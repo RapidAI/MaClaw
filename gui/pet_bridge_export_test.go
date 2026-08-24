@@ -272,7 +272,7 @@ func TestPetStoreRequestRefreshesExpiredSessionUsingHubEnrollment(t *testing.T) 
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload["account"] != "user-1" || payload["machine_id"] != "machine-1" || payload["viewer_token"] != strings.Repeat("a", 32) {
+			if payload["hub_id"] != "hub-test" || payload["account"] != "user-1" || payload["machine_id"] != "machine-1" || payload["viewer_token"] != strings.Repeat("a", 32) {
 				t.Fatalf("unexpected machine login payload: %#v", payload)
 			}
 			_, _ = w.Write([]byte(`{"session_token":"refreshed-token"}`))
@@ -285,6 +285,7 @@ func TestPetStoreRequestRefreshesExpiredSessionUsingHubEnrollment(t *testing.T) 
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
 		SkillMarketSessionToken: "expired-token",
 		RemoteUserID:            "user-1",
 		RemoteMachineID:         "machine-1",
@@ -327,6 +328,7 @@ func TestPetStoreRequestObtainsMissingSessionUsingHubEnrollment(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubCenterURL: server.URL,
+		RemoteHubID:        "hub-test",
 		RemoteUserID:       "user-1",
 		RemoteMachineID:    "machine-1",
 		RemoteViewerToken:  strings.Repeat("a", 32),

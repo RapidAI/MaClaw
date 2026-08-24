@@ -224,7 +224,7 @@ func searchEngineViaBrowserWithOptions(ctx context.Context, cdpAddr, engine, sea
 
 func searchPageNeedsHumanVerification(ctx context.Context, pws *CDPClient) bool {
 	raw, err := pws.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    `(() => { const t=(document.body?.innerText||'').toLowerCase(); return /captcha|verify you are human|unusual traffic|安全验证|人机验证|拖动滑块|验证码/.test(t) || !!document.querySelector('iframe[src*="captcha"], [class*="captcha"], [id*="captcha"]'); })()`,
+		"expression":    `(() => { function textFrom(doc){ let t=''; try { t += String(doc.body ? (doc.body.innerText || doc.body.textContent || '') : ''); } catch(e){} try { if (doc.querySelector('[class*="captcha"], [id*="captcha"]')) t += ' captcha'; } catch(e){} let all=[]; try { all = doc.querySelectorAll('*'); } catch(e){ return t; } for (const el of all){ if (el.shadowRoot){ try { t += ' ' + (el.shadowRoot.innerText || el.shadowRoot.textContent || ''); if (el.shadowRoot.querySelector('[class*="captcha"], [id*="captcha"]')) t += ' captcha'; } catch(e){} } } let frames=[]; try { frames = doc.querySelectorAll('iframe,frame'); } catch(e){ return t; } for (const f of frames){ try { if (/captcha/i.test(f.src||'')) return 'captcha'; if (f.contentDocument) t += ' ' + textFrom(f.contentDocument); } catch(e){} } return t; } const t = textFrom(document).toLowerCase(); return /captcha|verify you are human|unusual traffic|安全验证|人机验证|拖动滑块|验证码/.test(t); })()`,
 		"returnByValue": true,
 	}, browserSearchCommandTimeout(ctx, DefaultCmdTimeout))
 	if err != nil {

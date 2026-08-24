@@ -31,6 +31,16 @@ describe('userAgent helpers', () => {
         it('returns tigerclaw for CodeGen SSO provider', () => {
             expect(effectiveAgentType(provider({ name: 'CodeGen', auth_type: 'sso' }))).toBe('tigerclaw');
         });
+
+        it('uses each imported agent identity', () => {
+            expect(effectiveAgentType(provider({ import_source: 'codex' }))).toBe('Codex');
+            expect(effectiveAgentType(provider({ import_source: 'claude_code' }))).toBe('Claude Code');
+            expect(effectiveAgentType(provider({ import_source: 'opencode' }))).toBe('OpenCode');
+        });
+
+        it('uses OpenCode identity for the builtin OpenCode provider', () => {
+            expect(effectiveAgentType(provider({ name: 'OpenCode' }))).toBe('OpenCode');
+        });
     });
 
     describe('isKnownUserAgent', () => {
@@ -39,6 +49,7 @@ describe('userAgent helpers', () => {
             expect(isKnownUserAgent('Claude Code')).toBe(true);
             expect(isKnownUserAgent('Cline')).toBe(true);
             expect(isKnownUserAgent('OpenCode')).toBe(true);
+            expect(isKnownUserAgent('Codex')).toBe(true);
             expect(isKnownUserAgent('Roo Code')).toBe(true);
             expect(isKnownUserAgent('Kilo Code')).toBe(true);
             expect(isKnownUserAgent('Cursor')).toBe(true);

@@ -168,13 +168,19 @@ func (b *BtwSubAgent) Execute(query string) *BtwResult {
 
 type btwCallbacks struct {
 	subagent *BtwSubAgent
-
-	// cachedTools is built once on first call to BuildTools.
-	cachedTools []map[string]interface{}
 }
 
 func (c *btwCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.subagent.cfg
+}
+
+func (c *btwCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return c.GetLLMConfig(), agent.RouteDecision{}, false
+	}
+	cfg, d := c.subagent.handler.applyTurnModelRoute(c.subagent.cfg, userText, nil, nil)
+	c.subagent.cfg = cfg
+	return cfg, agentRouteFromModelRoute(d, cfg), true
 }
 
 func (c *btwCallbacks) GetMaxIterations() int {
@@ -185,8 +191,8 @@ func (c *btwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 	// Build a focused system prompt for /btw by selectively composing only
 	// the sections relevant to a single-turn read-only query:
 	//   Identity (role name, self_identity from memory)
-	//   Proactive memory recall (relevant memories for the query)
 	//   User fact summary (who the user is)
+	//   Tool hints for memory recall (no warehouse dump)
 	//   Coding workflow rules (3000+ tokens of noise)
 	//   Memory management guide (save/replace/delete — /btw is read-only)
 	//   Session list, MCP servers, skills, security firewall
@@ -195,15 +201,15 @@ func (c *btwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 	// This avoids two mechanism-level problems with reusing the full prompt:
 	// 1. frozenMemorySnapshots cache pollution (isFirstTurn=true corrupts
 	//    the main agent's cached snapshot)
-	// 2. Memory-driven tool pinning side effects (appendProactiveRecall
-	//    pins tools to the main session based on /btw query content)
+	// 2. Main-prompt catalog/tool wiring (appendProactiveRecall is CatalogOnly
+	//    and must not be reused as a /btw dump or tool-pin path)
 	return buildBtwSystemPrompt(c.subagent.handler, userText)
 }
 
 // buildBtwSystemPrompt constructs a focused system prompt for /btw.
 // It reads identity and memory directly from the handler's stores,
 // without calling buildSystemPromptBase (which has side effects).
-func buildBtwSystemPrompt(h *IMMessageHandler, userText string) string {
+func buildBtwSystemPrompt(h *IMMessageHandler, _ string) string {
 	var b strings.Builder
 
 	// --- Identity (same source as main agent) ---
@@ -237,17 +243,6 @@ func buildBtwSystemPrompt(h *IMMessageHandler, userText string) string {
 		b.WriteString(h.memoryStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## \u7528\u6237\u4fe1\u606f")))
 	}
 
-	// --- Proactive memory recall (read-only, no tool pinning side effect) ---
-	if h.memoryStore != nil && userText != "" {
-		projectPath := ""
-		if h.contextResolver != nil {
-			projectPath, _ = h.contextResolver.ResolveProject()
-		}
-		// Compact auto-extracted document bodies so /btw recall matches main-agent warmup.
-		promptContext, _ := h.memoryStore.ProactiveContextForPrompt(agent.CompactQueryForEmbedding(userText), corememory.BtwProactivePromptOptions(projectPath, "\n## \u76f8\u5173\u8bb0\u5fc6\uff08\u81ea\u52a8\u53ec\u56de\uff09"))
-		b.WriteString(promptContext)
-	}
-
 	return b.String()
 }
 
@@ -270,10 +265,12 @@ const btwSuffix = `
 `
 
 func (c *btwCallbacks) BuildTools(userText string) []map[string]interface{} {
-	if c.cachedTools == nil {
-		c.cachedTools = buildBtwToolDefinitions()
-	}
-	return c.cachedTools
+	_ = userText
+	// A /btw round still has a concrete request boundary. Do not retain a
+	// predecessor's definitions across a retry/fallback/successor: the complete
+	// read-only surface is cheap to rebuild and will be frozen by RunLoop before
+	// serialization.
+	return buildBtwToolDefinitions()
 }
 
 func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {

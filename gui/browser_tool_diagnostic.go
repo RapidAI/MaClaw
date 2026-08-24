@@ -140,19 +140,14 @@ func browserDiagRolePrefixAtLineStart(text string, idx int) bool {
 	return false
 }
 
-func BrowserDiagCP1_Route(userMsg string, routedTools []map[string]interface{}, sessionPinned bool) {
+func BrowserDiagCP1_Route(userMsg string, routedTools []map[string]interface{}) {
 	found := browserDiagExtractNames(routedTools)
-	if len(found) == 0 && !sessionPinned {
+	if len(found) == 0 {
 		return
 	}
 
-	if len(found) > 0 {
-		log.Printf("[browser-diag] CP1_Route: browser tools IN routed list: %v | sessionPinned=%v | msg_len=%d",
-			found, sessionPinned, len([]rune(userMsg)))
-	} else {
-		log.Printf("[browser-diag] CP1_Route: browser tools NOT in routed list | sessionPinned=%v | msg_len=%d",
-			sessionPinned, len([]rune(userMsg)))
-	}
+	log.Printf("[browser-diag] CP1_Route: browser tools IN routed list: %v | msg_len=%d",
+		found, len([]rune(userMsg)))
 }
 
 func BrowserDiagCP2_WorkflowFilter(beforeCount int, afterTools []map[string]interface{}, policy string, skipped bool) {
@@ -174,6 +169,22 @@ func BrowserDiagCP4_FinalToolList(tools []map[string]interface{}, iteration int,
 	}
 	log.Printf("[browser-diag] CP4_FinalToolList: WARNING browser tools PRESENT in LLM tool list: %v | iteration=%d totalTools=%d",
 		found, iteration, totalToolCount)
+}
+
+// emitFinalToolSurfaceDiagnostics is the Phase C routing checkpoint: a
+// managed plan logs its ExplainTrace. BrowserDiag CP4 remains the
+// compatibility display for unmanaged turns, and for a soup-name leak on a
+// closed grant surface.
+func emitFinalToolSurfaceDiagnostics(tools []map[string]interface{}, surface *semanticCallSurface, iteration int) {
+	if surface != nil {
+		tool.LogExplainTrace(surface.plan.Trace)
+		if leaked := browserDiagExtractNames(tools); len(leaked) > 0 {
+			log.Printf("[explain-trace] managed_surface_compat_leak checkpoint=CP4 count=%d", len(leaked))
+			BrowserDiagCP4_FinalToolList(tools, iteration, len(tools))
+		}
+		return
+	}
+	BrowserDiagCP4_FinalToolList(tools, iteration, len(tools))
 }
 
 func BrowserDiagCP5_StreamFilter(rpfHalted bool, rpfSuppressed int, repHalted bool, repSuppressed int, rawHasBrowser, filteredHasBrowser bool, filteredContent string) {

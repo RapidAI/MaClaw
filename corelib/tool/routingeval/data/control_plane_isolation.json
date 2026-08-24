@@ -1,0 +1,41 @@
+{
+  "category": "control_plane_isolation",
+  "category_id": 34,
+  "title": "control-plane isolation",
+  "design_ref": "10.1 item 34",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "no-call-mcp",
+      "title": "call_mcp_tool is not a search implementation",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "call_mcp_tool",
+            "effects": [
+              "sensitive"
+            ],
+            "capabilities": [
+              {
+                "capability": "shell.execute.local"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "Control-plane isolation is in semantic_expert_allowlist_test.go."
+    }
+  ]
+}

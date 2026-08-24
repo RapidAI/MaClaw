@@ -1,8 +1,10 @@
 import type { ChatMessage } from "./useAIAssistant";
+import { isCodingAgentBoardProgressContent } from "./codingAgentUserFinish";
 import {
     codingAgentFeedStableKey,
     codingAgentProgressLooksCritical,
     isCodingAgentActivityEvent,
+    isCodingAgentChatHiddenEvent,
     isCodingAgentProgressContent,
     isCodingAgentTaskStatusOnly,
     isCodingAgentTerminalPhase,
@@ -10,8 +12,8 @@ import {
     type CodingAgentProgress,
 } from "./CodingAgentProgressStatus";
 
-/** The activity tray intentionally shows only the latest three operations. */
-const MAX_RECENT_ACTIVITY_EVENTS = 3;
+/** Keep a Codex-like tool trail; the chat feed scrolls or expands past this. */
+const MAX_RECENT_ACTIVITY_EVENTS = 20;
 
 type ParsedRow = {
     msg: ChatMessage;
@@ -25,6 +27,10 @@ type ParsedRow = {
  * 3) re-cap every visible activity line after coalesce
  */
 export function compactCodingAgentProgressMessages(messages: ChatMessage[]): ChatMessage[] {
+    const hasCodingTrail = messages.some((msg) => msg.role === "progress" && isCodingAgentProgressContent(msg.content || ""));
+    if (hasCodingTrail) {
+        messages = messages.filter((msg) => msg.role !== "progress" || !isCodingAgentBoardProgressContent(msg.content || ""));
+    }
     // Parse once per message for this pipeline.
     const rows: ParsedRow[] = messages.map((msg) => ({
         msg,
@@ -33,12 +39,18 @@ export function compactCodingAgentProgressMessages(messages: ChatMessage[]): Cha
 
     let latestCodingIndex = -1;
     for (let i = rows.length - 1; i >= 0; i--) {
-        if (rows[i].progress) {
+        const progress = rows[i].progress;
+        if (progress && !isCodingAgentChatHiddenEvent(progress)) {
             latestCodingIndex = i;
             break;
         }
     }
-    if (latestCodingIndex < 0) return messages;
+    if (latestCodingIndex < 0) {
+        return messages.filter((msg, index) => {
+            const progress = rows[index].progress;
+            return !progress || !isCodingAgentChatHiddenEvent(progress);
+        });
+    }
 
     const latest = rows[latestCodingIndex].progress!;
     // Soft pre-filter: keep a generous window of raw tool events (starts+finishes),
@@ -64,6 +76,9 @@ export function compactCodingAgentProgressMessages(messages: ChatMessage[]): Cha
         const progress = rows[index].progress;
         if (!progress) {
             filtered.push(rows[index]); // ordinary chat / non-coding progress
+            continue;
+        }
+        if (isCodingAgentChatHiddenEvent(progress)) {
             continue;
         }
         if (keepTools.has(index) || shouldPreserveCodingProgress(progress, latest)) {
@@ -154,6 +169,49 @@ function coalesceCodingAgentToolLifecycleRows(rows: ParsedRow[]): ParsedRow[] {
         if (keep !== undefined && keep !== i) drop.add(i);
     }
 
+    // 3) Codex: one Edit/Write line per file. Drop diff_updated / diff_summary
+    //    when a write/edit tool_finished in the same turn already carries that path.
+    const editedFilesByTurn = new Map<string, Set<string>>();
+    for (let i = 0; i < rows.length; i++) {
+        if (drop.has(i)) continue;
+        const progress = rows[i].progress;
+        if (!progress) continue;
+        const event = (progress.event || "").trim().toLowerCase();
+        if (event !== "tool_finished") continue;
+        const tool = (progress.detail || "").toLowerCase().replace(/^ssh_/, "");
+        if (
+            tool !== "write_file" &&
+            tool !== "edit_file" &&
+            tool !== "edit_lines" &&
+            tool !== "apply_patch" &&
+            tool !== "str_replace"
+        ) {
+            continue;
+        }
+        const turnKey = codingProgressTurnKey(progress);
+        const files = new Set(editedFilesByTurn.get(turnKey) || []);
+        for (const path of progress.files || []) {
+            if (path) files.add(path.replace(/\\/g, "/"));
+        }
+        editedFilesByTurn.set(turnKey, files);
+    }
+    for (let i = 0; i < rows.length; i++) {
+        if (drop.has(i)) continue;
+        const progress = rows[i].progress;
+        if (!progress) continue;
+        const event = (progress.event || "").trim().toLowerCase();
+        if (event !== "diff_updated" && event !== "diff_summary") continue;
+        const files = editedFilesByTurn.get(codingProgressTurnKey(progress));
+        if (!files || files.size === 0) continue;
+        const updated = [
+            ...(progress.files || []),
+            ...(progress.fileChanges || []).map((row) => row.path),
+        ].map((path) => path.replace(/\\/g, "/")).filter(Boolean);
+        if (updated.length === 0 || updated.some((path) => files.has(path))) {
+            drop.add(i);
+        }
+    }
+
     if (drop.size === 0) return rows;
     return rows.filter((_, index) => !drop.has(index));
 }
@@ -194,19 +252,15 @@ function shouldPreserveCodingProgress(progress: CodingAgentProgress | null, late
     const event = (progress.event || "").trim().toLowerCase();
     const outcome = (progress.outcome || "").trim().toLowerCase();
     switch (event) {
-        case "guardrail_summary":
-            return outcome === "blocked";
         case "command_summary":
-        case "quality_summary":
         case "diff_check":
             return outcome === "failed";
-        case "verification_summary":
-        case "exploration_summary":
-            return outcome === "failed" || outcome === "missing";
         case "tool_finished":
             // Keep true failures/blocks for the trail; drop diagnostic probes from the soft preserve path
             // (they still appear inside the recent tool window when fresh).
             return codingAgentProgressLooksCritical(progress);
+        case "assistant_note":
+            return true;
         default:
             return false;
     }

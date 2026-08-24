@@ -40,15 +40,41 @@ const (
 	autoExtractHistoryPlaceholder = "[之前已自动解析文档正文，正文已省略]"
 )
 
+// DocumentAutoExtractBudget scales attachment injection to the usable model
+// context. The per-file limit preserves focused reads; the total limit leaves
+// at least half of a 200K+ context window free for prompts, tools, history and
+// subsequent reasoning. Zero retains the desktop-safe defaults.
+func DocumentAutoExtractBudget(contextTokens int) (perFile, total int) {
+	if contextTokens <= 0 {
+		return defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal
+	}
+	total = contextTokens / 2
+	if total < 40_000 {
+		total = 40_000
+	}
+	if total > 200_000 {
+		total = 200_000
+	}
+	perFile = total * 2 / 3
+	if perFile > 120_000 {
+		perFile = 120_000
+	}
+	if perFile < 20_000 {
+		perFile = 20_000
+	}
+	return perFile, total
+}
+
 // Caps for automatic injection into the *user turn*.
-// Intentionally much smaller than office(read_document) default (120k) / hard max (500k).
+// Intentionally smaller than the full Office reader's hard max (500k).
 //
 // Rough budget (Chinese-heavy text ≈ 1 token/rune):
-//   - ~20k runes/file ≈ one medium chapter
-//   - ~40k runes total across all attachments in one turn
+//   - ~80k runes/file leaves ample room in current 200K+ context windows
+//   - ~120k runes total keeps a multi-file turn useful without crowding out
+//     the system prompt, user request, and the agent's working context
 const (
-	defaultAutoInjectMaxRunesPerFile = 20_000
-	defaultAutoInjectMaxRunesTotal   = 40_000
+	defaultAutoInjectMaxRunesPerFile = 80_000
+	defaultAutoInjectMaxRunesTotal   = 120_000
 
 	// Keep automatic injection and read_document on the same full-source
 	// boundary. Paging limits the result sent to the model, but extraction still
@@ -64,7 +90,17 @@ func ExpandUserSelectedFilePaths(text string) string {
 	return expandUserSelectedFilePathsWithSettings(text, currentOfficeReadSettings())
 }
 
+// ExpandUserSelectedFilePathsWithContext scales automatic document injection
+// to the active model's usable context window.
+func ExpandUserSelectedFilePathsWithContext(text string, contextTokens int) string {
+	return expandUserSelectedFilePathsWithSettingsAndBudget(text, currentOfficeReadSettings(), contextTokens)
+}
+
 func expandUserSelectedFilePathsWithSettings(text string, settings officeReadSettings) string {
+	return expandUserSelectedFilePathsWithSettingsAndBudget(text, settings, 0)
+}
+
+func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings officeReadSettings, contextTokens int) string {
 	if strings.TrimSpace(text) == "" {
 		return text
 	}
@@ -98,7 +134,8 @@ func expandUserSelectedFilePathsWithSettings(text string, settings officeReadSet
 			docPaths = append(docPaths, p)
 		}
 	}
-	extracted := formatAutoExtractedDocumentsWithSettings(docPaths, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, settings)
+	perFile, totalBudget := DocumentAutoExtractBudget(contextTokens)
+	extracted := formatAutoExtractedDocumentsWithSettings(docPaths, perFile, totalBudget, nil, settings)
 	hasExtract := false
 	for _, block := range extracted {
 		if block != "" {
@@ -111,7 +148,7 @@ func expandUserSelectedFilePathsWithSettings(text string, settings officeReadSet
 	// append auto-extract bodies.
 	var b strings.Builder
 	// Extract bodies are rune-capped; UTF-8 Chinese ≈ 3 bytes/rune — pre-size to avoid growth thrash.
-	b.Grow(len(text) + defaultAutoInjectMaxRunesTotal*3 + 2048)
+	b.Grow(len(text) + totalBudget*3 + 2048)
 	b.WriteString(before)
 	b.WriteString(FilePathPromptPrefix)
 	b.WriteByte('\n')
@@ -162,7 +199,17 @@ func AppendDocumentExtractsToDescriptions(fileDescriptions []string, userText st
 	return appendDocumentExtractsToDescriptionsWithSettings(fileDescriptions, userText, currentOfficeReadSettings())
 }
 
+// AppendDocumentExtractsToDescriptionsWithContext is the context-aware
+// companion for attachment payload builders.
+func AppendDocumentExtractsToDescriptionsWithContext(fileDescriptions []string, userText string, contextTokens int) []string {
+	return appendDocumentExtractsToDescriptionsWithSettingsAndBudget(fileDescriptions, userText, currentOfficeReadSettings(), contextTokens)
+}
+
 func appendDocumentExtractsToDescriptionsWithSettings(fileDescriptions []string, userText string, settings officeReadSettings) []string {
+	return appendDocumentExtractsToDescriptionsWithSettingsAndBudget(fileDescriptions, userText, settings, 0)
+}
+
+func appendDocumentExtractsToDescriptionsWithSettingsAndBudget(fileDescriptions []string, userText string, settings officeReadSettings, contextTokens int) []string {
 	if len(fileDescriptions) == 0 {
 		return fileDescriptions
 	}
@@ -194,7 +241,12 @@ func appendDocumentExtractsToDescriptionsWithSettings(fileDescriptions []string,
 	for i, d := range docs {
 		paths[i] = d.path
 	}
-	blocks := formatAutoExtractedDocumentsWithSettings(paths, defaultAutoInjectMaxRunesPerFile, RemainingAutoInjectBudget(userText), AlreadyAutoExtractedPaths(userText), settings)
+	perFile, totalBudget := DocumentAutoExtractBudget(contextTokens)
+	remaining := totalBudget - CountInjectedAutoExtractRunes(userText)
+	if remaining < 0 {
+		remaining = 0
+	}
+	blocks := formatAutoExtractedDocumentsWithSettings(paths, perFile, remaining, AlreadyAutoExtractedPaths(userText), settings)
 	any := false
 	for _, block := range blocks {
 		if block != "" {
@@ -570,10 +622,10 @@ func autoExtractPolicyErrorBlock(filePath, format, errorClass string, guidance .
 func tryReadPlainDocument(filePath, format string, fileSize int64) (string, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
-	case ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log", ".csv", ".rtf":
+	case ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log", ".csv":
 	default:
 		switch strings.ToLower(format) {
-		case "txt", "md", "markdown", "json", "xml", "yaml", "yml", "log", "csv", "rtf":
+		case "txt", "md", "markdown", "json", "xml", "yaml", "yml", "log", "csv":
 		default:
 			return "", fmt.Errorf("not plain text")
 		}
@@ -615,7 +667,7 @@ func plainFormat(filePath string) string {
 
 func isPlainTextDocumentFormat(format string) bool {
 	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".") {
-	case "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log", "csv", "rtf":
+	case "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log", "csv":
 		return true
 	default:
 		return false
@@ -651,6 +703,31 @@ func parseSelectedFilePathLines(section string) (paths []string, rest string) {
 		restLines = append(restLines, line)
 	}
 	return pathLines, strings.Join(restLines, "\n")
+}
+
+// SelectedLocalFilePathsFromPrompt returns only the paths in the current
+// desktop file-picker marker.  It deliberately does not inspect historical
+// markers: those are conversational context, not a renewed local-file grant.
+// Callers that need to retain a file across turns must store a host-owned,
+// validated reference rather than recovering a path from history text.
+func SelectedLocalFilePathsFromPrompt(text string) []string {
+	idx := CurrentLocalFilePathPromptIndex(text)
+	if idx < 0 {
+		return nil
+	}
+	section := text[idx+len(FilePathPromptPrefix):]
+	section = strings.TrimPrefix(section, "\r\n")
+	section = strings.TrimPrefix(section, "\n")
+	paths, _ := parseSelectedFilePathLines(section)
+	return append([]string(nil), paths...)
+}
+
+// CurrentLocalFilePathPromptIndex returns a current picker marker. The
+// historical marker is a distinct literal, so it is deliberately not matched.
+// Historical paths are conversational context only and must never be
+// re-authorized.
+func CurrentLocalFilePathPromptIndex(text string) int {
+	return strings.Index(text, FilePathPromptPrefix)
 }
 
 // isLikelyLocalPathLine heuristically detects a file path line (not instruction prose).
@@ -742,7 +819,7 @@ func IsImageFilePath(filePath string) bool {
 func isDocumentExt(ext string) bool {
 	switch ext {
 	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
-		".txt", ".md", ".markdown", ".rtf", ".json", ".xml", ".yaml", ".yml", ".log":
+		".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
 		return true
 	default:
 		return false

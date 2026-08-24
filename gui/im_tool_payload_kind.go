@@ -10,6 +10,7 @@ const (
 	toolPayloadScreenshotSent   toolPayloadKind = "screenshot_sent"
 	toolPayloadFileBase64       toolPayloadKind = "file_base64"
 	toolPayloadVoiceBase64      toolPayloadKind = "voice_base64"
+	toolPayloadSpeechArtifact   toolPayloadKind = "speech_artifact"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	toolPayloadScreenshotSentMarker = "[screenshot_sent]"
 	toolPayloadFilePrefix           = "[file_base64|"
 	toolPayloadVoicePrefix          = "[voice_base64|"
+	toolPayloadSpeechArtifactPrefix = "[speech_artifact|audio/wav]"
 )
 
 type classifiedToolPayload struct {
@@ -58,6 +60,11 @@ func classifyToolPayloadResult(result string) classifiedToolPayload {
 		return classifiedToolPayload{
 			Kind: toolPayloadVoiceBase64,
 			Body: strings.TrimPrefix(result, toolPayloadVoicePrefix),
+		}
+	case strings.HasPrefix(result, toolPayloadSpeechArtifactPrefix):
+		return classifiedToolPayload{
+			Kind: toolPayloadSpeechArtifact,
+			Body: strings.TrimPrefix(result, toolPayloadSpeechArtifactPrefix),
 		}
 	default:
 		return classifiedToolPayload{Kind: toolPayloadPlain, Body: result}

@@ -80,6 +80,9 @@ func (s *Service) InstallMCPMarketCapability(ctx context.Context, p Principal, i
 	if command := strings.TrimSpace(stringFromAny(metadata["command"])); command != "" {
 		entry := corelib.LocalMCPServerEntry{ID: firstMCPNonEmpty(stringFromAny(metadata["server_id"]), item.ID, NewID("mcp_market")), Name: name, Command: command, Args: stringSliceFromAny(metadata["args"]), Env: stringMapFromAny(metadata["env"]), AutoStart: true, CreatedAt: now, Source: corelib.MCPSourceMarket, Capability: capRef}
 		upserted := upsertLocalMCP(&cfg.AppConfig, entry)
+		if err := s.revokeMCPServerDynamicContracts(p, upserted.ID); err != nil {
+			return nil, err
+		}
 		if err := s.saveRawUserConfig(p, cfg.AppConfig); err != nil {
 			return nil, err
 		}
@@ -98,6 +101,9 @@ func (s *Service) InstallMCPMarketCapability(ctx context.Context, p Principal, i
 	}
 	entry := corelib.MCPServerEntry{ID: firstMCPNonEmpty(stringFromAny(metadata["server_id"]), item.ID, NewID("mcp_market")), Name: name, EndpointURL: endpoint, AuthType: authType, Headers: stringMapFromAny(metadata["headers"]), CreatedAt: now, Source: corelib.MCPSourceMarket, Capability: capRef}
 	upserted := upsertRemoteMCP(&cfg.AppConfig, entry)
+	if err := s.revokeMCPServerDynamicContracts(p, upserted.ID); err != nil {
+		return nil, err
+	}
 	if err := s.saveRawUserConfig(p, cfg.AppConfig); err != nil {
 		return nil, err
 	}

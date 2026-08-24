@@ -36,6 +36,7 @@ func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCt
 	}
 
 	h.maybeAttachVoiceSummary(resp, msg.Platform, isVoiceInputMessage(msg))
+	h.settleSessionGovernedTaskAfterLoop(msg, loopCtx, resp)
 	return resp
 }
 
@@ -255,6 +256,9 @@ func (h *IMMessageHandler) workflowPhaseDocCaptureAllowed(ownerID, phaseID, docT
 }
 
 func (h *IMMessageHandler) recordAgentLoopTerminalExperience(loopCtx *LoopContext, resp *IMAgentResponse) {
+	if loopCtx != nil && h != nil && h.horizonActive(loopCtx.UserID) {
+		return
+	}
 	if event, ok := agentLoopTerminalExperienceEvent(loopCtx, resp); ok {
 		h.recordExperienceLifecycleEvent(event)
 	}

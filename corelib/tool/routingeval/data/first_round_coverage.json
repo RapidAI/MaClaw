@@ -1,0 +1,104 @@
+{
+  "category": "first_round_coverage",
+  "category_id": 25,
+  "title": "first-round coverage complete, incomplete, and stale",
+  "design_ref": "10.1 item 25",
+  "format_note": "Planner-expressible first-round inventory states. Complete is infeasibility; incomplete/stale are lifecycle gaps. Stale read-only may run only inside the published window.",
+  "samples": [
+    {
+      "id": "complete-search-is-selected",
+      "title": "Complete coverage with a ready search provider materializes",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}}],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "phase": "execution"}]
+      }
+    },
+    {
+      "id": "incomplete-search-is-not-unmet",
+      "title": "Incomplete coverage cannot be treated as no_feasible_provider",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}}],
+      "catalog": {
+        "coverage": {"state": "incomplete", "reason_code": "catalog_incomplete"},
+        "providers": []
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "search", "reason": "catalog_incomplete"}]
+      }
+    },
+    {
+      "id": "stale-readonly-inside-window",
+      "title": "Bounded stale window keeps a read-only search candidate",
+      "notes": "ReadyUntil may have elapsed; StaleUntil is the only allowed extension for read_only.",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}}],
+      "catalog": {
+        "coverage": {"state": "stale", "reason_code": "catalog_stale", "stale_seconds": 60},
+        "providers": [
+          {
+            "adapter": "stale_search",
+            "kind": "mcp",
+            "effects": ["read_only"],
+            "ready_seconds": -1,
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "adapter": "stale_search"}]
+      }
+    },
+    {
+      "id": "stale-readonly-window-expired",
+      "title": "Expired stale window is catalog_stale, not silent infeasibility",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}}],
+      "catalog": {
+        "coverage": {"state": "stale", "reason_code": "catalog_stale", "stale_seconds": -1},
+        "providers": [
+          {
+            "adapter": "expired_search",
+            "kind": "mcp",
+            "effects": ["read_only"],
+            "ready_seconds": -1,
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "search", "reason": "catalog_stale"}]
+      }
+    },
+    {
+      "id": "stale-generate-never-executes",
+      "title": "Stale coverage never materializes a mutating generate selection",
+      "needs": [{"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+      "catalog": {
+        "coverage": {"state": "stale", "reason_code": "catalog_stale", "stale_seconds": 60},
+        "providers": [
+          {
+            "adapter": "stale_generate",
+            "kind": "mcp",
+            "effects": ["local_mutation"],
+            "ready_seconds": -1,
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "generate", "reason": "catalog_stale"}]
+      }
+    }
+  ]
+}

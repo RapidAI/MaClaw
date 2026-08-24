@@ -2,8 +2,11 @@
 
 #include <string.h>
 
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+
+#include "provisioning_failure_injection.h"
 
 #define POWER_LEASE_MAX_SLOTS 8u
 
@@ -18,6 +21,21 @@ static power_lease_slot_t s_slots[POWER_LEASE_MAX_SLOTS];
 static bool s_initialized;
 static bool s_initializing;
 static bool s_stopping;
+/* A physical DISPLAY_OFF commit happens below the Power Service mutex (it may
+ * synchronously hand work to Display Service), so it cannot retain `s_lock`.
+ * This gate is the explicit substitute: it closes only *new* foreground
+ * leases for the short PREPARE -> COMMIT interval. Existing handles cannot
+ * become active here because PREPARE first proves there are none. */
+static bool s_display_off_commit_in_progress;
+static uint32_t s_display_off_commit_generation;
+/* This is deliberately independent from the DISPLAY_OFF fence: a future MCU
+ * sleep PREPARE has a wider rollback surface, while both fences atomically
+ * block a new foreground lease from crossing their final recheck. */
+static bool s_system_sleep_prepare_in_progress;
+static uint32_t s_system_sleep_prepare_generation;
+static device_power_state_t s_system_sleep_prepare_target;
+
+static const char *TAG = "maclaw_power_lease";
 
 static bool owner_is_valid(device_power_lease_owner_t owner) {
     return owner > DEVICE_POWER_LEASE_OWNER_NONE &&
@@ -50,6 +68,9 @@ device_status_t power_lease_service_init(void) {
     }
     s_initialized = true;
     s_initializing = false;
+    s_display_off_commit_in_progress = false;
+    s_system_sleep_prepare_in_progress = false;
+    s_system_sleep_prepare_target = DEVICE_POWER_STATE_ACTIVE;
     taskEXIT_CRITICAL(&s_lock);
     return DEVICE_STATUS_OK;
 }
@@ -75,11 +96,25 @@ device_status_t power_lease_service_deinit(uint32_t timeout_ms) {
             if (s_slots[i].active) ++active_count;
         }
         const bool stopping = s_stopping;
+        /* A DISPLAY_OFF PREPARE has closed acquisition but may still own a
+         * synchronous Display Service transaction. Do not declare this lease
+         * generation drained merely because it has zero client leases: a
+         * subsequent init could otherwise reuse the domain while the old
+         * Power worker still holds its commit generation. */
+        /* Keep the DISPLAY_OFF fence as a named invariant for the original
+         * lifecycle contract; System Sleep PREPARE is a second independent
+         * admission fence and must drain by the same rule. */
+        const bool commit_in_progress = s_display_off_commit_in_progress;
+        const bool system_sleep_prepare_in_progress =
+            s_system_sleep_prepare_in_progress;
         taskEXIT_CRITICAL(&s_lock);
-        if (!stopping || active_count == 0) break;
+        if (!stopping || (active_count == 0 && !commit_in_progress &&
+                          !system_sleep_prepare_in_progress)) break;
         if (esp_timer_get_time() >= deadline_us) {
             /* Keep admission closed; existing owners retain the only legal
-             * operation (release) until a later drain attempt succeeds. */
+             * operation (release), while an in-flight Power transaction can
+             * still execute its mandatory commit-fence finish. A later drain
+             * attempt, not a fresh init, completes this generation. */
             return DEVICE_STATUS_TIMEOUT;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -98,7 +133,8 @@ device_status_t power_lease_service_acquire(device_power_lease_owner_t owner,
     if (!out_lease || !owner_is_valid(owner)) return DEVICE_STATUS_INVALID_ARGUMENT;
     *out_lease = DEVICE_POWER_LEASE_INVALID;
     taskENTER_CRITICAL(&s_lock);
-    if (!s_initialized || s_stopping) {
+    if (!s_initialized || s_stopping || s_display_off_commit_in_progress ||
+        s_system_sleep_prepare_in_progress) {
         taskEXIT_CRITICAL(&s_lock);
         return DEVICE_STATUS_BUSY;
     }
@@ -132,21 +168,125 @@ void power_lease_service_release(device_power_lease_t lease) {
     taskEXIT_CRITICAL(&s_lock);
 }
 
-bool power_lease_service_allows_display_off(void) {
-    bool allowed = true;
+device_status_t power_lease_service_begin_display_off_commit(uint32_t *out_generation) {
+    if (!out_generation) return DEVICE_STATUS_INVALID_ARGUMENT;
+    *out_generation = 0;
     taskENTER_CRITICAL(&s_lock);
-    if (!s_initialized || s_stopping) {
-        allowed = false;
-    } else {
+    if (!s_initialized || s_stopping || s_display_off_commit_in_progress ||
+        s_system_sleep_prepare_in_progress) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
+        if (s_slots[i].active) {
+            taskEXIT_CRITICAL(&s_lock);
+            return DEVICE_STATUS_BUSY;
+        }
+    }
+    uint32_t next_generation = s_display_off_commit_generation + 1u;
+    if (next_generation == 0) next_generation = 1u;
+    s_display_off_commit_generation = next_generation;
+    s_display_off_commit_in_progress = true;
+    *out_generation = next_generation;
+    taskEXIT_CRITICAL(&s_lock);
+    return DEVICE_STATUS_OK;
+}
+
+bool power_lease_service_display_off_commit_is_current(uint32_t generation) {
+    if (generation == 0) return false;
+    taskENTER_CRITICAL(&s_lock);
+    bool current = s_initialized && !s_stopping &&
+                   s_display_off_commit_in_progress &&
+                   s_display_off_commit_generation == generation;
+    if (current) {
+        /* This second read is deliberately adjacent to COMMIT.  It protects
+         * against lifecycle admission closure after PREPARE.  Acquires are
+         * refused while the commit fence is set, so an active lease cannot
+         * appear after this check and before the panel transaction begins. */
         for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
             if (s_slots[i].active) {
-                allowed = false;
+                current = false;
                 break;
             }
         }
     }
     taskEXIT_CRITICAL(&s_lock);
-    return allowed;
+    return current;
+}
+
+void power_lease_service_end_display_off_commit(uint32_t generation) {
+    if (generation == 0) return;
+    taskENTER_CRITICAL(&s_lock);
+    if (s_display_off_commit_in_progress &&
+        s_display_off_commit_generation == generation) {
+        s_display_off_commit_in_progress = false;
+    }
+    taskEXIT_CRITICAL(&s_lock);
+}
+
+device_status_t power_lease_service_begin_system_sleep_prepare(
+    device_power_state_t target_state, uint32_t *out_generation) {
+    if (!out_generation ||
+        (target_state != DEVICE_POWER_STATE_LIGHT_SLEEP &&
+         target_state != DEVICE_POWER_STATE_DEEP_SLEEP)) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    *out_generation = 0;
+    taskENTER_CRITICAL(&s_lock);
+    if (!s_initialized || s_stopping || s_display_off_commit_in_progress ||
+        s_system_sleep_prepare_in_progress) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
+        if (s_slots[i].active) {
+            taskEXIT_CRITICAL(&s_lock);
+            return DEVICE_STATUS_BUSY;
+        }
+    }
+    uint32_t next_generation = s_system_sleep_prepare_generation + 1u;
+    if (next_generation == 0) next_generation = 1u;
+    s_system_sleep_prepare_generation = next_generation;
+    s_system_sleep_prepare_target = target_state;
+    s_system_sleep_prepare_in_progress = true;
+    *out_generation = next_generation;
+    taskEXIT_CRITICAL(&s_lock);
+    return DEVICE_STATUS_OK;
+}
+
+bool power_lease_service_system_sleep_prepare_is_current(
+    device_power_state_t target_state, uint32_t generation) {
+    if (generation == 0 ||
+        (target_state != DEVICE_POWER_STATE_LIGHT_SLEEP &&
+         target_state != DEVICE_POWER_STATE_DEEP_SLEEP)) {
+        return false;
+    }
+    taskENTER_CRITICAL(&s_lock);
+    bool current = s_initialized && !s_stopping &&
+                   s_system_sleep_prepare_in_progress &&
+                   s_system_sleep_prepare_generation == generation &&
+                   s_system_sleep_prepare_target == target_state;
+    if (current) {
+        for (size_t i = 0; i < POWER_LEASE_MAX_SLOTS; ++i) {
+            if (s_slots[i].active) {
+                current = false;
+                break;
+            }
+        }
+    }
+    taskEXIT_CRITICAL(&s_lock);
+    return current;
+}
+
+void power_lease_service_end_system_sleep_prepare(uint32_t generation) {
+    if (generation == 0) return;
+    taskENTER_CRITICAL(&s_lock);
+    if (s_system_sleep_prepare_in_progress &&
+        s_system_sleep_prepare_generation == generation) {
+        s_system_sleep_prepare_in_progress = false;
+        s_system_sleep_prepare_target = DEVICE_POWER_STATE_ACTIVE;
+    }
+    taskEXIT_CRITICAL(&s_lock);
 }
 
 bool power_lease_service_get_snapshot(device_power_lease_snapshot_t *out_snapshot) {
@@ -163,4 +303,68 @@ bool power_lease_service_get_snapshot(device_power_lease_snapshot_t *out_snapsho
     }
     taskEXIT_CRITICAL(&s_lock);
     return out_snapshot->initialized;
+}
+
+device_status_t power_lease_service_run_display_off_commit_lifecycle_test(void) {
+    if (!provisioning_failure_injection_power_lease_display_off_commit_test_enabled()) {
+        return DEVICE_STATUS_OK;
+    }
+
+    /* The test runs immediately after Power Service initialization, before
+     * App UI can arm an idle timer or any normal foreground owner can exist.
+     * It deliberately stops at the lease boundary: panel/DMA/wake behavior is
+     * verified by profile HIL separately and must never leak into this shared
+     * ownership proof. */
+    uint32_t generation = 0;
+    device_status_t status = power_lease_service_begin_display_off_commit(&generation);
+    if (status != DEVICE_STATUS_OK || generation == 0) {
+        ESP_LOGE(TAG, "test: cannot begin DISPLAY_OFF commit (%d)", (int)status);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+
+    device_power_lease_t lease = DEVICE_POWER_LEASE_INVALID;
+    status = power_lease_service_acquire(DEVICE_POWER_LEASE_OWNER_VOICE_INTERACTION,
+                                         &lease);
+    if (status != DEVICE_STATUS_BUSY || lease != DEVICE_POWER_LEASE_INVALID) {
+        power_lease_service_end_display_off_commit(generation);
+        ESP_LOGE(TAG, "test: foreground acquire crossed commit fence (%d)",
+                 (int)status);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    if (!power_lease_service_display_off_commit_is_current(generation)) {
+        power_lease_service_end_display_off_commit(generation);
+        ESP_LOGE(TAG, "test: freshly prepared commit is not current");
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+
+    /* Close admission while the commit is deliberately outstanding.  A drain
+     * must time out rather than allowing a future init to overlap a previous
+     * synchronous Display transaction. */
+    power_lease_service_close_admission();
+    if (power_lease_service_display_off_commit_is_current(generation)) {
+        power_lease_service_end_display_off_commit(generation);
+        ESP_LOGE(TAG, "test: closed lifecycle still admits commit");
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    status = power_lease_service_deinit(1);
+    if (status != DEVICE_STATUS_TIMEOUT) {
+        power_lease_service_end_display_off_commit(generation);
+        ESP_LOGE(TAG, "test: drain ignored outstanding commit (%d)", (int)status);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+
+    power_lease_service_end_display_off_commit(generation);
+    status = power_lease_service_deinit(100);
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGE(TAG, "test: cannot drain ended commit (%d)", (int)status);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    status = power_lease_service_init();
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGE(TAG, "test: cannot reopen clean lease generation (%d)", (int)status);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+
+    ESP_LOGI(TAG, "test: DISPLAY_OFF commit lifecycle passed");
+    return DEVICE_STATUS_OK;
 }

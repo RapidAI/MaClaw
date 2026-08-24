@@ -109,6 +109,14 @@ export type SettingsActiveContentProps = {
     setWeixinQRWaiting: Dispatch<SetStateAction<boolean>>;
     weixinQRError: string;
     setWeixinQRError: Dispatch<SetStateAction<string>>;
+    qqBotQRCode: string;
+    setQQBotQRCode: Dispatch<SetStateAction<string>>;
+    qqBotQRLoading: boolean;
+    setQQBotQRLoading: Dispatch<SetStateAction<boolean>>;
+    qqBotQRWaiting: boolean;
+    setQQBotQRWaiting: Dispatch<SetStateAction<boolean>>;
+    qqBotQRError: string;
+    setQQBotQRError: Dispatch<SetStateAction<string>>;
     veNavigationAvailable: boolean;
     veSettingsAuthorized: boolean;
     virtualEmployeeLayoutClassName: string;
@@ -200,6 +208,14 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         setWeixinQRWaiting,
         weixinQRError,
         setWeixinQRError,
+        qqBotQRCode,
+        setQQBotQRCode,
+        qqBotQRLoading,
+        setQQBotQRLoading,
+        qqBotQRWaiting,
+        setQQBotQRWaiting,
+        qqBotQRError,
+        setQQBotQRError,
         veNavigationAvailable,
         veSettingsAuthorized,
         virtualEmployeeLayoutClassName,
@@ -371,6 +387,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     isWindows={isWindows}
                     lang={lang}
                     t={t}
+                    showToastMessage={showToastMessage}
                 />
             ));
             break;
@@ -457,6 +474,14 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setWeixinQRWaiting={setWeixinQRWaiting}
                     weixinQRError={weixinQRError}
                     setWeixinQRError={setWeixinQRError}
+                    qqBotQRCode={qqBotQRCode}
+                    setQQBotQRCode={setQQBotQRCode}
+                    qqBotQRLoading={qqBotQRLoading}
+                    setQQBotQRLoading={setQQBotQRLoading}
+                    qqBotQRWaiting={qqBotQRWaiting}
+                    setQQBotQRWaiting={setQQBotQRWaiting}
+                    qqBotQRError={qqBotQRError}
+                    setQQBotQRError={setQQBotQRError}
                 />
             );
             break;

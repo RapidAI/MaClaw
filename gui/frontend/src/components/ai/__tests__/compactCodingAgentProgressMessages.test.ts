@@ -5,6 +5,7 @@ import {
     compactCodingAgentProgressMessages,
     groupCodingAgentProgressForRender,
 } from "../compactCodingAgentProgressMessages";
+import { isCodingAgentBoardProgressContent, reasoningHasCodingStatusMilestone, stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning } from "../codingAgentUserFinish";
 
 const message = (id: string, content: string): ChatMessage => ({
     id,
@@ -21,8 +22,8 @@ describe("compactCodingAgentProgressMessages", () => {
             message("diff", 'Coding Agent Event: {"version":1,"agent":"coding","event":"diff_summary","phase":"result","task_id":"T1","title":"Fix task","run_id":"run-1","turn_id":"turn-1","detail":"2 files","count":2}'),
         ];
 
-        // task_status is dropped once activity/summary lines exist for the turn.
-        expect(compactCodingAgentProgressMessages(messages).map(m => m.id)).toEqual(["quality", "diff"]);
+        // Audit banners stay off the chat trail; keep the file-change card.
+        expect(compactCodingAgentProgressMessages(messages).map(m => m.id)).toEqual(["diff"]);
     });
 
     it("does not keep non-critical summaries or older-turn failures", () => {
@@ -43,7 +44,7 @@ describe("compactCodingAgentProgressMessages", () => {
             { ...message("assistant", "I will summarize the failure."), role: "assistant" as const },
         ];
 
-        expect(compactCodingAgentProgressMessages(messages).map(m => m.id)).toEqual(["user", "quality", "assistant"]);
+        expect(compactCodingAgentProgressMessages(messages).map(m => m.id)).toEqual(["user", "running", "assistant"]);
     });
 
     it("keeps a recent tool trail for the latest turn (not only failures)", () => {
@@ -53,6 +54,24 @@ describe("compactCodingAgentProgressMessages", () => {
             message("t3", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"failed","command":"where cl.exe"}'),
         ];
         expect(compactCodingAgentProgressMessages(messages).map(m => m.id)).toEqual(["t1", "t2", "t3"]);
+    });
+
+    it("drops diff_updated when a write/edit tool already covers the file", () => {
+        const messages = [
+            message("write", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success","files":["hello_world.cpp"],"added":8,"removed":0}'),
+            message("diff", 'Coding Agent Event: {"version":1,"agent":"coding","event":"diff_updated","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"Edited hello_world.cpp (+8 -0)","files":["hello_world.cpp"]}'),
+            message("bash", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"cl"}'),
+        ];
+        expect(coalesceCodingAgentToolLifecycle(messages).map((m) => m.id)).toEqual(["write", "bash"]);
+    });
+
+    it("drops diff_summary when a write/edit tool already covers the files", () => {
+        const messages = [
+            message("write", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success","files":["hello_world.cpp"],"added":8,"removed":0}'),
+            message("summary", 'Coding Agent Event: {"version":1,"agent":"coding","event":"diff_summary","phase":"result","task_id":"T1","title":"Fix","turn_id":"turn-1","files":["hello_world.cpp"],"file_changes":[{"path":"hello_world.cpp","added":8,"removed":0}]}'),
+            message("bash", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"cl"}'),
+        ];
+        expect(coalesceCodingAgentToolLifecycle(messages).map((m) => m.id)).toEqual(["write", "bash"]);
     });
 
     it("coalesces tool_started into tool_finished for the same tool", () => {
@@ -94,7 +113,7 @@ describe("compactCodingAgentProgressMessages", () => {
     });
 
     it("caps the tool trail after coalesce without retaining older failures", () => {
-        const messages = Array.from({ length: 15 }, (_, i) =>
+        const messages = Array.from({ length: 21 }, (_, i) =>
             message(
                 `ok-${i}`,
                 `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"echo ${i}"}`,
@@ -107,9 +126,8 @@ describe("compactCodingAgentProgressMessages", () => {
             ),
         );
         const ids = compactCodingAgentProgressMessages(messages).map((m) => m.id);
-        // The live tray only retains the latest three operations.
         expect(ids).not.toContain("old-fail");
-        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(3);
+        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(20);
     });
 
     it("does not retain older critical tool failures", () => {
@@ -119,7 +137,7 @@ describe("compactCodingAgentProgressMessages", () => {
                 `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"failed","command":"cmd ${i}"}`,
             ),
         );
-        const oks = Array.from({ length: 12 }, (_, i) =>
+        const oks = Array.from({ length: 21 }, (_, i) =>
             message(
                 `ok-${i}`,
                 `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"echo ${i}"}`,
@@ -127,12 +145,11 @@ describe("compactCodingAgentProgressMessages", () => {
         );
         const ids = compactCodingAgentProgressMessages([...fails, ...oks]).map((m) => m.id);
         const keptFails = ids.filter((id) => id.startsWith("fail-"));
-        // Older failures do not expand the compact live tray.
         expect(keptFails.length).toBe(0);
-        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(3);
+        expect(ids.filter((id) => id.startsWith("ok-")).length).toBe(20);
     });
 
-    it("does not retain older diagnostic probes", () => {
+    it("does not retain older diagnostic probes outside the recent window", () => {
         const probes = Array.from({ length: 8 }, (_, i) =>
             message(
                 `probe-${i}`,
@@ -143,32 +160,31 @@ describe("compactCodingAgentProgressMessages", () => {
             "real-fail",
             'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"failed","command":"go test ./..."}',
         );
-        const oks = Array.from({ length: 12 }, (_, i) =>
+        const oks = Array.from({ length: 21 }, (_, i) =>
             message(
                 `ok-${i}`,
                 `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"echo ${i}"}`,
             ),
         );
         const ids = compactCodingAgentProgressMessages([...probes, realFail, ...oks]).map((m) => m.id);
-        // Nothing outside the newest three rows is retained, including failures.
         expect(ids).not.toContain("real-fail");
-        // Probes outside the recent window are not force-preserved as "critical".
         expect(ids.filter((id) => id.startsWith("probe-")).length).toBe(0);
     });
 
-    it("caps summaries and tools together at three visible activity rows", () => {
+    it("hides audit banners and keeps the tool trail plus terminal status", () => {
         const messages = [
             message("tool-1", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"read_file","outcome":"success"}'),
             message("summary-1", 'Coding Agent Event: {"version":1,"agent":"coding","event":"exploration_summary","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","outcome":"missing"}'),
             message("tool-2", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success"}'),
             message("summary-2", 'Coding Agent Event: {"version":1,"agent":"coding","event":"quality_summary","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","outcome":"failed"}'),
+            message("summary-3", 'Coding Agent Event: {"version":1,"agent":"coding","event":"command_summary","phase":"result","task_id":"T1","title":"Fix","turn_id":"turn-1","outcome":"failed","summary":"1 failed"}'),
             message("tool-3", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success"}'),
             message("done", 'Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"completed","task_id":"T1","title":"Fix","turn_id":"turn-1"}'),
         ];
 
         expect(compactCodingAgentProgressMessages(messages).map((m) => m.id)).toEqual([
+            "tool-1",
             "tool-2",
-            "summary-2",
             "tool-3",
             "done",
         ]);
@@ -189,6 +205,20 @@ describe("compactCodingAgentProgressMessages", () => {
 
         const single = groupCodingAgentProgressForRender([messages[1]]);
         expect(single.map((g) => g.kind)).toEqual(["coding-feed"]);
+    });
+
+    it("keeps mid-turn engineer notes and drops leftover audit notes", () => {
+        const messages = [
+            message("note-ok", 'Coding Agent Event: {"version":1,"agent":"coding","event":"assistant_note","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"Compiling the new hello world."}'),
+            message("note-audit", 'Coding Agent Event: {"version":1,"agent":"coding","event":"assistant_note","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"## 执行报告 总计：1"}'),
+            message("tool", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success"}'),
+            message("done", 'Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"completed","task_id":"T1","title":"Fix","turn_id":"turn-1"}'),
+        ];
+        expect(compactCodingAgentProgressMessages(messages).map((m) => m.id)).toEqual([
+            "note-ok",
+            "tool",
+            "done",
+        ]);
     });
 
     it("does not merge scoped historical turns into an unscoped latest event", () => {
@@ -223,5 +253,42 @@ describe("compactCodingAgentProgressMessages", () => {
             expect(g1[0].key).toBe(g2[0].key);
             expect(g1[0].key).toBe("feed-turn-turn-99");
         }
+    });
+
+    it("drops workbench board banners and keeps coding-agent trail lines", () => {
+        const messages = [
+            message("banner", "全功能编程工作台：开始执行"),
+            message("checklist", "执行步骤：\n☐ T1 write files"),
+            message("step", "T1/2: write files"),
+            message("tool", 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success"}'),
+        ];
+        expect(compactCodingAgentProgressMessages(messages).map((m) => m.id)).toEqual(["tool"]);
+        expect(isCodingAgentBoardProgressContent("全功能远程编程：使用 SSH 会话 ssh_1 开始执行")).toBe(true);
+        expect(isCodingAgentBoardProgressContent("Coding Agent: running T1 - write files")).toBe(false);
+        expect(isCodingAgentBoardProgressContent("正在生成报告")).toBe(false);
+    });
+});
+
+describe("stripCodingAgentAuditSections", () => {
+    it("cuts streamed audit and plan-board headings from assistant text", () => {
+        expect(stripCodingAgentAuditSections("Created hello.cpp.\n\n## 验证结果\ncl passed\n\n## 涉及文件\nhello.cpp")).toBe("Created hello.cpp.");
+        expect(stripCodingAgentAuditSections("Created hello.cpp.\n\n### T2: build\n状态: success")).toBe("Created hello.cpp.");
+        expect(stripCodingAgentAuditSections("Created hello.cpp.\n\n## Summary\nall good")).toBe("Created hello.cpp.\n\n## Summary\nall good");
+    });
+
+    it("keeps pending plan-approval steps", () => {
+        const card = "## \u9700\u8981\u786e\u8ba4\u6267\u884c\u8ba1\u5212\n\nTwo steps.\n\n### T1: write\n### T2: build\n\n`/plan approve`";
+        expect(stripCodingAgentAuditSections(card)).toBe(card);
+    });
+});
+
+describe("stripCodingWorkbenchStatusReasoning", () => {
+    it("drops chat status bullets including the early acknowledgement", () => {
+        const reasoning = "\u2022 \u6536\u5230\uff0c\u6b63\u5728\u5904\u7406\n\u2022 Task received\nI'll write hello.cpp.";
+        expect(reasoningHasCodingStatusMilestone(reasoning)).toBe(true);
+        expect(stripCodingWorkbenchStatusReasoning(reasoning)).toBe("I'll write hello.cpp.");
+        expect(stripCodingWorkbenchStatusReasoning("\u2022 \u6536\u5230\uff0c\u6b63\u5728\u5904\u7406")).toBe("");
+        expect(stripCodingWorkbenchStatusReasoning("\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406")).toBe("");
+        expect(stripCodingWorkbenchStatusReasoning("[Status] Task received")).toBe("");
     });
 });

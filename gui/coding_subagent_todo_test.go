@@ -177,6 +177,95 @@ func TestCodingAgentTodoWriteEmptyGuard(t *testing.T) {
 	}
 }
 
+func TestCodingAgentTodoWriteControlPlaneCASRejectsStaleReplacement(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Title: "implement feature", Description: "change code"},
+	}
+	firstDefinitions := cb.BuildToolsForModelRequest("implement feature", 0)
+	assertCodingTodoDefinitionTokenForTest(t, firstDefinitions, 1, 0)
+	first := cb.executeTodoWrite(`{
+		"expected_revision":1,
+		"expected_version":0,
+		"merge":false,
+		"todos":[{"id":"1","content":"inspect","status":"in_progress"}]
+	}`)
+	if first.Outcome != codingToolOutcomeSuccess || !strings.Contains(first.Text, "control_plane_revision=1 control_plane_version=1") {
+		t.Fatalf("first todo result=%#v", first)
+	}
+	before := cb.todos.controlPlaneSnapshot()
+	secondDefinitions := cb.BuildToolsForModelRequest("implement feature again", 1)
+	afterReplacement := cb.todos.controlPlaneSnapshot()
+	if afterReplacement.Revision != 2 || afterReplacement.Version != before.Version+1 {
+		t.Fatalf("replacement must advance CAS generation, before=%+v after=%+v", before, afterReplacement)
+	}
+	assertCodingTodoDefinitionTokenForTest(t, secondDefinitions, 2, afterReplacement.Version)
+	stale := cb.executeTodoWrite(`{
+		"expected_revision":1,
+		"expected_version":1,
+		"merge":false,
+		"todos":[{"id":"1","content":"stale overwrite","status":"completed"}]
+	}`)
+	if stale.Outcome == codingToolOutcomeSuccess || !strings.Contains(stale.Text, "control_plane_stale") {
+		t.Fatalf("stale replacement must fail closed, got %#v", stale)
+	}
+	afterStale := cb.todos.controlPlaneSnapshot()
+	if afterStale.Revision != afterReplacement.Revision || afterStale.Version != afterReplacement.Version || len(afterStale.Items) != 1 || afterStale.Items[0].Content != "inspect" {
+		t.Fatalf("stale mutation changed checklist: before=%+v after=%+v", afterReplacement, afterStale)
+	}
+	current := cb.executeTodoWrite(`{
+		"expected_revision":2,
+		"expected_version":2,
+		"merge":true,
+		"todos":[{"id":"1","status":"completed"}]
+	}`)
+	if current.Outcome != codingToolOutcomeSuccess || !strings.Contains(current.Text, "control_plane_revision=2 control_plane_version=3") {
+		t.Fatalf("current CAS write=%#v", current)
+	}
+}
+
+func assertCodingTodoDefinitionTokenForTest(t *testing.T, definitions []map[string]interface{}, revision, version uint64) {
+	t.Helper()
+	for _, definition := range definitions {
+		fn, _ := definition["function"].(map[string]interface{})
+		if fn == nil || fn["name"] != codingAgentTodoToolName {
+			continue
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		properties, _ := params["properties"].(map[string]interface{})
+		revisionDef, _ := properties["expected_revision"].(map[string]interface{})
+		versionDef, _ := properties["expected_version"].(map[string]interface{})
+		if !strings.Contains(fmt.Sprint(revisionDef["description"]), fmt.Sprint(revision)) || !strings.Contains(fmt.Sprint(versionDef["description"]), fmt.Sprint(version)) {
+			t.Fatalf("todo definition has wrong control-plane tokens: revision=%#v version=%#v", revisionDef, versionDef)
+		}
+		return
+	}
+	t.Fatal("todo definition missing from rendered surface")
+}
+
+func TestRemoteCodingTodoWriteControlPlaneCASRejectsStaleReplacement(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}, task: "implement feature"}
+	_ = cb.BuildToolsForModelRequest("implement feature", 0)
+	if got := cb.executeRemoteTodoWrite(`{
+		"expected_revision":1,"expected_version":0,"merge":false,
+		"todos":[{"id":"1","content":"inspect","status":"in_progress"}]
+	}`); !strings.Contains(got, "control_plane_revision=1 control_plane_version=1") {
+		t.Fatalf("first remote todo=%q", got)
+	}
+	_ = cb.BuildToolsForModelRequest("implement feature again", 1)
+	stale := cb.executeRemoteTodoWrite(`{
+		"expected_revision":1,"expected_version":1,"merge":false,
+		"todos":[{"id":"1","content":"stale overwrite","status":"completed"}]
+	}`)
+	if !strings.Contains(stale, "control_plane_stale") {
+		t.Fatalf("stale remote replacement must fail closed, got %q", stale)
+	}
+	snapshot := cb.todos.controlPlaneSnapshot()
+	if snapshot.Revision != 2 || snapshot.Version != 2 || len(snapshot.Items) != 1 || snapshot.Items[0].Content != "inspect" {
+		t.Fatalf("remote stale mutation changed checklist: %+v", snapshot)
+	}
+}
+
 func TestCodingAgentTodosToStepStatuses(t *testing.T) {
 	steps := codingAgentTodosToStepStatuses([]codingAgentTodoItem{
 		{ID: "1", Content: "a", Status: codingAgentTodoCompleted},

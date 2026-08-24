@@ -144,7 +144,7 @@ func buildConversation(req ExecuteRequest, cfg corelib.MaclawLLMConfig) []interf
 	// persisted OfficeRead rollout does not select another tenant's parser.
 	// Environment overrides remain honored by the agent resolver for emergency
 	// operational rollback.
-	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfig(req.Message.Content, req.Message.Attachments, cfg.Protocol, cfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config))
+	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(req.Message.Content, req.Message.Attachments, cfg.Protocol, cfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config), cfg.EffectiveContextTokens())
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	return conversation
 }

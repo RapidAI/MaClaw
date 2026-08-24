@@ -18,6 +18,8 @@ package main
 //
 // Those are caller-specific side effects that vary by reset path.
 func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
+	h.clearTaskIdentityAnchor(userID)
+
 	// Cancel any active workflow and understanding session. Without this,
 	// a stale workflow survives dismiss/clear and hijacks subsequent messages
 	// via QuickFilter.HasActiveWorkflow → FilterActiveWorkflow.
@@ -87,4 +89,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 
 	// Memory snapshot cache.
 	h.RefreshMemorySnapshot(userID)
+
+	h.clearSessionGovernedTasksForUser(userID)
+	h.clearActiveLocalDocumentsForUser(userID)
 }

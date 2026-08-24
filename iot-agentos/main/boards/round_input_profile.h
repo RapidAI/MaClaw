@@ -18,6 +18,12 @@ typedef struct {
     uint16_t scan_poll_ms;
     uint16_t double_tap_window_ms;
     uint16_t long_hold_ms;
+    /* Zero means dedicated volume controls or no verified fallback. Values
+     * below long_hold_ms map completed primary-control hold bands to the
+     * shared volume +/- intents; they are Input-HAL ergonomic facts, not app
+     * policy. `decrease` must be greater than `increase` when non-zero. */
+    uint16_t local_volume_increase_hold_ms;
+    uint16_t local_volume_decrease_hold_ms;
     uint16_t touch_regular_min_tap_ms;
     uint16_t touch_cancel_min_tap_ms;
     uint16_t touch_double_min_gap_ms;

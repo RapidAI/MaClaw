@@ -253,6 +253,23 @@ func createCodingWorkbenchWorktree(projectPath string, stepIndex int, label stri
 	}, nil
 }
 
+func (w *codingWorkbenchWorktree) hasLocalChanges() (dirty bool, ok bool) {
+	if w == nil || !w.created {
+		return false, true
+	}
+	if w.committed {
+		return true, true
+	}
+	if strings.TrimSpace(w.Path) == "" {
+		return false, false
+	}
+	status, err := remote.RunGitOutput(w.Path, "status", "--porcelain")
+	if err != nil {
+		return false, false
+	}
+	return strings.TrimSpace(status) != "", true
+}
+
 // mergeBack commits worktree changes (if any) and integrates into the main tree.
 // It requires a clean primary checkout and uses a controlled cherry-pick so Git
 // remains the only conflict-resolution authority.

@@ -37,7 +37,7 @@ type ClientCache struct {
 	idleTTL time.Duration
 }
 
-// DefaultCache is used by LeaseMeta / SearchActiveFromDataDir / AppendAutoRecallFromDataDir.
+// DefaultCache is used by LeaseMeta / SearchActiveFromDataDir.
 var DefaultCache = NewClientCache(defaultCacheMaxEntries, defaultCacheIdleTTL)
 
 // NewClientCache builds a cache. max <= 0 or idleTTL <= 0 use defaults.

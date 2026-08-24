@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,6 +65,18 @@ CREATE TABLE IF NOT EXISTS coding_runtime_consumed_continuations (
  FOREIGN KEY(parent_attempt_id) REFERENCES coding_runtime_attempts(attempt_id),
  FOREIGN KEY(review_attempt_id) REFERENCES coding_runtime_attempts(attempt_id)
 );`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS coding_runtime_semantic_anchors (
+ runtime_attempt_id TEXT PRIMARY KEY, runtime_task_id TEXT NOT NULL,
+ tenant_id TEXT NOT NULL, principal_id TEXT NOT NULL, session_id TEXT NOT NULL,
+ root_task_id TEXT NOT NULL, turn_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+ FOREIGN KEY(runtime_task_id) REFERENCES coding_runtime_tasks(task_id),
+ FOREIGN KEY(runtime_attempt_id) REFERENCES coding_runtime_attempts(attempt_id)
+);
+CREATE INDEX IF NOT EXISTS coding_runtime_semantic_anchor_task ON coding_runtime_semantic_anchors(runtime_task_id);`)
 	return err
 }
 
@@ -895,6 +908,78 @@ func (s *SQLiteStore) ListRecoveryCandidates() ([]*Attempt, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*SemanticTaskAnchor, error) {
+	normalized, err := normalizeSemanticTaskAnchor(anchor)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var taskID string
+	if err = tx.QueryRow(`SELECT task_id FROM coding_runtime_attempts WHERE attempt_id=?`, normalized.RuntimeAttemptID).Scan(&taskID); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSemanticAnchorNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if taskID != normalized.RuntimeTaskID {
+		return nil, ErrSemanticAnchorNotFound
+	}
+	var existing SemanticTaskAnchor
+	var createdAt int64
+	err = tx.QueryRow(`SELECT runtime_task_id,tenant_id,principal_id,session_id,root_task_id,turn_id,created_at FROM coding_runtime_semantic_anchors WHERE runtime_attempt_id=?`, normalized.RuntimeAttemptID).Scan(&existing.RuntimeTaskID, &existing.TenantID, &existing.PrincipalID, &existing.SessionID, &existing.RootTaskID, &existing.TurnID, &createdAt)
+	if err == nil {
+		existing.RuntimeAttemptID, existing.CreatedAt = normalized.RuntimeAttemptID, fromUnixNanos(createdAt)
+		if existing.RuntimeTaskID == normalized.RuntimeTaskID && existing.TenantID == normalized.TenantID && existing.PrincipalID == normalized.PrincipalID && existing.SessionID == normalized.SessionID && existing.RootTaskID == normalized.RootTaskID && existing.TurnID == normalized.TurnID {
+			if err = tx.Commit(); err != nil {
+				return nil, err
+			}
+			return &existing, nil
+		}
+		return nil, ErrSemanticAnchorConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	var conflict int
+	if err = tx.QueryRow(`SELECT COUNT(1) FROM coding_runtime_semantic_anchors WHERE runtime_task_id=? AND (tenant_id<>? OR principal_id<>? OR session_id<>? OR root_task_id<>?)`, normalized.RuntimeTaskID, normalized.TenantID, normalized.PrincipalID, normalized.SessionID, normalized.RootTaskID).Scan(&conflict); err != nil {
+		return nil, err
+	}
+	if conflict != 0 {
+		return nil, ErrSemanticAnchorConflict
+	}
+	if _, err = tx.Exec(`INSERT INTO coding_runtime_semantic_anchors(runtime_attempt_id,runtime_task_id,tenant_id,principal_id,session_id,root_task_id,turn_id,created_at) VALUES(?,?,?,?,?,?,?,?)`, normalized.RuntimeAttemptID, normalized.RuntimeTaskID, normalized.TenantID, normalized.PrincipalID, normalized.SessionID, normalized.RootTaskID, normalized.TurnID, unixNanos(normalized.CreatedAt)); err != nil {
+		if isConstraint(err) {
+			return nil, ErrSemanticAnchorConflict
+		}
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}
+
+func (s *SQLiteStore) ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID string) (*SemanticTaskAnchor, error) {
+	runtimeTaskID, runtimeAttemptID = strings.TrimSpace(runtimeTaskID), strings.TrimSpace(runtimeAttemptID)
+	if runtimeTaskID == "" || runtimeAttemptID == "" {
+		return nil, ErrSemanticAnchorNotFound
+	}
+	var anchor SemanticTaskAnchor
+	var createdAt int64
+	err := s.db.QueryRow(`SELECT runtime_task_id,runtime_attempt_id,tenant_id,principal_id,session_id,root_task_id,turn_id,created_at FROM coding_runtime_semantic_anchors WHERE runtime_task_id=? AND runtime_attempt_id=?`, runtimeTaskID, runtimeAttemptID).Scan(&anchor.RuntimeTaskID, &anchor.RuntimeAttemptID, &anchor.TenantID, &anchor.PrincipalID, &anchor.SessionID, &anchor.RootTaskID, &anchor.TurnID, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSemanticAnchorNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	anchor.CreatedAt = fromUnixNanos(createdAt)
+	return &anchor, nil
 }
 
 type rowQuerier interface{ QueryRow(string, ...any) *sql.Row }

@@ -209,4 +209,6 @@ type UIElement struct {
 	Interactable bool    `json:"interactable"`  // whether the element can be clicked/typed into
 	Confidence   float64 `json:"confidence"`    // 1.0 for accessibility, model confidence for vision
 	Source       string  `json:"source"`        // "accessibility", "yolo", "ocr"
+	Handle       string  `json:"handle,omitempty"`   // platform locator (UIA AutomationId, AX path)
+	Patterns     []string `json:"patterns,omitempty"` // invoke, value, toggle, select, expand
 }

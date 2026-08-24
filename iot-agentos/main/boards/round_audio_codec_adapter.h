@@ -27,19 +27,30 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "round_audio_lifecycle.h"
 
 static esp_err_t round_audio_codec_write(i2c_master_dev_handle_t device,
                                          uint8_t reg, uint8_t value) {
     if (!device) return ESP_ERR_INVALID_STATE;
+    if (!round_audio_lifecycle_shared_bus_codec_control_begin()) {
+        return ESP_ERR_INVALID_STATE;
+    }
     const uint8_t bytes[2] = {reg, value};
-    return i2c_master_transmit(device, bytes, sizeof(bytes), 1000);
+    const esp_err_t err = i2c_master_transmit(device, bytes, sizeof(bytes), 1000);
+    round_audio_lifecycle_shared_bus_codec_control_end();
+    return err;
 }
 
 static esp_err_t round_audio_codec_read(i2c_master_dev_handle_t device,
                                         uint8_t reg, uint8_t *value) {
     if (!device || !value) return ESP_ERR_INVALID_ARG;
-    return i2c_master_transmit_receive(device, &reg, sizeof(reg), value,
-                                       sizeof(*value), 1000);
+    if (!round_audio_lifecycle_shared_bus_codec_control_begin()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err = i2c_master_transmit_receive(device, &reg, sizeof(reg), value,
+                                                       sizeof(*value), 1000);
+    round_audio_lifecycle_shared_bus_codec_control_end();
+    return err;
 }
 
 /* ES8311 DAC volume is 0.5 dB/step.  Map the normalized Device API percentage
@@ -170,19 +181,31 @@ static i2c_master_bus_handle_t s_round_audio_i2c_bus;
 static i2c_master_dev_handle_t s_round_audio_input_codec;
 static i2c_master_dev_handle_t s_round_audio_output_codec;
 
-static void round_audio_adapter_release_codec_bus(void) {
+static esp_err_t round_audio_adapter_release_codecs(void) {
+    esp_err_t result = ESP_OK;
     if (s_round_audio_output_codec) {
-        (void)i2c_master_bus_rm_device(s_round_audio_output_codec);
+        const esp_err_t err = i2c_master_bus_rm_device(s_round_audio_output_codec);
+        if (result == ESP_OK && err != ESP_OK) result = err;
         s_round_audio_output_codec = NULL;
     }
     if (s_round_audio_input_codec) {
-        (void)i2c_master_bus_rm_device(s_round_audio_input_codec);
+        const esp_err_t err = i2c_master_bus_rm_device(s_round_audio_input_codec);
+        if (result == ESP_OK && err != ESP_OK) result = err;
         s_round_audio_input_codec = NULL;
     }
-    if (s_round_audio_i2c_bus) {
-        (void)i2c_del_master_bus(s_round_audio_i2c_bus);
-        s_round_audio_i2c_bus = NULL;
-    }
+    return result;
+}
+
+/* Keep master deletion distinct from codec removal. The recovery transaction
+ * must prove peripherals -> codecs -> master ordering, rather than collapse
+ * a controller delete error into codec cleanup. */
+static esp_err_t round_audio_adapter_delete_codec_bus(void) {
+    if (!s_round_audio_i2c_bus) return ESP_OK;
+    const esp_err_t err = i2c_del_master_bus(s_round_audio_i2c_bus);
+    /* The handle is no longer safe to use after any delete result. Lifecycle
+     * failure closure, not a stale-handle retry, decides the next action. */
+    s_round_audio_i2c_bus = NULL;
+    return err;
 }
 
 static esp_err_t round_audio_adapter_open_codec_bus(void) {
@@ -245,17 +268,23 @@ fail:
 static i2s_chan_handle_t s_round_audio_tx;
 static i2s_chan_handle_t s_round_audio_rx;
 
-static void round_audio_adapter_release_i2s(void) {
+static esp_err_t round_audio_adapter_release_i2s(void) {
+    esp_err_t result = ESP_OK;
     if (s_round_audio_tx) {
-        (void)i2s_channel_disable(s_round_audio_tx);
-        (void)i2s_del_channel(s_round_audio_tx);
+        const esp_err_t disable_err = i2s_channel_disable(s_round_audio_tx);
+        const esp_err_t delete_err = i2s_del_channel(s_round_audio_tx);
+        if (disable_err != ESP_OK) result = disable_err;
+        if (result == ESP_OK && delete_err != ESP_OK) result = delete_err;
         s_round_audio_tx = NULL;
     }
     if (s_round_audio_rx) {
-        (void)i2s_channel_disable(s_round_audio_rx);
-        (void)i2s_del_channel(s_round_audio_rx);
+        const esp_err_t disable_err = i2s_channel_disable(s_round_audio_rx);
+        const esp_err_t delete_err = i2s_del_channel(s_round_audio_rx);
+        if (result == ESP_OK && disable_err != ESP_OK) result = disable_err;
+        if (result == ESP_OK && delete_err != ESP_OK) result = delete_err;
         s_round_audio_rx = NULL;
     }
+    return result;
 }
 
 static esp_err_t round_audio_adapter_initialize_i2s(void) {
@@ -308,7 +337,7 @@ static esp_err_t round_audio_adapter_initialize_i2s(void) {
     return ESP_OK;
 
 fail:
-    round_audio_adapter_release_i2s();
+    (void)round_audio_adapter_release_i2s();
     return err;
 }
 
@@ -410,19 +439,41 @@ static esp_err_t round_audio_adapter_write_pcm(const int16_t *pcm, size_t frames
  * bus, let the peripheral adapter claim its devices, then attach codecs.  The
  * shared renderer observes only success/failure and owns the session mutexes,
  * PCM conversion, wake arbitration and retry policy. */
-static void round_audio_adapter_release(void) {
-    round_audio_adapter_release_i2s();
+static esp_err_t round_audio_adapter_release(void) {
+    bool lifecycle_teardown_active = false;
+    const esp_err_t lifecycle_err =
+        round_audio_lifecycle_shared_bus_begin_teardown(&lifecycle_teardown_active);
+    const esp_err_t i2s_cleanup_err = round_audio_adapter_release_i2s();
     /* PMIC/touch/IMU are bus devices. Their profile-private owner must detach
      * them before this Audio owner deletes the shared I2C master bus. */
-    round_peripheral_lifecycle_detach();
-    round_audio_adapter_release_codec_bus();
+    const esp_err_t peripheral_cleanup_err = round_peripheral_lifecycle_detach();
+    const esp_err_t codec_cleanup_err = round_audio_adapter_release_codecs();
+    const esp_err_t bus_cleanup_err = round_audio_adapter_delete_codec_bus();
+    const esp_err_t cleanup_err = i2s_cleanup_err != ESP_OK
+                                      ? i2s_cleanup_err
+                                      : peripheral_cleanup_err != ESP_OK
+                                            ? peripheral_cleanup_err
+                                            : codec_cleanup_err != ESP_OK
+                                                  ? codec_cleanup_err
+                                                  : bus_cleanup_err;
+    if (lifecycle_teardown_active) {
+        round_audio_lifecycle_shared_bus_finish_teardown(cleanup_err);
+    }
+    return lifecycle_err != ESP_OK ? lifecycle_err : cleanup_err;
 }
 
 static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
     const round_audio_profile_t *profile = round_audio_profile_adapter();
     if (!profile) return ESP_ERR_INVALID_STATE;
-    round_audio_adapter_release();
-    esp_err_t err = round_audio_adapter_open_codec_bus();
+    (void)round_audio_adapter_release();
+    esp_err_t err = round_audio_lifecycle_shared_bus_begin_bootstrap();
+    if (err != ESP_OK) return err;
+    err = round_audio_adapter_open_codec_bus();
+    if (err != ESP_OK) {
+        round_audio_lifecycle_shared_bus_abort_detached_bootstrap();
+        return err;
+    }
+    err = round_audio_lifecycle_shared_bus_mark_attached();
     if (err != ESP_OK) goto fail;
 
     const esp_err_t peripheral_err =
@@ -436,6 +487,8 @@ static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
                  esp_err_to_name(peripheral_err));
     }
 
+    err = round_audio_lifecycle_shared_bus_begin_self_test();
+    if (err != ESP_OK) goto fail;
     err = round_audio_adapter_attach_codecs();
     if (err != ESP_OK) goto fail;
     err = round_audio_adapter_initialize_input_codec(s_round_audio_input_codec);
@@ -448,11 +501,13 @@ static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
         s_round_audio_output_codec, profile->output_mute_register,
         profile->output_volume_register, output_volume);
     if (err != ESP_OK) goto fail;
+    err = round_audio_lifecycle_shared_bus_mark_ready();
+    if (err != ESP_OK) goto fail;
     round_audio_adapter_log_i2s_ready(profile->name);
     return ESP_OK;
 
 fail:
-    round_audio_adapter_release();
+    (void)round_audio_adapter_release();
     return err;
 }
 

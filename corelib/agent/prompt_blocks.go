@@ -1,7 +1,5 @@
 package agent
 
-import "strings"
-
 // prompt_blocks.go defines shared system prompt text blocks used by both
 // GUI (im_system_prompt.go) and TUI (system_prompt.go). This is the single
 // source of truth for core rules — modify here, both platforms pick up changes.
@@ -23,7 +21,7 @@ const PromptCorePrinciples = `
 - 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
 - 读文档阶梯（用户给了本地路径/附件时严格执行）：
   1. **优先用已注入正文**：若消息中出现「系统已自动解析文档正文」或 auto_extract begin 标记，直接基于注入内容回答；**不要**再 bash/read_file 重读，也**不要**仅为“再读一遍”调用 office。
-  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action="read_document", file_path=..., offset=next_offset)**（支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx；不要对二进制用 read_file）。
+  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action="read_document", file_path=..., offset=next_offset)**（支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log；不要对二进制用 read_file）。
   3. 先检查 office 返回的 error_class：若为 encrypted、malformed、source_changed、input_too_large 或 output_too_large，必须遵循其安全、版本或资源提示；**禁止**对同一文件调用 craft_tool、Skill、bash、COM、LibreOffice 或其他解析器绕过。加密文件当前不接收密码也不支持密码解密。
   4. 仅当失败不属于上述 error_class 且格式不支持（.rtf/.odt/.wps/.et/.dps/.pages/.epub/.msg 等）或为普通解析失败时，才 **必须 craft_tool** 生成一次性解析脚本并抽取纯文本，不要直接放弃。
   5. 再 manage_skill 搜索/运行文档解析 Skill；bash 仅作最后备选。
@@ -51,18 +49,38 @@ const PromptCorePrinciples = `
   - 路径默认：未指定保存位置时，录音产物落在当前 Project directory / 工作目录相关约定下；不要擅自改用记忆里的其它盘符或 Pictures。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
 - 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
-- 先查记忆和知识库再问用户：当用户提到服务器、环境、配置、凭据、项目路径等信息时，先检查下方「用户记忆」「相关记忆（自动召回）」和「知识库参考」section 中是否已有相关信息；自动召回没有时，必须先调用 memory(action="recall") 和 knowledge_search（如有该工具）深入检索，确认记忆和知识库都没有之后才允许向用户索要。不要向用户索要本地已保存的信息。
+- 仓库未预装：当前任务工作集为空，不会预装记忆或知识库正文。仅当本轮工具列表里有记忆检索或知识库检索时，才用它们拉取已保存资料，确认没有之后再向用户索要；没有这些工具时不要假装已读过仓库，也不要先搜知识库。不要把记忆索引当作已确认事实。
 - 时效性凭据优先执行：对于一次性密码、动态口令、1 小时有效的 SSH/跳板机密码、验证码、临时令牌等高时效凭据，先立刻执行最小必要的验证或目标操作；不要先调用 memory(action="save")、knowledge_save_*、长时间总结或等待步骤来保存这些信息。
 - 敏感凭据默认不入长期记忆：除非用户明确要求你保存经过脱敏的长期规则，否则不要把密码、验证码、动态口令、临时 token、私钥、连接串中的密钥片段写入 memory 或知识库。即使用户要求“更新到记忆”，对这类信息也应优先完成当前任务，再单独确认是否需要保存非敏感摘要。
 - 信息来源优先级（严格执行）：回答事实性、知识性问题时，必须按以下优先级获取信息：
-  1. **记忆/知识库优先**：先查看下方「用户记忆」「相关记忆（自动召回）」以及「知识库参考」（如有）中是否已有答案。有则直接引用，并标注来源（如"根据知识库中的资料..."、"根据记忆中的记录..."）
-  2. **主动检索**：自动召回内容不够时，主动调用 memory(action="recall") 深入检索；如有知识库工具可用，必须同时调用 knowledge_search 检索知识库
-  3. **外部搜索**：记忆和知识库都没有时，使用 web_search 搜索互联网；需要核验细节时继续用 web_fetch 打开结果页
-  4. **无依据则不回答事实结论**：如果记忆、知识库、工具结果、外部搜索都没有依据，必须明确说"根据当前资料无法确认"或"材料中未提及"；不要用训练数据、常识或猜测补齐事实。
+  1. **本轮已有材料**：先用当前附件、文件和已经返回的工具结果。
+  2. **仓库工具（仅当列表里有）**：工具列表中有知识库/记忆检索时，再用它们拉取仓库正文并标注来源。没有这些工具时，不要假装已经读过知识库，也不要先搜知识库。
+  3. **查找类问题**：天气、实时数据、指定 URL 用本轮已有的网页/URL 工具作答，不要先搜知识库。
+  4. **无依据则不回答事实结论**：本轮材料、仓库工具和网页工具都没有依据时，必须明确说"根据当前资料无法确认"或"材料中未提及"；不要用训练数据、常识或猜测补齐事实。
   绝不要在缺少依据的情况下直接给事实结论——用户信任的是可追溯来源，不是你的"脑补"。
 - 遇阻不停：当多步骤任务中某个子任务被阻塞（如需要用户扫码登录、等待审批等），不要停下来只报告状态。先继续执行其他不依赖该阻塞步骤的子任务，在最终回复中一并说明阻塞情况。只有当所有可执行的子任务都完成或都被阻塞时，才停下来向用户报告。具体做法：在同一轮回复中，用工具调用继续推进其他子任务，同时在文本中简要说明哪个步骤需要用户介入。
 - 提问即停：当你需要向用户提问、征求意见或提供选项让用户选择时（如"要不要继续？"、"你想下载哪个？"、"需要压缩吗？"），**只输出问题文本，不要在同一轮中调用任何工具**。等用户回答后再根据回答行动。自问自答（自己提问又自己回答并执行）是严重错误——用户会看到你替他做了决定。
 - 短消息上下文延续：当用户发送简短消息（如"开工"、"好"、"继续"、"可以"等）时，必须结合对话历史理解其含义。如果你在上一条消息中要求用户确认或说某个词来继续，用户的短回复就是对你上一条消息的回应——直接按之前讨论的任务继续执行，不要当作新对话的开始。绝不要回复"请告诉我今天要做什么"之类的通用问候。
+`
+
+// PromptWorkingStateContract is a short full-profile rule. It must not include
+// the [任务状态] marker; that heading is spliced by RunLoop only.
+const PromptWorkingStateContract = `
+- 台上名称和约束只认系统提示末尾的任务状态；改定义先换槽。先上台再写已证实。按下一步行动，不要空转重试相同调用。
+`
+
+// PromptCorePrinciplesManaged is for capability-managed turns whose tools are
+// host-bound grants. It must not teach soup signatures (send_file path=,
+// manage_skill, craft_tool) and must not forbid listed document/delivery tools.
+const PromptCorePrinciplesManaged = `
+## 核心原则
+- 只调用本轮工具列表里实际出现的工具。名称就是普通工具名（如 web_search、generate_pdf、send_file）。
+- 参数以当前列表的 schema 为准。投递类工具的目的地已由宿主绑定：不要传 path、channel、group_id，也不要套用 send_to_im(path=...) 旧签名。
+- 多步任务按列表解锁：当前可能只有查询；成功后文档生成或投递会出现在同一次回复的后续请求里。那不是缺工具，不要向用户宣布，也不要用 bash、python、write_file 绕过。
+- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、previous_turn_tool，也不要复用历史里的 invoke_*。
+- 不要请用户重新授权工具。查到依据后立即作答；当前列表一旦出现 generate_pdf，必须立刻调用，不要说请稍候然后结束。
+- 用用户的语言简洁回答；没有依据时说明无法确认。
+- 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
 `
 
 // PromptCorePrinciplesLight is a trimmed principles block for simple turns
@@ -70,10 +88,11 @@ const PromptCorePrinciples = `
 const PromptCorePrinciplesLight = `
 ## 核心原则（轻量 turn）
 - 用用户的语言简洁回答；不确定就直说。
-- 需要实时信息时再调用工具（如 web_search / web_fetch / 时间类工具）；不要为闲聊扫代码库或开 shell。
-- 结合对话历史理解短回复（如"好"、"继续"、"在吗"），不要当成全新任务。
+- 只调用本轮工具列表里实际出现的工具。对话历史里出现过的工具名，未列入本轮则不可用。
+- 本轮列表中的工具名是当前授权（如 web_search），每次列出仍是一次性授权。只调用列表里的名字。不要抓搜索引擎页，也不要请用户重新授权。
+- 一次成功的实时查询之后立即作答。不要写文件、不要执行命令、不要生成文档，也不要请用户重新授权工具。
+- 结合对话历史理解短回复（如"好"、"继续"、"在吗"），但以当前工具列表为准。
 - 不要编造事实；没有依据时说明无法确认。
-- 本地资料优先：涉及可能已保存的信息（如服务器地址、环境配置、凭据、文档内容）时，先调用 memory 或 knowledge_search 查本地记忆/知识库，确认没有后再回答或向用户提问。
 - 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
 `
 
@@ -81,8 +100,9 @@ const PromptCorePrinciplesLight = `
 // HasKnowledgeBase is true. Shared by GUI and TUI.
 const PromptKnowledgeBaseRules = `
 ## 知识库外脑规则
-- 回答优先级：当用户提问且「知识库参考（自动检索）」section 中有相关内容时，**必须优先使用知识库内容回答**，并标注"根据知识库中的资料"。绝不要忽略知识库内容而给无依据答案。
-- 主动深入检索（最高优先级）：自动检索只注入前几条结果（可能不完整）。对于数量/列表/详情类问题（如"有几本书"、"列出所有专利"、"详细经历"），**必须先调用 knowledge_search 或 knowledge_context_pack 做完整检索，拿到所有相关条目后再回答**。绝不要仅凭自动注入的几条片段就回答数量或列表问题。
+- 当前任务不预装知识库正文。目录只是指针，不是事实。
+- 当且仅当本轮工具列表里有知识库检索工具（knowledge_search、knowledge_context_pack）时，才用它拉取仓库正文并标注"根据知识库中的资料"。没有该工具时，不要假装已经读过知识库，也不要要求先搜知识库。
+- 证据顺序：先用本轮附件、文件和已有工具结果；再在工具列表允许时检索知识库；查找类问题（天气、实时数据、指定 URL）用本轮已有的网页/URL 工具，不要先搜知识库。
 - 来源透明：回答中明确区分哪些信息来自知识库、哪些来自记忆、哪些来自网络搜索或工具结果。不要把模型训练数据当作事实依据。
 - 写入限制：仅当用户明确要求保存信息到知识库时（如"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"导入这份文档/目录"等），才调用知识库写入或导入工具。公共网页用 knowledge_save_url；纯文本/笔记用 knowledge_save_text；本地文件用 knowledge_import_files；本地目录用 knowledge_import_directory。
 - 知识库管理：列出/查看来源用 knowledge_list_sources / knowledge_source_detail；统计用 knowledge_stats；标签管理用 knowledge_list_source_labels / knowledge_update_source_labels / knowledge_update_source_metadata；启停用 knowledge_enable_source / knowledge_disable_source；刷新用 knowledge_refresh_source（先 dry_run 预览）；导入批次用 knowledge_list_import_batches / knowledge_list_import_items / knowledge_retry_import_batch。删除（knowledge_delete_source / knowledge_delete_import_batch）前必须先列出相关条目并获得用户明确确认。
@@ -93,12 +113,11 @@ const PromptKnowledgeBaseRules = `
 // PromptEvidenceBoundFactualRules hardens knowledge-backed virtual employees
 // against fabricating facts when the source material is partial or silent.
 
-// --- Knowledge Auto-Recall shared constants ---
-// These constants define the shared behavior for knowledge auto-recall injection
-// across all hosts (GUI/TUI/maclawsrv). Modify here → all platforms pick up changes.
+// --- Knowledge Auto-Recall sentinels ---
+// Hosts must not inject these headers into the system prompt. Tests assert
+// they are absent. Warehouse text is retrieved with tools.
 
-// KnowledgeAutoRecallHeader is the section header and instruction text injected
-// before auto-recall results in the system prompt.
+// KnowledgeAutoRecallHeader is a forbidden prompt marker for silent KB inject.
 const KnowledgeAutoRecallHeader = "\n## 知识库参考（自动检索）\n" +
 	"以下条目是从知识库自动检索的初步结果（可能不完整）。请自然引用相关内容回答，标注来源。\n" +
 	"重要：如果以下条目不足以完整回答用户问题（尤其是数量/列表/详情类问题），必须主动调用 knowledge_search 或 knowledge_context_pack 深入检索后再回答，不要仅凭初步结果就说\u201c未提及\u201d。\n\n" +
@@ -110,167 +129,11 @@ const KnowledgeAutoRecallHeader = "\n## 知识库参考（自动检索）\n" +
 	"4. **网络搜索（web_search）** — 仅当记忆和知识库均无法回答时才使用\n" +
 	"禁止在第一轮就并行调用 web_search 和 knowledge_search。先查本地来源（记忆+知识库），确认不足后再搜网络。\n\n"
 
-// EnterpriseKnowledgeAutoRecallHeader is injected when enterprise digital-asset
-// snippets are attached after personal knowledge auto-recall.
+// EnterpriseKnowledgeAutoRecallHeader is a forbidden prompt marker for
+// silent enterprise-KB inject.
 const EnterpriseKnowledgeAutoRecallHeader = "\n## 企业知识库参考（自动检索）\n" +
 	"以下内容来自企业数字资产库（Hub 单向同步，只读）。请优先在合规范围内引用，并标注「企业知识」。\n" +
 	"若条目不足，可继续使用 knowledge_search（个人库）或说明需要管理员更新企业库。\n\n"
-
-// KnowledgeAutoRecallMaxQueryRunes limits the user message length used for auto-recall FTS query.
-const KnowledgeAutoRecallMaxQueryRunes = 200
-
-// KnowledgeAutoRecallPriorUserTurns is how many previous user turns may be blended
-// into the auto-recall search query (multi-turn expansion).
-const KnowledgeAutoRecallPriorUserTurns = 2
-
-// KnowledgeAutoRecallPriorTurnMaxRunes caps each prior-turn contribution.
-const KnowledgeAutoRecallPriorTurnMaxRunes = 80
-
-// KnowledgeAutoRecallScoreThreshold is the minimum FTS score for injection.
-const KnowledgeAutoRecallScoreThreshold = 0.3
-
-// KnowledgeAutoRecallSearchLimit is the number of candidates to retrieve from the store.
-const KnowledgeAutoRecallSearchLimit = 8
-
-// KnowledgeAutoRecallSnippetMaxRunes is the max rune length per injected snippet.
-const KnowledgeAutoRecallSnippetMaxRunes = 400
-
-// KnowledgeAutoRecallNoMatchHint is injected when the knowledge base has content
-// but auto-recall found no matching results. This ensures the LLM knows it should
-// use knowledge_search/knowledge_context_pack for deeper retrieval rather than
-// assuming the knowledge base has nothing relevant.
-const KnowledgeAutoRecallNoMatchHint = "\n[知识库提示] 知识库中有已导入的文档资料，但自动检索未匹配到直接相关条目。" +
-	"如果用户的问题或任务可能涉及已导入的内容（如简历、论文、资料、服务器连接信息、环境配置、项目路径、凭据说明等），请主动调用 knowledge_search 或 knowledge_context_pack 工具" +
-	"用不同关键词深入检索，不要直接说\u201c知识库中没有\u201d。\n"
-
-// KnowledgeAutoRecallMaxInject returns the maximum number of results to inject
-// based on the top score of search results (using the default min threshold).
-func KnowledgeAutoRecallMaxInject(topScore float64) int {
-	return KnowledgeAutoRecallMaxInjectWithMin(topScore, KnowledgeAutoRecallScoreThreshold)
-}
-
-// KnowledgeAutoRecallMaxInjectWithMin is like KnowledgeAutoRecallMaxInject but
-// uses a custom minimum score (e.g. user-configured min score). minScore <= 0
-// falls back to KnowledgeAutoRecallScoreThreshold.
-func KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore float64) int {
-	if minScore <= 0 {
-		minScore = KnowledgeAutoRecallScoreThreshold
-	}
-	switch {
-	case topScore >= 3.0:
-		return 5
-	case topScore >= 1.0:
-		return 3
-	case topScore >= minScore:
-		return 2
-	default:
-		return 0
-	}
-}
-
-// PriorUserMessagesFromHistory returns up to maxTurns previous user texts
-// (chronological), skipping empty / low-signal turns. History should not
-// include the current turn (callers pass pre-turn history).
-func PriorUserMessagesFromHistory(history []ConversationEntry, maxTurns int) []string {
-	if maxTurns <= 0 || len(history) == 0 {
-		return nil
-	}
-	var selected []string
-	for i := len(history) - 1; i >= 0; i-- {
-		e := history[i]
-		if !strings.EqualFold(strings.TrimSpace(e.Role), "user") {
-			continue
-		}
-		text := strings.TrimSpace(EntryContentToString(e.Content))
-		if text == "" || isLowSignalKnowledgeAutoRecallTurn(text) {
-			continue
-		}
-		selected = append(selected, text)
-		if len(selected) >= maxTurns {
-			break
-		}
-	}
-	// Reverse to chronological order (oldest first among selected).
-	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
-		selected[i], selected[j] = selected[j], selected[i]
-	}
-	return selected
-}
-
-// ExpandKnowledgeAutoRecallQuery blends prior user turns into the search query.
-// The current message is always preferred when the rune budget is tight.
-func ExpandKnowledgeAutoRecallQuery(current string, priorUserMessages []string) string {
-	current = strings.TrimSpace(current)
-	if current == "" {
-		return ""
-	}
-	curRunes := []rune(current)
-	if len(curRunes) >= KnowledgeAutoRecallMaxQueryRunes {
-		return string(curRunes[:KnowledgeAutoRecallMaxQueryRunes])
-	}
-	if len(priorUserMessages) == 0 {
-		return current
-	}
-
-	remaining := KnowledgeAutoRecallMaxQueryRunes - len(curRunes)
-	// Need room for at least a short prior snippet + separator.
-	if remaining < 12 {
-		return current
-	}
-
-	var priorParts []string
-	used := 0
-	// Walk priors from newest to oldest so recent context wins remaining budget.
-	for i := len(priorUserMessages) - 1; i >= 0; i-- {
-		p := strings.TrimSpace(priorUserMessages[i])
-		if p == "" || p == current || isLowSignalKnowledgeAutoRecallTurn(p) {
-			continue
-		}
-		pr := []rune(p)
-		capEach := KnowledgeAutoRecallPriorTurnMaxRunes
-		left := remaining - used
-		if left <= 1 {
-			break
-		}
-		if capEach > left-1 {
-			capEach = left - 1
-		}
-		if capEach < 8 {
-			break
-		}
-		if len(pr) > capEach {
-			pr = pr[:capEach]
-		}
-		priorParts = append([]string{string(pr)}, priorParts...)
-		used += len(pr) + 1 // +1 for space separator
-		if used >= remaining {
-			break
-		}
-	}
-	if len(priorParts) == 0 {
-		return current
-	}
-	return strings.TrimSpace(strings.Join(append(priorParts, current), " "))
-}
-
-func isLowSignalKnowledgeAutoRecallTurn(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return true
-	}
-	if len([]rune(s)) < 2 {
-		return true
-	}
-	switch strings.ToLower(s) {
-	case "ok", "okay", "yes", "no", "y", "n", "k",
-		"好", "好的", "嗯", "行", "可以", "继续", "继续吧",
-		"thanks", "thank you", "谢谢", "多谢",
-		"continue", "go on", "next":
-		return true
-	default:
-		return false
-	}
-}
 
 // PromptEvidenceBoundFactualRules hardens knowledge-backed virtual employees
 // against fabricating facts when the source material is partial or silent.

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // ── Task Spec ──
@@ -79,15 +81,17 @@ const (
 
 // TaskState holds the runtime state of a browser task execution.
 type TaskState struct {
-	ID          string       `json:"id"`
-	Status      TaskStatus   `json:"status"`
-	CurrentStep int          `json:"current_step"`
-	TotalSteps  int          `json:"total_steps"`
-	RetryCount  int          `json:"retry_count"`
-	LastError   string       `json:"last_error,omitempty"`
-	Checkpoints []Checkpoint `json:"checkpoints,omitempty"`
-	StepTraces  []StepTrace  `json:"step_traces,omitempty"`
-	StartedAt   time.Time    `json:"started_at"`
+	ID               string                `json:"id"`
+	Status           TaskStatus            `json:"status"`
+	CurrentStep      int                   `json:"current_step"`
+	TotalSteps       int                   `json:"total_steps"`
+	RetryCount       int                   `json:"retry_count"`
+	LastError        string                `json:"last_error,omitempty"`
+	Checkpoints      []Checkpoint          `json:"checkpoints,omitempty"`
+	StepTraces       []StepTrace           `json:"step_traces,omitempty"`
+	AskUser          *agent.AskUserRequest `json:"ask_user,omitempty"`
+	LastResultStatus string                `json:"last_result_status,omitempty"`
+	StartedAt        time.Time             `json:"started_at"`
 }
 
 // Checkpoint is a snapshot taken after each step execution.

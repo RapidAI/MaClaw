@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -43,5 +44,46 @@ func TestSharedAskUserCheckpointConflictFailsClosed(t *testing.T) {
 	}
 	if task, _ := memory.ConsumeInFlightTask(userID); task != "newer task" {
 		t.Fatalf("failed ask-user finalization changed newer marker: %q", task)
+	}
+}
+
+func TestAskUserToolResultKeepsResumeTaskID(t *testing.T) {
+	h := &IMMessageHandler{}
+	history := []agent.ConversationEntry{
+		{Role: "assistant", ToolCalls: []map[string]string{{"id": "call-ask"}}},
+	}
+	out := h.handleAgentLoopAskUserToolResult(
+		"user-1", "desktop", "publish",
+		agent.AskUserResultMarker(&agent.AskUserRequest{
+			Question: "solve captcha",
+			Context:  "resume_task_id=bt-9 challenge",
+			Options:  []string{"Continue"},
+		}),
+		false, "call-ask", nil, history, nil, nil, false,
+	)
+	if len(out.History) == 0 {
+		t.Fatal("expected history tool result")
+	}
+	got := out.History[len(out.History)-1].Content
+	if !strings.Contains(fmt.Sprint(got), "resume_task_id=bt-9") {
+		t.Fatalf("history dropped resume_task_id: %#v", got)
+	}
+}
+
+func TestConsumePendingAskUserAnswerKeepsContext(t *testing.T) {
+	h := &IMMessageHandler{}
+	entries := []agent.ConversationEntry{{Role: "user", Content: "publish"}}
+	h.pendingAskUser.Store("user-1", &pendingAskUserState{
+		Question:  "solve captcha",
+		Context:   "resume_task_id=bt-9",
+		History:   entries,
+		Timestamp: time.Now(),
+	})
+	got, _, ok := h.consumePendingAskUserAnswer("user-1", "continue", entries)
+	if !ok {
+		t.Fatal("expected pending ask answer")
+	}
+	if !strings.Contains(got, "resume_task_id=bt-9") {
+		t.Fatalf("continue hint dropped resume_task_id: %q", got)
 	}
 }

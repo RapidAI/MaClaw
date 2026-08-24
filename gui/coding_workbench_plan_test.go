@@ -1,13 +1,93 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+func TestCodingRequestLooksExplicitWorkspaceClear(t *testing.T) {
+	for _, text := range []string{
+		"清空当前目录",
+		"请把当前目录清空",
+		"clear the current directory",
+		"wipe the workspace",
+		"delete all files in the folder",
+	} {
+		if !codingRequestLooksExplicitWorkspaceClear(text) {
+			t.Fatalf("expected workspace-clear request: %q", text)
+		}
+	}
+	for _, text := range []string{
+		"怎么清空当前目录",
+		"如何 clear the directory",
+		"不要清空当前目录",
+		"run the app",
+		"fix the login bug",
+	} {
+		if codingRequestLooksExplicitWorkspaceClear(text) {
+			t.Fatalf("did not expect workspace-clear request: %q", text)
+		}
+	}
+}
+
+func TestCodingRequestLooksModeratelyComplex(t *testing.T) {
+	for _, text := range []string{
+		"改为豪华版 hello world",
+		"改为图形界面版",
+		"实现登录并加测试",
+		"add a login page with tests",
+		"1. inspect auth\n2. implement jwt",
+	} {
+		if !codingRequestLooksModeratelyComplex(text) {
+			t.Fatalf("expected moderately complex: %q", text)
+		}
+	}
+	for _, text := range []string{
+		"fix the button label",
+		"fix a typo",
+		"清空当前目录",
+		"run the app",
+	} {
+		if codingRequestLooksModeratelyComplex(text) {
+			t.Fatalf("did not expect moderately complex: %q", text)
+		}
+	}
+}
+
+func TestResolveCodingRequestDecisionPlansModerateRewrite(t *testing.T) {
+	decision := (*IMMessageHandler)(nil).resolveCodingRequestDecision("改为豪华版 hello world")
+	if decision.Kind != codingRequestImplementation || !decision.NeedsPlan {
+		t.Fatalf("moderate rewrite must plan, got %#v", decision)
+	}
+}
+
+func TestApplyCodingRequestPlanFloorPromotesModerateImplementation(t *testing.T) {
+	got := applyCodingRequestPlanFloor(codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false}, "改为豪华版 hello world")
+	if !got.NeedsPlan {
+		t.Fatal("moderate implementation must get a planning boundary")
+	}
+	got = applyCodingRequestPlanFloor(codingRequestDecision{Kind: codingRequestOperational, NeedsPlan: false}, "改为豪华版 hello world")
+	if got.NeedsPlan {
+		t.Fatal("operational requests must not gain a planning boundary")
+	}
+}
+
+func TestResolveCodingRequestDecisionForcesWorkspaceClearToImplementation(t *testing.T) {
+	decision := (*IMMessageHandler)(nil).resolveCodingRequestDecision("清空当前目录")
+	if decision.Kind != codingRequestImplementation || decision.NeedsPlan {
+		t.Fatalf("workspace clear must be a direct implementation turn, got %#v", decision)
+	}
+}
+
+func TestCodingRequestClassifierPromptTreatsWorkspaceClearAsImplementation(t *testing.T) {
+	if !strings.Contains(codingRequestClassifierSystemPrompt, "clearing or emptying the current project directory is implementation") &&
+		!strings.Contains(codingRequestClassifierSystemPrompt, "Clearing or emptying the current project directory is implementation") {
+		t.Fatalf("classifier prompt must not treat workspace clear as operational: %s", codingRequestClassifierSystemPrompt)
+	}
+}
 
 func TestParseCodingRequestDecision(t *testing.T) {
 	for _, tc := range []struct {
@@ -79,6 +159,45 @@ func TestCodingTaskRequestKindUsesPropagatedDecision(t *testing.T) {
 		t.Fatal("subagent must not reclassify task wording")
 	}
 }
+
+func TestCodingTaskLooksOperationalRejectsWorkspaceClear(t *testing.T) {
+	if codingTaskLooksOperational(&TaskItem{Title: "清空当前目录", RequestKind: codingRequestOperational}) {
+		t.Fatal("workspace clear must not use operational launch/build scoring")
+	}
+	if codingTaskLooksOperational(&TaskItem{Description: "wipe the workspace", RequestKind: codingRequestOperational}) {
+		t.Fatal("english workspace wipe must not use operational scoring")
+	}
+	if !codingTaskLooksOperational(&TaskItem{Title: "run the app", RequestKind: codingRequestOperational}) {
+		t.Fatal("a real run/build request must stay operational")
+	}
+}
+
+func TestForceWorkspaceClearCodingDecision(t *testing.T) {
+	got := forceWorkspaceClearCodingDecision("清空当前目录", codingRequestDecision{Kind: codingRequestOperational, NeedsPlan: false})
+	if got.Kind != codingRequestImplementation || got.NeedsPlan {
+		t.Fatalf("leaked operational wipe must become implementation, got %#v", got)
+	}
+	got = forceWorkspaceClearCodingDecision("run the app", codingRequestDecision{Kind: codingRequestOperational, NeedsPlan: false})
+	if got.Kind != codingRequestOperational {
+		t.Fatalf("real run/build must stay operational, got %#v", got)
+	}
+	got = forceWorkspaceClearCodingDecision(codingPlanApproveExecuteMarker+" 清空当前目录", codingRequestDecision{Kind: codingRequestOperational, NeedsPlan: false})
+	if got.Kind != codingRequestImplementation || got.NeedsPlan {
+		t.Fatalf("approve-prefixed wipe must become implementation, got %#v", got)
+	}
+}
+
+func TestNormalizeCodingWorkspaceClearTextStripsApproveMarker(t *testing.T) {
+	if got := normalizeCodingWorkspaceClearText(codingPlanApproveExecuteMarker + " 清空当前目录"); got != "清空当前目录" {
+		t.Fatalf("normalized approve-prefixed wipe = %q", got)
+	}
+	if !codingRequestIsPureWorkspaceClear(normalizeCodingWorkspaceClearText(codingPlanApproveExecuteMarker + " 清空当前目录")) {
+		t.Fatal("approve-prefixed wipe must remain a pure host-clear")
+	}
+	if codingRequestIsPureWorkspaceClear(codingPlanApproveExecuteMarker + " 清空当前目录") {
+		t.Fatal("raw approve marker must not look like a pure wipe without normalization")
+	}
+}
 func TestSummarizeOperationalSubAgentQuality(t *testing.T) {
 	// Empty no-tool operational run fails with a clear ops diagnostic (not implement no-change matrix).
 	st, sum, n := summarizeOperationalSubAgentQuality(codingSubAgentAudit{}, agent.LoopResult{ToolCalls: 0})
@@ -145,6 +264,17 @@ func TestSummarizeOperationalSubAgentQuality(t *testing.T) {
 	}, agent.LoopResult{ToolCalls: 1})
 	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "failed") {
 		t.Fatalf("failed launch ops quality = %q %q %d", st, sum, n)
+	}
+}
+
+func TestSummarizeOperationalSubAgentQualityRejectsWorkspaceClear(t *testing.T) {
+	st, sum, n := summarizeOperationalSubAgentQualityForTask(
+		&TaskItem{Title: "清空当前目录", RequestKind: codingRequestOperational},
+		codingSubAgentAudit{AllCommandsRun: []CodingSubAgentCommandResult{{Command: ".\\hello.exe", Succeeded: true, Summary: "ok"}}},
+		agent.LoopResult{ToolCalls: 1},
+	)
+	if st != codingSubAgentQualityFailed || n != 1 || !strings.Contains(sum, "workspace clear") {
+		t.Fatalf("leftover launch must not pass a wipe, got %q %q %d", st, sum, n)
 	}
 }
 
@@ -260,6 +390,407 @@ func TestCodingInquiryShellCommandsRejectWritesAndAllowInspection(t *testing.T) 
 		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
 			t.Fatalf("read-only inquiry command should be rejected: %q", command)
 		}
+	}
+}
+
+func TestGuardedOperationalCommandAsksTheUserInsteadOfDeadEnding(t *testing.T) {
+	// A run/build guardrail decides what runs without asking, so a command it
+	// turns down has to reach the user. Dead-ending here is what made an agent
+	// invent a network fault to explain a refusal it could not act on.
+	const command = "git ls-remote --upload-pack=whoami origin"
+	rejection := rejectCodingOperationalShellCommand(command)
+	if rejection == "" {
+		t.Fatal("the guardrail should have turned this command down")
+	}
+
+	var asked ScopeApprovalRequest
+	callbacks := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		scopeApproval: newScopeApprovalState(func(req ScopeApprovalRequest) ScopeApprovalDecision {
+			asked = req
+			return ScopeApprovalAllowOnce
+		}, false),
+	}}
+	if msg := callbacks.approveGuardedShellCommand(command, `D:\repo`, rejection); msg != "" {
+		t.Fatalf("an approved command should run, got %q", msg)
+	}
+	if asked.ToolName != "bash" || asked.Kind != localHighRiskApprovalKind || asked.Path != command {
+		t.Fatalf("approval request = %#v", asked)
+	}
+	if asked.Message != rejection {
+		t.Fatalf("the user must see why it was guarded: %q", asked.Message)
+	}
+
+	denying := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		scopeApproval: newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+			return ScopeApprovalDeny
+		}, false),
+	}}
+	if msg := denying.approveGuardedShellCommand(command, `D:\repo`, rejection); msg != rejection {
+		t.Fatalf("a denied command must stay rejected, got %q", msg)
+	}
+	// Without an approval channel the guardrail is the whole answer.
+	bare := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
+	if msg := bare.approveGuardedShellCommand(command, `D:\repo`, rejection); msg != rejection {
+		t.Fatalf("a missing approval channel must keep the guardrail, got %q", msg)
+	}
+}
+
+func TestGuardCodingShellCommandOrdersHardBlocksBeforeApproval(t *testing.T) {
+	prompts := 0
+	newGuard := func(kind codingRequestKind, decide ScopeApprovalDecision) *codingSubAgentCallbacks {
+		prompts = 0
+		return &codingSubAgentCallbacks{
+			task: &TaskItem{RequestKind: kind},
+			subagent: &CodingSubAgent{scopeApproval: newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+				prompts++
+				return decide
+			}, false)},
+		}
+	}
+
+	// A repository inquiry never reaches the user: its report claims the turn
+	// modified nothing, so there is nothing to approve away.
+	guard := newGuard(codingRequestInquiry, ScopeApprovalAllowOnce)
+	if msg := guard.guardCodingShellCommand("npm install left-pad", `D:\repo`); msg == "" {
+		t.Fatal("an inquiry must not run a dependency install")
+	}
+	if prompts != 0 {
+		t.Fatalf("an inquiry must not offer approval, prompts = %d", prompts)
+	}
+	if msg := guard.guardCodingShellCommand("git status --short", `D:\repo`); msg != "" {
+		t.Fatalf("a read-only inspection should pass an inquiry: %s", msg)
+	}
+
+	// A run/build guardrail asks, and the user's answer decides.
+	guard = newGuard(codingRequestOperational, ScopeApprovalAllowOnce)
+	if msg := guard.guardCodingShellCommand("git fetch origin", `D:\repo`); msg != "" {
+		t.Fatalf("an approved command should run: %s", msg)
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d, want one approval", prompts)
+	}
+	guard = newGuard(codingRequestOperational, ScopeApprovalDeny)
+	if msg := guard.guardCodingShellCommand("git fetch origin", `D:\repo`); msg == "" {
+		t.Fatal("a denied command must not run")
+	}
+
+	// One command, one prompt: approving the mode guardrail must not queue up a
+	// second prompt from the high-risk guardrail the same command also trips.
+	guard = newGuard(codingRequestOperational, ScopeApprovalAllowOnce)
+	if msg := guard.guardCodingShellCommand("git reset --hard HEAD", `D:\repo`); msg != "" {
+		t.Fatalf("an approved command should run: %s", msg)
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d, want exactly one for a single command", prompts)
+	}
+
+	// Outside a guarded mode the same command still reaches the high-risk gate.
+	guard = newGuard(codingRequestImplementation, ScopeApprovalDeny)
+	if msg := guard.guardCodingShellCommand("git reset --hard HEAD", `D:\repo`); msg == "" {
+		t.Fatal("a denied high-risk command must not run")
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d, want one high-risk approval", prompts)
+	}
+
+	// A silenced git self-check is a hard block: no prompt, and no answer opens
+	// it, including one already given for the run/build guardrail it trips too.
+	guard = newGuard(codingRequestImplementation, ScopeApprovalAllowOnce)
+	if msg := guard.guardCodingShellCommand("git status 2>/dev/null", `D:\repo`); msg == "" {
+		t.Fatal("a silenced git self-check must stay blocked")
+	}
+	if prompts != 0 {
+		t.Fatalf("a hard block must not offer approval, prompts = %d", prompts)
+	}
+	guard = newGuard(codingRequestOperational, ScopeApprovalAllowOnce)
+	if msg := guard.guardCodingShellCommand("git status 2>/dev/null", `D:\repo`); msg == "" {
+		t.Fatal("approval must not unlock a hard block")
+	}
+}
+
+func TestGuardRemoteShellCommandMirrorsTheLocalGuardOrdering(t *testing.T) {
+	prompts := 0
+	newGuard := func(inquiry, operational bool, decide ScopeApprovalDecision) *remoteCodingCallbacks {
+		prompts = 0
+		return &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+			readOnlyInquiry:    inquiry,
+			operationalRequest: operational,
+			highRiskApproval: newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+				prompts++
+				return decide
+			}, false),
+		}}
+	}
+
+	guard := newGuard(true, false, ScopeApprovalAllowOnce)
+	msg, record := guard.guardRemoteShellCommand("npm install left-pad", "/srv/repo")
+	if msg == "" {
+		t.Fatal("an inquiry must not run a dependency install")
+	}
+	if !record {
+		t.Fatal("a mode-guardrail rejection belongs in the run evidence")
+	}
+	if prompts != 0 {
+		t.Fatalf("an inquiry must not offer approval, prompts = %d", prompts)
+	}
+	if msg, _ = guard.guardRemoteShellCommand("git status --short", "/srv/repo"); msg != "" {
+		t.Fatalf("a read-only inspection should pass an inquiry: %s", msg)
+	}
+
+	guard = newGuard(false, true, ScopeApprovalAllowOnce)
+	if msg, _ = guard.guardRemoteShellCommand("git fetch origin", "/srv/repo"); msg != "" {
+		t.Fatalf("an approved command should run: %s", msg)
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d, want one approval", prompts)
+	}
+	guard = newGuard(false, true, ScopeApprovalDeny)
+	if msg, _ = guard.guardRemoteShellCommand("git fetch origin", "/srv/repo"); msg == "" {
+		t.Fatal("a denied command must not run")
+	}
+
+	// One command, one prompt.
+	guard = newGuard(false, true, ScopeApprovalAllowOnce)
+	if msg, _ = guard.guardRemoteShellCommand("git reset --hard HEAD", "/srv/repo"); msg != "" {
+		t.Fatalf("an approved command should run: %s", msg)
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d, want exactly one for a single command", prompts)
+	}
+
+	// A silenced git self-check stays blocked, with or without an approval.
+	guard = newGuard(false, false, ScopeApprovalAllowOnce)
+	if msg, _ = guard.guardRemoteShellCommand("git status 2>/dev/null", "/srv/repo"); msg == "" {
+		t.Fatal("a silenced git self-check must stay blocked")
+	}
+	if prompts != 0 {
+		t.Fatalf("a hard block must not offer approval, prompts = %d", prompts)
+	}
+	guard = newGuard(false, true, ScopeApprovalAllowOnce)
+	if msg, _ = guard.guardRemoteShellCommand("git status 2>/dev/null", "/srv/repo"); msg == "" {
+		t.Fatal("approval must not unlock a hard block")
+	}
+}
+
+func TestRemoteTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
+	prompts := 0
+	state := newRemoteHighRiskApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		prompts++
+		return ScopeApprovalDeny
+	}, true)
+
+	if msg := state.checkTaskModeGuard("git push origin main", "/srv/repo", "guarded"); msg == "" {
+		t.Fatal("a sticky full-access grant must not silently satisfy a mode guardrail")
+	}
+	if prompts != 1 {
+		t.Fatalf("prompts = %d, want the user to be asked despite full access", prompts)
+	}
+}
+
+func TestRecursiveDeleteStillRequiresHighRiskApproval(t *testing.T) {
+	if msg := rejectDisallowedCodingBashCommand(`Remove-Item -Recurse -Force *`); msg == "" {
+		t.Fatal("recursive delete must still be classified as high-risk")
+	}
+	blocked := newScopeApprovalState(nil, false)
+	if msg := blocked.checkHighRisk("bash", `Remove-Item -Recurse -Force *`, `D:\repo`, `D:\repo`, "high risk"); msg == "" {
+		t.Fatal("without approval, recursive delete must stay blocked")
+	}
+	full := newScopeApprovalState(nil, true)
+	if msg := full.checkHighRisk("bash", `Remove-Item -Recurse -Force *`, `D:\repo`, `D:\repo`, "high risk"); msg != "" {
+		t.Fatalf("Full Control must auto-allow project-scoped high-risk delete, got %q", msg)
+	}
+}
+
+func TestTaskModeGuardIsNotSatisfiedByAStickyHighRiskGrant(t *testing.T) {
+	// A sticky "allow risky commands" answer is about danger, not about turning
+	// a run/build turn into something wider, so it must not silently widen the
+	// task mode without the user ever seeing a prompt.
+	prompts := 0
+	state := newScopeApprovalState(func(ScopeApprovalRequest) ScopeApprovalDecision {
+		prompts++
+		return ScopeApprovalFullAccess
+	}, false)
+
+	if msg := state.checkHighRisk("bash", "git reset --hard HEAD", `D:\repo`, `D:\repo`, "high risk"); msg != "" {
+		t.Fatalf("full access should allow the high-risk command, got %q", msg)
+	}
+	// checkHighRisk has now stored the sticky grant and stops prompting.
+	if msg := state.checkHighRisk("bash", "git clean -fd", `D:\repo`, `D:\repo`, "high risk"); msg != "" || prompts != 1 {
+		t.Fatalf("sticky high-risk grant = %q after %d prompts", msg, prompts)
+	}
+	if msg := state.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "" {
+		t.Fatalf("the user allowed it at the prompt, got %q", msg)
+	}
+	if prompts != 2 {
+		t.Fatalf("a task-mode guard must still prompt, prompts = %d", prompts)
+	}
+
+	// And a mode guard never installs a sticky grant of its own.
+	silent := newScopeApprovalState(nil, false)
+	if msg := silent.checkTaskModeGuard("bash", "npm install left-pad", `D:\repo`, `D:\repo`, "guarded"); msg != "guarded" {
+		t.Fatalf("no approval channel must keep the guardrail, got %q", msg)
+	}
+}
+
+func TestCodingGitInspectionSubcommandsStayAvailable(t *testing.T) {
+	// Read-only git subcommands must survive both gates: an agent that only
+	// wants to look at refs should never be told to ask for an implementation
+	// change, and the rejection text must not call a read a mutation.
+	for _, command := range []string{
+		"git ls-remote --heads origin",
+		"git ls-tree -r HEAD",
+		"git rev-list --count HEAD",
+		"git describe --tags",
+		"git merge-base main HEAD",
+		"git show-ref --tags",
+		"git branch",
+		"git branch -a -v",
+		"git branch --list --sort=-committerdate",
+		"git tag",
+		"git tag -l v1.*",
+		"git tag -n5",
+		"git remote -v",
+		"git remote show origin",
+		"git remote get-url origin",
+		"git remote get-url --push origin",
+		"git branch --show-current",
+		"git branch --merged main",
+		"git branch --no-merged main",
+		"git branch --contains HEAD",
+		"git branch --list 'feature/*'",
+		"git tag --contains HEAD",
+		"git tag --no-merged main",
+		"git tag --sort=-v:refname",
+		// Clustered short flags are the usual spelling of `-a -v`.
+		"git branch -av",
+		"git branch -avv",
+		"git tag -ln9",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			t.Fatalf("read-only git command should pass an inquiry: %q: %s", command, msg)
+		}
+		if msg := rejectCodingOperationalShellCommand(command); msg != "" {
+			t.Fatalf("read-only git command should pass a run/build request: %q: %s", command, msg)
+		}
+	}
+	for _, command := range []string{
+		"git branch -D stale",
+		"git branch --delete stale",
+		"git branch feature/new",
+		"git branch -m old new",
+		"git branch --set-upstream-to=origin/main",
+		// Before git 2.19 `-l` meant --create-reflog, so it must not license a
+		// branch name the way --list does.
+		"git branch -l newbranch",
+		// The operand of a value-taking flag is consumed, so a name after it is
+		// still a creation.
+		"git branch --sort=committerdate newbranch",
+		"git branch --sort committerdate newbranch",
+		// A cluster is only as safe as its least safe letter, and it never
+		// enters list mode, so it cannot license a branch name either.
+		"git branch -vd stale",
+		"git branch -av newbranch",
+		"git tag -ld v1.0.0",
+		"git tag v1.0.0",
+		"git tag -d v1.0.0",
+		"git tag -a v1.0.0 -m release",
+		"git remote add upstream https://example.invalid/x.git",
+		"git remote set-url origin https://example.invalid/y.git",
+		"git remote rename origin old",
+		"git push origin main",
+		"git config user.name test",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("ref-mutating git command should be rejected by an inquiry: %q", command)
+		}
+		if msg := rejectCodingOperationalShellCommand(command); msg == "" {
+			t.Fatalf("ref-mutating git command should be rejected by a run/build request: %q", command)
+		}
+	}
+	// `--output=<path>` makes an otherwise read-only git command write a file
+	// without ever using a shell redirect, so the redirect guard cannot see it.
+	for _, command := range []string{
+		"git diff --output=leak.txt",
+		"git diff --output leak.txt",
+		"git log --output=leak.txt",
+		"git show --output=leak.txt HEAD",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("git file-writing option should be rejected by an inquiry: %q", command)
+		}
+		if msg := rejectCodingOperationalShellCommand(command); msg == "" {
+			t.Fatalf("git file-writing option should be rejected by a run/build request: %q", command)
+		}
+	}
+	// ls-remote is the one allowed subcommand that takes a URL, and git's ext/fd
+	// transport helpers execute their payload as a command line.
+	for _, command := range []string{
+		"git ls-remote ext::sh -c whoami",
+		"git ls-remote 'ext::sh -c whoami'",
+		"git ls-remote fd::7",
+		"git ls-remote --upload-pack=whoami origin",
+		"git ls-remote --exec=whoami origin",
+		"git remote show ext::sh -c whoami",
+		"git grep -Owhoami pattern",
+		"git grep --open-files-in-pager=whoami pattern",
+		// --exec-path relocates the directory git loads git-remote-* and other
+		// helper programs from, and it must not be mistaken for --exec.
+		"git --exec-path=/tmp/evil ls-remote origin",
+		"git --exec-path=/tmp/evil status",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("git transport execution vector should be rejected by an inquiry: %q", command)
+		}
+		if msg := rejectCodingOperationalShellCommand(command); msg == "" {
+			t.Fatalf("git transport execution vector should be rejected by a run/build request: %q", command)
+		}
+	}
+	// A search pattern has the same `a::b` shape as a transport URL and must not
+	// be mistaken for one.
+	if msg := rejectCodingInquiryShellCommand("git grep std::vector"); msg != "" {
+		t.Fatalf("a pattern containing :: should still be searchable: %s", msg)
+	}
+	// Inline config before the subcommand can name a pager, an alias, or a
+	// transport helper, so it must not ride along on a read-only subcommand.
+	for _, command := range []string{
+		"git -c core.pager=whoami log",
+		"git -c protocol.ext.allow=always ls-remote origin",
+		"git --config-env=core.pager=LEAK log",
+	} {
+		if msg := rejectCodingInquiryShellCommand(command); msg == "" {
+			t.Fatalf("git config injection should be rejected by an inquiry: %q", command)
+		}
+		if msg := rejectCodingOperationalShellCommand(command); msg == "" {
+			t.Fatalf("git config injection should be rejected by a run/build request: %q", command)
+		}
+	}
+	// `-c` after the subcommand is git's combined-diff flag, not config.
+	if msg := rejectCodingInquiryShellCommand("git log -c --oneline"); msg != "" {
+		t.Fatalf("combined-diff flag should stay available: %s", msg)
+	}
+	// An inline shell script must not become a way to run the git commands the
+	// gate just rejected.
+	for _, command := range []string{
+		"bash -c 'git push origin main'",
+		"sh -c 'git push origin main'",
+		"zsh -c 'git commit -am wip'",
+	} {
+		if msg := rejectCodingOperationalShellCommand(command); msg == "" {
+			t.Fatalf("wrapped git mutation should be rejected by a run/build request: %q", command)
+		}
+	}
+	// The old wording accused read-only commands of being mutations, which sent
+	// agents chasing imaginary network faults instead of surfacing the real
+	// allow-list miss.
+	msg := rejectCodingOperationalShellCommand("git fetch origin")
+	if msg == "" {
+		t.Fatal("git fetch should stay unavailable for a run/build request")
+	}
+	if strings.Contains(strings.ToLower(msg), "mutating") {
+		t.Fatalf("rejection must name the allow-list miss rather than claim a mutation: %s", msg)
+	}
+	if !strings.Contains(msg, "git fetch") {
+		t.Fatalf("rejection should name the offending subcommand: %s", msg)
 	}
 }
 
@@ -448,13 +979,194 @@ func TestCodingWorkbenchRunLabelsStaySpecificToRequestKind(t *testing.T) {
 }
 
 func TestRepositoryInquiryHeaderAndReportStateNoFilesWereModified(t *testing.T) {
-	header := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}})
-	if header != "仓库分析完成" {
-		t.Fatalf("header = %q", header)
-	}
-	body := fmt.Sprintf("%s\n项目路径：%s\n只读检查：未修改任何文件。\n\n%s", header, "D:/repo", "analysis")
-	if strings.Contains(body, "编码完成") || !strings.Contains(body, "只读检查：未修改任何文件") {
+	body := formatCodingWorkbenchUserAnswer(codingRequestInquiry, []v2.TaskRunResult{{Status: v2.TaskPassed, Summary: "analysis"}}, false)
+	if strings.Contains(body, "Coding complete") || strings.Contains(body, "## ") || !strings.Contains(body, "Read-only check: no files were modified.") {
 		t.Fatalf("unexpected inquiry report: %q", body)
+	}
+}
+
+func TestFormatCodingAgentUserFinishHidesScorecard(t *testing.T) {
+	failed := formatCodingAgentUserFinish([]v2.TaskRunResult{{
+		Title:        "hello world",
+		Status:       v2.TaskFailed,
+		Summary:      "Completed: created hello_world.cpp and successfully compiled.",
+		Error:        "coding SubAgent quality audit failed: 1 command(s) failed: cl",
+		FilesCreated: []string{"hello_world.cpp"},
+	}}, false)
+	if strings.Contains(failed, "## ") || strings.Contains(failed, "Execution report") || strings.Contains(failed, "successfully compiled") {
+		t.Fatalf("failed finish should not keep the scorecard or success claim: %q", failed)
+	}
+	if strings.Contains(failed, "quality audit") || strings.Contains(failed, "did not finish") {
+		t.Fatalf("failed finish should not use audit or generic incomplete phrasing: %q", failed)
+	}
+	if !strings.Contains(failed, "`cl` failed") || !strings.Contains(failed, "hello_world.cpp") {
+		t.Fatalf("failed finish should name the command and file: %q", failed)
+	}
+	passed := formatCodingAgentUserFinish([]v2.TaskRunResult{{
+		Title:   "hello world",
+		Status:  v2.TaskPassed,
+		Summary: "Created hello_world.cpp and ran it.",
+	}}, false)
+	if passed != "Created hello_world.cpp and ran it." {
+		t.Fatalf("passed finish should be the model summary, got %q", passed)
+	}
+	zhFailed := formatCodingAgentUserFinish([]v2.TaskRunResult{{
+		Title:        "hello world",
+		Status:       v2.TaskFailed,
+		Summary:      "已完成：创建了 hello_world.cpp 并成功编译运行。\n\n## 验证结果\ncl 通过\n\n## 涉及文件\nhello_world.cpp",
+		Error:        "coding SubAgent quality audit failed: 1 command(s) failed: cl",
+		FilesCreated: []string{"hello_world.cpp"},
+	}}, false)
+	if strings.Contains(zhFailed, "## ") || strings.Contains(zhFailed, "验证结果") || strings.Contains(zhFailed, "涉及文件") || strings.Contains(zhFailed, "成功编译") {
+		t.Fatalf("chinese failed finish should drop audit sections and success claim: %q", zhFailed)
+	}
+	if strings.Contains(zhFailed, "quality audit") || strings.Contains(zhFailed, "did not finish") {
+		t.Fatalf("chinese failed finish should not use audit or generic incomplete phrasing: %q", zhFailed)
+	}
+	if !strings.Contains(zhFailed, "`cl` failed") || !strings.Contains(zhFailed, "hello_world.cpp") {
+		t.Fatalf("chinese failed finish should name the command and file: %q", zhFailed)
+	}
+	if got := formatCodingAgentVisibleError("coding SubAgent quality audit failed: 1 command(s) failed: go test ./pkg -> compile failed"); got != "`go test ./pkg` failed: compile failed" {
+		t.Fatalf("visible error = %q", got)
+	}
+}
+
+func TestIsCodingAgentUserProgressTextKeepsTrailOnly(t *testing.T) {
+	if !isCodingAgentUserProgressText(`Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started"}`) {
+		t.Fatal("structured coding event should stay visible")
+	}
+	if !isCodingAgentUserProgressText("Coding Agent: running T1 - Write hello") {
+		t.Fatal("legacy coding status should stay visible")
+	}
+	for _, banner := range []string{
+		"全功能编程工作台：开始执行",
+		"全功能远程编程：使用 SSH 会话 ssh_1 开始执行",
+		"T1/2: write files",
+		"执行步骤：\n☐ T1 write files",
+		"① Local coding execution: 2 tasks",
+	} {
+		if isCodingAgentUserProgressText(banner) {
+			t.Fatalf("board banner should stay off the chat trail: %q", banner)
+		}
+	}
+}
+
+func TestEmitCodingAgentUserProgressDropsBoardBanners(t *testing.T) {
+	var got []string
+	emitCodingAgentUserProgress(func(s string) { got = append(got, s) }, "全功能编程工作台：开始执行")
+	emitCodingAgentUserProgress(func(s string) { got = append(got, s) }, "T1/2: write files")
+	emitCodingAgentUserProgress(func(s string) { got = append(got, s) }, "Coding Agent: running T1 - write files")
+	if len(got) != 1 || !strings.HasPrefix(got[0], "Coding Agent:") {
+		t.Fatalf("only the coding trail line should be forwarded: %#v", got)
+	}
+}
+
+func TestWrapCodingAgentReasoningTokenPrefixesThinking(t *testing.T) {
+	var got []string
+	wrapped := wrapCodingAgentReasoningToken(func(s string) { got = append(got, s) })
+	wrapped("Created hello.cpp.")
+	wrapped("\x01already thinking")
+	wrapped("Browser: leaked")
+	if wrapCodingAgentReasoningToken(nil) != nil {
+		t.Fatal("nil callback should stay nil")
+	}
+	if len(got) != 3 {
+		t.Fatalf("unexpected tokens: %#v", got)
+	}
+	if got[0] != "\x01Created hello.cpp." {
+		t.Fatalf("live model prose should fold into thinking: %q", got[0])
+	}
+	if got[1] != "\x01already thinking" {
+		t.Fatalf("already-prefixed thinking should pass through: %q", got[1])
+	}
+	if got[2] != "\x01leaked" {
+		t.Fatalf("Browser prefix should be stripped into thinking: %q", got[2])
+	}
+}
+
+func TestIsCodingAgentUserProgressTextKeepsPrefixedRemoteEvents(t *testing.T) {
+	event := `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started"}`
+	if !isCodingAgentUserProgressText(event) {
+		t.Fatal("remote tool events must stay on the trail")
+	}
+	if isCodingAgentUserProgressText("   · T1 merged remote git worktree") {
+		t.Fatal("prefixed board chrome must not look like a trail event")
+	}
+}
+
+func TestStripCodingAgentAuditSectionsKeepsPlanApproval(t *testing.T) {
+	card := formatPendingPlanApprovalText("**\u76ee\u6807**: write a hello binary\n\n### T1: write\n\u63cf\u8ff0: add hello\nFiles: hello.cpp\n\u4f9d\u8d56: T0\n### T2: build\n", 2)
+	if strings.Contains(card, "\u63cf\u8ff0:") || strings.Contains(card, "Files:") || strings.Contains(card, "\u4f9d\u8d56:") || strings.Contains(card, "**\u76ee\u6807**") {
+		t.Fatalf("user plan card should drop form labels: %q", card)
+	}
+	if strings.Contains(card, "## 需求理解") {
+		t.Fatalf("plan card must not reuse the stream restatement heading: %q", card)
+	}
+	if !strings.Contains(card, "add hello") || !strings.Contains(card, "hello.cpp") {
+		t.Fatalf("user plan card should keep step facts: %q", card)
+	}
+	got := stripCodingAgentAuditSections(card)
+	if !strings.Contains(got, "### T1: write") || !strings.Contains(got, "### T2: build") || !strings.Contains(got, "/plan approve") {
+		t.Fatalf("plan approval card must keep ### T steps: %q", got)
+	}
+	got = formatCodingSubAgentUserAnswer(&CodingSubAgentResult{
+		Status:  TaskExecPassed,
+		Summary: "Created hello.cpp.\n\n## \u9a8c\u8bc1\u7ed3\u679c\ncl passed",
+	})
+	if strings.Contains(got, "\u9a8c\u8bc1\u7ed3\u679c") || strings.Contains(got, "## ") {
+		t.Fatalf("delegate/IM answer still has audit headings: %q", got)
+	}
+	if !strings.Contains(got, "Created hello.cpp.") {
+		t.Fatalf("delegate/IM answer lost engineer prose: %q", got)
+	}
+}
+
+func TestFormatCodingAgentUserFinishDropsPlanBoardChrome(t *testing.T) {
+	got := formatCodingAgentUserFinish([]v2.TaskRunResult{{
+		Status:  v2.TaskPassed,
+		Summary: "Created hello.cpp.\n\n### T2: build\n状态: success\n\n### 计划执行结果\n远程编程完成\n\n执行步骤：\n☑ T1 write",
+	}}, false)
+	if strings.Contains(got, "计划执行结果") || strings.Contains(got, "执行步骤") || strings.Contains(got, "SSH") || strings.Contains(got, "### T") {
+		t.Fatalf("plan board chrome leaked into finish: %q", got)
+	}
+	if !strings.Contains(got, "Created hello.cpp.") {
+		t.Fatalf("engineer prose missing: %q", got)
+	}
+}
+
+func TestRemoteCodingStepToRunResultAndSkippedRemainder(t *testing.T) {
+	step := &v2.TaskItem{Index: 1, Title: "write hello"}
+	got := remoteCodingStepToRunResult(step, &RemoteCodingSubAgentResult{
+		Status:       "failed",
+		Summary:      "Created hello.cpp.",
+		Error:        "coding SubAgent quality audit failed: 1 command(s) failed: cl",
+		FilesCreated: []string{"hello.cpp"},
+	})
+	if got.Status != v2.TaskFailed || got.Title != "write hello" || got.FilesCreated[0] != "hello.cpp" {
+		t.Fatalf("unexpected run result: %#v", got)
+	}
+	results := appendCodingWorkbenchSkippedResults([]v2.TaskRunResult{got}, []*v2.TaskItem{
+		step,
+		{Index: 2, Title: "build"},
+	}, []codingWorkbenchStepStatus{{Index: 2, Status: codingStepSkipped, Summary: "skipped: prior step failed"}})
+	if len(results) != 2 || results[1].Status != v2.TaskSkipped || results[1].Title != "build" {
+		t.Fatalf("skipped remainder: %#v", results)
+	}
+	finish := formatCodingWorkbenchUserAnswer(codingRequestImplementation, results, false)
+	if strings.Contains(finish, "### T") || strings.Contains(finish, "SSH") || strings.Contains(finish, "执行报告") {
+		t.Fatalf("remote finish must match local engineer prose: %q", finish)
+	}
+}
+
+func TestEmitCodingAgentFinishTokenAlwaysStreamsVisibleAnswer(t *testing.T) {
+	var got string
+	emitCodingAgentFinishToken(func(s string) { got = s }, "Created foo.", []v2.TaskRunResult{{Status: v2.TaskPassed, Summary: "Created foo."}}, false)
+	if !strings.Contains(got, "Created foo.") {
+		t.Fatalf("visible finish must stream even when Summary already matches: %q", got)
+	}
+	emitCodingAgentFinishToken(func(s string) { got = s }, "Created foo.\n\n`cl` failed.", []v2.TaskRunResult{{Status: v2.TaskFailed, Summary: "Created foo.", Error: "cl failed"}}, false)
+	if !strings.Contains(got, "Created foo.") {
+		t.Fatalf("failed finish should stream: %q", got)
 	}
 }
 

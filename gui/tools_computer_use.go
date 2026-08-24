@@ -17,19 +17,24 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // computerUseRuntime holds shared CU state for the desktop agent tool handlers.
 type computerUseRuntime struct {
-	mu         sync.Mutex
-	session    *computeruse.Session
-	bridge     accessibility.Bridge
-	input      guiautomation.InputSimulator
-	yolo       *guiautomation.YOLOScreenParser
-	ocr        taskengine.OCRProvider
-	ocrSidecar *browser.NativeOCRProvider // underlying engine for Warm(); may be nil
-	logger     func(string)
+	mu          sync.Mutex
+	session     *computeruse.Session
+	sessions    map[string]*computeruse.Session
+	sessionUsed map[string]time.Time
+	activeOwner string
+	bridge      accessibility.Bridge
+	input       guiautomation.InputSimulator
+	yolo        *guiautomation.YOLOScreenParser
+	ocr         taskengine.OCRProvider
+	ocrSidecar  *browser.NativeOCRProvider // underlying engine for Warm(); may be nil
+	logger      func(string)
 	// activated is sticky session state after a successful computer_* observe/action.
 	// It expires after computerUseStickyTTL unless refreshed by further CU activity.
 	activated   bool
@@ -40,6 +45,19 @@ type computerUseRuntime struct {
 	// liftComputerUseStopForFreshRequest tell that re-gate apart from a genuine
 	// new task and keep the operator's Stop blocking.
 	lastFreshOpenRequestID string
+	// turnVision / turnVisionKnown are set from the current agent-loop LLM
+	// config so observe can skip OmniParser when that model accepts images.
+	turnVision      bool
+	turnVisionKnown bool
+	// pendingModelImage is a PNG (base64) captured by computer_observe in
+	// vision mode; the agent loop attaches it as a model-facing screenshot.
+	pendingModelImage string
+	// taskStates holds the slim per-owner CU MEA contract (P0). Empty
+	// Acceptance means computer_done keeps today's self-reported completion.
+	taskStates map[string]*computerUseTaskState
+	// horizonClaimOnly keyed by CU owner: computer_done returns a claim and
+	// must not complete the outer LongHorizon TaskState.
+	horizonClaimOnly map[string]bool
 }
 
 var globalComputerUse = &computerUseRuntime{}
@@ -70,6 +88,50 @@ func (a *taskOCRFromBrowser) Recognize(pngBase64 string) ([]taskengine.OCRResult
 
 func (a *taskOCRFromBrowser) IsAvailable() bool {
 	return a != nil && a.inner != nil && a.inner.IsAvailable()
+}
+
+func cuHandleDone(summary string) string {
+	text, _ := cuDoneResult(summary)
+	return text
+}
+
+// cuDoneResult reports whether the completion was accepted, alongside the text
+// describing it. A long-horizon claim and an audit rejection are both refusals
+// to complete, and separating them from an accepted completion by reading the
+// prose is how a refused completion ends up recorded as a finished task.
+func cuDoneResult(summary string) (string, bool) {
+	sess, owner := cuSessionAndOwner()
+	if horizonComputerUseClaimOnly(owner) {
+		if sess != nil {
+			sess.RecordAction("done", summary, true, "horizon claim", false)
+		}
+		return fmt.Sprintf("computer_done claim: %s (does not complete the long-horizon task)", summary), false
+	}
+	state := snapshotComputerUseTaskState(owner)
+	if state != nil && len(state.Acceptance) > 0 {
+		passed, reason := applyComputerUseAudit(sess, state)
+		if !passed {
+			updateComputerUseTaskAudit(owner, computerUseAuditFailed, true)
+			if sess != nil {
+				sess.RecordAction("done", summary, false, reason, false)
+			}
+			return fmt.Sprintf("computer_done rejected: %s; call computer_observe and retry", reason), false
+		}
+		updateComputerUseTaskAudit(owner, computerUseAuditPassed, false)
+	} else if state != nil {
+		updateComputerUseTaskAudit(owner, computerUseAuditSkipped, false)
+	}
+	steps := 0
+	if sess != nil {
+		sess.RecordAction("done", summary, true, "", false)
+		if p := sess.Policy(); p != nil {
+			steps = p.StepCount()
+		}
+	}
+	// End sticky injection so the next unrelated chat does not keep CU tools.
+	clearComputerUseSessionActive()
+	emitComputerUseDoneControl(steps)
+	return fmt.Sprintf("computer_done: %s", summary), true
 }
 
 // registerComputerUseTools registers text-primary Computer Use tools.
@@ -144,6 +206,12 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	} else {
 		globalComputerUse.session = sess
 	}
+	if globalComputerUse.sessions == nil {
+		globalComputerUse.sessions = make(map[string]*computeruse.Session)
+	}
+	if globalComputerUse.sessions[computerUseDefaultOwner] == nil {
+		globalComputerUse.sessions[computerUseDefaultOwner] = sess
+	}
 	ocr := &taskOCRFromBrowser{inner: newVisionFirstOCRProvider(app, ocrSidecar)}
 	globalComputerUse.ocr = ocr
 	globalComputerUse.logger = logger
@@ -152,19 +220,19 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	// --- computer_observe ---
 	registry.Register(RegisteredTool{
 		Name: "computer_observe",
-		Description: "Observe the desktop as structured TEXT for Computer Use (text-primary). " +
-			"Uses local OmniParser (YOLO) + accessibility + on-screen text recognition (main model's vision when it supports images, local OCR otherwise). Does NOT return screenshots/base64 — " +
-			"safe for text-only models. Returns eN elements; click with computer_click ref=eN. " +
-			"Defaults to primary monitor (screen_index=0). Use screen_index=-1 only when you need all monitors stitched.",
+		Description: "Observe the desktop for Computer Use. " +
+			"If the chat model supports vision, a screenshot is attached — look at the image and click x,y. " +
+			"If the model is text-only, local OmniParser (YOLO) + OCR + accessibility return eN element refs (no image). " +
+			"Defaults to a crop of the focused window (or window= title). Pass screen_index=0 for the primary monitor, or screen_index=-1 for all monitors stitched.",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"computer", "gui", "desktop", "observe", "omniparser"},
 		Priority: 8,
 		Status:   RegToolAvailable,
 		InputSchema: map[string]interface{}{
-			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring to bias a11y tree"},
+			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring; omitted crops the foreground window"},
 			"screen_index": map[string]interface{}{
 				"type":        "integer",
-				"description": "Monitor index: 0=primary (default), 1=second, …; -1=all monitors stitched (slow, OCR may degrade on huge desktops)",
+				"description": "When set, capture that monitor instead of the focused window: 0=primary, 1=second, …; -1=all monitors stitched (slow, OCR may degrade on huge desktops)",
 			},
 		},
 		Source: "builtin:computer_use",
@@ -176,9 +244,8 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	// --- computer_click ---
 	registry.Register(RegisteredTool{
 		Name: "computer_click",
-		Description: "Click a desktop UI element. Prefer ref=eN from computer_observe. " +
-			"button=left|right (default left), count=1|2 (2=double-click). " +
-			"Raw x,y only if session allows pixel click (disabled by default for text models).",
+		Description: "Click a desktop UI element. After computer_observe: vision models pass x,y in screenshot pixels; " +
+			"text-only models pass ref=eN. button=left|right (default left), count=1|2 (2=double-click).",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"computer", "gui", "desktop", "click"},
 		Priority: 8,
@@ -255,6 +322,61 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 		},
 	})
 
+	registry.Register(RegisteredTool{
+		Name:        "computer_select",
+		Description: "Select a list, tab, or tree item (UIA SelectionItem / AXPress). Prefer ref=eN from computer_observe.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"computer", "gui", "desktop", "select"},
+		Priority:    7,
+		Status:      RegToolAvailable,
+		Required:    []string{"ref"},
+		InputSchema: map[string]interface{}{
+			"ref": map[string]interface{}{"type": "string", "description": "Element ref from last computer_observe"},
+		},
+		Source: "builtin:computer_use",
+		Handler: func(args map[string]interface{}) string {
+			return cuHandleSelect(args)
+		},
+	})
+
+	registry.Register(RegisteredTool{
+		Name:        "computer_scroll_into_view",
+		Description: "Scroll a container so ref=eN is visible (UIA ScrollItem / AXScrollToVisible), then you can click it.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"computer", "gui", "desktop", "scroll"},
+		Priority:    7,
+		Status:      RegToolAvailable,
+		Required:    []string{"ref"},
+		InputSchema: map[string]interface{}{
+			"ref": map[string]interface{}{"type": "string", "description": "Element ref to reveal"},
+		},
+		Source: "builtin:computer_use",
+		Handler: func(args map[string]interface{}) string {
+			return cuHandleScrollIntoView(args)
+		},
+	})
+
+	registry.Register(RegisteredTool{
+		Name:        "computer_drag",
+		Description: "Drag from one on-screen point to another. Prefer from_ref/to_ref; pixel points only when vision/pixel click is allowed.",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"computer", "gui", "desktop", "drag"},
+		Priority:    6,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"from_ref": map[string]interface{}{"type": "string"},
+			"to_ref":   map[string]interface{}{"type": "string"},
+			"from_x":   map[string]interface{}{"type": "integer"},
+			"from_y":   map[string]interface{}{"type": "integer"},
+			"to_x":     map[string]interface{}{"type": "integer"},
+			"to_y":     map[string]interface{}{"type": "integer"},
+		},
+		Source: "builtin:computer_use",
+		Handler: func(args map[string]interface{}) string {
+			return cuHandleDrag(args)
+		},
+	})
+
 	// --- computer_wait ---
 	registry.Register(RegisteredTool{
 		Name:        "computer_wait",
@@ -309,29 +431,14 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 			if msg := cuGuardDisabled("computer_done"); msg != "" {
 				return msg
 			}
-			summary := guiStrArg(args, "summary", "done")
-			rt := globalComputerUse
-			rt.mu.Lock()
-			sess := rt.session
-			rt.mu.Unlock()
-			steps := 0
-			if sess != nil {
-				sess.RecordAction("done", summary, true, "", false)
-				if p := sess.Policy(); p != nil {
-					steps = p.StepCount()
-				}
-			}
-			// End sticky injection so the next unrelated chat does not keep CU tools.
-			clearComputerUseSessionActive()
-			emitComputerUseDoneControl(steps)
-			return fmt.Sprintf("computer_done: %s", summary)
+			return cuHandleDone(guiStrArg(args, "summary", "done"))
 		},
 	})
 
 	// --- computer_playbook (optional helper so agents can re-read rules) ---
 	registry.Register(RegisteredTool{
 		Name:        "computer_playbook",
-		Description: "Return Computer Use operating rules for text-only models.",
+		Description: "Return Computer Use operating rules for the active perception mode (vision screenshot vs text-primary OmniParser).",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"computer", "gui"},
 		Priority:    3,
@@ -342,7 +449,11 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 			if msg := cuGuardDisabled("computer_playbook"); msg != "" {
 				return msg
 			}
-			return computeruse.Playbook()
+			mode := cuSession().Config().Mode
+			if computerUseLLMSupportsVision() {
+				mode = computeruse.ObserveVisionAssist
+			}
+			return computeruse.PlaybookFor(mode)
 		},
 	})
 
@@ -360,7 +471,7 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 		Required: []string{"query"},
 		InputSchema: map[string]interface{}{
 			"query":  map[string]interface{}{"type": "string", "description": "Text to find on screen, e.g. a contact name"},
-			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring to bias a11y tree"},
+			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring; omitted uses the foreground window for a11y"},
 			"limit":  map[string]interface{}{"type": "integer", "description": "Max matches (default 10)"},
 		},
 		Source: "builtin:computer_use",
@@ -370,25 +481,23 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	})
 
 	log.Printf("[computer-use] tools registered (text-primary, OmniParser=%v OCR=available-on-demand)", yolo != nil)
-}
 
-func cuSession() *computeruse.Session {
-	globalComputerUse.mu.Lock()
-	defer globalComputerUse.mu.Unlock()
-	if globalComputerUse.session == nil {
-		globalComputerUse.session = computeruse.NewSession(computeruse.DefaultConfig())
+	// Catalog registration only: the computer-use family drives external
+	// desktop effects without a trusted receipt boundary, so no intent rule
+	// maps LabelComputerUse to this capability and managed routing stays
+	// disabled for it. Every computer_* entry is a complete user-facing entry
+	// point (there is no merged dispatcher), so each one declares the shared
+	// outcome contract.
+	for _, name := range []string{
+		"computer_observe", "computer_click", "computer_type", "computer_key",
+		"computer_scroll", "computer_select", "computer_scroll_into_view",
+		"computer_drag", "computer_wait", "computer_focus", "computer_done",
+		"computer_playbook", "computer_find",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityComputerControlDesktop, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectExternalEffect})
 	}
-	// Attribute elements to their owning window at observe time (click policy).
-	globalComputerUse.session.SetWindowResolver(accessibility.WindowTitleAtPoint)
-	// Re-apply the target-app allowlist on every access so config changes take
-	// effect without restarting the session. A config read error keeps the
-	// previous allowlist (fail-closed).
-	if computerUseTargetAppsFn != nil {
-		if apps, ok := computerUseTargetAppsFn(); ok {
-			globalComputerUse.session.SetTargetApps(apps)
-		}
-	}
-	return globalComputerUse.session
 }
 
 // cuGuardDisabled returns a user-facing message when Computer Use is disabled
@@ -409,19 +518,29 @@ func cuPolicyWindowTitle(x, y int) string {
 	return accessibility.ForegroundWindowTitle()
 }
 
-func cuHandleObserve(args map[string]interface{}) string {
+// cuObserveResult returns the observation text together with whether the
+// observation actually succeeded.
+//
+// cuHandleObserve flattens the two into one string because the legacy tool
+// surface has nowhere to carry the flag, which leaves a failed observation
+// indistinguishable from a successful one. A caller that can report a failure
+// must not have to read the prose to discover there was one.
+func cuObserveResult(args map[string]interface{}) (string, bool) {
 	if msg := cuGuardDisabled("computer_observe"); msg != "" {
-		return msg
+		return msg, false
 	}
-	// Default to primary monitor. Full multi-monitor stitch (-1) is explicit only —
-	// huge virtual desktops crash/degrade OCR and leave all YOLO labels empty.
-	screenIdx := guiIntArg(args, "screen_index", 0)
+	// Default: crop the focused window. An explicit screen_index captures that
+	// monitor (or -1 = all monitors). Huge virtual desktops degrade OCR.
+	screenIdx, screenSet := guiIntArgPresent(args, "screen_index", 0)
 	windowHint := guiStrArg(args, "window", "")
-	res := computerUseObserve(screenIdx, windowHint, true)
-	if !res.OK {
-		return res.Message
-	}
-	return res.Message
+	cropFocused := !screenSet && screenIdx >= 0
+	res := computerUseObserve(screenIdx, windowHint, true, cropFocused)
+	return res.Message, res.OK
+}
+
+func cuHandleObserve(args map[string]interface{}) string {
+	text, _ := cuObserveResult(args)
+	return text
 }
 
 // cuHandleFind searches element labels and raw OCR lines for the query,
@@ -436,6 +555,10 @@ func cuHandleFind(args map[string]interface{}) string {
 	if strings.TrimSpace(query) == "" {
 		return "computer_find: query is required"
 	}
+	if computerUseLLMSupportsVision() {
+		return "computer_find: the chat model can see the screenshot from computer_observe. " +
+			"Look at that image and computer_click x,y; do not use OmniParser/OCR find."
+	}
 	windowHint := guiStrArg(args, "window", "")
 	limit := guiIntArg(args, "limit", 10)
 
@@ -446,7 +569,7 @@ func cuHandleFind(args map[string]interface{}) string {
 	obs := sess.LastObserve()
 	tookObserve := false
 	if obs == nil || windowHint != "" || !sess.RefsValid() || time.Since(obs.ObservedAt) > 2*time.Second {
-		res := computerUseObserve(0, windowHint, true)
+		res := computerUseObserve(0, windowHint, true, true)
 		if !res.OK {
 			return res.Message
 		}
@@ -515,6 +638,7 @@ type computerUseObserveResult struct {
 	ScreenshotOK bool
 	Width        int
 	Height       int
+	CaptionCount int
 	// TimingMs is per-stage latency for operator UI / diagnostics.
 	TimingMs map[string]int64
 	TotalMs  int64
@@ -522,7 +646,14 @@ type computerUseObserveResult struct {
 
 // computerUseObserve runs screenshot → YOLO/a11y/OCR → SoM commit.
 // withOCR enables OCR (slower); smoke checks may set it false.
-func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computerUseObserveResult {
+// cropFocused captures the focused (or window=) window instead of a full monitor.
+func computerUseObserve(screenIdx int, windowHint string, withOCR, cropFocused bool) computerUseObserveResult {
+	return computerUseObserveCaption(screenIdx, windowHint, withOCR, cropFocused, true)
+}
+
+// computerUseObserveCaption is the observe implementation. Diagnostics/E2E
+// pass caption=false so unlabeled-box HTTP does not inflate self-check time.
+func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFocused, caption bool) computerUseObserveResult {
 	rt := globalComputerUse
 	out := computerUseObserveResult{
 		TimingMs: map[string]int64{},
@@ -530,7 +661,7 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	totalStart := time.Now()
 
 	t0 := time.Now()
-	pngB64, err := captureDesktopScreenshot(screenIdx)
+	cap, err := captureComputerUseScreen(screenIdx, windowHint, cropFocused)
 	out.TimingMs["screenshot"] = time.Since(t0).Milliseconds()
 	if err != nil {
 		guide, action := cuScreenshotFailureGuidance(err)
@@ -554,22 +685,32 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 		emitComputerUseEvent(EventComputerUseObserve, payload)
 		return out
 	}
+	pngB64 := cap.PNG
+	meta := cap.Meta
 	out.ScreenshotOK = true
-	if w, h, ok := decodeImageSizeB64(pngB64); ok {
-		out.Width, out.Height = w, h
+	out.Width, out.Height = cap.Width, cap.Height
+	if out.Width == 0 || out.Height == 0 {
+		if w, h, ok := decodeImageSizeB64(pngB64); ok {
+			out.Width, out.Height = w, h
+			if meta.Width == 0 {
+				meta.Width = w
+			}
+			if meta.Height == 0 {
+				meta.Height = h
+			}
+		}
 	}
 	if screenIdx < 0 && int64(out.Width)*int64(out.Height) > 8_000_000 {
 		log.Printf("[computer-use] large stitched capture %dx%d (screen_index=-1); prefer screen_index=0 for reliable OCR", out.Width, out.Height)
 	}
 
-	meta := computeruse.ScreenMeta{
-		ScaleFactor: 1.0,
-		ScreenIndex: screenIdx,
-		Width:       out.Width,
-		Height:      out.Height,
+	vision := computerUseLLMSupportsVision()
+	sess := cuSession()
+	sess.ApplyPerceptionMode(vision)
+	if !vision {
+		setPendingComputerUseModelImage("")
 	}
 
-	var elements []taskengine.UIElement
 	rt.mu.Lock()
 	yolo := rt.yolo
 	ocr := rt.ocr
@@ -577,15 +718,16 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	rt.mu.Unlock()
 
 	yoloN, a11yN := 0, 0
-	useYOLO := yolo != nil && yolo.IsAvailable()
+	useYOLO := !vision && yolo != nil && yolo.IsAvailable()
 	if useYOLO && !computerUseYOLOAllowed() {
 		useYOLO = false
 	}
 	tYolo := time.Now()
+	var yoloEls []taskengine.UIElement
 	if useYOLO {
 		if dets, err := yolo.Parse(pngB64); err == nil {
 			yoloN = len(dets)
-			elements = append(elements, dets...)
+			yoloEls = dets
 		} else {
 			log.Printf("[computer-use] YOLO parse: %v", err)
 		}
@@ -593,29 +735,40 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	out.TimingMs["yolo"] = time.Since(tYolo).Milliseconds()
 
 	var windows []string
+	var a11yEls []taskengine.UIElement
 	tA11y := time.Now()
 	if bridge != nil {
-		if windowHint != "" {
-			if tree, err := bridge.EnumElements(windowHint); err == nil {
-				before := len(elements)
-				flattenA11y(&elements, tree, 0, 3)
-				a11yN = len(elements) - before
-			}
-		} else {
-			if tops, err := bridge.EnumElements(""); err == nil {
-				for _, el := range tops {
-					if el.Name != "" {
-						windows = append(windows, el.Name)
-					}
+		if tops, err := bridge.EnumElements(""); err == nil {
+			for _, el := range tops {
+				if el.Name != "" {
+					windows = append(windows, el.Name)
 				}
+			}
+		}
+		hint := strings.TrimSpace(windowHint)
+		if hint == "" {
+			hint = accessibility.ForegroundWindowTitle()
+		}
+		if hint != "" {
+			if tree, err := bridge.EnumElements(hint); err == nil {
+				flattenA11y(&a11yEls, tree, 0, 5, meta)
+				a11yN = len(a11yEls)
 			}
 		}
 	}
 	out.TimingMs["a11y"] = time.Since(tA11y).Milliseconds()
 
+	elements, _ := guiautomation.NewCompositeScreenParser(
+		&guiautomation.StaticScreenParser{Els: yoloEls},
+		&guiautomation.StaticScreenParser{Els: a11yEls},
+	).Parse(pngB64)
+	if elements == nil {
+		elements = []taskengine.UIElement{}
+	}
+
 	var ocrResults []taskengine.OCRResult
 	tOCR := time.Now()
-	if withOCR && ocr != nil {
+	if !vision && withOCR && ocr != nil {
 		// Always attempt Recognize: IsAvailable is advisory (install-on-demand).
 		res, ocrErr := ocr.Recognize(pngB64)
 		if ocrErr != nil {
@@ -629,9 +782,30 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	out.TimingMs["ocr"] = time.Since(tOCR).Milliseconds()
 
 	tCommit := time.Now()
-	sess := cuSession()
 	obs := sess.CommitObserve(meta, windows, elements, ocrResults, pngB64)
 	out.TimingMs["commit"] = time.Since(tCommit).Milliseconds()
+	if vision {
+		annotated := annotateSoMOverlay(pngB64, obs.Elements)
+		modelPNG, vw, vh := prepareVisionScreenshot(annotated)
+		meta.VisionWidth = vw
+		meta.VisionHeight = vh
+		obs.Meta.VisionWidth = vw
+		obs.Meta.VisionHeight = vh
+		obs.TextForModel = computeruse.RenderVisionObserve(obs)
+		setPendingComputerUseModelImage(modelPNG)
+	} else if caption {
+		tCap := time.Now()
+		working := append([]computeruse.MarkedElement(nil), obs.Elements...)
+		captionN := applyComputerUseCaptions(pngB64, working)
+		out.TimingMs["caption"] = time.Since(tCap).Milliseconds()
+		if captionN > 0 {
+			sess.ReplaceLastElements(working)
+			if last := sess.LastObserve(); last != nil {
+				obs = last
+			}
+		}
+		out.CaptionCount = captionN
+	}
 	markComputerUseSessionActive()
 	clearComputerUseError()
 
@@ -660,6 +834,8 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 		"ocr_count":     len(ocrResults),
 		"ocr_failed":    out.OCRFailed,
 		"ocr_error":     out.OCRError,
+		"caption_count": out.CaptionCount,
+		"perception":    obs.Mode,
 		"timing_ms":     out.TimingMs,
 		"total_ms":      out.TotalMs,
 	}
@@ -759,9 +935,18 @@ func emitComputerUseActionUI(action, detail string, ok bool, errMsg string) {
 	})
 }
 
-// cuPostActionSettle gives the UI a brief moment to update before the next observe.
+// cuPostActionSettle waits for the UI to settle after an action.
+// Windows and macOS poll a short visual idle wait (native capture is cheap).
+// Linux sleeps briefly — X11 screenshots are too slow to poll after every click.
 func cuPostActionSettle() {
-	time.Sleep(180 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond)
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		return
+	}
+	obs := guiautomation.NewGUIStateObserver(nil, nil, func() (string, error) {
+		return captureSettleScreenshot()
+	}, nil)
+	_ = obs.WaitForIdle(300*time.Millisecond, 80*time.Millisecond)
 }
 
 func cuHandleFocus(args map[string]interface{}) string {
@@ -790,32 +975,171 @@ func cuHandleFocus(args map[string]interface{}) string {
 	return fmt.Sprintf("focused window matching %q — call computer_observe again", window)
 }
 
-func flattenA11y(dst *[]taskengine.UIElement, nodes []accessibility.Element, depth, maxDepth int) {
+func flattenA11y(dst *[]taskengine.UIElement, nodes []accessibility.Element, depth, maxDepth int, meta computeruse.ScreenMeta) {
 	if depth >= maxDepth {
 		return
 	}
 	for _, n := range nodes {
-		interact := n.Role == "button" || n.Role == "Button" ||
-			strings.Contains(strings.ToLower(n.Role), "edit") ||
-			strings.Contains(strings.ToLower(n.Role), "menu") ||
-			strings.Contains(strings.ToLower(n.Role), "link") ||
-			strings.Contains(strings.ToLower(n.Role), "check") ||
-			strings.Contains(strings.ToLower(n.Role), "tab") ||
-			n.Role == "ListItem"
+		interact := a11yRoleInteractable(n.Role)
 		if n.Name != "" || n.Value != "" || interact {
+			x, y := computeruse.MapScreenToCapture(meta, n.Bounds.X, n.Bounds.Y)
+			w, h := computeruse.ScaleSize(meta, n.Bounds.Width, n.Bounds.Height)
 			*dst = append(*dst, taskengine.UIElement{
 				Type:         n.Role,
 				Name:         n.Name,
 				Value:        n.Value,
-				BBox:         [4]int{n.Bounds.X, n.Bounds.Y, n.Bounds.Width, n.Bounds.Height},
+				BBox:         [4]int{x, y, w, h},
 				Interactable: interact || n.Name != "",
 				Confidence:   1.0,
 				Source:       "accessibility",
+				Handle:       n.AutomationID,
+				Patterns:     append([]string(nil), n.Patterns...),
 			})
 		}
 		if len(n.Children) > 0 {
-			flattenA11y(dst, n.Children, depth+1, maxDepth)
+			flattenA11y(dst, n.Children, depth+1, maxDepth, meta)
 		}
+	}
+}
+
+func a11yRoleInteractable(role string) bool {
+	r := strings.ToLower(role)
+	switch {
+	case strings.Contains(r, "button"),
+		strings.Contains(r, "edit"),
+		strings.Contains(r, "menu"),
+		strings.Contains(r, "link"),
+		strings.Contains(r, "check"),
+		strings.Contains(r, "tab"),
+		strings.Contains(r, "listitem"),
+		strings.Contains(r, "treeitem"),
+		strings.Contains(r, "combo"),
+		strings.Contains(r, "radio"),
+		strings.Contains(r, "hyperlink"),
+		strings.Contains(r, "slider"),
+		strings.Contains(r, "spinner"),
+		strings.Contains(r, "document"),
+		r == "textfield",
+		r == "edit":
+		return true
+	default:
+		return false
+	}
+}
+
+func screenMetaFromCapture(screenIdx, imageW, imageH int) computeruse.ScreenMeta {
+	meta := computeruse.ScreenMeta{
+		ScaleFactor: 1.0,
+		ScreenIndex: screenIdx,
+		Width:       imageW,
+		Height:      imageH,
+	}
+	displays, err := remote.EnumDisplays()
+	if err != nil || len(displays) == 0 {
+		return meta
+	}
+	if screenIdx >= 0 && screenIdx < len(displays) {
+		d := displays[screenIdx]
+		if screenshotMatchesDisplay(imageW, imageH, d.Width, d.Height) {
+			computeruse.ApplyDisplayGeometry(&meta, d.X, d.Y, d.Width, d.Height, imageW, imageH)
+			return meta
+		}
+	}
+	minX, minY := displays[0].X, displays[0].Y
+	maxX, maxY := displays[0].X+displays[0].Width, displays[0].Y+displays[0].Height
+	for _, d := range displays[1:] {
+		if d.X < minX {
+			minX = d.X
+		}
+		if d.Y < minY {
+			minY = d.Y
+		}
+		if d.X+d.Width > maxX {
+			maxX = d.X + d.Width
+		}
+		if d.Y+d.Height > maxY {
+			maxY = d.Y + d.Height
+		}
+	}
+	computeruse.ApplyDisplayGeometry(&meta, minX, minY, maxX-minX, maxY-minY, imageW, imageH)
+	return meta
+}
+
+func screenshotMatchesDisplay(imageW, imageH, logicalW, logicalH int) bool {
+	if imageW <= 0 || imageH <= 0 || logicalW <= 0 || logicalH <= 0 {
+		return false
+	}
+	for _, s := range []int{1, 2} {
+		if absInt(imageW-logicalW*s) <= 8 && absInt(imageH-logicalH*s) <= 8 {
+			return true
+		}
+	}
+	return false
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func cuTrySemanticClick(mark *computeruse.MarkedElement, screenX, screenY int) bool {
+	if mark == nil || !cuMarkSemantic(mark) {
+		return false
+	}
+	rt := globalComputerUse
+	rt.mu.Lock()
+	bridge := rt.bridge
+	rt.mu.Unlock()
+	if bridge == nil {
+		return false
+	}
+	el := cuMarkToA11y(mark, screenX, screenY)
+	return bridge.ClickElement(el) == nil
+}
+
+func cuTrySemanticType(mark *computeruse.MarkedElement, screenX, screenY int, text string) bool {
+	if mark == nil || !cuMarkSemantic(mark) {
+		return false
+	}
+	rt := globalComputerUse
+	rt.mu.Lock()
+	bridge := rt.bridge
+	rt.mu.Unlock()
+	if bridge == nil {
+		return false
+	}
+	el := cuMarkToA11y(mark, screenX, screenY)
+	return bridge.TypeInElement(el, text) == nil
+}
+
+func cuMarkSemantic(mark *computeruse.MarkedElement) bool {
+	if mark.Source == "accessibility" || mark.Handle != "" {
+		return true
+	}
+	for _, p := range mark.Patterns {
+		switch strings.ToLower(p) {
+		case "invoke", "value", "toggle", "select", "expand":
+			return true
+		}
+	}
+	return false
+}
+
+func cuMarkToA11y(mark *computeruse.MarkedElement, screenX, screenY int) *accessibility.Element {
+	return &accessibility.Element{
+		Role:         mark.Type,
+		Name:         mark.Name,
+		Value:        mark.Value,
+		AutomationID: mark.Handle,
+		Patterns:     append([]string(nil), mark.Patterns...),
+		Bounds: accessibility.Rect{
+			X:      screenX,
+			Y:      screenY,
+			Width:  0,
+			Height: 0,
+		},
 	}
 }
 
@@ -831,6 +1155,9 @@ func cuHandleClick(args map[string]interface{}) string {
 		return "computer_click: input simulator unavailable"
 	}
 	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_click: " + msg
+	}
 	ref := guiStrArg(args, "ref", "")
 	button := strings.ToLower(strings.TrimSpace(guiStrArg(args, "button", "left")))
 	if button == "" {
@@ -846,12 +1173,14 @@ func cuHandleClick(args map[string]interface{}) string {
 	var x, y int
 	var detail string
 	var policyTitle string
+	var mark *computeruse.MarkedElement
 	if ref != "" {
 		cx, cy, el, err := sess.ResolveClickRef(ref)
 		if err != nil {
 			return fmt.Sprintf("computer_click: %v", err)
 		}
 		x, y = cx, cy
+		mark = el
 		// Prefer the element's owning-window attribution from observe time.
 		policyTitle = el.Window
 		detail = fmt.Sprintf("ref=%s name=%q at (%d,%d) button=%s count=%d", el.Ref, el.Name, x, y, button, count)
@@ -861,6 +1190,8 @@ func cuHandleClick(args map[string]interface{}) string {
 		}
 		x = guiIntArg(args, "x", 0)
 		y = guiIntArg(args, "y", 0)
+		x, y = sess.MapVisionClick(x, y)
+		x, y = sess.MapCaptureClick(x, y)
 		detail = fmt.Sprintf("pixel (%d,%d) button=%s count=%d", x, y, button, count)
 	}
 	if policyTitle == "" {
@@ -877,24 +1208,29 @@ func cuHandleClick(args map[string]interface{}) string {
 		return fmt.Sprintf("computer_click: %v", err)
 	}
 	var err error
+	strategy := "pixel"
 	switch {
 	case button == "right":
 		err = input.RightClick(x, y)
 	case count >= 2:
 		err = input.DoubleClick(x, y)
 	default:
-		err = input.Click(x, y)
+		if mark != nil && cuTrySemanticClick(mark, x, y) {
+			strategy = "a11y"
+		} else {
+			err = input.Click(x, y)
+		}
 	}
 	if err != nil {
 		sess.RecordAction("click", detail, false, err.Error(), false)
 		emitComputerUseActionUI("click", detail, false, err.Error())
 		return fmt.Sprintf("computer_click failed: %v", err)
 	}
-	sess.RecordAction("click", detail, true, "", true)
+	sess.RecordAction("click", detail+" via "+strategy, true, "", true)
 	markComputerUseSessionActive()
-	emitComputerUseActionUI("click", detail, true, "")
+	emitComputerUseActionUI("click", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("clicked %s — call computer_observe again (refs are now stale)", detail)
+	return fmt.Sprintf("clicked %s via %s — call computer_observe again (refs are now stale)", detail, strategy)
 }
 
 func cuHandleType(args map[string]interface{}) string {
@@ -913,6 +1249,9 @@ func cuHandleType(args map[string]interface{}) string {
 		return "computer_type: missing text"
 	}
 	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_type: " + msg
+	}
 	ref := guiStrArg(args, "ref", "")
 	detail := fmt.Sprintf("chars=%d", len([]rune(text)))
 	// Typing sends keystrokes to whatever window is foreground — gate it with
@@ -926,6 +1265,7 @@ func cuHandleType(args map[string]interface{}) string {
 	if err := sess.BeginAction("type", detail); err != nil {
 		return fmt.Sprintf("computer_type: %v", err)
 	}
+	strategy := "pixel"
 	if ref != "" {
 		x, y, el, err := sess.ResolveClickRef(ref)
 		if err != nil {
@@ -944,28 +1284,34 @@ func cuHandleType(args map[string]interface{}) string {
 			emitComputerUseActionUI("type", detail, false, err.Error())
 			return fmt.Sprintf("computer_type blocked: %v", err)
 		}
-		if err := input.Click(x, y); err != nil {
-			sess.RecordAction("type", detail, false, err.Error(), false)
-			return fmt.Sprintf("computer_type focus click failed: %v", err)
+		if cuTrySemanticType(el, x, y, text) {
+			strategy = "a11y"
+		} else {
+			if err := input.Click(x, y); err != nil {
+				sess.RecordAction("type", detail, false, err.Error(), false)
+				return fmt.Sprintf("computer_type focus click failed: %v", err)
+			}
+			time.Sleep(80 * time.Millisecond)
+			// Re-check: the focus click may have foregrounded a blocked window.
+			if err := sess.CheckClickPolicy(x, y, cuPolicyWindowTitle(x, y)); err != nil {
+				sess.RecordAction("type", detail, false, err.Error(), false)
+				emitComputerUseActionUI("type", detail, false, err.Error())
+				return fmt.Sprintf("computer_type blocked: %v", err)
+			}
 		}
-		time.Sleep(80 * time.Millisecond)
-		// Re-check: the focus click may have foregrounded a blocked window.
-		if err := sess.CheckClickPolicy(x, y, cuPolicyWindowTitle(x, y)); err != nil {
+	}
+	if strategy != "a11y" {
+		if err := input.Type(text); err != nil {
 			sess.RecordAction("type", detail, false, err.Error(), false)
 			emitComputerUseActionUI("type", detail, false, err.Error())
-			return fmt.Sprintf("computer_type blocked: %v", err)
+			return fmt.Sprintf("computer_type failed: %v", err)
 		}
 	}
-	if err := input.Type(text); err != nil {
-		sess.RecordAction("type", detail, false, err.Error(), false)
-		emitComputerUseActionUI("type", detail, false, err.Error())
-		return fmt.Sprintf("computer_type failed: %v", err)
-	}
-	sess.RecordAction("type", detail, true, "", true)
+	sess.RecordAction("type", detail+" via "+strategy, true, "", true)
 	markComputerUseSessionActive()
-	emitComputerUseActionUI("type", detail, true, "")
+	emitComputerUseActionUI("type", detail+" via "+strategy, true, "")
 	cuPostActionSettle()
-	return fmt.Sprintf("typed %s — call computer_observe again", detail)
+	return fmt.Sprintf("typed %s via %s — call computer_observe again", detail, strategy)
 }
 
 func cuHandleKey(args map[string]interface{}) string {
@@ -985,6 +1331,9 @@ func cuHandleKey(args map[string]interface{}) string {
 	}
 	keys := splitKeyCombo(raw)
 	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_key: " + msg
+	}
 	detail := strings.Join(keys, "+")
 	// Keys go to the foreground window (enter/space can confirm dialogs) — gate
 	// with the same blocked-window/target-app policy as clicks. Policy before
@@ -1035,6 +1384,9 @@ func cuHandleScroll(args map[string]interface{}) string {
 		return "computer_scroll: input simulator unavailable"
 	}
 	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_scroll: " + msg
+	}
 	dx := guiIntArg(args, "delta_x", 0)
 	dy := guiIntArg(args, "delta_y", 0)
 	if dx == 0 && dy == 0 {
@@ -1051,11 +1403,14 @@ func cuHandleScroll(args map[string]interface{}) string {
 	} else if sess.AllowPixelClick() {
 		x = guiIntArg(args, "x", 0)
 		y = guiIntArg(args, "y", 0)
+		x, y = sess.MapVisionClick(x, y)
+		x, y = sess.MapCaptureClick(x, y)
 	} else {
 		// Default to screen center of last observe meta if available.
 		if last := sess.LastObserve(); last != nil && last.Meta.Width > 0 {
 			x = last.Meta.Width / 2
 			y = last.Meta.Height / 2
+			x, y = sess.MapCaptureClick(x, y)
 		} else {
 			return "computer_scroll: provide ref=eN from computer_observe (or enable pixel click)"
 		}
@@ -1074,6 +1429,144 @@ func cuHandleScroll(args map[string]interface{}) string {
 	emitComputerUseActionUI("scroll", detail, true, "")
 	cuPostActionSettle()
 	return fmt.Sprintf("scrolled %s — call computer_observe again", detail)
+}
+
+func cuHandleSelect(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_select"); msg != "" {
+		return msg
+	}
+	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_select: " + msg
+	}
+	ref := guiStrArg(args, "ref", "")
+	if ref == "" {
+		return "computer_select: missing ref"
+	}
+	x, y, mark, err := sess.ResolveClickRef(ref)
+	if err != nil {
+		return fmt.Sprintf("computer_select: %v", err)
+	}
+	detail := fmt.Sprintf("ref=%s name=%q", mark.Ref, mark.Name)
+	if err := sess.CheckClickPolicy(x, y, cuPolicyWindowTitle(x, y)); err != nil {
+		return fmt.Sprintf("computer_select blocked: %v", err)
+	}
+	if err := sess.BeginAction("select", detail); err != nil {
+		return fmt.Sprintf("computer_select: %v", err)
+	}
+	rt := globalComputerUse
+	rt.mu.Lock()
+	bridge := rt.bridge
+	input := rt.input
+	rt.mu.Unlock()
+	strategy := "pixel"
+	if bridge != nil && bridge.SelectElement(cuMarkToA11y(mark, x, y)) == nil {
+		strategy = "a11y"
+	} else if input != nil {
+		if err := input.Click(x, y); err != nil {
+			sess.RecordAction("select", detail, false, err.Error(), false)
+			return fmt.Sprintf("computer_select failed: %v", err)
+		}
+	} else {
+		sess.RecordAction("select", detail, false, "no actuator", false)
+		return "computer_select: input simulator unavailable"
+	}
+	sess.RecordAction("select", detail+" via "+strategy, true, "", true)
+	markComputerUseSessionActive()
+	emitComputerUseActionUI("select", detail+" via "+strategy, true, "")
+	cuPostActionSettle()
+	return fmt.Sprintf("selected %s via %s — call computer_observe again", detail, strategy)
+}
+
+func cuHandleScrollIntoView(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_scroll_into_view"); msg != "" {
+		return msg
+	}
+	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_scroll_into_view: " + msg
+	}
+	ref := guiStrArg(args, "ref", "")
+	if ref == "" {
+		return "computer_scroll_into_view: missing ref"
+	}
+	x, y, mark, err := sess.ResolveClickRef(ref)
+	if err != nil {
+		return fmt.Sprintf("computer_scroll_into_view: %v", err)
+	}
+	detail := fmt.Sprintf("ref=%s name=%q", mark.Ref, mark.Name)
+	if err := sess.BeginAction("scroll_into_view", detail); err != nil {
+		return fmt.Sprintf("computer_scroll_into_view: %v", err)
+	}
+	rt := globalComputerUse
+	rt.mu.Lock()
+	bridge := rt.bridge
+	rt.mu.Unlock()
+	if bridge == nil || bridge.ScrollElementIntoView(cuMarkToA11y(mark, x, y)) != nil {
+		sess.RecordAction("scroll_into_view", detail, false, "a11y scroll_into_view unavailable", false)
+		return "computer_scroll_into_view: accessibility scroll failed — try computer_scroll then re-observe"
+	}
+	sess.RecordAction("scroll_into_view", detail+" via a11y", true, "", true)
+	markComputerUseSessionActive()
+	emitComputerUseActionUI("scroll_into_view", detail, true, "")
+	cuPostActionSettle()
+	return fmt.Sprintf("scrolled %s into view — call computer_observe again", detail)
+}
+
+func cuHandleDrag(args map[string]interface{}) string {
+	if msg := cuGuardDisabled("computer_drag"); msg != "" {
+		return msg
+	}
+	rt := globalComputerUse
+	rt.mu.Lock()
+	input := rt.input
+	rt.mu.Unlock()
+	if input == nil {
+		return "computer_drag: input simulator unavailable"
+	}
+	sess := cuSession()
+	if msg := cuRequireSameWindow(sess); msg != "" {
+		return "computer_drag: " + msg
+	}
+	fromX, fromY, err := cuResolveDragPoint(sess, args, "from_ref", "from_x", "from_y")
+	if err != nil {
+		return "computer_drag: " + err.Error()
+	}
+	toX, toY, err := cuResolveDragPoint(sess, args, "to_ref", "to_x", "to_y")
+	if err != nil {
+		return "computer_drag: " + err.Error()
+	}
+	detail := fmt.Sprintf("(%d,%d)->(%d,%d)", fromX, fromY, toX, toY)
+	if err := sess.CheckClickPolicy(fromX, fromY, cuPolicyWindowTitle(fromX, fromY)); err != nil {
+		return fmt.Sprintf("computer_drag blocked: %v", err)
+	}
+	if err := sess.BeginAction("drag", detail); err != nil {
+		return fmt.Sprintf("computer_drag: %v", err)
+	}
+	if err := input.DragDrop(fromX, fromY, toX, toY); err != nil {
+		sess.RecordAction("drag", detail, false, err.Error(), false)
+		return fmt.Sprintf("computer_drag failed: %v", err)
+	}
+	sess.RecordAction("drag", detail, true, "", true)
+	markComputerUseSessionActive()
+	emitComputerUseActionUI("drag", detail, true, "")
+	cuPostActionSettle()
+	return fmt.Sprintf("dragged %s — call computer_observe again", detail)
+}
+
+func cuResolveDragPoint(sess *computeruse.Session, args map[string]interface{}, refKey, xKey, yKey string) (int, int, error) {
+	if ref := guiStrArg(args, refKey, ""); ref != "" {
+		x, y, _, err := sess.ResolveClickRef(ref)
+		return x, y, err
+	}
+	if !sess.AllowPixelClick() {
+		return 0, 0, fmt.Errorf("provide %s (or enable pixel click for %s/%s)", refKey, xKey, yKey)
+	}
+	x := guiIntArg(args, xKey, 0)
+	y := guiIntArg(args, yKey, 0)
+	x, y = sess.MapVisionClick(x, y)
+	x, y = sess.MapCaptureClick(x, y)
+	return x, y, nil
 }
 
 func cuHandleWait(args map[string]interface{}) string {

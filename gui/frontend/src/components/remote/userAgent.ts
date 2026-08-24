@@ -5,6 +5,7 @@ export const KNOWN_USER_AGENTS = [
     "Claude Code",
     "Cline",
     "OpenCode",
+    "Codex",
     "Roo Code",
     "Kilo Code",
     "Cursor",
@@ -18,7 +19,17 @@ const LEGACY_KNOWN_USER_AGENTS = ["opencode", "claude-code/2.0.0"] as const;
 
 export const defaultAgentTypeForProvider = (provider?: LLMProvider | null) => {
     if (provider?.name === "CodeGen" && provider?.auth_type === "sso") return "tigerclaw";
-    return "openclaw";
+    if (provider?.name === "OpenCode") return "OpenCode";
+    switch ((provider?.import_source || "").trim()) {
+        case "codex":
+            return "Codex";
+        case "claude_code":
+            return "Claude Code";
+        case "opencode":
+            return "OpenCode";
+        default:
+            return "openclaw";
+    }
 };
 
 export const effectiveAgentType = (provider?: LLMProvider | null) => {

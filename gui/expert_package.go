@@ -595,6 +595,9 @@ func validateImportedExpertDefinition(def ExpertDefinition) error {
 	if builtinExpertByID(strings.TrimSpace(def.ID)) != nil || def.Builtin {
 		return fmt.Errorf("package must contain a user-created expert")
 	}
+	if err := validateExpertCapabilityRules(def.CapabilityRules); err != nil {
+		return err
+	}
 	return nil
 }
 

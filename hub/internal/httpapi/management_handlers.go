@@ -1095,7 +1095,7 @@ func UpdateUserSmartRouteHandler(users store.UserRepository) http.HandlerFunc {
 // GetSmartRouteAllHandler returns the global smart_route_all toggle.
 func GetSmartRouteAllHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
+		system := scopedSystemSettingsForRequest(r, system)
 		raw, _ := system.Get(r.Context(), smartRouteAllKey)
 		enabled := raw == "true"
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
@@ -1105,7 +1105,7 @@ func GetSmartRouteAllHandler(system store.SystemSettingsRepository) http.Handler
 // UpdateSmartRouteAllHandler sets the global smart_route_all toggle.
 func UpdateSmartRouteAllHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
+		system := scopedSystemSettingsForRequest(r, system)
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}

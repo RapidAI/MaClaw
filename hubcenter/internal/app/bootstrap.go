@@ -200,6 +200,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		PendingDir:     pendingDir,
 		DataDir:        dataDir,
 		PetStoreMailer: mailer,
+		HubVerifier:    hubService,
 	}
 	if haSvc != nil {
 		// Assign only a live recorder: a typed-nil *ha.Service stored in the
@@ -263,7 +264,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	} else {
 		nodeID = "single"
 	}
-	if _, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc); err != nil {
+	if _, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc, dataDir); err != nil {
 		return nil, fmt.Errorf("initialize LLM module: %w", err)
 	}
 	if haSvc != nil {

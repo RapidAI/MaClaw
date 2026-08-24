@@ -118,7 +118,7 @@ func makeSummarizeCallback(cfg corelib.MaclawLLMConfig, httpClient *http.Client)
 		}
 
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-compress"})
-		resp, err := doSimpleLLMRequest(ctx, cfg, messages, httpClient, 30*time.Second)
+		resp, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), messages, httpClient, 30*time.Second)
 		if err != nil {
 			return "", err
 		}

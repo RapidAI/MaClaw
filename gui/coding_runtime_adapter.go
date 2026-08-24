@@ -95,22 +95,20 @@ func (a *guiRemoteCodingRuntimeAdapter) Execute(ctx context.Context, request cod
 		// acceptance-command facts. Persist only the derived digest, paired with
 		// an explicit evidence type, so corelib can accept an unchanged remote
 		// workspace without trusting the model's summary prose.
-		noChangeDigest = codingRuntimeDigest(result.Summary)
+		noChangeDigest = codingRuntimeDigest(result.ExplorationSummary + "\n" + result.VerificationSummary + "\n" + result.QualitySummary)
 		evidence = append(evidence, codingruntime.Evidence{Type: "verified_no_change", Digest: noChangeDigest})
 	}
 	return codingruntime.ExecutionResult{Status: status, SideEffectState: effects, ErrorCode: remoteCodingRuntimeErrorCode(result), ErrorSummary: result.Error, Evidence: evidence, NoWorkspaceChangeEvidenceDigest: noChangeDigest}
 }
 
 // verifiedGUIRemoteNoChangeResult accepts only the remote subagent's
-// quality-gated outcome. applyRemoteVerificationOutcome rejects ordinary
-// no-change completions unless its read/command/diff audit establishes a
-// verified existing result; the marker is deliberately textual but generated
-// by that host audit, not supplied by model completion prose.
+// quality-gated outcome. applyRemoteVerificationOutcome sets VerifiedNoChange
+// after read/command/diff audit establishes a verified existing result.
 func verifiedGUIRemoteNoChangeResult(result *RemoteCodingSubAgentResult) bool {
 	if result == nil {
 		return false
 	}
-	return strings.Contains(result.Summary, "[verified no-change acceptance]")
+	return result.VerifiedNoChange
 }
 
 func (a *guiCodingRuntimeAdapter) Execute(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ExecutionResult {
@@ -148,7 +146,8 @@ func (a *guiCodingRuntimeAdapter) Execute(ctx context.Context, request codingrun
 		if finalizeErr != nil {
 			result.Status = TaskExecSkipped
 			result.Error = compactSubAgentErrorSummary(finalizeErr.Error())
-			result.Summary = strings.TrimSpace(result.Summary + "\n\nFinal diff/merge gate failed: " + result.Error)
+			result.QualityStatus = codingSubAgentQualityFailed
+			result.QualitySummary = result.Error
 			return codingruntime.ExecutionResult{
 				Status: codingruntime.TaskBlocked, SideEffectState: codingruntime.SideEffectObserved,
 				ErrorCode: "final_diff_gate_failed", ErrorSummary: result.Error,

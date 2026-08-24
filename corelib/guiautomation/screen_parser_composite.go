@@ -16,6 +16,27 @@ func NewCompositeScreenParser(parsers ...taskengine.ScreenParser) *CompositeScre
 	return &CompositeScreenParser{parsers: parsers}
 }
 
+// StaticScreenParser returns a fixed element list. Used to fold a11y (or any
+// non-PNG parser) into CompositeScreenParser.
+type StaticScreenParser struct {
+	Els []taskengine.UIElement
+}
+
+func (s *StaticScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement, error) {
+	if s == nil {
+		return nil, nil
+	}
+	out := make([]taskengine.UIElement, len(s.Els))
+	copy(out, s.Els)
+	return out, nil
+}
+
+func (s *StaticScreenParser) IsAvailable() bool {
+	return s != nil
+}
+
+var _ taskengine.ScreenParser = (*StaticScreenParser)(nil)
+
 // Parse implements taskengine.ScreenParser.
 func (c *CompositeScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement, error) {
 	var all []taskengine.UIElement
@@ -29,7 +50,14 @@ func (c *CompositeScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement,
 		}
 		all = append(all, elements...)
 	}
-	return deduplicateByBBox(all), nil
+	return MergeUIElements(all), nil
+}
+
+// MergeUIElements merges overlapping detections from YOLO, OCR, and
+// accessibility by bounding-box IoU. Accessibility handles and values win
+// when two boxes cover the same control.
+func MergeUIElements(elements []taskengine.UIElement) []taskengine.UIElement {
+	return deduplicateByBBox(elements)
 }
 
 // IsAvailable implements taskengine.ScreenParser.
@@ -93,15 +121,59 @@ func mergeElements(primary, secondary taskengine.UIElement) taskengine.UIElement
 	if result.Value == "" && secondary.Value != "" {
 		result.Value = secondary.Value
 	}
-	// Take Name from whichever has a more descriptive one
-	if result.Name == "" || (len(secondary.Name) > len(result.Name) && secondary.Name != "") {
+	// Take Name from whichever has a more descriptive one, but never replace a
+	// real label with a synthetic YOLO name like element_0.
+	if preferMergedName(result.Name, secondary.Name) {
 		result.Name = secondary.Name
 	}
 	// Interactable: true if either says true
 	if secondary.Interactable {
 		result.Interactable = true
 	}
+	if result.Handle == "" && secondary.Handle != "" {
+		result.Handle = secondary.Handle
+	}
+	if len(result.Patterns) == 0 && len(secondary.Patterns) > 0 {
+		result.Patterns = append([]string(nil), secondary.Patterns...)
+	}
+	// Prefer accessibility as the actuation source when either side is a11y.
+	if secondary.Source == "accessibility" && result.Source != "accessibility" {
+		result.Source = "accessibility"
+		if result.Type == "" || result.Type == "interactable" {
+			if secondary.Type != "" {
+				result.Type = secondary.Type
+			}
+		}
+	}
 	return result
+}
+
+func preferMergedName(primary, secondary string) bool {
+	if secondary == "" {
+		return false
+	}
+	if primary == "" || syntheticElementName(primary) {
+		return !syntheticElementName(secondary)
+	}
+	if syntheticElementName(secondary) {
+		return false
+	}
+	return len(secondary) > len(primary)
+}
+
+func syntheticElementName(name string) bool {
+	if name == "" {
+		return true
+	}
+	if len(name) < 9 || name[:8] != "element_" {
+		return false
+	}
+	for _, c := range name[8:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // bboxIoU computes Intersection over Union for two [x, y, w, h] bounding boxes.

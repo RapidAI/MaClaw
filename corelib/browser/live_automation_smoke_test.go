@@ -189,6 +189,99 @@ func TestLiveAutomationPrimitives(t *testing.T) {
 	}
 }
 
+func TestLiveObserveShadowAmbiguousAndIframe(t *testing.T) {
+	xo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><html><body><button id="xo-btn">Pay</button></body></html>`)
+	}))
+	defer xo.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><title>rich-fixture</title></head><body>
+<button disabled id="disabled-btn">Disabled</button>
+<button class="dup">发布</button>
+<button class="dup">发布</button>
+<div role="menu" aria-label="Account"><button role="menuitem" aria-label="Settings">Settings</button></div>
+<div id="host"></div>
+<iframe src="%s" style="width:300px;height:80px"></iframe>
+<script>
+  const host = document.getElementById('host');
+  const root = host.attachShadow({mode:'open'});
+  root.innerHTML = '<button id="shadow-btn" onclick="document.title=\'clicked-shadow\'">ShadowBuy</button>';
+</script>
+</body></html>`, xo.URL)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	addr, err := DiscoverOrLaunchPersistent()
+	if err != nil {
+		t.Skipf("managed browser unavailable: %v", err)
+	}
+	CloseSession()
+	session, err := GetSession(addr)
+	if err != nil {
+		t.Skipf("CDP session unavailable: %v", err)
+	}
+	t.Cleanup(func() { _, _ = session.Navigate("about:blank") })
+	if _, err := session.Navigate(srv.URL + "/"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	raw, err := session.Eval(browserObserveScript)
+	if err != nil {
+		t.Fatalf("observe eval: %v", err)
+	}
+	var payload observePayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("parse observe: %v", err)
+	}
+	var shadow, disabled *BrowserElementRef
+	publish := 0
+	settings := false
+	for i := range payload.Refs {
+		ref := &payload.Refs[i]
+		name := strings.TrimSpace(firstNonEmpty(ref.Name, ref.Text))
+		if name == "ShadowBuy" || strings.Contains(strings.Join(ref.SelectorCandidates, " "), "shadow-btn") {
+			shadow = ref
+		}
+		if ref.Disabled || ref.Ref != "" && strings.Contains(strings.ToLower(name), "disabled") {
+			if strings.Contains(strings.ToLower(name), "disabled") {
+				disabled = ref
+			}
+		}
+		if name == "发布" {
+			publish++
+		}
+		if strings.EqualFold(name, "Settings") || strings.EqualFold(ref.Role, "menuitem") {
+			settings = true
+		}
+	}
+	if shadow == nil {
+		t.Fatal("observe missed open-shadow ShadowBuy")
+	}
+	if disabled == nil || !disabled.Disabled {
+		t.Fatalf("disabled button missing or not flagged: %#v", disabled)
+	}
+	if publish < 2 {
+		t.Fatalf("want two 发布 refs, got %d", publish)
+	}
+	if !settings {
+		t.Fatal("observe missed aria menuitem Settings")
+	}
+	if err := session.Click("#shadow-btn"); err != nil {
+		t.Fatalf("click shadow: %v", err)
+	}
+	title, _ := session.Eval(`document.title`)
+	if title != "clicked-shadow" {
+		t.Fatalf("shadow click title=%q", title)
+	}
+	if len(payload.FrameTree) < 2 {
+		t.Fatalf("frame_tree=%#v, want iframe entry", payload.FrameTree)
+	}
+}
+
 // TestLiveSearchExtractionResilience runs the layered search extraction JS
 // against real Chrome with local fixture pages: current markup, renamed
 // classes (secondary layer), and unrecognizable markup (generic fallback).

@@ -133,6 +133,20 @@ type Config struct {
 		KeyFile      string `yaml:"key_file"`
 		AutoGenerate bool   `yaml:"auto_generate"` // generate self-signed cert if cert/key missing
 	} `yaml:"tls"`
+
+	// Replica identifies this Hub process among optional tenant-head replicas.
+	// Empty NodeID is treated as "local". Peers are other Hub processes of the
+	// same install. SharedSecret authenticates replica artifact push.
+	Replica struct {
+		NodeID       string        `yaml:"node_id"`
+		SharedSecret string        `yaml:"shared_secret"`
+		Peers        []ReplicaPeer `yaml:"peers"`
+	} `yaml:"replica"`
+}
+
+type ReplicaPeer struct {
+	ID  string `yaml:"id"`
+	URL string `yaml:"url"`
 }
 
 func Default() *Config {

@@ -108,16 +108,17 @@ type tenantAdminHandlerRouteSyncer struct {
 }
 
 type tenantAdminHandlerRouteSyncCall struct {
-	email    string
-	tenantID string
+	email         string
+	tenantID      string
+	previousEmail string
 }
 
-func (s *tenantAdminHandlerRouteSyncer) SyncUserRoute(_ context.Context, email string, tenantIDOpt ...string) error {
-	tenantID := ""
-	if len(tenantIDOpt) > 0 {
-		tenantID = tenantIDOpt[0]
+func (s *tenantAdminHandlerRouteSyncer) SyncTenantAdminRoute(_ context.Context, email, tenantID string, previousEmailOpt ...string) error {
+	previousEmail := ""
+	if len(previousEmailOpt) > 0 {
+		previousEmail = previousEmailOpt[0]
 	}
-	s.calls = append(s.calls, tenantAdminHandlerRouteSyncCall{email: email, tenantID: tenantID})
+	s.calls = append(s.calls, tenantAdminHandlerRouteSyncCall{email: email, tenantID: tenantID, previousEmail: previousEmail})
 	return s.err
 }
 
@@ -442,6 +443,9 @@ func TestTenantAdminProfileEmailUpdateSyncsRoute(t *testing.T) {
 	}
 	if len(syncer.calls) != 1 || syncer.calls[0].email != "new@example.com" || syncer.calls[0].tenantID != "tenant_profile" {
 		t.Fatalf("route sync calls=%#v", syncer.calls)
+	}
+	if syncer.calls[0].previousEmail != "old@example.com" {
+		t.Fatalf("previous admin email = %q, want old@example.com", syncer.calls[0].previousEmail)
 	}
 }
 

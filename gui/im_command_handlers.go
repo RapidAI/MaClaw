@@ -26,15 +26,7 @@ func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, t
 		return &IMAgentResponse{Text: localizedLansengerGroupCommandRestrictedMessage(responseLang)}, true
 	}
 	if commandKind == imCommandReset {
-		h.memory.Clear(msg.UserID)
-		h.clearPerUserSessionState(msg.UserID)
-		h.flushEvidenceOnSessionEnd(msg.UserID)
-		// Clear active goal on conversation reset — the user is starting fresh.
-		if h.app != nil && h.app.goalContinuation != nil {
-			h.app.goalContinuation.CancelPending(msg.UserID)
-			h.getGoalStore().Clear(msg.UserID)
-		}
-		resp := &IMAgentResponse{Text: localizedIMConversationResetMessage(responseLang), ClearUI: true}
+		resp := h.resetIMSessionForUser(msg.UserID, responseLang)
 		if ctx := h.getSessionLoopCtx(msg.UserID); ctx != nil {
 			return h.finalizeTraceResult(ctx, resp, resp.Text, ""), true
 		}
@@ -140,46 +132,79 @@ func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, t
 		return h.handleInstallIMCommand(commandKind, trimmed, responseLang), true
 	}
 	if commandKind == imCommandCancel {
-		h.cancelWorkflowForUser(msg.UserID)
-		// Pause active goal on cancel (don't clear — user can resume later)
-		if h.app != nil && h.app.goalContinuation != nil {
-			h.app.goalContinuation.CancelPending(msg.UserID)
-			if g := h.getGoalStore().Get(msg.UserID); g != nil && g.Status == goal.StatusActive {
-				h.getGoalStore().Pause(msg.UserID, g.GoalID)
-				log.Printf("[goal] paused on /cancel: user=%s goal_id=%s", msg.UserID, g.GoalID)
-			}
-		}
-		if h.confirmationStore != nil {
-			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
-				h.confirmationStore.clear(msg.UserID)
-				return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "confirmation", "")}, true
-			}
-		}
-		if btw := h.activeBtwSubAgentForOwner(msg.UserID); btw != nil {
-			btw.Cancel()
-			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "btw", "")}, true
-		}
-		if loop := h.activeLoopCallbacksForOwner(msg.UserID); loop != nil {
-			loop.Cancel()
-			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "loop", "")}, true
-		}
-		ctx := h.getSessionLoopCtx(msg.UserID)
-		taskText := h.sessionLoopTaskText(msg.UserID)
-		if ctx == nil {
-			ctx, taskText, _ = h.legacyLoopSnapshotForUser(msg.UserID)
-		}
-		if ctx == nil {
-			return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")}, true
-		}
-		ctx.Cancel()
-		// Close steer acceptance before clearing pending injections; this keeps
-		// cancel and busy-turn Enter from creating an accepted orphan.
-		h.markTaskCancelledByUser(msg.UserID)
-		cancelMsg := localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))
-		return &IMAgentResponse{Text: cancelMsg}, true
+		return h.cancelCurrentTaskForUser(msg.UserID, responseLang), true
 	}
 
 	return nil, false
+}
+
+// resetIMSessionForUser cancels the current loop before clearing all state that
+// belongs to the conversation. It is shared by direct commands and busy-turn
+// interrupts so /new always has identical reset semantics.
+func (h *IMMessageHandler) resetIMSessionForUser(userID, responseLang string) *IMAgentResponse {
+	// Reset must be an interrupting control action, not a message queued behind
+	// a long-running tool call. Apply the full cancellation policy before
+	// clearing state so a side-runner (/btw or /loop) cannot outlive the freshly
+	// reset conversation.
+	_ = h.cancelCurrentTaskForUser(userID, responseLang)
+	if h.memory != nil {
+		h.memory.Clear(userID)
+	}
+	h.clearPerUserSessionState(userID)
+	h.flushEvidenceOnSessionEnd(userID)
+	// Clear active goal on conversation reset — the user is starting fresh.
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.CancelPending(userID)
+		h.getGoalStore().Clear(userID)
+	}
+	return &IMAgentResponse{Text: localizedIMConversationResetMessage(responseLang), ClearUI: true}
+}
+
+// cancelCurrentTaskForUser is the single cancellation policy for both normal
+// IM command dispatch and gateway busy-turn interrupts. Keeping these paths
+// together prevents /stop from cancelling only a LoopContext while leaving an
+// active workflow, goal continuation, or side-runner alive.
+func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string) *IMAgentResponse {
+	h.cancelWorkflowForUser(userID)
+	confirmationCancelled := false
+	btwCancelled := false
+	loopCancelled := false
+	// Pause active goal on cancel (don't clear — user can resume later).
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.CancelPending(userID)
+		if g := h.getGoalStore().Get(userID); g != nil && g.Status == goal.StatusActive {
+			h.getGoalStore().Pause(userID, g.GoalID)
+			log.Printf("[goal] paused on /cancel: user=%s goal_id=%s", userID, g.GoalID)
+		}
+	}
+	if h.confirmationStore != nil {
+		if pending := h.confirmationStore.get(userID); pending != nil {
+			h.confirmationStore.clear(userID)
+			confirmationCancelled = true
+		}
+	}
+	if btw := h.activeBtwSubAgentForOwner(userID); btw != nil {
+		btw.Cancel()
+		btwCancelled = true
+	}
+	if loop := h.activeLoopCallbacksForOwner(userID); loop != nil {
+		loop.Cancel()
+		loopCancelled = true
+	}
+	taskText, err := h.RequestCancelSessionForUser(userID)
+	if err == nil {
+		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))}
+	}
+	if loopCancelled {
+		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "loop", "")}
+	}
+	if btwCancelled {
+		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "btw", "")}
+	}
+	if confirmationCancelled {
+		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "confirmation", "")}
+	}
+	return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")}
 }
 
 func (h *IMMessageHandler) imCommandResponseLang(msgLang string) string {
@@ -195,6 +220,10 @@ func (h *IMMessageHandler) imCommandResponseLang(msgLang string) string {
 // handleExitCommand terminates all active sessions, resets conversation
 // memory, and returns the user to normal chat mode.
 func (h *IMMessageHandler) handleExitCommand(userID, lang string) *IMAgentResponse {
+	// /exit is a destructive session reset, so it must first interrupt every
+	// owner-scoped operation. This also lets a busy IM gateway consume /exit
+	// immediately instead of queuing it behind a long-running task.
+	_ = h.cancelCurrentTaskForUser(userID, lang)
 	var killed []string
 	var failCount int
 	if h.manager != nil {
@@ -213,7 +242,9 @@ func (h *IMMessageHandler) handleExitCommand(userID, lang string) *IMAgentRespon
 			}
 		}
 	}
-	h.memory.Clear(userID)
+	if h.memory != nil {
+		h.memory.Clear(userID)
+	}
 	h.clearPerUserSessionState(userID)
 	// Flush evidence batch and reset session on exit.
 	h.flushEvidenceOnSessionEnd(userID)
@@ -307,7 +338,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"/summary - (Lansenger group) summarize new group chat since last summary\n" +
 			"/compress - compress conversation history\n" +
 			"/memory - show memory status\n" +
-			"/cancel - cancel current task\n" +
+			"/cancel /stop - cancel current task\n" +
 			"/exit /quit - stop sessions\n" +
 			"/sessions /status - show current sessions\n" +
 			"/help - show this help"
@@ -327,7 +358,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"/summary - （藍信群）摘要自上次以來的新群聊討論\n" +
 			"/compress - 壓縮對話歷史\n" +
 			"/memory - 查看記憶狀態\n" +
-			"/cancel - 取消當前任務\n" +
+			"/cancel /stop - 取消當前任務\n" +
 			"/exit /quit - 停止會話\n" +
 			"/sessions /status - 查看當前會話\n" +
 			"/help - 顯示此幫助"
@@ -347,7 +378,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"/summary - （蓝信群）摘要自上次以来的新群聊讨论\n" +
 			"/compress - 压缩对话历史\n" +
 			"/memory - 查看记忆状态\n" +
-			"/cancel - 取消当前任务\n" +
+			"/cancel /stop - 取消当前任务\n" +
 			"/exit /quit - 停止会话\n" +
 			"/sessions /status - 查看当前会话\n" +
 			"/help - 显示此帮助"

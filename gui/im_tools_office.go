@@ -13,6 +13,11 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	contextTokens := runtimeContextTokensFromToolArgs(args)
+	delete(args, registeredToolContextTokensField)
+	if contextTokens <= 0 {
+		contextTokens = h.getMaclawLLMConfig().EffectiveContextTokens()
+	}
 	ownerID, hasRuntimeOwner := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
 	if hasRuntimeOwner && ownerID == "" {
 		return "office failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
@@ -40,7 +45,7 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 	case "generate_pdf":
 		return h.toolGeneratePDF(args)
 	case "read_document", "read", "read_doc", "read_docx", "read_pdf", "read_word":
-		return agent.ToolReadDocument(args)
+		return agent.ToolReadDocumentWithContext(args, contextTokens)
 	case "read_excel":
 		return agent.ToolReadExcel(args)
 	case "write_excel":
@@ -49,6 +54,24 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 		return agent.ToolReadPPTX(args)
 	default:
 		return fmt.Sprintf("未知的 office action: %q。支持的 action: generate_pdf, read_document, read_doc, read_docx, read_pdf, read_excel, write_excel, read_pptx", action)
+	}
+}
+
+func runtimeContextTokensFromToolArgs(args map[string]interface{}) int {
+	if args == nil {
+		return 0
+	}
+	switch value := args[registeredToolContextTokensField].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case float32:
+		return int(value)
+	default:
+		return 0
 	}
 }
 

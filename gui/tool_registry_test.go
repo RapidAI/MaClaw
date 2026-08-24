@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestToolRegistry_RegisterAndGet(t *testing.T) {
@@ -25,6 +27,102 @@ func TestToolRegistry_RegisterAndGet(t *testing.T) {
 	}
 	if tool.Handler == nil {
 		t.Error("Handler is nil")
+	}
+}
+
+func TestToolRegistrySnapshotsMutableSchemaAndExecutionContract(t *testing.T) {
+	r := NewToolRegistry()
+	schema := map[string]interface{}{
+		"payload": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{"type": "string"},
+			},
+		},
+	}
+	contract := map[string]interface{}{"capabilities": []string{"web"}}
+	if err := r.Register(RegisteredTool{
+		Name: "snapshot", Description: "snapshot", InputSchema: schema, Required: []string{"payload"}, ExecutionContract: contract,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	schema["caller_mutation"] = true
+	contract["caller_mutation"] = true
+
+	first, ok := r.Get("snapshot")
+	if !ok {
+		t.Fatal("Get returned false")
+	}
+	first.InputSchema["request_mutation"] = true
+	first.ExecutionContract["request_mutation"] = true
+	first.Required[0] = "rewritten"
+	second, ok := r.Get("snapshot")
+	if !ok {
+		t.Fatal("second Get returned false")
+	}
+	for _, field := range []string{"caller_mutation", "request_mutation"} {
+		if _, leaked := second.InputSchema[field]; leaked {
+			t.Fatalf("input schema mutation %q leaked through registry snapshot", field)
+		}
+		if _, leaked := second.ExecutionContract[field]; leaked {
+			t.Fatalf("execution-contract mutation %q leaked through registry snapshot", field)
+		}
+	}
+	if len(second.Required) != 1 || second.Required[0] != "payload" {
+		t.Fatalf("required mutation leaked through registry snapshot: %v", second.Required)
+	}
+	definition := registeredToolToDef(*second)
+	definition["x_execution_contract"].(map[string]interface{})["render_mutation"] = true
+	third, _ := r.Get("snapshot")
+	if _, leaked := third.ExecutionContract["render_mutation"]; leaked {
+		t.Fatal("rendered definition mutation leaked into registry inventory")
+	}
+}
+
+func TestToolRegistrySemanticCapabilityRequiresCompleteContract(t *testing.T) {
+	r := NewToolRegistry()
+	err := r.Register(RegisteredTool{
+		Name: "incomplete", CapabilityProvisions: []tool.CapabilityProvision{{Capability: "visual.capture.desktop"}},
+	})
+	if err == nil {
+		t.Fatal("incomplete semantic contract was accepted")
+	}
+	err = r.Register(RegisteredTool{
+		Name: "complete",
+		CapabilityProvisions: []tool.CapabilityProvision{{
+			Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"},
+		}},
+		SemanticEffects: []tool.EffectClass{tool.EffectReadOnly},
+	})
+	if err != nil {
+		t.Fatalf("complete semantic contract: %v", err)
+	}
+	registered, ok := r.Get("complete")
+	if !ok || registered.SemanticCatalogState != SemanticCatalogCapability {
+		t.Fatalf("registered semantic state=%#v", registered)
+	}
+}
+
+func TestToolRegistryQuarantinesUnclassifiedImplementations(t *testing.T) {
+	r := NewToolRegistry()
+	if err := r.Register(RegisteredTool{Name: "legacy_only"}); err != nil {
+		t.Fatalf("register legacy implementation: %v", err)
+	}
+	registered, ok := r.Get("legacy_only")
+	if !ok || registered.SemanticCatalogState != SemanticCatalogQuarantined {
+		t.Fatalf("semantic catalog state = %#v, want quarantined", registered)
+	}
+}
+
+func TestBuiltinDynamicGatewaysAreClassifiedAsControlPlane(t *testing.T) {
+	r := NewToolRegistry()
+	h := &IMMessageHandler{registry: r}
+	registerBuiltinTools(r, h)
+	for _, name := range []string{"manage_skill", "call_mcp_tool"} {
+		registered, ok := r.Get(name)
+		if !ok || registered.SemanticCatalogState != SemanticCatalogFixedControlPlane {
+			t.Fatalf("%s semantic catalog state = %#v, want fixed control plane", name, registered)
+		}
 	}
 }
 

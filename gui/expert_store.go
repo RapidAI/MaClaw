@@ -34,7 +34,11 @@ type ExpertDefinition struct {
 	SystemPrompt string   `json:"system_prompt"` // persona injected as role description
 	Tools        []string `json:"tools"`         // tool allow-list; empty = all tools
 	Skills       []string `json:"skills"`        // skill allow-list; empty = all active skills
-	Builtin      bool     `json:"builtin"`       // true only for in-binary definitions
+	// CapabilityRules is an optional control-plane policy vocabulary. It is
+	// never derived from Tools or Skills. Empty keeps the legacy card
+	// behavior: managed turns ignore the tool-name allow-list.
+	CapabilityRules []ExpertCapabilityRule `json:"capability_rules,omitempty"`
+	Builtin         bool                   `json:"builtin"` // true only for in-binary definitions
 	// OptimizedFromID records lineage: non-empty means this expert was distilled
 	// from the session of the referenced source expert ("专家优化"). Each source
 	// expert has at most one direct optimized expert; optimized experts are
@@ -104,6 +108,9 @@ func (s *expertStore) loadLocked() (expertStoreFile, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return expertStoreFile{}, fmt.Errorf("parse experts store: %w", err)
 	}
+	if err := validateExpertStoreCapabilityRules(f.Experts); err != nil {
+		return expertStoreFile{}, err
+	}
 	return f, nil
 }
 
@@ -112,6 +119,9 @@ func (s *expertStore) writeLocked(f expertStoreFile) error {
 	path := s.path()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create experts dir: %w", err)
+	}
+	if err := validateExpertStoreCapabilityRules(f.Experts); err != nil {
+		return err
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {

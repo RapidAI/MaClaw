@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,59 @@ func TestAIAssistantAttachmentPreviewDataURLCreatesCompactThumbnail(t *testing.T
 	}
 }
 
+func TestAIAssistantAttachmentFullDataURLKeepsOriginalBytes(t *testing.T) {
+	app := NewApp()
+	path := filepath.Join(t.TempDir(), "attachment.png")
+	source := image.NewRGBA(image.Rect(0, 0, 480, 120))
+	for y := 0; y < 120; y++ {
+		for x := 0; x < 480; x++ {
+			source.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 120, A: 255})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	full, err := app.AIAssistantAttachmentFullDataURL(path)
+	if err != nil {
+		t.Fatalf("create full preview: %v", err)
+	}
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(full, prefix) {
+		t.Fatalf("full preview = %q, want PNG data URL", full)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(full, prefix))
+	if err != nil {
+		t.Fatalf("decode full preview: %v", err)
+	}
+	if !bytes.Equal(decoded, encoded.Bytes()) {
+		t.Fatalf("full preview re-encoded the attachment; want the original %d bytes, got %d", encoded.Len(), len(decoded))
+	}
+}
+
+func TestAIAssistantAttachmentFullDataURLRejectsNonImages(t *testing.T) {
+	app := NewApp()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(path, []byte("plain text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.AIAssistantAttachmentFullDataURL(path); err == nil {
+		t.Fatal("full preview of a text file succeeded, want an error")
+	}
+	if _, err := app.AIAssistantAttachmentFullDataURL(dir); err == nil {
+		t.Fatal("full preview of a directory succeeded, want an error")
+	}
+	if _, err := app.AIAssistantAttachmentFullDataURL("   "); err == nil {
+		t.Fatal("full preview of an empty path succeeded, want an error")
+	}
+}
+
 func TestNormalizeBugReportScreenshotPathsDeduplicatesAndLimits(t *testing.T) {
 	paths := make([]string, 0, maxBugReportScreenshots+3)
 	paths = append(paths, "", " screenshot-0.png ", "screenshot-0.png")
@@ -141,6 +195,7 @@ func TestCopyBugReportScreenshotPartClosesSourceFile(t *testing.T) {
 func TestUploadBugReportArchiveIncludesProgramVersionUsingHubCenterFieldName(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
 	archive := filepath.Join(app.GetTempDir(), "maclaw-diagnostics-test.zip")
 	if err := os.WriteFile(archive, []byte("diagnostics"), 0o600); err != nil {
 		t.Fatal(err)
@@ -186,6 +241,7 @@ func TestUploadBugReportArchiveIncludesProgramVersionUsingHubCenterFieldName(t *
 func TestSuccessfulBugReportUploadClearsCollectedDiagnostics(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
 	archive := filepath.Join(app.GetTempDir(), "maclaw-diagnostics-test.zip")
 	if err := os.WriteFile(archive, []byte("diagnostics"), 0o600); err != nil {
 		t.Fatal(err)
@@ -211,15 +267,7 @@ func TestSuccessfulBugReportUploadClearsCollectedDiagnostics(t *testing.T) {
 	if _, err := app.uploadBugReportArchive(archive, 2, "Windows 11", "test report", nil); err != nil {
 		t.Fatalf("upload report: %v", err)
 	}
-	for _, dir := range []string{"logs", "trajectories"} {
-		entries, err := os.ReadDir(filepath.Join(app.getMaclawBaseDir(), dir))
-		if err != nil {
-			t.Fatalf("read cleared %s: %v", dir, err)
-		}
-		if len(entries) != 0 {
-			t.Fatalf("%s still contains uploaded diagnostics: %v", dir, entries)
-		}
-	}
+	assertStaleBugReportEntriesGone(t, app.getMaclawBaseDir(), "captured.txt")
 }
 
 func TestRejectedBugReportUploadPreservesCollectedDiagnosticsForRetry(t *testing.T) {
@@ -315,6 +363,7 @@ func TestSubmitBugReportRemovesPartialArchiveBeforeRetryStateExists(t *testing.T
 func TestSuccessfulBugReportUploadSkipsLinkedDiagnosticRoot(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
 	archive := filepath.Join(app.GetTempDir(), "maclaw-diagnostics-test.zip")
 	if err := os.WriteFile(archive, []byte("diagnostics"), 0o600); err != nil {
 		t.Fatal(err)
@@ -352,11 +401,38 @@ func TestSuccessfulBugReportUploadSkipsLinkedDiagnosticRoot(t *testing.T) {
 	if content, err := os.ReadFile(externalFile); err != nil || string(content) != "external" {
 		t.Fatalf("external linked data was modified: content=%q err=%v", content, err)
 	}
+	entries, err := os.ReadDir(externalRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "must-not-delete.txt" {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("reopen followed logs symlink: %v", names)
+	}
+}
+
+func assertStaleBugReportEntriesGone(t *testing.T, base, staleName string) {
+	t.Helper()
+	for _, dir := range []string{"logs", "trajectories"} {
+		entries, err := os.ReadDir(filepath.Join(base, dir))
+		if err != nil {
+			t.Fatalf("read cleared %s: %v", dir, err)
+		}
+		for _, entry := range entries {
+			if entry.Name() == staleName {
+				t.Fatalf("%s kept the stale entry: %v", dir, entries)
+			}
+		}
+	}
 }
 
 func TestSetBugReportEnabledClearsDiagnosticsAndRestoresSettings(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
 	if err := app.SaveConfig(corelib.AppConfig{LLMTrajectoryLogging: false, LogDetailEnabled: true}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -376,15 +452,7 @@ func TestSetBugReportEnabledClearsDiagnosticsAndRestoresSettings(t *testing.T) {
 	if !started.BugReportEnabled || !started.LLMTrajectoryLogging || !started.LogDetailEnabled {
 		t.Fatalf("unexpected enabled config: %+v", started)
 	}
-	for _, dir := range []string{"logs", "trajectories"} {
-		entries, err := os.ReadDir(filepath.Join(app.getMaclawBaseDir(), dir))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(entries) != 0 {
-			t.Fatalf("%s was not cleared: %v", dir, entries)
-		}
-	}
+	assertStaleBugReportEntriesGone(t, app.getMaclawBaseDir(), "stale.txt")
 	stopped, err := app.SetBugReportEnabled(false)
 	if err != nil {
 		t.Fatalf("disable: %v", err)
@@ -394,12 +462,91 @@ func TestSetBugReportEnabledClearsDiagnosticsAndRestoresSettings(t *testing.T) {
 	}
 }
 
+// A collection session that clears the log directory must leave a live log
+// sink behind. Otherwise the session records nothing for the very failure the
+// user started it to capture.
+func TestSetBugReportEnabledKeepsLoggingAfterClear(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	logPath := filepath.Join(app.getMaclawBaseDir(), "logs", "maclaw.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("stale line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetBugReportEnabled(true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	log.Printf("[semantic-routing] plan rejected user=%q reason=%v", "user-1", "semantic route has unmet needs")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "stale line") {
+		t.Fatalf("collection session kept pre-session logs: %s", body)
+	}
+	if !strings.Contains(string(body), "plan rejected") {
+		t.Fatalf("collection session lost the reject line: %s", body)
+	}
+	if !strings.Contains(string(body), "log sinks reopened") {
+		t.Fatalf("collection session did not record the rebound sink: %s", body)
+	}
+}
+
+// Skip notes are collected while sinks are closed. They must land in the
+// rebound maclaw.log, not the disconnected stderr window used during clear.
+func TestSetBugReportEnabledRecordsSkippedLinkedRootAfterRebind(t *testing.T) {
+	app := NewApp()
+	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	logsDir := filepath.Join(app.getMaclawBaseDir(), "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(externalRoot, "must-not-delete.txt"), []byte("external"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trajectoryLink := filepath.Join(app.getMaclawBaseDir(), "trajectories")
+	if err := os.MkdirAll(filepath.Dir(trajectoryLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalRoot, trajectoryLink); err != nil {
+		t.Skipf("symlinks unavailable in this test environment: %v", err)
+	}
+	if _, err := app.SetBugReportEnabled(true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(logsDir, "maclaw.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "skipping symbolic-link diagnostic root") {
+		t.Fatalf("skip note did not reach rebound log: %s", body)
+	}
+	if !strings.Contains(string(body), "log sinks reopened") {
+		t.Fatalf("collection session did not record the rebound sink: %s", body)
+	}
+	if content, err := os.ReadFile(filepath.Join(externalRoot, "must-not-delete.txt")); err != nil || string(content) != "external" {
+		t.Fatalf("linked trajectory data was modified: content=%q err=%v", content, err)
+	}
+}
+
 func TestSetBugReportEnabledTruncatesLockedLogOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific locked-file behavior")
 	}
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
 	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -431,6 +578,7 @@ func TestSetBugReportEnabledTruncatesLockedLogOnWindows(t *testing.T) {
 func TestSetBugReportEnabledContinuesWhenDiagnosticPathIsUnreadable(t *testing.T) {
 	app := NewApp()
 	app.testHomeDir = t.TempDir()
+	t.Cleanup(closeLogSinks)
 	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}

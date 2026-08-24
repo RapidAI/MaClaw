@@ -59,10 +59,9 @@ func RefreshAccessTokenCtx(ctx context.Context, cfg Config, refreshToken string)
 		return nil, fmt.Errorf("token refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token refresh request failed: %w", err)
+		return nil, annotateOAuthNetworkError("token refresh request failed", err)
 	}
 	defer resp.Body.Close()
 

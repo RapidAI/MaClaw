@@ -88,9 +88,14 @@ type AppConfig struct {
 	SkillRunnerTimeoutSec    int                 `json:"skill_runner_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
+	// ExternalAgentImportAttempted is set after the first automatic scan of
+	// local Codex / Claude Code / OpenCode configs. Manual "Import other
+	// agents" does not consult this flag.
+	ExternalAgentImportAttempted bool `json:"external_agent_import_attempted,omitempty"`
 	// MaclawLLMProfiles separates model selection for general assistance from
-	// coding work. A nil value means this is a legacy single-profile config and
-	// must be resolved lazily without changing it during reads.
+	// coding work and an optional Computer Use caption model. A nil value means
+	// this is a legacy single-profile config and must be resolved lazily without
+	// changing it during reads.
 	MaclawLLMProfiles *MaclawLLMProfiles   `json:"maclaw_llm_profiles,omitempty"`
 	LLMPromptCache    LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
 	// AnswerCache is retained only as the one-time migration source for legacy
@@ -128,6 +133,9 @@ type AppConfig struct {
 	// MACLAW_DISABLE_SKILL_EVOLUTION still overrides when set. Manual
 	// manage_skill trigger_repair/trigger_optimize remain available.
 	SkillEvolutionEnabled *bool `json:"skill_evolution_enabled,omitempty"`
+	// EmbedHWAccel prefers NPU when present. Nil means default true.
+	// Detect-fail machines must not persist false just because NPU is absent.
+	EmbedHWAccel *bool `json:"embed_hw_accel,omitempty"`
 	// SkillAutoUploadEnabled controls whether skills are automatically uploaded
 	// to SkillMarket once they reach the success-run threshold. Nil means
 	// default true. Independent of SkillEvolutionEnabled.
@@ -343,10 +351,9 @@ type AppConfig struct {
 	// operation's query, scores, and returned entries for debugging/improving
 	// the memory system. Default: false (disabled).
 	MemoryRecallLogEnabled bool `json:"memory_recall_log_enabled,omitempty"`
-	// KnowledgeAutoRecallEnabled controls automatic knowledge-base injection
-	// into system prompts (desktop IM, VE, TUI, agentservice). Nil means
-	// default true (enabled). Set false to disable auto-recall only; manual
-	// knowledge_search / knowledge_context_pack tools remain available.
+	// KnowledgeAutoRecallEnabled is retained for config compatibility.
+	// Hosts no longer inject warehouse bodies into the system prompt; retrieval
+	// is on-demand via knowledge_search / memory tools. Nil means default true.
 	KnowledgeAutoRecallEnabled *bool `json:"knowledge_auto_recall_enabled,omitempty"`
 	// KnowledgeAutoRecallMinScore overrides the minimum FTS score required for
 	// auto-recall injection. Zero means use the shared default (0.3).
@@ -499,6 +506,12 @@ type AppConfig struct {
 	// path (doc phases stay legacy). Env MACLAW_SHARED_AGENT_LOOP_WORKFLOW
 	// overrides when set (on/off).
 	SharedAgentLoopWorkflow bool `json:"shared_agent_loop_workflow,omitempty"`
+	// SemanticCodingCanaryPercent is the rollback dial for the managed semantic
+	// coding family, sticky 0..100. nil = env MACLAW_SEMANTIC_CODING_PERCENT or
+	// 100. It is separate from SharedAgentLoopCanaryPercent because managed
+	// coding turns bypass the shared-loop strangler, so that dial cannot
+	// withdraw them. 0 returns coding turns to pre-migration refusal.
+	SemanticCodingCanaryPercent *int `json:"semantic_coding_canary_percent,omitempty"`
 	// DailyLLMBudgetUSD — daily LLM API cost budget in USD. When exceeded,
 	// the agent warns the user and may throttle non-essential LLM calls.
 	// 0 means unlimited (default).
@@ -734,12 +747,15 @@ type MaclawLLMProfile struct {
 	InheritAssistant bool   `json:"inherit_assistant,omitempty"`
 }
 
-// MaclawLLMProfiles is the persisted dual-profile model assignment.
+// MaclawLLMProfiles is the persisted model assignment.
 // Coding defaults to following Assistant when this struct is first created.
+// Caption is optional: empty provider/model means Computer Use stays on
+// heuristic/OCR/a11y labels when the chat model cannot see images.
 type MaclawLLMProfiles struct {
 	Version   int              `json:"version"`
 	Assistant MaclawLLMProfile `json:"assistant"`
 	Coding    MaclawLLMProfile `json:"coding"`
+	Caption   MaclawLLMProfile `json:"caption,omitempty"`
 }
 
 const (
@@ -976,7 +992,7 @@ func (c AppConfig) IsKnowledgeAutoRecallEnabled() bool {
 	return c.KnowledgeAutoRecallEnabled == nil || *c.KnowledgeAutoRecallEnabled
 }
 
-// DefaultKnowledgeAutoRecallMinScore matches corelib/agent.KnowledgeAutoRecallScoreThreshold.
+// DefaultKnowledgeAutoRecallMinScore is retained for config compatibility.
 const DefaultKnowledgeAutoRecallMinScore = 0.3
 
 // EffectiveKnowledgeAutoRecallMinScore returns the configured min score or default.
@@ -1001,6 +1017,19 @@ func (c *AppConfig) SetSkillEvolutionEnabled(v bool) {
 		return
 	}
 	c.SkillEvolutionEnabled = &v
+}
+
+// EmbedHWAccelEnabled returns the persisted prefer-NPU flag (default true).
+func (c AppConfig) EmbedHWAccelEnabled() bool {
+	return c.EmbedHWAccel == nil || *c.EmbedHWAccel
+}
+
+// SetEmbedHWAccel sets the persisted prefer-NPU flag.
+func (c *AppConfig) SetEmbedHWAccel(v bool) {
+	if c == nil {
+		return
+	}
+	c.EmbedHWAccel = &v
 }
 
 // IsSkillAutoUploadEnabled returns whether automatic SkillMarket upload is
@@ -1546,10 +1575,11 @@ func applyGroupDiscussionFieldDefaults(gd *GroupDiscussionConfig) {
 // summarization, etc. Mirrors llm.AuxiliaryConfig but lives in corelib to
 // avoid circular imports.
 type AuxiliaryLLMConfig struct {
-	URL      string `json:"url"`
-	Key      string `json:"key"`
-	Model    string `json:"model"`
-	Protocol string `json:"protocol,omitempty"` // "openai" (default) or "anthropic"
+	URL           string `json:"url"`
+	Key           string `json:"key"`
+	Model         string `json:"model"`
+	Protocol      string `json:"protocol,omitempty"`       // "openai" (default) or "anthropic"
+	ContextLength int    `json:"context_length,omitempty"` // model context window; 0 inherits primary
 }
 
 // IsConfigured returns true if the auxiliary LLM has a URL and key set.
@@ -1561,11 +1591,12 @@ func (c AuxiliaryLLMConfig) IsConfigured() bool {
 // Used in AppConfig.ModelRoutes to route different task types to different models.
 // Empty fields inherit from the primary LLM config.
 type ModelRouteConfig struct {
-	Model    string `json:"model"`              // model name override (required)
-	URL      string `json:"url,omitempty"`      // API URL override
-	Key      string `json:"key,omitempty"`      // API key override
-	Protocol string `json:"protocol,omitempty"` // protocol override
-	Provider string `json:"provider,omitempty"` // provider name (display only)
+	Model         string `json:"model"`                    // model name override (required)
+	URL           string `json:"url,omitempty"`            // API URL override
+	Key           string `json:"key,omitempty"`            // API key override
+	Protocol      string `json:"protocol,omitempty"`       // protocol override
+	Provider      string `json:"provider,omitempty"`       // provider name (display only)
+	ContextLength int    `json:"context_length,omitempty"` // model context window; 0 inherits primary
 }
 
 // KnowledgeVisionLLMConfig is the configuration for the optional Vision LLM

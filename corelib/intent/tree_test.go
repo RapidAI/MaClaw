@@ -5,6 +5,53 @@ import (
 	"testing"
 )
 
+func TestTreeResponseFormatUsesOnlyTaxonomyLabelsAndWorkflowTypes(t *testing.T) {
+	format := TreeResponseFormat()
+	jsonSchema, _ := format["json_schema"].(map[string]interface{})
+	root, _ := jsonSchema["schema"].(map[string]interface{})
+	properties, _ := root["properties"].(map[string]interface{})
+	top, _ := properties["top"].(map[string]interface{})
+	items, _ := top["items"].(map[string]interface{})
+	alternatives, _ := items["anyOf"].([]interface{})
+	if len(alternatives) == 0 {
+		t.Fatalf("items = %#v, want per-label alternatives", items)
+	}
+
+	workflowsByLabel := make(map[string][]string, len(alternatives))
+	for _, raw := range alternatives {
+		alternative, _ := raw.(map[string]interface{})
+		itemProperties, _ := alternative["properties"].(map[string]interface{})
+		skill, _ := itemProperties["skill"].(map[string]interface{})
+		labels, _ := skill["enum"].([]string)
+		if len(labels) != 1 {
+			t.Fatalf("skill enum = %#v, want exactly one taxonomy label per branch", labels)
+		}
+		workflow, _ := itemProperties["workflow_type"].(map[string]interface{})
+		workflowsByLabel[labels[0]], _ = workflow["enum"].([]string)
+	}
+
+	for _, label := range []string{string(LabelLiveData), string(LabelDocumentGenerate), string(LabelCoding), string(LabelWorkflowTask)} {
+		if _, ok := workflowsByLabel[label]; !ok {
+			t.Fatalf("schema branches = %#v, missing %q", workflowsByLabel, label)
+		}
+	}
+	if containsString(workflowsByLabel[string(LabelLiveData)], "contract_review") {
+		t.Fatalf("live_data workflows = %#v, must not accept another label's workflow", workflowsByLabel[string(LabelLiveData)])
+	}
+	if !containsString(workflowsByLabel[string(LabelCoding)], "coding") || containsString(workflowsByLabel[string(LabelCoding)], "contract_review") {
+		t.Fatalf("coding workflows = %#v, want only coding label workflow types", workflowsByLabel[string(LabelCoding)])
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildIntentTreeText(t *testing.T) {
 	defs := []IntentDefinition{
 		{Label: LabelCoding, Domain: "Coding", TreeText: "create new software"},
@@ -26,8 +73,9 @@ func TestBuildIntentTreeText(t *testing.T) {
 	if !strings.Contains(tree, "ssh: connect to remote servers") {
 		t.Error("expected ssh entry")
 	}
-	// Coding domain has 2 intents → should auto-generate disambiguation note.
-	if !strings.Contains(tree, "mutually exclusive") {
+	// Coding domain has 2 intents → should auto-generate a default
+	// disambiguation note without contradicting declared composites.
+	if !strings.Contains(tree, "normally choose the single best match") {
 		t.Error("expected auto-generated disambiguation note for multi-intent domain")
 	}
 	if !strings.Contains(tree, "coding/bug_fix") {
@@ -47,7 +95,7 @@ func TestBuildIntentTreeText_SingleIntentDomain(t *testing.T) {
 
 	tree := BuildIntentTreeText(defs)
 
-	if strings.Contains(tree, "mutually exclusive") {
+	if strings.Contains(tree, "normally choose the single best match") {
 		t.Error("single-intent domain should NOT have disambiguation note")
 	}
 }
@@ -110,6 +158,23 @@ func TestParseTreeResponse_ScoreClamping(t *testing.T) {
 	}
 }
 
+func TestParseTreeResponseRejectsUnknownWorkflowType(t *testing.T) {
+	candidates := ParseTreeResponse(`{"top":[{"skill":"live_data","score":0.95,"workflow_type":"single_turn"}]}`)
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %#v, want invalid workflow_type rejected", candidates)
+	}
+}
+
+func TestParseTreeResponseRejectsWorkflowTypeForAnotherIntent(t *testing.T) {
+	// Regression: the 2026-08-23 desktop request received HTTP 200 with
+	// skill="coding" paired with workflow_type="contract_review". Both values
+	// are individually known, but never form a valid classification pair.
+	candidates := ParseTreeResponse(`{"top":[{"skill":"coding","score":0.8,"workflow_type":"contract_review"},{"skill":"coding","score":0.2,"workflow_type":"project_proposal"}]}`)
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %#v, want cross-intent workflow types rejected", candidates)
+	}
+}
+
 func TestParseTreeResponse_Malformed(t *testing.T) {
 	candidates := ParseTreeResponse("this is not json at all")
 	if len(candidates) != 0 {
@@ -127,7 +192,22 @@ func TestBuildTreePrompt(t *testing.T) {
 	if !strings.Contains(prompt, "开发一个游戏") {
 		t.Error("prompt should contain user message")
 	}
-	if !strings.Contains(prompt, "<think>") {
-		t.Error("prompt should instruct chain-of-thought reasoning")
+	if !strings.Contains(prompt, "Return ONLY this JSON object") {
+		t.Error("prompt should require a JSON-only response")
+	}
+	if strings.Contains(prompt, "<think>") {
+		t.Error("structured-output prompt must not request emitted reasoning tags")
+	}
+}
+
+func TestBuildTreePromptKeepsCompositeAndWebFetchBoundariesConsistent(t *testing.T) {
+	prompt := BuildTreePrompt("tree", "北京天气，输出格式化pdf报告")
+	for _, want := range []string{
+		"web_fetch requires a concrete URL",
+		"Current externally acquired facts rendered as a PDF → live_data + document_generate",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing semantic boundary %q", want)
+		}
 	}
 }

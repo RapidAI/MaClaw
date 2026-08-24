@@ -1,0 +1,32 @@
+{
+  "category": "semantic_contract_governance",
+  "category_id": 17,
+  "title": "semantic contract governance",
+  "design_ref": "10.1 item 17",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "unknown-from-text",
+      "title": "Unknown capability is fail-closed",
+      "needs": [
+        {
+          "id": "mystery",
+          "capability": "eval.unknown.capability"
+        }
+      ],
+      "catalog": {
+        "providers": []
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {
+            "need_id": "mystery",
+            "reason": "unknown_capability"
+          }
+        ]
+      },
+      "notes": "Runtime self-registration is forbidden."
+    }
+  ]
+}

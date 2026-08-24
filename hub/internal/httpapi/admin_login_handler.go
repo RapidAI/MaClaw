@@ -180,6 +180,7 @@ func AdminUpdateProfileHandler(admins *auth.AdminService, routeSyncers ...tenant
 			return
 		}
 
+		previousEmail := admin.Email
 		token, updatedAdmin, err := admins.UpdateEmailScoped(r.Context(), admin.Username, req.Email, admin.Scope, admin.TenantID)
 		if err != nil {
 			if isAdminValidationError(err) {
@@ -190,7 +191,7 @@ func AdminUpdateProfileHandler(admins *auth.AdminService, routeSyncers ...tenant
 			return
 		}
 		if strings.EqualFold(strings.TrimSpace(updatedAdmin.Scope), "tenant") {
-			syncTenantAdminRoute(r.Context(), routeSyncer, updatedAdmin.TenantID, updatedAdmin.Email)
+			syncTenantAdminRoute(r.Context(), routeSyncer, updatedAdmin.TenantID, updatedAdmin.Email, previousEmail)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{

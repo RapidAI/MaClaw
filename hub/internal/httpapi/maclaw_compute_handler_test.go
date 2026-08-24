@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -55,6 +56,33 @@ func TestMaClawComputeStatusIncludesRegisteredHubContextForTenantAdmin(t *testin
 	}
 	if payload.AdminEmail != "acme-admin@example.com" {
 		t.Fatalf("admin_email = %q, want acme-admin@example.com", payload.AdminEmail)
+	}
+}
+
+func TestMaClawComputeStatusTenantAdminCannotOverrideTenantByQuery(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+	tenantToken := issueTenantAdminToken(t, services.handler, globalToken, "acme", "acme-admin")
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/llm/maclaw-compute-status?tenant_id=tenant_other", nil, tenantToken)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d body=%s", resp.Code, http.StatusForbidden, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "TENANT_FORBIDDEN") {
+		t.Fatalf("body = %s, want tenant access denied error", resp.Body.String())
+	}
+}
+
+func TestMaClawComputeStatusRejectsGlobalAdmin(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/llm/maclaw-compute-status", nil, globalToken)
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d body=%s", resp.Code, http.StatusForbidden, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "TENANT_ADMIN_REQUIRED") {
+		t.Fatalf("body = %s, want tenant admin authorization error", resp.Body.String())
 	}
 }
 
@@ -362,5 +390,296 @@ func TestMaClawComputeStatusReportsRefreshError(t *testing.T) {
 	}
 	if !strings.Contains(payload.AuthorizationError, "hubcenter unavailable") {
 		t.Fatalf("authorization_error = %q", payload.AuthorizationError)
+	}
+}
+
+func TestMaClawComputeStatusIncludesProviderBilling(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	globalToken := issueHubAdminToken(t, services.handler)
+	tenantToken := issueTenantAdminToken(t, services.handler, globalToken, "acme", "acme-admin")
+	record := `{
+		"registered": true,
+		"hub_id": "hub_acme",
+		"hub_secret": "secret",
+		"last_base_url": "https://hubs.example.com",
+		"authorizations": {
+			"llm_compute": {
+				"provider_billing": [
+					{
+						"provider_id": "deepseek",
+						"timezone": "Asia/Shanghai",
+						"credit_multiplier": 1,
+						"credit_multiplier_schedule": [{
+							"days": [1, 2, 3, 4, 5],
+							"start": "00:30",
+							"end": "08:30",
+							"multiplier": 0.5
+						}]
+					},
+					{
+						"provider_id": "openai",
+						"timezone": "Asia/Shanghai",
+						"credit_multiplier": 1
+					}
+				],
+				"tenants": {
+					"tenant_acme": {
+						"hub_id": "hub_acme",
+						"tenant_id": "tenant_acme",
+						"allow_external_providers": true,
+						"authorizations": [{"id": "auth_active", "active": true}]
+					}
+				}
+			}
+		}
+	}`
+	if err := services.store.System.Set(context.Background(), "center_registration", record); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/llm/maclaw-compute-status", nil, tenantToken)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		ProviderBilling []struct {
+			ProviderID               string  `json:"provider_id"`
+			Timezone                 string  `json:"timezone"`
+			CreditMultiplier         float64 `json:"credit_multiplier"`
+			CurrentMultiplier        float64 `json:"current_multiplier"`
+			CreditMultiplierSchedule []struct {
+				Start      string  `json:"start"`
+				End        string  `json:"end"`
+				Multiplier float64 `json:"multiplier"`
+			} `json:"credit_multiplier_schedule"`
+		} `json:"provider_billing"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.ProviderBilling) != 1 {
+		t.Fatalf("provider_billing = %#v, want 1 time-of-use policy body=%s", payload.ProviderBilling, resp.Body.String())
+	}
+	got := payload.ProviderBilling[0]
+	if got.ProviderID != "deepseek" || got.Timezone != "Asia/Shanghai" || len(got.CreditMultiplierSchedule) != 1 {
+		t.Fatalf("provider_billing[0] = %#v", got)
+	}
+	if got.CreditMultiplierSchedule[0].Start != "00:30" || got.CreditMultiplierSchedule[0].Multiplier != 0.5 {
+		t.Fatalf("schedule = %#v", got.CreditMultiplierSchedule)
+	}
+	if got.CurrentMultiplier != 0.5 && got.CurrentMultiplier != 1 {
+		t.Fatalf("current_multiplier = %v, want 0.5 or 1", got.CurrentMultiplier)
+	}
+}
+
+func TestMaClawComputeStatusUsesCachedOfficialProviderBilling(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	client := llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: "https://hubcenter.example.com",
+		HubID:        "hub_dynamic",
+		MachineToken: "secret_dynamic",
+	})
+	accessCtrl := llmservice.NewTenantLLMAccessControl(client)
+	accessCtrl.UpdateOfficialProviderBilling([]llmpool.ProviderBillingPolicy{{
+		ProviderID:       "deepseek",
+		Timezone:         "Asia/Shanghai",
+		CreditMultiplier: 0.8,
+	}})
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client:     client,
+		AccessCtrl: accessCtrl,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/maclaw-compute-status?tenant_id=tenant_acme", nil)
+	rec := httptest.NewRecorder()
+	MaClawComputeStatusHandler(nil, nil)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		ProviderBilling []struct {
+			ProviderID        string  `json:"provider_id"`
+			CreditMultiplier  float64 `json:"credit_multiplier"`
+			CurrentMultiplier float64 `json:"current_multiplier"`
+		} `json:"provider_billing"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.ProviderBilling) != 1 || payload.ProviderBilling[0].ProviderID != "deepseek" {
+		t.Fatalf("provider_billing = %#v", payload.ProviderBilling)
+	}
+	if payload.ProviderBilling[0].CreditMultiplier != 0.8 || payload.ProviderBilling[0].CurrentMultiplier != 0.8 {
+		t.Fatalf("multipliers = %#v", payload.ProviderBilling[0])
+	}
+}
+
+func TestMaClawComputeStatusKeepsLiveBillingOverStoredHeartbeat(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	record := `{
+		"registered": true,
+		"hub_id": "hub_acme",
+		"hub_secret": "secret",
+		"last_base_url": "https://hubs.example.com",
+		"authorizations": {
+			"llm_compute": {
+				"provider_billing": [{
+					"provider_id": "stale",
+					"timezone": "Asia/Shanghai",
+					"credit_multiplier": 0.2
+				}],
+				"tenants": {
+					"tenant_acme": {
+						"hub_id": "hub_acme",
+						"tenant_id": "tenant_acme",
+						"allow_external_providers": true
+					}
+				}
+			}
+		}
+	}`
+	if err := services.store.System.Set(context.Background(), "center_registration", record); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateOfficialProviderBilling([]llmpool.ProviderBillingPolicy{{
+		ProviderID:       "live",
+		Timezone:         "Asia/Shanghai",
+		CreditMultiplier: 0.8,
+	}})
+	centerSvc := center.NewService(config.Default(), services.store.System)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/maclaw-compute-status?tenant_id=tenant_acme", nil)
+	rec := httptest.NewRecorder()
+	MaClawComputeStatusHandler(centerSvc, accessCtrl)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		ProviderBilling []struct {
+			ProviderID       string  `json:"provider_id"`
+			CreditMultiplier float64 `json:"credit_multiplier"`
+		} `json:"provider_billing"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.ProviderBilling) != 1 || payload.ProviderBilling[0].ProviderID != "live" || payload.ProviderBilling[0].CreditMultiplier != 0.8 {
+		t.Fatalf("stored heartbeat replaced live billing: %#v body=%s", payload.ProviderBilling, rec.Body.String())
+	}
+	got := accessCtrl.OfficialProviderBilling()
+	if len(got) != 1 || got[0].ProviderID != "live" || got[0].CreditMultiplier != 0.8 {
+		t.Fatalf("cache = %#v", got)
+	}
+}
+
+func TestMaClawComputeStatusRefreshWithoutClientKeepsHeartbeatGrants(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	record := `{
+		"registered": true,
+		"hub_id": "hub_acme",
+		"hub_secret": "secret",
+		"last_base_url": "https://hubs.example.com",
+		"authorizations": {
+			"llm_compute": {
+				"provider_billing": [{
+					"provider_id": "deepseek",
+					"timezone": "Asia/Shanghai",
+					"credit_multiplier": 1,
+					"credit_multiplier_schedule": [{
+						"days": [1, 2, 3, 4, 5],
+						"start": "00:30",
+						"end": "08:30",
+						"multiplier": 0.5
+					}]
+				}],
+				"tenants": {
+					"tenant_acme": {
+						"hub_id": "hub_acme",
+						"tenant_id": "tenant_acme",
+						"allow_external_providers": true,
+						"authorizations": [{"id": "auth_heartbeat", "active": true}]
+					}
+				}
+			}
+		}
+	}`
+	if err := services.store.System.Set(context.Background(), "center_registration", record); err != nil {
+		t.Fatalf("set center registration: %v", err)
+	}
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	centerSvc := center.NewService(config.Default(), services.store.System)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/maclaw-compute-status?tenant_id=tenant_acme&refresh=1", nil)
+	rec := httptest.NewRecorder()
+	MaClawComputeStatusHandler(centerSvc, accessCtrl)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		AllowExternalProviders bool `json:"allow_external_providers"`
+		Authorizations         []struct {
+			ID string `json:"id"`
+		} `json:"authorizations"`
+		ProviderBilling []struct {
+			ProviderID string `json:"provider_id"`
+		} `json:"provider_billing"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.AllowExternalProviders || len(payload.Authorizations) != 1 || payload.Authorizations[0].ID != "auth_heartbeat" {
+		t.Fatalf("nil-client refresh hid heartbeat grants: %#v body=%s", payload, rec.Body.String())
+	}
+	if len(payload.ProviderBilling) != 1 || payload.ProviderBilling[0].ProviderID != "deepseek" {
+		t.Fatalf("provider_billing = %#v body=%s", payload.ProviderBilling, rec.Body.String())
+	}
+}
+
+func TestOfficialProviderBillingViewsOmitsDefaultOnlyPolicies(t *testing.T) {
+	ac := llmservice.NewTenantLLMAccessControl(nil)
+	ac.UpdateOfficialProviderBilling([]llmpool.ProviderBillingPolicy{
+		{ProviderID: "openai", Timezone: "Asia/Shanghai", CreditMultiplier: 1},
+		{
+			ProviderID:       "deepseek",
+			Timezone:         "Asia/Shanghai",
+			CreditMultiplier: 1,
+			CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+				Days:       []int{1, 2, 3, 4, 5},
+				Start:      "00:30",
+				End:        "08:30",
+				Multiplier: 0.5,
+			}},
+		},
+	})
+	views := officialProviderBillingViews(ac, nil)
+	if len(views) != 1 || views[0].ProviderID != "deepseek" {
+		t.Fatalf("views = %#v, want only deepseek", views)
+	}
+	if views[0].CurrentMultiplier != 0.5 && views[0].CurrentMultiplier != 1 {
+		t.Fatalf("current_multiplier = %v, want 0.5 or 1", views[0].CurrentMultiplier)
+	}
+}
+
+func TestOfficialProviderBillingViewsSkipPaused(t *testing.T) {
+	ac := llmservice.NewTenantLLMAccessControl(nil)
+	ac.UpdateOfficialProviderBilling([]llmpool.ProviderBillingPolicy{
+		{
+			ProviderID:       "deepseek",
+			Timezone:         "Asia/Shanghai",
+			CreditMultiplier: 1,
+			Paused:           true,
+			CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+				Days:       []int{1, 2, 3, 4, 5},
+				Start:      "00:30",
+				End:        "08:30",
+				Multiplier: 0.5,
+			}},
+		},
+		{ProviderID: "yinyu", Timezone: "Asia/Shanghai", CreditMultiplier: 0.8},
+	})
+	views := officialProviderBillingViews(ac, nil)
+	if len(views) != 1 || views[0].ProviderID != "yinyu" {
+		t.Fatalf("views = %#v, want live yinyu only", views)
 	}
 }

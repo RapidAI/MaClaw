@@ -118,20 +118,5 @@ func mergeSystemIntoUser(messages []interface{}) []interface{} {
 
 // convertToAnthropicTools converts OpenAI-style tool definitions to Anthropic format.
 func convertToAnthropicTools(tools []map[string]interface{}) []map[string]interface{} {
-	var anthropicTools []map[string]interface{}
-	for _, t := range tools {
-		fn, _ := t["function"].(map[string]interface{})
-		if fn == nil {
-			continue
-		}
-		at := map[string]interface{}{"name": fn["name"]}
-		if desc, ok := fn["description"]; ok {
-			at["description"] = desc
-		}
-		if params, ok := fn["parameters"]; ok {
-			at["input_schema"] = params
-		}
-		anthropicTools = append(anthropicTools, at)
-	}
-	return anthropicTools
+	return llm.ConvertToAnthropicTools(tools)
 }

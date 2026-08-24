@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
@@ -35,16 +36,16 @@ func TestCodingSubAgentStartFailuresReturnCompleteResult(t *testing.T) {
 	if result.Status != TaskExecFailed || result.Error == "" || !strings.Contains(result.Summary, "任务运行错误") || result.QualityStatus != codingSubAgentQualityFailed || result.QualityIssueCount != 1 {
 		t.Fatalf("nil subagent should return complete failed result, got %#v", result)
 	}
-	if !strings.Contains(result.Summary, "## 质量审计") || strings.Count(result.Summary, "## 质量审计") != 1 {
-		t.Fatalf("nil subagent summary should include one quality audit section, got %q", result.Summary)
+	if strings.Contains(result.Summary, "## 质量审计") || result.QualityStatus != codingSubAgentQualityFailed || !strings.Contains(result.QualitySummary, "coding subagent is nil") {
+		t.Fatalf("nil subagent should keep audit off user summary, got %#v", result)
 	}
 
 	result = (&CodingSubAgent{}).ExecuteTask(nil, "", "", nil)
 	if result.Status != TaskExecFailed || !strings.Contains(result.Error, "task is nil") || !strings.Contains(result.Summary, result.Error) || result.QualityStatus != codingSubAgentQualityFailed {
 		t.Fatalf("nil task should return complete failed result, got %#v", result)
 	}
-	if !strings.Contains(result.Summary, "## 质量审计") || strings.Count(result.Summary, "## 质量审计") != 1 {
-		t.Fatalf("nil task summary should include one quality audit section, got %q", result.Summary)
+	if strings.Contains(result.Summary, "## 质量审计") || result.QualityStatus != codingSubAgentQualityFailed || !strings.Contains(result.QualitySummary, "task is nil") {
+		t.Fatalf("nil task should keep audit off user summary, got %#v", result)
 	}
 }
 
@@ -103,6 +104,9 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "验证优先流程") || !strings.Contains(prompt, "test/build/lint/typecheck") {
 		t.Error("prompt should prefer focused verification over mandatory report writing")
 	}
+	if !strings.Contains(prompt, "编译/链接失败必须在本回合") {
+		t.Error("prompt should require in-turn compile/link recovery instead of stopping incomplete")
+	}
 	if strings.Contains(prompt, "每个任务必须执行") || strings.Contains(prompt, "将测试用例和测试结果写入") {
 		t.Error("prompt should not require every task to write TEST_REPORT.md")
 	}
@@ -115,14 +119,14 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "no-change tasks") || !strings.Contains(prompt, "project-context evidence for new files") {
 		t.Error("prompt should describe no-change and created-file evidence requirements")
 	}
-	if !strings.Contains(prompt, "actual modified/created file paths") || !strings.Contains(prompt, "map every acceptance criterion") || !strings.Contains(prompt, "scope expansion") || !strings.Contains(prompt, "remaining risk") {
-		t.Error("prompt should describe final summary audit requirements")
+	if !strings.Contains(prompt, "## Final answer") || !strings.Contains(prompt, "do not use audit headings") || !strings.Contains(prompt, "验证结果") || !strings.Contains(prompt, "remaining risk") {
+		t.Error("prompt should describe engineer-prose final answer without audit headings")
 	}
-	if !strings.Contains(prompt, "verification commands really run/passed") || !strings.Contains(prompt, "no tests found") || !strings.Contains(prompt, "0 tests") {
+	if !strings.Contains(prompt, "Do not invent EXPLORED / PASS / FAILED banners") || !strings.Contains(prompt, "no tests found") || !strings.Contains(prompt, "0 tests") {
 		t.Error("prompt should prevent unsupported verification claims and empty-success verification")
 	}
-	if !strings.Contains(prompt, "fresh after the final edit") || !strings.Contains(prompt, "real execution output") || !strings.Contains(prompt, "pass/fail outcome") {
-		t.Error("prompt should require fresh verification with non-empty execution evidence and an outcome")
+	if !strings.Contains(prompt, "fresh after the final edit") || !strings.Contains(prompt, "real execution output") {
+		t.Error("prompt should require fresh verification with non-empty execution evidence")
 	}
 	if !strings.Contains(prompt, "(无输出)") || !strings.Contains(prompt, "no tests collected") || !strings.Contains(prompt, "[no test files]") || !strings.Contains(prompt, "list/help/collect-only/dry-run") {
 		t.Error("prompt should enumerate weak verification outputs that do not count")
@@ -144,6 +148,12 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "git reset --hard") || !strings.Contains(prompt, "Remove-Item -Recurse") {
 		t.Error("prompt should describe dangerous command guardrails")
+	}
+	if !strings.Contains(prompt, "禁止擅自执行破坏性删除") || !strings.Contains(prompt, "禁止只回复文字拒绝而不调用工具") || !strings.Contains(prompt, "完全控制") {
+		t.Error("prompt should send explicit workspace wipes through bash so the host can prompt or honor Full Control")
+	}
+	if !strings.Contains(prompt, "Do not refuse in prose without a tool call") || !strings.Contains(prompt, "honor Full Control") {
+		t.Error("prompt should describe host approval for user-requested destructive commands")
 	}
 	if !strings.Contains(prompt, "Git commands that rewrite") || !strings.Contains(prompt, "merge") || !strings.Contains(prompt, "apply") || !strings.Contains(prompt, "cherry-pick") || !strings.Contains(prompt, "update-index") || !strings.Contains(prompt, "Remove-Item -Recurse/-r/-rf") {
 		t.Error("prompt should describe expanded command guardrails")
@@ -173,8 +183,11 @@ func TestBuildFullCodingEnvironmentPromptPreamble(t *testing.T) {
 	if !strings.Contains(preamble, "全功能编程环境") {
 		t.Fatal("preamble should declare full coding environment")
 	}
-	if !strings.Contains(preamble, "manage_skill") || !strings.Contains(preamble, "call_mcp_tool") {
-		t.Fatal("preamble should mention skill/MCP tools")
+	if strings.Contains(preamble, "manage_skill") || strings.Contains(preamble, "call_mcp_tool") {
+		t.Fatal("preamble must not advertise legacy Skill/MCP gateways")
+	}
+	if !strings.Contains(preamble, "受管扩展函数") || !strings.Contains(preamble, "受限别名") {
+		t.Fatal("preamble should explain that only request-listed managed extensions are callable")
 	}
 	if !strings.Contains(preamble, "web_search") || !strings.Contains(preamble, "web_fetch") {
 		t.Fatal("preamble should mention web research tools")
@@ -242,36 +255,50 @@ func TestCodingSubAgentOperationalTaskUsesFocusedNonMutatingTools(t *testing.T) 
 	}
 }
 
-func TestCodingSubAgentLeanUnknownDependencyGetsResearchTools(t *testing.T) {
-	sa := &CodingSubAgent{projectPath: t.TempDir()}
-	cb := &codingSubAgentCallbacks{
-		subagent: sa,
+func TestCodingSubAgentLeanTaskWordingCannotMaterializeResearchTools(t *testing.T) {
+	plain := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Title: "fix request failure", Description: "request returns the wrong result"},
+	}
+	versionSensitive := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
 		task: &TaskItem{Title: "fix unknown vendor SDK error after upgrade",
-			Description: "third-party API compatibility failure"},
+			Description: "third-party API compatibility failure in version 4.2"},
 	}
-	names := make([]string, 0)
-	for _, def := range cb.BuildTools("fix") {
-		fn, _ := def["function"].(map[string]interface{})
-		name, _ := fn["name"].(string)
-		names = append(names, name)
+	plainNames := codingSubAgentToolDefinitionNamesForTest(plain.BuildTools("fix"))
+	versionSensitiveNames := codingSubAgentToolDefinitionNamesForTest(versionSensitive.BuildTools("fix"))
+	if strings.Join(plainNames, "\n") != strings.Join(versionSensitiveNames, "\n") {
+		t.Fatalf("task wording changed lean static surface: plain=%v version_sensitive=%v", plainNames, versionSensitiveNames)
 	}
-	for _, want := range []string{"web_search", "web_fetch"} {
-		if !containsString(names, want) {
-			t.Fatalf("lean unknown-dependency task missing %q; got %v", want, names)
+	for _, forbidden := range []string{"web_search", "web_fetch", "download_file"} {
+		if containsStringForTest(versionSensitiveNames, forbidden) {
+			t.Fatalf("lean task wording must not materialize %q: %v", forbidden, versionSensitiveNames)
 		}
 	}
 }
 
-func TestCodingSubAgentLeanGenericBugKeepsResearchToolsAfterCaching(t *testing.T) {
+func TestCodingSubAgentBuildToolsReplacesStaticSurfaceForCurrentPosture(t *testing.T) {
+	task := &TaskItem{Index: 1, Title: "Inspect implementation", Description: "inspect code"}
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{projectPath: t.TempDir()},
-		task:     &TaskItem{Title: "fix request failure", Description: "request returns the wrong result"},
+		task:     task,
 	}
-	first := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("start diagnosis"))
-	second := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("code navigation discovered AcmeSDK v2"))
-	for _, want := range []string{"web_search", "web_fetch"} {
-		if !containsStringForTest(first, want) || !containsStringForTest(second, want) {
-			t.Fatalf("generic bug must retain %q across cached tool turns; first=%v second=%v", want, first, second)
+	implementation := codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("inspect"))
+	if !containsStringForTest(implementation, "write_file") {
+		t.Fatalf("implementation fixture must start with a write tool: %v", implementation)
+	}
+
+	// The host posture is normally frozen before the loop starts. This test
+	// deliberately changes it between requests to prove a previous rendered
+	// static definition list cannot act as the next request's authority.
+	task.RequestKind = codingRequestInquiry
+	inquiry := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("inspect", 1))
+	if containsStringForTest(inquiry, "write_file") || containsStringForTest(inquiry, "edit_file") {
+		t.Fatalf("request surface retained prior posture's write tools: implementation=%v inquiry=%v", implementation, inquiry)
+	}
+	for _, want := range []string{"read_file", "list_directory"} {
+		if !containsStringForTest(inquiry, want) {
+			t.Fatalf("current inquiry posture lost %q: %v", want, inquiry)
 		}
 	}
 }
@@ -345,8 +372,8 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 	if strings.Contains(prompt, longReq) || strings.Contains(prompt, longDesign) {
 		t.Error("full untruncated context should not appear in the prompt")
 	}
-	if len([]rune(prompt)) > 7000 {
-		t.Errorf("prompt too long: %d runes, expected <7000", len([]rune(prompt)))
+	if len([]rune(prompt)) > 7800 {
+		t.Errorf("prompt too long: %d runes, expected <7800", len([]rune(prompt)))
 	}
 	// Previous outputs are injected into the task user message, not duplicated in
 	// the system prompt.
@@ -355,24 +382,24 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 	}
 }
 
-func TestCodingSubAgentSystemPromptCachesDynamicSelections(t *testing.T) {
+func TestCodingSubAgentSystemPromptDoesNotAdvertiseUnmaterializedDynamicSelections(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{projectPath: t.TempDir()},
 		task:     &TaskItem{Index: 1, Title: "Polish UI", Description: "Improve frontend progress status"},
 		matchedSkills: []codingSubAgentSkillMatch{
-			{Name: "impeccable", Description: "Audit and polish frontend UI", Score: 0.9, RequiredArgs: []string{"input"}},
+			{Name: "impeccable", Description: "Audit and polish frontend UI", Score: 0.9, RequiredArgs: []string{"input"}, StableID: "publisher:impeccable", ContentDigest: "content-a", ContractDigest: "contract-a"},
 		},
 		matchedMCPTools: []codingSubAgentMCPToolMatch{
-			{ServerID: "browser", ServerName: "browser", ToolName: "screenshot", Description: "Capture browser screenshot", Score: 0.8, RequiredArgs: []string{"url"}},
+			{ServerID: "browser", ServerName: "browser", ToolName: "screenshot", Description: "Capture browser screenshot", Score: 0.8, RequiredArgs: []string{"url"}, SchemaDigest: "schema-a", ContractDigest: "contract-a"},
 		},
 	}
 
 	first := cb.BuildSystemPrompt("first turn", true)
-	if !cb.matchedSkillsSelected || !cb.matchedMCPToolsSelected {
-		t.Fatalf("dynamic selections should be marked selected after first prompt build")
+	if cb.matchedSkillsSelected || cb.matchedMCPToolsSelected {
+		t.Fatalf("unmaterialized dynamic candidates must not be selected for the model prompt")
 	}
-	if !strings.Contains(first, "impeccable") || !strings.Contains(first, "screenshot") || !strings.Contains(first, "server: browser") {
-		t.Fatalf("prompt should include preselected skill and MCP sections, got %q", first)
+	if strings.Contains(first, "impeccable") || strings.Contains(first, "screenshot") || !strings.Contains(first, "动态 Skill/MCP 当前未通过") {
+		t.Fatalf("prompt must describe the unavailable dynamic capability without advertising candidates, got %q", first)
 	}
 
 	cb.matchedSkills = nil
@@ -383,22 +410,22 @@ func TestCodingSubAgentSystemPromptCachesDynamicSelections(t *testing.T) {
 	}
 }
 
-func TestCodingSubAgentBuildToolsCachesDynamicToolDefinitions(t *testing.T) {
+func TestCodingSubAgentBuildToolsSeparatesDynamicRequestAliases(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{},
-		task:     &TaskItem{Index: 1, Title: "Use dynamic helpers"},
+		task:     &TaskItem{Index: 1, Title: "Implement feature with dynamic helpers"},
 		matchedSkills: []codingSubAgentSkillMatch{
-			{Name: "impeccable", Description: "Audit and polish frontend UI", Score: 0.9, RequiredArgs: []string{"input"}},
+			{Name: "impeccable", Description: "Audit and polish frontend UI", Score: 0.9, RequiredArgs: []string{"input"}, StableID: "publisher:impeccable", ContentDigest: "content-a", ContractDigest: "contract-a"},
 		},
 		matchedMCPTools: []codingSubAgentMCPToolMatch{
-			{ServerID: "browser", ServerName: "browser", ToolName: "screenshot", Description: "Capture browser screenshot", Score: 0.8, RequiredArgs: []string{"url"}},
+			{ServerID: "browser", ServerName: "browser", ToolName: "screenshot", Description: "Capture browser screenshot", Score: 0.8, RequiredArgs: []string{"url"}, SchemaDigest: "schema-a", ContractDigest: "contract-a"},
 		},
 	}
 
 	first := cb.BuildTools("first turn")
 	firstNames := codingSubAgentToolDefinitionNamesForTest(first)
-	if !containsStringForTest(firstNames, "manage_skill") || !containsStringForTest(firstNames, "call_mcp_tool") {
-		t.Fatalf("tools should include dynamic manage_skill and call_mcp_tool definitions, got %#v", firstNames)
+	if containsStringForTest(firstNames, "manage_skill") || containsStringForTest(firstNames, "call_mcp_tool") {
+		t.Fatalf("cached tools must not include generic dynamic gateways, got %#v", firstNames)
 	}
 	if len(first) == 0 {
 		t.Fatal("expected at least one tool definition")
@@ -407,12 +434,7 @@ func TestCodingSubAgentBuildToolsCachesDynamicToolDefinitions(t *testing.T) {
 		fn["name"] = "mutated_external_tool_name"
 	}
 
-	cb.matchedSkills = nil
-	cb.matchedMCPTools = nil
 	second := cb.BuildTools("later turn")
-	if len(second) != len(first) {
-		t.Fatalf("cached tool list length changed after matched tools were cleared: first=%d second=%d", len(first), len(second))
-	}
 	secondNames := codingSubAgentToolDefinitionNamesForTest(second)
 	if strings.Join(secondNames, "\n") != strings.Join(firstNames, "\n") {
 		t.Fatalf("cached tool names changed after matched tools were cleared: first=%#v second=%#v", firstNames, secondNames)
@@ -420,6 +442,26 @@ func TestCodingSubAgentBuildToolsCachesDynamicToolDefinitions(t *testing.T) {
 	if containsStringForTest(secondNames, "mutated_external_tool_name") {
 		t.Fatalf("BuildTools should return a defensive copy of cached tool definitions, got %#v", secondNames)
 	}
+	if cb.dynamicSurface == nil {
+		cb.dynamicSurface = &codingDynamicSurface{}
+	}
+	requestTools := cb.BuildToolsForModelRequest("first turn", 0)
+	requestNames := codingSubAgentToolDefinitionNamesForTest(requestTools)
+	if containsStringForTest(requestNames, "manage_skill") || containsStringForTest(requestNames, "call_mcp_tool") {
+		t.Fatalf("request surface must not expose generic gateways, got %#v", requestNames)
+	}
+	if containsCodingDynamicAliasForTest(requestNames, "skill_") || containsCodingDynamicAliasForTest(requestNames, "mcp_") {
+		t.Fatalf("request surface must fail closed until durable identity/plan admission exists, got %#v", requestNames)
+	}
+}
+
+func containsCodingDynamicAliasForTest(names []string, prefix string) bool {
+	for _, name := range names {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCodingSubAgentDynamicSelectionTextCachesTaskSnapshot(t *testing.T) {
@@ -493,6 +535,30 @@ func TestCloneCodingSubAgentToolDefinitionsDeepCopiesTypedSchemaContainers(t *te
 	}
 }
 
+func TestCloneCodingSubAgentToolDefinitionsDeepCopiesNamedSchemaContainers(t *testing.T) {
+	type namedSchema map[string]interface{}
+	type namedEnum []string
+	original := []map[string]interface{}{{
+		"function": map[string]interface{}{
+			"name": "named_schema_tool",
+			"parameters": namedSchema{
+				"properties": namedSchema{
+					"mode": namedSchema{"enum": namedEnum{"safe", "full"}},
+				},
+			},
+		},
+	}}
+
+	cloned := cloneCodingSubAgentToolDefinitions(original)
+	params := cloned[0]["function"].(map[string]interface{})["parameters"].(namedSchema)
+	params["properties"].(namedSchema)["mode"].(namedSchema)["enum"].(namedEnum)[0] = "mutated"
+
+	originalParams := original[0]["function"].(map[string]interface{})["parameters"].(namedSchema)
+	if got := originalParams["properties"].(namedSchema)["mode"].(namedSchema)["enum"].(namedEnum)[0]; got != "safe" {
+		t.Fatalf("named schema container was not deep-copied, original enum = %q", got)
+	}
+}
+
 func codingSubAgentToolDefinitionNamesForTest(tools []map[string]interface{}) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
@@ -558,10 +624,10 @@ func TestCodingSubAgentTaskUserMessageIncludesPreflightChecklist(t *testing.T) {
 		"retry context",
 		"After the last edit",
 		"Do not present pre-edit verification as final verification",
-		"actual modified/created file paths",
-		"verification commands you really ran after editing",
-		"acceptance criteria",
-		"scope expansion",
+		"Write the final answer as an engineer",
+		"name real files",
+		"verification commands in prose",
+		"Do not emit audit headings",
 		"remaining risk",
 	} {
 		if !strings.Contains(userMsg, want) {
@@ -1486,7 +1552,7 @@ func TestRemoteCodingSubAgentVerificationGateRequiresPostEditVerification(t *tes
 		Summary:   "changed file",
 		ToolCalls: 2,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "verification command") || !strings.Contains(result.Summary, "## 验证状态") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "verification command") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" {
 		t.Fatalf("remote file changes without verification should fail, got %#v", result)
 	}
 
@@ -1501,7 +1567,7 @@ func TestRemoteCodingSubAgentVerificationGateRequiresPostEditVerification(t *tes
 		Summary:   "changed file",
 		ToolCalls: 4,
 	})
-	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "PASS") {
+	if result.Status != "success" || result.Error != "" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" || !strings.Contains(result.VerificationSummary, "验证命令") {
 		t.Fatalf("remote post-edit verification should pass, got %#v", result)
 	}
 
@@ -1517,6 +1583,70 @@ func TestRemoteCodingSubAgentVerificationGateRequiresPostEditVerification(t *tes
 	})
 	if result.Status != "failed" || !strings.Contains(result.Error, "before the final edit") {
 		t.Fatalf("remote verification before final edit should fail, got %#v", result)
+	}
+}
+
+func TestRemoteCreatedFileContextEvidenceMatchesLocalGreenfieldRule(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/main.cpp", true)
+	cb.trackRemoteFileRead("/repo/main.cpp")
+	cb.trackRemoteCommand("g++ -o app main.cpp", "/repo", "build succeeded", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.cpp | 1 +", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{Status: "success", Summary: "created file", ToolCalls: 4})
+	if result.Status != "failed" || !strings.Contains(result.Error, "created files without inspection") {
+		t.Fatalf("non-greenfield remote creation needs context evidence, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{workspaceWasEmptyAtStart: true}
+	cb.trackRemoteFileChanged("/repo/main.cpp", true)
+	cb.trackRemoteFileRead("/repo/main.cpp")
+	cb.trackRemoteCommand("g++ -o app main.cpp", "/repo", "build succeeded", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " main.cpp | 1 +", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{Status: "success", Summary: "created file", ToolCalls: 4})
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed {
+		t.Fatalf("remote greenfield creation should accept frozen empty-workspace evidence, got %#v", result)
+	}
+}
+
+func TestRemoteWorkspaceBootstrapCapturesPreCreationState(t *testing.T) {
+	command := remoteCodingWorkspaceBootstrapCommand("/repo/new project")
+	if !strings.Contains(command, remoteCodingWorkspaceEmptyMarker) || !strings.Contains(command, "mkdir -p --") || strings.Contains(command, "2>/dev/null") {
+		t.Fatalf("bootstrap command must emit the empty-workspace marker without suppressed errors: %q", command)
+	}
+	if !remoteCodingWorkspaceWasEmptyFromBootstrap("" + remoteCodingWorkspaceEmptyMarker + "1\nEXIT: 0") {
+		t.Fatal("empty marker must be parsed before bootstrap creates files")
+	}
+	if remoteCodingWorkspaceWasEmptyFromBootstrap(remoteCodingWorkspaceEmptyMarker + "0\nEXIT: 0") {
+		t.Fatal("non-empty marker must not be treated as greenfield")
+	}
+	if remoteCodingWorkspaceWasEmptyFromBootstrap(remoteCodingWorkspaceEmptyMarker + remoteCodingWorkspaceUnknownMarker + "\nEXIT: 0") {
+		t.Fatal("unknown marker must not grant greenfield context evidence")
+	}
+	if remoteCodingWorkspaceWasEmptyFromBootstrap("EXIT: 0") {
+		t.Fatal("missing marker must not grant greenfield context evidence")
+	}
+}
+
+func TestRemoteVerificationRecoveryUsesSharedCleanVerifier(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/snake.cpp")
+	cb.trackRemoteFileChanged("/repo/snake.cpp", false)
+	cb.trackRemoteFileRead("/repo/snake.cpp")
+	cb.trackRemoteCommand(`g++ -std=c++11 -o snake snake.cpp 2>&1; echo "Exit code: $?"`, "/repo", "EXIT: 0", true)
+	if got := recoverableSubAgentVerificationCommand(cb.commandsRun, cb.lastEditSeq); got != `g++ -std=c++11 -o snake snake.cpp` {
+		t.Fatalf("remote wrapper recovery command = %q", got)
+	}
+
+	// The completion hook invokes sshBash in production. This assertion proves
+	// the remote audit accepts the direct command it records afterwards, using
+	// the same shared classifier as local coding.
+	cb.trackRemoteCommand(`g++ -std=c++11 -o snake snake.cpp`, "/repo", "EXIT: 0", true)
+	cb.trackRemoteCommand("git diff --stat", "/repo", " snake.cpp | 2 +-", true)
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status: "success", Summary: "changed file", ToolCalls: 5,
+	})
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed {
+		t.Fatalf("shared recovered verifier should satisfy remote quality gate, got %#v", result)
 	}
 }
 
@@ -1781,8 +1911,8 @@ Plan outline (titles only; later steps are separate remote tasks — do not exec
 	if result.Status != "success" || result.Error != "" {
 		t.Fatalf("scaffold plan step without build should pass, got %#v", result)
 	}
-	if !strings.Contains(result.Summary, "验证状态") || !strings.Contains(result.Summary, "NOT_NEEDED") {
-		t.Fatalf("expected scaffold verification NOT_NEEDED, got summary:\n%s", result.Summary)
+	if result.Summary != "T2 scaffold complete; waiting for T3" || !strings.Contains(result.VerificationSummary, "scaffold") {
+		t.Fatalf("expected scaffold verification deferred on structured fields, got summary=%q verification=%q", result.Summary, result.VerificationSummary)
 	}
 
 	// T2 must also survive a missing optional tree display command. The failed
@@ -1801,7 +1931,7 @@ Plan outline (titles only; later steps are separate remote tasks — do not exec
 	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
 		Status: "success", Summary: "T2 scaffold complete", ToolCalls: 6,
 	})
-	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "NOT_NEEDED") {
+	if result.Status != "success" || result.Error != "" || result.QualityStatus != codingSubAgentQualityPassed || !strings.Contains(result.VerificationSummary, "scaffold") {
 		t.Fatalf("T2 missing optional tree should use scaffold relaxation and pass, got %#v", result)
 	}
 
@@ -1826,7 +1956,7 @@ Focus on this step only; do not skip ahead.
 	if result.Status != "failed" {
 		t.Fatalf("implement step without verification must still fail, got %#v", result)
 	}
-	if !strings.Contains(result.Error, "verification") && !strings.Contains(result.Error, "test/build") && !strings.Contains(result.Summary, "MISSING") {
+	if result.QualityStatus != codingSubAgentQualityFailed || (!strings.Contains(result.Error, "verification") && !strings.Contains(result.Error, "test/build")) {
 		t.Fatalf("implement step should fail on verification gate, got %#v", result)
 	}
 
@@ -1849,7 +1979,7 @@ Plan outline (titles only; later steps are separate remote tasks):
 	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
 		Status: "success", Summary: "implemented core collection", ToolCalls: 4,
 	})
-	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "explicitly deferred") {
+	if result.Status != "success" || result.Error != "" || result.QualityStatus != codingSubAgentQualityPassed || !strings.Contains(result.VerificationSummary, "explicitly deferred") {
 		t.Fatalf("implementation with later compile step should defer verification, got %#v", result)
 	}
 
@@ -1861,7 +1991,7 @@ Plan outline (titles only; later steps are separate remote tasks):
 		Summary:   "wrote files",
 		ToolCalls: 1,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Summary, "## 确认状态") {
+	if result.Status != "failed" || result.QualityStatus != codingSubAgentQualityFailed || !strings.Contains(result.Error, "ssh_read_file") || result.Summary != "wrote files" {
 		t.Fatalf("scaffold without post-edit read must fail confirmation, got %#v", result)
 	}
 }
@@ -1901,7 +2031,7 @@ func TestRemoteCodingSubAgentNoChangeRequiresInspectionEvidence(t *testing.T) {
 		Summary:   "nothing needed",
 		ToolCalls: 1,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "no file changes and no inspection") || !strings.Contains(result.Summary, "## 无改动证据") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "no file changes and no inspection") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "nothing needed" {
 		t.Fatalf("remote no-change result without evidence should fail, got %#v", result)
 	}
 
@@ -1912,7 +2042,7 @@ func TestRemoteCodingSubAgentNoChangeRequiresInspectionEvidence(t *testing.T) {
 		Summary:   "inspected only",
 		ToolCalls: 1,
 	})
-	if result.Status != "success" || strings.Contains(result.Summary, "## 无改动证据") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "inspected only" || strings.Contains(result.Summary, "## 无改动证据") {
 		t.Fatalf("remote no-change result with read evidence should pass, got %#v", result)
 	}
 
@@ -1923,7 +2053,7 @@ func TestRemoteCodingSubAgentNoChangeRequiresInspectionEvidence(t *testing.T) {
 		Summary:   "listed only",
 		ToolCalls: 1,
 	})
-	if result.Status != "success" || strings.Contains(result.Summary, "## 无改动证据") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "listed only" || strings.Contains(result.Summary, "## 无改动证据") {
 		t.Fatalf("remote no-change result with list/search evidence should pass, got %#v", result)
 	}
 
@@ -2063,7 +2193,7 @@ Plan outline (titles only):
 	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
 		Status: "failed", Error: "max iterations reached", Summary: "implemented core code", ToolCalls: 4,
 	})
-	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "explicitly deferred") {
+	if result.Status != "success" || result.Error != "" || result.QualityStatus != codingSubAgentQualityPassed || !strings.Contains(result.VerificationSummary, "explicitly deferred") {
 		t.Fatalf("deferred T3 should recover from iteration limit, got %#v", result)
 	}
 }
@@ -2081,7 +2211,7 @@ func TestRemoteCodingSubAgentQualityGateFailsUnresolvedPostEditCommands(t *testi
 		Summary:   "changed file",
 		ToolCalls: 6,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "cat missing.txt") || !strings.Contains(result.Summary, "## 命令状态") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "cat missing.txt") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" {
 		t.Fatalf("unresolved failed post-edit command should fail remote quality gate, got %#v", result)
 	}
 
@@ -2098,7 +2228,7 @@ func TestRemoteCodingSubAgentQualityGateFailsUnresolvedPostEditCommands(t *testi
 		Summary:   "changed file",
 		ToolCalls: 7,
 	})
-	if result.Status != "success" || strings.Contains(result.Summary, "## 命令状态") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" || strings.Contains(result.Summary, "## 命令状态") {
 		t.Fatalf("later successful equivalent command should resolve remote failure, got %#v", result)
 	}
 }
@@ -2112,7 +2242,10 @@ func TestRemoteCodingSubAgentFailedResultStillIncludesCommandEvidence(t *testing
 		Summary:   "partial work",
 		ToolCalls: 1,
 	})
-	if result.Status != "failed" || result.Error != "model stopped" || !strings.Contains(result.Summary, "## 命令状态") || !strings.Contains(result.Summary, "cat missing.txt") {
+	if result.Status != "failed" || result.Error != "model stopped" || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "partial work" {
+		t.Fatalf("failed remote result should keep original error without audit headings, got %#v", result)
+	}
+	if len(result.CommandsRun) == 0 || !strings.Contains(result.CommandsRun[0].Command, "cat missing.txt") {
 		t.Fatalf("failed remote result should keep unresolved command evidence, got %#v", result)
 	}
 
@@ -2127,7 +2260,7 @@ func TestRemoteCodingSubAgentFailedResultStillIncludesCommandEvidence(t *testing
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Summary, "## 验证状态") || strings.Contains(result.Summary, "## 命令状态") {
+	if result.Status != "failed" || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" || !strings.Contains(result.Error, "lint") {
 		t.Fatalf("verification failures should not duplicate command failure summary, got %#v", result)
 	}
 }
@@ -2142,7 +2275,7 @@ func TestRemoteCodingSubAgentExplorationGateRequiresPreEditReadForExistingFiles(
 		Summary:   "changed file",
 		ToolCalls: 3,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "首次修改前") || !strings.Contains(result.Summary, "## 探索状态") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "首次修改前") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" {
 		t.Fatalf("remote existing-file edit without pre-read should fail exploration gate, got %#v", result)
 	}
 
@@ -2157,7 +2290,7 @@ func TestRemoteCodingSubAgentExplorationGateRequiresPreEditReadForExistingFiles(
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "EXPLORED") {
+	if result.Status != "success" || result.Error != "" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" || !strings.Contains(result.ExplorationSummary, "首次修改前已探索") {
 		t.Fatalf("remote successful search before edit should satisfy exploration gate, got %#v", result)
 	}
 
@@ -2200,7 +2333,7 @@ func TestRemoteCodingSubAgentExplorationGateRequiresPreEditReadForExistingFiles(
 		Summary:   "created file",
 		ToolCalls: 4,
 	})
-	if result.Status != "success" || result.Error != "" || !strings.Contains(result.Summary, "NOT_NEEDED") {
+	if result.Status != "success" || result.Error != "" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "created file" || !strings.Contains(result.ExplorationSummary, "跳过探索") {
 		t.Fatalf("remote created file should not require pre-edit read, got %#v", result)
 	}
 }
@@ -2215,7 +2348,7 @@ func TestRemoteCodingSubAgentConfirmationGateRequiresPostEditRead(t *testing.T) 
 		Summary:   "changed file",
 		ToolCalls: 3,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "ssh_read_file") || !strings.Contains(result.Summary, "## 确认状态") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "ssh_read_file") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" {
 		t.Fatalf("remote file changes without post-edit read should fail confirmation gate, got %#v", result)
 	}
 
@@ -2355,7 +2488,7 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "success" || !strings.Contains(result.Summary, "## 远程 Diff 自检") || !strings.Contains(result.Summary, "CHECKED") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" {
 		t.Fatalf("remote diff self-check should be reported as checked, got %#v", result)
 	}
 
@@ -2369,7 +2502,7 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 4,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "git diff/status") || !strings.Contains(result.Summary, "MISSING") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "git diff/status") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" {
 		t.Fatalf("missing post-edit remote diff self-check should fail the final quality gate, got %#v", result)
 	}
 
@@ -2384,7 +2517,7 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Error, "git diff/status") || !strings.Contains(result.Summary, "MISSING") {
+	if result.Status != "failed" || !strings.Contains(result.Error, "git diff/status") || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" {
 		t.Fatalf("pre-edit remote diff self-check should fail the final quality gate, got %#v", result)
 	}
 
@@ -2399,7 +2532,7 @@ func TestRemoteDiffSelfCheckSummary(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "success" || !strings.Contains(result.Summary, "NOT_NEEDED") || strings.Contains(result.Summary, "## 命令状态") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" || strings.Contains(result.Summary, "## 命令状态") {
 		t.Fatalf("non-git remote diff/status failure should not leave command failure, got %#v", result)
 	}
 
@@ -3003,7 +3136,7 @@ func TestSubAgentSoftensSilencedNonGitDiffSelfCheckExit128(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Summary, "MISSING") ||
+	if result.Status != "failed" || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" ||
 		!strings.Contains(result.Error, "git diff/status") {
 		t.Fatalf("ambiguous silenced EXIT:128 must not satisfy post-edit diff evidence, got %#v", result)
 	}
@@ -3101,7 +3234,7 @@ func TestRemoteCodingTaskCheckResultCanSatisfyVerification(t *testing.T) {
 		Summary:   "changed file",
 		ToolCalls: 5,
 	})
-	if result.Status != "success" || !strings.Contains(result.Summary, "PASS") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" || !strings.Contains(result.VerificationSummary, "验证命令") {
 		t.Fatalf("completed check_task with verifier command should satisfy verification, got %#v", result)
 	}
 
@@ -3162,7 +3295,7 @@ func TestRemoteCodingTaskCheckFailureResolvedBySameWorkingDirCommand(t *testing.
 		Summary:   "changed file",
 		ToolCalls: 6,
 	})
-	if result.Status != "success" || strings.Contains(result.Summary, "## 命令状态") {
+	if result.Status != "success" || result.QualityStatus != codingSubAgentQualityPassed || result.Summary != "changed file" || strings.Contains(result.Summary, "## 命令状态") {
 		t.Fatalf("same working dir rerun should resolve failed check_task command, got %#v", result)
 	}
 
@@ -3178,7 +3311,7 @@ func TestRemoteCodingTaskCheckFailureResolvedBySameWorkingDirCommand(t *testing.
 		Summary:   "changed file",
 		ToolCalls: 6,
 	})
-	if result.Status != "failed" || !strings.Contains(result.Summary, "## 验证状态") || !strings.Contains(result.Error, "pytest tests") {
+	if result.Status != "failed" || result.QualityStatus != codingSubAgentQualityFailed || result.Summary != "changed file" || !strings.Contains(result.Error, "pytest tests") {
 		t.Fatalf("different working dir rerun should not resolve failed check_task command, got %#v", result)
 	}
 }
@@ -3298,13 +3431,14 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"运行匹配任务的验证命令",
 		"git diff --stat",
 		"git status --short",
-		"diff/status 自检结果",
-		"实际运行的验证命令及结果",
-		"剩余风险或未验证项",
+		"最终回复用工程师口吻",
+		"不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题",
+		"没有真实风险时不要写 remaining risk",
 		"文件改写必须使用 ssh_edit_file/ssh_write_file",
 		"必须用 ssh_check_task 跟进直到得到明确状态/exit_code",
 		"git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f",
 		"不要用 ssh_bash 执行 rm -r/rm -rf",
+		"禁止只回复文字拒绝",
 		"2>/dev/null",
 		"never put an optional tool in an \"&&\" chain",
 		"\"command -v clang++ || true\"",
@@ -4574,7 +4708,7 @@ func TestCodingSubAgentManageSkillRunMissingNameUsesStandardArgumentError(t *tes
 	}
 }
 
-func TestRejectedDynamicToolArgumentFailureIsTrackedForAudit(t *testing.T) {
+func TestLegacyDynamicGatewayIsRejectedBeforeModelDispatch(t *testing.T) {
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{},
 		matchedSkills: []codingSubAgentSkillMatch{
@@ -4582,16 +4716,16 @@ func TestRejectedDynamicToolArgumentFailureIsTrackedForAudit(t *testing.T) {
 		},
 	}
 
-	result := cb.executeToolWithOutcome("manage_skill", `{"action":"run"}`)
-	if result.Outcome != codingToolOutcomeFailed {
-		t.Fatalf("outcome = %s, want failed", result.Outcome)
+	result := cb.ExecuteToolStructured("manage_skill", `{"action":"run"}`)
+	if result.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("outcome = %s, want error", result.Outcome)
 	}
 	tools := cb.getDynamicToolsRun()
-	if len(tools) != 1 {
-		t.Fatalf("dynamic tool failures tracked = %d, want 1: %#v", len(tools), tools)
+	if len(tools) != 0 {
+		t.Fatalf("legacy model gateway must not record a dynamic attempt: %#v", tools)
 	}
-	if tools[0].Tool != "manage_skill" || tools[0].Succeeded || !strings.Contains(tools[0].Summary, "missing required argument") {
-		t.Fatalf("unexpected tracked dynamic failure: %#v", tools[0])
+	if !strings.Contains(result.Result, "catalog_incomplete") {
+		t.Fatalf("legacy model gateway should fail closed, got %q", result.Result)
 	}
 }
 
@@ -4663,6 +4797,48 @@ func TestBuildCodingSubAgentSystemPromptIncludesWindowsShellContract(t *testing.
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}
+	}
+}
+
+func TestBuildCodingSubAgentSystemPromptWorkspaceClearIsNeverOperational(t *testing.T) {
+	prompt := buildCodingSubAgentSystemPrompt(&TaskItem{
+		Index: 0, Title: "清空当前目录", RequestKind: codingRequestOperational,
+	}, `D:\tmp\proj`, "", "", nil)
+	if strings.Contains(prompt, "操作执行器") {
+		t.Fatal("workspace clear must not use the operational launch/build prompt")
+	}
+	if !strings.Contains(prompt, "禁止只回复文字拒绝而不调用工具") {
+		t.Fatal("implementation prompt must send explicit wipes through the host")
+	}
+}
+
+func TestBuildCodingSubAgentSystemPromptOperationalHasNoWipeException(t *testing.T) {
+	prompt := buildCodingSubAgentSystemPrompt(&TaskItem{
+		Index: 0, Title: "run the app", RequestKind: codingRequestOperational,
+	}, `D:\tmp\proj`, "", "", nil)
+	if !strings.Contains(prompt, "操作执行器") {
+		t.Fatal("expected operational prompt")
+	}
+	if strings.Contains(prompt, "必须调用 bash") || strings.Contains(prompt, "不要改去运行无关的已有程序") {
+		t.Fatal("operational prompt must not carry a contradictory wipe exception")
+	}
+	if !strings.Contains(prompt, "不得清空或改写项目文件") {
+		t.Fatal("operational prompt must forbid workspace mutation")
+	}
+}
+
+func TestBuildSystemPromptFullControlTellsAgentToCallTools(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{
+			handler:       &IMMessageHandler{},
+			projectPath:   t.TempDir(),
+			scopeApproval: newScopeApprovalState(nil, true),
+		},
+		task: &TaskItem{Index: 1, Title: "清空当前目录", Description: "清空当前目录"},
+	}
+	prompt := cb.BuildSystemPrompt("清空当前目录", true)
+	if !strings.Contains(prompt, "当前权限：完全控制") {
+		t.Fatalf("full-control prompt hint missing")
 	}
 }
 
@@ -5281,7 +5457,16 @@ func TestCodingSubAgentRejectsMissingMCPRequiredArguments(t *testing.T) {
 		}},
 	}
 
-	result := cb.executeToolWithOutcome("call_mcp_tool", `{"server_id":"wiki","tool_name":"get_page_children","arguments":{"limit":25}}`)
+	// call_mcp_tool is a legacy model gateway and must remain rejected by the
+	// regular callback. Exercise the explicit host-maintenance helper directly
+	// so this test continues to cover target-specific required-argument checks
+	// without reopening selector-based model dispatch.
+	argsJSON := normalizeCodingSubAgentToolArgumentsForTool("call_mcp_tool", `{"server_id":"wiki","tool_name":"get_page_children","arguments":{"limit":25}}`)
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		t.Fatalf("normalized MCP args should be valid JSON: %v; %s", err, argsJSON)
+	}
+	result := cb.executeCallMCPTool(args)
 
 	if result.Outcome != codingToolOutcomeFailed {
 		t.Fatalf("missing MCP required arg outcome = %q, want failed; result=%s", result.Outcome, result.Text)
@@ -5308,7 +5493,14 @@ func TestCodingSubAgentMCPArgumentAliasesReachTargetValidation(t *testing.T) {
 		}},
 	}
 
-	result := cb.executeToolWithOutcome("call_mcp_tool", `{"server":"wiki","tool":"get_page_children","params":{"limit":25}}`)
+	// Keep alias normalization covered at the host-maintenance seam. The
+	// model-facing callback rejects this legacy gateway before normalization.
+	argsJSON := normalizeCodingSubAgentToolArgumentsForTool("call_mcp_tool", `{"server":"wiki","tool":"get_page_children","params":{"limit":25}}`)
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		t.Fatalf("normalized aliased MCP args should be valid JSON: %v; %s", err, argsJSON)
+	}
+	result := cb.executeCallMCPTool(args)
 
 	if result.Outcome != codingToolOutcomeFailed {
 		t.Fatalf("aliased MCP call missing target required arg outcome = %q, want failed; result=%s", result.Outcome, result.Text)
@@ -5458,13 +5650,13 @@ func TestConvertUnquotedAndAndForPowerShellPreservesQuotedText(t *testing.T) {
 		command string
 		want    string
 	}{
-		{name: "plain separator", command: `Write-Output before && Write-Output after`, want: `Write-Output before ; Write-Output after`},
-		{name: "compact separator", command: `go test ./...&&go vet ./...`, want: `go test ./...;go vet ./...`},
+		{name: "plain separator", command: `Write-Output before && Write-Output after`, want: `Write-Output before ` + windowsPowerShellAndAndStop + ` Write-Output after`},
+		{name: "compact separator", command: `go test ./...&&go vet ./...`, want: `go test ./...` + windowsPowerShellAndAndStop + `go vet ./...`},
 		{name: "double quoted data", command: `Write-Output "a && b"`, want: `Write-Output "a && b"`},
-		{name: "single quoted data", command: `Write-Output 'a && b' && Write-Output done`, want: `Write-Output 'a && b' ; Write-Output done`},
+		{name: "single quoted data", command: `Write-Output 'a && b' && Write-Output done`, want: `Write-Output 'a && b' ` + windowsPowerShellAndAndStop + ` Write-Output done`},
 		{name: "wrapped cmd command", command: `cmd /c "echo a && echo b"`, want: `cmd /c "echo a && echo b"`},
-		{name: "powershell escaped quote", command: "Write-Output \"a `\" && still data\" && Write-Output done", want: "Write-Output \"a `\" && still data\" ; Write-Output done"},
-		{name: "unicode text", command: `Write-Output "路径 && 数据" && Write-Output 完成`, want: `Write-Output "路径 && 数据" ; Write-Output 完成`},
+		{name: "powershell escaped quote", command: "Write-Output \"a `\" && still data\" && Write-Output done", want: "Write-Output \"a `\" && still data\" " + windowsPowerShellAndAndStop + " Write-Output done"},
+		{name: "unicode text", command: `Write-Output "路径 && 数据" && Write-Output 完成`, want: `Write-Output "路径 && 数据" ` + windowsPowerShellAndAndStop + ` Write-Output 完成`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5505,6 +5697,22 @@ func TestExecuteCodingBashWindowsUsesCmdForNulAndOrSyntax(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "probe") {
 		t.Fatalf("cmd syntax probe output = %q, want probe", result.Text)
+	}
+}
+
+func TestExecuteCodingBashWindowsAndAndStopsOnFailure(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell && translation is Windows-specific")
+	}
+
+	result := executeCodingBash(map[string]interface{}{
+		"command": `cmd /c "exit 1" && echo SHOULD_NOT_PRINT`,
+	}, nil)
+	if result.Kind == codingCommandResultOK {
+		t.Fatalf("failed left-hand && must not succeed, got %#v", result)
+	}
+	if strings.Contains(result.Text, "SHOULD_NOT_PRINT") {
+		t.Fatalf("failed left-hand && must not run the right-hand command, got %q", result.Text)
 	}
 }
 
@@ -5798,6 +6006,42 @@ func TestCodingSubAgentBashVerificationExitErrorFails(t *testing.T) {
 	}
 	if commands[0].Succeeded {
 		t.Fatalf("verification failure should be tracked as failed: %#v", commands[0])
+	}
+}
+
+func TestPostLoopVerificationFailureUsesCommandLedger(t *testing.T) {
+	project := t.TempDir()
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: project},
+		task:     &TaskItem{Index: 1, Title: "verification ledger"},
+	}
+	cb.trackCommandResult(map[string]interface{}{
+		"command":     "go test ./...",
+		"working_dir": project,
+	}, "command timed out after 60 seconds", false)
+	ledgerKnown, ledgerFailed := commandLedgerVerificationOutcome(cb, "go test ./...")
+	if !ledgerKnown || !ledgerFailed {
+		t.Fatal("failed verifier must be found in the command ledger")
+	}
+	if !postLoopVerificationFailed("command timed out after 60 seconds", ledgerKnown, ledgerFailed) {
+		t.Fatal("timeout must fail post-loop verification even without an exit-status phrase")
+	}
+	cb.trackCommandResult(map[string]interface{}{
+		"command":     "go test ./...",
+		"working_dir": project,
+	}, "ok github.com/example/project", true)
+	ledgerKnown, ledgerFailed = commandLedgerVerificationOutcome(cb, "go test ./...")
+	if !ledgerKnown || ledgerFailed {
+		t.Fatal("latest matching successful verifier must supersede an earlier failure")
+	}
+	if postLoopVerificationFailed("test fixture contains: fatal error; exit status 1", ledgerKnown, ledgerFailed) {
+		t.Fatal("successful command ledger outcome must override failure-like test output")
+	}
+	if postLoopVerificationFailed("test fixture contains: exit status 0", false, false) {
+		t.Fatal("successful output mentioning exit status 0 must not be treated as a failure")
+	}
+	if !postLoopVerificationFailed("exit status 1", false, false) {
+		t.Fatal("failure-like output without a command ledger must remain a failure")
 	}
 }
 func TestExecuteCodingBashWindowsNativeStderrWithZeroExitSucceeds(t *testing.T) {
@@ -6188,7 +6432,7 @@ func TestCodingSubAgentTrackFileEmitsDiffUpdatedEvent(t *testing.T) {
 		!strings.Contains(joined, `"event":"diff_updated"`) ||
 		!strings.Contains(joined, `"phase":"running"`) ||
 		!strings.Contains(joined, `"task_id":"T4"`) ||
-		!strings.Contains(joined, `"detail":"parser.go (1)"`) {
+		!strings.Contains(joined, `"detail":"Edited parser.go"`) {
 		t.Fatalf("expected structured diff_updated progress, got %#v", progress)
 	}
 }
@@ -8113,6 +8357,43 @@ func TestSummarizeSubAgentQuality(t *testing.T) {
 		t.Fatalf("failed command resolved by a later equivalent success should pass, got %q, %q, %d", status, summary, count)
 	}
 	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
+		{Command: `cmd /c "del C:\\work\\prog-test\\*.*"`, Succeeded: false, Summary: "Are you sure (Y/N)?\ncommand exited with code 1", seq: 2},
+		{Command: `cmd /c "del /F /Q C:\\work\\prog-test\\*.*"`, Succeeded: true, Summary: "", seq: 3},
+	}, 1, nil, nil)
+	if status != "passed" || count != 0 || strings.Contains(summary, "command(s) failed") {
+		t.Fatalf("forced quiet delete retry should resolve its interactive predecessor, got %q, %q, %d", status, summary, count)
+	}
+	if unresolved := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `cmd /c "erase C:\\work\\prog-test\\*.*"`, Succeeded: false, Summary: "Are you sure (Y/N)?\ncommand exited with code 1", seq: 2},
+		{Command: `cmd /c "erase /QF C:\\work\\prog-test\\*.*"`, Succeeded: true, seq: 3},
+	}); len(unresolved) != 0 {
+		t.Fatalf("combined force/quiet erase retry should resolve its interactive predecessor, got %#v", unresolved)
+	}
+	if unresolved := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `cmd /c "del C:\\work\\prog-test\\one.*"`, Succeeded: false, Summary: "command exited with code 1", seq: 2},
+		{Command: `cmd /c "del /F /Q C:\\work\\prog-test\\two.*"`, Succeeded: true, seq: 3},
+	}); len(unresolved) != 1 {
+		t.Fatalf("successful delete of a different target must not resolve the failure, got %#v", unresolved)
+	}
+	if unresolved := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `cmd /c "del C:\\work\\prog-test\\*.*"`, WorkingDir: `C:\\work\\one`, Succeeded: false, Summary: "command exited with code 1", seq: 2},
+		{Command: `cmd /c "del /F /Q C:\\work\\prog-test\\*.*"`, WorkingDir: `C:\\work\\two`, Succeeded: true, seq: 3},
+	}); len(unresolved) != 1 {
+		t.Fatalf("successful delete from a different working directory must not resolve the failure, got %#v", unresolved)
+	}
+	if unresolved := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `cmd /c "del C:\\work\\prog-test\\*.*"`, Succeeded: false, Summary: "command exited with code 1", seq: 2},
+		{Command: `cmd /c "del /FS C:\\work\\prog-test\\*.*"`, Succeeded: true, seq: 3},
+	}); len(unresolved) != 1 {
+		t.Fatalf("delete retry with a behavior-changing switch must not resolve the failure, got %#v", unresolved)
+	}
+	if unresolved := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: `cmd /c "del C:\\work\\prog-test\\*.*"`, Succeeded: false, Summary: "command exited with code 1", seq: 2},
+		{Command: `cmd /c "del -qf C:\\work\\prog-test\\*.*"`, Succeeded: true, seq: 3},
+	}); len(unresolved) != 1 {
+		t.Fatalf("non-Windows dash arguments must not be treated as del switches, got %#v", unresolved)
+	}
+	status, summary, count = summarizeSubAgentQuality("explored", "passed", true, []string{"main.go"}, nil, []CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: false, Summary: "failed", seq: 2},
 		{Command: "pytest   tests", Succeeded: true, Summary: "no tests collected in 0.01s", seq: 3},
 	}, 1, nil, nil)
@@ -8460,6 +8741,15 @@ func TestSoftInspectionProbeFailureIsNotUnresolved(t *testing.T) {
 	}})
 	if len(failed) != 0 {
 		t.Fatalf("missing-path env probe must not block step progression, got %#v", failed)
+	}
+
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   `ls "C:\\Users\\ma139\\Desktop\\prog-test\\build\\snake.exe" && file "C:\\Users\\ma139\\Desktop\\prog-test\\build\\snake.exe"`,
+		Succeeded: false,
+		Summary:   "PowerShell exception: 无法将“file”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("missing Unix file(1) on Windows must be a soft inspect probe, got %#v", failed)
 	}
 
 	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
@@ -8934,65 +9224,88 @@ func TestExistingSubAgentModifiedFilesNormalizesPathSeparators(t *testing.T) {
 }
 
 func TestSummarizeSubAgentCreatedFileContextEvidence(t *testing.T) {
-	warning := summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, nil)
+	warning := summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, nil, false)
 	if warning == "" || !strings.Contains(warning, "created files") || !strings.Contains(warning, "project-context evidence") {
 		t.Fatalf("created files without inspection evidence should warn, got %q", warning)
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, []string{"src/new_handler.go"}, nil, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, []string{"src/new_handler.go"}, nil, nil, false)
 	if warning == "" {
 		t.Fatalf("reading only the created file should not satisfy project-context evidence")
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, []string{"src\\new_handler.go"}, nil, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, []string{"src\\new_handler.go"}, nil, nil, false)
 	if warning == "" {
 		t.Fatalf("reading only the created file with different path separators should not satisfy project-context evidence")
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, []string{"src/existing_handler.go"}, nil, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, []string{"src/existing_handler.go"}, nil, nil, false)
 	if warning != "" {
 		t.Fatalf("read evidence from an existing file should satisfy created-file context, got %q", warning)
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "codegraph explore handlers", Succeeded: true, Summary: "Found handler symbols in src/existing_handler.go"}}, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "codegraph", Query: "codegraph explore handlers", Succeeded: true, Summary: "Found handler symbols in src/existing_handler.go"}}, nil, false)
 	if warning != "" {
 		t.Fatalf("successful search should satisfy created-file context, got %q", warning)
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "ripgrep", Query: "NewHandler", Succeeded: true, Summary: "0 results"}}, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, []CodingSubAgentSearchResult{{Tool: "ripgrep", Query: "NewHandler", Succeeded: true, Summary: "0 results"}}, nil, false)
 	if warning == "" {
 		t.Fatalf("empty-result search should not satisfy created-file context")
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "project_docs/search", Succeeded: true, Summary: "found related handlers"}})
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "project_docs/search", Succeeded: true, Summary: "found related handlers"}}, false)
 	if warning != "" {
 		t.Fatalf("inspection dynamic tool should satisfy created-file context, got %q", warning)
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "coding_knowledge_search", Succeeded: true, Summary: "0 results"}})
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "coding_knowledge_search", Succeeded: true, Summary: "0 results"}}, false)
 	if warning == "" {
 		t.Fatalf("empty-result knowledge search should not satisfy created-file context")
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/write_file", Succeeded: true}})
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/write_file", Succeeded: true}}, false)
 	if warning == "" {
 		t.Fatalf("mutating MCP tool call should not satisfy created-file context")
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/writeFile", Succeeded: true, Summary: "wrote file"}})
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "repo/writeFile", Succeeded: true, Summary: "wrote file"}}, false)
 	if warning == "" {
 		t.Fatalf("camelCase mutating MCP tool call should not satisfy created-file context")
 	}
 
-	warning = summarizeSubAgentCreatedFileContextEvidence(nil, nil, nil, nil)
+	warning = summarizeSubAgentCreatedFileContextEvidence(nil, nil, nil, nil, false)
 	if warning != "" {
 		t.Fatalf("no created files should not warn, got %q", warning)
+	}
+
+	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"main.cpp"}, nil, nil, nil, true)
+	if warning != "" {
+		t.Fatalf("an authoritative empty-workspace inventory should satisfy greenfield context evidence, got %q", warning)
+	}
+}
+
+func TestNewCodingSubAgentCallbacksFreezesEmptyWorkspaceInventory(t *testing.T) {
+	projectPath := t.TempDir()
+	agent := &CodingSubAgent{projectPath: projectPath}
+	callbacks := newCodingSubAgentCallbacks(agent, &TaskItem{Index: 1, Title: "greenfield"}, "", "", nil)
+	if !callbacks.workspaceWasEmptyAtStart {
+		t.Fatal("empty workspace must be recorded before the task starts")
+	}
+	if err := os.WriteFile(filepath.Join(projectPath, "main.cpp"), []byte("int main() {}\n"), 0o600); err != nil {
+		t.Fatalf("create task output: %v", err)
+	}
+	if projectWorkspaceWasEmpty(projectPath) {
+		t.Fatal("fixture must prove the workspace becomes non-empty after task output")
+	}
+	if warning := summarizeSubAgentCreatedFileContextEvidence([]string{"main.cpp"}, nil, nil, nil, callbacks.workspaceWasEmptyAtStart); warning != "" {
+		t.Fatalf("frozen greenfield inventory must satisfy context evidence after creation, got %q", warning)
 	}
 }
 
 func TestCreatedFileContextEvidenceAddsQualityFailure(t *testing.T) {
 	status, summary, count := summarizeSubAgentQuality(codingSubAgentQualityNotNeeded, codingSubAgentQualityPassed, true, []string{"src/new_handler.go"}, []string{"src/new_handler.go"}, []CodingSubAgentCommandResult{{Command: "go test ./...", Succeeded: true, Summary: "ok", seq: 1}}, 0, nil, nil)
-	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, nil))
+	status, summary, count = appendSubAgentQualityFailure(status, summary, count, summarizeSubAgentCreatedFileContextEvidence([]string{"src/new_handler.go"}, nil, nil, nil, false))
 	if status != codingSubAgentQualityFailed || count != 1 || !strings.Contains(summary, "created files without inspection") {
 		t.Fatalf("created-file context gap should become a quality failure, got (%q, %q, %d)", status, summary, count)
 	}
@@ -9696,6 +10009,19 @@ func TestUnresolvedFailedSubAgentCommandsRequireLaterEquivalentRealSuccess(t *te
 	}
 	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
 		t.Fatalf("later PowerShell full-path cmake success should resolve failed shorthand command, got %#v", unresolved)
+	}
+
+	commands = []CodingSubAgentCommandResult{
+		{Command: `ls -lh "C:\\repo\\build\\snake.exe" && file "C:\\repo\\build\\snake.exe"`, Succeeded: false, Summary: "PowerShell exception: 找不到与参数名称“lh”匹配的参数。", seq: 1},
+		{Command: `ls "C:\\repo\\build\\snake.exe" && file "C:\\repo\\build\\snake.exe"`, Succeeded: false, Summary: "PowerShell exception: 无法将“file”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。", seq: 2},
+		{Command: `cd "C:\\repo" && cmake --build build`, Succeeded: true, Summary: "ninja: no work to do.", seq: 3},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later cmake success should resolve Unix ls/file inspect failures, got %#v", unresolved)
+	}
+	status, summary, count := summarizeSubAgentQuality("explored", "passed", true, []string{"snake.cpp"}, nil, commands, 0, nil, nil)
+	if status != "passed" || count != 0 || strings.Contains(summary, "command(s) failed") {
+		t.Fatalf("successful GUI rewrite must not fail quality on missing file(1), got %q, %q, %d", status, summary, count)
 	}
 
 	commands = []CodingSubAgentCommandResult{
@@ -11984,5 +12310,77 @@ func TestCodingSubAgentFinalGitDiffFailureDoesNotMarkChecked(t *testing.T) {
 	}
 	if cb.gitDiffChecked {
 		t.Fatal("gitDiffChecked should remain false after failed final diff")
+	}
+}
+
+func TestProbeCodingWorkspaceEmptyIsHostAuthoritative(t *testing.T) {
+	dir := t.TempDir()
+	probe := probeCodingWorkspace(dir)
+	if !strings.Contains(probe, "\u9876\u5c42: \u7a7a") {
+		t.Fatalf("empty workspace must be an explicit host ReadDir conclusion: %q", probe)
+	}
+	if !hostWorkspaceInventoryEvidence(dir) {
+		t.Fatal("empty but readable work root must still produce a host inventory probe")
+	}
+	if summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, nil) == "" {
+		t.Fatal("host inventory must not waive no-change quality; agent still needs read/search/inspect evidence")
+	}
+
+	prompt := "base prompt"
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: dir}}
+	appendCodingWorkspaceProbe(&prompt, cb)
+	if !strings.Contains(prompt, "\u5de5\u4f5c\u533a\u6982\u89c8") || !strings.Contains(prompt, "ReadDir") {
+		t.Fatalf("host probe must be injected even when fullEnv is off: %q", prompt)
+	}
+}
+
+func TestInspectOnlyPythonFailureDoesNotFailExploreQuality(t *testing.T) {
+	cmd := CodingSubAgentCommandResult{
+		Command:   `python3 -c "import os; print(os.listdir(r'C:\\Users\\me\\prog-test'))"`,
+		Succeeded: false,
+		Summary:   `failed: [ERROR] Executable C:\Users\me\AppData\Local\Python\pythoncore-3.14-64\python.exe is for a different kind of processor architecture. (1 issue(s))`,
+	}
+	if !subAgentInspectOnlyInventoryCommand(cmd.Command) {
+		t.Fatal("python listdir must classify as inventory-only")
+	}
+	if !subAgentCommandIsSoftInspectionProbeFailure(cmd) {
+		t.Fatal("inventory-only python failure must be soft")
+	}
+	if failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{cmd}); len(failed) != 0 {
+		t.Fatalf("inventory-only python failure must not stay unresolved, got %#v", failed)
+	}
+	status, summary, _ := summarizeSubAgentQuality(
+		codingSubAgentQualityExplored, codingSubAgentQualityNotNeeded, true,
+		nil, nil, []CodingSubAgentCommandResult{cmd}, 0, nil, nil,
+	)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("explore T1 must not fail quality on inspect-only python, got %s %q", status, summary)
+	}
+
+	pytestFail := CodingSubAgentCommandResult{
+		Command:   "python3 -m pytest tests",
+		Succeeded: false,
+		Summary:   "FAILED tests/test_app.py",
+	}
+	if subAgentInspectOnlyInventoryCommand(pytestFail.Command) {
+		t.Fatal("pytest must not classify as inventory-only")
+	}
+	status, summary, _ = summarizeSubAgentQuality(
+		codingSubAgentQualityExplored, codingSubAgentQualityNotNeeded, true,
+		nil, nil, []CodingSubAgentCommandResult{pytestFail}, 0, nil, nil,
+	)
+	if status == codingSubAgentQualityPassed {
+		t.Fatalf("pytest failure must stay a hard quality failure, got %s %q", status, summary)
+	}
+}
+
+func TestCodingLoopRequestContextDisablesTransparentCompatibilityRetries(t *testing.T) {
+	ctx, finish, err := codingLoopLLMRequestContext(nil, nil, "coding-compat-retry-test", 1)
+	if err != nil {
+		t.Fatalf("request context: %v", err)
+	}
+	defer finish(nil)
+	if !llm.TransparentRequestRetriesDisabled(ctx) {
+		t.Fatal("Coding request context must keep compatibility retries under RunLoop ownership")
 	}
 }

@@ -7,7 +7,7 @@ import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./
 import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
-import { renderMessage } from "./aiAssistantMarkdown";
+import { renderCodingAgentThinkingTimelineItem, renderMessage } from "./aiAssistantMarkdown";
 import {
     formatRecordingCompletionDisplay,
     formatRecordingCompletionMessage,
@@ -23,7 +23,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
 import { useAIAssistantVoiceControls } from "./useAIAssistantVoiceControls";
-import { useAssistantOutputScroll } from "./useAssistantOutputScroll";
+import { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX, useAssistantOutputScroll } from "./useAssistantOutputScroll";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
@@ -49,7 +49,7 @@ import {
 } from "./welcomeTaskMemory";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
-import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
+import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentInputStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText, formatToolProgressStatus, isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
@@ -68,8 +68,8 @@ import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
-import { compactCodingAgentProgressMessages, groupCodingAgentProgressForRender } from "./compactCodingAgentProgressMessages";
-import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
+import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgressMessages";
+import { CodingAgentPreviewFocusContext, renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
@@ -79,6 +79,7 @@ import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
+import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
@@ -450,6 +451,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [remoteReconnectStatusPath, setRemoteReconnectStatusPath] = useState("");
     /** Advances after SSH reconnect so the already-mounted source tree reloads. */
     const [remoteWorkspaceRefreshToken, setRemoteWorkspaceRefreshToken] = useState(0);
+    /** Advances after the local tab working directory changes so the source tree reloads. */
+    const [localWorkspaceRefreshToken, setLocalWorkspaceRefreshToken] = useState(0);
+    const bumpLocalWorkspaceRefresh = useCallback(() => {
+        setLocalWorkspaceRefreshToken((value) => value + 1);
+    }, []);
     /** Avoid auto-reconnect loops: key = projectPath|user@host:port after one attempt (success or fail). */
     const remoteAutoReconnectKeyRef = useRef("");
     /** In-flight SSH reconnect owner (`projectPath|user@host:port`), so different remote tabs never block each other. */
@@ -465,6 +471,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     /** Pure coding session plan editor (local + remote). */
     const [codingSessionPlan, setCodingSessionPlan] = useState("");
     const [codingExecutionPlan, setCodingExecutionPlan] = useState("");
+    const [codingRequirementRestatement, setCodingRequirementRestatement] = useState("");
     const [codingPlanMode, setCodingPlanMode] = useState<"auto" | "approve" | "off">("auto");
     const [codingPendingApproval, setCodingPendingApproval] = useState(false);
     const [codingPendingPlanEditing, setCodingPendingPlanEditing] = useState(false);
@@ -878,6 +885,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!pureCoding || !projectPath) {
             setCodingSessionPlan("");
             setCodingExecutionPlan("");
+            setCodingRequirementRestatement("");
             setCodingPlanMode("auto");
             setCodingPendingApproval(false);
             setCodingStepStatuses([]);
@@ -929,6 +937,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const execPlan = String(st.execution_plan || "").trim();
             setCodingSessionPlan(plan);
             setCodingExecutionPlan(execPlan);
+            setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             const mode = String(st.plan_mode || "auto").toLowerCase();
             setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
             {
@@ -1196,6 +1205,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 applySteps(payload?.step_statuses ?? payload?.stepStatuses);
                 const plan = String(payload?.execution_plan || payload?.executionPlan || "").trim();
                 if (plan) setCodingExecutionPlan(plan);
+                const understood = String(payload?.requirement_restatement || payload?.requirementRestatement || "").trim();
+                if (understood) setCodingRequirementRestatement(understood);
                 return;
             }
             // Fallback: re-poll status if payload shape unexpected.
@@ -1204,6 +1215,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 applySteps(st.step_statuses);
                 const execPlan = String(st.execution_plan || "").trim();
                 if (execPlan) setCodingExecutionPlan(execPlan);
+                const understood = String(st.requirement_restatement || "").trim();
+                if (understood) setCodingRequirementRestatement(understood);
             });
         });
         return () => { if (typeof off === "function") off(); };
@@ -1222,6 +1235,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 if (!st) return;
                 setCodingSessionPlan(String(st.session_plan || "").trim());
                 setCodingExecutionPlan(String(st.execution_plan || "").trim());
+                setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
                 const mode = String(st.plan_mode || "auto").toLowerCase();
                 setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
                 {
@@ -1588,6 +1602,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
             })) : []);
             setCodingExecutionPlan(String(st?.execution_plan || "").trim());
+            setCodingRequirementRestatement(String(st?.requirement_restatement || "").trim());
         } catch {
             // Re-sync pending if reject optimistic clear failed
             try {
@@ -1920,6 +1935,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!st) return;
             setCodingSessionPlan(String(st.session_plan || "").trim());
             setCodingExecutionPlan(String(st.execution_plan || "").trim());
+            setCodingRequirementRestatement(String(st.requirement_restatement || "").trim());
             setCodingCheckpointLabel(String(st.checkpoint_label || "").trim());
             setCodingCheckpointFiles(Array.isArray(st.checkpoint_files) ? st.checkpoint_files.map(String) : []);
             setCodingCheckpointSnapshots(Number(st.checkpoint_snapshots) || 0);
@@ -2205,6 +2221,42 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setRenameGroupError(error instanceof Error ? error.message : String(error || localizeText(lang, "Failed to rename group", "修改群名失败", "修改群名失敗")));
         }
     }, [closeRenameGroupDialog, lang, renameGroupSaving, renameGroupTab, renameGroupTargetTab, renameGroupValue]);
+    const clearedProjectTabIdsRef = useRef<Set<string>>(new Set());
+    /**
+     * Clear and send both mutate the same backend session memory. A new prompt
+     * must wait for an in-progress clear rather than racing it and being erased.
+     */
+    const sessionHistoryClearPromisesRef = useRef<Map<string, Promise<boolean>>>(new Map());
+    /**
+     * A rejected backend clear must remain visible after its promise settles.
+     * Otherwise the next send can silently reuse the old server-side context.
+     */
+    const failedSessionHistoryClearRef = useRef<Set<string>>(new Set());
+    const ensureProjectSessionHistoryCleared = useCallback((rawSessionKey: string): Promise<boolean> => {
+        const sessionKey = rawSessionKey.trim();
+        if (!sessionKey) return Promise.resolve(false);
+        const inFlight = sessionHistoryClearPromisesRef.current.get(sessionKey);
+        if (inFlight) return inFlight;
+        const clearPromise = ClearAIAssistantHistoryForSession(sessionKey)
+            .then(() => {
+                failedSessionHistoryClearRef.current.delete(sessionKey);
+                return true;
+            })
+            .catch((error) => {
+                // Keep a durable failure marker after this promise is removed.
+                // The next send will retry the clear instead of using old context.
+                failedSessionHistoryClearRef.current.add(sessionKey);
+                console.warn("[AIAssistantPanel] failed to clear project history", { sessionKey, error });
+                return false;
+            });
+        sessionHistoryClearPromisesRef.current.set(sessionKey, clearPromise);
+        void clearPromise.finally(() => {
+            if (sessionHistoryClearPromisesRef.current.get(sessionKey) === clearPromise) {
+                sessionHistoryClearPromisesRef.current.delete(sessionKey);
+            }
+        });
+        return clearPromise;
+    }, []);
     const clearActiveHistory = useCallback(async () => {
         // Close all right-side preview panels (workflow doc, code preview, agent view)
         closeAllPreviewPanelsRef.current?.();
@@ -2215,6 +2267,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             clearTabConversation(activeTab.id);
             setProjectTabMessages([]);
             clearedProjectTabIdsRef.current.add(activeTab.id);
+            projectConversationHydrationGenerationByTabIdRef.current.set(
+                activeTab.id,
+                (projectConversationHydrationGenerationByTabIdRef.current.get(activeTab.id) || 0) + 1,
+            );
+            projectConversationHydrationByTabIdRef.current.delete(activeTab.id);
             latestProjectCloseSnapshotRef.current = {
                 tabId: activeTab.id,
                 projectPath: activeTab.projectPath,
@@ -2252,15 +2309,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setQueueInteractionStarted(false);
             setQueueEditDraftActive(false);
             setEditingEntryId(null);
-            // Fire-and-forget cancel the backend agent. The live-sync effect guard
-            // and displayMessages guard prevent cancel responses from resurrecting.
+            // ClearAIAssistantHistoryForSession owns the backend transaction: it
+            // cancels an active agent, clears memory, and resets per-session state
+            // under the session's synchronization. Do not issue a separate cancel
+            // in parallel, which can race the clear with a late write.
             if (activeTab.projectPath) {
                 const sessionKey = activeTab.sessionKey || `desktop-user:${activeTab.projectPath}`;
                 // Invalidate all session-owned transient state before the async
                 // cancel returns. Otherwise an open file picker or late stream
                 // event can revive attachments/messages after a clear.
                 forgetAIAssistantSessionRounds(sessionKey);
-                CancelAIAssistantSessionForSession(sessionKey).catch(() => {});
+                // The project transcript is restored from this same session
+                // owner. Clearing only the tab snapshot would make a later
+                // activation repopulate the conversation from backend memory.
+                await ensureProjectSessionHistoryCleared(sessionKey);
             }
             return;
         }
@@ -2291,7 +2353,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setQueueEditDraftActive(false);
         setEditingEntryId(null);
         await clearHistory();
-    }, [activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation]);
+    }, [activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation, ensureProjectSessionHistoryCleared]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const isExpertTabActive = activeTab.type === "expert";
@@ -2418,7 +2480,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const activeTabIdRef = useRef<string>(activeTab.id);
     const activeTabRef = useRef(activeTab);
     const latestDisplayMessagesRef = useRef<ChatMessage[]>([]);
-    const clearedProjectTabIdsRef = useRef<Set<string>>(new Set());
+    /**
+     * Project-agent history is keyed by project path, independently from the
+     * tab-session snapshot. Track only in-flight reads: existing local history
+     * is the durable completion marker, while an empty backend response must
+     * remain retryable on a later task activation.
+     */
+    const projectConversationHydrationByTabIdRef = useRef<Map<string, Promise<void>>>(new Map());
+    /** Monotonic lifecycle token per tab; invalidates late hydration after close/delete/reopen. */
+    const projectConversationHydrationGenerationByTabIdRef = useRef<Map<string, number>>(new Map());
     const latestProjectCloseSnapshotRef = useRef<{
         tabId: string;
         projectPath?: string;
@@ -2555,9 +2625,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setProjectTabMessages((restored.history || []) as ChatMessage[]);
                 setLocalDraftInputValue(restored.inputText || "");
                 requestAnimationFrame(() => {
-                    if (outputContainerRef.current && restored.scrollTop) {
-                        outputContainerRef.current.scrollTop = restored.scrollTop;
-                    }
+                    const el = outputContainerRef.current;
+                    if (!el || !restored.scrollTop) return;
+                    el.scrollTop = restored.scrollTop;
+                    userScrolledUpRef.current =
+                        el.scrollHeight - el.scrollTop - el.clientHeight > ASSISTANT_OUTPUT_NEAR_BOTTOM_PX;
                 });
             } else {
                 setProjectTabMessages([]);
@@ -2648,7 +2720,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (activeTabIdRef.current === detached.tabId) {
                 setProjectTabMessages(nextHistory);
             }
-            const assistantStillPending = latestDetachedMessages.some(message => message.role === "assistant" && !message.content && !message.fields?.length && !message.actions?.length && !message.localFilePath && !message.localFilePaths?.length && !message.thumbnailBase64);
+            const assistantStillPending = latestDetachedMessages.some(message => message.role === "assistant" && !message.content && !message.fields?.length && !message.actions?.length && !message.localFilePath && !message.localFilePaths?.length && !message.thumbnailBase64 && !message.imageKey);
             if (!assistantStillPending) {
                 detachedProjectRoundsRef.current.delete(key);
                 changed = true;
@@ -2896,7 +2968,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }, Math.max(0, delayMs));
             projectPrepareTimersRef.current.set(readyTab.id, timer);
         };
-        const tab = createProjectTab(projectPath, taskTitle, {
+		const tab = createProjectTab(projectPath, taskTitle, {
             agentMode,
             remoteHost,
             remoteSafety,
@@ -2912,11 +2984,63 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     scheduleNewAgentReady(readyTab, minimumVisibleMs, "session-ready");
                 },
             } : {}),
-        });
+		});
 		// ACP's owner and transcript live exclusively in its external session.
 		// Never hydrate a path-owned project transcript/context into this mirror.
 		if (tab && sessionKey) return tab;
-        if (tab && tab.projectPath && !tabExisted) {
+		// A task can already have a restored tab entry when the user clicks its
+		// row in task management (for example after application startup).  That
+		// activation used to skip the whole restore branch below, leaving the
+		// project tab blank even though the project-scoped conversation is still
+		// available from the backend.  Keep the transcript restore independent
+		// from whether the tab itself was newly created.
+		const restoreBackendConversationIfNeeded = (): Promise<void> => {
+			if (!tab?.projectPath || clearedProjectTabIdsRef.current.has(tab.id)) return Promise.resolve();
+			const initialState = getTabState(tab.id);
+			if (hasRestorableProjectConversation(withoutProjectContextMessages(initialState?.history))) return Promise.resolve();
+			const inFlightOrLoaded = projectConversationHydrationByTabIdRef.current.get(tab.id);
+			if (inFlightOrLoaded) return inFlightOrLoaded;
+			const hydrationGeneration = projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0;
+
+			let restore!: Promise<void>;
+			restore = (async () => {
+				try {
+					const restoredHistory = await loadRestoredProjectConversationHistory(tab.projectPath!);
+					if (restoredHistory.length === 0
+						|| clearedProjectTabIdsRef.current.has(tab.id)
+						|| (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) !== hydrationGeneration
+						|| !getTabs().some(openTab => openTab.id === tab.id && openTab.type === "project" && openTab.projectPath === tab.projectPath)) return;
+					const existing = getTabState(tab.id);
+					// A user may have sent a new message while this request was in
+					// flight. Never merge an older backend snapshot over that newer
+					// local conversation.
+					if (hasRestorableProjectConversation(withoutProjectContextMessages(existing?.history))) return;
+					const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restoredHistory);
+					saveTabState(tab.id, {
+						...existing,
+						history: nextHistory,
+					});
+					if (activeTabIdRef.current === tab.id) {
+						setProjectTabMessages(nextHistory);
+					}
+				} catch (error) {
+					console.warn("[AIAssistantPanel] failed to restore backend project history", { projectPath: tab.projectPath, error });
+				} finally {
+					// The message state, not this promise, records successful hydration.
+					// Remove empty and failed results so a later activation can retry.
+					if (projectConversationHydrationByTabIdRef.current.get(tab.id) === restore) {
+						projectConversationHydrationByTabIdRef.current.delete(tab.id);
+					}
+				}
+			})();
+			projectConversationHydrationByTabIdRef.current.set(tab.id, restore);
+			return restore;
+		};
+		if (tab && tab.projectPath && tabExisted) {
+			void restoreBackendConversationIfNeeded();
+			return tab;
+		}
+		if (tab && tab.projectPath && !tabExisted) {
             const projectPathForTab = tab.projectPath;
             setProjectTabPreparing(tab.id, true, prepareMode || "restore-context");
             console.info("[AIAssistantPanel] project tab preparing", { tabId: tab.id, projectPath: projectPathForTab, prepareMode: prepareMode || "restore-context" });
@@ -2925,25 +3049,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 return tab;
             }
             void (async () => {
-                const initialState = getTabState(tab.id);
-                if (!hasRestorableProjectConversation(withoutProjectContextMessages(initialState?.history))) {
-                    try {
-                        const restoredHistory = await loadRestoredProjectConversationHistory(projectPathForTab);
-                        if (restoredHistory.length > 0) {
-                            const existing = getTabState(tab.id);
-                            const nextHistory = mergeChatMessages(withoutProjectContextMessages(existing?.history), restoredHistory);
-                            saveTabState(tab.id, {
-                                ...existing,
-                                history: nextHistory,
-                            });
-                            if (activeTabIdRef.current === tab.id) {
-                                setProjectTabMessages(nextHistory);
-                            }
-                        }
-                    } catch (error) {
-                        console.warn("[AIAssistantPanel] failed to restore backend project history", { projectPath: projectPathForTab, error });
-                    }
-                }
+				await restoreBackendConversationIfNeeded();
                 loadProjectContext(projectPathForTab, (msg) => {
                     const existing = getTabState(tab.id);
                     const nextHistory = [msg, ...withoutProjectContextMessages(existing?.history)];
@@ -3045,6 +3151,42 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const resolvedTabId = optionTabId || resolvedTab?.id || (liveActiveTab.type === "project" ? liveActiveTab.id : undefined);
         const isProjectSend = !!resolvedProjectPath;
         if (isProjectSend && resolvedProjectPath) {
+            const sessionKey = resolvedTab?.sessionKey || projectSessionKey(resolvedProjectPath);
+            const pendingClear = sessionHistoryClearPromisesRef.current.get(sessionKey);
+            const retryFailedClear = !pendingClear && failedSessionHistoryClearRef.current.has(sessionKey);
+            const canDeferForClear = !!resolvedTabId
+                && getTabs().some(openTab => (
+                    openTab.id === resolvedTabId
+                    && openTab.type === "project"
+                    && openTab.projectPath === resolvedProjectPath
+                ));
+            const clearBarrier = pendingClear || (retryFailedClear
+                ? ensureProjectSessionHistoryCleared(sessionKey)
+                : undefined);
+            if (clearBarrier) {
+                if (!canDeferForClear) return Promise.resolve(false);
+                // Keep this send bound to the tab that the user was viewing when
+                // it was submitted. A later tab switch, close, or task deletion
+                // must not retarget the prompt once the clear settles.
+                const tabIdAtSubmit = resolvedTabId;
+                return clearBarrier.then((cleared) => {
+                    // If backend clearing failed, reject the queued prompt rather
+                    // than attaching it to the pre-clear conversation context.
+                    if (!cleared) return false;
+                    const tabIsStillOpen = !!tabIdAtSubmit && getTabs().some(openTab => (
+                        openTab.id === tabIdAtSubmit
+                        && openTab.type === "project"
+                        && openTab.projectPath === resolvedProjectPath
+                    ));
+                    if (!tabIsStillOpen) return false;
+                    clearedProjectTabIdsRef.current.delete(tabIdAtSubmit);
+                    return sendMessageForTab(text, {
+                        ...sendOptions,
+                        tabId: tabIdAtSubmit,
+                        project_path: resolvedProjectPath,
+                    });
+                });
+            }
             if (resolvedTabId) clearedProjectTabIdsRef.current.delete(resolvedTabId);
             const mergedOptions: Record<string, unknown> = {
                 ...sendOptions,
@@ -3183,7 +3325,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             : sendOptions;
         const localSend = sendMessage(text, localOptions as any);
         return localSend.finally(() => markPanelSendInFlight(localSessionKey, false));
-    }, [getTabState, getTabs, markPanelSendInFlight, messages, persistProjectTabMsgIds, projectTabMessages, saveTabState, sendMessage]);
+    }, [ensureProjectSessionHistoryCleared, getTabState, getTabs, markPanelSendInFlight, messages, persistProjectTabMsgIds, projectTabMessages, saveTabState, sendMessage]);
     sendMessageForTabRef.current = sendMessageForTab;
     const sendProjectMessageAfterPrepare = useCallback((text: string, options?: Record<string, unknown>): Promise<boolean> => {
         const tabId = typeof options?.tabId === "string" ? options.tabId : "";
@@ -3240,6 +3382,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const closeTabWithProjectCleanup = useCallback((tabId: string) => {
         const tab = getTabs().find(t => t.id === tabId);
         if (tab?.type === "project") {
+            projectConversationHydrationGenerationByTabIdRef.current.set(
+                tabId,
+                (projectConversationHydrationGenerationByTabIdRef.current.get(tabId) || 0) + 1,
+            );
+            projectConversationHydrationByTabIdRef.current.delete(tabId);
             const snapshot = latestProjectCloseSnapshotRef.current;
             const existingState = getTabState(tabId);
             if (snapshot?.tabId === tabId) {
@@ -3367,6 +3514,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         const offDeleted = EventsOn(EVENT_PROJECT_TASK_DELETED, (projectPath: string) => {
             if (typeof projectPath === "string" && projectPath.trim()) {
+                const normalizedPath = normalizeProjectSessionPath(projectPath);
+                for (const tab of getTabs()) {
+                    if (tab.type !== "project" || normalizeProjectSessionPath(tab.projectPath) !== normalizedPath) continue;
+                    projectConversationHydrationGenerationByTabIdRef.current.set(
+                        tab.id,
+                        (projectConversationHydrationGenerationByTabIdRef.current.get(tab.id) || 0) + 1,
+                    );
+                    projectConversationHydrationByTabIdRef.current.delete(tab.id);
+                }
                 purgeDeletedProjectTabLocalCache(projectPath);
                 discardDeletedProjectTabs(projectPath);
             }
@@ -3383,7 +3539,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (typeof offExpertDeleted === "function") offExpertDeleted();
             else EventsOff(EVENT_EXPERT_TASK_DELETED);
         };
-    }, [discardDeletedExpertTabs, discardDeletedProjectTabs]);
+    }, [discardDeletedExpertTabs, discardDeletedProjectTabs, getTabs]);
     const addParticipantToTab = useAddGroupParticipantToTab({ getTabState, upgradeVETabToGroup });
     const addLocalMaclawToTab = useAddLocalMaclawToTab({ getTabState, upgradeVETabToGroup });
     const [participantInviteTargetTabId, setParticipantInviteTargetTabId] = useState<string | null>(null);
@@ -3430,7 +3586,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope, codePreviewPathScope);
     const sourcePreviewAllowed = shouldShowSourcePreviewForWorkflow(workflowState.workflowType)
         || shouldShowSourcePreviewForAgentMode(activeTab.agentMode);
-    const { state: codePreviewState, closePanel: closeCodePreview, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, openWorkspaceFile, closeFile: closeCodeFile, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFiles, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
+    const { state: codePreviewState, closePanel: closeCodePreview, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, focusFile: focusCodeFile, openWorkspaceFile, closeFile: closeCodeFile, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFiles, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return;
         previewOwnerResetPendingRef.current = false;
@@ -3812,16 +3968,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
                 return isRemoteMaintenanceEnvironment
                     ? localizeText(lang, "Connecting SSH and preparing remote maintenance diagnostics (read-only inspection first)…", "正在连接 SSH 并准备远程维护诊断（先进行只读检查）…", "正在連線 SSH 並準備遠端維護診斷（先進行唯讀檢查）…")
-                    : localizeText(lang, "Connecting SSH and preparing full remote coding workbench (source preview + local Skill/MCP)…", "正在连接 SSH 并建立全功能远程编程工作台（源码预览 + 本机 Skill/MCP）…", "正在連線 SSH 並建立全功能遠端程式工作台（原始碼預覽 + 本機 Skill/MCP）…");
+                    : localizeText(lang, "Connecting SSH (source preview + local Skill/MCP)…", "正在连接 SSH（源码预览 + 本机 Skill/MCP）…", "正在連線 SSH（原始碼預覽 + 本機 Skill/MCP）…");
             }
             return isRemoteMaintenanceEnvironment
                 ? localizeText(lang, "Remote maintenance task: inspect the host via SSH before making changes. Diagnostics start read-only; risky repairs require confirmation. Skill/MCP/web search run on this machine.", "远程维护任务：通过 SSH 检查主机后再执行变更。诊断默认只读；高风险修复需要确认。Skill、MCP、联网检索在本机运行。", "遠端維護任務：透過 SSH 檢查主機後再執行變更。診斷預設唯讀；高風險修復需要確認。Skill、MCP、聯網檢索在本機執行。")
-                : localizeText(lang, "Full remote workbench: code runs on the remote host via SSH; Skill/MCP/web_search run on this machine. Multi-turn continues until you leave the tab. Source preview is on the right.", "全功能远程工作台：改码/命令在远端 SSH 执行；Skill、MCP、联网检索在本机。同一 Tab 可多轮续写。右侧为源码预览。", "全功能遠端工作台：改碼/命令在遠端 SSH 執行；Skill、MCP、聯網檢索在本機。同一 Tab 可多輪續寫。右側為原始碼預覽。");
+                : localizeText(lang, "Remote host via SSH. Skill/MCP on this machine. Multi-turn. Source preview on the right.", "远端 SSH 改码；Skill/MCP 在本机。可多轮续写。右侧为源码预览。", "遠端 SSH 改碼；Skill/MCP 在本機。可多輪續寫。右側為原始碼預覽。");
         }
         if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
-            return localizeText(lang, "Starting full coding workbench (tools, Skill/MCP, source preview)…", "正在启动全功能编程工作台（工具 / Skill / MCP / 源码预览）…", "正在啟動全功能程式工作台（工具 / Skill / MCP / 原始碼預覽）…");
+            return localizeText(lang, "Starting coding environment (tools, Skill/MCP, source preview)…", "正在启动编程环境（工具 / Skill / MCP / 源码预览）…", "正在啟動程式環境（工具 / Skill / MCP / 原始碼預覽）…");
         }
-        return localizeText(lang, "Full coding workbench (Claude Code / Codex–level intent). Tools, Skill/MCP, web research, multi-turn session memory, and source preview are active. Follow-up messages continue in this coding environment.", "全功能编程工作台（对齐 Claude Code / Codex）。工具、Skill/MCP、联网检索、多轮会话记忆与源码预览已启用；后续消息仍在本编程环境中续写。", "全功能程式工作台（對齊 Claude Code / Codex）。工具、Skill/MCP、聯網檢索、多輪工作階段記憶與原始碼預覽已啟用；後續訊息仍在本程式環境中續寫。");
+        return localizeText(lang, "Tools, Skill/MCP, multi-turn session memory, and source preview are on. Follow-up messages continue in this coding environment.", "工具、Skill/MCP、多轮会话记忆与源码预览已启用；后续消息仍在本编程环境中续写。", "工具、Skill/MCP、多輪工作階段記憶與原始碼預覽已啟用；後續訊息仍在本程式環境中續寫。");
     }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, isRemoteMaintenanceEnvironment, remoteCodingNeedsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
     // Live record_audio card: hard-lock composer (no type-ahead / no queue) so the
     // user only uses pause/stop on the recording card until it finishes.
@@ -3873,6 +4029,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const showBusySpinner = inputVisualBusy;
     const codingAgentTurnSnapshot = useMemo(() => activeSessionHasWork ? latestCodingAgentTurnSnapshot(displayProgressMessages) : null, [activeSessionHasWork, displayProgressMessages]);
     const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(displayProgressMessages, activeSessionHasWork), [activeSessionHasWork, codingAgentTurnSnapshot, displayProgressMessages]);
+    const codingHasPlainTrail = useMemo(
+        () => isPureCodingEnvironment && codingAgentMessagesHavePlainTrail(displayProgressMessages),
+        [displayProgressMessages, isPureCodingEnvironment],
+    );
+    const codingWorkingTrail = useMemo(() => {
+        if (!isPureCodingEnvironment || !(isBusy || showThinkingState) || codingHasPlainTrail) return null;
+        return renderCodingAgentWorkingTrail(t, lang);
+    }, [codingHasPlainTrail, isBusy, isPureCodingEnvironment, lang, showThinkingState, t]);
     const latestToolProgress = useMemo(() => findLatestToolProgressText(displayProgressMessages, activeSessionHasWork), [activeSessionHasWork, displayProgressMessages]);
     const workflowFormStatusText = workflowFormActive
         ? (lang === "en" ? "Waiting for the workflow form on the right..." : "等待右侧工作流表单填写…")
@@ -3885,7 +4049,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         : workflowAwaitingForm
         ? workflowFormStatusText
         : codingAgentProgress
-        ? codingAgentCompactText(codingAgentProgress, lang)
+        ? (codingAgentInputStatusText(codingAgentProgress, lang) || processingText)
         : latestToolProgress
             ? `${formatToolProgressStatus(latestToolProgress, lang)} · ${lang === "en" ? "you can type ahead" : "\u53ef\u7ee7\u7eed\u8f93\u5165"}`
             : processingText;
@@ -4067,6 +4231,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 : (lang === "en" ? "Opening the workflow form on the right..." : "正在打开右侧工作流表单…"))
             : workflowAwaitingReview
             ? (lang === "en" ? "Review the document on the right, then confirm or provide feedback" : "请先查看右侧文档，再确认推进或输入补充意见")
+            : isPureCodingEnvironment
+            ? (codingAgentComposerStatusText(codingAgentProgress, lang) || idlePlaceholderText)
             : showThinkingState
             ? thinkingText
             : showProcessingState
@@ -4223,7 +4389,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // scrolling for it would create a needless jump without new visible text.
     const lastRenderedProgressMessage = compactProgressMessages.at(-1);
     const progressActivityKey = lastRenderedProgressMessage?.id || "";
-    const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, hasConversation, messages: displayMessages, ready, scrollToTopSeq });
+    const { handleScroll, handleUserScrollIntent, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ activityKey: progressActivityKey, hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     useEffect(() => {
         if (activeTab.type !== "project") return;
         latestProjectCloseSnapshotRef.current = {
@@ -4685,7 +4851,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 fileName: att.fileName,
                 extension: att.extension,
                 isImage: att.isImage,
-                thumbnailDataUrl: att.thumbnailDataUrl,
             })),
             ...selectedFilePaths.map(attachmentInfoFromFilePath),
         ];
@@ -5079,8 +5244,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     });
     // Track render-config: when theme/lang/callback change, invalidate entire cache
     // to avoid returning stale renders with old styles or stale closures.
-    // NOTE: isBusy is NOT included here — it only affects the last assistant message's
-    // <details open> state, handled via the per-message contentKey below.
+    // NOTE: isBusy is NOT included here — last-assistant busy only affects
+    // the Working... placeholder, handled via the per-message contentKey below.
     const prevRenderConfigRef = useRef<{ t: Theme; lang: string; savedFileLabel: string; execAction: typeof panelExecuteAction } | null>(null);
     if (!prevRenderConfigRef.current || prevRenderConfigRef.current.t !== t || prevRenderConfigRef.current.lang !== lang || prevRenderConfigRef.current.savedFileLabel !== savedFileLabel || prevRenderConfigRef.current.execAction !== panelExecuteAction) {
         prevRenderConfigRef.current = { t, lang, savedFileLabel, execAction: panelExecuteAction };
@@ -5099,23 +5264,57 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return otherMessages.map((msg: ChatMessage, idx: number) => {
             const isLast = idx === lastAssistantIdx;
+            const codingTimeline = isPureCodingEnvironment && msg.role === "assistant" ? msg.codingTimeline : undefined;
+            if (codingTimeline?.length) {
+                const reply = renderMessage(
+                    suppressWorkflowReviewActions(msg),
+                    panelExecuteAction,
+                    t,
+                    isLast,
+                    savedFileLabel,
+                    lang,
+                    isLast && activeSessionHasWork,
+                    undefined,
+                    handleRecordingComplete,
+                    true,
+                );
+                return (
+                    <Fragment key={msg.id}>
+                        <div data-testid="coding-agent-interleaved-timeline">
+                            {codingTimeline.map((item) => (
+                                <Fragment key={item.id}>
+                                    {item.kind === "thinking"
+                                        ? renderCodingAgentThinkingTimelineItem(item, t, lang)
+                                        : renderCodingAgentActivityFeed([{
+                                            id: item.id,
+                                            role: "progress",
+                                            content: item.content,
+                                            timestamp: item.timestamp,
+                                        }], t, lang)}
+                                </Fragment>
+                            ))}
+                        </div>
+                        {reply}
+                    </Fragment>
+                );
+            }
             // Content key captures message-specific fields that affect render.
-            // isBusy is included only for the last assistant (affects <details open>).
+            // isBusy is included only for the last assistant (Working... placeholder).
             // Include the actual text, not just its length. Tool retries and stream
             // corrections can replace content in place without changing the length.
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}`;
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.length ?? 0}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
             }
-            // For the last assistant message during streaming (isBusy), use incremental
+            // For the last assistant message while its content is streaming, use incremental
             // Markdown rendering to avoid O(content.length) full re-parse every 33ms.
             // The incremental renderer freezes completed paragraphs and only re-parses
             // the active tail (~20 lines), keeping per-frame cost < 1ms regardless of
             // total message length.
             let node: ReturnType<typeof renderMessage>;
-            if (isLast && isBusy && msg.role === 'assistant' && msg.content && msg.content.length > 2000) {
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy, (formattedContent: string) => {
+            if (isLast && activeSessionIsStreaming && msg.role === 'assistant' && msg.content && msg.content.length > 2000) {
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, true, (formattedContent: string) => {
                     // Incremental render callback: called by renderMessage for the
                     // content section of the last streaming assistant message.
                     const incRef = incrementalStateRef.current;
@@ -5124,14 +5323,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.state = createIncrementalRenderState();
                     }
                     return renderContentIncremental(formattedContent, t, incRef.state);
-                }, handleRecordingComplete);
+                }, handleRecordingComplete, isPureCodingEnvironment);
             } else {
-                // Reset incremental state when streaming ends (isBusy becomes false)
+                // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
-                if (isLast && msg.role === 'assistant' && incrementalStateRef.current.messageId === msg.id && !isBusy) {
+                if (isLast && msg.role === 'assistant' && incrementalStateRef.current.messageId === msg.id && !activeSessionIsStreaming) {
                     incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy, undefined, handleRecordingComplete);
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionHasWork, undefined, handleRecordingComplete, isPureCodingEnvironment);
             }
             cache.set(msg.id, { contentKey, node });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -5171,25 +5370,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return node;
         });
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, branchPointByDisplayIndex, handleRecordingComplete]);
-    // Group consecutive coding-agent tool rows into one activity feed (Codex-style trail).
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, activeSessionIsStreaming, branchPointByDisplayIndex, handleRecordingComplete, isPureCodingEnvironment]);
+    // A coding turn with an ordered timeline owns its coding progress rows.
+    // Retain the legacy progress feed for non-coding and older in-flight turns.
     const renderedProgressMessages = useMemo(() => {
-        const items = groupCodingAgentProgressForRender(compactProgressMessages);
-        return items.map((item) => {
-            if (item.kind === "coding-feed") {
-                return (
-                    <Fragment key={item.key}>
-                        {renderCodingAgentActivityFeed(item.messages, t, lang)}
-                    </Fragment>
-                );
-            }
-            return (
-                <Fragment key={item.message.id}>
-                    {renderMessage(suppressWorkflowReviewActions(item.message), panelExecuteAction, t, false, savedFileLabel, lang)}
-                </Fragment>
-            );
-        });
-    }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
+        const hasTimeline = isPureCodingEnvironment && otherMessages.some((message) => message.role === "assistant" && message.codingTimeline?.length);
+        const visibleProgress = hasTimeline
+            ? compactProgressMessages.filter((message) => !isCodingAgentProgressContent(message.content || ""))
+            : compactProgressMessages;
+        return visibleProgress.map((message) => (
+            <Fragment key={message.id}>
+                {renderMessage(suppressWorkflowReviewActions(message), panelExecuteAction, t, false, savedFileLabel, lang, false, undefined, undefined, isPureCodingEnvironment)}
+            </Fragment>
+        ));
+    }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang, isPureCodingEnvironment, otherMessages]);
     // maximizedInlineStyle uses inset:0 (not 100vw/100vh) so UI scale transform cannot clip chrome.
     const containerStyle: React.CSSProperties = !inline
         ? overlayStyle
@@ -5300,6 +5494,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     sessionReadyRevision={activeTab?.type === "project" ? projectTabSessionReadyRevisions[activeTab.id] || 0 : 0}
                     theme={t}
                     lang={lang}
+                    onWorkingDirChange={bumpLocalWorkspaceRefresh}
                 />
             )}
             {showChatUI && (
@@ -6064,7 +6259,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         />
                     </div>
                 ) : (
-                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll}>
+                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
                     {isExpertTabActive && displayMessages.length === 0 ? (
                         // Expert tab empty state (e.g. after a conversation clear):
                         // expert name + intro instead of the generic welcome view.
@@ -6080,7 +6275,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                     ) : null}
                     {showPureCodingEmptyState ? pureCodingEmptyContent : null}
-                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
+                    <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
+                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState && !isPureCodingEnvironment} showThinkingState={showThinkingState && !isPureCodingEnvironment} busyAccessory={codingWorkingTrail} theme={t} thinkingText={thinkingText} />
+                    </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div>
                 )}
@@ -6131,6 +6328,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onDismiss={handleWelcomeTemplateOfferDismiss}
                     />
                 )}
+                {!showWelcomeView && isPureCodingEnvironment && (codingPendingApproval || codingStepStatuses.length > 0 || !!codingRequirementRestatement) && (
+                    <CodingAgentPlanChecklist
+                        lang={lang}
+                        theme={t}
+                        chrome={codingBannerChrome}
+                        steps={codingStepStatuses}
+                        understanding={codingRequirementRestatement}
+                        pendingApproval={codingPendingApproval}
+                        ready={codingTaskReadyForIntents}
+                        onApprove={() => { void handleCodingPlanGate("approve"); }}
+                        onSkip={() => { void handleCodingPlanGate("skip"); }}
+                        onReject={() => { void handleCodingPlanGate("reject"); }}
+                    />
+                )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
                 {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
@@ -6169,7 +6380,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         selectCodeFile={selectCodeFile}
                         projectPath={isPureCodingEnvironment ? activeTab.projectPath : undefined}
-                        workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : undefined}
+                        workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : localWorkspaceRefreshToken}
+                        workspaceResetOnRefresh={!isRemoteCodingDevEnvironment}
                         openWorkspaceFile={openWorkspaceFile}
                         submitAgentView={panelSubmitAgentView}
                         showCodePreview={showCodePreview}

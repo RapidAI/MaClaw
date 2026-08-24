@@ -15,3 +15,11 @@ func foregroundWindowTitle() string {
 func windowTitleAtPoint(x, y int) string {
 	return ""
 }
+
+func foregroundWindowBounds() (WindowBounds, bool) {
+	return WindowBounds{}, false
+}
+
+func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
+	return WindowBounds{}, false
+}

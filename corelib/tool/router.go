@@ -33,8 +33,14 @@ var routeLogMu sync.Mutex
 
 func init() {
 	logDetailEnabled.Store(false)
-	// Ensure every core tool is also recognized as builtin.
+	// The old name stays source-compatible, but only the minimal control plane
+	// is now unconditional. Both bootstrap and legacy candidates are builtin
+	// capabilities; builtin classification must not depend on whether a tool is
+	// permanently exposed to a model request.
 	for name := range CoreToolNames {
+		BuiltinToolNames[name] = true
+	}
+	for name := range LegacyCandidateToolNames {
 		BuiltinToolNames[name] = true
 	}
 }
@@ -44,15 +50,17 @@ func SetLogDetailEnabled(enabled bool) {
 	logDetailEnabled.Store(enabled)
 }
 
-// CoreToolNames are always included regardless of the user message.
+// CoreToolNames is the historical compatibility catalog. New code must not
+// treat it as an always-visible surface: only LegacyBootstrapToolNames is
+// unconditional in RouteWithOptions. Keeping this broad map for now avoids a
+// flag-day break in registries, tests and discovery metadata while individual
+// families migrate to reviewed capability provisions.
 var CoreToolNames = map[string]bool{
 	"list_sessions": true, "get_session_output": true, "get_session_events": true,
 	"bash": true, "read_file": true, "read_tool_result": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
-	"call_mcp_tool":    true,
-	"manage_skill":     true,
 	"memory":           true,
 	"web_fetch":        true,
-	"download_file":    true, // generic HTTP/PDF download; prefer over Hub wget/curl skills
+	"download_file":    true,
 	"set_nickname":     true,
 	"discover_tool":    true,
 	"task":             true,
@@ -61,10 +69,14 @@ var CoreToolNames = map[string]bool{
 	"compress_context": true,
 	"tts":              true,
 	"asr":              true,
-	// Desktop long-form / meeting recording. Always expose so hybrid budget
-	// contention cannot hide it when the user asks to start recording.
-	// On IM channels the tool itself returns a desktop-only message.
-	"record_audio": true,
+}
+
+// LegacyBootstrapToolNames is the only unconditional legacy layer. It carries
+// bounded loop-control/recovery affordances, not business execution.
+var LegacyBootstrapToolNames = map[string]bool{
+	"task":             true,
+	"async_wait":       true,
+	"compress_context": true,
 }
 
 type conditionalKeepRule struct {
@@ -73,6 +85,13 @@ type conditionalKeepRule struct {
 	// from recalled memory or other indirect context. They are pinned after
 	// actual successful use through ActivateSessionTool.
 	noMemoryPin bool
+	// scoreEligible when true means the rule's tools are benign (no privilege
+	// expansion beyond everyday surfaces) and may compete as normal scored
+	// candidates instead of being filtered out whenever the semantic
+	// classifier does not activate them. Sensitive tools (ssh, browser,
+	// screenshot, record_audio, craft_tool, mis_data, IM delivery) stay
+	// fail-closed: they are exposed only through classifier activation.
+	scoreEligible bool
 }
 
 // allBrowserToolNames is the browser automation surface exposed to routing.
@@ -108,12 +127,27 @@ func IsNoEagerPinTool(name string) bool {
 var conditionalKeepRules = []conditionalKeepRule{
 	{keepTools: []string{"mis_data"}},
 	{keepTools: []string{"ssh"}},
-	{keepTools: []string{"web_search"}},
+	// Web search and document rendering do not expand privilege beyond what
+	// the everyday core surface already allows, so they compete on retrieval
+	// score instead of disappearing whenever the classifier stays silent.
+	{keepTools: []string{"web_search"}, scoreEligible: true},
 	{keepTools: []string{"send_file", "send_to_im", "im_message", "open"}},
 	{keepTools: []string{"craft_tool"}},
 	{keepTools: allBrowserToolNames, noMemoryPin: true},
-	{keepTools: []string{"office"}},
-	{keepTools: []string{"generate_pdf", "office"}},
+	{keepTools: []string{"office"}, scoreEligible: true},
+	{keepTools: []string{"generate_pdf", "office"}, scoreEligible: true},
+	// Microphone capture is sensitive and must be selected from a semantic
+	// audio-record intent. It is never part of the legacy fallback surface.
+	{keepTools: []string{"record_audio"}},
+	// Knowledge-base writers mutate a shared store. They stay fail-closed and
+	// enter only through a knowledge-write classification (UIC affinity pins
+	// them, then payload narrowing keeps just the needed ones); a read-only
+	// question must never see them as priority fillers.
+	{keepTools: knowledgeWriteToolList},
+	// Screenshot is a focused, on-demand desktop capture surface. It is
+	// activated by the unified semantic intent classifier, never left as a
+	// generic fallback candidate.
+	{keepTools: []string{"screenshot"}},
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.
@@ -152,8 +186,8 @@ func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 }
 
 // BuiltinToolNames is the complete set of all builtin tool names.
-// CoreToolNames are merged in automatically via init(), so there is no need
-// to duplicate entries that already appear in CoreToolNames.
+// Bootstrap and legacy-candidate names are merged in automatically via init(),
+// so there is no need to duplicate them here.
 var BuiltinToolNames = map[string]bool{
 	"list_providers":    true,
 	"ssh":               true,
@@ -196,8 +230,13 @@ var BuiltinToolNames = map[string]bool{
 }
 
 func init() {
-	// Ensure every core tool is also recognized as builtin.
+	// Keep both the bootstrap and candidate catalog classified as builtin. The
+	// latter affects dynamic-slot accounting only; it does not make a candidate
+	// permanently visible.
 	for name := range CoreToolNames {
+		BuiltinToolNames[name] = true
+	}
+	for name := range LegacyCandidateToolNames {
 		BuiltinToolNames[name] = true
 	}
 }
@@ -240,22 +279,22 @@ type SkillProvider interface {
 // Router selects the most relevant tools for a given user message.
 type Router struct {
 	// mu serializes configuration updates and route construction. Route rebuilds
-	// cached BM25 indexes and reads session state, so it must not overlap an
-	// embedding activation or a second IM request sharing this router.
-	mu                sync.Mutex
-	generator         *DefinitionGenerator
-	registry          *Registry
-	recommender       SkillRecommender
-	skillProvider     SkillProvider
-	bm25Index         *bm25.Index
-	skillBM25         *bm25.Index // separate index for skill trigger matching
-	hybrid            *HybridRetriever
-	enrichStore       *EnrichmentStore
-	tracker           *UsageTracker
-	reranker          Reranker // nil when reranking is disabled
-	sessionTools      map[string]bool
-	intentClassifier  *IntentClassifier               // hybrid intent classifier (Layer 1+2+3)
-	unifiedClassifier *intent.UnifiedIntentClassifier // UIC replaces conditionalKeepRules when non-nil
+	// cached BM25 indexes, so it must not overlap an embedding activation or a
+	// second IM request sharing this router.
+	mu                 sync.Mutex
+	generator          *DefinitionGenerator
+	registry           *Registry
+	recommender        SkillRecommender
+	skillProvider      SkillProvider
+	bm25Index          *bm25.Index
+	skillBM25          *bm25.Index // separate index for skill trigger matching
+	hybrid             *HybridRetriever
+	enrichStore        *EnrichmentStore
+	tracker            *UsageTracker
+	reranker           Reranker                        // nil when reranking is disabled
+	intentClassifier   *IntentClassifier               // hybrid intent classifier (Layer 1+2+3)
+	unifiedClassifier  *intent.UnifiedIntentClassifier // UIC replaces conditionalKeepRules when non-nil
+	lastRecommendation RoutingRecommendation
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
@@ -686,52 +725,35 @@ func (r *Router) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
 	r.unifiedClassifier = uic
 }
 
-// ActivateSessionTool adds a tool to the current session's always-include set.
+// ActivateSessionTool is retained as a source-compatible no-op while hosts
+// migrate from historical name pins to verified task relations. A candidate
+// recommender must never retain a tool name as future model authority.
 func (r *Router) ActivateSessionTool(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !ShouldPinConditionalTool(name) {
-		return
-	}
-	if r.sessionTools == nil {
-		r.sessionTools = make(map[string]bool)
-	}
-	r.sessionTools[name] = true
+	_ = r
+	_ = name
 }
 
-// IsSessionPinned returns true if the named tool has been session-pinned
-// via ActivateSessionTool. This is used by callers (e.g. routeTools) to
-// avoid removing a tool that was previously used in this session.
+// IsSessionPinned always returns false. Historical tool names are not task
+// evidence and cannot affect a later tool surface.
 func (r *Router) IsSessionPinned(name string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.sessionTools[name]
+	_ = r
+	_ = name
+	return false
 }
 
-// SessionPinnedToolsMissing returns session-pinned tool names that are NOT
-// in the provided currentNames set. This is used by the agent loop to detect
-// tools that were session-pinned mid-loop (e.g. by discover_tool) but are
-// not yet in the LLM's tool definition list.
+// SessionPinnedToolsMissing is retained as a source-compatible no-op. Surface
+// replacement is driven by a fresh plan/revision, never by a missing legacy
+// tool name.
 func (r *Router) SessionPinnedToolsMissing(currentNames map[string]bool) []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.sessionTools) == 0 {
-		return nil
-	}
-	var missing []string
-	for name := range r.sessionTools {
-		if !currentNames[name] {
-			missing = append(missing, name)
-		}
-	}
-	return missing
+	_ = r
+	_ = currentNames
+	return nil
 }
 
-// ResetSession clears session-activated tools.
+// ResetSession is retained for callers that reset other router caches. Router
+// instances no longer carry task-continuation state.
 func (r *Router) ResetSession() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessionTools = nil
+	_ = r
 }
 
 // WarmupDeferredEmbeddings pre-computes and caches embedding vectors for
@@ -933,16 +955,13 @@ func (r *Router) buildSearchText(name, description string) string {
 }
 
 // buildEmbeddingText returns the text used for embedding vector computation.
-// Includes name + description + BodySummary when available.
-// Falls back to name + description when BodySummary is empty.
+// It is name + description only: BodySummary is long, templated parameter
+// documentation whose shared boilerplate ("Parameters:/Typical usage:")
+// collapses the embedding space (measured median pairwise cosine ~0.8 across
+// tool vectors), turning cosine ranking into noise. BodySummary is still fed
+// to the LLM reranker via CandidateSummary, where a judge can use it.
 func (r *Router) buildEmbeddingText(name, description string) string {
-	text := name + " " + description
-	if r.registry != nil {
-		if t, ok := r.registry.Get(name); ok && t.BodySummary != "" {
-			text += "\n" + t.BodySummary
-		}
-	}
-	return text
+	return name + " " + description
 }
 
 func (r *Router) isBuiltin(name string) bool {
@@ -969,19 +988,30 @@ func (r *Router) tagsForTool(name string) []string {
 // conditional keep rule.
 var allConditionalKeepTools map[string]bool
 
+// scoreEligibleConditionalToolNames is the set of conditional tools whose
+// rules are marked scoreEligible. These benign tools are not filtered out of
+// the candidate pool when the classifier stays silent; they compete on
+// retrieval score like ordinary candidates.
+var scoreEligibleConditionalToolNames map[string]bool
+
 func init() {
 	allConditionalKeepTools = make(map[string]bool)
+	scoreEligibleConditionalToolNames = make(map[string]bool)
 	for _, rule := range conditionalKeepRules {
 		for _, name := range rule.keepTools {
 			allConditionalKeepTools[name] = true
+			if rule.scoreEligible {
+				scoreEligibleConditionalToolNames[name] = true
+			}
 		}
 	}
 }
 
 // IsConditionalTool returns true if the tool is governed by a conditional keep
-// rule. Such tools are included only when semantic routing selects them.
-// Once actually used in a session, callers should pin them via
-// ActivateSessionTool so they remain available for follow-up messages.
+// rule. Sensitive conditional tools are included only when the semantic
+// classifier activates them; score-eligible (benign) ones may also enter via
+// retrieval scoring. Once actually used in a session, callers should pin them
+// via ActivateSessionTool so they remain available for follow-up messages.
 func IsConditionalTool(name string) bool {
 	return allConditionalKeepTools[name]
 }
@@ -1002,7 +1032,7 @@ var noPinConditionalTools = map[string]bool{
 // noMemoryPin=true contributes all its keepTools to this set. This ensures
 // the protection is co-located with the rule definition: adding a new rule
 // with noMemoryPin=true automatically protects its tools, with zero changes
-// needed in MatchConditionalTools, Route(), or any other consumer.
+// needed in Route() or any other consumer.
 var noEagerPinTools map[string]bool
 
 func init() {
@@ -1031,69 +1061,62 @@ func isBrowserDiagTool(name string) bool {
 	return noEagerPinTools[name]
 }
 
-// MatchConditionalTools intentionally does not infer execution tools from
-// recalled memory text. Memory recall can surface context, but pinning SSH,
-// browser, or similar tools from lexical mentions in past summaries is too
-// error-prone. Conditional tools are activated by UIC/semantic routing for the
-// current user message, or after actual successful use via ActivateSessionTool.
-func MatchConditionalTools(text string) map[string]bool {
-	return map[string]bool{}
-}
-
-// matchConditionalKeepRules keeps the legacy API shape for callers and tests,
-// but local wording is no longer an execution-routing authority. Conditional
-// tools start filtered and are promoted only by semantic classifiers in Route.
-func matchConditionalKeepRules(userMessage string) (keep map[string]bool, filterOut map[string]bool, needsConfirm map[string]string) {
-	_ = userMessage
-	keep = make(map[string]bool)
-	filterOut = make(map[string]bool)
-	needsConfirm = make(map[string]string)
-	for name := range allConditionalKeepTools {
-		filterOut[name] = true
-	}
-	return keep, filterOut, needsConfirm
-}
-
 func uicResultUsableForToolActivation(result intent.ClassificationResult) bool {
-	return result.Primary != intent.LabelUnknown && result.Primary != intent.LabelAmbiguous
+	// The compatibility router has no capability-plan evidence of its own.  A
+	// degraded classification means one of the semantic channels did not
+	// complete, so its label is only a routing hint and must not become a
+	// model-visible capability here.  Managed GUI turns use the governed
+	// planner, which has its own explicit read-only degraded-hint policy.
+	//
+	// This is deliberately a provenance check, rather than another confidence
+	// threshold: a high score from a partial classifier is still partial
+	// evidence, not an authorization decision.
+	return !result.Degraded && result.Primary != intent.LabelUnknown && result.Primary != intent.LabelAmbiguous
 }
 
 func uicToolNameActivatable(name string) bool {
 	return allConditionalKeepTools[name] || knowledgeWriteToolNames[name]
 }
 
-func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]bool) int {
+func coreRoutePriority(name string, condKeep, mustKeep map[string]bool) int {
 	if mustKeep[name] {
 		return -1
 	}
 	if condKeep[name] {
-		// office pinned via needsOfficeDocumentTool lands here (and often also mustKeep).
+		// A current-request policy requirement (for example office for a staged
+		// document) is never silently displaced by optional candidates.
 		return 0
 	}
 	switch name {
-	case "bash", "read_file", "FileRead", "ripgrep", "Glob", "write_file", "edit_file", "list_directory", "archive":
+	case "task", "async_wait", "compress_context":
 		return 1
 	}
-	if sessionTools[name] {
-		return 2
-	}
+	return 2
+}
+
+// legacyRouteFallbackTool is a deliberately tiny compatibility bridge for
+// operations that must remain discoverable while their callers move to
+// explicit adapter provisions. It is not a bootstrap grant and must never be
+// expanded from history, text matches, or tool metadata.
+func legacyRouteFallbackTool(name string) bool {
+	return legacyAdapterFallbackAllowed(name, time.Now().UTC()) && legacyFallbackSurfaceTool(name)
+}
+
+// legacyFallbackSurfaceTool is the temporary minimal adapter surface needed by
+// existing unmanaged hosts. Each listed name has a reviewed provision in
+// legacy_adapter_catalog.go; this function only defines which provisions are
+// required without a current retrieval match while that host migration is
+// underway.
+func legacyFallbackSurfaceTool(name string) bool {
 	switch name {
-	case "task", "async_wait", "compress_context", "memory":
-		return 3
-	case "list_sessions", "get_session_output", "get_session_events",
-		// Prefer keeping recording surface when core set is trimmed for budget.
-		"record_audio":
-		return 4
-	case "screenshot", "web_fetch", "set_nickname", "tts", "asr":
-		return 5
-	case "manage_skill", "discover_tool", "call_mcp_tool":
-		return 6
+	case "bash", "read_file", "ripgrep", "edit_file", "discover_tool":
+		return true
 	default:
-		return 7
+		return false
 	}
 }
 
-func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools, mustKeep map[string]bool) []map[string]interface{} {
+func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, mustKeep map[string]bool) []map[string]interface{} {
 	if len(core) <= MaxToolBudget && len(mustKeep) == 0 {
 		return core
 	}
@@ -1101,8 +1124,8 @@ func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools
 	sort.SliceStable(trimmed, func(i, j int) bool {
 		ni := ExtractToolName(trimmed[i])
 		nj := ExtractToolName(trimmed[j])
-		pi := coreRoutePriority(ni, condKeep, sessionTools, mustKeep)
-		pj := coreRoutePriority(nj, condKeep, sessionTools, mustKeep)
+		pi := coreRoutePriority(ni, condKeep, mustKeep)
+		pj := coreRoutePriority(nj, condKeep, mustKeep)
 		if pi != pj {
 			return pi < pj
 		}
@@ -1119,10 +1142,57 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	return r.RouteWithOptions(userMessage, allTools, RouteOptions{})
 }
 
-// RouteWithOptions is Route plus optional intent rewrite pins / search query.
+// RouteWithOptions preserves the legacy definitions return for callers that
+// have not yet migrated. New code should use RecommendWithOptions followed by
+// BuildLegacyAdapterPlan/RenderLegacyAdapterPlan, not treat this return value
+// as an authorization decision.
 func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts RouteOptions) []map[string]interface{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.routeWithOptionsLocked(userMessage, allTools, opts)
+}
+
+// RecommendWithOptions returns the Router's compatibility selection together
+// with the reviewed host-only capability evidence from the same serialized
+// routing decision. It closes the old Route(); LastRoutingRecommendation()
+// race, where another turn could overwrite evidence before a host built its
+// adapter plan. The selected definitions remain compatibility data only; an
+// LLM surface must be built by BuildLegacyAdapterPlan and rendered from that
+// immutable plan.
+func (r *Router) RecommendWithOptions(userMessage string, allTools []map[string]interface{}, opts RouteOptions) ([]map[string]interface{}, RoutingRecommendation) {
+	if r == nil {
+		return nil, RoutingRecommendation{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	selected := r.routeWithOptionsLocked(userMessage, allTools, opts)
+	return selected, r.lastRecommendation.clone()
+}
+
+// LastRoutingRecommendation returns the host-only capability evidence from
+// the most recent Route call. It is a migration bridge for callers moving to
+// a planner: the existing Route return remains a legacy compatibility surface
+// and must not be confused with authorization.
+func (r *Router) LastRoutingRecommendation() RoutingRecommendation {
+	if r == nil {
+		return RoutingRecommendation{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastRecommendation.clone()
+}
+
+// routeWithOptionsLocked is RouteWithOptions' serialized implementation.
+// Keeping this private ensures the candidate recommendation and compatibility
+// selection can be observed atomically by RecommendWithOptions.
+func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[string]interface{}, opts RouteOptions) []map[string]interface{} {
+	// A dynamic MCP/Skill gateway is a host-controlled transport, not a legacy
+	// model capability. Filter before any match scoring or budget partition so
+	// it cannot consume a slot, gain a fallback pin, or leave stale advice in a
+	// routing recommendation even if a later surface compositor strips it.
+	allTools = withoutLegacyModelDynamicGateways(allTools)
+	r.lastRecommendation = RoutingRecommendation{}
+	routeNow := time.Now().UTC()
 	var condKeep map[string]bool
 	var condFilterOut map[string]bool
 	var cachedICResult *IntentResult
@@ -1130,45 +1200,63 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 	var skillCapabilityConstrained bool
 	suppressedTools := map[string]bool{}
 	skillInstallEligible := true
-	localStoredInfoQuery := IsLocalStoredInfoQuery(userMessage)
 	routeIntent := opts.Intent
 	if routeIntent != nil && !routeIntent.Usable() {
 		routeIntent = nil
 	}
-	availableNames := availableToolNameSet(allTools)
 	searchQuery := userMessage
 	if routeIntent != nil {
 		searchQuery = routeIntent.SearchQuery(userMessage)
 	}
 
-	if r.unifiedClassifier != nil && !opts.SkipUnifiedClassifier {
-		// UIC path: use UnifiedIntentClassifier to determine which conditional
-		// tools to keep, replacing local matchConditionalKeepRules.
+	// UIC activation: UIC returns a concrete, non-ambiguous top
+	// intent, including degraded embedding-only fusion results. Activate that
+	// intent's ToolNames so the LLM can see and
+	// call them. This uses a LOW threshold because the cost of a false
+	// positive is small (an extra tool definition in context) while the
+	// cost of a false negative is high (LLM cannot perform the task and
+	// falls back to dangerous workarounds like raw ssh via bash).
+	//
+	// The old design used a single 0.90 threshold for activation. Fusion-
+	// ambiguous results (e.g. ssh 0.695 vs search 0.676)
+	// never reach 0.90, causing the correct top-intent's tools to be
+	// completely hidden from the LLM.
+	const uicActivationThreshold = 0.50
+
+	if (r.unifiedClassifier != nil || opts.PreResolved != nil) && !opts.SkipUnifiedClassifier {
+		// UIC path: the UnifiedIntentClassifier determines which conditional
+		// tools to keep. Local wording never promotes one. A pre-resolved
+		// classification is data from the turn's governed upstream pass and is
+		// honored even when no live classifier is attached to this router.
 		condKeep = make(map[string]bool)
 		condFilterOut = make(map[string]bool)
 
 		var uicResult intent.ClassificationResult
-		if opts.PreferEmbeddingOnly {
+		switch {
+		case opts.PreResolved != nil:
+			// The turn's governed classification was already computed upstream
+			// (e.g. RuntimeContext.SemanticIntent): use it verbatim instead of
+			// classifying again on possibly different context.
+			uicResult = *opts.PreResolved
+		case opts.PreferEmbeddingOnly:
 			uicResult = r.unifiedClassifier.ClassifyEmbeddingOnly(intent.MessageContext{Text: userMessage})
-		} else {
+			if !uicResultUsableForToolActivation(uicResult) || uicResult.Confidence < uicActivationThreshold {
+				// The fast channel cannot activate anything for this message.
+				// Reuse the main loop's full-fusion classification when it is
+				// already cached for this same message: a pure cache read that
+				// never triggers a new embedding or LLM call, so the
+				// "routing never calls tree/LLM" contract still holds while a
+				// degraded/unknown fast result no longer hides every
+				// conditional tool.
+				if cached, ok := r.unifiedClassifier.ClassifyCached(intent.MessageContext{Text: userMessage}); ok {
+					uicResult = cached
+				}
+			}
+		default:
 			uicResult = r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
 		}
 		skillInstallEligible = uicSkillInstallEligible(uicResult)
 		skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
-
-		// UIC activation: UIC returns a concrete, non-ambiguous top
-		// intent, including degraded embedding-only fusion results. Activate that
-		// intent's ToolNames so the LLM can see and
-		// call them. This uses a LOW threshold because the cost of a false
-		// positive is small (an extra tool definition in context) while the
-		// cost of a false negative is high (LLM cannot perform the task and
-		// falls back to dangerous workarounds like raw ssh via bash).
-		//
-		// The old design used a single 0.90 threshold for activation. Fusion-
-		// ambiguous results (e.g. ssh 0.695 vs search 0.676)
-		// never reach 0.90, causing the correct top-intent's tools to be
-		// completely hidden from the LLM.
-		const uicActivationThreshold = 0.50
 
 		// A degraded UIC result can still be actionable: in practice the tree
 		// channel may time out while the embedding channel returns a confident
@@ -1197,21 +1285,26 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 			suppressedTools["memory"] = true
 		}
 
-		// Filter out conditional tools NOT matched by UIC.
+		// Filter out conditional tools NOT matched by UIC. Score-eligible
+		// (benign) conditional tools stay in the candidate pool and compete on
+		// retrieval score; only sensitive tools fail closed.
 		for name := range allConditionalKeepTools {
-			if !condKeep[name] {
+			if !condKeep[name] && !scoreEligibleConditionalToolNames[name] {
 				condFilterOut[name] = true
 			}
 		}
 
 	} else {
 		// Fallback path: UIC not available. Local conditional rules are not an
-		// execution-routing authority, so keep every conditional tool filtered
-		// unless the semantic IntentClassifier below explicitly promotes it.
+		// execution-routing authority, so keep every sensitive conditional tool
+		// filtered unless the semantic IntentClassifier below explicitly
+		// promotes it. Score-eligible (benign) tools compete on retrieval score.
 		condKeep = make(map[string]bool)
 		condFilterOut = make(map[string]bool)
 		for name := range allConditionalKeepTools {
-			condFilterOut[name] = true
+			if !scoreEligibleConditionalToolNames[name] {
+				condFilterOut[name] = true
+			}
 		}
 
 		if r.intentClassifier != nil {
@@ -1254,23 +1347,10 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 			}
 		}
 	}
-	browserPublishAffordance := intent.BrowserPublicationAffordance(userMessage)
 	skillUploadRequest := isSkillUploadRequest(userMessage)
-	if browserPublishAffordance {
-		condKeep["browser"] = true
-		delete(condFilterOut, "browser")
-	}
 	if skillUploadRequest {
 		skillInstallEligible = false
 		suppressedTools["search_and_install_skill"] = true
-		delete(suppressedTools, "manage_skill")
-	}
-	if localStoredInfoQuery {
-		condKeep["knowledge_search"] = true
-		condKeep["knowledge_context_pack"] = true
-		for name := range knowledgeWriteToolNames {
-			suppressedTools[name] = true
-		}
 	}
 	if !skillInstallEligible {
 		suppressedTools["search_and_install_skill"] = true
@@ -1285,90 +1365,24 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		suppressedTools["manage_skill"] = true
 		suppressedTools["discover_tool"] = true
 		suppressedTools["search_and_install_skill"] = true
-	} else if r.sessionTools["ssh"] {
-		// Preserve the older gateway guard for follow-up messages where ssh was
-		// session-pinned, without hiding skill/discovery tools for a possible
-		// topic change in the same conversation.
-		suppressedTools["call_mcp_tool"] = true
 	}
-	explicitScreenshotRequest := isExplicitScreenshotRequest(userMessage)
-	explicitRecordAudioRequest := isExplicitRecordAudioRequest(userMessage)
-	explicitGitRequest := isExplicitGitRequest(userMessage)
-	// Explicit start-recording intents must never lose record_audio to budget
-	// pressure (also in CoreToolNames; pin keeps session continuity if core set changes).
-	if explicitRecordAudioRequest {
-		condKeep["record_audio"] = true
-		delete(condFilterOut, "record_audio")
-		delete(suppressedTools, "record_audio")
-	}
-	// Explicit screenshot/git must be pinned: with score-floor candidate selection
-	// they can otherwise lose remaining slots to noise or land at score 0.
-	if explicitScreenshotRequest {
-		condKeep["screenshot"] = true
-		delete(condFilterOut, "screenshot")
-		delete(suppressedTools, "screenshot")
-	}
-	if explicitGitRequest {
-		condKeep["git_commit"] = true
-		condKeep["git_push"] = true
-		delete(condFilterOut, "git_commit")
-		delete(condFilterOut, "git_push")
-		delete(suppressedTools, "git_commit")
-		delete(suppressedTools, "git_push")
-	}
-	// Document path / host auto-extract: office is conditional and would otherwise be
-	// entirely filtered when UIC misses LabelOffice (common for "评分表.docx" + path
-	// marker). Without office the model falls back to read_file (binary garbage) then
-	// bash/Python — pin office so native read_document / offset paging stay available.
-	officeDocRequest := needsOfficeDocumentTool(userMessage) && availableNames["office"]
-	if officeDocRequest {
-		condKeep["office"] = true
-		delete(condFilterOut, "office")
-		delete(suppressedTools, "office")
-	}
-	// LLM / structured intent rewrite: pin families and suppress excludes.
-	if routeIntent != nil {
-		intentPins := routeIntent.ExpandPins(availableNames)
-		intentExcludes := routeIntent.ExpandExcludes(availableNames)
-		for _, name := range intentPins {
-			condKeep[name] = true
-			delete(condFilterOut, name)
-			delete(suppressedTools, name)
+	// LLM / structured intent rewrite only contributes an expanded retrieval
+	// query (applied at the search stage). It must never pin or exclude tools
+	// by name — that is the planner's job under the capability-first design.
+	if routeIntent != nil && routeIntent.QueryForRoute != "" {
+		q := routeIntent.QueryForRoute
+		if rs := []rune(q); len(rs) > 80 {
+			q = string(rs[:80]) + "..."
 		}
-		for _, name := range intentExcludes {
-			// Do not suppress something we just pinned for this turn.
-			if condKeep[name] {
-				continue
-			}
-			suppressedTools[name] = true
-			delete(condKeep, name)
-			condFilterOut[name] = true
-		}
-		if routeIntent.QueryForRoute != "" || len(intentPins) > 0 {
-			q := routeIntent.QueryForRoute
-			if rs := []rune(q); len(rs) > 80 {
-				q = string(rs[:80]) + "..."
-			}
-			log.Printf("[RouteIntent] intent=%q confidence=%.2f query=%q pins=%v excludes=%v families=%v",
-				routeIntent.Intent, routeIntent.Confidence, q, intentPins, intentExcludes, routeIntent.ToolFamilies)
-		}
+		log.Printf("[RouteIntent] intent=%q confidence=%.2f query=%q",
+			routeIntent.Intent, routeIntent.Confidence, q)
 	}
-	browserSessionActive := condKeep["browser"] || r.sessionTools["browser"]
-
-	// When the user explicitly asks for a desktop screenshot and browser was
-	// only activated by UIC misclassification (not by session pin, not by
-	// browserPublishAffordance, not by the message also mentioning browser/web
-	// context), demote browser activation to avoid confusing the LLM with an
-	// irrelevant browser tool alongside the correct screenshot tool.
-	//
-	// Exception: if the message also contains browser-context words (浏览器,
-	// chrome, 网页, 页面, web page, etc.), the screenshot is likely a browser
-	// screenshot request, so browser should remain active.
-	if explicitScreenshotRequest && condKeep["browser"] && !r.sessionTools["browser"] && !browserPublishAffordance && !messageHasBrowserContext(userMessage) {
-		delete(condKeep, "browser")
-		condFilterOut["browser"] = true
-		browserSessionActive = false
-	}
+	// Screenshot can only be promoted by the semantic classifier. A legacy
+	// router must not derive capture, recording, VCS, or document authority
+	// from wording, filenames, or host presentation markers.
+	semanticScreenshotRequest := condKeep["screenshot"]
+	screenshotRequest := semanticScreenshotRequest
+	browserSessionActive := condKeep["browser"]
 
 	if browserSessionActive {
 		// Browser tasks must use the stable merged browser surface. Hide generic
@@ -1376,7 +1390,7 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		// model cannot drift into screen scraping, taskkill, raw authenticated HTTP
 		// calls, skill reruns, or source-control actions instead of page actions.
 		suppressedTools["bash"] = true
-		if !explicitScreenshotRequest {
+		if !screenshotRequest {
 			suppressedTools["screenshot"] = true
 		}
 		suppressedTools["call_mcp_tool"] = true
@@ -1388,16 +1402,16 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		suppressedTools["passthrough_task"] = true
 		suppressedTools["list_mcp_tools"] = true
 	}
-	if !explicitScreenshotRequest {
+	if !screenshotRequest {
 		suppressedTools["screenshot"] = true
 	}
-	if !isExplicitGitRequest(userMessage) {
-		suppressedTools["git_commit"] = true
-		suppressedTools["git_push"] = true
-	}
+	suppressedTools["git_commit"] = true
+	suppressedTools["git_push"] = true
 
-	// Compute skill match before generic fallback suppression so a concrete
-	// matched skill is not removed by broad SSH/browser fallback guards.
+	// Skill matching is recommendation evidence only on this compatibility
+	// route. Dynamic Skills must enter the model surface through a managed,
+	// identity-bound semantic binding; a legacy name router must never turn a
+	// matched name into authority for manage_skill.
 	var skillScore float64
 	var matchedSkills []string
 	if r.skillProvider != nil {
@@ -1410,38 +1424,22 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 			}
 		}
 	}
-	hasMatchedSkill := len(matchedSkills) > 0
-
-	if condKeep["ssh"] && hasMatchedSkill {
-		delete(suppressedTools, "manage_skill")
-	}
-	if browserSessionActive && hasMatchedSkill {
-		delete(suppressedTools, "manage_skill")
-	}
-
 	// --- Browser diagnostic: log how browser tools entered condKeep ---
 	{
 		var browserInKeep []string
-		var browserInSession []string
 		for name := range condKeep {
 			if isBrowserDiagTool(name) {
 				browserInKeep = append(browserInKeep, name)
 			}
 		}
-		for name := range r.sessionTools {
-			if isBrowserDiagTool(name) {
-				browserInSession = append(browserInSession, name)
-			}
-		}
-		if len(browserInKeep) > 0 || len(browserInSession) > 0 {
+		if len(browserInKeep) > 0 {
 			source := "unknown"
 			if r.unifiedClassifier != nil {
 				source = "UIC"
 			} else {
 				source = "semantic_intent"
 			}
-			log.Printf("[browser-diag] Route_condKeep: source=%s browserInKeep=%v browserInSession=%v",
-				source, browserInKeep, browserInSession)
+			log.Printf("[browser-diag] Route_condKeep: source=%s browserInKeep=%v", source, browserInKeep)
 		}
 	}
 
@@ -1457,7 +1455,13 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		if suppressedTools[name] {
 			continue
 		}
-		if CoreToolNames[name] || r.sessionTools[name] || condKeep[name] {
+		if LegacyCandidateToolNames[name] && !legacyAdapterCandidateAllowed(name, routeNow) {
+			// A known compatibility name without a live reviewed provision is
+			// catalog_incomplete, not a candidate. Never let its description or
+			// a BM25 hit reconstruct authority.
+			continue
+		}
+		if LegacyBootstrapToolNames[name] || condKeep[name] || legacyRouteFallbackTool(name) {
 			core = append(core, t)
 		} else if condFilterOut[name] {
 			// This tool has a conditional keep rule that did NOT match this
@@ -1469,21 +1473,12 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		}
 	}
 
-	// Skill match has already been computed before suppression so manage_skill's
-	// execution contract does not depend on dynamic candidate routing being active.
 	mustKeepCore := map[string]bool{}
-	if len(matchedSkills) > 0 || skillUploadRequest {
-		mustKeepCore["manage_skill"] = true
-	}
-	if officeDocRequest {
-		// Survive MaxToolBudget trim when many core/session tools compete.
-		mustKeepCore["office"] = true
-	}
 	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
-	core = trimCoreToolsToBudget(core, condKeep, r.sessionTools, mustKeepCore)
-	core = r.enrichMatchedSkillTool(core, matchedSkills, matchedSkillCapabilities)
+	core = trimCoreToolsToBudget(core, condKeep, mustKeepCore)
 	remainingSlots := MaxToolBudget - len(core)
 	if len(candidates) == 0 || remainingSlots <= 0 {
+		r.recordLegacyRoutingRecommendation(searchQuery, core, nil, nil, mustKeepCore, routeNow)
 		return core
 	}
 
@@ -1533,7 +1528,7 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 	}
 
 	// Three-signal scoring: retrieval + experience + priority + skill_match.
-	normScores := minMaxNormalize(scores)
+	normScores := normalizeRetrievalScores(scores)
 
 	type scored struct {
 		index                 int
@@ -1562,16 +1557,12 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 			routingHintAdjustment = r.tracker.RoutingHintAdjustment(name, userTokens)
 		}
 
-		// Skill match bonus: only applies to manage_skill tool.
-		var skillBonus float64
-		if r.skillProvider != nil && name == "manage_skill" {
-			skillBonus = skillScore
-		}
-
 		var finalScore float64
 		if r.skillProvider != nil && r.tracker != nil {
-			// Five signals: retrieval + experience + skill match + outcome + priority.
-			finalScore = 0.45*retrievalScore + 0.20*expScore + 0.15*skillBonus + 0.10*outcomeScore + 0.10*priorityBonus
+			// Four signals: retrieval + experience + outcome + priority. Dynamic
+			// Skill match data remains recommendation evidence, never a bonus for
+			// a legacy gateway candidate.
+			finalScore = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else if r.tracker != nil {
 			// Four signals: retrieval + experience + outcome + priority.
 			finalScore = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
@@ -1691,8 +1682,20 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 	if r.recommender != nil && skillInstallEligible {
 		if hint := r.matchRecommendations(userTokens); hint != nil {
 			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] {
-				result = append(result, hint)
-				resultNames[name] = true
+				// Recommendation hints are metadata-only client-side prompts in
+				// legacy hosts. Do not let them violate the model tool budget: if
+				// the routed request surface is full, replace the lowest-priority
+				// optional candidate instead of appending a 29th definition.
+				if len(result) >= MaxToolBudget {
+					if evicted := evictLegacyOptionalTool(result, LegacyBootstrapToolNames, condKeep, mustKeepCore); evicted >= 0 {
+						delete(resultNames, ExtractToolName(result[evicted]))
+						result[evicted] = hint
+						resultNames[name] = true
+					}
+				} else {
+					result = append(result, hint)
+					resultNames[name] = true
+				}
 			}
 		}
 	}
@@ -1711,7 +1714,11 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		rankedRoutingHintAdjustments[i] = s.routingHintAdjustment
 	}
 
-	// Compute bodyAware: true when hybrid is active and any candidate has non-empty BodySummary.
+	// Compute bodyAware: true when hybrid is active and any candidate has a
+	// non-empty BodySummary. BodySummary no longer feeds the embedding text
+	// (it collapsed the vector space); it is still passed to the LLM reranker
+	// via CandidateSummary, so the flag now only means "reranker has body
+	// context available", not "body affects retrieval scoring".
 	bodyAware := false
 	if r.hybrid != nil && r.registry != nil {
 		for _, name := range candidateNames {
@@ -1730,9 +1737,84 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 	}
 	sort.Strings(suppressedNames)
 
-	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, suppressedNames, browserPublishAffordance, explicitScreenshotRequest, rerankerResult, skillScore, matchedSkills, matchedSkillCapabilities, skillCapabilityConstrained, skillRequiredCapabilities)
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, suppressedNames, false, false, semanticScreenshotRequest, screenshotRequest, rerankerResult, skillScore, matchedSkills, matchedSkillCapabilities, skillCapabilityConstrained, skillRequiredCapabilities)
 
+	r.recordLegacyRoutingRecommendation(searchQuery, result, rankedNames, rankedScores, mustKeepCore, routeNow)
 	return result
+}
+
+func withoutLegacyModelDynamicGateways(definitions []map[string]interface{}) []map[string]interface{} {
+	if len(definitions) == 0 {
+		return definitions
+	}
+	filtered := make([]map[string]interface{}, 0, len(definitions))
+	for _, definition := range definitions {
+		if IsLegacyModelDynamicGateway(ExtractToolName(definition)) {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+	return filtered
+}
+
+func (r *Router) recordLegacyRoutingRecommendation(searchQuery string, selected []map[string]interface{}, rankedNames []string, rankedScores []float64, required map[string]bool, now time.Time) {
+	recommendation := RoutingRecommendation{SearchQuery: strings.TrimSpace(searchQuery)}
+	scoreByName := make(map[string]float64, len(rankedNames))
+	for i, name := range rankedNames {
+		if i < len(rankedScores) {
+			scoreByName[name] = rankedScores[i]
+		}
+	}
+	seenCapabilities := make(map[CapabilityID]bool)
+	for _, definition := range selected {
+		name := ExtractToolName(definition)
+		provision, ok := LegacyAdapterProvisionForTool(name, now)
+		if !ok {
+			continue
+		}
+		reason := "retrieval_candidate"
+		score := scoreByName[name]
+		if LegacyBootstrapToolNames[name] {
+			reason = "bootstrap"
+			score = 1
+		} else if required[name] {
+			reason = "current_turn_required"
+			score = 1
+		} else if legacyFallbackSurfaceTool(name) {
+			reason = "compatibility_fallback"
+			score = 1
+		}
+		recommendation.Evidence = append(recommendation.Evidence, RoutingEvidence{
+			ToolName: name, Capability: provision.Capability, Reason: reason, Score: score, AdapterContract: provision.AdapterContract,
+		})
+		if !seenCapabilities[provision.Capability] {
+			seenCapabilities[provision.Capability] = true
+			recommendation.CandidateCapabilities = append(recommendation.CandidateCapabilities, provision.Capability)
+		}
+		if score > recommendation.Confidence {
+			recommendation.Confidence = score
+		}
+	}
+	sort.SliceStable(recommendation.Evidence, func(i, j int) bool {
+		if recommendation.Evidence[i].Reason != recommendation.Evidence[j].Reason {
+			return recommendation.Evidence[i].Reason < recommendation.Evidence[j].Reason
+		}
+		return recommendation.Evidence[i].ToolName < recommendation.Evidence[j].ToolName
+	})
+	r.lastRecommendation = recommendation
+}
+
+// evictLegacyOptionalTool finds a candidate that was neither bootstrap nor a
+// current-turn required tool. Returning -1 is intentional: required tools are
+// never silently replaced merely to fit a recommendation hint.
+func evictLegacyOptionalTool(result []map[string]interface{}, bootstrap, condKeep, mustKeep map[string]bool) int {
+	for i := len(result) - 1; i >= 0; i-- {
+		name := ExtractToolName(result[i])
+		if !bootstrap[name] && !condKeep[name] && !mustKeep[name] && !legacyRouteFallbackTool(name) {
+			return i
+		}
+	}
+	return -1
 }
 
 func uicSkillInstallEligible(result intent.ClassificationResult) bool {
@@ -1754,318 +1836,6 @@ func intentClassifierSkillInstallEligible(result IntentResult) bool {
 	default:
 		return true
 	}
-}
-
-func isExplicitScreenshotRequest(userMessage string) bool {
-	msg := strings.ToLower(strings.TrimSpace(userMessage))
-	if msg == "" {
-		return false
-	}
-	if strings.Contains(msg, "screenshot") || strings.Contains(msg, "screen shot") {
-		return true
-	}
-	for _, marker := range []string{"\u622a\u56fe", "\u622a\u5c4f", "\u5c4f\u5e55\u622a\u56fe", "\u684c\u9762\u622a\u56fe", "\u622a\u4e2a\u56fe", "\u622a\u4e00\u4e0b\u56fe"} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// Keep in sync with host auto-extract markers (corelib/agent file_path_expand.go)
-// and GUI file-picker / IM attachment prefixes — string match only, no import cycle.
-const (
-	officePinAutoExtractBegin   = "--- auto_extract: begin"
-	officePinAutoExtractEnd     = "--- auto_extract: end"
-	officePinAutoExtractNotice  = "[系统已自动解析文档正文"
-	officePinFilePathPrefix     = "[用户选择的本地文件路径]"
-	officePinFilePathHistorical = "[之前选择的本地文件路径"
-	officePinAttachmentPrefix   = "[附件:"
-	officePinAttachmentHist     = "[之前的附件:"
-)
-
-// officeDocumentExts are extensions the native office(read_document) tool handles
-// (plus plain text). Used for path-token detection when pinning the office tool.
-var officeDocumentExts = []string{
-	".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
-	".txt", ".md", ".markdown", ".rtf",
-}
-
-// needsOfficeDocumentTool reports whether this turn needs the builtin office tool
-// for reading local documents (path picker, auto-extract continue, or explicit office path).
-//
-// office is a *conditional* tool: without an explicit pin it is filtered out entirely
-// when UIC does not emit LabelOffice, which previously forced bash/Python fallbacks.
-func needsOfficeDocumentTool(userMessage string) bool {
-	msg := strings.TrimSpace(userMessage)
-	if msg == "" {
-		return false
-	}
-	// Host auto-inject (治本): pagination / re-read still needs office(read_document).
-	if strings.Contains(msg, officePinAutoExtractBegin) ||
-		strings.Contains(msg, officePinAutoExtractNotice) ||
-		strings.Contains(msg, officePinAutoExtractEnd) {
-		return true
-	}
-	// Path-like tokens ending in office document extensions (Windows/Unix/relative).
-	if officeDocumentPathToken(msg) {
-		return true
-	}
-	// GUI / IM markers with an office extension somewhere in the section (paths may
-	// contain spaces so token split alone can miss; marker + ext is a strong signal).
-	if strings.Contains(msg, officePinFilePathPrefix) ||
-		strings.Contains(msg, officePinFilePathHistorical) ||
-		strings.Contains(msg, officePinAttachmentPrefix) ||
-		strings.Contains(msg, officePinAttachmentHist) {
-		if messageHasOfficeDocumentExt(msg) {
-			return true
-		}
-	}
-	return false
-}
-
-func messageHasOfficeDocumentExt(msg string) bool {
-	lower := strings.ToLower(msg)
-	for _, ext := range officeDocumentExts {
-		if strings.Contains(lower, ext) {
-			return true
-		}
-	}
-	return false
-}
-
-// officeDocumentPathToken is true when any path-like token ends with an office document extension.
-// Tokens may contain spaces on Windows (e.g. "C:\Users\me\对比评分表 技术部分.docx"), so we
-// also scan for drive/UNC prefixes via a secondary pass.
-func officeDocumentPathToken(msg string) bool {
-	// Fast path: whitespace/quote-delimited tokens.
-	for _, field := range strings.FieldsFunc(msg, func(r rune) bool {
-		return unicode.IsSpace(r) || r == '"' || r == '\'' || r == '`' || r == ',' || r == ';' || r == '\n' || r == '\r'
-	}) {
-		if tokenLooksLikeOfficeDocumentPath(field) {
-			return true
-		}
-	}
-	// Paths with spaces: walk windowsKnownFilePathPattern hits and require office ext.
-	for _, p := range windowsKnownFilePathPattern.FindAllString(msg, -1) {
-		if tokenLooksLikeOfficeDocumentPath(p) {
-			return true
-		}
-	}
-	// Unix absolute/relative with spaces is rare; scan lines for "/.../file.ext".
-	for _, line := range strings.Split(msg, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || (!strings.Contains(line, "/") && !strings.Contains(line, "\\")) {
-			continue
-		}
-		// Take last path-looking segment on the line (after markers like "→ 已保存到 ").
-		if i := strings.LastIndex(line, "已保存到 "); i >= 0 {
-			line = strings.TrimSpace(line[i+len("已保存到 "):])
-			line = strings.TrimSuffix(line, "]")
-		}
-		if tokenLooksLikeOfficeDocumentPath(line) {
-			return true
-		}
-	}
-	return false
-}
-
-func tokenLooksLikeOfficeDocumentPath(tok string) bool {
-	tok = strings.TrimSpace(tok)
-	if tok == "" {
-		return false
-	}
-	tok = strings.TrimRight(tok, ")]}>。．、\"'")
-	lower := strings.ToLower(tok)
-	hasSep := strings.Contains(tok, "/") || strings.Contains(tok, "\\") || filepath.VolumeName(tok) != ""
-	if !hasSep {
-		return false
-	}
-	for _, ext := range officeDocumentExts {
-		if strings.HasSuffix(lower, ext) {
-			return true
-		}
-	}
-	return false
-}
-
-// recordingStopMarkers are unambiguous stop/cancel/refuse phrases. Checked
-// before start markers so "不要帮我录音" (contains "帮我录音") is not treated
-// as a start request.
-var recordingStopMarkers = []string{
-	"停止录音", "停止錄音", "停止录制", "停止錄製",
-	"结束录音", "結束錄音", "结束录制", "結束錄製",
-	"取消录音", "取消錄音", "取消录制", "取消錄製",
-	"关闭录音", "關閉錄音", "关掉录音", "關掉錄音",
-	"不要录音", "不要錄音", "别录音", "別錄音", "别录了", "別錄了",
-	"不要帮我录音", "不要幫我錄音", "别帮我录音", "別幫我錄音",
-	"不用录音", "不用錄音", "无需录音", "無需錄音",
-	"stop recording", "cancel recording", "end recording", "stop the recording",
-	"don't record", "do not record", "dont record",
-}
-
-// recordingStartMarkers are strong start-recording phrases (substring match).
-var recordingStartMarkers = []string{
-	"record_audio",
-	"start recording", "start a recording", "begin recording",
-	"record the meeting", "record meeting", "meeting recording",
-	"record this meeting", "long-form recording", "long form recording",
-	"open the recorder", "open recorder", "start the recorder",
-	"会议录音", "開始錄音", "开始录音", "打开录音", "打開錄音",
-	"开始录制", "開始錄製", "打开录制", "打開錄製",
-	"录一下", "錄一下", "帮我录音", "幫我錄音", "给我录音", "給我錄音",
-	"现场录音", "現場錄音", "长时录音", "長時錄音", "长时录制", "長時錄製",
-	"讨论录制", "討論錄製", "访谈录制", "訪談錄製", "访谈录音", "訪談錄音",
-	"录个音", "錄個音", "录制会议", "錄製會議", "录音会议", "錄音會議",
-}
-
-// isExplicitRecordAudioRequest detects clear user intent to START interactive
-// long-form / meeting recording (not "transcribe an existing audio file",
-// and not stop/cancel recording).
-func isExplicitRecordAudioRequest(userMessage string) bool {
-	msg := strings.ToLower(strings.TrimSpace(userMessage))
-	if msg == "" {
-		return false
-	}
-	// Hard stop/cancel always wins (even if a start substring is nested).
-	if looksLikeHardStopRecordingRequest(msg) {
-		return false
-	}
-	// Strong start phrases win over co-occurring 转写/路径 talk
-	// (e.g. "不要转写，开始录音"), but not over "整理会议录音纪要".
-	if hasStrongStartRecordingPhrase(msg) && !looksLikeProcessExistingMeetingRecording(msg) {
-		return true
-	}
-	if looksLikeStopOrNegateRecordingRequest(msg) ||
-		looksLikeExistingAudioTranscriptionRequest(msg) ||
-		looksLikeProcessExistingMeetingRecording(msg) {
-		return false
-	}
-	// Bare "录音" / "录制" only for short messages (e.g. "录音", "帮我录一下"),
-	// not long narrative that merely mentions recording as a topic.
-	runeCount := len([]rune(msg))
-	if runeCount > 0 && runeCount <= 16 &&
-		(strings.Contains(msg, "录音") || strings.Contains(msg, "錄音") ||
-			strings.Contains(msg, "录制") || strings.Contains(msg, "錄製") ||
-			containsASCIIToken(msg, "record") || containsASCIIToken(msg, "recording")) {
-		return true
-	}
-	return false
-}
-
-func hasStrongStartRecordingPhrase(msg string) bool {
-	for _, marker := range recordingStartMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// looksLikeHardStopRecordingRequest matches unambiguous stop/cancel/refuse phrases.
-func looksLikeHardStopRecordingRequest(msg string) bool {
-	for _, marker := range recordingStopMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// looksLikeExistingAudioTranscriptionRequest is true when the user is asking to
-// transcribe/process an existing audio file rather than start a new recording.
-func looksLikeExistingAudioTranscriptionRequest(msg string) bool {
-	for _, marker := range []string{
-		"转写", "轉寫", "转录", "轉錄", "asr", "whisper",
-		"音频文件", "音頻文件", "录音文件", "錄音文件",
-		".wav", ".mp3", ".m4a", ".ogg", ".opus", ".silk", ".aac",
-		"path=", "路径", "路徑",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// looksLikeProcessExistingMeetingRecording is true when the user wants to
-// process/summarize an existing meeting recording, not open the mic UI.
-// Example: "把会议录音整理成纪要" (contains "会议录音" but is not a start intent).
-func looksLikeProcessExistingMeetingRecording(msg string) bool {
-	hasMeetingAudio := strings.Contains(msg, "会议录音") || strings.Contains(msg, "會議錄音") ||
-		strings.Contains(msg, "meeting recording") || strings.Contains(msg, "recording of the meeting")
-	if !hasMeetingAudio {
-		return false
-	}
-	// Explicit start verbs still mean "start recording (and maybe summarize later)".
-	for _, start := range []string{
-		"开始", "開始", "打开", "打開", "帮我录", "幫我錄", "给我录", "給我錄",
-		"start ", "begin ", "open ",
-	} {
-		if strings.Contains(msg, start) {
-			return false
-		}
-	}
-	for _, process := range []string{
-		"整理", "纪要", "紀要", "总结", "總結", "摘要", "转成", "轉成",
-		"写成", "寫成", "生成", "summar", "minutes", "notes",
-	} {
-		if strings.Contains(msg, process) {
-			return true
-		}
-	}
-	return false
-}
-
-// looksLikeStopOrNegateRecordingRequest is true when the user is stopping,
-// cancelling, or refusing recording — not asking to start it.
-func looksLikeStopOrNegateRecordingRequest(msg string) bool {
-	if looksLikeHardStopRecordingRequest(msg) {
-		return true
-	}
-	// Soft negate only for short messages ("不要录音啊") so we do not kill
-	// compound intents like "不要转写，开始录音".
-	runeCount := len([]rune(msg))
-	if runeCount > 0 && runeCount <= 20 &&
-		(strings.Contains(msg, "不要") || strings.Contains(msg, "别") || strings.Contains(msg, "別") ||
-			strings.Contains(msg, "不用") || strings.Contains(msg, "无需") || strings.Contains(msg, "無需")) &&
-		(strings.Contains(msg, "录音") || strings.Contains(msg, "錄音") ||
-			strings.Contains(msg, "录制") || strings.Contains(msg, "錄製")) {
-		return true
-	}
-	return false
-}
-
-func isExplicitGitRequest(userMessage string) bool {
-	msg := strings.ToLower(strings.TrimSpace(userMessage))
-	if msg == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"git", "commit", "push", "pull request", "branch", "repository",
-		"\u4ee3\u7801", "\u4ed3\u5e93", "\u63d0\u4ea4\u4ee3\u7801", "\u63a8\u9001", "\u5206\u652f", "\u5408\u5e76\u8bf7\u6c42",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// messageHasBrowserContext returns true if the message mentions browser/web
-// context words, indicating the user wants a browser-based action (like a
-// webpage screenshot) rather than a desktop screenshot.
-func messageHasBrowserContext(userMessage string) bool {
-	msg := strings.ToLower(strings.TrimSpace(userMessage))
-	for _, marker := range []string{
-		"\u6d4f\u89c8\u5668", "\u7f51\u9875", "\u9875\u9762", "chrome", "firefox", "safari",
-		"playwright", "web page", "webpage", "browser", "\u7f51\u7ad9", "url",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func isSkillUploadRequest(userMessage string) bool {
@@ -2276,6 +2046,8 @@ func writeRouteLog(
 	suppressedNames []string,
 	browserPublishAffordance bool,
 	explicitScreenshotRequest bool,
+	semanticScreenshotRequest bool,
+	screenshotRequest bool,
 	rerankerResult []string,
 	skillMatchScore float64,
 	matchedSkills []string,
@@ -2318,7 +2090,7 @@ func writeRouteLog(
 	fmt.Fprintf(f, "Total tools: %d | Core: %d | Candidates: %d | Hybrid: %v\n",
 		totalTools, coreCount, candidateCount, hybridActive)
 	fmt.Fprintf(f, "Body-aware: %v\n", bodyAware)
-	fmt.Fprintf(f, "Execution affordances: browser_publish=%v explicit_screenshot=%v\n", browserPublishAffordance, explicitScreenshotRequest)
+	fmt.Fprintf(f, "Execution affordances: browser_publish=%v explicit_screenshot=%v semantic_screenshot=%v screenshot_requested=%v\n", browserPublishAffordance, explicitScreenshotRequest, semanticScreenshotRequest, screenshotRequest)
 	if len(suppressedNames) > 0 {
 		fmt.Fprintf(f, "Suppressed tools (%d): %v\n", len(suppressedNames), suppressedNames)
 	}

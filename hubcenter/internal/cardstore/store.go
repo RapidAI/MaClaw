@@ -160,7 +160,9 @@ type PurchaseOrder struct {
 
 	// HubCenter-specific fields
 	HubID          string  `json:"hub_id"`
+	HubName        string  `json:"hub_name,omitempty"`
 	TenantID       string  `json:"tenant_id"`
+	TenantName     string  `json:"tenant_name,omitempty"`
 	CardTypeID     string  `json:"card_type_id"`
 	ServiceGroupID string  `json:"service_group_id"`
 	AgentID        string  `json:"agent_id,omitempty"`
@@ -175,6 +177,8 @@ type PurchaseOrder struct {
 	AuthorizationExpiresAt *time.Time `json:"authorization_expires_at,omitempty"`
 	CreditsUsed            *float64   `json:"credits_used,omitempty"`
 	CreditsRemaining       *float64   `json:"credits_remaining,omitempty"`
+	ServiceGroup           string     `json:"service_group,omitempty"`
+	CanRebindServiceGroup  bool       `json:"can_rebind_service_group,omitempty"`
 }
 
 // PurchaseOrderRepository persists purchase orders.
@@ -199,8 +203,21 @@ type OrderFilter struct {
 	Statuses        []string
 	ArchivedOnly    bool
 	IncludeArchived bool
+	ActiveCardsOnly bool
 	Offset          int
 	Limit           int
+}
+
+// DefaultServiceGroupSentinel selects the current HubCenter default service group.
+const DefaultServiceGroupSentinel = "__default__"
+
+// ServiceGroupRecord is a catalog entry used when rebinding a sold card.
+type ServiceGroupRecord struct {
+	ID           string
+	Name         string
+	AgentID      string
+	AgentName    string
+	AccessPolicy string
 }
 
 // ---------------------------------------------------------------------------
@@ -209,15 +226,17 @@ type OrderFilter struct {
 
 // Service manages the HubCenter card store operations.
 type Service struct {
-	cardTypes    CardTypeRepository
-	orders       PurchaseOrderRepository
-	authRepo     llmservice.TenantAuthorizationRepository
-	payment      corecardstore.PersonalPaymentConfig
-	alipay       corecardstore.AlipayDirectConfig
-	verifyTenant func(ctx context.Context, hubID, tenantID, email string) error // security check
-	auditLog     func(ctx context.Context, action, detail string)               // audit trail
-	resolveGroup func(ctx context.Context, serviceGroupID string) (serviceGroupName, agentID, agentName string)
-	publicURL    func(ctx context.Context) (string, error)
+	cardTypes        CardTypeRepository
+	orders           PurchaseOrderRepository
+	authRepo         llmservice.TenantAuthorizationRepository
+	payment          corecardstore.PersonalPaymentConfig
+	alipay           corecardstore.AlipayDirectConfig
+	verifyTenant     func(ctx context.Context, hubID, tenantID, email string) error // security check
+	auditLog         func(ctx context.Context, action, detail string)               // audit trail
+	resolveGroup     func(ctx context.Context, serviceGroupID string) (serviceGroupName, agentID, agentName string)
+	resolveCatalog   func(ctx context.Context) (groups []ServiceGroupRecord, defaultID string)
+	resolveHubTenant func(ctx context.Context, hubID, tenantID string) (hubName, tenantName string)
+	publicURL        func(ctx context.Context) (string, error)
 }
 
 // NewService creates a card store service.
@@ -233,7 +252,8 @@ func NewService(
 	}
 }
 
-// SetTenantVerifier sets the function that validates hub+tenant+email identity.
+// SetTenantVerifier sets the function that validates the purchasing tenant
+// administrator's hub+tenant+email identity.
 func (s *Service) SetTenantVerifier(fn func(ctx context.Context, hubID, tenantID, email string) error) {
 	s.verifyTenant = fn
 }
@@ -241,6 +261,16 @@ func (s *Service) SetTenantVerifier(fn func(ctx context.Context, hubID, tenantID
 // SetServiceGroupResolver enriches card type views with service group and agent metadata.
 func (s *Service) SetServiceGroupResolver(fn func(ctx context.Context, serviceGroupID string) (serviceGroupName, agentID, agentName string)) {
 	s.resolveGroup = fn
+}
+
+// SetServiceGroupCatalog supplies the live service-group list and default group.
+func (s *Service) SetServiceGroupCatalog(fn func(ctx context.Context) (groups []ServiceGroupRecord, defaultID string)) {
+	s.resolveCatalog = fn
+}
+
+// SetHubTenantResolver enriches sold-card orders with hub and tenant display names.
+func (s *Service) SetHubTenantResolver(fn func(ctx context.Context, hubID, tenantID string) (hubName, tenantName string)) {
+	s.resolveHubTenant = fn
 }
 
 // SetAuditLogger sets the audit log function for tracking admin operations.
@@ -378,14 +408,47 @@ func (s *Service) ListAllCardTypes(ctx context.Context) ([]*CardType, error) {
 }
 
 func (s *Service) enrichCardTypes(ctx context.Context, types []*CardType) {
-	if s.resolveGroup == nil {
+	if len(types) == 0 {
 		return
 	}
+	cache := make(map[string][3]string, len(types))
 	for _, ct := range types {
-		if ct == nil || ct.ServiceGroupID == "" {
+		if ct == nil || strings.TrimSpace(ct.ServiceGroupID) == "" {
 			continue
 		}
-		ct.ServiceGroup, ct.AgentID, ct.AgentName = s.resolveGroup(ctx, ct.ServiceGroupID)
+		gid := strings.TrimSpace(ct.ServiceGroupID)
+		if v, ok := cache[gid]; ok {
+			if v[0] != "" {
+				ct.ServiceGroup = v[0]
+			} else if strings.TrimSpace(ct.ServiceGroup) == "" {
+				ct.ServiceGroup = gid
+			}
+			if v[1] != "" {
+				ct.AgentID = v[1]
+			}
+			if v[2] != "" {
+				ct.AgentName = v[2]
+			}
+			continue
+		}
+		if s.resolveGroup != nil {
+			name, agentID, agentName := s.resolveGroup(ctx, gid)
+			if strings.TrimSpace(name) != "" {
+				ct.ServiceGroup = name
+			} else if strings.TrimSpace(ct.ServiceGroup) == "" {
+				ct.ServiceGroup = gid
+			}
+			if agentID != "" {
+				ct.AgentID = agentID
+			}
+			if agentName != "" {
+				ct.AgentName = agentName
+			}
+			cache[gid] = [3]string{strings.TrimSpace(name), agentID, agentName}
+		} else if strings.TrimSpace(ct.ServiceGroup) == "" {
+			ct.ServiceGroup = gid
+			cache[gid] = [3]string{"", "", ""}
+		}
 	}
 }
 
@@ -582,16 +645,379 @@ func (s *Service) ListOrders(ctx context.Context, filter OrderFilter) ([]*Purcha
 // ListOrdersWithAlipayConfig returns orders and hydrates missing payment links
 // with the supplied request-scoped Alipay config.
 func (s *Service) ListOrdersWithAlipayConfig(ctx context.Context, filter OrderFilter, alipay corecardstore.AlipayDirectConfig) ([]*PurchaseOrder, int, error) {
-	orders, total, err := s.orders.List(ctx, filter)
+	pageOffset, pageLimit := filter.Offset, filter.Limit
+	listFilter := filter
+	if filter.ActiveCardsOnly {
+		listFilter.Offset = 0
+		// Cap full scan to avoid OOM on large tenants; 2000 is well above UI page size (20)
+		// but bounds memory when tenant has many historical activated orders.
+		if listFilter.Limit == 0 || listFilter.Limit > 2000 {
+			listFilter.Limit = 2000
+		}
+		listFilter.ArchivedOnly = false
+		listFilter.IncludeArchived = true
+		if listFilter.Status == "" && len(listFilter.Statuses) == 0 {
+			listFilter.Status = corecardstore.StatusActivated
+		}
+	}
+	orders, total, err := s.orders.List(ctx, listFilter)
 	if err != nil {
 		return nil, 0, err
 	}
 	authHydrator := s.newOrderAuthorizationHydrator(ctx)
+	hubHydrator := s.newOrderHubTenantHydrator(ctx)
+	groupCache := make(map[string][3]string, 16)
+	labelCache := make(map[string]string, 16)
+	now := time.Now().UTC()
+	var active []*PurchaseOrder
+	if filter.ActiveCardsOnly {
+		active = make([]*PurchaseOrder, 0, len(orders))
+	}
 	for _, order := range orders {
 		s.hydrateOrderPaymentDetails(order, alipay)
 		authHydrator.hydrate(order)
+		s.enrichOrderServiceGroupCached(ctx, order, groupCache)
+		hubHydrator.enrich(order)
+		s.enrichOrderProductLabel(ctx, order, labelCache)
+		order.CanRebindServiceGroup = orderHasUsableSoldCard(order, now)
+		if filter.ActiveCardsOnly && order.CanRebindServiceGroup {
+			active = append(active, order)
+		}
+	}
+	if filter.ActiveCardsOnly {
+		return paginateOrders(active, pageOffset, pageLimit), len(active), nil
 	}
 	return orders, total, nil
+}
+
+func paginateOrders(orders []*PurchaseOrder, offset, limit int) []*PurchaseOrder {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(orders) {
+		return []*PurchaseOrder{}
+	}
+	orders = orders[offset:]
+	if limit > 0 && len(orders) > limit {
+		orders = orders[:limit]
+	}
+	return orders
+}
+
+func (s *Service) enrichOrderProductLabel(ctx context.Context, order *PurchaseOrder, cache map[string]string) {
+	if order == nil || strings.TrimSpace(order.ProductLabel) != "" {
+		return
+	}
+	ctID := strings.TrimSpace(order.CardTypeID)
+	if ctID == "" || s.cardTypes == nil {
+		return
+	}
+	if label, ok := cache[ctID]; ok {
+		order.ProductLabel = label
+		return
+	}
+	var label string
+	if ct, err := s.cardTypes.GetByID(ctx, ctID); err == nil && ct != nil {
+		label = strings.TrimSpace(ct.Label)
+	}
+	cache[ctID] = label
+	order.ProductLabel = label
+}
+
+func (s *Service) enrichOrderServiceGroup(ctx context.Context, order *PurchaseOrder) {
+	groupCache := make(map[string][3]string, 4)
+	s.enrichOrderServiceGroupCached(ctx, order, groupCache)
+}
+
+func (s *Service) enrichOrderServiceGroupCached(ctx context.Context, order *PurchaseOrder, cache map[string][3]string) {
+	if order == nil || strings.TrimSpace(order.ServiceGroupID) == "" {
+		return
+	}
+	gid := strings.TrimSpace(order.ServiceGroupID)
+	if cache != nil {
+		if v, ok := cache[gid]; ok {
+			if v[0] != "" {
+				order.ServiceGroup = v[0]
+			} else if strings.TrimSpace(order.ServiceGroup) == "" {
+				order.ServiceGroup = gid
+			}
+			if v[1] != "" {
+				order.AgentID = v[1]
+			}
+			if v[2] != "" {
+				order.AgentName = v[2]
+			}
+			return
+		}
+	}
+	if s.resolveGroup != nil {
+		name, agentID, agentName := s.resolveGroup(ctx, gid)
+		if strings.TrimSpace(name) != "" {
+			order.ServiceGroup = name
+		} else if strings.TrimSpace(order.ServiceGroup) == "" {
+			order.ServiceGroup = gid
+		}
+		if agentID != "" {
+			order.AgentID = agentID
+		}
+		if agentName != "" {
+			order.AgentName = agentName
+		}
+		if cache != nil {
+			cache[gid] = [3]string{strings.TrimSpace(name), agentID, agentName}
+		}
+	} else if strings.TrimSpace(order.ServiceGroup) == "" {
+		order.ServiceGroup = gid
+		if cache != nil {
+			cache[gid] = [3]string{"", "", ""}
+		}
+	}
+}
+
+type orderHubTenantHydrator struct {
+	ctx     context.Context
+	resolve func(ctx context.Context, hubID, tenantID string) (hubName, tenantName string)
+	cache   map[string][2]string
+}
+
+func (s *Service) newOrderHubTenantHydrator(ctx context.Context) *orderHubTenantHydrator {
+	if s == nil {
+		return nil
+	}
+	return &orderHubTenantHydrator{ctx: ctx, resolve: s.resolveHubTenant, cache: map[string][2]string{}}
+}
+
+func (h *orderHubTenantHydrator) enrich(order *PurchaseOrder) {
+	if h == nil {
+		return
+	}
+	hubName, tenantName := h.lookup(order)
+	applyOrderHubTenantNames(order, hubName, tenantName)
+}
+
+func (h *orderHubTenantHydrator) lookup(order *PurchaseOrder) (string, string) {
+	if h == nil || h.resolve == nil || order == nil {
+		return "", ""
+	}
+	hubID := strings.TrimSpace(order.HubID)
+	tenantID := strings.TrimSpace(order.TenantID)
+	if hubID == "" && tenantID == "" {
+		return "", ""
+	}
+	key := hubID + "\x00" + tenantID
+	if names, ok := h.cache[key]; ok {
+		return names[0], names[1]
+	}
+	hubName, tenantName := h.resolve(h.ctx, hubID, tenantID)
+	h.cache[key] = [2]string{hubName, tenantName}
+	return hubName, tenantName
+}
+
+func (s *Service) enrichOrderHubTenant(ctx context.Context, order *PurchaseOrder) {
+	if s == nil || s.resolveHubTenant == nil || order == nil {
+		return
+	}
+	hubName, tenantName := s.resolveHubTenant(ctx, order.HubID, order.TenantID)
+	applyOrderHubTenantNames(order, hubName, tenantName)
+}
+
+func applyOrderHubTenantNames(order *PurchaseOrder, hubName, tenantName string) {
+	if order == nil {
+		return
+	}
+	if name := strings.TrimSpace(hubName); name != "" {
+		order.HubName = name
+	}
+	if name := strings.TrimSpace(tenantName); name != "" {
+		order.TenantName = name
+	}
+}
+
+func orderHasUsableSoldCard(order *PurchaseOrder, now time.Time) bool {
+	if order == nil || !strings.EqualFold(order.Status, corecardstore.StatusActivated) {
+		return false
+	}
+	if strings.EqualFold(order.AuthorizationStatus, "expired") || strings.EqualFold(order.AuthorizationStatus, "exhausted") {
+		return false
+	}
+	if order.CreditsRemaining == nil || *order.CreditsRemaining <= 0 {
+		return false
+	}
+	if order.AuthorizationStartsAt != nil && now.Before(*order.AuthorizationStartsAt) {
+		return false
+	}
+	if order.AuthorizationExpiresAt == nil || now.After(*order.AuthorizationExpiresAt) {
+		return false
+	}
+	return strings.TrimSpace(order.AuthorizationID) != ""
+}
+
+// RebindOrderServiceGroup moves a usable sold card onto another existing group
+// or the current default service group.
+func (s *Service) RebindOrderServiceGroup(ctx context.Context, orderNo, serviceGroupID string, useDefault bool) (*PurchaseOrder, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo == "" {
+		return nil, fmt.Errorf("order number is required")
+	}
+	order, err := s.orders.GetByOrderNo(ctx, orderNo)
+	if err != nil {
+		return nil, fmt.Errorf("get order: %w", err)
+	}
+	if order == nil {
+		return nil, fmt.Errorf("order %s not found", orderNo)
+	}
+	hydrator := s.newOrderAuthorizationHydrator(ctx)
+	auth := hydrator.find(order)
+	hydrator.hydrate(order)
+	now := time.Now().UTC()
+	if auth == nil || !auth.IsActive(now) || !orderHasUsableSoldCard(order, now) {
+		return nil, fmt.Errorf("only unused remaining active cards can change service group")
+	}
+	if strings.EqualFold(strings.TrimSpace(serviceGroupID), DefaultServiceGroupSentinel) {
+		useDefault = true
+		serviceGroupID = ""
+	}
+	if !useDefault && sameSoldCardGroup(order, auth, serviceGroupID) {
+		return s.finishSameGroupRebind(ctx, order, auth, now)
+	}
+	target, err := s.resolveRebindTarget(ctx, serviceGroupID, useDefault)
+	if err != nil {
+		return nil, err
+	}
+	if sameSoldCardGroup(order, auth, target.ID) {
+		return s.finishSameGroupRebind(ctx, order, auth, now)
+	}
+	prevAuthGroupID := auth.ServiceGroupID
+	prevAuthUpdatedAt := auth.UpdatedAt
+	prevAllowExternal := auth.AllowExternalProviders
+	updated := *order
+	updated.ServiceGroupID = target.ID
+	updated.ServiceGroup = target.Name
+	updated.AgentID = target.AgentID
+	updated.AgentName = target.AgentName
+	updated.UpdatedAt = now
+	updatedAuth := *auth
+	updatedAuth.ServiceGroupID = target.ID
+	updatedAuth.UpdatedAt = now
+	updatedAuth.AllowExternalProviders = false
+	if err := s.authRepo.Update(ctx, &updatedAuth); err != nil {
+		return nil, fmt.Errorf("update authorization group: %w", err)
+	}
+	if err := s.orders.Update(ctx, &updated); err != nil {
+		updatedAuth.ServiceGroupID = prevAuthGroupID
+		updatedAuth.UpdatedAt = prevAuthUpdatedAt
+		updatedAuth.AllowExternalProviders = prevAllowExternal
+		if revertErr := s.authRepo.Update(ctx, &updatedAuth); revertErr != nil {
+			return nil, fmt.Errorf("update order group: %w; revert authorization group: %v", err, revertErr)
+		}
+		return nil, fmt.Errorf("update order group: %w", err)
+	}
+	s.enrichOrderServiceGroup(ctx, &updated)
+	s.enrichOrderHubTenant(ctx, &updated)
+	updated.CanRebindServiceGroup = true
+	if s.auditLog != nil {
+		s.auditLog(ctx, "cardstore.order.rebind_group", fmt.Sprintf("order=%s hub=%s tenant=%s group=%s", orderNo, updated.HubID, updated.TenantID, target.ID))
+	}
+	return &updated, nil
+}
+
+func sameSoldCardGroup(order *PurchaseOrder, auth *llmservice.TenantAuthorization, serviceGroupID string) bool {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if order == nil || auth == nil || serviceGroupID == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(order.ServiceGroupID), serviceGroupID) &&
+		strings.EqualFold(strings.TrimSpace(auth.ServiceGroupID), serviceGroupID)
+}
+
+func soldCardHasStaleExternalFlag(auth *llmservice.TenantAuthorization) bool {
+	if auth == nil || !auth.AllowExternalProviders {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(auth.ServiceGroupID), llmservice.ExternalComputePermissionServiceGroupID)
+}
+
+func (s *Service) finishSameGroupRebind(ctx context.Context, order *PurchaseOrder, auth *llmservice.TenantAuthorization, now time.Time) (*PurchaseOrder, error) {
+	if soldCardHasStaleExternalFlag(auth) {
+		if err := s.clearSoldCardStaleExternalFlag(ctx, auth, now); err != nil {
+			return nil, err
+		}
+	}
+	s.enrichOrderServiceGroup(ctx, order)
+	s.enrichOrderHubTenant(ctx, order)
+	order.CanRebindServiceGroup = true
+	return order, nil
+}
+
+func (s *Service) clearSoldCardStaleExternalFlag(ctx context.Context, auth *llmservice.TenantAuthorization, now time.Time) error {
+	if auth == nil {
+		return nil
+	}
+	updatedAuth := *auth
+	updatedAuth.AllowExternalProviders = false
+	updatedAuth.UpdatedAt = now
+	if err := s.authRepo.Update(ctx, &updatedAuth); err != nil {
+		return fmt.Errorf("clear authorization external flag: %w", err)
+	}
+	auth.AllowExternalProviders = false
+	auth.UpdatedAt = now
+	return nil
+}
+
+func (s *Service) resolveRebindTarget(ctx context.Context, serviceGroupID string, useDefault bool) (ServiceGroupRecord, error) {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if strings.EqualFold(serviceGroupID, DefaultServiceGroupSentinel) {
+		useDefault = true
+		serviceGroupID = ""
+	}
+	if s.resolveCatalog == nil {
+		return ServiceGroupRecord{}, fmt.Errorf("service group catalog is unavailable")
+	}
+	groups, defaultID := s.resolveCatalog(ctx)
+	if useDefault {
+		defaultID = strings.TrimSpace(defaultID)
+		if defaultID == "" {
+			return ServiceGroupRecord{}, fmt.Errorf("default service group is not configured")
+		}
+		if found, ok := lookupRebindGroup(groups, defaultID); ok {
+			if rebindGroupIsFree(found) {
+				return ServiceGroupRecord{}, fmt.Errorf("default service group does not require grant")
+			}
+			return found, nil
+		}
+		return ServiceGroupRecord{}, fmt.Errorf("default service group is not configured")
+	}
+	if serviceGroupID == "" {
+		return ServiceGroupRecord{}, fmt.Errorf("service_group_id is required")
+	}
+	if found, ok := lookupRebindGroup(groups, serviceGroupID); ok {
+		if rebindGroupIsFree(found) {
+			return ServiceGroupRecord{}, fmt.Errorf("service group %s does not require grant", serviceGroupID)
+		}
+		return found, nil
+	}
+	return ServiceGroupRecord{}, fmt.Errorf("service group %s not found", serviceGroupID)
+}
+
+func rebindGroupIsFree(group ServiceGroupRecord) bool {
+	return !llmservice.RequiresGrantAccessPolicy(group.AccessPolicy)
+}
+
+func lookupRebindGroup(groups []ServiceGroupRecord, serviceGroupID string) (ServiceGroupRecord, bool) {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if serviceGroupID == "" || strings.EqualFold(serviceGroupID, llmservice.ExternalComputePermissionServiceGroupID) {
+		return ServiceGroupRecord{}, false
+	}
+	for _, group := range groups {
+		if strings.EqualFold(strings.TrimSpace(group.ID), serviceGroupID) {
+			if strings.TrimSpace(group.Name) == "" {
+				group.Name = strings.TrimSpace(group.ID)
+			}
+			group.ID = strings.TrimSpace(group.ID)
+			return group, true
+		}
+	}
+	return ServiceGroupRecord{}, false
 }
 
 type orderAuthorizationHydrator struct {
@@ -650,7 +1076,7 @@ func roundOrderCreditDisplay(v float64) float64 {
 }
 
 func (h *orderAuthorizationHydrator) find(order *PurchaseOrder) *llmservice.TenantAuthorization {
-	if order.Status != corecardstore.StatusActivated {
+	if !strings.EqualFold(order.Status, corecardstore.StatusActivated) {
 		return nil
 	}
 	authID := strings.TrimSpace(order.PaymentID)
@@ -779,7 +1205,7 @@ func orderMatchesAuthorization(order *PurchaseOrder, auth *llmservice.TenantAuth
 	if authOrderNo := strings.TrimSpace(auth.CardOrderID); authOrderNo != "" && authOrderNo != orderNo {
 		return false
 	}
-	if orderServiceGroupID != "" && authServiceGroupID != "" && authServiceGroupID != orderServiceGroupID {
+	if orderServiceGroupID != "" && authServiceGroupID != "" && !strings.EqualFold(authServiceGroupID, orderServiceGroupID) {
 		return false
 	}
 	return true
@@ -1022,7 +1448,7 @@ func (s *Service) activateOrder(ctx context.Context, order *PurchaseOrder) (stri
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if order.ServiceGroupID == llmservice.ExternalComputePermissionServiceGroupID {
+	if strings.EqualFold(order.ServiceGroupID, llmservice.ExternalComputePermissionServiceGroupID) {
 		auth.AllowExternalProviders = true
 	}
 

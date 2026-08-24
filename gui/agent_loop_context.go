@@ -21,16 +21,27 @@ type LoopContext struct {
 	SlotKind    SlotKind // Coding, Scheduled, Auto (Background only)
 	Description string   // human-readable task description
 
-	mu                                  sync.RWMutex
-	maxIterations                       int // current max iterations for this loop
-	iteration                           int // current iteration count
-	status                              LoopState
-	replanRevision                      int64 // increments when live user guidance should interrupt/re-plan
-	replansSealed                       bool  // final response won the accept/commit race; reject later steering
-	currentOperationCancel              context.CancelFunc
-	currentOperation                    *loopReplannableOperation
-	cancelHooks                         map[uint64]func()
-	nextCancelHookID                    uint64
+	mu                     sync.RWMutex
+	maxIterations          int // current max iterations for this loop
+	iteration              int // current iteration count
+	status                 LoopState
+	replanRevision         int64 // increments when live user guidance should interrupt/re-plan
+	replansSealed          bool  // final response won the accept/commit race; reject later steering
+	currentOperationCancel context.CancelFunc
+	currentOperation       *loopReplannableOperation
+	cancelHooks            map[uint64]func()
+	nextCancelHookID       uint64
+	// semanticTurnGeneration distinguishes replacement of an inbound turn from
+	// terminal loop cancellation. A supplied LoopContext may be reused before
+	// the previous provider callback has returned, while CancelC intentionally
+	// remains reusable only for the lifetime of this loop object. Managed
+	// surfaces register a durable-revocation fence against this generation; a
+	// fresh ingress advances it and runs the prior generation's fences.
+	semanticTurnGeneration              uint64
+	semanticTurnFences                  map[uint64]func()
+	nextSemanticTurnFenceID             uint64
+	semanticTurnReplacementCancels      map[uint64]context.CancelFunc
+	nextSemanticTurnReplacementCancelID uint64
 	backgroundTaskBoundaryExtensionKeys map[string]struct{}
 
 	Conversation []interface{}             // this loop's conversation messages
@@ -50,15 +61,58 @@ type LoopContext struct {
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
 	Runtime    RuntimeContext
+	// ingressFingerprint is a host-computed digest of the authenticated inbound
+	// payload and request-scoped client binding. RequestID only identifies a
+	// transport retry inside this exact payload; it must not let a changed body,
+	// attachment set, or device tool catalog reuse a prior turn's grants.
+	ingressFingerprint string
+	// CodingTaskIngressToken is copied from a host-only message field. It is an
+	// opaque one-shot capability, not a session/user/runtime identifier.
+	CodingTaskIngressToken string
+	// semanticInvocation is a host-issued, loop-private identity for the
+	// managed semantic surface.  It deliberately does not reuse RequestID,
+	// LoopContext.ID, a project path, or a user-controlled task description:
+	// those values describe transport/runtime lifetime, not an authorization
+	// lineage.  The fields stay private so neither a provider nor the model can
+	// select or restore a semantic root by name.
+	semanticInvocation semanticLoopInvocationIdentity
 	// ComputerUseBlockedForLocalFileWork is a per-turn control-plane fence. It
 	// survives tool recovery and dynamic augmentation so a staged attachment
 	// cannot accidentally re-enable desktop automation later in the same loop.
 	// Explicit @computer / "computer use" requests never set this flag.
 	ComputerUseBlockedForLocalFileWork bool
+	// ComputerUseFresh is this turn's CU gate "new task" bit (not sticky).
+	// It must not be stored on the process-global session.
+	ComputerUseFresh bool
+	// ComputerUseActive is the latched gate decision for this request.
+	ComputerUseActive bool
+	// ComputerUseGateSettled is true after the first gateComputerUse for this
+	// LoopContext. Prompt rebuilds and tool refresh must not re-run UIC.
+	ComputerUseGateSettled bool
+	// ComputerUseBegun latches Begin to this RequestID so prompt rebuilds
+	// (light→full, post-tool refresh) cannot wipe TaskState.
+	ComputerUseBegun bool
+	// ComputerUseRoutingText is the same gate input used for tool injection
+	// and the Computer Use playbook (not CompactQueryForEmbedding).
+	ComputerUseRoutingText string
+	// ComputerUseOwner is the SessionKey/UserID used for this turn's CU
+	// session and TaskState. Playbook extra must use it, not the process-global
+	// activeOwner, so a concurrent tab cannot inject the wrong contract.
+	ComputerUseOwner string
+	// HorizonRole is set only for LongHorizon inner episodes (cli_executor /
+	// gui_executor / browser_executor). Empty means ordinary IM/CU.
+	HorizonRole string
+	// ResumeWorkingState is a one-shot carrier from AskUser / RecordAudio
+	// consume. Ordinary chat and leftover pending maps must not set this.
+	// bindLoopResumeWorkingState clears a reused LoopContext leftover.
+	ResumeWorkingState *agent.WorkingState
 	// ClientTools and ClientToolContext are immutable per-turn snapshots. They
 	// keep dynamically declared device tools out of the global tool registry.
 	ClientTools       []agent.ClientToolDefinition
 	ClientToolContext *agent.ClientToolContext
+	// DeliveryTarget is a copy of the authenticated inbound channel target.
+	// Tool parameters and LLM text cannot alter it.
+	DeliveryTarget *agent.DeliveryTarget
 
 	// codeSessionID scopes source-preview events emitted by nested coding
 	// SubAgents to the same UI code session opened by the workflow runner.
@@ -101,6 +155,15 @@ type LoopContext struct {
 	// model output before it reaches workflow persistence or UI.
 	WorkflowPhaseID string
 
+	// WorkflowType is the active V2 template type (coding, business_plan, ...).
+	// Desktop sends it as X-MaClaw-Workflow-Type when talking to Hub/HubCenter.
+	WorkflowType string
+
+	// WorkflowPhaseKind is the normalized V2 phase role (document_planning,
+	// execution, review, ...). Desktop prefers this over WorkflowPhaseID for
+	// X-MaClaw-Phase-Kind.
+	WorkflowPhaseKind string
+
 	// WorkflowID is the durable V2 workflow identity. Coding runtime tasks use
 	// it for a stable Workflow/Phase projection; LoopContext.ID is only a
 	// per-process execution-loop identity and must never be substituted here.
@@ -140,6 +203,19 @@ type LoopContext struct {
 
 type loopReplannableOperation struct {
 	cancel context.CancelFunc
+}
+
+// bindLoopResumeWorkingState is the one-shot ResumeWorkingState write.
+// A reused LoopContext must not keep a previous turn's workspace.
+func bindLoopResumeWorkingState(loopCtx *LoopContext, resume *agent.WorkingState, askUserContext string) {
+	if loopCtx == nil {
+		return
+	}
+	if resume != nil && strings.TrimSpace(askUserContext) != "" {
+		loopCtx.ResumeWorkingState = agent.CloneWorkingState(resume)
+		return
+	}
+	loopCtx.ResumeWorkingState = nil
 }
 
 // NewLoopContext creates a LoopContext for a chat loop.
@@ -415,6 +491,12 @@ func (c *LoopContext) SetLoopState(s LoopState) {
 // Cancel signals the loop to stop.
 func (c *LoopContext) Cancel() {
 	c.mu.Lock()
+	// Compatibility/test-created LoopContexts may omit CancelC.  Treat that as
+	// an uninitialised cancellation signal, not as a nil channel to close: the
+	// latter panics while c.mu is held and can deadlock deferred hook cleanup.
+	if c.CancelC == nil {
+		c.CancelC = make(chan struct{})
+	}
 	select {
 	case <-c.CancelC:
 		// already closed
@@ -431,6 +513,9 @@ func (c *LoopContext) Cancel() {
 	// cancellation would only keep host/store references alive while this loop
 	// unwinds.
 	c.cancelHooks = nil
+	// The terminal state is now fully published while the lock is held.  An
+	// unregister closure that races with hook execution must observe this
+	// closed channel and become a no-op rather than waiting for c.mu.
 	c.mu.Unlock()
 	// Hooks persist the durable cancellation boundary (for example a coding
 	// runtime task). Run them after releasing the loop lock: SQLite can block
@@ -464,6 +549,15 @@ func (c *LoopContext) RegisterCancelHook(hook func()) func() {
 	c.cancelHooks[id] = hook
 	c.mu.Unlock()
 	return func() {
+		// Cancel clears the entire hook set before invoking callbacks.  A
+		// terminal cleanup may race with (or be reached re-entrantly from) a
+		// cancellation callback; once the signal is closed there is nothing
+		// left to unregister, and taking c.mu here can deadlock that cleanup.
+		select {
+		case <-c.CancelC:
+			return
+		default:
+		}
 		c.mu.Lock()
 		delete(c.cancelHooks, id)
 		c.mu.Unlock()
@@ -484,6 +578,153 @@ func (c *LoopContext) RegisterCancelHookForContext(ctx context.Context, hook fun
 		unregister()
 	}()
 	return unregister
+}
+
+// ReplaceSemanticTurn discards the private semantic identity for a fresh
+// inbound request and durably fences every surface published for the prior
+// request. This is deliberately separate from Cancel: a caller may reuse a
+// LoopContext, so closing CancelC would permanently poison the replacement.
+//
+// Fences run after releasing c.mu because they may synchronously persist route
+// cancellation in SQLite. They are best-effort only in the sense that a
+// failure is reported by the fence owner; authority is never transferred to
+// the new turn while a prior fence is pending.
+func (c *LoopContext) ReplaceSemanticTurn() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.semanticTurnGeneration++
+	fences := make([]func(), 0, len(c.semanticTurnFences))
+	for _, fence := range c.semanticTurnFences {
+		fences = append(fences, fence)
+	}
+	c.semanticTurnFences = nil
+	replacementCancels := make([]context.CancelFunc, 0, len(c.semanticTurnReplacementCancels))
+	for _, cancel := range c.semanticTurnReplacementCancels {
+		replacementCancels = append(replacementCancels, cancel)
+	}
+	c.semanticTurnReplacementCancels = nil
+	c.semanticInvocation = semanticLoopInvocationIdentity{}
+	c.mu.Unlock()
+	// Stop in-flight planning/catalog work before revoking any published
+	// surface. CancelC is deliberately not involved: it belongs to the reusable
+	// loop object and would also poison the fresh replacement turn.
+	for _, cancel := range replacementCancels {
+		if cancel != nil {
+			cancel()
+		}
+	}
+	for _, fence := range fences {
+		if fence != nil {
+			fence()
+		}
+	}
+}
+
+// RegisterSemanticTurnReplacementCancel associates request-local planning
+// with exactly one inbound generation. A replacement stops this work even
+// though the LoopContext itself remains usable. If it already lost the race,
+// the cancel runs immediately and the caller must fail the stale request
+// closed rather than publishing a model-visible surface.
+func (c *LoopContext) RegisterSemanticTurnReplacementCancel(generation uint64, cancel context.CancelFunc) (func(), bool) {
+	if c == nil || cancel == nil {
+		return func() {}, c != nil
+	}
+	c.mu.Lock()
+	if c.semanticTurnGeneration != generation {
+		c.mu.Unlock()
+		cancel()
+		return func() {}, false
+	}
+	c.nextSemanticTurnReplacementCancelID++
+	id := c.nextSemanticTurnReplacementCancelID
+	if c.semanticTurnReplacementCancels == nil {
+		c.semanticTurnReplacementCancels = make(map[uint64]context.CancelFunc)
+	}
+	c.semanticTurnReplacementCancels[id] = cancel
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		delete(c.semanticTurnReplacementCancels, id)
+		c.mu.Unlock()
+	}, true
+}
+
+// SemanticTurnContext is a request context for work that must not survive a
+// fresh ingress replacement. It composes terminal loop cancellation with the
+// generation-specific replacement fence; callers must use the returned cleanup
+// after their request-bound classification, catalog, or planning work ends.
+func (c *LoopContext) SemanticTurnContext(generation uint64) (context.Context, func(), bool) {
+	if c == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		return ctx, cancel, generation == 0
+	}
+	base, cancelBase := c.Context()
+	ctx, cancelReplacement := context.WithCancel(base)
+	remove, current := c.RegisterSemanticTurnReplacementCancel(generation, cancelReplacement)
+	cleanup := func() {
+		remove()
+		cancelReplacement()
+		cancelBase()
+	}
+	if !current {
+		cleanup()
+	}
+	return ctx, cleanup, current
+}
+
+// SemanticTurnCurrent reports whether a host-captured generation still owns
+// this reusable LoopContext. Generation zero is the initial, valid generation
+// of a newly created LoopContext; only a nil context has no host turn.
+func (c *LoopContext) SemanticTurnCurrent(generation uint64) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.semanticTurnGeneration == generation
+}
+
+// SemanticTurnGeneration returns the host-private replacement generation for
+// the current inbound turn. It is not a transport, runtime, or model-visible
+// identity and must never be used in an InvocationScope or host-call key.
+func (c *LoopContext) SemanticTurnGeneration() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.semanticTurnGeneration
+}
+
+// RegisterSemanticTurnFence associates durable authority cleanup with exactly
+// one inbound generation. If the request was already replaced while a surface
+// was being planned/published, the fence runs immediately and registration
+// fails; the caller must fail the stale surface closed rather than returning
+// definitions for it.
+func (c *LoopContext) RegisterSemanticTurnFence(generation uint64, fence func()) (func(), bool) {
+	if c == nil || fence == nil {
+		return func() {}, c != nil
+	}
+	c.mu.Lock()
+	if c.semanticTurnGeneration != generation {
+		c.mu.Unlock()
+		fence()
+		return func() {}, false
+	}
+	c.nextSemanticTurnFenceID++
+	id := c.nextSemanticTurnFenceID
+	if c.semanticTurnFences == nil {
+		c.semanticTurnFences = make(map[uint64]func())
+	}
+	c.semanticTurnFences[id] = fence
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		delete(c.semanticTurnFences, id)
+		c.mu.Unlock()
+	}, true
 }
 
 // isCancelledLocked reports cancellation while c.mu is held. Cancel closes
@@ -514,6 +755,14 @@ func (c *LoopContext) IsCancelled() bool {
 // to avoid goroutine leaks.
 func (c *LoopContext) Context() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
+	if c != nil {
+		select {
+		case <-c.CancelC:
+			cancel()
+			return ctx, cancel
+		default:
+		}
+	}
 	go func() {
 		select {
 		case <-c.CancelC:

@@ -1,5 +1,8 @@
-#include "board_port.h"
-
+#include "board_background_lifecycle.h"
+#include "legacy_connectivity_transport.h"
+#include "legacy_display_scene.h"
+#include "legacy_storage_admission.h"
+#include "legacy_bootstrap_input.h"
 #include <ctype.h>
 #include <inttypes.h>
 #include <math.h>
@@ -21,28 +24,13 @@
 #include "round_input_service.h"
 #include "round_peripheral_service.h"
 #include "round_visual_profile_service.h"
-#include "round_wake_service.h"
 
 /* The shared round renderer owns scene composition.  Geometry, raster and
  * layout are received only through the private visual-profile contract; audio
  * session defaults come from its dedicated Audio HAL service. */
 #define LCD_WIDTH       (round_display_service_width())
 #define LCD_HEIGHT      (round_display_service_height())
-#define OUTPUT_VOLUME_DEFAULT (round_audio_service_default_output_volume())
 #define AUDIO_RATE      (round_audio_service_sample_rate())
-
-// End a command after a natural pause instead of a fixed recording window.
-// Thirty seconds leaves room for multi-step requests while keeping the maximum
-// 16 kHz PCM WAV allocation below 1 MiB on the current in-memory upload path.
-#define COMMAND_CAPTURE_MAX_SECONDS 30
-#define COMMAND_CAPTURE_START_TIMEOUT_MS 6000
-#define COMMAND_CAPTURE_SILENCE_MS 1200
-#define COMMAND_CAPTURE_START_CONFIRM_MS 80
-#define COMMAND_CAPTURE_START_LEVEL 55
-#define COMMAND_CAPTURE_SILENCE_FLOOR 20
-#define COMMAND_CAPTURE_SILENCE_MARGIN 15
-#define COMMAND_CAPTURE_SILENCE_CEILING 90
-#define COMMAND_CAPTURE_PREROLL_MS 300
 #define LCD_STRIPE_ROWS (round_display_service_transfer_stripe_rows())
 #define TEXT_SCALE      2
 #define TEXT_ADVANCE    7
@@ -251,7 +239,6 @@ static volatile uint32_t s_skipped_pet_frames;
 // The meeting stream owns the audio mutex from start to stop.  Track that
 // ownership explicitly (as Bread Compact does) so an error path or duplicate
 // stop cannot release a mutex held by an unrelated wake/audio operation.
-static unsigned s_output_volume;
 static volatile bool s_command_display_locked;
 static bool s_recording_is_meeting;
 
@@ -294,7 +281,6 @@ static esp_err_t present_frame_sync(const uint16_t *frame) {
     }
     return ESP_OK;
 }
-
 // esp_lcd_panel_draw_bitmap() only queues the color transaction. Keep every
 // caller's source buffer immutable until the color-complete callback fires.
 // Centralizing this fence also avoids waiting for a callback when queueing the
@@ -581,7 +567,7 @@ static bool dynamic_glyph_copy(uint32_t codepoint,
     taskEXIT_CRITICAL(&s_state_lock);
     return found;
 }
-int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[DYNAMIC_GLYPH_BYTES]) {
+int legacy_display_scene_cache_glyph(uint32_t codepoint, const uint8_t bitmap[DYNAMIC_GLYPH_BYTES]) {
     if (!bitmap || codepoint < 0x20 || codepoint > 0xFFFF ||
         (codepoint >= 0xD800 && codepoint <= 0xDFFF)) return 0;
     size_t replacement = 0;
@@ -1795,7 +1781,7 @@ static bool remote_pet_visible_bounds(uint8_t *const *frames, size_t frame_count
     return true;
 }
 
-bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_height,
+bool legacy_display_scene_get_pet_asset_install_budget(size_t source_width, size_t source_height,
                                              size_t frame_count, size_t *out_total_external_bytes,
                                              size_t *out_max_external_allocation_bytes,
                                              size_t *out_max_frame_count) {
@@ -1827,7 +1813,7 @@ bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_
     return true;
 }
 
-bool board_port_allows_optional_flash_work(void) {
+bool legacy_storage_admission_allows_optional_flash_work(void) {
     return ROUND_LAYOUT->allows_optional_flash_work;
 }
 
@@ -2150,7 +2136,7 @@ static void pet_animation_task(void *arg) {
             // phone cameras. Nothing else should draw while setup is active.
         } else if (s_recording_active) {
             // Recording frames are driven synchronously by
-            // board_port_set_audio_level(): one completed 512-sample capture
+            // legacy_display_scene_set_audio_level(): one completed 512-sample capture
             // block produces one waveform frame, exactly as on Bread Compact.
             // The idle animation scheduler must not add a second, phase-shifted
             // draw between two audio blocks. If a 32 ms meter frame was
@@ -2254,9 +2240,14 @@ static void wake_round_display_for_draw_locked(void) {
     s_recording_meter_dirty = false;
 }
 
-esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
+esp_err_t legacy_bootstrap_input_initialize(void) {
+    /* Renderer construction is boot-lifetime.  Input starts later, after its
+     * public queue and envelope publisher exist, so a second bootstrap must
+     * never allocate another panel or mutex set. */
+    if (s_background_tasks_lock || s_lcd_mutex || round_display_service_ready()) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (round_audio_service_sample_rate() == 0) return ESP_ERR_INVALID_STATE;
-    if (s_output_volume == 0) s_output_volume = round_audio_service_default_output_volume();
     s_background_tasks_lock = xSemaphoreCreateMutex();
     if (!s_background_tasks_lock) return ESP_ERR_NO_MEM;
     s_lcd_mutex = xSemaphoreCreateRecursiveMutex();
@@ -2303,104 +2294,96 @@ esp_err_t board_port_init(board_port_button_cb_t on_button, void *arg) {
     // Do not submit any full-screen transfer until networking has completed
     // its fragile association phase.  On this S3, simultaneous LCD GDMA and
     // Wi-Fi ROM initialisation can corrupt Wi-Fi's timer callback state.
-    // board_port_set_command_display_lock(false) starts the pet task after
+    // legacy_display_scene_set_command_lock(false) starts the pet task after
     // the startup surface is released.
 
     // Peripheral Service owns the semantic preflight for touch/PMIC/IMU before
     // Input starts. Its private Audio lifecycle bridge creates the shared I2C
     // bus without leaking that electrical dependency into the renderer.
     esp_err_t input_i2c_err = round_peripheral_service_prepare(
-        s_output_volume, 5000);
+        round_audio_service_default_output_volume(), 5000);
     if (input_i2c_err != ESP_OK) {
         ESP_LOGW(TAG, "touch/audio init deferred: %s", esp_err_to_name(input_i2c_err));
     }
-    else {
-        device_motion_sample_t motion = {
-            .struct_size = sizeof(motion),
-            .abi_version = DEVICE_MOTION_SAMPLE_ABI_VERSION,
-        };
-        const esp_err_t motion_err = board_port_motion_get_sample(&motion);
-        if (motion_err == ESP_OK) {
-            ESP_LOGI(TAG, "Motion HAL sample: a=(%ld,%ld,%ld)mg g=(%ld,%ld,%ld)mdps",
-                     (long)motion.acceleration_mg_x, (long)motion.acceleration_mg_y,
-                     (long)motion.acceleration_mg_z, (long)motion.angular_rate_mdps_x,
-                     (long)motion.angular_rate_mdps_y, (long)motion.angular_rate_mdps_z);
-        } else {
-            if (motion_err != ESP_ERR_NOT_SUPPORTED) {
-                ESP_LOGW(TAG, "Motion HAL sample unavailable after peripheral initialization: %s",
-                         esp_err_to_name(motion_err));
-            }
-        }
-    }
 
-    ESP_RETURN_ON_ERROR(round_input_service_start(on_button, arg), TAG,
-                        "round input service init failed");
     ESP_RETURN_ON_ERROR(round_display_service_run_animation_deadline_test(), TAG,
                         "animation stop deadline test");
-    ESP_LOGI(TAG, "%s round display/input adapter ready", round_audio_service_name());
+    ESP_LOGI(TAG, "%s round display/peripheral adapter ready", round_audio_service_name());
     return ESP_OK;
 }
 
-bool board_port_load_transport_selection(bool *out_cellular) {
+esp_err_t legacy_bootstrap_input_start_scanner(
+    legacy_input_scanner_publish_cb_t on_button, void *arg) {
+    if (!on_button || !s_background_tasks_lock || !s_lcd_mutex ||
+        !round_display_service_ready()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_RETURN_ON_ERROR(round_input_service_start(on_button, arg), TAG,
+                        "round input service start failed");
+    ESP_LOGI(TAG, "%s round input scanner ready", round_audio_service_name());
+    return ESP_OK;
+}
+
+bool legacy_connectivity_transport_load_selection(bool *out_cellular) {
     if (out_cellular) *out_cellular = false;
     return false;
 }
 
-bool board_port_apply_startup_transport_toggle(uint32_t window_ms,
-                                               bool current_cellular,
-                                               bool *out_cellular) {
+bool legacy_connectivity_transport_apply_startup_toggle(uint32_t window_ms,
+                                                        bool current_cellular,
+                                                        bool *out_cellular) {
     (void)window_ms;
     if (out_cellular) *out_cellular = current_cellular;
     return false;
 }
 
-void board_port_adapt_gateway_url(char *gateway_url, size_t capacity,
-                                  bool cellular_active) {
+void legacy_connectivity_transport_adapt_gateway_url(char *gateway_url, size_t capacity,
+                                                     bool cellular_active) {
     (void)gateway_url;
     (void)capacity;
     (void)cellular_active;
 }
 
-esp_err_t board_port_prepare_cellular_transport(void) {
+esp_err_t legacy_connectivity_transport_prepare_cellular(void) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-bool board_port_cancel_cellular_foreground_request(void) {
+bool legacy_connectivity_transport_cancel_foreground_request(void) {
     return false;
 }
 
-bool board_port_cancel_cellular_requests_for_owner(const void *owner) {
+bool legacy_connectivity_transport_cancel_requests_for_owner(const void *owner) {
     (void)owner;
     return false;
 }
 
-esp_err_t board_port_start_cellular_transport(uint32_t timeout_ms) {
+esp_err_t legacy_connectivity_transport_start_cellular(uint32_t timeout_ms) {
     (void)timeout_ms;
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-bool board_port_is_cellular_transport_ready(void) {
+bool legacy_connectivity_transport_cellular_ready(void) {
     return false;
 }
 
-esp_err_t board_port_quiesce_cellular_transport(uint32_t timeout_ms) {
+esp_err_t legacy_connectivity_transport_quiesce_cellular(uint32_t timeout_ms) {
     (void)timeout_ms;
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-esp_err_t board_port_cellular_http_request(
+esp_err_t legacy_connectivity_transport_http_request(
     const device_connectivity_http_request_t *request) {
     (void)request;
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-esp_err_t board_port_cellular_http_stream_request(
+esp_err_t legacy_connectivity_transport_http_stream_request(
     const device_connectivity_stream_request_t *request) {
     (void)request;
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-void board_port_show_startup_screen(void) {
+void legacy_display_scene_show_startup(void) {
     if (!round_display_service_ready() || !s_lcd_mutex) return;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     if (s_alarm_visual_active) {
@@ -2452,26 +2435,7 @@ void board_port_show_startup_screen(void) {
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent) {
-    int next = (int)s_output_volume + delta_percent;
-    if (next < 0) next = 0;
-    if (next > 100) next = 100;
-    esp_err_t err = board_port_set_output_volume((unsigned)next);
-    if (out_percent) *out_percent = s_output_volume;
-    return err;
-}
-
-esp_err_t board_port_set_output_volume(unsigned percent) {
-    if (percent > 100) return ESP_ERR_INVALID_ARG;
-    esp_err_t err = round_audio_service_apply_output_volume(s_output_volume, percent, 1500);
-    if (err == ESP_OK) {
-        s_output_volume = percent;
-        ESP_LOGI(TAG, "speaker output volume: %u%%", percent);
-    }
-    return err;
-}
-
-void board_port_set_pet_state(const char *state) {
+void legacy_display_scene_set_pet_state(const char *state) {
     const char *next_state = state ? state : "idle";
     // The provisioning screen is intentionally pixel-stable for phone cameras.
     // A delayed state message must not clear this guard and let a pet frame
@@ -2519,7 +2483,7 @@ void board_port_set_pet_state(const char *state) {
     if (!s_recording_active) draw_pet();
 }
 
-void board_port_set_command_stage(const char *stage) {
+void legacy_display_scene_set_command_stage(const char *stage) {
     const char *next_stage = stage && stage[0] ? stage : "正在处理";
     bool changed;
     taskENTER_CRITICAL(&s_state_lock);
@@ -2536,7 +2500,7 @@ void board_port_set_command_stage(const char *stage) {
     ESP_LOGI(TAG, "command stage: %s", next_stage);
 }
 
-void board_port_set_command_display_lock(bool locked) {
+void legacy_display_scene_set_command_lock(bool locked) {
     s_command_display_locked = locked;
     if (locked) s_ready_prompt_expires_us = 0;
     if (!locked) {
@@ -2590,11 +2554,7 @@ void board_port_set_command_display_lock(bool locked) {
     }
 }
 
-void board_port_set_command_cancel_enabled(bool enabled) {
-    round_input_service_set_command_cancel_enabled(enabled);
-}
-
-void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
+void legacy_display_scene_set_pet_profile(const char *skin, bool motion_enabled) {
 	const char *next_skin = (skin && skin[0]) ? skin : s_pet_skin;
 	char normalized_skin[sizeof(s_pet_skin)];
 	strlcpy(normalized_skin, next_skin, sizeof(normalized_skin));
@@ -2700,18 +2660,18 @@ no_mem:
     return ESP_ERR_NO_MEM;
 }
 
-esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+esp_err_t legacy_display_scene_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
                                    size_t width, size_t height, uint32_t frame_ms) {
     return set_pet_asset_internal((uint8_t **)frames, false,
                                   frame_count, width, height, frame_ms);
 }
 
-esp_err_t board_port_set_pet_asset_consuming(uint8_t **frames, size_t frame_count,
+esp_err_t legacy_display_scene_set_pet_asset_consuming(uint8_t **frames, size_t frame_count,
                                              size_t width, size_t height, uint32_t frame_ms) {
     return set_pet_asset_internal(frames, true, frame_count, width, height, frame_ms);
 }
 
-void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
+void legacy_display_scene_set_recording_visual(bool active, bool paused, uint32_t elapsed_seconds) {
     bool new_session;
     bool visual_changed;
     taskENTER_CRITICAL(&s_state_lock);
@@ -2752,7 +2712,7 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     }
     taskEXIT_CRITICAL(&s_state_lock);
     // Bread Compact only redraws the complete static recording scene at a
-    // state/timer boundary. Meter samples call board_port_set_audio_level(),
+    // state/timer boundary. Meter samples call legacy_display_scene_set_audio_level(),
     // which owns the live waveform frames. Avoid re-composing a no-op scene on
     // every caller reassertion so a paused/steady recorder cannot compete with
     // the next audio-driven update.
@@ -2778,7 +2738,7 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed_
     }
 }
 
-void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
+void legacy_display_scene_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     if (level > 1000) level = 1000;
     bool should_draw = false;
     taskENTER_CRITICAL(&s_state_lock);
@@ -2797,7 +2757,7 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     s_recording_wave_levels[RECORDING_WAVE_COLUMNS - 1] = s_recording_smoothed_level;
     // Keep the live waveform cadence independent from the visible timer.
     // Bread Compact advances its recorder clock only from
-    // board_port_set_recording_visual() at the one-second boundary. Updating
+    // legacy_display_scene_set_recording_visual() at the one-second boundary. Updating
     // it here made that later call appear unchanged, so EchoEar could skip the
     // full frame containing the next timer value. The meter does not draw the
     // timer region, therefore it must leave this state alone.
@@ -2813,15 +2773,7 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
     if (should_draw) draw_recording_meter_visual();
 }
 
-void board_port_push_recording_pcm(const int16_t *samples, size_t count) {
-    // EchoEar's board renderer derives its 24-column history from the same
-    // normalized level path as Bread Compact. PCM is retained by the caller
-    // for upload; it must not introduce a second, differently-smoothed wave.
-    (void)samples;
-    (void)count;
-}
-
-void board_port_show_text(const char *title, const char *text) {
+void legacy_display_scene_show_text(const char *title, const char *text) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     // A short status message is a foreground surface too.  In particular it
     // can replace a paged result after a transport or recording transition;
@@ -2903,7 +2855,7 @@ void board_port_show_text(const char *title, const char *text) {
     ESP_LOGI(TAG, "%s: %s", title ? title : "MaClaw", text ? text : "");
 }
 
-void board_port_show_upload_progress(size_t completed_bytes, size_t total_bytes,
+void legacy_display_scene_show_upload_progress(size_t completed_bytes, size_t total_bytes,
                                      const char *stage) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     // A transfer is an independent, quiet surface. It avoids the animated pet
@@ -3074,12 +3026,12 @@ static void show_qrcode_matrix(const uint8_t *modules, size_t size, const char *
     ESP_LOGI(TAG, "showing setup Wi-Fi QR for %s", ssid ? ssid : "");
 }
 
-void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
+void legacy_display_scene_show_qrcode_modules(const uint8_t *modules, size_t module_count,
                                    const char *ssid) {
     show_qrcode_matrix(modules, module_count, ssid);
 }
 
-void board_port_set_wifi_status(const char *ssid, bool connected) {
+void legacy_display_scene_set_wifi_status(const char *ssid, bool connected) {
     bool changed;
     taskENTER_CRITICAL(&s_state_lock);
     // Once the gateway has authenticated, retain a transient transport loss
@@ -3107,7 +3059,7 @@ void board_port_set_wifi_status(const char *ssid, bool connected) {
              ssid ? ssid : "");
 }
 
-void board_port_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
+void legacy_display_scene_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
                             const char *weather_summary, int temperature_c,
                             bool weather_valid, bool weather_stale) {
     const char *next_time = time ? time : "";
@@ -3149,7 +3101,7 @@ void board_port_set_ambient(const char *time, const char *location, const char *
     }
 }
 
-void board_port_set_alarm_scheduled(bool scheduled) {
+void legacy_display_scene_set_alarm_scheduled(bool scheduled) {
     bool changed;
     taskENTER_CRITICAL(&s_state_lock);
     changed = s_alarm_scheduled != scheduled;
@@ -3163,7 +3115,7 @@ void board_port_set_alarm_scheduled(bool scheduled) {
     }
 }
 
-void board_port_show_ready_prompt(const char *title, const char *text) {
+void legacy_display_scene_show_ready_prompt(const char *title, const char *text) {
     if (s_alarm_visual_active) return;
     /*
      * The board profile may have left a boot-only artwork on the panel.  The
@@ -3174,7 +3126,7 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
      * on the Waveshare round screen, where the opaque eagle can cover the
      * lower weather ring.
      *
-     * s_lcd_mutex is recursive, and board_port_set_pet_state() deliberately
+     * s_lcd_mutex is recursive, and legacy_display_scene_set_pet_state() deliberately
      * uses the normal full-frame presenter.  Holding it here makes that
      * presenter replace every boot pixel before any concurrent ambient update
      * can compose a rim overlay.  No board-specific scene choice leaks into
@@ -3187,7 +3139,7 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
     }
     // Completing provisioning is the terminal transition for the QR surface.
     // Keep its guard while a phone is scanning, but release it before the
-    // ready path republishes idle; otherwise board_port_set_pet_state() keeps
+    // ready path republishes idle; otherwise legacy_display_scene_set_pet_state() keeps
     // deferring the standby frame forever and EchoEar remains visually stuck
     // on the old QR page. Bread Compact clears its foreground owner as part of
     // this same ready-to-idle transition.
@@ -3209,22 +3161,22 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
     // Use the normal release transition rather than changing the flag in
     // place.  Besides keeping frame baselines invalid, it starts the ambient
     // animator once startup has genuinely released the display.
-    board_port_set_command_display_lock(false);
+    legacy_display_scene_set_command_lock(false);
     s_startup_surface_visible = false;
     s_front_frame_valid = false;
     s_recording_frame_baseline = false;
     wake_round_display_for_draw_locked();
-    board_port_set_pet_state("idle");
+    legacy_display_scene_set_pet_state("idle");
     s_ready_prompt_expires_us = 0;
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "ready standby: %s | %s", title ? title : "", text ? text : "");
 }
 
-void board_port_cancel_ready_prompt(void) {
+void legacy_display_scene_cancel_ready_prompt(void) {
     s_ready_prompt_expires_us = 0;
 }
 
-esp_err_t board_port_set_display_brightness(unsigned percent) {
+esp_err_t legacy_display_scene_set_brightness(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
     if (s_lcd_mutex &&
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) == pdTRUE) {
@@ -3245,9 +3197,9 @@ esp_err_t board_port_set_display_brightness(unsigned percent) {
 // Board-owned DISPLAY_OFF transaction. Network, alarm, and wake-word services
 // deliberately stay alive; the application controls idle policy while this HAL
 // owns only the physical panel/backlight state and matching wake bookkeeping.
-bool board_port_enter_display_off(void) {
-    if (!s_lcd_mutex || !round_display_service_ready()) return false;
-    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+esp_err_t legacy_display_scene_enter_display_off(void) {
+    if (!s_lcd_mutex || !round_display_service_ready()) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
     // A Power Service deadline can become due just as a foreground transition
     // is being published. The display adapter is the final arbiter of its
     // local scene, so it refuses stale ambient deadlines instead of blanking
@@ -3263,14 +3215,14 @@ bool board_port_enter_display_off(void) {
                  s_setup_qrcode_visible, s_alarm_visual_active,
                  s_command_display_locked);
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
     s_idle_pet_visible = false;
     esp_err_t err = round_display_service_enter_display_off();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "DISPLAY_OFF entry transaction failed: %s", esp_err_to_name(err));
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return err;
     }
     s_display_sleeping = true;
     // The retained software frame is no longer proof of what the controller
@@ -3282,10 +3234,10 @@ bool board_port_enter_display_off(void) {
     s_recording_meter_dirty = false;
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
-    return true;
+    return ESP_OK;
 }
 
-bool board_port_display_is_off(void) {
+bool legacy_display_scene_is_off(void) {
     if (!s_lcd_mutex) return false;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
     bool display_off = s_display_sleeping;
@@ -3293,17 +3245,17 @@ bool board_port_display_is_off(void) {
     return display_off;
 }
 
-bool board_port_wake_from_idle(void) {
-    if (!s_lcd_mutex || !round_display_service_ready()) return false;
-    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+esp_err_t legacy_display_scene_wake_display(void) {
+    if (!s_lcd_mutex || !round_display_service_ready()) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
     if (!s_display_sleeping) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
     wake_round_display_for_draw_locked();
     if (s_display_sleeping) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return ESP_FAIL;
     }
     // The first physical contact after the 30-minute ambient timeout is a
     // screen wake, not an implicit voice command. Re-publish the same ready
@@ -3316,35 +3268,7 @@ bool board_port_wake_from_idle(void) {
     draw_pet();
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "ambient display awakened");
-    return true;
-}
-
-esp_err_t board_port_audio_stream_start(void) {
-    board_port_pause_wake_word(true);
-    // MultiNet may already be inside a 250 ms I2S read when pause is asserted,
-    // and foreground network/UI work can delay its mutex release. Allow a
-    // bounded settling window so a valid double tap does not intermittently
-    // fail before capture has even started.
-    (void)round_wake_service_wait_for_pause_ack(200);
-    esp_err_t err = round_audio_service_stream_begin(s_output_volume, 5000, "meeting");
-    if (err != ESP_OK) board_port_pause_wake_word(false);
-    return err;
-}
-
-esp_err_t board_port_audio_stream_read(int16_t *mono, size_t sample_capacity,
-                                       size_t *samples_read, uint16_t *level) {
-    return round_audio_service_stream_read(mono, sample_capacity, samples_read, level);
-}
-
-void board_port_audio_stream_stop(void) {
-    // Keep I2S enabled for the normal six-second command path. The next stream
-    // read drains any DMA frames accumulated while a meeting was paused.
-    round_audio_service_stream_end();
-    board_port_pause_wake_word(false);
-}
-
-void board_port_pause_wake_word(bool paused) {
-    round_wake_service_set_paused(paused);
+    return ESP_OK;
 }
 
 static bool response_break(uint32_t cp) {
@@ -3385,7 +3309,7 @@ static bool response_opening_punctuation(uint32_t cp) {
     }
 }
 
-void board_port_set_recording_mode(bool meeting) {
+void legacy_display_scene_set_recording_mode(bool meeting) {
     taskENTER_CRITICAL(&s_state_lock);
     s_recording_is_meeting = meeting;
     taskEXIT_CRITICAL(&s_state_lock);
@@ -3614,10 +3538,10 @@ static void draw_response_page(void) {
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-void board_port_show_response(const char *title, const char *text) {
+void legacy_display_scene_show_response(const char *title, const char *text) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
     s_ready_prompt_expires_us = 0;
-    // Enter the result state without calling board_port_set_pet_state(). That
+    // Enter the result state without calling legacy_display_scene_set_pet_state(). That
     // public setter paints a complete pet frame immediately; doing so just
     // before this page produced a visible boot/idle-looking flash between the
     // thinking screen and every streamed response message.
@@ -3642,7 +3566,7 @@ void board_port_show_response(const char *title, const char *text) {
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
+void legacy_display_scene_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                                  const char *label, unsigned attempt, unsigned max_attempts) {
     if (!active) {
         // The shared UI coordinator immediately replays the authoritative
@@ -3743,7 +3667,7 @@ void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_t
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-void board_port_show_response_image(const char *title, const char *caption,
+void legacy_display_scene_show_response_image(const char *title, const char *caption,
                                     const uint16_t *pixels, size_t width, size_t height) {
     if (!pixels || width < 1 || width > 64 || height < 1 || height > 64) return;
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return;
@@ -3809,7 +3733,7 @@ void board_port_show_response_image(const char *title, const char *caption,
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-bool board_port_navigate_response(int page_delta) {
+bool legacy_display_scene_navigate_response(int page_delta) {
     if (page_delta == 0) return false;
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
     if (!s_response_active) {
@@ -3842,7 +3766,7 @@ bool board_port_navigate_response(int page_delta) {
     return true;
 }
 
-bool board_port_get_response_page(unsigned *page) {
+bool legacy_display_scene_get_response_page(unsigned *page) {
     if (!page) return false;
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) {
         return false;
@@ -3853,7 +3777,7 @@ bool board_port_get_response_page(unsigned *page) {
     return active;
 }
 
-bool board_port_restore_response_page(unsigned page) {
+bool legacy_display_scene_restore_response_page(unsigned page) {
     if (s_lcd_mutex && xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) {
         return false;
     }
@@ -3873,232 +3797,11 @@ bool board_port_restore_response_page(unsigned page) {
     return true;
 }
 
-esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t on_wake, void *arg) {
-    if (!on_wake) return ESP_ERR_INVALID_ARG;
-    const esp_err_t audio_err = round_audio_service_prepare_for_wake(s_output_volume, 5000);
-    if (audio_err != ESP_OK) {
-        ESP_LOGE(TAG, "offline wake microphone init failed: %s",
-                 esp_err_to_name(audio_err));
-        return audio_err;
-    }
-    const esp_err_t wake_err = round_wake_service_start(on_wake, arg, 10000);
-    if (wake_err == ESP_OK) ESP_LOGI(TAG, "offline wake task ready");
-    else if (wake_err == ESP_FAIL) {
-        ESP_LOGW(TAG, "offline wake task exited during model initialization");
-    } else if (wake_err == ESP_ERR_TIMEOUT) {
-        ESP_LOGW(TAG, "offline wake model initialization timed out");
-    }
-    return wake_err;
-}
-
-esp_err_t board_port_stop_wake_word_with_timeout(uint32_t timeout_ms) {
-    const esp_err_t err = round_wake_service_stop(timeout_ms);
-    if (err == ESP_OK) ESP_LOGI(TAG, "offline wake task stopped cleanly");
-    return err;
-}
-
-esp_err_t board_port_stop_wake_word(void) {
-    /* Preserve the established portal/media stop allowance for ordinary
-     * callers. Lifecycle roots call the deadline-bearing variant above so
-     * this compatibility policy cannot reset their parent transaction. */
-    return board_port_stop_wake_word_with_timeout(6000);
-}
-
-esp_err_t board_port_capture_wav(uint8_t **out_wav, size_t *out_len) {
-    if (out_wav) *out_wav = NULL;
-    if (out_len) *out_len = 0;
-    if (!out_wav || !out_len) return ESP_ERR_INVALID_ARG;
-    board_port_pause_wake_word(true);
-    // MultiNet reads from this I2S RX channel in the background. It must
-    // acknowledge the pause before foreground capture takes the mutex, or it
-    // can consume the first command frame in the hand-off window.
-    (void)round_wake_service_wait_for_pause_ack(200);
-    esp_err_t init_err = round_audio_service_command_capture_begin(s_output_volume, 1500);
-    if (init_err != ESP_OK) {
-        board_port_pause_wake_word(false);
-        return init_err;
-    }
-
-    const size_t max_samples = AUDIO_RATE * COMMAND_CAPTURE_MAX_SECONDS;
-    const size_t start_timeout_samples =
-        AUDIO_RATE * COMMAND_CAPTURE_START_TIMEOUT_MS / 1000;
-    const size_t silence_samples = AUDIO_RATE * COMMAND_CAPTURE_SILENCE_MS / 1000;
-    const size_t start_confirm_samples =
-        AUDIO_RATE * COMMAND_CAPTURE_START_CONFIRM_MS / 1000;
-    const size_t preroll_samples = AUDIO_RATE * COMMAND_CAPTURE_PREROLL_MS / 1000;
-    const size_t wav_capacity = 44 + max_samples * sizeof(int16_t);
-    // A 30-second mono command is almost 1 MiB. Keep that payload in PSRAM so
-    // command capture cannot consume the small internal/DMA heap needed by
-    // Wi-Fi and mbedTLS immediately afterwards. The recorder writes it only as
-    // ordinary byte-addressable PCM; it is never an I2S DMA descriptor.
-    uint8_t *wav = round_audio_service_allocate_command_wav(wav_capacity);
-    if (!wav) {
-        round_audio_service_command_capture_end();
-        board_port_pause_wake_word(false);
-        return ESP_ERR_NO_MEM;
-    }
-    memset(wav, 0, 44);
-    memcpy(wav, "RIFF", 4);
-    uint32_t riff_size = (uint32_t)wav_capacity - 8;
-    memcpy(wav + 4, &riff_size, 4);
-    memcpy(wav + 8, "WAVEfmt ", 8);
-    uint32_t fmt_size = 16; uint16_t pcm = 1, channels = 1, bits = 16;
-    uint32_t rate = AUDIO_RATE, byte_rate = AUDIO_RATE * 2; uint16_t align = 2;
-    memcpy(wav + 16, &fmt_size, 4); memcpy(wav + 20, &pcm, 2);
-    memcpy(wav + 22, &channels, 2); memcpy(wav + 24, &rate, 4);
-    memcpy(wav + 28, &byte_rate, 4); memcpy(wav + 32, &align, 2);
-    memcpy(wav + 34, &bits, 2); memcpy(wav + 36, "data", 4);
-    uint32_t data_size = (uint32_t)(max_samples * 2);
-    memcpy(wav + 40, &data_size, 4);
-
-    int16_t *mono = (int16_t *)(wav + 44);
-    size_t written_samples = 0;
-    size_t voiced_samples = 0;
-    size_t silence_samples_seen = 0;
-    size_t speech_start_sample = 0;
-    bool speech_started = false;
-    int32_t peak = 0;
-    // Accumulate logical mono frames before updating the shared recorder meter.
-    // The adapter hides whether one physical read represents 256 or 512 frames.
-    uint16_t capture_smoothed_level = 0;
-    uint16_t meter_pending_peak = 0;
-    size_t meter_pending_samples = 0;
-    uint16_t idle_level = 0;
-    uint32_t last_ui_second = UINT32_MAX;
-    while (written_samples < max_samples) {
-        size_t frames = 0;
-        round_audio_capture_stats_t capture_stats = {0};
-        esp_err_t err = round_audio_service_command_capture_read(
-            &mono[written_samples], max_samples - written_samples,
-            &frames, &capture_stats);
-        if (err != ESP_OK) {
-            round_audio_service_free_command_wav(wav);
-            round_audio_service_command_capture_end();
-            board_port_pause_wake_word(false);
-            return err;
-        }
-        if (frames == 0) {
-            // A successful I2S read may still return no complete logical mono
-            // frame.  Do not feed the VAD state or pointer arithmetic with an
-            // empty chunk; simply keep waiting within the existing bounds.
-            continue;
-        }
-        written_samples += frames;
-        if (capture_stats.peak > peak) peak = capture_stats.peak;
-        // Audio HAL conditioning and physical signal statistics bring the
-        // selected capsule into the common UI/VAD scale.
-        const uint16_t raw_level = capture_stats.level;
-        uint32_t elapsed = (uint32_t)(written_samples / AUDIO_RATE);
-        if (raw_level > meter_pending_peak) meter_pending_peak = raw_level;
-        meter_pending_samples += frames;
-        if (meter_pending_samples >= RECORDING_WAVE_SAMPLES_PER_COLUMN) {
-            capture_smoothed_level = meter_pending_peak > capture_smoothed_level
-                                         ? (uint16_t)((capture_smoothed_level +
-                                                       meter_pending_peak * 3u) / 4u)
-                                         : (uint16_t)((capture_smoothed_level * 7u +
-                                                       meter_pending_peak) / 8u);
-            // This intentionally matches Bread Compact's short-command path:
-            // one filter in capture and a second one in the common recording
-            // UI. VAD below continues to use raw_level, preserving capture
-            // start/stop sensitivity.
-            board_port_set_audio_level(capture_smoothed_level, elapsed);
-            meter_pending_peak = 0;
-            meter_pending_samples = 0;
-        }
-        // Command capture is synchronous, unlike the meeting stream.  Keep the
-        // shared recording surface alive just as Bread Compact does so timer,
-        // MIC readout and PCM waveform advance together instead of relying on
-        // the unrelated 150 ms standby animation task.
-        if (elapsed != last_ui_second) {
-            board_port_set_recording_visual(true, false, elapsed);
-            last_ui_second = elapsed;
-        }
-        // Hysteresis ignores short loud clicks before speech, then allows
-        // natural intra-word dips without treating them as the command end.
-        const uint16_t mean_level = capture_stats.mean_level;
-        if (!speech_started) {
-            // Learn the room's actual post-filter noise floor before speech.
-            // The minimum avoids a spoken preamble raising the completion
-            // threshold and keeps the next quiet pause recognisable.
-            if (idle_level == 0 || mean_level < idle_level) idle_level = mean_level;
-            voiced_samples = raw_level >= COMMAND_CAPTURE_START_LEVEL
-                                 ? voiced_samples + frames
-                                 : 0;
-            if (voiced_samples >= start_confirm_samples) {
-                speech_started = true;
-                silence_samples_seen = 0;
-                speech_start_sample = written_samples - voiced_samples;
-                ESP_LOGI(TAG, "command speech started after %u ms",
-                         (unsigned)(written_samples * 1000 / AUDIO_RATE));
-            } else if (written_samples >= start_timeout_samples) {
-                ESP_LOGI(TAG, "command capture timed out waiting for speech");
-                round_audio_service_free_command_wav(wav);
-                round_audio_service_command_capture_end();
-                board_port_pause_wake_word(false);
-                return ESP_ERR_NOT_FOUND;
-            }
-        } else {
-            uint16_t silence_level = idle_level + COMMAND_CAPTURE_SILENCE_MARGIN;
-            if (silence_level < COMMAND_CAPTURE_SILENCE_FLOOR) {
-                silence_level = COMMAND_CAPTURE_SILENCE_FLOOR;
-            }
-            if (silence_level > COMMAND_CAPTURE_SILENCE_CEILING) {
-                silence_level = COMMAND_CAPTURE_SILENCE_CEILING;
-            }
-            silence_samples_seen = mean_level <= silence_level
-                                       ? silence_samples_seen + frames
-                                       : 0;
-            if (silence_samples_seen >= silence_samples) {
-                ESP_LOGI(TAG,
-                         "command capture ended after %u ms of silence (mean=%u threshold=%u)",
-                         COMMAND_CAPTURE_SILENCE_MS, mean_level, silence_level);
-                break;
-            }
-        }
-        if (round_audio_service_command_capture_stop_requested()) {
-            ESP_LOGI(TAG, "command capture manually stopped: speech=%s elapsed=%ums",
-                     speech_started ? "yes" : "no",
-                     (unsigned)(written_samples * 1000 / AUDIO_RATE));
-            break;
-        }
-    }
-    if (!speech_started) {
-        round_audio_service_free_command_wav(wav);
-        round_audio_service_command_capture_end();
-        board_port_pause_wake_word(false);
-        return ESP_ERR_NOT_FOUND;
-    }
-    const size_t trim_start = speech_start_sample > preroll_samples
-                                  ? speech_start_sample - preroll_samples
-                                  : 0;
-    const size_t captured_samples = written_samples - trim_start;
-    if (trim_start > 0) {
-        memmove(mono, mono + trim_start, captured_samples * sizeof(*mono));
-    }
-    ESP_LOGI(TAG, "captured %u mono samples (trimmed %u ms), peak=%ld",
-             (unsigned)captured_samples,
-             (unsigned)(trim_start * 1000 / AUDIO_RATE), (long)peak);
-    const size_t wav_len = 44 + captured_samples * sizeof(*mono);
-    riff_size = (uint32_t)wav_len - 8;
-    memcpy(wav + 4, &riff_size, sizeof(riff_size));
-    data_size = (uint32_t)(captured_samples * sizeof(*mono));
-    memcpy(wav + 40, &data_size, sizeof(data_size));
-    round_audio_service_command_capture_end();
-    board_port_pause_wake_word(false);
-    *out_wav = wav;
-    *out_len = wav_len;
-    return ESP_OK;
-}
-
-void board_port_release_captured_wav(uint8_t *wav) {
-    round_audio_service_free_command_wav(wav);
-}
-
-esp_err_t board_port_stop_input(uint32_t timeout_ms) {
+esp_err_t legacy_bootstrap_input_stop_scanner(uint32_t timeout_ms) {
     return round_input_service_stop(timeout_ms);
 }
 
-esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
+esp_err_t board_background_lifecycle_stop(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     /* Match the compact renderer's lifecycle contract: an initialization
      * rollback may reach this board facade before optional decorative work
@@ -4193,11 +3896,11 @@ static esp_err_t present_pet_frame_delta_sync(const uint16_t *frame) {
     return ESP_OK;
 }
 
-void board_port_set_network_transport(bool cellular) {
+void legacy_connectivity_transport_set_network_transport(bool cellular) {
     (void)cellular;
 }
 
-void board_port_set_service_ready(bool ready) {
+void legacy_display_scene_set_service_ready(bool ready) {
     bool changed;
     taskENTER_CRITICAL(&s_state_lock);
     changed = s_service_ready != ready;
@@ -4210,141 +3913,4 @@ void board_port_set_service_ready(bool ready) {
         draw_pet();
     }
     ESP_LOGI(TAG, "gateway service: %s", ready ? "ready" : "not ready");
-}
-
-bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
-    return round_peripheral_service_get_power_status(level_percent, charging);
-}
-
-esp_err_t board_port_motion_get_sample(device_motion_sample_t *out_sample) {
-    if (!out_sample) return ESP_ERR_INVALID_ARG;
-    return round_peripheral_service_get_motion_sample(out_sample);
-}
-
-void board_port_request_capture_stop(void) {
-    // Retain a stop arriving after the application publishes RECORDING but
-    // before the synchronous reader marks itself active.
-    round_audio_service_request_command_capture_stop();
-}
-
-void board_port_reset_capture_stop(void) {
-    round_audio_service_reset_command_capture_stop();
-}
-
-void board_port_request_audio_playback_stop(void) {
-    round_audio_service_request_playback_stop();
-}
-
-esp_err_t board_port_play_wav(const uint8_t *wav, size_t wav_len) {
-    if (!wav || wav_len < 44 || memcmp(wav, "RIFF", 4) != 0 || memcmp(wav + 8, "WAVE", 4) != 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    const uint8_t *fmt = NULL, *data = NULL;
-    size_t fmt_len = 0, data_len = 0;
-    for (size_t offset = 12; offset + 8 <= wav_len;) {
-        const uint8_t *chunk = wav + offset;
-        uint32_t chunk_len = (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) |
-                             ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
-        offset += 8;
-        if (chunk_len > wav_len - offset) return ESP_ERR_INVALID_SIZE;
-        if (memcmp(chunk, "fmt ", 4) == 0) { fmt = wav + offset; fmt_len = chunk_len; }
-        if (memcmp(chunk, "data", 4) == 0) { data = wav + offset; data_len = chunk_len; }
-        size_t padded = (size_t)chunk_len + (chunk_len & 1u);
-        if (padded > wav_len - offset) return ESP_ERR_INVALID_SIZE;
-        offset += padded;
-    }
-    if (!fmt || fmt_len < 16 || !data || !data_len) return ESP_ERR_INVALID_ARG;
-    uint16_t format = (uint16_t)fmt[0] | ((uint16_t)fmt[1] << 8);
-    uint16_t channels = (uint16_t)fmt[2] | ((uint16_t)fmt[3] << 8);
-    uint32_t rate = (uint32_t)fmt[4] | ((uint32_t)fmt[5] << 8) |
-                    ((uint32_t)fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
-    uint16_t bits = (uint16_t)fmt[14] | ((uint16_t)fmt[15] << 8);
-    if (format != 1 || bits != 16 || rate != AUDIO_RATE || (channels != 1 && channels != 2)) {
-        ESP_LOGW(TAG, "unsupported WAV: format=%u rate=%lu bits=%u channels=%u",
-                 format, (unsigned long)rate, bits, channels);
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    size_t frame_bytes = channels * sizeof(int16_t);
-    if (data_len % frame_bytes != 0) return ESP_ERR_INVALID_SIZE;
-    esp_err_t err = board_port_audio_playback_begin();
-    if (err == ESP_OK) {
-        err = board_port_audio_playback_write((const int16_t *)data,
-                                              data_len / frame_bytes,
-                                              channels);
-        err = board_port_audio_playback_end(err);
-    }
-    return err;
-}
-
-esp_err_t board_port_audio_playback_begin(void) {
-    // Pause recognition before competing for the shared I2S lock. MultiNet may
-    // already be inside a bounded microphone read; waiting for its explicit
-    // acknowledgement lets it release the bus and clean its detector state
-    // before speaker DMA starts. This prevents playback from racing a resumed
-    // recognizer and improves wake reliability after a response finishes.
-    board_port_pause_wake_word(true);
-    (void)round_wake_service_wait_for_pause_ack(300);
-    esp_err_t err = round_audio_service_playback_begin(s_output_volume, 1500);
-    if (err != ESP_OK) board_port_pause_wake_word(false);
-    return err;
-}
-
-esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
-                                          unsigned channels) {
-    return round_audio_service_playback_write(pcm, frames, channels);
-}
-
-esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
-    const esp_err_t finish_err = round_audio_service_playback_end(playback_err);
-    if (finish_err == ESP_ERR_INVALID_STATE) return finish_err;
-    board_port_pause_wake_word(false);
-    return finish_err;
-}
-esp_err_t board_port_play_ack_chime(void) {
-    esp_err_t err = board_port_audio_playback_begin();
-    if (err != ESP_OK) return err;
-    int16_t mono[256];
-    // A short two-note acknowledgement: distinct enough to hear, soft enough
-    // not to be confused with an alarm. The waveform is generated locally so
-    // the board can confirm receipt before network TTS is available.
-    for (int note = 0; err == ESP_OK && note < 2; ++note) {
-        const int half_period = note == 0 ? 20 : 15; // 400 Hz, then ~533 Hz.
-        for (int frame = 0; frame < AUDIO_RATE / 7; frame += 256) {
-            int frames = (AUDIO_RATE / 7 - frame) > 256 ? 256 : (AUDIO_RATE / 7 - frame);
-            for (int i = 0; i < frames; ++i) {
-                int phase = (frame + i) % (half_period * 2);
-                mono[i] = phase < half_period ? 2600 : -2600;
-            }
-            err = board_port_audio_playback_write(mono, (size_t)frames, 1);
-        }
-    }
-    return board_port_audio_playback_end(err);
-}
-
-esp_err_t board_port_play_alarm_burst(void) {
-    esp_err_t err = board_port_audio_playback_begin();
-    if (err != ESP_OK) return err;
-    int16_t mono[256];
-    // Alternating ~1.7/2.1 kHz square waves with a decaying envelope mimic the
-    // bright impact and chatter of a traditional twin-bell mechanism.
-    for (int strike = 0; strike < 3 && err == ESP_OK; ++strike) {
-        int half_period = strike & 1 ? 4 : 5;
-        for (int frame = 0; frame < AUDIO_RATE / 12; frame += 256) {
-            int frames = AUDIO_RATE / 12 - frame;
-            if (frames > 256) frames = 256;
-            for (int i = 0; i < frames; ++i) {
-                int position = frame + i;
-                int envelope = 8200 - position * 5;
-                if (envelope < 1400) envelope = 1400;
-                int16_t sample = ((position / half_period) & 1) ? envelope : -envelope;
-                mono[i] = sample;
-            }
-            err = board_port_audio_playback_write(mono, (size_t)frames, 1);
-        }
-    }
-    return board_port_audio_playback_end(err);
-}
-
-esp_err_t board_port_play_ack_voice(void) {
-    return board_port_play_ack_chime();
 }

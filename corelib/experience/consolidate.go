@@ -11,12 +11,21 @@ import (
 const similarTriggerThreshold = defaultSimilarTriggerThreshold
 
 func matchExistingSkill(candidate corelib.NLSkillEntry, existing []corelib.NLSkillEntry, threshold float64) (corelib.NLSkillEntry, bool) {
+	// A name is the on-disk identity, so a name collision is the same skill
+	// whatever pool it sits in.
 	for _, current := range existing {
 		if current.Name == candidate.Name {
 			return current, true
 		}
 	}
+	// Merely looking alike is not enough to merge across experience pools: the
+	// match renames the candidate onto the existing skill, so a coding recipe
+	// folded into a general one would overwrite the general recipe and leave
+	// coding with nothing. Skills learned in separate pools stay separate.
 	for _, current := range existing {
+		if !corelib.SkillVisibleInExperienceDomain(current.ExperienceDomain, candidate.ExperienceDomain) {
+			continue
+		}
 		if similarSkillThreshold(candidate, current, threshold) {
 			return current, true
 		}
@@ -58,6 +67,21 @@ func preserveExistingSkillIdentity(candidate, existing corelib.NLSkillEntry) cor
 	candidate.HubVersion = existing.HubVersion
 	if candidate.SourceProject == "" {
 		candidate.SourceProject = existing.SourceProject
+	}
+	// Refining a recipe must not move it between experience pools: what the
+	// skill is for was decided when it was first learned, and a candidate
+	// always carries the pool of the session that produced it, so letting the
+	// candidate win would silently delete the recipe from its original pool.
+	//
+	// An empty pool is ambiguous, and the two meanings need opposite handling:
+	// a skill the user deliberately installed is universal on purpose and must
+	// stay visible everywhere, while a self-learned skill from before pools
+	// existed is merely unstamped and adopts the candidate's pool.
+	switch {
+	case existing.ExperienceDomain != "":
+		candidate.ExperienceDomain = existing.ExperienceDomain
+	case !corelib.IsLearnedSource(existing.Source):
+		candidate.ExperienceDomain = corelib.SkillDomainUniversal
 	}
 	return candidate
 }

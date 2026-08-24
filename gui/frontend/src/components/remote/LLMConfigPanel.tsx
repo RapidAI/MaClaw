@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportCodexAuth, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartOpenCodeZenLogin, StartXAIOAuth, TestAndSaveMaclawLLMProviders, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
-import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, hubCreditGrants, hubOfficialStatus, inputStyle, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { PROVIDER_LOGOS } from "./providerLogos";
@@ -15,6 +15,10 @@ import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
 import { MoAConfigSection } from "./MoAConfigSection";
 import { LLMConfigToast, type LLMConfigToastData } from "./LLMConfigToast";
 import { LLMProfileAssignments } from "./LLMProfileAssignments";
+import { LLMConfigProviderLimitsFields } from "./LLMConfigProviderLimitsFields";
+import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
+import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
+import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
 
 interface Props {
     lang?: string;
@@ -63,6 +67,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
     const [providerModelListOpen, setProviderModelListOpen] = useState(false);
     const [qrDialogOpen, setQrDialogOpen] = useState(false);
+    const [importingAgents, setImportingAgents] = useState(false);
+    const importingAgentsRef = useRef(false);
+    const [openCodeLoginBusy, setOpenCodeLoginBusy] = useState(false);
+    const openCodeLoginBusyRef = useRef(false);
+    const [openCodeKeyFocusNonce, setOpenCodeKeyFocusNonce] = useState(0);
+    const dlgOpenRef = useRef(dlgOpen);
+    dlgOpenRef.current = dlgOpen;
+    const dlgProvidersRef = useRef(dlgProviders);
+    dlgProvidersRef.current = dlgProviders;
     const loadSeqRef = useRef(0);
     const hubStatusSeqRef = useRef(0);
     const fetchModelsSeqRef = useRef(0);
@@ -340,6 +353,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         return () => { if (typeof cleanup === 'function') cleanup(); else EventsOff("hub-llm-service-changed"); };
     }, [loadProviders]);
 
+    useEffect(() => {
+        const handler = () => { void loadProviders(); };
+        const cleanup = EventsOn("llm-profiles-changed", handler);
+        return () => { if (typeof cleanup === 'function') cleanup(); else EventsOff("llm-profiles-changed"); };
+    }, [loadProviders]);
+
     const isNone = providerListReady && currentName === NONE_PROVIDER;
     const canConfigureProviders = providerListReady;
     const hasHubEntitlement = !!hubServiceStatus?.active || hubCreditGrants(hubServiceStatus).length > 0;
@@ -376,11 +395,96 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         onProviderChanged?.();
     }, [loadProviders, onProviderChanged]);
 
+    const handleImportExternalAgents = useCallback(async () => {
+        if (importingAgentsRef.current) return;
+        importingAgentsRef.current = true;
+        setImportingAgents(true);
+        const selectedName = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
+        const keepHub = dlgHubSelected;
+        try {
+            const result = await ImportExternalAgents() as { imported?: string[]; skipped?: { source?: string; name?: string; reason?: string }[]; current?: string };
+            const fresh = await refreshProviderList();
+            if (!fresh) {
+                await loadProviders();
+            } else if (dlgOpen) {
+                if (keepHub) {
+                    setDlgHubSelected(true);
+                    setDlgSelectedIdx(null);
+                } else if (selectedName) {
+                    const idx = fresh.findIndex(provider => provider.name === selectedName);
+                    setDlgSelectedIdx(idx >= 0 ? idx : null);
+                    setDlgHubSelected(false);
+                }
+            }
+            setProviderListRevision(revision => revision + 1);
+            onProviderChanged?.();
+            const imported = result?.imported || [];
+            const skipped = result?.skipped || [];
+            const importedText = imported.length
+                ? t(`Imported: ${imported.join(", ")}`, `已导入：${imported.join("、")}`)
+                : t("No new providers imported.", "没有新的服务商导入。");
+            const skippedText = skipped
+                .filter(item => item.reason)
+                .map(item => `${item.name || item.source || t("Agent", "Agent")}: ${item.reason}`)
+                .join("\n");
+            await showAlert(skippedText ? `${importedText}\n${skippedText}` : importedText);
+        } catch (e) {
+            await showAlert(String(e));
+        } finally {
+            importingAgentsRef.current = false;
+            setImportingAgents(false);
+        }
+    }, [dlgHubSelected, dlgOpen, dlgProviders, dlgSelectedIdx, loadProviders, onProviderChanged, refreshProviderList, showAlert, t]);
+
+    const handleOpenCodeLogin = useCallback(async () => {
+        if (openCodeLoginBusyRef.current) return;
+        openCodeLoginBusyRef.current = true;
+        setOpenCodeLoginBusy(true);
+        setDlgTestResult(null);
+        const selectedIdx = dlgSelectedIdx;
+        try {
+            const result = await StartOpenCodeZenLogin() as { message?: string; key?: string };
+            const localKey = (result?.key || "").trim();
+            const current = selectedIdx !== null ? dlgProvidersRef.current[selectedIdx] : undefined;
+            const filledLocalKey = !!(localKey && current && !(current.key || "").trim() && isOpenCodeProvider(current));
+            if (filledLocalKey && selectedIdx !== null) {
+                setDlgProviders(prev => prev.map((p, i) =>
+                    i === selectedIdx && !(p.key || "").trim() && isOpenCodeProvider(p)
+                        ? { ...p, key: localKey, connection_test_passed: false }
+                        : p
+                ));
+                setDlgDirty(true);
+                setDlgTested(false);
+            }
+            if (dlgOpenRef.current) setOpenCodeKeyFocusNonce(n => n + 1);
+            setDlgTestResult({
+                ok: true,
+                msg: filledLocalKey
+                    ? t(
+                        "Opened OpenCode and filled the local key. Test & Save to finish.",
+                        "已打开 OpenCode，并填入本机 Key。请检测并保存。",
+                      )
+                    : t(
+                        "Opened OpenCode. Copy the key from API Keys and paste it below, then Test & Save.",
+                        "已打开 OpenCode。请到 API Keys 复制密钥，粘贴到下方后检测并保存。",
+                      ),
+            });
+        } catch (e) {
+            setDlgTestResult({ ok: false, msg: String(e) });
+        } finally {
+            openCodeLoginBusyRef.current = false;
+            setOpenCodeLoginBusy(false);
+        }
+    }, [dlgSelectedIdx, t]);
+
     const closeDialog = useCallback(async () => {
         if (oauthBusy) return;
         if (dlgSaving) return;
         setDlgOpen(false);
     }, [dlgSaving, oauthBusy]);
+    useEffect(() => {
+        if (!dlgOpen) setOpenCodeKeyFocusNonce(0);
+    }, [dlgOpen]);
     const { backdropProps: configDialogBackdropProps, dialogProps: configDialogProps } = useSafeBackdropDismiss(closeDialog);
 
     // Escape key to close dialog
@@ -399,18 +503,29 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         const raw = String(dlgTestResult.msg || "").trim();
         const saved = t("Saved", "\u5df2\u4fdd\u5b58");
         const isSavedOnly = raw === saved || raw === "Saved" || raw === "\u5df2\u4fdd\u5b58";
+        // Failures stay in the dialog footer, including Hub activate errors.
+        // A second toast would hide the reason after 10s and announce twice.
+        if (!dlgTestResult.ok) {
+            setDlgToast(null);
+            return;
+        }
         const title = dlgHubSelected
             ? raw
             : dlgTestResult.retryable
                 ? t("Model test required", "需要检测模型连接")
-            : dlgTestResult.ok
-                ? (isSavedOnly ? saved : t("Connection OK, saved", "\u8fde\u63a5\u6210\u529f\uff0c\u5df2\u4fdd\u5b58"))
-                : t("Connection failed, not saved", "\u8fde\u63a5\u5931\u8d25\uff0c\u672a\u4fdd\u5b58");
-        const detail = dlgHubSelected || (dlgTestResult.ok && isSavedOnly) ? "" : raw;
-        setDlgToast({ ok: dlgTestResult.ok, title, detail });
-        const timeout = window.setTimeout(() => setDlgToast(null), dlgTestResult.ok ? 7000 : 10000);
+            : (isSavedOnly ? saved : t("Connection OK, saved", "\u8fde\u63a5\u6210\u529f\uff0c\u5df2\u4fdd\u5b58"));
+        const detail = dlgHubSelected || isSavedOnly ? "" : formatProviderTestError(raw, t);
+        setDlgToast({ ok: true, title, detail });
+        const timeout = window.setTimeout(() => setDlgToast(null), 7000);
         return () => window.clearTimeout(timeout);
     }, [dlgHubSelected, dlgTestResult, t]);
+
+    const dlgFailureReason = useMemo(() => (
+        dlgTestResult && !dlgTestResult.ok ? formatProviderTestErrorOrFallback(dlgTestResult.msg, t) : undefined
+    ), [dlgTestResult, t]);
+    const dlgFailureTitle = dlgTestResult && !dlgTestResult.ok && isProviderTestCancelMessage(dlgTestResult.msg)
+        ? t("unsaved", "\u672a\u4fdd\u5b58")
+        : undefined;
 
     const dlgAuthType = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.auth_type : undefined;
 
@@ -438,6 +553,18 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setProviderModelsError(null);
         setProviderModelListOpen(false);
     }, [dlgSelectedIdx, dlgOpen]);
+
+    useEffect(() => {
+        if (!dlgOpen || dlgSelectedIdx === null) return;
+        const selected = dlgProviders[dlgSelectedIdx];
+        if (!selected?.import_source) return;
+        const models = (selected.models || []).map(id => ({ id, name: id }));
+        if (selected.model && !models.some(item => item.id === selected.model)) {
+            models.unshift({ id: selected.model, name: selected.model });
+        }
+        setProviderModels(models);
+        setProviderModelsError(null);
+    }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
 
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
     const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
@@ -787,7 +914,31 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 </div>
             </div>
 
-            <LLMProfileAssignments lang={lang} onSaved={handleProfilesSaved} providerListRevision={providerListRevision} />
+            <LLMProfileAssignments
+                lang={lang}
+                onSaved={handleProfilesSaved}
+                providerListRevision={providerListRevision}
+                descriptionAction={
+                    <button
+                        type="button"
+                        className="llm-config-import-action"
+                        onClick={() => { void handleImportExternalAgents(); }}
+                        disabled={!canConfigureProviders || importingAgents}
+                        aria-busy={importingAgents || undefined}
+                        style={{
+                            fontSize: "0.72rem", padding: "4px 10px", minHeight: 28, lineHeight: 1.2,
+                            cursor: canConfigureProviders && !importingAgents ? "pointer" : "default",
+                            background: colors.surface, color: colors.primaryDark,
+                            border: `1px solid ${colors.primary}`, borderRadius: 4,
+                            opacity: canConfigureProviders && !importingAgents ? 1 : 0.65,
+                        }}
+                    >
+                        {importingAgents
+                            ? t("Scanning agents...", "正在扫描...")
+                            : t("Import other agents", "导入其它 Agent")}
+                    </button>
+                }
+            />
 
             {/* Legacy compatibility summary. The profile assignment above is
                 the source of truth; this remains useful provider-management
@@ -1121,13 +1272,23 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 border: `1px solid ${colors.border}`, background: colors.bg,
                             }}>
                                 <div className="llm-config-form-card__title" style={{ fontSize: "0.78rem", fontWeight: 600, color: colors.text, marginBottom: 12 }}>
-                                    {dlgProvider.is_custom
+                                    {dlgProvider.import_source
+                                        ? `${dlgProvider.name} ${t("(imported)", "（已导入）")}`
+                                        : dlgProvider.is_custom
                                         ? t("Custom Provider Configuration", "自定义服务商配置")
                                         : `${dlgProvider.name} ${t("Configuration", "配置")}`}
                                 </div>
+                                {dlgProvider.import_source && (
+                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "0 0 12px 0", lineHeight: 1.4 }}>
+                                        {t(
+                                            "Imported from a local agent. Connection details stay locked; choose a model and save.",
+                                            "来自本机其它 Agent 的导入。连接信息已锁定，只需选择模型并保存。",
+                                        )}
+                                    </p>
+                                )}
 
                                 {/* Custom: quick-fill from known endpoints */}
-                                {dlgProvider.is_custom && (
+                                {!dlgProvider.import_source && dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
                                         <label style={labelStyle}>{t("Quick-fill from known provider", "从已知服务商快速填充")}</label>
                                         <select
@@ -1172,7 +1333,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 )}
 
                                 {/* User-Agent selection */}
-                                <div style={{ marginBottom: 12 }}>
+                                {!dlgProvider.import_source && <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>User-Agent</label>
                                     {(() => {
                                         const currentAgent = effectiveAgentType(dlgProvider);
@@ -1221,9 +1382,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             </p>
                                         </>);
                                     })()}
-                                </div>
+                                </div>}
 
-                                {dlgProvider.is_custom && (
+                                {!dlgProvider.import_source && dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
                                         <label style={labelStyle}>{t("Provider Name", "服务商名称")}</label>
                                         <input style={inputStyle} value={dlgProvider.name}
@@ -1233,7 +1394,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     </div>
                                 )}
 
-                                <div style={{ marginBottom: 12 }}>
+                                {!dlgProvider.import_source && <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("API URL", "API 地址 (URL)")}
                                         {!dlgProvider.is_custom && (
@@ -1250,12 +1411,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     ) : (
                                         <input style={readonlyStyle} value={dlgProvider.url} readOnly tabIndex={-1} />
                                     )}
-                                </div>
+                                </div>}
 
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
                                         {t("Model Name", "模型名称")}
-                                        {dlgProvider.auth_type === "sso" ? (
+                                        {dlgProvider.import_source ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {t("(select model)", "（选择模型）")}
+                                            </span>
+                                        ) : dlgProvider.auth_type === "sso" ? (
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
                                                 {codegenModelsFetching ? t("(loading models...)", "（加载模型中...）") : t("(select model)", "（选择模型）")}
                                             </span>
@@ -1281,7 +1446,21 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                             </span>
                                         )}
                                     </label>
-                                    {dlgProvider.auth_type === "sso" ? (
+                                    {dlgProvider.import_source ? (
+                                        <select
+                                            data-testid="imported-agent-model-select"
+                                            style={inputStyle}
+                                            value={dlgProvider.model || ""}
+                                            onChange={e => dlgUpdateField("model", e.target.value)}
+                                        >
+                                            {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
+                                                <option value={dlgProvider.model}>{dlgProvider.model}</option>
+                                            )}
+                                            {providerModels.map(m => (
+                                                <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                            ))}
+                                        </select>
+                                    ) : dlgProvider.auth_type === "sso" ? (
                                         /* SSO (CodeGen): auto-fetch model list */
                                         codegenModels.length > 0 ? (
                                             <select style={inputStyle} value={dlgProvider.model}
@@ -1317,221 +1496,70 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                 </div>
 
                                 {/* Auth: OAuth login button / no-key hint / API Key input */}
-                                {dlgProvider.auth_type === "oauth" ? (
-                                    <div>
-                                        <label style={labelStyle}>{t("Authentication", "认证方式")}</label>
-                                        {dlgProvider.key ? (
-                                            <div style={{
-                                                display: "flex", alignItems: "center", gap: 10,
-                                                padding: "8px 12px", borderRadius: 4,
-                                                background: colors.successBg, border: `1px solid color-mix(in srgb, ${colors.success} 30%, transparent)`,
-                                            }}>
-                                                <span style={{ fontSize: "0.76rem", color: colors.success, flex: 1 }}>
-                                                    已认证 {t("OAuth authenticated", "OAuth 已认证")}
-                                                </span>
-                                                <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
-                                                    fontSize: "0.72rem", padding: "4px 12px", cursor: "pointer",
-                                                    background: "transparent", color: "var(--theme-primary)",
-                                                    border: `1px solid ${colors.primary}`, borderRadius: 4,
-                                                    opacity: oauthBusy ? 0.5 : 1,
-                                                }}>
-                                                    {oauthBusy ? t("Logging in...", "登录中...") : t("Re-login", "重新登录")}
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <>
-                                            <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
-                                                width: "100%", padding: "10px 0", fontSize: "0.8rem",
-                                                cursor: oauthBusy ? "default" : "pointer",
-                                                background: colors.primaryLight, color: colors.primaryDark,
-                                                border: `1px solid ${colors.primary}`, borderRadius: 4,
-                                                opacity: oauthBusy ? 0.6 : 1,
-                                            }}>
-                                                {oauthBusy
-                                                    ? `RUN ${t("Waiting for browser authorization...", "等待浏览器授权...")}`
-                                                    : dlgProvider.name === "GitHub Copilot"
-                                                        ? t("Sign in with GitHub", "使用 GitHub 账号登录")
-                                                        : dlgProvider.name === "Anthropic"
-                                                            ? t("Sign in with Claude.ai", "使用 Claude.ai 账号登录")
-                                                            : dlgProvider.name === "xAI-Grok"
-                                                                ? t("Sign in with xAI", "使用 xAI 账号登录")
-                                                            : t("Sign in with OpenAI", "使用 OpenAI 账号登录")}
-                                            </button>
-                                            {oauthBusy && (
-                                                <button aria-label={t("Cancel OAuth login", "取消 OAuth 登录")} onClick={() => {
-                                                    const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
-                                                    if (name === "GitHub Copilot") {
-                                                        cancelActiveOAuth(name);
-                                                    } else if (name === "xAI-Grok") {
-                                                        cancelActiveOAuth(name);
-                                                    } else {
-                                                        cancelActiveOAuth(name);
-                                                    }
-                                                }} style={{
-                                                    width: "100%", padding: "8px 0", fontSize: "0.76rem",
-                                                    cursor: "pointer", marginTop: 6,
-                                                    background: "transparent", color: colors.textMuted,
-                                                    border: `1px solid ${colors.border}`, borderRadius: 4,
-                                                }}>
-                                                    {t("Cancel", "取消")}
-                                                </button>
-                                            )}
-                                            {dlgProvider.name === "OpenAI" && dlgTestResult && !dlgTestResult.ok && !oauthBusy && (
-                                                <button onClick={async () => {
-                                                    try {
-                                                        const msg = await ImportCodexAuth();
-                                                        const data = await GetMaclawLLMProviders();
-                                                        if (data?.providers) {
-                                                            const fresh = data.providers.map((p: LLMProvider) => ({ ...p }));
-                                                            setDlgProviders(fresh);
-                                                            setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
-                                                            setCurrentName(data.current || NONE_PROVIDER);
-                                                            setDlgDirty(false);
-                                                            onStatusChange?.(true, true);
-                                                            onProviderChanged?.();
-                                                        }
-                                                        setDlgTestResult({ ok: true, msg: msg || "已从 Codex 导入" });
-                                                    } catch (e) {
-                                                        setDlgTestResult({ ok: false, msg: String(e) });
-                                                    }
-                                                }} style={{
-                                                    width: "100%", padding: "8px 0", fontSize: "0.76rem",
-                                                    cursor: "pointer", marginTop: 6,
-                                                    background: "transparent", color: colors.primary,
-                                                    border: `1px dashed ${colors.primary}`, borderRadius: 4,
-                                                }}>
-                                                    {t("Import from Codex CLI (if already logged in)", "从 Codex CLI 导入（如已在 Codex 中登录）")}
-                                                </button>
-                                            )}
-                                            </>
-                                        )}
-                                    </div>
+                                {!dlgProvider.import_source && (dlgProvider.auth_type === "oauth" ? (
+                                    <LLMConfigOAuthFields
+                                        provider={dlgProvider}
+                                        oauthBusy={oauthBusy}
+                                        testFailed={!!dlgTestResult && !dlgTestResult.ok}
+                                        t={t}
+                                        onLogin={handleOAuthLogin}
+                                        onCancel={() => {
+                                            const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
+                                            cancelActiveOAuth(name);
+                                        }}
+                                        onImported={async (msg) => {
+                                            await refreshProviderList();
+                                            setDlgDirty(false);
+                                            onStatusChange?.(true, true);
+                                            onProviderChanged?.();
+                                            setDlgTestResult({ ok: true, msg });
+                                        }}
+                                        onImportError={(e) => setDlgTestResult({ ok: false, msg: String(e) })}
+                                    />
                                 ) : (
-                                    <div>
-                                        <label style={labelStyle}>{t("API Key", "API Key")} <span style={{ color: colors.danger }}>*</span></label>
-                                        <input style={inputStyle} type="password" value={dlgProvider.key}
-                                            onChange={e => dlgUpdateField("key", e.target.value)}
-                                            placeholder={((dlgProvider.name === "智谱编程") || (dlgProvider.protocol || "openai") === "anthropic") ? "xxxxxxxx.yyyyyyyy" : "sk-..."}
-                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
-                                    </div>
-                                )}
+                                    <LLMConfigApiKeyFields
+                                        provider={dlgProvider}
+                                        loginBusy={openCodeLoginBusy}
+                                        t={t}
+                                        focusNonce={openCodeKeyFocusNonce}
+                                        onUpdateKey={(key) => dlgUpdateField("key", key)}
+                                        onOpenCodeLogin={() => { void handleOpenCodeLogin(); }}
+                                    />
+                                ))}
 
-                                {/* Context Length */}
-                                <div style={{ marginTop: 12 }}>
-                                    <label style={labelStyle}>{t("Context Length (tokens)", "上下文长度 (tokens)")}</label>
-                                    <input style={inputStyle} type="number" min={0} step={1000}
-                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
-                                        value={dlgProvider.context_length || ""}
-                                        onChange={e => dlgUpdateField("context_length", e.target.value)}
-                                        placeholder="128000" />
-                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                        {t(
-                                            "Max context window of the model. GLM supports 180000. Defaults to 128000 if empty.",
-                                            "模型支持的最大上下文长度。GLM 可支持 180000，留空默认 128000。"
-                                        )}
-                                    </p>
-                                </div>
-
-                                {/* Max Output Tokens */}
-                                <div style={{ marginTop: 12 }}>
-                                    <label style={labelStyle}>{t("Max Output Tokens", "最大输出长度 (tokens)")}</label>
-                                    <input style={inputStyle} type="number" min={1024} step={1024}
-                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
-                                        value={dlgProvider.max_output_tokens || ""}
-                                        onChange={e => dlgUpdateField("max_output_tokens", e.target.value)}
-                                        placeholder="65536" />
-                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
-                                        {t(
-                                            "Max tokens per LLM response. Defaults to 65536. For models with lower limits, the system auto-detects and adapts on first use.",
-                                            "单次回复最大 token 数。默认 65536。对于限制较低的模型，系统在首次使用时自动检测并适配。"
-                                        )}
-                                    </p>
-                                </div>
-
-                                {/* Vision Support Toggle */}
-                                <div style={{
-                                    marginTop: 12, display: "flex", alignItems: "center",
-                                    justifyContent: "space-between", gap: 10,
-                                }}>
-                                    <div style={{ flex: 1 }}>
-                                        <label style={{ ...labelStyle, marginBottom: 2 }}>
-                                            {t("Vision Support", "视觉支持")}
-                                        </label>
-                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: 0, lineHeight: 1.4 }}>
-                                            {dlgProvider.supports_vision
-                                                ? t("Supports image input (WeChat images understood by model)", "支持图片输入（微信发图可被模型理解）")
-                                                : t("No vision (images saved as files, not sent to model)", "不支持视觉（图片会保存为文件，不发送给模型）")}
-                                        </p>
-                                        <p style={{ fontSize: "0.64rem", color: colors.textMuted, margin: "2px 0 0 0", lineHeight: 1.4 }}>
-                                            {t(
-                                                "Vision support is auto-detected during the initial test-and-save. If inaccurate, you can adjust it manually and save again.",
-                                                "首次测试并保存时会自动检测视觉能力；如果不准确，可手动调整后再保存。"
-                                            )}
-                                        </p>
-                                    </div>
-                                    <input type="checkbox" checked={!!dlgProvider.supports_vision}
-                                        onChange={e => {
-                                            if (dlgSelectedIdx === null) return;
-                                            setDlgProviders(prev => {
-                                                const copy = [...prev];
-                                                copy[dlgSelectedIdx] = withVisionResultForCurrentModel(copy[dlgSelectedIdx], e.target.checked);
-                                                return copy;
-                                            });
-                                            setDlgDirty(true);
-                                            setDlgTestResult(null);
+                                <LLMConfigProviderLimitsFields
+                                    provider={dlgProvider}
+                                    t={t}
+                                    onUpdateField={dlgUpdateField}
+                                    onVisionChange={(supportsVision) => {
+                                        if (dlgSelectedIdx === null) return;
+                                        setDlgProviders(prev => prev.map((p, i) => i === dlgSelectedIdx ? withVisionResultForCurrentModel(p, supportsVision) : p));
+                                        setDlgDirty(true);
+                                        setDlgTestResult(null);
                                     }}
-                                        style={{ width: 18, height: 18, accentColor: "var(--theme-primary)", cursor: "pointer", flexShrink: 0 }} />
-                                </div>
-
-
+                                />
                             </div>
                         )}
-
-
-                        {/* Footer */}
-                        <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end", marginTop: 20 }}>
-                            {dlgDirty && !dlgHubSelected && <span style={{ fontSize: "0.68rem", color: colors.primaryDark, marginRight: "auto" }}>{t("unsaved", "未保存")}</span>}
-                            <button onClick={closeDialog} style={{
-                                fontSize: "0.76rem", padding: "6px 18px", cursor: "pointer",
-                                background: colors.bg, color: colors.text,
-                                border: `1px solid ${colors.border}`, borderRadius: 4,
-                            }}>
-                                {t("Cancel", "取消")}
-                            </button>
-                            {dlgHubSelected ? (
-                                <button onClick={dlgHandleSaveHubService} disabled={dlgSaving || hubSelectionAlreadySynced} style={{
-                                    fontSize: "0.76rem", padding: "6px 18px",
-                                    cursor: (dlgSaving || hubSelectionAlreadySynced) ? "default" : "pointer",
-                                    background: hubSelectionAlreadySynced ? colors.bg : colors.primaryLight,
-                                    color: hubSelectionAlreadySynced ? colors.textMuted : colors.primaryDark,
-                                    border: `1px solid ${hubSelectionAlreadySynced ? colors.border : colors.primary}`, borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
-                                }}>
-                                    {dlgSaving ? t("Saving...", "保存中...")
-                                        : hubSelectionAlreadySynced ? t("Currently Active", "当前已启用")
-                                        : t("Use This Service", "使用此服务")}
-                                </button>
-                            ) : (
-                                <button onClick={dlgHandleSave} disabled={dlgSaving || oauthBusy || (!dlgDirty && !dlgTested && !dlgNeedsOAuthLogin)} style={{
-                                    fontSize: "0.76rem", padding: "6px 18px", cursor: (dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? "pointer" : "default",
-                                    background: (dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? colors.primaryLight : colors.bg, color: (dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? colors.primaryDark : colors.textMuted,
-                                    border: `1px solid ${(dlgDirty || dlgTested || dlgNeedsOAuthLogin) ? colors.primary : colors.border}`, borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
-                                }}>
-                                    {dlgSaving ? t("Testing & Saving...", "检测并保存中...") : dlgTested ? t("Save Changes", "保存修改") : t("Test & Save", "检测并保存")}
-                                </button>
-                            )}
-                        </div>
+                        <LLMConfigDialogFooter
+                            dirty={dlgDirty}
+                            error={dlgFailureReason}
+                            errorTitle={dlgFailureTitle}
+                            hubSelected={dlgHubSelected}
+                            hubAlreadySynced={hubSelectionAlreadySynced}
+                            needsOAuthLogin={dlgNeedsOAuthLogin}
+                            oauthBusy={oauthBusy}
+                            saving={dlgSaving}
+                            t={t}
+                            tested={dlgTested}
+                            onCancel={closeDialog}
+                            onSave={dlgHandleSave}
+                            onSaveHub={dlgHandleSaveHubService}
+                        />
                     </div>
                 </div>
             )}
 
-            {/* Mobile QR Code Dialog */}
-            <MobileQRCodeDialog
-                open={qrDialogOpen}
-                onClose={() => setQrDialogOpen(false)}
-                providers={providers}
-                currentName={currentName}
-                lang={lang}
-            />
+            <MobileQRCodeDialog open={qrDialogOpen} onClose={() => setQrDialogOpen(false)} providers={providers} currentName={currentName} lang={lang} />
         </div>
     );
 }

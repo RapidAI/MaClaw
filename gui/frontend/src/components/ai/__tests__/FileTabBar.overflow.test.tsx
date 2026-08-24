@@ -395,6 +395,10 @@ describe('FileTabBar overflow management', () => {
         expect(byPath('/src/b.ts').getAttribute('data-dirty')).toBe('false');
         expect(byPath('/src/c.ts').getAttribute('data-dirty')).toBe('true');
         expect(screen.getAllByTestId('file-tab-dirty').length).toBe(2);
+        expect(byPath('/src/a.ts').textContent).toContain('+1');
+        expect(byPath('/src/a.ts').textContent).toContain('-1');
+        expect(byPath('/src/a.ts').textContent).not.toContain('MOD');
+        expect(byPath('/src/b.ts').textContent).toContain('READ');
     });
 
     it('shows pin marker and pin context action', () => {

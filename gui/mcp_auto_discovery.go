@@ -143,15 +143,20 @@ func (d *MCPAutoDiscovery) syncServerTools(srv MCPDeclServer) {
 
 		serverID := srv.ID
 		mcpToolName := t.Name
+		// A discovered MCP endpoint has not yet earned a semantic capability
+		// contract. Keep it explicitly quarantined from capability-first
+		// materialization; legacy exposure remains a compatibility concern until
+		// a governed provision/trust contract is registered.
 		d.registry.Register(RegisteredTool{
-			Name:        toolName,
-			Description: fmt.Sprintf("[MCP:%s] %s", srv.Name, t.Description),
-			Category:    ToolCategoryMCP,
-			Tags:        tags,
-			Priority:    0,
-			Status:      RegToolAvailable,
-			InputSchema: schema,
-			Source:      "mcp:" + serverID,
+			Name:                 toolName,
+			Description:          fmt.Sprintf("[MCP:%s] %s", srv.Name, t.Description),
+			Category:             ToolCategoryMCP,
+			Tags:                 tags,
+			Priority:             0,
+			Status:               RegToolAvailable,
+			InputSchema:          schema,
+			Source:               "mcp:" + serverID,
+			SemanticCatalogState: SemanticCatalogQuarantined,
 			Handler: func(args map[string]interface{}) string {
 				result, err := d.mcpRegistry.CallTool(serverID, mcpToolName, args)
 				if err != nil {

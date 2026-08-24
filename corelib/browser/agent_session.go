@@ -74,8 +74,8 @@ func reusableBrowserAgentSessionForOwner(ownerID, requestedAddr string, mode Ses
 	if !reuseExisting && mode != SessionModePersistent {
 		return nil
 	}
+	var candidates []*BrowserAgentSession
 	browserAgentMu.Lock()
-	defer browserAgentMu.Unlock()
 	if reuseExisting || mode == SessionModePersistent {
 		for _, sess := range browserAgentSessions {
 			if sess == nil {
@@ -84,13 +84,25 @@ func reusableBrowserAgentSessionForOwner(ownerID, requestedAddr string, mode Ses
 			if !browserAgentSessionMatchesRequestForOwner(sess, ownerID, requestedAddr, mode) {
 				continue
 			}
-			if sess.session != nil && sess.session.client != nil && sess.session.client.IsAlive() {
-				sess.Policy = policy
-				sess.UpdatedAt = time.Now()
-				log.Printf("[browser] agent session reused id=%s owner=%q addr=%s mode=%s target=%s", sess.ID, sess.OwnerID, sess.Addr, sess.Mode, sess.TargetID)
-				return sess
-			}
+			candidates = append(candidates, sess)
 		}
+	}
+	browserAgentMu.Unlock()
+	for _, sess := range candidates {
+		live, err := GetAgentSession(sess.ID)
+		if err != nil || live == nil {
+			_ = StopAgentSession(sess.ID, false)
+			continue
+		}
+		if !agentSessionStillRegistered(live.ID, live) {
+			continue
+		}
+		live.mu.Lock()
+		live.Policy = policy
+		live.UpdatedAt = time.Now()
+		live.mu.Unlock()
+		log.Printf("[browser] agent session reused id=%s owner=%q addr=%s mode=%s target=%s", live.ID, live.OwnerID, live.Addr, live.Mode, live.TargetID)
+		return live
 	}
 	return nil
 }
@@ -150,7 +162,7 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 	}
 	targetStart := time.Now()
 	if err := ensureDedicatedAgentTarget(session); err != nil {
-		_ = session.client.Close()
+		session.closeClient()
 		return nil, err
 	}
 	if elapsed := time.Since(targetStart); elapsed > 500*time.Millisecond {
@@ -162,7 +174,7 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 		}
 	}
 	if existing := reusableBrowserAgentSessionForOwner(ownerID, cdpAddr, mode, policy, reuseExisting); existing != nil {
-		_ = session.client.Close()
+		session.closeClient()
 		return existing, nil
 	}
 	targetID := activeTargetID(session)
@@ -188,6 +200,7 @@ func startAgentSessionForOwner(ownerID, requestedAddr string, policy BrowserPoli
 		recentSubmitClicks: map[string]time.Time{},
 	}
 	agentSession.startEventPump()
+	applySessionDownloadPolicy(session, policy, mode)
 	// Start inactivity timeout only for sessions attached to the user's own Chrome.
 	if browserAgentModeUsesUserChrome(mode) {
 		agentSession.startInactivityTimer()
@@ -236,10 +249,16 @@ func browserAgentSessionMatchesRequestForOwner(sess *BrowserAgentSession, ownerI
 }
 
 func ensureDedicatedAgentTarget(session *Session) error {
-	if session == nil || session.client == nil {
+	if session == nil {
 		return fmt.Errorf("browser session is not connected")
 	}
-	result, err := session.client.Send("Target.createTarget", map[string]interface{}{"url": "about:blank"}, 5*time.Second)
+	session.mu.Lock()
+	client := session.client
+	session.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session is not connected")
+	}
+	result, err := client.Send("Target.createTarget", map[string]interface{}{"url": "about:blank"}, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("create dedicated browser target: %w", err)
 	}
@@ -260,77 +279,205 @@ func ensureDedicatedAgentTarget(session *Session) error {
 
 // GetAgentSession returns a previously started agent session.
 func GetAgentSession(sessionID string) (*BrowserAgentSession, error) {
-	browserAgentMu.Lock()
-	defer browserAgentMu.Unlock()
+	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, fmt.Errorf("missing browser session id")
 	}
+	browserAgentMu.Lock()
 	sess, ok := browserAgentSessions[sessionID]
+	browserAgentMu.Unlock()
 	if !ok || sess == nil {
 		return nil, fmt.Errorf("browser session not found: %s", sessionID)
 	}
-	if sess.session == nil || sess.session.client == nil || !sess.session.client.IsAlive() {
-		// Close old client explicitly so its readLoop exits, events channel
-		// closes, and the old event pump goroutine terminates cleanly.
-		if sess.session != nil && sess.session.client != nil {
-			_ = sess.session.client.Close()
+	if sess.cdpClient().IsAlive() && sess.IsTargetAlive() {
+		if !agentSessionStillRegistered(sessionID, sess) {
+			return nil, fmt.Errorf("browser session not found: %s", sessionID)
 		}
-		reconnected, err := connectToAddr(sess.Addr)
-		if err != nil {
+		sess.TouchActivity()
+		return sess, nil
+	}
+	sess.recoverMu.Lock()
+	defer sess.recoverMu.Unlock()
+	if !sess.cdpClient().IsAlive() {
+		if err := recoverAgentSessionConnection(sess); err != nil {
 			return nil, err
 		}
-		sess.mu.Lock()
-		sess.session = reconnected
-		sess.TargetID = activeTargetID(reconnected)
-		sess.UpdatedAt = time.Now()
-		// Clear stale snapshots from the old target — refs are no longer valid.
-		sess.snapshots = map[string]*BrowserSnapshot{}
-		sess.lastSnapshotID = ""
-		// Reset the target-gone signal so operations on the new target work.
-		sess.resetTargetGone()
-		sess.mu.Unlock()
-		sess.startEventPump()
 	} else if !sess.IsTargetAlive() {
-		// Connection is alive but target was destroyed/detached (e.g. page
-		// navigated away, tab closed by user). Re-attach to the first available
-		// page target in the same browser.
-		log.Printf("[browser] target gone but connection alive session=%s; re-attaching to new target", sessionID)
-		targets, err := DiscoverTargets(sess.Addr)
-		if err != nil {
-			return nil, fmt.Errorf("browser target gone and cannot discover new targets: %w", err)
+		if err := recoverAgentSessionTarget(sess); err != nil {
+			return nil, err
 		}
-		newTargetID := ""
-		for _, t := range targets {
-			if t.Type == "page" && t.ID != "" {
-				newTargetID = t.ID
-				break
-			}
-		}
-		if newTargetID == "" {
-			return nil, fmt.Errorf("browser target gone and no page targets available; call browser(action=\"navigate\", url=\"...\") to open a new page")
-		}
-		// SwitchPage makes HTTP calls and creates a new WebSocket connection —
-		// don't hold sess.mu during it to avoid blocking IsTargetAlive/TargetGone
-		// callers for seconds.
-		if err := sess.session.SwitchPage(newTargetID); err != nil {
-			return nil, fmt.Errorf("browser target gone and failed to attach to new target: %w", err)
-		}
-		sess.mu.Lock()
-		sess.TargetID = newTargetID
-		sess.UpdatedAt = time.Now()
-		sess.snapshots = map[string]*BrowserSnapshot{}
-		sess.lastSnapshotID = ""
-		sess.resetTargetGone()
-		sess.mu.Unlock()
-		// SwitchPage replaces the underlying CDPClient (closes old, creates new).
-		// The old event pump goroutine exits when old client's events channel closes.
-		// Must start a new pump for the new client's events channel.
-		sess.startEventPump()
-		log.Printf("[browser] re-attached to target=%s session=%s", newTargetID, sessionID)
 	}
-	// Touch activity on every access to reset the inactivity timer.
+	if !agentSessionStillRegistered(sessionID, sess) {
+		return nil, fmt.Errorf("browser session not found: %s", sessionID)
+	}
 	sess.TouchActivity()
 	return sess, nil
+}
+
+func agentSessionStillRegistered(sessionID string, sess *BrowserAgentSession) bool {
+	browserAgentMu.Lock()
+	current := browserAgentSessions[sessionID]
+	browserAgentMu.Unlock()
+	return current == sess
+}
+
+func recoverAgentSessionConnection(sess *BrowserAgentSession) error {
+	if sess == nil {
+		return fmt.Errorf("browser session not found")
+	}
+	sess.mu.RLock()
+	old := sess.session
+	addr := sess.Addr
+	policy := sess.Policy
+	sess.mu.RUnlock()
+	var client *CDPClient
+	if old != nil {
+		old.mu.Lock()
+		client = old.client
+		old.mu.Unlock()
+	}
+	if client != nil && client.IsAlive() {
+		return nil
+	}
+	if client != nil {
+		_ = client.Close()
+	}
+	reconnected, err := connectToAddr(addr)
+	if err != nil {
+		return err
+	}
+	if err := attachSessionToRecoverablePage(reconnected, policy, ""); err != nil {
+		reconnected.closeClient()
+		return err
+	}
+	if !agentSessionStillRegistered(sess.ID, sess) {
+		reconnected.closeClient()
+		return fmt.Errorf("browser session not found: %s", sess.ID)
+	}
+	targetID := activeTargetID(reconnected)
+	sess.mu.Lock()
+	cur := sess.session
+	if cur != nil && cur != old {
+		cur.mu.Lock()
+		live := cur.client != nil && !cur.client.isClosed()
+		cur.mu.Unlock()
+		if live {
+			sess.mu.Unlock()
+			reconnected.closeClient()
+			return nil
+		}
+	}
+	sess.session = reconnected
+	sess.TargetID = targetID
+	sess.UpdatedAt = time.Now()
+	sess.snapshots = map[string]*BrowserSnapshot{}
+	sess.lastSnapshotID = ""
+	sess.resetTargetGone()
+	sess.mu.Unlock()
+	sess.startEventPump()
+	applySessionDownloadPolicy(reconnected, sess.Policy, sess.Mode)
+	return nil
+}
+
+func recoverAgentSessionTarget(sess *BrowserAgentSession) error {
+	if sess == nil {
+		return fmt.Errorf("browser session not found")
+	}
+	log.Printf("[browser] target gone but connection alive session=%s; re-attaching to new target", sess.ID)
+	sess.mu.RLock()
+	session := sess.session
+	policy := sess.Policy
+	currentID := sess.TargetID
+	sess.mu.RUnlock()
+	if err := attachSessionToRecoverablePage(session, policy, currentID); err != nil {
+		if isPolicyDenied(err) {
+			return err
+		}
+		return fmt.Errorf("browser target gone and failed to attach to new target: %w", err)
+	}
+	if !agentSessionStillRegistered(sess.ID, sess) {
+		if client := sess.cdpClient(); client != nil {
+			_ = client.Close()
+		}
+		return fmt.Errorf("browser session not found: %s", sess.ID)
+	}
+	newTargetID := activeTargetID(sess.session)
+	sess.mu.Lock()
+	sess.TargetID = newTargetID
+	sess.UpdatedAt = time.Now()
+	sess.snapshots = map[string]*BrowserSnapshot{}
+	sess.lastSnapshotID = ""
+	sess.resetTargetGone()
+	sess.mu.Unlock()
+	sess.startEventPump()
+	log.Printf("[browser] re-attached to target=%s session=%s", newTargetID, sess.ID)
+	return nil
+}
+
+func chooseRecoveryPageTarget(session *Session, policy BrowserPolicy, currentID string, targets []TargetInfo) (string, error) {
+	currentID = strings.TrimSpace(currentID)
+	var otherSafe, anySafe string
+	sawPage := false
+	for _, t := range targets {
+		id := strings.TrimSpace(t.ID)
+		if t.Type != "page" || id == "" {
+			continue
+		}
+		sawPage = true
+		popup := session != nil && session.isPopupTarget(id)
+		if !policy.AllowPopup && popup {
+			continue
+		}
+		if anySafe == "" {
+			anySafe = id
+		}
+		if id != currentID && otherSafe == "" {
+			otherSafe = id
+		}
+	}
+	if otherSafe != "" {
+		return otherSafe, nil
+	}
+	if anySafe != "" {
+		return anySafe, nil
+	}
+	if sawPage && !policy.AllowPopup {
+		return "", policyDenied("browser policy blocked popup; pass allow_popup=true on session_start")
+	}
+	return "", nil
+}
+
+func attachSessionToRecoverablePage(session *Session, policy BrowserPolicy, currentID string) error {
+	if session == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	infos, err := session.getTargetInfos()
+	if err != nil {
+		pages, listErr := session.ListPages()
+		if listErr != nil {
+			return err
+		}
+		return switchToRecoverablePage(session, policy, currentID, pages)
+	}
+	session.hydratePopupTargetsFrom(infos)
+	return switchToRecoverablePage(session, policy, currentID, pageTargetsFromInfos(infos))
+}
+
+func switchToRecoverablePage(session *Session, policy BrowserPolicy, currentID string, targets []TargetInfo) error {
+	id, err := chooseRecoveryPageTarget(session, policy, currentID, targets)
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		return fmt.Errorf("browser target gone and no page targets available; call browser(action=\"navigate\", url=\"...\") to open a new page")
+	}
+	session.mu.Lock()
+	active := session.activeTabID
+	session.mu.Unlock()
+	if id == active {
+		return nil
+	}
+	return session.SwitchPage(id)
 }
 
 // StopAgentSession closes and removes a browser agent session.
@@ -348,24 +495,30 @@ func StopAgentSession(sessionID string, closeBrowser bool) error {
 	if !ok || sess == nil {
 		return fmt.Errorf("browser session not found: %s", sessionID)
 	}
+	sess.mu.Lock()
 	if sess.stopCh != nil {
 		close(sess.stopCh)
 		sess.stopCh = nil
 	}
-	// Audit log for user-chrome disconnections (skip if already logged by inactivity timer).
-	if browserAgentModeUsesUserChrome(sess.Mode) && !sess.timedOut {
+	timedOut := sess.timedOut
+	mode := sess.Mode
+	ownerID := sess.OwnerID
+	addr := sess.Addr
+	targetID := sess.TargetID
+	managedDir := sess.ManagedUserDataDir
+	session := sess.session
+	sess.mu.Unlock()
+	if browserAgentModeUsesUserChrome(mode) && !timedOut {
 		GetAuditLogger().LogDisconnect(sessionID, "session_stop")
 	}
-	if sess.session != nil && sess.session.client != nil {
-		log.Printf("[browser] closing CDP client session=%s owner=%q addr=%s mode=%s target=%s close_browser=%v", sessionID, sess.OwnerID, sess.Addr, sess.Mode, sess.TargetID, closeBrowser)
-		_ = sess.session.client.Close()
+	if session != nil {
+		log.Printf("[browser] closing CDP client session=%s owner=%q addr=%s mode=%s target=%s close_browser=%v", sessionID, ownerID, addr, mode, targetID, closeBrowser)
+		session.closeClient()
 	}
-	// Only isolated debug browsers are disposable. Persistent managed profile owns
-	// login/cookies and must survive session_stop to avoid Chrome churn.
-	if closeBrowser && browserAgentModeAllowsProcessKill(sess.Mode) {
-		if sess.ManagedUserDataDir != "" {
-			log.Printf("[browser] killing managed browser session=%s dir=%q", sessionID, sess.ManagedUserDataDir)
-			killManagedBrowserForDir(sess.ManagedUserDataDir)
+	if closeBrowser && browserAgentModeAllowsProcessKill(mode) {
+		if managedDir != "" {
+			log.Printf("[browser] killing managed browser session=%s dir=%q", sessionID, managedDir)
+			killManagedBrowserForDir(managedDir)
 		}
 	}
 	return nil
@@ -377,6 +530,22 @@ func browserAgentModeUsesUserChrome(mode SessionMode) bool {
 
 func browserAgentModeIsManaged(mode SessionMode) bool {
 	return mode == SessionModePersistent || mode == SessionModeIsolated
+}
+
+func applySessionDownloadPolicy(session *Session, policy BrowserPolicy, mode SessionMode) {
+	if session == nil || !shouldDenyManagedDownloads(policy, mode) {
+		return
+	}
+	session.mu.Lock()
+	client := session.client
+	session.mu.Unlock()
+	if client == nil {
+		return
+	}
+	_, _ = client.Send("Browser.setDownloadBehavior", map[string]interface{}{
+		"behavior":      "deny",
+		"eventsEnabled": true,
+	}, 3*time.Second)
 }
 
 func browserAgentModeAllowsProcessKill(mode SessionMode) bool {
@@ -403,8 +572,11 @@ func activeTargetID(session *Session) string {
 	if session == nil {
 		return ""
 	}
-	if strings.TrimSpace(session.activeTabID) != "" {
-		return strings.TrimSpace(session.activeTabID)
+	session.mu.Lock()
+	id := strings.TrimSpace(session.activeTabID)
+	session.mu.Unlock()
+	if id != "" {
+		return id
 	}
 	pages, err := session.ListPages()
 	if err != nil {
@@ -421,20 +593,52 @@ func activeTargetID(session *Session) string {
 	return ""
 }
 
+func (s *BrowserAgentSession) cdpClient() *CDPClient {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	sess := s.session
+	s.mu.RUnlock()
+	return sessionClient(sess)
+}
+
+func sessionClient(session *Session) *CDPClient {
+	if session == nil {
+		return nil
+	}
+	session.mu.Lock()
+	client := session.client
+	session.mu.Unlock()
+	return client
+}
+
+func sessionClientAlive(session *Session) bool {
+	client := sessionClient(session)
+	return client != nil && !client.isClosed()
+}
+
+func (s *BrowserAgentSession) sessionClientLocked() *CDPClient {
+	return sessionClient(s.session)
+}
+
 func (s *BrowserAgentSession) startEventPump() {
-	if s == nil || s.session == nil || s.session.client == nil {
+	client := s.cdpClient()
+	if client == nil {
 		return
 	}
-	events := s.session.client.Events()
+	events := client.Events()
+	if events == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.eventPumpClient == client {
+		s.mu.Unlock()
+		return
+	}
+	s.eventPumpClient = client
 	stopCh := s.stopCh
-	// Capture the current targetGoneCh. If it changes (due to resetTargetGone
-	// after re-attach), this pump is stale and should not signal target-gone
-	// on the new channel. handleCDPEvent uses s.targetGoneCh (current), so
-	// stale events from old clients that arrive after re-attach are harmless
-	// only if this pump stops before processing them. Since events channel
-	// will be closed when the old client is closed, this pump naturally exits.
-	// This capture is purely for defensive logging.
-	pumpClient := s.session.client
+	s.mu.Unlock()
 	go func() {
 		log.Printf("[browser] event pump started session=%s target=%s", s.ID, s.TargetID)
 		for {
@@ -447,9 +651,7 @@ func (s *BrowserAgentSession) startEventPump() {
 					log.Printf("[browser] event pump stopped session=%s reason=events_closed target=%s", s.ID, s.TargetID)
 					return
 				}
-				// Guard: if the session's client has been replaced (re-attach
-				// or full reconnect), this pump is stale. Exit gracefully.
-				if s.session != nil && s.session.client != pumpClient {
+				if s.cdpClient() != client {
 					log.Printf("[browser] event pump exiting session=%s reason=client_replaced", s.ID)
 					return
 				}
@@ -570,30 +772,119 @@ func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {
 		line := compactJSONString(evt.Params)
 		now := time.Now().UnixMilli()
 		s.recentErrors = appendCapped(s.recentErrors, line, browserAgentErrorLimit)
-		if s.session != nil {
-			s.session.recentErrors = appendCapped(s.session.recentErrors, line, browserAgentErrorLimit)
-		}
+		s.session.noteRecentError(line)
 		s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "error", Summary: line, CreatedAt: now}, browserAgentConsoleLimit)
 		s.recentTimeline = appendCappedTimeline(s.recentTimeline, BrowserTimelineSlice{Kind: "error", Summary: line, CreatedAt: now}, browserAgentConsoleLimit)
 		s.recentConsoleEntries = appendCappedConsoleEntries(s.recentConsoleEntries, BrowserConsoleEvent{Type: "exception", Level: "error", Text: line, CreatedAt: now}, browserAgentConsoleLimit)
 	case "Network.requestWillBeSent":
 		var payload struct {
-			Request struct {
+			RequestID string `json:"requestId"`
+			Request   struct {
 				Method string `json:"method"`
 				URL    string `json:"url"`
 			} `json:"request"`
 		}
 		if json.Unmarshal(evt.Params, &payload) == nil {
+			if s.session != nil {
+				s.session.trackNetwork(payload.RequestID, true)
+			}
 			line := strings.TrimSpace(payload.Request.Method + " " + payload.Request.URL)
 			if line != "" {
 				now := time.Now().UnixMilli()
 				s.recentNetwork = appendCapped(s.recentNetwork, line, browserAgentNetworkLimit)
-				if s.session != nil {
-					s.session.recentNetwork = appendCapped(s.session.recentNetwork, line, browserAgentNetworkLimit)
-				}
+				s.session.noteRecentNetwork(line)
 				s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "network", Summary: line, CreatedAt: now}, browserAgentConsoleLimit)
 				s.recentTimeline = appendCappedTimeline(s.recentTimeline, BrowserTimelineSlice{Kind: "network", Summary: line, CreatedAt: now}, browserAgentConsoleLimit)
-				s.recentNetworkEntries = appendCappedNetworkEntries(s.recentNetworkEntries, BrowserNetworkEvent{Method: payload.Request.Method, URL: payload.Request.URL, Kind: "request", CreatedAt: now}, browserAgentNetworkLimit)
+				s.recentNetworkEntries = appendCappedNetworkEntries(s.recentNetworkEntries, BrowserNetworkEvent{RequestID: payload.RequestID, Method: payload.Request.Method, URL: payload.Request.URL, Kind: "request", CreatedAt: now}, browserAgentNetworkLimit)
+			}
+		}
+	case "Network.loadingFinished", "Network.loadingFailed":
+		var payload struct {
+			RequestID string `json:"requestId"`
+		}
+		if json.Unmarshal(evt.Params, &payload) == nil && s.session != nil {
+			s.session.trackNetwork(payload.RequestID, false)
+		}
+	case "Page.javascriptDialogOpening":
+		var payload struct {
+			URL     string `json:"url"`
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		}
+		_ = json.Unmarshal(evt.Params, &payload)
+		if s.session != nil {
+			s.session.noteDialog(payload.Message, payload.Type, payload.URL)
+		}
+		s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "dialog", Summary: "dialog opening: " + payload.Type + " " + payload.Message, CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+	case "Page.javascriptDialogClosed":
+		if s.session != nil {
+			s.session.clearDialog()
+		}
+	case "Page.downloadWillBegin", "Browser.downloadWillBegin":
+		var payload struct {
+			GUID string `json:"guid"`
+			URL  string `json:"url"`
+		}
+		_ = json.Unmarshal(evt.Params, &payload)
+		if err := validateDownloadPolicy(s.Policy); err != nil {
+			if client := s.sessionClientLocked(); client != nil && strings.TrimSpace(payload.GUID) != "" {
+				guid := payload.GUID
+				go func() {
+					_, _ = client.Send("Browser.cancelDownload", map[string]interface{}{"guid": guid}, 3*time.Second)
+				}()
+			}
+			s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "download", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+			s.recentErrors = appendCapped(s.recentErrors, err.Error(), browserAgentErrorLimit)
+		}
+	case "Target.attachedToTarget":
+		var payload struct {
+			SessionID          string `json:"sessionId"`
+			WaitingForDebugger bool   `json:"waitingForDebugger"`
+			TargetInfo         struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+				OpenerID string `json:"openerId"`
+			} `json:"targetInfo"`
+		}
+		if json.Unmarshal(evt.Params, &payload) == nil && s.session != nil {
+			s.session.noteAttachedTarget(payload.SessionID, payload.TargetInfo.TargetID, payload.TargetInfo.Type, payload.TargetInfo.URL, payload.TargetInfo.OpenerID, payload.WaitingForDebugger)
+			if payload.TargetInfo.OpenerID != "" && payload.TargetInfo.Type == "page" {
+				if err := validatePopupPolicy(s.Policy); err != nil {
+					client := s.sessionClientLocked()
+					targetID := payload.TargetInfo.TargetID
+					if client != nil && targetID != "" {
+						go func() {
+							_, _ = client.Send("Target.closeTarget", map[string]interface{}{"targetId": targetID}, 3*time.Second)
+						}()
+					}
+					s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "popup", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+				}
+			}
+		}
+	case "Target.targetCreated":
+		var payload struct {
+			TargetInfo struct {
+				TargetID string `json:"targetId"`
+				Type     string `json:"type"`
+				URL      string `json:"url"`
+				OpenerID string `json:"openerId"`
+			} `json:"targetInfo"`
+		}
+		if json.Unmarshal(evt.Params, &payload) == nil && payload.TargetInfo.OpenerID != "" {
+			if s.session != nil {
+				s.session.notePopupTarget(payload.TargetInfo.TargetID, payload.TargetInfo.OpenerID, payload.TargetInfo.Type, payload.TargetInfo.URL)
+			}
+			if payload.TargetInfo.Type == "page" {
+				if err := validatePopupPolicy(s.Policy); err != nil {
+					if client := s.sessionClientLocked(); client != nil {
+						targetID := payload.TargetInfo.TargetID
+						go func() {
+							_, _ = client.Send("Target.closeTarget", map[string]interface{}{"targetId": targetID}, 3*time.Second)
+						}()
+					}
+					s.recentTrace = appendCappedTrace(s.recentTrace, BrowserTraceEvent{Kind: "popup", Summary: err.Error(), CreatedAt: time.Now().UnixMilli()}, browserAgentConsoleLimit)
+				}
 			}
 		}
 	}
@@ -671,6 +962,9 @@ func (s *BrowserAgentSession) addSnapshot(snapshot BrowserSnapshot) {
 	if s.snapshots == nil {
 		s.snapshots = map[string]*BrowserSnapshot{}
 	}
+	if prev := s.snapshots[s.lastSnapshotID]; prev != nil && prev.SnapshotID != snapshot.SnapshotID {
+		s.lastFingerprint = snapshotFingerprint(*prev)
+	}
 	cp := snapshot
 	s.snapshots[snapshot.SnapshotID] = &cp
 	s.lastSnapshotID = snapshot.SnapshotID
@@ -732,7 +1026,7 @@ func (s *BrowserAgentSession) State() BrowserAgentState {
 		NetworkEntries: append([]BrowserNetworkEvent(nil), s.recentNetworkEntries...),
 		LastSnapshotID: s.lastSnapshotID,
 		ActiveTabID:    s.TargetID,
-		Alive:          s.session != nil && s.session.client != nil && s.session.client.IsAlive(),
+		Alive:          sessionClientAlive(s.session),
 	}
 	if s.lastSnapshotID != "" {
 		if snap, ok := s.snapshots[s.lastSnapshotID]; ok && snap != nil {

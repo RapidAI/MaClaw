@@ -184,6 +184,9 @@ func ApplyThinkingPolicy(cfg corelib.MaclawLLMConfig, policy ThinkingPolicy) cor
 	}
 	switch policy {
 	case ThinkingOff:
+		if corelib.IsAlwaysOnThinkingModel(cfg) {
+			return cfg
+		}
 		cfg.ThinkingMode = "disabled"
 		cfg.ReasoningEffort = "none"
 	case ThinkingLow:

@@ -366,12 +366,12 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 		errs := make([]error, len(missing))
 
 		maxWorkers := runtime.NumCPU()
+		if maxWorkers > 8 {
+			maxWorkers = 8
+		}
 		if maxWorkers > len(missing) {
 			maxWorkers = len(missing)
 		}
-
-		// Disable internal MatMul parallelism — batch-level parallelism is more efficient.
-		tensor.SetMatMulMaxParallel(1)
 
 		sem := make(chan struct{}, maxWorkers)
 		var wg sync.WaitGroup
@@ -391,9 +391,6 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 			}(i, m.text)
 		}
 		wg.Wait()
-
-		// Restore default MatMul parallelism.
-		tensor.SetMatMulMaxParallel(0)
 
 		c.mu.Lock()
 		for i, m := range missing {
@@ -584,11 +581,17 @@ func (h *HybridRetriever) FuseScores(
 	}
 
 	// Min-max normalize BM25 scores.
-	normBM25 := minMaxNormalize(bm25Scores)
+	normBM25 := normalizeRetrievalScores(bm25Scores)
 
-	// Compute fused scores.
-	fused := make(map[string]float64, len(bm25Scores))
-	for toolID, normScore := range normBM25 {
+	// Compute fused scores over ALL candidates, not just BM25 hits. The whole
+	// point of the dense channel is to rescue semantically relevant tools that
+	// keyword scoring misses (e.g. a Chinese query against English tool
+	// descriptions). Iterating only over bm25Scores keys would silently drop
+	// every tool without token overlap — the failure mode behind git_status
+	// outranking web_fetch for a weather query in production.
+	fused := make(map[string]float64, len(toolTexts))
+	for toolID := range toolTexts {
+		normScore := normBM25[toolID] // 0 when the tool had no BM25 hit
 		vec := toolVecs[toolID]
 		if vec == nil {
 			// No embedding available — use only normalized BM25 score.
@@ -602,27 +605,30 @@ func (h *HybridRetriever) FuseScores(
 	return fused
 }
 
-// minMaxNormalize applies min-max normalization to a score map.
-// If all scores are the same (min==max), all normalized values are 0.0.
-func minMaxNormalize(scores map[string]float64) map[string]float64 {
+// normalizeRetrievalScores scales retrieval scores by dividing by the maximum
+// value, mapping the top score to 1.0 while keeping "no signal" at 0.
+//
+// This deliberately avoids min-max normalization: subtracting the minimum
+// zeroes the weakest genuine hit (the tool ranked last among the matches) and,
+// when all scores tie at a positive value (e.g. a single BM25 hit), collapses
+// the only relevant tool to 0 as well. Both failure modes make downstream
+// selection gates (MinCandidateRouteScore) silently drop tools that did match.
+func normalizeRetrievalScores(scores map[string]float64) map[string]float64 {
 	if len(scores) == 0 {
 		return scores
 	}
 
-	minVal := math.Inf(1)
 	maxVal := math.Inf(-1)
 	for _, s := range scores {
-		if s < minVal {
-			minVal = s
-		}
 		if s > maxVal {
 			maxVal = s
 		}
 	}
 
 	result := make(map[string]float64, len(scores))
-	rang := maxVal - minVal
-	if rang == 0 {
+	if maxVal <= 0 {
+		// No positive signal at all: everything normalizes to 0 so selection
+		// gates treat every tool as unmatched.
 		for k := range scores {
 			result[k] = 0.0
 		}
@@ -630,7 +636,7 @@ func minMaxNormalize(scores map[string]float64) map[string]float64 {
 	}
 
 	for k, s := range scores {
-		result[k] = (s - minVal) / rang
+		result[k] = s / maxVal
 	}
 	return result
 }

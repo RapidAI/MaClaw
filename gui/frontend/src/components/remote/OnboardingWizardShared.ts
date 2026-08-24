@@ -18,6 +18,8 @@ export interface HubLLMActiveGrant {
     card_order_id?: string;
     starts_at?: string;
     expires_at?: string;
+    permanent?: boolean;
+    rolling_five_hour?: boolean;
     active?: boolean;
     effective?: boolean;
     status?: string;
@@ -28,6 +30,18 @@ export interface HubLLMActiveGrant {
     credits_available?: number;
     retry_after_seconds?: number;
     retry_after_at?: string;
+    period_limits?: {
+        five_hour?: number;
+        daily?: number;
+        weekly?: number;
+        monthly?: number;
+    };
+    period_usage?: {
+        five_hour?: { window_start?: string; window_end?: string; credits_used?: number; rolling?: boolean };
+        daily?: { window_start?: string; window_end?: string; credits_used?: number };
+        weekly?: { window_start?: string; window_end?: string; credits_used?: number };
+        monthly?: { window_start?: string; window_end?: string; credits_used?: number };
+    };
 }
 
 export interface LLMProvider {

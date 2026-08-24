@@ -790,54 +790,19 @@ func (f *plainToolCallStreamFilter) drain(force bool) {
 			return
 		}
 	}
-	idx := firstGUIContentToolCallMarkerIndex(strings.ToLower(s))
-	if idx >= 0 {
-		if idx > 0 {
-			f.downstream(s[:idx])
-		}
+	visible, hold, suppress := llm.HoldContentToolCallStream(s, force)
+	if visible != "" {
+		f.downstream(visible)
+	}
+	if suppress {
 		f.suppressed = true
 		f.pending.Reset()
 		return
 	}
-	lower := strings.ToLower(s)
-	partial := guiContentToolCallMarkerSuffixLen(lower)
-	if partial > 0 && !force {
-		if len(s) > partial {
-			f.downstream(s[:len(s)-partial])
-			f.pending.Reset()
-			f.pending.WriteString(s[len(s)-partial:])
-		}
-		return
-	}
-	f.downstream(s)
 	f.pending.Reset()
-}
-
-func firstGUIContentToolCallMarkerIndex(lower string) int {
-	best := -1
-	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
-		if idx := strings.Index(lower, marker); idx >= 0 && (best < 0 || idx < best) {
-			best = idx
-		}
+	if hold != "" {
+		f.pending.WriteString(hold)
 	}
-	return best
-}
-
-func guiContentToolCallMarkerSuffixLen(lower string) int {
-	best := 0
-	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
-		max := len(marker) - 1
-		if len(lower) < max {
-			max = len(lower)
-		}
-		for i := max; i > best; i-- {
-			if strings.HasSuffix(lower, marker[:i]) {
-				best = i
-				break
-			}
-		}
-	}
-	return best
 }
 
 func bareJSONToolCallTextLooksLikely(content string) bool {
@@ -968,6 +933,16 @@ func responseHasToolCalls(resp *llm.Response) bool {
 		return false
 	}
 	return len(resp.Choices[0].Message.ToolCalls) > 0
+}
+
+func llmResponseHasVisibleOutput(resp *llm.Response) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return false
+	}
+	msg := resp.Choices[0].Message
+	return strings.TrimSpace(msg.Content) != "" ||
+		strings.TrimSpace(msg.ReasoningContent) != "" ||
+		len(msg.ToolCalls) > 0
 }
 
 func withFirstTokenMetrics(onToken llm.TokenCallback, metrics *llmStreamMetrics) llm.TokenCallback {
@@ -1154,13 +1129,6 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
 	}
-	if err != nil {
-		if friendly, ok := classifyOpenAICompatibleHTTPError(err, cfg.ProviderName); ok {
-			log.Printf("[LLM Stream] SDK error endpoint=%s request=%s err=%v", endpoint, llm.SummarizeOpenAIChatRequestBody(reqBody), err)
-			return nil, fmt.Errorf("%s [url=%s model=%s]", friendly, endpoint, upstreamModel)
-		}
-		return nil, fmt.Errorf("[%s] %w", endpoint, err)
-	}
 
 	tf.Flush()
 	reasoningRoleFilter.Flush()
@@ -1175,6 +1143,9 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 		log.Printf("[LLM Stream] role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
 	}
 	if resp == nil || len(resp.Choices) == 0 {
+		if err != nil {
+			return nil, wrapOpenAILLMStreamError(err, cfg.ProviderName, endpoint, upstreamModel, reqBody)
+		}
 		return resp, nil
 	}
 
@@ -1224,10 +1195,22 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 		log.Printf("[LLM-stream-diag] GUI truncation detected: truncated=%v input=%d output=%d total=%d reasoning_content=%d chars",
 			truncatedTools, u.InputTokens, u.OutputTokens, u.TotalTokens, len(msg.ReasoningContent))
 	}
-	return &llm.Response{
+	out := &llm.Response{
 		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   resp.Usage,
-	}, nil
+	}
+	if err != nil {
+		return out, wrapOpenAILLMStreamError(err, cfg.ProviderName, endpoint, upstreamModel, reqBody)
+	}
+	return out, nil
+}
+
+func wrapOpenAILLMStreamError(err error, providerName, endpoint, upstreamModel string, reqBody []byte) error {
+	if friendly, ok := classifyOpenAICompatibleHTTPError(err, providerName); ok {
+		log.Printf("[LLM Stream] SDK error endpoint=%s request=%s err=%v", endpoint, llm.SummarizeOpenAIChatRequestBody(reqBody), err)
+		return fmt.Errorf("%s [url=%s model=%s]", friendly, endpoint, upstreamModel)
+	}
+	return fmt.Errorf("[%s] %w", endpoint, err)
 }
 
 func parseNonStreamOpenAIResponse(resp *http.Response) (*llm.Response, error) {
@@ -1267,19 +1250,23 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 	rpf := newRolePrefixStreamFilter(filteredOnToken)
 	repf := newRepetitionFilter(rpf.Write)
+	thinkReasoningCb := func(delta string) {
+		if onToken != nil && delta != "" {
+			onToken("\x01" + delta)
+		}
+	}
+	reasoningRoleFilter := newRolePrefixStreamFilter(thinkReasoningCb)
 
 	httpDoStartedAt := time.Now()
-	resp, err := llm.DoAnthropicRequestStream(reqCtx, cfg, messages, tools, httpClient, repf.Write)
+	resp, err := llm.DoAnthropicRequestStreamWithReasoning(reqCtx, cfg, messages, tools, httpClient, repf.Write, reasoningRoleFilter.Write)
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
 		if metrics.FirstSSEWaitNanos == 0 {
 			metrics.FirstSSEWaitNanos = metrics.HTTPDoNanos
 		}
 	}
-	if err != nil {
-		return nil, err
-	}
 
+	reasoningRoleFilter.Flush()
 	repf.Flush()
 	rpf.Flush()
 	if repf.Halted() {
@@ -1289,15 +1276,15 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 		log.Printf("[LLM Stream] anthropic role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
 	}
 
-	// Apply filteredBuf content to msg.Content for data flow consistency
-	// (same mechanism as Fix #50 for OpenAI path).
-	if resp != nil && len(resp.Choices) > 0 && filteredBuf.Len() > 0 {
+	// Apply filtered text and sanitize thinking even on a partial stream so
+	// a disconnect does not wipe a thinking panel that already had tokens.
+	if resp != nil && len(resp.Choices) > 0 {
 		msg := resp.Choices[0].Message
-		filtered := filteredBuf.String()
-		if filtered != "" && (msg.Content == "" || len(filtered) <= len(msg.Content)) {
+		if filtered := filteredBuf.String(); filtered != "" && (msg.Content == "" || len(filtered) <= len(msg.Content)) {
 			msg.Content = filtered
-			resp.Choices[0].Message = msg
 		}
+		msg.ReasoningContent = stripRolePrefixReasoningForDisplay(msg.ReasoningContent)
+		resp.Choices[0].Message = msg
 	}
 
 	return resp, err

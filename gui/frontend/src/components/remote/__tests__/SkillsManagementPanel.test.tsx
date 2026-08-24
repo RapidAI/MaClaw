@@ -59,7 +59,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-import { SkillsManagementPanel, getLearnedSkillDescriptionPreview, hubSourceFilterMatches } from '../SkillsManagementPanel';
+import { SkillsManagementPanel, getLearnedSkillDescriptionPreview, hubSourceFilterMatches, skillDescriptionTooltip, LOCAL_SKILLS_DESCRIPTION_COL_PX } from '../SkillsManagementPanel';
 import { getSkillSourceLabel, getSkillSourceTooltip } from '../SkillSourceBadge';
 import { DialogProvider } from '../../CustomDialog';
 import { ToastProvider } from '../../Toast';
@@ -350,6 +350,18 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText(getLearnedSkillDescriptionPreview(longDescription))).toBeTruthy();
         expect(screen.queryByText(longDescription)).toBeNull();
         expect(screen.getByTitle(longDescription)).toBeTruthy();
+    });
+    it('caps the description column so later columns stay in the table viewport', async () => {
+        renderPanel();
+        await waitFor(() => expect(ListNLSkillsMock).toHaveBeenCalled());
+
+        const descriptionHeader = screen.getByRole('columnheader', { name: '描述' });
+        expect(descriptionHeader.style.width).toBe(`${LOCAL_SKILLS_DESCRIPTION_COL_PX}px`);
+        expect(descriptionHeader.style.maxWidth).toBe(`${LOCAL_SKILLS_DESCRIPTION_COL_PX}px`);
+        const table = descriptionHeader.closest('table');
+        expect(table?.style.width).toBe('100%');
+        expect(table?.style.tableLayout).toBe('fixed');
+        expect((table?.parentElement as HTMLElement | null)?.style.overflowX).toBe('hidden');
     });
     it('does not show the obsolete MaClaw App upload action in the filtered category', async () => {
         UploadNLSkillToMarketMock.mockResolvedValue('submission-app-1');
@@ -692,5 +704,14 @@ describe('learned skill description preview', () => {
         expect(getLearnedSkillDescriptionPreview(full)).toBe('编写一个 PowerShell 脚本，从...');
         expect(getLearnedSkillDescriptionPreview('short description')).toBe('short description');
         expect(getLearnedSkillDescriptionPreview('   ')).toBe('-');
+    });
+
+    it('exposes a tooltip only when the preview cannot show the full description', () => {
+        const full = '编写一个 PowerShell 脚本，从 Hugging Face Daily Papers API 获取最近一周的论文数据';
+
+        expect(skillDescriptionTooltip(full)).toBe(full);
+        expect(skillDescriptionTooltip('short description')).toBeUndefined();
+        expect(skillDescriptionTooltip('   ')).toBeUndefined();
+        expect(skillDescriptionTooltip(`  ${full}  `)).toBe(full);
     });
 });

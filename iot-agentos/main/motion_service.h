@@ -1,7 +1,8 @@
 #pragma once
 
-/* Internal Motion domain service: Device API sees normalized samples; this is
- * the sole shared owner of the physical Sensor-port transition. */
+/* Internal Motion domain service: Device API sees normalized, complete
+ * timestamped samples; this is the sole shared owner of the physical
+ * Sensor-port transition. */
 
 #include "device_api.h"
 

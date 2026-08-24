@@ -1,0 +1,50 @@
+{
+  "category": "trust_enforceability",
+  "category_id": 29,
+  "title": "trust enforceability",
+  "design_ref": "10.1 item 29",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "deliver-external",
+      "title": "Deliver keeps the external effect class",
+      "needs": [
+        {
+          "id": "deliver",
+          "capability": "artifact.deliver.current_channel",
+          "qualifiers": {
+            "format": "file"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "deliver_adapter",
+            "effects": [
+              "external_effect"
+            ],
+            "capabilities": [
+              {
+                "capability": "artifact.deliver.current_channel",
+                "qualifiers": {
+                  "format": "file"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "deliver",
+            "capability": "artifact.deliver.current_channel",
+            "phase": "delivery"
+          }
+        ]
+      },
+      "notes": "Unobservable side effects are in trust contract tests."
+    }
+  ]
+}

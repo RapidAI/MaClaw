@@ -69,6 +69,7 @@ func runCodingWorkbenchStepVerify(ctx context.Context, projectPath string) (ok b
 	} else {
 		c = exec.CommandContext(ctx, "bash", "-lc", cmd)
 	}
+	hideCommandWindow(c)
 	c.Dir = projectPath
 	var buf bytes.Buffer
 	c.Stdout = &buf

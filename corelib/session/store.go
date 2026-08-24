@@ -178,6 +178,8 @@ func (s *Store) Prune(olderThan time.Duration) (int, error) {
 	return int(n), nil
 }
 
+const sessionOwnedSnippetChars = 160
+
 // SessionSummary is a lightweight view of a session (no full_text).
 type SessionSummary struct {
 	SessionID string `json:"session_id"`
@@ -185,6 +187,7 @@ type SessionSummary struct {
 	Platform  string `json:"platform"`
 	Topic     string `json:"topic"`
 	TextLen   int    `json:"text_len"` // length of full_text in runes
+	Snippet   string `json:"snippet,omitempty"`
 }
 
 // ListRecent returns the most recent sessions ordered by timestamp descending.
@@ -210,6 +213,119 @@ func (s *Store) ListRecent(limit int) ([]SessionSummary, error) {
 		results = append(results, r)
 	}
 	return results, rows.Err()
+}
+
+// ListRecentOwned returns the most recent sessions whose SessionID is the
+// principal itself or `{principal}_{digits}`, the persist format used by GUI IM.
+func (s *Store) ListRecentOwned(principalID string, limit int) ([]SessionSummary, error) {
+	clause, args, ok := sessionOwnerMatch("session_id", principalID)
+	if !ok {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	queryArgs := []interface{}{sessionOwnedSnippetChars, sessionOwnedSnippetChars}
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, limit)
+	rows, err := s.db.Query(
+		`SELECT session_id, timestamp, platform, topic, length(full_text),
+		        CASE WHEN length(full_text) > ? THEN substr(full_text, 1, ?) || '...' ELSE full_text END
+		 FROM sessions WHERE `+clause+` ORDER BY timestamp DESC LIMIT ?`,
+		queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("session store: list recent owned: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SessionSummary
+	for rows.Next() {
+		var r SessionSummary
+		if err := rows.Scan(&r.SessionID, &r.Timestamp, &r.Platform, &r.Topic, &r.TextLen, &r.Snippet); err != nil {
+			return nil, fmt.Errorf("session store: scan owned summary: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
+// SearchOwned is Search restricted to sessions owned by principalID.
+func (s *Store) SearchOwned(query, principalID string, maxResults int) ([]SearchResult, error) {
+	if strings.TrimSpace(query) == "" {
+		return []SearchResult{{
+			Snippet: "no results found",
+		}}, nil
+	}
+	clause, args, ok := sessionOwnerMatch("s.session_id", principalID)
+	if !ok {
+		return []SearchResult{{
+			Snippet: "no results found",
+		}}, nil
+	}
+	if maxResults <= 0 {
+		maxResults = 10
+	}
+	queryArgs := append([]interface{}{query}, args...)
+	queryArgs = append(queryArgs, maxResults)
+	rows, err := s.db.Query(
+		`SELECT s.session_id, s.timestamp, s.platform, s.topic,
+		        snippet(sessions_fts, 0, '<b>', '</b>', '...', 32) as snippet,
+		        bm25(sessions_fts) as rank
+		 FROM sessions_fts f
+		 JOIN sessions s ON f.rowid = s.rowid
+		 WHERE sessions_fts MATCH ? AND `+clause+`
+		 ORDER BY rank
+		 LIMIT ?`,
+		queryArgs...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("session store: search owned: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var r SearchResult
+		if err := rows.Scan(&r.SessionID, &r.Timestamp, &r.Platform, &r.Topic, &r.Snippet, &r.Rank); err != nil {
+			return nil, fmt.Errorf("session store: scan owned result: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session store: owned rows iteration: %w", err)
+	}
+	if len(results) == 0 {
+		return []SearchResult{{
+			Snippet: "no results found",
+		}}, nil
+	}
+	return results, nil
+}
+
+func sessionOwnerMatch(column, principalID string) (string, []interface{}, bool) {
+	principalID = strings.TrimSpace(principalID)
+	if principalID == "" || !validSessionOwnerColumn(column) {
+		return "", nil, false
+	}
+	like := escapeLike(principalID) + `_%`
+	clause := "(" + column + " = ? OR (" + column + ` LIKE ? ESCAPE '\' AND length(` + column + ") > length(?) + 1 AND substr(" + column + ", length(?) + 2) NOT GLOB '*[^0-9]*'))"
+	return clause, []interface{}{principalID, like, principalID, principalID}, true
+}
+
+func validSessionOwnerColumn(column string) bool {
+	switch column {
+	case "session_id", "s.session_id":
+		return true
+	default:
+		return false
+	}
+}
+
+func escapeLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return value
 }
 
 // GetFullText returns the full transcript text for a given session ID.

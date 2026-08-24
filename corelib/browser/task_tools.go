@@ -25,12 +25,12 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "automation", "task"},
 			Priority:    5,
-			Required:    []string{"session_id", "steps"},
+			Required:    []string{"session_id"},
 			InputSchema: map[string]interface{}{
 				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
 				"steps": map[string]interface{}{
 					"type":        "string",
-					"description": `Action steps JSON array. Each step: {"action":"navigate|click|type|wait|scroll|select","params":{"url":"...","ref":"@e1","selector":"...","text":"...","content_format":"plain|markdown"}}. Type can omit ref/selector to write into the currently focused editable element after a click. For rich editors/article publishing, type steps may set content_format=markdown. eval/click_at are disabled.`,
+					"description": `Action steps JSON array. Required unless resume_task_id is set. Each step: {"action":"navigate|click|type|wait|scroll|select","params":{"url":"...","ref":"@e1","selector":"...","text":"...","content_format":"plain|markdown"}}. Type can omit ref/selector to write into the currently focused editable element after a click. For rich editors/article publishing, type steps may set content_format=markdown. eval/click_at are disabled.`,
 				},
 				"success_criteria": map[string]interface{}{
 					"type":        "string",
@@ -48,6 +48,10 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 					"type":        "string",
 					"description": "Optional default for type steps: plain (default) or markdown. Per-step params.content_format overrides this.",
 				},
+				"resume_task_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional: continue a paused task from the captcha/ask step using a new Execute",
+				},
 			},
 			Handler: func(args map[string]interface{}) string {
 				execSupervisor, err := taskSupervisorForArgs(supervisor, args)
@@ -58,20 +62,38 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				if err != nil {
 					return fmt.Sprintf("steps JSON parse failed: %v", err)
 				}
-				if strings.TrimSpace(stepsJSON) == "" {
+				resumeID := strings.TrimSpace(strVal(args, "resume_task_id"))
+				if strings.TrimSpace(stepsJSON) == "" && resumeID == "" {
 					return "missing steps"
 				}
 				var steps []StepSpec
-				if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
-					return fmt.Sprintf("steps JSON parse failed: %v", err)
+				if strings.TrimSpace(stepsJSON) != "" {
+					if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+						return fmt.Sprintf("steps JSON parse failed: %v", err)
+					}
+					normalizeStepParams(stepsJSON, steps)
+					applyDefaultContentFormatToTypeSteps(steps, strVal(args, "content_format"))
 				}
-				normalizeStepParams(stepsJSON, steps)
-				applyDefaultContentFormatToTypeSteps(steps, strVal(args, "content_format"))
 
 				spec := TaskSpec{
 					Steps:       steps,
 					Description: strVal(args, "description"),
 					MaxRetries:  intVal(args, "max_retries", 3),
+				}
+
+				if resumeID != "" {
+					prev, from, ok := execSupervisor.ResumeSpec(resumeID)
+					if !ok {
+						return fmt.Sprintf("paused task %s not found", resumeID)
+					}
+					if len(spec.Steps) == 0 {
+						if from >= len(prev.Steps) {
+							return fmt.Sprintf("paused task %s has no remaining steps", resumeID)
+						}
+						spec = prev
+						spec.Steps = append([]StepSpec(nil), prev.Steps[from:]...)
+						spec.ID = ""
+					}
 				}
 
 				if criteriaJSON, err := browserJSONArg(args, "success_criteria"); err != nil {
@@ -85,29 +107,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				}
 
 				state, err := execSupervisor.Execute(spec)
-				if err != nil {
-					errResp := map[string]interface{}{
-						"status": "failed",
-						"error":  err.Error(),
-					}
-					if state != nil {
-						errResp["status"] = string(state.Status)
-						errResp["step"] = state.CurrentStep
-						errResp["total"] = state.TotalSteps
-						errResp["retries"] = state.RetryCount
-						errResp["task_id"] = state.ID
-					}
-					result, _ := json.Marshal(errResp)
-					return string(result)
-				}
-
-				result, _ := json.Marshal(map[string]interface{}{
-					"status":  string(state.Status),
-					"task_id": state.ID,
-					"step":    state.CurrentStep,
-					"total":   state.TotalSteps,
-				})
-				return string(result)
+				return marshalTaskRunResult(state, err)
 			},
 		},
 		{
@@ -131,8 +131,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				if taskID != "" && statusSupervisor != nil {
 					state, ok := statusSupervisor.GetState(taskID)
 					if ok {
-						result, _ := json.Marshal(state)
-						return string(result)
+						return marshalTaskState(state)
 					}
 				}
 
@@ -206,8 +205,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				if err != nil {
 					return fmt.Sprintf("verification failed: %v", err)
 				}
-				out, _ := json.Marshal(result)
-				return string(out)
+				return marshalVerifyResult(result)
 			},
 		},
 	}
@@ -285,8 +283,144 @@ func forgetBrowserSessionTaskSupervisor(sessionID string) {
 		return
 	}
 	browserSessionTaskSupervisors.mu.Lock()
+	if existing := browserSessionTaskSupervisors.items[sessionID]; existing != nil {
+		existing.DiscardAll()
+	}
 	delete(browserSessionTaskSupervisors.items, sessionID)
 	browserSessionTaskSupervisors.mu.Unlock()
+}
+
+func marshalTaskRunResult(state *TaskState, err error) string {
+	if state == nil {
+		if err != nil {
+			result, _ := json.Marshal(map[string]interface{}{"status": "failed", "error": llmSafeBrowserError(err)})
+			return string(result)
+		}
+		return marshalBrowserResult(false, "empty task state", nil)
+	}
+	if state != nil && state.Status == TaskStatusPaused && state.LastResultStatus == "ask" {
+		req := attachResumeTaskID(state.AskUser, state.ID)
+		return agent.AskUserResultMarker(req)
+	}
+	if err != nil {
+		errResp := map[string]interface{}{
+			"status": "failed",
+			"error":  llmSafeBrowserError(err),
+		}
+		if state != nil {
+			errResp["status"] = string(state.Status)
+			errResp["step"] = state.CurrentStep
+			errResp["total"] = state.TotalSteps
+			errResp["retries"] = state.RetryCount
+			errResp["task_id"] = state.ID
+		}
+		result, _ := json.Marshal(errResp)
+		return string(result)
+	}
+	if state != nil && state.LastResultStatus == "blocked" {
+		return marshalBrowserResult(false, firstNonEmpty(state.LastError, "blocked"), map[string]interface{}{
+			"status":  string(state.Status),
+			"task_id": state.ID,
+			"step":    state.CurrentStep,
+			"total":   state.TotalSteps,
+			"reason":  "blocked",
+		})
+	}
+	payload := map[string]interface{}{
+		"status":  string(state.Status),
+		"task_id": state.ID,
+		"step":    state.CurrentStep,
+		"total":   state.TotalSteps,
+	}
+	result, _ := json.Marshal(payload)
+	return string(result)
+}
+
+func marshalTaskState(state *TaskState) string {
+	if state == nil {
+		return marshalBrowserResult(false, "empty task state", nil)
+	}
+	payload := map[string]interface{}{
+		"status":  string(state.Status),
+		"task_id": state.ID,
+		"step":    state.CurrentStep,
+		"total":   state.TotalSteps,
+		"retries": state.RetryCount,
+	}
+	if state.LastError != "" {
+		payload["last_error"] = llmSafeBrowserError(fmt.Errorf("%s", state.LastError))
+	}
+	if state.LastResultStatus != "" {
+		payload["last_result_status"] = state.LastResultStatus
+	}
+	encoded, _ := json.Marshal(payload)
+	return string(encoded)
+}
+
+func attachResumeTaskID(req *agent.AskUserRequest, taskID string) *agent.AskUserRequest {
+	taskID = strings.TrimSpace(taskID)
+	if req == nil {
+		req = captchaAskUserRequest("")
+	} else {
+		cloned := *req
+		req = &cloned
+	}
+	if taskID == "" || strings.Contains(req.Context, "resume_task_id="+taskID) {
+		return req
+	}
+	marker := "resume_task_id=" + taskID
+	if strings.TrimSpace(req.Context) == "" {
+		req.Context = marker
+	} else {
+		req.Context = strings.TrimSpace(req.Context) + " " + marker
+	}
+	return req
+}
+
+func marshalVerifyResult(result *VerifyResult) string {
+	if result == nil {
+		return marshalBrowserResult(false, "empty verify result", nil)
+	}
+	display := "verification passed"
+	if !result.Passed {
+		display = "verification failed"
+	}
+	return marshalBrowserResult(result.Passed, display, map[string]interface{}{
+		"passed":  result.Passed,
+		"details": compactVerifyDetails(result),
+	})
+}
+
+func compactVerifyDetails(result *VerifyResult) []map[string]interface{} {
+	if result == nil {
+		return nil
+	}
+	details := make([]map[string]interface{}, 0, len(result.Details))
+	for _, d := range result.Details {
+		details = append(details, map[string]interface{}{
+			"type":   d.Criterion.Type,
+			"passed": d.Passed,
+			"actual": d.Actual,
+			"error":  d.Error,
+		})
+	}
+	return details
+}
+
+func compactVerifyFailure(result *VerifyResult) string {
+	encoded, _ := json.Marshal(map[string]interface{}{
+		"passed":  false,
+		"details": compactVerifyDetails(result),
+	})
+	return "success criteria not met: " + string(encoded)
+}
+
+func formatStepVerifyFailure(result *VerifyResult) error {
+	encoded, _ := json.Marshal(map[string]interface{}{
+		"passed":  false,
+		"details": compactVerifyDetails(result),
+	})
+	return fmt.Errorf("step verification failed: %s", encoded)
 }
 
 func strVal(args map[string]interface{}, key string) string {

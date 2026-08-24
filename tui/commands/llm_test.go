@@ -557,3 +557,26 @@ func captureLLMStdout(t *testing.T, fn func() error) (string, error) {
 	}
 	return string(outBytes), runErr
 }
+
+func TestFileConfigStoreMigratesZhipuCodingDefault(t *testing.T) {
+	store := NewFileConfigStore(t.TempDir())
+	if err := store.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaclawLLMModel != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("flat model = %q, want %q", cfg.MaclawLLMModel, corelib.ZhipuCodingDefaultModel)
+	}
+	if len(cfg.MaclawLLMProviders) == 0 || cfg.MaclawLLMProviders[0].Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("provider model = %#v, want %q", cfg.MaclawLLMProviders, corelib.ZhipuCodingDefaultModel)
+	}
+}

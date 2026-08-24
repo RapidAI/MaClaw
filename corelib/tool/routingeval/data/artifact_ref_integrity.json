@@ -1,0 +1,50 @@
+{
+  "category": "artifact_ref_integrity",
+  "category_id": 18,
+  "title": "ArtifactRef integrity",
+  "design_ref": "10.1 item 18",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "deliver-without-artifact",
+      "title": "File deliver is planned but not ready without an artifact fact",
+      "needs": [
+        {
+          "id": "deliver",
+          "capability": "artifact.deliver.current_channel",
+          "qualifiers": {
+            "format": "file"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "deliver_adapter",
+            "effects": [
+              "external_effect"
+            ],
+            "capabilities": [
+              {
+                "capability": "artifact.deliver.current_channel",
+                "qualifiers": {
+                  "format": "file"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "deliver",
+            "capability": "artifact.deliver.current_channel",
+            "phase": "delivery"
+          }
+        ]
+      },
+      "notes": "Tamper/cross-scope artifact tests are in artifact store tests."
+    }
+  ]
+}

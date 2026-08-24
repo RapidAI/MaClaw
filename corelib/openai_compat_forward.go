@@ -258,7 +258,10 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	}
 	sanitizeOpenAICompatForwardStreamOptions(body)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
-		SanitizeCodeGenOpenAICompatBody(body)
+		// Forwarding receives a caller-owned payload. Output and tool controls
+		// define its semantics, so preserve them and surface an upstream
+		// capability error rather than silently issuing a different request.
+		SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts(body)
 	}
 	normalizeOpenAICompatForwardToolChoice(body)
 	isDeepSeekFlash := IsDeepSeekFlashOpenAICompat(cfg)

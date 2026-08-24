@@ -262,10 +262,13 @@ static bool round_display_adapter_color_transfer_done(
     return task_woken == pdTRUE;
 }
 
-static esp_err_t round_display_adapter_wait_for_transfer_idle(void) {
+static esp_err_t round_display_adapter_wait_for_transfer_idle(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     if (!s_echoear_display_transfer_pending) return ESP_OK;
     if (!s_echoear_display_transfer_done) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_echoear_display_transfer_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (ticks == 0) ticks = 1;
+    if (xSemaphoreTake(s_echoear_display_transfer_done, ticks) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return s_echoear_display_transfer_pending ? ESP_ERR_INVALID_STATE : ESP_OK;
@@ -373,7 +376,7 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
     }
     /* Retain a timed-out transfer fence instead of permitting a subsequent
      * frame to consume its late callback and reuse DMA-owned scene memory. */
-    ESP_RETURN_ON_ERROR(round_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(round_display_adapter_wait_for_transfer_idle(1000),
                         "echoear_display", "previous transfer still pending");
     while (xSemaphoreTake(s_echoear_display_transfer_done, 0) == pdTRUE) {}
     s_echoear_display_transfer_pending = true;
@@ -399,7 +402,7 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
  * only scene eligibility and the normalized wake semantics. */
 static esp_err_t round_display_adapter_enter_display_off(void) {
     if (!s_echoear_display_panel) return ESP_ERR_INVALID_STATE;
-    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle();
+    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle(1000);
     if (idle_err != ESP_OK) return idle_err;
     /* The PWM backlight, rather than the ST77916 command, is the immediate
      * visible-off guarantee.  QSPI can be briefly busy after a frame; retain
@@ -418,7 +421,7 @@ static esp_err_t round_display_adapter_enter_display_off(void) {
 
 static esp_err_t round_display_adapter_wake_from_display_off(unsigned brightness) {
     if (!s_echoear_display_panel || brightness > 100) return ESP_ERR_INVALID_ARG;
-    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle();
+    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle(1000);
     if (idle_err != ESP_OK) return idle_err;
     esp_err_t err = esp_lcd_panel_disp_on_off(s_echoear_display_panel, true);
     if (err != ESP_OK) return err;

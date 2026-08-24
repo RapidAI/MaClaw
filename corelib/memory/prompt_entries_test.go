@@ -73,6 +73,30 @@ func TestProactiveContextForPrompt(t *testing.T) {
 	}
 }
 
+func TestProactiveContextForPromptCatalogOnlyIgnoresQuery(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: "Project uses pnpm test for verification", Category: CategoryProjectKnowledge, Tags: []string{"pnpm"}, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := IMProactivePromptOptions("", false)
+	out, recalled := store.ProactiveContextForPrompt("How do I verify this project with pnpm?", opts)
+	if len(recalled) != 0 {
+		t.Fatalf("catalog-only must not return warehouse entries, got %d", len(recalled))
+	}
+	if strings.Contains(out, "pnpm test") || strings.Contains(out, "Project uses") {
+		t.Fatalf("catalog-only must not dump warehouse bodies, got %q", out)
+	}
+	if !strings.Contains(out, CatalogOnlyWorkingSetFooter()) {
+		t.Fatalf("expected catalog-only footer, got %q", out)
+	}
+}
+
 func TestProactiveContextForPromptEmitsInjectedEvent(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {

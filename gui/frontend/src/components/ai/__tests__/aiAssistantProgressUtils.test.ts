@@ -32,6 +32,7 @@ describe('aiAssistantProgressUtils', () => {
         expect(prepareChatBodyForDisplay('\u274C sugar')).toBe('\u274C sugar');
         // Fenced code keeps leading pictographs.
         expect(prepareChatBodyForDisplay('```\n\u{1F680} not stripped\n```')).toBe('```\n\u{1F680} not stripped\n```');
+        expect(prepareChatBodyForDisplay('~~~~\n\u{1F680} not stripped\n~~~\n\u{1F4A1} still source\n~~~~')).toBe('~~~~\n\u{1F680} not stripped\n~~~\n\u{1F4A1} still source\n~~~~');
         expect(prepareChatBodyForDisplay('')).toBe('');
         expect(stripLeadingEmojiCluster('\u{1F50D} **/btw**')).toBe('**/btw**');
         // Idempotent + line-array form matches string form.

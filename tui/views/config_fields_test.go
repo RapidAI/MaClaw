@@ -396,7 +396,7 @@ func TestConfigFields_IMTabHidesDisabledChannelsByDefault(t *testing.T) {
 	if !visibleConfigEntryExists(entries, "im_channel_profile") {
 		t.Fatal("IM profile selector should remain visible")
 	}
-	for _, hidden := range []string{"qqbot_enabled", "telegram_bot_token", "weixin_base_url", "lansenger_gateway_url"} {
+	for _, hidden := range []string{"qqbot_enabled", "qqbot_qr_login", "telegram_bot_token", "weixin_base_url", "lansenger_gateway_url"} {
 		if visibleConfigEntryExists(entries, hidden) {
 			t.Fatalf("%s should be hidden when IM profile is off", hidden)
 		}
@@ -417,7 +417,7 @@ func TestConfigFields_IMTabShowsSelectedChannelOnly(t *testing.T) {
 			t.Fatalf("%s should be visible for telegram IM profile", visible)
 		}
 	}
-	for _, hidden := range []string{"qqbot_app_id", "weixin_base_url", "lansenger_gateway_url"} {
+	for _, hidden := range []string{"qqbot_app_id", "qqbot_qr_login", "weixin_base_url", "lansenger_gateway_url"} {
 		if visibleConfigEntryExists(entries, hidden) {
 			t.Fatalf("%s should stay hidden for telegram IM profile", hidden)
 		}
@@ -451,7 +451,7 @@ func TestConfigFields_IMTabShowsAllChannelsForCustomProfile(t *testing.T) {
 	m.LoadFromAppConfig(corelib.AppConfig{WeixinEnabled: true, TelegramBotEnabled: true})
 
 	entries := m.currentEntries()
-	for _, visible := range []string{"qqbot_enabled", "telegram_bot_enabled", "weixin_enabled", "lansenger_enabled"} {
+	for _, visible := range []string{"qqbot_enabled", "qqbot_qr_login", "telegram_bot_enabled", "weixin_enabled", "lansenger_enabled"} {
 		if !visibleConfigEntryExists(entries, visible) {
 			t.Fatalf("%s should be visible for custom IM profile", visible)
 		}
@@ -885,7 +885,7 @@ func TestConfigFields_AuxLLMProfileHidesDetailsByDefault(t *testing.T) {
 	if !visibleConfigEntryExists(entries, "aux_llm_profile") {
 		t.Fatal("auxiliary LLM profile should remain visible")
 	}
-	for _, hidden := range []string{"aux_llm_url", "aux_llm_key", "aux_llm_model", "aux_llm_protocol"} {
+	for _, hidden := range []string{"aux_llm_url", "aux_llm_key", "aux_llm_model", "aux_llm_protocol", "aux_llm_context_length"} {
 		if visibleConfigEntryExists(entries, hidden) {
 			t.Fatalf("%s should be hidden when auxiliary LLM profile is off", hidden)
 		}
@@ -940,7 +940,7 @@ func TestConfigFields_AuxLLMProfileCustomShowsDetails(t *testing.T) {
 	m.LoadFromAppConfig(corelib.AppConfig{AuxiliaryLLM: corelib.AuxiliaryLLMConfig{URL: "https://aux.example/v1", Model: "aux-model", Protocol: "openai"}})
 
 	entries := m.currentEntries()
-	for _, visible := range []string{"aux_llm_profile", "aux_llm_url", "aux_llm_key", "aux_llm_model", "aux_llm_protocol"} {
+	for _, visible := range []string{"aux_llm_profile", "aux_llm_url", "aux_llm_key", "aux_llm_model", "aux_llm_protocol", "aux_llm_context_length"} {
 		if !visibleConfigEntryExists(entries, visible) {
 			t.Fatalf("%s should be visible for custom auxiliary LLM", visible)
 		}
@@ -1211,5 +1211,22 @@ func TestConfigOptionDisplayLocalizesOfficialProvider(t *testing.T) {
 	}
 	if got := configOptionDisplay("maclaw_llm_provider_preset", serviceRedeemOfficialProviderName, "zh"); got != "MaClaw 官方" {
 		t.Fatalf("Chinese provider display = %q", got)
+	}
+}
+
+func TestSyncCurrentLLMProviderMigratesZhipuCodingDefault(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic",
+		}},
+	}
+	syncCurrentLLMProvider(&cfg)
+	if cfg.MaclawLLMModel != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("flat model = %q, want %q", cfg.MaclawLLMModel, corelib.ZhipuCodingDefaultModel)
+	}
+	if cfg.MaclawLLMProviders[0].Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("provider model = %q, want %q", cfg.MaclawLLMProviders[0].Model, corelib.ZhipuCodingDefaultModel)
 	}
 }

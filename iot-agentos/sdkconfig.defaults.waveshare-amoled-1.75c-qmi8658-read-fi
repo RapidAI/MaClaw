@@ -1,0 +1,4 @@
+# Dedicated non-release Waveshare runtime Motion fault artifact. The initial
+# startup probe succeeds; exactly one later profile-private sample read fails.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_WAVESHARE_QMI8658_MOTION_READ_FAILURE=y

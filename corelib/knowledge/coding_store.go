@@ -190,7 +190,16 @@ func NewCodingKnowledgeStore(dbPath string) (*CodingKnowledgeStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("coding knowledge store: %w", err)
 	}
-	return &CodingKnowledgeStore{inner: store}, nil
+	return WrapCodingKnowledgeStore(store), nil
+}
+
+// WrapCodingKnowledgeStore exposes coding search APIs over an existing store.
+// The caller retains ownership of Close.
+func WrapCodingKnowledgeStore(inner *SQLiteStore) *CodingKnowledgeStore {
+	if inner == nil {
+		return nil
+	}
+	return &CodingKnowledgeStore{inner: inner}
 }
 
 // Close releases the database connection.

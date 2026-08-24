@@ -268,6 +268,7 @@ func execHookCommand(projectPath, command string, timeout time.Duration) (string
 	} else {
 		cmd = exec.CommandContext(ctx, "bash", "-lc", command)
 	}
+	hideCommandWindow(cmd)
 	if projectPath != "" {
 		cmd.Dir = projectPath
 	}

@@ -45,6 +45,10 @@ static SemaphoreHandle_t s_operation_mutex;
 static SemaphoreHandle_t s_deinit_mutex;
 static bool s_initialized;
 static bool s_stopping;
+/* A reversible System Sleep fence is distinct from permanent deinit.  It
+ * closes ordinary callers while retaining the mutex/status storage so ABORT
+ * can restore this exact service generation after a later participant fails. */
+static bool s_system_sleep_preparing;
 static volatile bool s_initializing;
 static uint32_t s_active_calls;
 
@@ -61,7 +65,8 @@ static TickType_t update_stop_remaining_ticks(TickType_t started, TickType_t bud
 static bool admission_enter(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (s_initialized && !s_stopping && s_operation_mutex) {
+    if (s_initialized && !s_stopping && !s_system_sleep_preparing &&
+        s_operation_mutex) {
         ++s_active_calls;
         admitted = true;
     }
@@ -84,7 +89,8 @@ static bool operation_enter(void) {
      * the service. Do not let it access/update the retained status or NVS
      * state after that boundary. */
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    const bool admitted = s_initialized && !s_stopping;
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     if (!admitted) xSemaphoreGive(s_operation_mutex);
     return admitted;
@@ -213,7 +219,7 @@ static void clear_update_status(void) {
     memset(&s_status, 0, sizeof(s_status));
 }
 
-esp_err_t update_service_init(const update_service_config_t *config) {
+static esp_err_t update_service_init_legacy(const update_service_config_t *config) {
     if (!config || !persistence_service_is_initialized() ||
         config->running_release_sequence < 0) return ESP_ERR_INVALID_ARG;
     bool expected = false;
@@ -247,13 +253,14 @@ esp_err_t update_service_init(const update_service_config_t *config) {
     s_running_release_sequence = config->running_release_sequence;
     memset(&s_status, 0, sizeof(s_status));
     s_initialized = true;
+    s_system_sleep_preparing = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     xSemaphoreGive(s_deinit_mutex);
     __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
     return ESP_OK;
 }
 
-esp_err_t update_service_deinit(uint32_t timeout_ms) {
+static esp_err_t update_service_deinit_legacy(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t budget = update_stop_timeout_ticks(timeout_ms);
@@ -280,6 +287,7 @@ esp_err_t update_service_deinit(uint32_t timeout_ms) {
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_initialized = false;
     s_stopping = true;
+    s_system_sleep_preparing = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     for (;;) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
@@ -301,9 +309,104 @@ esp_err_t update_service_deinit(uint32_t timeout_ms) {
     return ESP_OK;
 }
 
+
+/* Tool protocol still uses its existing ESP-IDF-compatible error boundary,
+ * while service lifecycle is hardware-neutral and participates in the shared
+ * Device shutdown/startup orchestration. */
+static device_status_t update_status_from_legacy_error(esp_err_t err) {
+    switch (err) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        case ESP_ERR_NOT_FOUND: return DEVICE_STATUS_NOT_FOUND;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
+
+device_status_t update_service_init(const update_service_config_t *config) {
+    return update_status_from_legacy_error(update_service_init_legacy(config));
+}
+
+device_status_t update_service_deinit(uint32_t timeout_ms) {
+    return update_status_from_legacy_error(update_service_deinit_legacy(timeout_ms));
+}
+
+device_status_t update_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = update_stop_timeout_ticks(timeout_ms);
+    while (__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE)) {
+        if (update_stop_remaining_ticks(started, budget) == 0) {
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (!s_deinit_mutex) return DEVICE_STATUS_UNAVAILABLE;
+    TickType_t remaining = update_stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_deinit_mutex, remaining) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool ready = s_initialized && !s_stopping && s_operation_mutex;
+    const bool already_preparing = s_system_sleep_preparing;
+    if (ready && !already_preparing) s_system_sleep_preparing = true;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (!ready) {
+        xSemaphoreGive(s_deinit_mutex);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    if (already_preparing) {
+        xSemaphoreGive(s_deinit_mutex);
+        return DEVICE_STATUS_BUSY;
+    }
+
+    /* Active callers passed the admission fence before the marker, and may
+     * still own Persistence or the presentation status. Let them finish; no
+     * later caller may enter because admission_enter observes the marker. */
+    for (;;) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const uint32_t active_calls = s_active_calls;
+        const bool stopping = s_stopping;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (stopping) {
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_BUSY;
+        }
+        if (active_calls == 0) {
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_OK;
+        }
+        if (update_stop_remaining_ticks(started, budget) == 0) {
+            /* A pre-fence metadata operation can still own Persistence or a
+             * presentation status. Do not admit a successor until Power's
+             * common ABORT has unwound the wider transaction. */
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+void update_service_abort_system_sleep_prepare(void) {
+    if (!s_deinit_mutex ||
+        xSemaphoreTake(s_deinit_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return;
+    }
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_system_sleep_preparing) {
+        s_system_sleep_preparing = false;
+    }
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    xSemaphoreGive(s_deinit_mutex);
+}
+
 bool update_service_is_initialized(void) {
     taskENTER_CRITICAL(&s_lifecycle_lock);
     const bool initialized = s_initialized && !s_stopping &&
+                             !s_system_sleep_preparing &&
                              !__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE);
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     return initialized;

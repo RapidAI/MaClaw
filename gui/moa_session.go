@@ -113,7 +113,7 @@ func (h *IMMessageHandler) resolveMoAPreset(presetName string) (moa.ResolvedPres
 	if len(cfg.ModelRoutes) > 0 {
 		routes := make(map[string]llm.ModelRoute, len(cfg.ModelRoutes))
 		for k, v := range cfg.ModelRoutes {
-			routes[k] = llm.ModelRoute{Model: v.Model, URL: v.URL, Key: v.Key, Protocol: v.Protocol, Provider: v.Provider}
+			routes[k] = llm.ModelRoute{Model: v.Model, URL: v.URL, Key: v.Key, Protocol: v.Protocol, Provider: v.Provider, ContextLength: v.ContextLength}
 		}
 		router = llm.NewModelRouter(routes)
 	}
@@ -173,7 +173,7 @@ func (h *IMMessageHandler) tryPrepareMoAAuto(userText string, route modelRouteDe
 	task := llm.TaskType(strings.ToLower(strings.TrimSpace(route.Task)))
 	if task == "" {
 		// Fallback classify when route has no task.
-		cr := llm.ClassifyTurn(userText, llm.ClassifyHints{})
+		cr := llm.ClassifyTurn(semanticUserIntentText(userText), llm.ClassifyHints{})
 		task = cr.Task
 	}
 	if !moa.ShouldActivateAuto(true, task, route.CostTier) {

@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -156,6 +160,119 @@ func TestIntentActivationDoesNotCloseSharedEmbedder(t *testing.T) {
 	}
 	if !app.intentEmbeddingActive.Load() {
 		t.Fatalf("intent embedding should be active")
+	}
+}
+
+func TestBuildUICLLMContextFuncSendsStrictStructuredIntentContract(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"top\":[{\"skill\":\"live_data\",\"score\":0.95,\"workflow_type\":\"\"}]}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "test", Name: "Test", URL: server.URL, Key: "test-key", Model: "test-model",
+		}},
+		MaclawLLMCurrentProvider: "Test",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	response, err := app.buildUICLLMContextFunc()(context.Background(), "classify", "北京天气，输出格式化PDF报告")
+	if err != nil {
+		t.Fatalf("classifier callback: %v", err)
+	}
+	if response == "" {
+		t.Fatal("classifier callback returned empty response")
+	}
+	format, _ := body["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("response_format=%#v, want json_schema", body["response_format"])
+	}
+	schema, _ := format["json_schema"].(map[string]interface{})
+	root, _ := schema["schema"].(map[string]interface{})
+	properties, _ := root["properties"].(map[string]interface{})
+	top, _ := properties["top"].(map[string]interface{})
+	if top["minItems"] != float64(1) || top["maxItems"] != float64(3) {
+		t.Fatalf("top schema=%#v, want 1..3 candidates", top)
+	}
+	assertIntentTreeSkillEnum(t, top)
+}
+
+func TestBuildUICLLMContextFuncPreservesStructuredIntentContractForConservativeResponses(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"top\":[{\"skill\":\"live_data\",\"score\":0.95,\"workflow_type\":\"\"}]}"}]}]}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "test", Name: "Qwen", URL: server.URL, Key: "test-key", Model: "qwen-coder", Protocol: "openai", WireAPI: "responses",
+		}},
+		MaclawLLMCurrentProvider: "Qwen",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	response, err := app.buildUICLLMContextFunc()(context.Background(), "classify", "北京天气，输出格式化PDF报告")
+	if err != nil || response == "" {
+		t.Fatalf("classifier callback response=%q err=%v", response, err)
+	}
+	text, _ := body["text"].(map[string]interface{})
+	format, _ := text["format"].(map[string]interface{})
+	if format["type"] != "json_schema" || format["name"] != "intent_tree_candidates" || format["strict"] != true {
+		t.Fatalf("Responses text.format=%#v, want preserved strict intent schema", format)
+	}
+	schema, _ := format["schema"].(map[string]interface{})
+	properties, _ := schema["properties"].(map[string]interface{})
+	top, _ := properties["top"].(map[string]interface{})
+	assertIntentTreeSkillEnum(t, top)
+}
+
+func assertIntentTreeSkillEnum(t *testing.T, top map[string]interface{}) {
+	t.Helper()
+	items, _ := top["items"].(map[string]interface{})
+	alternatives, _ := items["anyOf"].([]interface{})
+	if len(alternatives) == 0 {
+		t.Fatalf("items=%#v, want per-label schema alternatives", items)
+	}
+	values := make(map[string]bool, len(alternatives))
+	for _, alternative := range alternatives {
+		branch, ok := alternative.(map[string]interface{})
+		if !ok {
+			t.Fatalf("schema alternative=%#v, want object", alternative)
+		}
+		properties, _ := branch["properties"].(map[string]interface{})
+		skill, _ := properties["skill"].(map[string]interface{})
+		enum, _ := skill["enum"].([]interface{})
+		if len(enum) != 1 {
+			t.Fatalf("skill schema=%#v, want exactly one taxonomy label per alternative", skill)
+		}
+		label, ok := enum[0].(string)
+		if !ok {
+			t.Fatalf("skill enum=%#v, want strings", enum)
+		}
+		values[label] = true
+	}
+	for _, label := range []string{"live_data", "document_generate"} {
+		if !values[label] {
+			t.Fatalf("skill alternatives=%#v, missing %q", alternatives, label)
+		}
+	}
+	if values["get_current_weather"] {
+		t.Fatalf("skill alternatives=%#v, must not accept provider tool names", alternatives)
 	}
 }
 

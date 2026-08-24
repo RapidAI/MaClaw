@@ -1056,13 +1056,22 @@ func downloadFeishuFile(n *Notifier, messageID, content string) *im.MessageAttac
 		fileName = parsed.FileKey
 	}
 
-	return &im.MessageAttachment{
-		Type:     "file",
-		FileName: fileName,
-		MimeType: guessMimeType(fileName),
-		Data:     base64.StdEncoding.EncodeToString(data),
-		Size:     int64(len(data)),
+	att := im.CanonicalizeTrustedHostAttachment(im.MessageAttachment{
+		Type:          "file",
+		FileName:      fileName,
+		MimeType:      guessMimeType(fileName),
+		Data:          base64.StdEncoding.EncodeToString(data),
+		Size:          int64(len(data)),
+		SourceMediaID: feishuTrustedSourceMediaID(parsed.FileKey),
+	})
+	return &att
+}
+
+func feishuTrustedSourceMediaID(fileKey string) string {
+	if id := strings.TrimSpace(fileKey); id != "" {
+		return "feishu-media:" + id
 	}
+	return ""
 }
 
 // downloadFeishuResource downloads a message resource (image or file) using

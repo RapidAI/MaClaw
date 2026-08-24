@@ -1,0 +1,50 @@
+{
+  "category": "artifact_egress",
+  "category_id": 28,
+  "title": "ArtifactRef egress",
+  "design_ref": "10.1 item 28",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "deliver-phase",
+      "title": "Current-channel deliver is a delivery-phase selection",
+      "needs": [
+        {
+          "id": "deliver",
+          "capability": "artifact.deliver.current_channel",
+          "qualifiers": {
+            "format": "file"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "deliver_adapter",
+            "effects": [
+              "external_effect"
+            ],
+            "capabilities": [
+              {
+                "capability": "artifact.deliver.current_channel",
+                "qualifiers": {
+                  "format": "file"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "deliver",
+            "capability": "artifact.deliver.current_channel",
+            "phase": "delivery"
+          }
+        ]
+      },
+      "notes": "Egress checks are in artifact egress tests."
+    }
+  ]
+}

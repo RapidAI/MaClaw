@@ -204,7 +204,11 @@ type SkillYAMLFile struct {
 	Status      string          `yaml:"status"`
 	// Source classifies origin for UI filters (e.g. "learned", "crafted", "file").
 	// Empty means resolve via path/name heuristics, defaulting to "file".
-	Source           string               `yaml:"source,omitempty"`
+	Source string `yaml:"source,omitempty"`
+	// ExperienceDomain scopes a self-learned skill to the kind of work it was
+	// distilled from: "coding" or "general". Empty means universal, which is
+	// what every deliberately installed skill carries.
+	ExperienceDomain string               `yaml:"experience_domain,omitempty"`
 	Platforms        []string             `yaml:"platforms"`
 	RequiresGUI      bool                 `yaml:"requires_gui"`
 	ProducesArtifact *bool                `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
@@ -1515,6 +1519,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Steps:                   steps,
 			Status:                  status,
 			Source:                  ResolveDiskSkillSource(skillYAMLDeclaredSource(&sf), skillDir, name),
+			ExperienceDomain:        corelib.NormalizeSkillExperienceDomain(sf.ExperienceDomain),
 			HubVersion:              strings.TrimSpace(sf.Version),
 			Version:                 strings.TrimSpace(sf.Version),
 			Platforms:               sf.Platforms,

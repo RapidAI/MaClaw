@@ -23,6 +23,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/telegram"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
@@ -521,14 +522,20 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 			// Pass image as a proper attachment for multimodal vision.
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, ""))
 		} else {
-			// Non-image media: save to temp file and prepend path as text.
-			mediaPath, err := m.saveMediaToTemp(msg)
-			if err != nil {
-				log.Printf("[weixin-mgr] save media error: %v", err)
-			} else {
-				prefix := "[收到" + mediaLabel(msg.MediaType) + ": " + mediaPath + "]\n"
-				text = prefix + text
+			sourceID := ""
+			if token := strings.TrimSpace(msg.ContextToken); token != "" {
+				sourceID = "weixin-media:" + token
 			}
+			text, attachments = appendTrustedHostMediaOrStage(text, attachments, trustedHostMediaInput{
+				MediaType:        msg.MediaType,
+				FileName:         msg.MediaName,
+				MimeType:         msg.MediaType,
+				SourceMediaID:    sourceID,
+				Data:             msg.MediaData,
+				DefaultAudioMIME: weixinTrustedVoiceDefaultMIME(msg.MediaType),
+			}, func() (string, error) {
+				return m.saveMediaToTemp(msg)
+			})
 		}
 	}
 
@@ -572,6 +579,10 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		Text:        text,
 		Lang:        appUILang(m.app),
 		Attachments: attachments,
+		DeliveryTarget: &agent.DeliveryTarget{
+			ChannelScope:  "weixin",
+			DestinationID: "user:" + strings.TrimSpace(msg.FromUserID),
+		},
 	}, onProgress)
 
 	if resp == nil {
@@ -650,9 +661,9 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 	}
 
 	if resp.Text != "" {
-		text := textutil.StripMarkdown(resp.Text)
+		text := textutil.SanitizeVisibleChatText(textutil.StripMarkdown(resp.Text))
 		if voiceSent {
-			text = "\u97f3\u9891\u6587\u4ef6\u5df2\u53d1\u9001\uff1b\u5fae\u4fe1\u539f\u751f\u8bed\u97f3\u6c14\u6ce1\u4ecd\u5728\u8bca\u65ad\uff0c\u6587\u5b57\u7248\u5982\u4e0b\uff1a\n\n" + textutil.StripMarkdown(resp.Text)
+			text = "\u97f3\u9891\u6587\u4ef6\u5df2\u53d1\u9001\uff1b\u5fae\u4fe1\u539f\u751f\u8bed\u97f3\u6c14\u6ce1\u4ecd\u5728\u8bca\u65ad\uff0c\u6587\u5b57\u7248\u5982\u4e0b\uff1a\n\n" + text
 		}
 		if err := gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
@@ -725,22 +736,96 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 		}
 	}
 
-	// Send file if present (base64-encoded)
+	// Send file if present (base64-encoded). Managed semantic file delivery
+	// must claim the outbox first; SendMedia returning nil is not accepted.
 	if resp.FileData != "" {
-		fileBytes, err := base64.StdEncoding.DecodeString(resp.FileData)
-		if err == nil && len(fileBytes) > 0 {
-			_ = gw.SendMedia(ctx, weixin.OutgoingMedia{
-				ToUserID:     toUserID,
-				ContextToken: contextToken,
-				FileData:     fileBytes,
-				FileName:     resp.FileName,
-				MediaType:    "file",
-			})
+		claim, dispatch := m.claimSemanticDeliveryDispatch(resp, "user:"+strings.TrimSpace(toUserID))
+		if !dispatch {
+			return
+		}
+		fileData, fileName := resp.FileData, resp.FileName
+		if resp.SemanticDelivery != nil && resp.SemanticDelivery.Coordinator != nil {
+			if strings.TrimSpace(claim.Ref.ID) == "" || strings.EqualFold(strings.TrimSpace(claim.Ref.Kind), "image") {
+				m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+				log.Printf("[weixin-mgr] semantic file claim has unsupported artifact kind=%q", claim.Ref.Kind)
+				return
+			}
+			fileData, fileName = claim.Base64, semanticArtifactFileName(claim.Ref)
+		}
+		fileBytes, err := base64.StdEncoding.DecodeString(fileData)
+		if err != nil || len(fileBytes) == 0 {
+			m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+			log.Printf("[weixin-mgr] decode semantic file delivery failed (to=%s): %v", toUserID, err)
+		} else if err := gw.SendMedia(ctx, weixin.OutgoingMedia{
+			ToUserID:     toUserID,
+			ContextToken: contextToken,
+			FileData:     fileBytes,
+			FileName:     fileName,
+			MediaType:    "file",
+		}); err != nil {
+			m.recordSemanticDeliveryOutcome(resp, weixinSemanticDeliveryOutcome(err))
+			log.Printf("[weixin-mgr] SendMedia semantic file failed (to=%s): %v", toUserID, err)
+		} else {
+			m.recordSemanticDeliveryOutcome(resp, tool.DeliveryUnknown)
+			log.Printf("[weixin-mgr] SendMedia semantic file reached transport without receipt (to=%s)", toUserID)
 		}
 	}
 
 	// Send local file(s) if present
 	m.sendLocalFiles(gw, toUserID, contextToken, resp)
+}
+
+func weixinSemanticDeliveryOutcome(err error) tool.DeliveryState {
+	if err == nil {
+		return tool.DeliveryUnknown
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "gateway is unavailable") || strings.Contains(message, "decode") || strings.Contains(message, "empty") {
+		return tool.DeliveryFailed
+	}
+	return tool.DeliveryUnknown
+}
+
+func (m *weixinGatewayManager) recordSemanticDeliveryOutcome(resp *IMAgentResponse, outcome tool.DeliveryState, receiptDigest ...string) {
+	if resp == nil || resp.SemanticDelivery == nil {
+		return
+	}
+	if err := resp.SemanticDelivery.recordOutcome(outcome, receiptDigest...); err != nil {
+		log.Printf("[weixin-mgr] record semantic delivery outcome failed (outcome=%s): %v", outcome, err)
+	}
+}
+
+func (m *weixinGatewayManager) claimSemanticDeliveryDispatch(resp *IMAgentResponse, destinationID string) (tool.ArtifactPayload, bool) {
+	if resp == nil || resp.SemanticDelivery == nil {
+		return tool.ArtifactPayload{}, true
+	}
+	projection := resp.SemanticDelivery
+	if !strings.EqualFold(strings.TrimSpace(projection.ChannelScope), "weixin") || strings.TrimSpace(destinationID) == "" || strings.TrimSpace(projection.DestinationID) != strings.TrimSpace(destinationID) {
+		log.Printf("[weixin-mgr] reject semantic delivery projection channel=%q destination=%q", projection.ChannelScope, projection.DestinationID)
+		return tool.ArtifactPayload{}, false
+	}
+	if projection.Coordinator != nil {
+		claim, dispatch, err := projection.Coordinator.ClaimDelivery(projection.Scope, projection.SelectionID, time.Now().UTC())
+		if err != nil {
+			log.Printf("[weixin-mgr] claim semantic delivery outbox failed: %v", err)
+			return tool.ArtifactPayload{}, false
+		}
+		if !dispatch {
+			log.Printf("[weixin-mgr] skip semantic delivery outbox state=%s", claim.Delivery.State)
+			return tool.ArtifactPayload{}, false
+		}
+		return claim.Payload, true
+	}
+	record, dispatch, err := projection.Store.ClaimDeliveryDispatch(projection.Scope, projection.SelectionID, time.Now().UTC())
+	if err != nil {
+		log.Printf("[weixin-mgr] claim semantic delivery dispatch failed: %v", err)
+		return tool.ArtifactPayload{}, false
+	}
+	if !dispatch {
+		log.Printf("[weixin-mgr] suppress semantic delivery replay state=%s operation=%s", record.State, record.OperationKey)
+		return tool.ArtifactPayload{}, false
+	}
+	return tool.ArtifactPayload{}, true
 }
 
 func (m *weixinGatewayManager) sendVoiceResponse(ctx context.Context, gw *weixin.Gateway, toUserID, contextToken string, resp *IMAgentResponse) bool {
@@ -1301,7 +1386,7 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 	case gatewayReplyTypeText:
 		if err := gw.SendText(context.Background(), weixin.OutgoingText{
 			ToUserID:     reply.PlatformUID,
-			Text:         textutil.StripMarkdown(reply.Text),
+			Text:         textutil.SanitizeVisibleChatText(textutil.StripMarkdown(reply.Text)),
 			ContextToken: contextToken,
 		}); err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendText: %v", err)

@@ -1,7 +1,9 @@
 #include "display_service.h"
 
+#include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -12,6 +14,7 @@
 #include "platform_display.h"
 #include "provisioning_failure_injection.h"
 #include "task_registry.h"
+#include "fault_domain.h"
 
 /* The current board renderers are synchronous, but all calls into Platform
  * Display now originate from this one task. Result-bearing/scene-transition
@@ -97,6 +100,8 @@ static QueueHandle_t s_display_service_queue;
 static StaticTask_t s_display_service_task_storage;
 static StackType_t s_display_service_task_stack[DISPLAY_SERVICE_TASK_STACK_WORDS];
 static TaskHandle_t s_display_service_task;
+static StaticSemaphore_t s_display_service_start_gate_storage;
+static SemaphoreHandle_t s_display_service_start_gate;
 /* Only test builds opt in to this static worker. It intentionally issues a
  * second bounded STOP while the primary lifecycle caller is already waiting,
  * exercising the shared STOP record without ever publishing a test hook to
@@ -129,17 +134,49 @@ static display_service_request_t s_display_service_stop_request;
 static uint32_t s_submitted_revision;
 static uint32_t s_completed_revision;
 static uint32_t s_task_generation;
+/* Updated only by the sole Display Task immediately after the ordered Platform
+ * Display brightness transaction returns. It is a semantic acknowledgement,
+ * not a claim about a controller register or physical scan-out. */
+static bool s_brightness_known;
+static uint8_t s_brightness_percent;
+static device_status_t s_brightness_last_status = DEVICE_STATUS_UNAVAILABLE;
 static bool s_stopping;
 static bool s_initializing;
 static bool s_initialization_failed;
 static bool s_registry_registered;
+/* The logical Display task is still a Task Registry generation even though
+ * panel/DMA ownership remains boot-lifetime below Platform Display. */
+static bool s_display_service_retiring;
+static esp_err_t s_display_service_exit_status = ESP_OK;
+static bool s_display_service_registry_retirement_failed;
+static bool s_display_service_start_rejected;
 static bool s_stop_enqueued;
+/* This is the logical Display Service domain only: it owns semantic request
+ * admission, the queue and the one Display Task.  The selected profile still
+ * owns renderer, panel, DMA and scan-out lifetime below Platform Display.
+ * Stopping this task must never be presented as physical display restart. */
+static fault_domain_t s_display_service_fault_domain = {
+    .struct_size = sizeof(fault_domain_t),
+    .abi_version = FAULT_DOMAIN_ABI_VERSION,
+    .id = FAULT_DOMAIN_ID_DISPLAY,
+    .phase = FAULT_DOMAIN_STOPPED,
+    .generation = 1u,
+};
+/* System Sleep PREPARE shares neither terminal STOP nor panel ownership.  It
+ * only prevents fresh semantic submissions and counts those already accepted
+ * through the Display Task.  A later rollback reopens the same boot-lifetime
+ * task/queue, while a true service deinit remains the sole terminal path. */
+static bool s_system_sleep_preparing;
+static uint32_t s_system_sleep_admitted_requests;
+static StaticSemaphore_t s_system_sleep_requests_drained_storage;
+static SemaphoreHandle_t s_system_sleep_requests_drained;
 
 static void display_service_dispatch(display_service_request_t *request);
 static void display_service_submission_lock(void);
 static void display_service_submission_unlock(void);
 static bool display_service_take_submission_lock(TickType_t timeout);
 static bool display_service_wait_for_stop(TickType_t started, TickType_t budget);
+static bool display_service_mark_logical_domain_stopped(void);
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms);
 static void display_service_test_secondary_stopper_task(void *unused);
 static bool display_service_start_test_secondary_stopper(void);
@@ -148,9 +185,25 @@ static bool display_service_submit(display_service_request_t *request,
 static void display_service_schedule_audio_level(void);
 static bool display_service_dispatch_audio_level_snapshot(
     display_service_request_t *request);
+static bool display_service_fault_domain_accepting(void);
+static device_status_t display_service_finish_stop_wait(TickType_t started,
+                                                         TickType_t budget);
+static device_status_t display_service_status_from_esp_err(esp_err_t err);
+
+static void display_service_system_sleep_request_complete(void) {
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    if (s_system_sleep_admitted_requests != 0) {
+        --s_system_sleep_admitted_requests;
+        if (s_system_sleep_preparing && s_system_sleep_admitted_requests == 0 &&
+            s_system_sleep_requests_drained) {
+            (void)xSemaphoreGive(s_system_sleep_requests_drained);
+        }
+    }
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+}
 
 static TickType_t display_service_stop_remaining_ticks(TickType_t started,
-                                                        TickType_t budget) {
+                                                         TickType_t budget) {
     const TickType_t elapsed = xTaskGetTickCount() - started;
     return elapsed >= budget ? 0 : budget - elapsed;
 }
@@ -166,10 +219,10 @@ static bool display_service_wait_for_stop(TickType_t started, TickType_t budget)
     for (;;) {
         taskENTER_CRITICAL(&s_display_service_state_lock);
         const bool stopped = s_display_service_task == NULL;
-        if (stopped) s_registry_registered = false;
+        const bool retirement_failed = s_display_service_registry_retirement_failed;
         SemaphoreHandle_t completion = s_display_service_stop_completion;
         taskEXIT_CRITICAL(&s_display_service_state_lock);
-        if (stopped) return true;
+        if (stopped) return !retirement_failed;
 
         const TickType_t remaining =
             display_service_stop_remaining_ticks(started, budget);
@@ -256,6 +309,10 @@ bool display_service_start_test_request(void) {
 
 static void display_service_task(void *unused) {
     (void)unused;
+    if (!s_display_service_start_gate ||
+        xSemaphoreTake(s_display_service_start_gate, portMAX_DELAY) != pdTRUE) {
+        goto finish;
+    }
     for (;;) {
         display_service_request_t *request = NULL;
         if (xQueueReceive(s_display_service_queue, &request, portMAX_DELAY) != pdTRUE ||
@@ -278,13 +335,7 @@ static void display_service_task(void *unused) {
                 vTaskDelay(delay_ticks);
                 ESP_LOGW("display_service", "test: delayed terminal STOP released");
             }
-            taskENTER_CRITICAL(&s_display_service_state_lock);
-            s_display_service_task = NULL;
-            taskEXIT_CRITICAL(&s_display_service_state_lock);
-            if (request->completion) (void)xSemaphoreGive(request->completion);
-            ESP_LOGI("display_service", "display task stopped");
-            vTaskDelete(NULL);
-            return;
+            goto finish;
         }
         /* A normal boot publication can legitimately reach the service before
          * the composition root arms its test request.  Delay only the private
@@ -314,6 +365,13 @@ static void display_service_task(void *unused) {
         }
         if (request == &s_display_service_audio_level_request) {
             const bool rendered = display_service_dispatch_audio_level_snapshot(request);
+            /* System Sleep PREPARE can hold the submission mutex while it
+             * waits for this in-flight request. Retire its admission before
+             * trying to schedule a newer meter snapshot, otherwise this task
+             * would block on that mutex before it can release the PREPARE
+             * drain waiter. New meter admission is closed during PREPARE, so
+             * the retained latest value will be retried after rollback. */
+            display_service_system_sleep_request_complete();
             if (rendered) display_service_schedule_audio_level();
             continue;
         }
@@ -324,28 +382,66 @@ static void display_service_task(void *unused) {
             taskEXIT_CRITICAL(&s_display_service_state_lock);
         }
         if (request->completion) (void)xSemaphoreGive(request->completion);
+        display_service_system_sleep_request_complete();
         /* A meter publish can race while the bounded request queue is full.
          * Every normal completion retries its one retained snapshot, so a
          * producer never needs to spin or wait merely to obtain queue space. */
         display_service_schedule_audio_level();
     }
+finish: {
+    const TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    s_display_service_retiring = true;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    const esp_err_t registry_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_BOARD, (void *)self, 10);
+    const bool domain_stopped = registry_err == ESP_OK &&
+        display_service_mark_logical_domain_stopped();
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    s_display_service_exit_status = registry_err;
+    if (s_display_service_task == self) s_display_service_task = NULL;
+    s_display_service_retiring = false;
+    if (registry_err != ESP_OK) {
+        s_display_service_registry_retirement_failed = true;
+        s_display_service_start_rejected = true;
+    } else {
+        s_registry_registered = false;
+    }
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    if (!domain_stopped) {
+        (void)fault_domain_mark_degraded(&s_display_service_fault_domain);
+        ESP_LOGE("display_service", "task STOP lacked Registry/domain proof");
+    }
+    if (s_display_service_stop_request.completion) {
+        (void)xSemaphoreGive(s_display_service_stop_request.completion);
+    }
+    ESP_LOGI("display_service", "display task stopped");
+    vTaskDelete(NULL);
+    return;
+}
 }
 
-bool display_service_init(void) {
+device_status_t display_service_init(void) {
     for (;;) {
         taskENTER_CRITICAL(&s_display_service_state_lock);
         if (s_stopping) {
             taskEXIT_CRITICAL(&s_display_service_state_lock);
-            return false;
+            return DEVICE_STATUS_BUSY;
+        }
+        if (s_display_service_start_rejected ||
+            s_display_service_registry_retirement_failed) {
+            taskEXIT_CRITICAL(&s_display_service_state_lock);
+            return DEVICE_STATUS_INTERNAL_ERROR;
         }
         if (s_initialization_failed) {
             taskEXIT_CRITICAL(&s_display_service_state_lock);
-            return false;
+            return DEVICE_STATUS_INTERNAL_ERROR;
         }
         if (s_display_service_submission_mutex && s_display_service_queue &&
             s_display_service_task) {
             taskEXIT_CRITICAL(&s_display_service_state_lock);
-            return true;
+            return display_service_fault_domain_accepting()
+                       ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
         }
         if (!s_initializing) {
             s_initializing = true;
@@ -359,11 +455,24 @@ bool display_service_init(void) {
         vTaskDelay(1);
     }
 
+    /* A winning initializer closes semantic admission before any static
+     * queue/task object can become visible. */
+    if (!fault_domain_begin_start(&s_display_service_fault_domain)) {
+        taskENTER_CRITICAL(&s_display_service_state_lock);
+        s_initializing = false;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+
     SemaphoreHandle_t mutex = xSemaphoreCreateRecursiveMutexStatic(
         &s_display_service_submission_mutex_storage);
     SemaphoreHandle_t stop_completion = mutex ? xSemaphoreCreateBinaryStatic(
         &s_display_service_stop_completion_storage) : NULL;
-    QueueHandle_t queue = stop_completion ? xQueueCreateStatic(
+    SemaphoreHandle_t start_gate = stop_completion ? xSemaphoreCreateBinaryStatic(
+        &s_display_service_start_gate_storage) : NULL;
+    SemaphoreHandle_t system_sleep_drained = start_gate
+        ? xSemaphoreCreateBinaryStatic(&s_system_sleep_requests_drained_storage) : NULL;
+    QueueHandle_t queue = system_sleep_drained ? xQueueCreateStatic(
         DISPLAY_SERVICE_QUEUE_DEPTH, sizeof(display_service_request_t *),
         s_display_service_queue_buffer, &s_display_service_queue_storage) : NULL;
     /* xTaskCreateStatic() may schedule the child before it returns.  Publish
@@ -374,6 +483,8 @@ bool display_service_init(void) {
     taskENTER_CRITICAL(&s_display_service_state_lock);
     s_display_service_submission_mutex = mutex;
     s_display_service_stop_completion = stop_completion;
+    s_display_service_start_gate = start_gate;
+    s_system_sleep_requests_drained = system_sleep_drained;
     s_display_service_queue = queue;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
 
@@ -386,7 +497,7 @@ bool display_service_init(void) {
         .struct_size = sizeof(task_registry_entry_t),
         .owner = TASK_REGISTRY_OWNER_BOARD,
         .name = "display_service",
-        .context = NULL,
+        .context = (void *)task,
         .stop = display_service_registry_stop,
     }) : ESP_ERR_NO_MEM;
     if (registry_err != ESP_OK) {
@@ -403,10 +514,43 @@ bool display_service_init(void) {
         if (s_task_generation == 0) ++s_task_generation;
     }
     s_registry_registered = task != NULL;
+    s_display_service_retiring = false;
+    s_display_service_exit_status = ESP_OK;
+    s_display_service_registry_retirement_failed = false;
     if (!task) s_initialization_failed = true;
     s_initializing = false;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
-    return task != NULL && display_service_start_test_secondary_stopper();
+    if (!task) {
+        /* Queue/mutex/static-task creation is capacity admission; a Task
+         * Registry refusal is an invariant failure after resources existed.
+         * Keep those Device-level meanings distinct for startup rollback. */
+        (void)fault_domain_mark_stopped(&s_display_service_fault_domain);
+        return registry_err == ESP_ERR_NO_MEM
+                   ? DEVICE_STATUS_RESOURCE_EXHAUSTED
+                    : DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    /* The static task is now registered under its exact handle. Do not permit
+     * it to consume a request before this immutable identity is visible. */
+    if (xSemaphoreGive(s_display_service_start_gate) != pdTRUE) {
+        taskENTER_CRITICAL(&s_display_service_state_lock);
+        s_display_service_start_rejected = true;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    /* This is intentionally a logical self-test: task and Registry
+     * publication are observable. Panel/DMA/scan-out remain profile-owned
+     * boot-lifetime resources and are not represented as restartable here. */
+    if (!fault_domain_begin_self_test(&s_display_service_fault_domain) ||
+        !fault_domain_mark_ready(&s_display_service_fault_domain)) {
+        /* The task was published, but its logical readiness record was not.
+         * Leave a cleanup-capable UNKNOWN outcome so startup rollback can
+         * still send the terminal STOP; do not strand a live task in an
+         * unrecoverable diagnostic phase. */
+        (void)fault_domain_mark_unknown_outcome(&s_display_service_fault_domain);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    return display_service_start_test_secondary_stopper()
+               ? DEVICE_STATUS_OK : DEVICE_STATUS_INTERNAL_ERROR;
 }
 
 bool display_service_wait_for_test_request_start(uint32_t timeout_ms) {
@@ -426,7 +570,10 @@ bool display_service_wait_for_test_request_start(uint32_t timeout_ms) {
 }
 
 static esp_err_t display_service_registry_stop(void *context, uint32_t timeout_ms) {
-    (void)context;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    TaskHandle_t task = s_display_service_task;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
     const device_status_t status = display_service_deinit(timeout_ms);
     switch (status) {
         case DEVICE_STATUS_OK: return ESP_OK;
@@ -462,27 +609,58 @@ device_status_t display_service_deinit(uint32_t timeout_ms) {
 
     TickType_t remaining = display_service_stop_remaining_ticks(started, budget);
     if (!display_service_take_submission_lock(remaining)) {
+        /* The owner may have accepted a request just before this caller's
+         * deadline.  Close the domain even though terminal STOP was not yet
+         * enqueued; a later cleanup caller may start from UNKNOWN_OUTCOME,
+         * while normal semantic submitters cannot extend this generation. */
+        if (fault_domain_begin_quiesce(&s_display_service_fault_domain)) {
+            (void)fault_domain_mark_unknown_outcome(&s_display_service_fault_domain);
+        }
         return DEVICE_STATUS_TIMEOUT;
     }
     taskENTER_CRITICAL(&s_display_service_state_lock);
     if (s_stopping) {
         const bool stopped = s_display_service_task == NULL;
-        if (stopped) s_registry_registered = false;
+        const bool retirement_failed = s_display_service_registry_retirement_failed;
+        const esp_err_t exit_status = s_display_service_exit_status;
         taskEXIT_CRITICAL(&s_display_service_state_lock);
         display_service_submission_unlock();
-        if (stopped) return DEVICE_STATUS_OK;
+        if (stopped) {
+            if (retirement_failed) return display_service_status_from_esp_err(exit_status);
+            return display_service_finish_stop_wait(started, budget);
+        }
         /* The first bounded stopper owns the static STOP record. A timeout
          * must leave it intact; later lifecycle callers only consume that
          * same completion rather than enqueueing a second sentinel. */
-        return display_service_wait_for_stop(started, budget)
-                   ? DEVICE_STATUS_OK : DEVICE_STATUS_TIMEOUT;
+        return display_service_finish_stop_wait(started, budget);
+    }
+    fault_domain_snapshot_t fault_snapshot;
+    if (!fault_domain_get_snapshot(&s_display_service_fault_domain,
+                                   &fault_snapshot)) {
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        display_service_submission_unlock();
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    if (!s_display_service_task && fault_snapshot.phase == FAULT_DOMAIN_STOPPED) {
+        const bool retirement_failed = s_display_service_registry_retirement_failed;
+        const esp_err_t exit_status = s_display_service_exit_status;
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        display_service_submission_unlock();
+        return retirement_failed ? display_service_status_from_esp_err(exit_status)
+                                 : DEVICE_STATUS_OK;
+    }
+    if (!fault_domain_begin_quiesce(&s_display_service_fault_domain)) {
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        display_service_submission_unlock();
+        return DEVICE_STATUS_INTERNAL_ERROR;
     }
     s_stopping = true;
     TaskHandle_t task = s_display_service_task;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
     if (!task) {
+        const bool stopped = display_service_mark_logical_domain_stopped();
         display_service_submission_unlock();
-        return DEVICE_STATUS_OK;
+        return stopped ? DEVICE_STATUS_OK : DEVICE_STATUS_INTERNAL_ERROR;
     }
 
     if (!s_stop_enqueued) {
@@ -496,6 +674,7 @@ device_status_t display_service_deinit(uint32_t timeout_ms) {
             taskENTER_CRITICAL(&s_display_service_state_lock);
             s_stopping = false;
             taskEXIT_CRITICAL(&s_display_service_state_lock);
+            (void)fault_domain_mark_unknown_outcome(&s_display_service_fault_domain);
             display_service_submission_unlock();
             return DEVICE_STATUS_BUSY;
         }
@@ -504,8 +683,132 @@ device_status_t display_service_deinit(uint32_t timeout_ms) {
         taskEXIT_CRITICAL(&s_display_service_state_lock);
     }
     display_service_submission_unlock();
-    return display_service_wait_for_stop(started, budget)
-               ? DEVICE_STATUS_OK : DEVICE_STATUS_TIMEOUT;
+    return display_service_finish_stop_wait(started, budget);
+}
+
+static device_status_t display_service_status_from_esp_err(esp_err_t err) {
+    switch (err) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
+
+device_status_t display_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(timeout_ms) == 0
+                                 ? 1 : pdMS_TO_TICKS(timeout_ms);
+    if (!display_service_take_submission_lock(budget)) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    if (s_stopping || s_initializing || s_system_sleep_preparing ||
+        s_display_service_retiring || s_display_service_registry_retirement_failed ||
+        !s_display_service_task || !s_display_service_queue ||
+        !s_system_sleep_requests_drained) {
+        taskEXIT_CRITICAL(&s_display_service_state_lock);
+        display_service_submission_unlock();
+        return DEVICE_STATUS_BUSY;
+    }
+    /* No prior PREPARE is allowed to retain a completion token.  Submission
+     * is now closed by the same mutex used by normal scene admission, so no
+     * request can cross this drain baseline after it is established. */
+    while (xSemaphoreTake(s_system_sleep_requests_drained, 0) == pdTRUE) {
+    }
+    s_system_sleep_preparing = true;
+    const bool drained = s_system_sleep_admitted_requests == 0;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    bool completed = drained;
+    if (!completed) {
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+        const TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
+        completed = remaining != 0 &&
+                    xSemaphoreTake(s_system_sleep_requests_drained,
+                                   remaining) == pdTRUE;
+    }
+    if (completed) {
+        /* Semantic queue drain is not sufficient for a future electrical
+         * commit: the selected profile may still own an asynchronous scan-out
+         * source after its renderer call returned.  Keep that controller/DMA
+         * detail below Platform Display and consume only the same remaining
+         * parent budget. */
+        const TickType_t after_drain_elapsed = xTaskGetTickCount() - started;
+        const TickType_t after_drain_remaining = after_drain_elapsed >= budget
+            ? 0 : budget - after_drain_elapsed;
+        const uint32_t remaining_ms = after_drain_remaining == 0
+            ? 0 : (uint32_t)after_drain_remaining * portTICK_PERIOD_MS;
+        const device_status_t physical_status = remaining_ms != 0
+            ? platform_display_prepare_system_sleep(remaining_ms)
+            : DEVICE_STATUS_TIMEOUT;
+        if (physical_status == DEVICE_STATUS_OK) {
+            display_service_submission_unlock();
+            return DEVICE_STATUS_OK;
+        }
+        /* Keep semantic and profile-private display admission closed. The
+         * common Power rollback is the sole owner that may unpark a renderer
+         * or controller; an early local abort could submit a late frame while
+         * sibling participants remain inside PREPARE. */
+        display_service_submission_unlock();
+        return physical_status;
+    }
+
+    /* A pre-fence semantic submit may still be completing. Keep the marker
+     * closed until Power's required reverse-order ABORT restores display. */
+    display_service_submission_unlock();
+    return DEVICE_STATUS_TIMEOUT;
+}
+
+void display_service_abort_system_sleep_prepare(void) {
+    const TickType_t timeout = pdMS_TO_TICKS(3000) == 0 ? 1 : pdMS_TO_TICKS(3000);
+    if (!display_service_take_submission_lock(timeout)) return;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    /* A concurrent terminal deinit remains authoritative; abort only clears
+     * the reversible transaction admission marker and never revives a task. */
+    if (s_system_sleep_preparing) s_system_sleep_preparing = false;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    platform_display_abort_system_sleep_prepare();
+    display_service_submission_unlock();
+}
+
+static bool display_service_fault_domain_accepting(void) {
+    fault_domain_snapshot_t snapshot;
+    return fault_domain_get_snapshot(&s_display_service_fault_domain, &snapshot) &&
+           snapshot.admission_open;
+}
+
+/* The STOP sentinel is the authoritative observation that the logical task
+ * domain ended.  A timed-out lifecycle caller may already have recorded
+ * UNKNOWN_OUTCOME, in which case an explicit cleanup transition is required
+ * before STOPPED can be published. */
+static bool display_service_mark_logical_domain_stopped(void) {
+    if (fault_domain_mark_stopped(&s_display_service_fault_domain)) return true;
+    return fault_domain_begin_quiesce(&s_display_service_fault_domain) &&
+           fault_domain_mark_stopped(&s_display_service_fault_domain);
+}
+
+static device_status_t display_service_finish_stop_wait(TickType_t started,
+                                                         TickType_t budget) {
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    const bool retirement_failed = s_display_service_registry_retirement_failed;
+    const esp_err_t exit_status = s_display_service_exit_status;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    if (retirement_failed) return display_service_status_from_esp_err(exit_status);
+    if (!display_service_wait_for_stop(started, budget)) {
+        /* A profile renderer may still be executing synchronously.  Preserve
+         * closed admission rather than guessing whether its outcome was safe. */
+        (void)fault_domain_mark_unknown_outcome(&s_display_service_fault_domain);
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    fault_domain_snapshot_t snapshot;
+    return fault_domain_get_snapshot(&s_display_service_fault_domain, &snapshot) &&
+                   snapshot.phase == FAULT_DOMAIN_STOPPED
+               ? DEVICE_STATUS_OK
+               : DEVICE_STATUS_INTERNAL_ERROR;
 }
 
 static void display_service_submission_lock(void) {
@@ -551,12 +854,14 @@ static void display_service_schedule_audio_level(void) {
      * while it holds the active request slot. Other producers initialize the
      * service before their first update. */
     if (xTaskGetCurrentTaskHandle() != s_display_service_task &&
-        !display_service_init()) return;
+        display_service_init() != DEVICE_STATUS_OK) return;
     display_service_submission_lock();
     taskENTER_CRITICAL(&s_display_service_state_lock);
     const bool should_enqueue = s_display_service_audio_level_pending &&
                                 !s_display_service_audio_level_enqueued &&
-                                !s_stopping && s_display_service_queue &&
+                                !s_stopping && !s_system_sleep_preparing &&
+                                display_service_fault_domain_accepting() &&
+                                s_display_service_queue &&
                                 s_display_service_task;
     if (should_enqueue) s_display_service_audio_level_enqueued = true;
     taskEXIT_CRITICAL(&s_display_service_state_lock);
@@ -566,7 +871,11 @@ static void display_service_schedule_audio_level(void) {
     }
     s_display_service_audio_level_request.revision = note_display_submission();
     display_service_request_t *queued = &s_display_service_audio_level_request;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    ++s_system_sleep_admitted_requests;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
     if (xQueueSend(s_display_service_queue, &queued, 0) != pdTRUE) {
+        display_service_system_sleep_request_complete();
         taskENTER_CRITICAL(&s_display_service_state_lock);
         s_display_service_audio_level_enqueued = false;
         taskEXIT_CRITICAL(&s_display_service_state_lock);
@@ -611,7 +920,7 @@ static bool display_service_dispatch_audio_level_snapshot(
 static bool display_service_submit(display_service_request_t *request,
                                    bool mutates_scene) {
     if (!request) return false;
-    if (!display_service_init()) return false;
+    if (display_service_init() != DEVICE_STATUS_OK) return false;
     if (xTaskGetCurrentTaskHandle() == s_display_service_task) {
         /* A renderer callback may synchronously re-enter Device Display while
          * this task is presenting a request. It must never enqueue-and-wait
@@ -621,6 +930,8 @@ static bool display_service_submit(display_service_request_t *request,
          * this state check keeps the terminal STOP generation singular too. */
         taskENTER_CRITICAL(&s_display_service_state_lock);
         const bool accepting = !s_stopping &&
+                               !s_system_sleep_preparing &&
+                               display_service_fault_domain_accepting() &&
                                s_display_service_task == xTaskGetCurrentTaskHandle();
         taskEXIT_CRITICAL(&s_display_service_state_lock);
         if (!accepting) return false;
@@ -639,7 +950,8 @@ static bool display_service_submit(display_service_request_t *request,
     if (!completion) return false;
     request->completion = completion;
     display_service_submission_lock();
-    if (!s_display_service_queue || !s_display_service_task || s_stopping) {
+    if (!s_display_service_queue || !s_display_service_task || s_stopping ||
+        s_system_sleep_preparing || !display_service_fault_domain_accepting()) {
         display_service_submission_unlock();
         return false;
     }
@@ -652,7 +964,14 @@ static bool display_service_submit(display_service_request_t *request,
      * than close admission/own the terminal generation. Stack-backed request
      * storage remains valid because every submitter still waits below. The
      * finite queue is the sole backlog bound. */
+    /* Count admission before queue publication: Display Task can run as soon
+     * as xQueueSend succeeds, and a later increment would leave PREPARE
+     * waiting forever after that request has already completed. */
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    ++s_system_sleep_admitted_requests;
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
     if (xQueueSend(s_display_service_queue, &queued, 0) != pdTRUE) {
+        display_service_system_sleep_request_complete();
         display_service_submission_unlock();
         return false;
     }
@@ -674,11 +993,19 @@ static void display_service_dispatch(display_service_request_t *request) {
         case DISPLAY_REQUEST_SET_COMMAND_LOCK:
             platform_display_set_command_lock(request->bool_a); break;
         case DISPLAY_REQUEST_SET_BRIGHTNESS:
-            request->status_result = platform_display_set_brightness(request->u8_a); break;
+            request->status_result = platform_display_set_brightness(request->u8_a);
+            taskENTER_CRITICAL(&s_display_service_state_lock);
+            s_brightness_last_status = request->status_result;
+            if (request->status_result == DEVICE_STATUS_OK) {
+                s_brightness_percent = request->u8_a;
+                s_brightness_known = true;
+            }
+            taskEXIT_CRITICAL(&s_display_service_state_lock);
+            break;
         case DISPLAY_REQUEST_ENTER_DISPLAY_OFF:
-            request->bool_result = platform_display_enter_display_off(); break;
+            request->status_result = platform_display_enter_display_off(); break;
         case DISPLAY_REQUEST_WAKE_DISPLAY:
-            request->bool_result = platform_display_wake_display(); break;
+            request->status_result = platform_display_wake_display(); break;
         case DISPLAY_REQUEST_DISPLAY_IS_OFF:
             request->bool_result = platform_display_is_off(); break;
         case DISPLAY_REQUEST_SHOW_STARTUP: platform_display_show_startup(); break;
@@ -770,6 +1097,26 @@ bool display_service_get_snapshot(display_service_snapshot_t *out_snapshot) {
     return true;
 }
 
+bool display_service_get_brightness_state(
+    display_service_brightness_state_t *out_state) {
+    if (!out_state) return false;
+    taskENTER_CRITICAL(&s_display_service_state_lock);
+    *out_state = (display_service_brightness_state_t){
+        .struct_size = sizeof(*out_state),
+        .abi_version = DISPLAY_SERVICE_BRIGHTNESS_STATE_ABI_VERSION,
+        .known = s_brightness_known,
+        .percent = s_brightness_percent,
+        .last_status = s_brightness_last_status,
+    };
+    taskEXIT_CRITICAL(&s_display_service_state_lock);
+    return true;
+}
+
+bool display_service_get_fault_domain_snapshot(
+    fault_domain_snapshot_t *out_snapshot) {
+    return fault_domain_get_snapshot(&s_display_service_fault_domain, out_snapshot);
+}
+
 bool display_service_get_pet_asset_install_budget(
     uint32_t source_width, uint32_t source_height, uint32_t frame_count,
     device_display_pet_asset_install_budget_t *out_budget) {
@@ -794,18 +1141,22 @@ device_status_t display_service_set_brightness(uint8_t percent) {
                                                    : DEVICE_STATUS_BUSY;
 }
 
-bool display_service_enter_display_off(void) {
+device_status_t display_service_enter_display_off(void) {
     display_service_request_t request = {
         .kind = DISPLAY_REQUEST_ENTER_DISPLAY_OFF,
+        .status_result = DEVICE_STATUS_INTERNAL_ERROR,
     };
-    return display_service_submit(&request, true) && request.bool_result;
+    return display_service_submit(&request, true) ? request.status_result
+                                                   : DEVICE_STATUS_BUSY;
 }
 
-bool display_service_wake_display(void) {
+device_status_t display_service_wake_display(void) {
     display_service_request_t request = {
         .kind = DISPLAY_REQUEST_WAKE_DISPLAY,
+        .status_result = DEVICE_STATUS_INTERNAL_ERROR,
     };
-    return display_service_submit(&request, true) && request.bool_result;
+    return display_service_submit(&request, true) ? request.status_result
+                                                   : DEVICE_STATUS_BUSY;
 }
 
 bool display_service_display_is_off(void) {
@@ -864,7 +1215,7 @@ void display_service_set_recording_visual(bool active, bool paused,
                                    .u32_a = elapsed_seconds);
 }
 void display_service_set_audio_level(uint16_t level, uint32_t elapsed_seconds) {
-    if (!display_service_init()) return;
+    if (display_service_init() != DEVICE_STATUS_OK) return;
     taskENTER_CRITICAL(&s_display_service_state_lock);
     s_display_service_audio_level_request.u16_a = level;
     s_display_service_audio_level_request.u32_a = elapsed_seconds;
@@ -918,22 +1269,29 @@ bool display_service_restore_response_page(uint32_t page) {
     return display_service_submit(&request, true) && request.bool_result;
 }
 int display_service_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
-    /* A Hub decoder commonly supplies this bitmap from a stack buffer.  Make
-     * the synchronous Service -> Platform hand-off explicitly independent of
-     * that producer storage before entering the selected renderer.  This is a
-     * submission-local copy only: the current facade has no Display Task or
-     * deferred glyph queue, so Platform must still consume/copy it before
-     * returning.  A future asynchronous implementation must replace this
-     * with per-record owned storage plus a completion/release policy; it must
-     * not retain `bitmap` or this local array. */
+    /* Hub glyph JSON decoding produces a 72-byte bitmap from a short-lived
+     * stack or cJSON buffer.  This service owns the cross-task payload: it
+     * creates a per-entry heap-owned copy before submission, so the Display
+     * Task's synchronous Platform hand-off never retains the producer stack
+     * pointer.  The owned record is freed after the synchronous submit
+     * returns (Platform has already copied it into the board's bounded LRU).
+     * A future asynchronous queue must extend this to per-entry owned storage
+     * with an explicit completion/release policy instead of freeing in the
+     * submitter. */
     if (!bitmap) return 0;
-    uint8_t submission_bitmap[72];
-    memcpy(submission_bitmap, bitmap, sizeof(submission_bitmap));
+    uint8_t *owned_bitmap = (uint8_t *)heap_caps_malloc(72, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!owned_bitmap) {
+        owned_bitmap = (uint8_t *)malloc(72);
+        if (!owned_bitmap) return 0;
+    }
+    memcpy(owned_bitmap, bitmap, 72);
     display_service_request_t request = {
         .kind = DISPLAY_REQUEST_CACHE_GLYPH, .u32_a = codepoint,
-        .bytes = submission_bitmap,
+        .bytes = owned_bitmap,
     };
-    return display_service_submit(&request, true) ? request.int_result : 0;
+    int result = display_service_submit(&request, true) ? request.int_result : 0;
+    heap_caps_free(owned_bitmap);
+    return result;
 }
 void display_service_show_qrcode_modules(const uint8_t *modules,
                                          uint32_t module_count,

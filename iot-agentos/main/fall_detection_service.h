@@ -55,6 +55,13 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
  * domain's task/locks; the board Motion HAL remains owned by its profile. */
 device_status_t fall_detection_service_deinit(uint32_t timeout_ms);
 
+/* Future System Sleep participant. PREPARE closes new fall-policy, local
+ * cancel and presentation admission, then parks the already-published motion
+ * worker at a safe point. ABORT reopens the same worker; neither operation
+ * selects a sensor, enters MCU sleep, or creates a wake source. */
+device_status_t fall_detection_service_prepare_system_sleep(uint32_t timeout_ms);
+void fall_detection_service_abort_system_sleep_prepare(void);
+
 bool fall_detection_service_is_initialized(void);
 bool fall_detection_service_is_available(void);
 bool fall_detection_service_get_snapshot(fall_detection_snapshot_t *out_snapshot);

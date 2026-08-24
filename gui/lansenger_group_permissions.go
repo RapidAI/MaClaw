@@ -91,23 +91,10 @@ func (p *lansengerGroupPermissionPolicy) knowledgePriorityState() *lansengerGrou
 	return p.knowledgePriority
 }
 
-// markKnowledgeAutoRecallEvidence records that the prompt already contains a
-// relevant result from the authorised knowledge sources. In that case web
-// research is not a fallback for this turn.
-func (p *lansengerGroupPermissionPolicy) markKnowledgeAutoRecallEvidence() {
-	if p == nil {
-		return
-	}
-	state := p.knowledgePriorityState()
-	state.mu.Lock()
-	state.knowledgeEvidenceFound = true
-	state.mu.Unlock()
-}
-
-// webFallbackBlockReason enforces the group-turn order: memory (prompt
-// context), authorised knowledge, then the network only when that knowledge
-// lookup had no result. It deliberately has no effect for groups that were not
-// granted any knowledge sources.
+// webFallbackBlockReason enforces the group-turn order: authorised knowledge
+// tools first, then the network only when that lookup had no result. It
+// deliberately has no effect for groups that were not granted any knowledge
+// sources. Prompt-body auto-recall is gone; evidence comes from tool results.
 func (p *lansengerGroupPermissionPolicy) webFallbackBlockReason() string {
 	if p == nil || !p.allowsKnowledge() {
 		return ""
@@ -189,14 +176,40 @@ func lansengerKnowledgeSearchResults(raw json.RawMessage, count int) ([]json.Raw
 func lansengerGroupKnowledgePriorityPrompt() string {
 	return `
 ## 群聊信息来源优先级
-- 本轮必须按以下顺序作答：已有记忆与会话上下文 → 已授权的本地知识库 → 网络。
-- 当已授权知识库可用时，先使用当前提示中已召回的知识；若仍不足，必须先调用 knowledge_search 检索文字资料，或调用 knowledge_image_search 检索图片。
+- 本轮必须按以下顺序作答：先用当前工具检索已授权记忆与知识库 → 网络。
+- 当已授权知识库可用时，必须先调用当前工具列表中的知识库检索（文字或图片）；不要假设系统已注入知识库正文。
 - 知识库检索有相关结果时，基于其内容回复，不得改用 web_search 或 web_fetch 补充、替代或臆测。
 - 仅当已授权知识库检索没有相关结果时，网络才是兜底来源。`
 }
 
+func isSemanticInvocationGrantName(name string) bool {
+	const prefix = "invoke_"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	token := name[len(prefix):]
+	if len(token) != 24 {
+		return false
+	}
+	for _, r := range token {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
+	if isSemanticInvocationGrantName(name) {
+		// CatalogRenderer grants are already capability-constrained. The
+		// group filter must not drop a rotating invoke_* name just because
+		// it is not a legacy tool. Stable host names (web_search, bash)
+		// still go through the cases below; managed turns execute bound
+		// adapters by AdapterName, which this filter never sees.
+		return true
+	}
 	if name == "memory" {
 		// The action is checked again immediately before execution. A group needs
 		// its owner-scoped recall path as the first information source, but other
@@ -218,7 +231,7 @@ func (p lansengerGroupPermissionPolicy) allowsTool(name string) bool {
 	switch name {
 	case "read_file", "list_directory", "search_files", "send_file", "send_to_im", "archive":
 		return p.AllowAllDirectories || len(p.AllowedDirectories) > 0
-	case "current_datetime":
+	case "current_datetime", "generate_pdf":
 		return true
 	case "web_search", "web_fetch":
 		// Network access is opt-in for group bots. Downloads are constrained to

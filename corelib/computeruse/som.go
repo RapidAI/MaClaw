@@ -30,10 +30,7 @@ func BuildMarks(elements []taskengine.UIElement, ocr []taskengine.OCRResult) []M
 		}
 		cx := el.BBox[0] + el.BBox[2]/2
 		cy := el.BBox[1] + el.BBox[3]/2
-		typ := el.Type
-		if typ == "" {
-			typ = "interactable"
-		}
+		typ := InferElementType(el, name)
 		marks = append(marks, MarkedElement{
 			Type:         typ,
 			Name:         name,
@@ -44,6 +41,8 @@ func BuildMarks(elements []taskengine.UIElement, ocr []taskengine.OCRResult) []M
 			Confidence:   el.Confidence,
 			Source:       el.Source,
 			Interactable: el.Interactable || el.Source == "yolo",
+			Handle:       el.Handle,
+			Patterns:     append([]string(nil), el.Patterns...),
 		})
 	}
 	marks = dedupeCoveredYoloMarks(marks)
@@ -116,32 +115,47 @@ func isSyntheticName(name string) bool {
 	return false
 }
 
-// associateOCRLabel picks the OCR string whose box center is closest to the element
-// and lies roughly inside/near the element bbox.
+// associateOCRLabel prefers the OCR box with the highest IoU against the
+// element, then falls back to nearest-center among nearby lines.
 func associateOCRLabel(bbox [4]int, ocr []taskengine.OCRResult) string {
+	best := ""
+	bestIoU := 0.0
+	for _, r := range ocr {
+		text := strings.TrimSpace(r.Text)
+		if text == "" || r.BBox[2] <= 0 || r.BBox[3] <= 0 {
+			continue
+		}
+		iou := bboxIoU(bbox, r.BBox)
+		if iou > bestIoU {
+			bestIoU = iou
+			best = text
+		}
+	}
+	if bestIoU >= 0.1 {
+		return capOCRLabel(best)
+	}
+
 	ex := bbox[0] + bbox[2]/2
 	ey := bbox[1] + bbox[3]/2
-	best := ""
 	bestDist := int64(1 << 62)
-	// Expand search region slightly around the element.
 	pad := 24
 	minX, minY := bbox[0]-pad, bbox[1]-pad
 	maxX, maxY := bbox[0]+bbox[2]+pad, bbox[1]+bbox[3]+pad
+	best = ""
 
 	for _, r := range ocr {
 		text := strings.TrimSpace(r.Text)
-		if text == "" {
+		if text == "" || r.BBox[2] <= 0 || r.BBox[3] <= 0 {
 			continue
 		}
 		ox := r.BBox[0] + r.BBox[2]/2
 		oy := r.BBox[1] + r.BBox[3]/2
-		// Prefer OCR whose center is inside expanded element box.
 		inside := ox >= minX && ox <= maxX && oy >= minY && oy <= maxY
 		dx := int64(ox - ex)
 		dy := int64(oy - ey)
 		dist := dx*dx + dy*dy
 		if inside {
-			dist = dist / 4 // bias toward inside
+			dist = dist / 4
 		} else if dist > int64(120*120) {
 			continue
 		}
@@ -150,11 +164,44 @@ func associateOCRLabel(bbox [4]int, ocr []taskengine.OCRResult) string {
 			best = text
 		}
 	}
-	// Cap label length for tool text.
+	return capOCRLabel(best)
+}
+
+func capOCRLabel(best string) string {
 	if len([]rune(best)) > 40 {
-		best = string([]rune(best)[:40]) + "…"
+		return string([]rune(best)[:40]) + "…"
 	}
 	return best
+}
+
+func bboxIoU(a, b [4]int) float64 {
+	x1 := a[0]
+	if b[0] > x1 {
+		x1 = b[0]
+	}
+	y1 := a[1]
+	if b[1] > y1 {
+		y1 = b[1]
+	}
+	x2 := a[0] + a[2]
+	if b[0]+b[2] < x2 {
+		x2 = b[0] + b[2]
+	}
+	y2 := a[1] + a[3]
+	if b[1]+b[3] < y2 {
+		y2 = b[1] + b[3]
+	}
+	if x2 <= x1 || y2 <= y1 {
+		return 0
+	}
+	inter := float64((x2 - x1) * (y2 - y1))
+	areaA := float64(a[2] * a[3])
+	areaB := float64(b[2] * b[3])
+	union := areaA + areaB - inter
+	if union <= 0 {
+		return 0
+	}
+	return inter / union
 }
 
 // FormatOCRExcerpt joins OCR results into a bounded text block for the model.
@@ -199,8 +246,7 @@ func RenderTextObserve(res *ObserveResult, maxElements int) string {
 		maxElements = 80
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("mode=%s screen=%dx%d scale=%.2f screen_index=%d\n",
-		res.Mode, res.Meta.Width, res.Meta.Height, res.Meta.ScaleFactor, res.Meta.ScreenIndex))
+	writeObserveMetaHeader(&b, res)
 	if len(res.Windows) > 0 {
 		b.WriteString("windows:\n")
 		for _, w := range res.Windows {
@@ -246,11 +292,82 @@ func RenderTextObserve(res *ObserveResult, maxElements int) string {
 		b.WriteString(res.OCRExcerpt)
 		b.WriteByte('\n')
 	}
-	b.WriteString("hint: Use computer_click with ref=eN (or computer_type/key/scroll). ")
+	if hint := MatchAdapter(res.Windows, res.Meta.CropTitle); hint.Kind != "" {
+		fmt.Fprintf(&b, "adapter=%s %s\n", hint.Kind, hint.Advice)
+	}
+	b.WriteString("hint: Use computer_click with ref=eN (or computer_type/key/scroll/select). ")
 	b.WriteString("Do NOT invent pixel coordinates. Re-observe after every action. ")
 	b.WriteString("You may be a text-only model — screenshots are NOT included in this result. ")
-	b.WriteString("Default observe uses primary monitor (screen_index=0); pass -1 only for all monitors stitched.\n")
+	b.WriteString("Default observe crops to the focused window; pass screen_index=-1 for all monitors, or screen_index=N for a full monitor.\n")
 	return b.String()
+}
+
+// RenderVisionObserve builds the text tool result when a screenshot is attached
+// for a vision-capable chat model. A compact SoM mark list may be included so
+// the attached image's numbered boxes can be clicked as ref=eN.
+func RenderVisionObserve(res *ObserveResult) string {
+	if res == nil {
+		return "computer_observe: empty result"
+	}
+	var b strings.Builder
+	writeObserveMetaHeader(&b, res)
+	if res.Meta.VisionWidth > 0 && res.Meta.VisionHeight > 0 &&
+		(res.Meta.VisionWidth != res.Meta.Width || res.Meta.VisionHeight != res.Meta.Height) {
+		b.WriteString(fmt.Sprintf("image=%dx%d (click x,y in this image; mapped to screen)\n",
+			res.Meta.VisionWidth, res.Meta.VisionHeight))
+	}
+	if len(res.Windows) > 0 {
+		b.WriteString("windows:\n")
+		for _, w := range res.Windows {
+			b.WriteString("  - ")
+			b.WriteString(w)
+			b.WriteByte('\n')
+		}
+	}
+	if hint := MatchAdapter(res.Windows, res.Meta.CropTitle); hint.Kind != "" {
+		fmt.Fprintf(&b, "adapter=%s %s\n", hint.Kind, hint.Advice)
+	}
+	b.WriteString("perception=llm_vision (OmniParser/OCR skipped; a11y marks drawn on screenshot)\n")
+	if n := len(res.Elements); n > 0 {
+		show := n
+		if show > 40 {
+			show = 40
+		}
+		fmt.Fprintf(&b, "som_marks=%d (boxes drawn on the attached image)\n", n)
+		for i := 0; i < show; i++ {
+			el := res.Elements[i]
+			name := el.Name
+			if name == "" {
+				name = "(no label)"
+			}
+			fmt.Fprintf(&b, "  %s [%s] %q center=%d,%d\n", el.Ref, el.Type, name, el.CenterX, el.CenterY)
+		}
+	}
+	b.WriteString("screenshot: attached in the following message. Look at the image.\n")
+	b.WriteString("hint: Click with computer_click x,y in screenshot pixel space, or ref=eN for a drawn mark. ")
+	b.WriteString("Then re-observe.\n")
+	return b.String()
+}
+
+func writeObserveMetaHeader(b *strings.Builder, res *ObserveResult) {
+	fmt.Fprintf(b, "mode=%s screen=%dx%d scale=%.2f screen_index=%d",
+		res.Mode, res.Meta.Width, res.Meta.Height, res.Meta.ScaleFactor, res.Meta.ScreenIndex)
+	if res.Meta.CropTitle != "" {
+		fmt.Fprintf(b, " crop=%q origin=%d,%d", res.Meta.CropTitle, res.Meta.OriginX, res.Meta.OriginY)
+	}
+	b.WriteByte('\n')
+}
+
+// MapVisionClick converts vision-image coordinates into capture/screen space.
+func MapVisionClick(meta ScreenMeta, x, y int) (int, int) {
+	vw, vh := meta.VisionWidth, meta.VisionHeight
+	if vw <= 0 || vh <= 0 || meta.Width <= 0 || meta.Height <= 0 {
+		return x, y
+	}
+	if vw == meta.Width && vh == meta.Height {
+		return x, y
+	}
+	return x * meta.Width / vw, y * meta.Height / vh
 }
 
 // ResolveRef finds a marked element by ref (e.g. "e3" or "3").

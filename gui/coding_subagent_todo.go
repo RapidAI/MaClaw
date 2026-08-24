@@ -10,6 +10,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,8 +39,52 @@ type codingAgentTodoItem struct {
 
 // codingAgentTodoState holds the live checklist for one SubAgent turn.
 type codingAgentTodoState struct {
-	mu    sync.Mutex
-	items []codingAgentTodoItem
+	mu       sync.Mutex
+	items    []codingAgentTodoItem
+	revision uint64
+	version  uint64
+}
+
+type codingAgentTodoSnapshot struct {
+	Revision uint64
+	Version  uint64
+	Items    []codingAgentTodoItem
+}
+
+// bindControlPlaneRevision advances the callback-local generation while
+// preserving the checklist. Initializing revision one is not a replacement;
+// later changes invalidate the prior version so an old model payload cannot
+// mutate a freshly rendered control-plane surface. It is a local fence, not a
+// durable task revision: callers must not persist or derive it from
+// request/runtime IDs.
+func (s *codingAgentTodoState) bindControlPlaneRevision(revision uint64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.revision != 0 && s.revision != revision {
+		s.version++
+	}
+	s.revision = revision
+	s.mu.Unlock()
+}
+
+func (s *codingAgentTodoState) revisionVersion() (revision, version uint64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revision, s.version
+}
+
+func (s *codingAgentTodoState) controlPlaneSnapshot() codingAgentTodoSnapshot {
+	if s == nil {
+		return codingAgentTodoSnapshot{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return codingAgentTodoSnapshot{Revision: s.revision, Version: s.version, Items: cloneCodingAgentTodoItems(s.items)}
 }
 
 func normalizeCodingAgentTodoStatus(raw string) string {
@@ -186,12 +231,23 @@ func enforceSingleInProgress(items []codingAgentTodoItem) {
 // applyTodoWrite merges or replaces the checklist. Claude Code semantics:
 // merge=true updates by id; merge=false replaces the whole list.
 func (s *codingAgentTodoState) applyTodoWrite(items []codingAgentTodoItem, merge bool) []codingAgentTodoItem {
+	applied, _ := s.applyTodoWriteCAS(items, merge, 0, 0, false)
+	return applied
+}
+
+// applyTodoWriteCAS is the only mutation path used by model-request control
+// plane calls. expected revision/version are checked while holding the state
+// lock so a delayed merge/replace/clear cannot overwrite a newer checklist.
+func (s *codingAgentTodoState) applyTodoWriteCAS(items []codingAgentTodoItem, merge bool, expectedRevision, expectedVersion uint64, requireExpected bool) ([]codingAgentTodoItem, bool) {
 	if s == nil {
-		return nil
+		return nil, false
 	}
 	cleaned := normalizeCodingAgentTodoItems(items)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if requireExpected && (s.revision != expectedRevision || s.version != expectedVersion) {
+		return cloneCodingAgentTodoItems(s.items), false
+	}
 	if !merge || len(s.items) == 0 {
 		for i := range cleaned {
 			if cleaned[i].Content == "" {
@@ -224,7 +280,8 @@ func (s *codingAgentTodoState) applyTodoWrite(items []codingAgentTodoItem, merge
 		}
 	}
 	enforceSingleInProgress(s.items)
-	return cloneCodingAgentTodoItems(s.items)
+	s.version++
+	return cloneCodingAgentTodoItems(s.items), true
 }
 
 func codingAgentTodoProgress(items []codingAgentTodoItem) (done, total int, current string) {
@@ -354,7 +411,8 @@ func buildCodingAgentTodoToolDefinition() map[string]interface{} {
 			"description": "维护本任务的执行步骤清单（Claude Code / Codex 风格）。" +
 				"复杂需求应先拆成 2-8 个有序步骤再动手改代码；每完成一步立即勾选。" +
 				"同一时间最多一个 in_progress。" +
-				"merge=true 时按 id 合并更新（可只传 id+status）；merge=false 时整表替换。",
+				"merge=true 时按 id 合并更新（可只传 id+status）；merge=false 时整表替换。" +
+				"模型请求必须回传本轮 definition 标明的 expected_revision 与 expected_version；版本不匹配会被拒绝。",
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -382,10 +440,43 @@ func buildCodingAgentTodoToolDefinition() map[string]interface{} {
 						"type":        "boolean",
 						"description": "true=按 id 合并；false=整表替换。省略时：已有清单则 merge=true。",
 					},
+					"expected_revision": map[string]interface{}{
+						"type":        "integer",
+						"description": "本次请求的 callback-local control-plane revision（由 definition 给出）",
+					},
+					"expected_version": map[string]interface{}{
+						"type":        "integer",
+						"description": "本次请求的 checklist version（由 definition 给出；成功后递增）",
+					},
 				},
 			},
 		},
 	}
+}
+
+// annotateCodingTodoDefinitionForControlPlane exposes the callback-local CAS
+// values only in the rendered definition for this request. They are not
+// aliases, grants, durable revisions, or values derived from model input.
+func annotateCodingTodoDefinitionForControlPlane(tools []map[string]interface{}, revision, version uint64) []map[string]interface{} {
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		if fn == nil || fn["name"] != codingAgentTodoToolName {
+			continue
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		properties, _ := params["properties"].(map[string]interface{})
+		if properties == nil {
+			continue
+		}
+		if field, ok := properties["expected_revision"].(map[string]interface{}); ok {
+			field["description"] = fmt.Sprintf("必须传回本次 request 的 control-plane revision：%d", revision)
+		}
+		if field, ok := properties["expected_version"].(map[string]interface{}); ok {
+			field["description"] = fmt.Sprintf("必须传回本次 request 的 checklist version：%d", version)
+		}
+		break
+	}
+	return tools
 }
 
 // codingAgentTodoPromptSection is injected into local/remote coding system prompts.
@@ -401,15 +492,27 @@ const codingAgentTodoPromptSection = `
 琐碎单点修改（改一个 typo、跑一条命令）可不建清单。
 `
 
-func parseCodingAgentTodoWriteArgs(argsJSON string) (items []codingAgentTodoItem, merge bool, mergeSet bool, err error) {
+const codingAgentTodoControlPlanePromptSection = `
+## todo_write 并发令牌
+在一次真实模型请求中，todo_write 的 definition 会提供 expected_revision 与 expected_version。
+每次调用必须原样带回这两个值；成功结果会返回新的 version，下一次调用使用它。
+不要从任务文本、路径、request/loop/runtime ID 猜测 token；版本不匹配时读取返回的 current 值后重新规划。
+`
+
+func parseCodingAgentTodoWriteArgs(argsJSON string) (items []codingAgentTodoItem, merge bool, mergeSet bool, expectedRevision, expectedVersion uint64, expectedSet bool, err error) {
 	raw := strings.TrimSpace(argsJSON)
 	if raw == "" || raw == "{}" || raw == "null" {
-		return nil, false, false, fmt.Errorf("todo_write requires todos array")
+		return nil, false, false, 0, 0, false, fmt.Errorf("todo_write requires todos array")
 	}
 
 	// Prefer flexible map parse so id can be number and fields can use aliases.
 	var generic map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &generic); err == nil && generic != nil {
+		var revisionSet, versionSet bool
+		if expectedRevision, revisionSet = codingAgentTodoUint64(generic["expected_revision"]); revisionSet {
+			expectedVersion, versionSet = codingAgentTodoUint64(generic["expected_version"])
+			expectedSet = versionSet
+		}
 		if v, ok := generic["merge"]; ok {
 			mergeSet = true
 			switch t := v.(type) {
@@ -426,18 +529,42 @@ func parseCodingAgentTodoWriteArgs(argsJSON string) (items []codingAgentTodoItem
 		if len(items) == 0 && !mergeSet {
 			// Object without todos — try bare array path below.
 		} else {
-			return items, merge, mergeSet, nil
+			return items, merge, mergeSet, expectedRevision, expectedVersion, expectedSet, nil
 		}
 	}
 
 	// Bare array: [{"content":"..."}]
 	if items = codingAgentTodoItemsFromJSONArray(raw); items != nil || strings.HasPrefix(raw, "[") {
 		if items == nil && strings.HasPrefix(raw, "[") {
-			return nil, false, false, fmt.Errorf("invalid todo_write array")
+			return nil, false, false, 0, 0, false, fmt.Errorf("invalid todo_write array")
 		}
-		return items, false, false, nil
+		return items, false, false, 0, 0, false, nil
 	}
-	return nil, false, false, fmt.Errorf("invalid todo_write arguments: expected object with todos/tasks")
+	return nil, false, false, 0, 0, false, fmt.Errorf("invalid todo_write arguments: expected object with todos/tasks")
+}
+
+func codingAgentTodoUint64(value interface{}) (uint64, bool) {
+	switch value := value.(type) {
+	case float64:
+		if value >= 0 && value == math.Trunc(value) && value <= float64(^uint64(0)) {
+			return uint64(value), true
+		}
+	case json.Number:
+		parsed, err := strconv.ParseUint(strings.TrimSpace(value.String()), 10, 64)
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+		return parsed, err == nil
+	case int:
+		if value >= 0 {
+			return uint64(value), true
+		}
+	case int64:
+		if value >= 0 {
+			return uint64(value), true
+		}
+	}
+	return 0, false
 }
 
 func codingAgentTodoItemsFromJSONArray(raw string) []codingAgentTodoItem {
@@ -518,12 +645,31 @@ func executeCodingAgentTodoWrite(
 	onProgress func(string),
 	onEmit func([]codingAgentTodoItem),
 ) (resultText string, outcome codingToolOutcome) {
+	return executeCodingAgentTodoWriteForControlPlane(state, argsJSON, onProgress, onEmit, 0, false)
+}
+
+// executeCodingAgentTodoWriteForControlPlane applies a direct-host write when
+// requireCurrentRevision is false, and a revision/version CAS model call when
+// it is true. The latter is the only path used after a static request surface
+// has been rendered.
+func executeCodingAgentTodoWriteForControlPlane(
+	state *codingAgentTodoState,
+	argsJSON string,
+	onProgress func(string),
+	onEmit func([]codingAgentTodoItem),
+	currentRevision uint64,
+	requireCurrentRevision bool,
+) (resultText string, outcome codingToolOutcome) {
 	if state == nil {
 		return "todo_write unavailable: no state", codingToolOutcomeFailed
 	}
-	items, merge, mergeSet, err := parseCodingAgentTodoWriteArgs(argsJSON)
+	items, merge, mergeSet, expectedRevision, expectedVersion, expectedSet, err := parseCodingAgentTodoWriteArgs(argsJSON)
 	if err != nil {
 		return err.Error(), codingToolOutcomeFailed
+	}
+	if requireCurrentRevision && !expectedSet {
+		revision, version := state.revisionVersion()
+		return fmt.Sprintf("control_plane_stale: todo_write requires expected_revision=%d and expected_version=%d; current revision=%d version=%d", currentRevision, version, revision, version), codingToolOutcomeFailed
 	}
 
 	// Default merge / clear rules.
@@ -542,8 +688,14 @@ func executeCodingAgentTodoWrite(
 		// explicit clear
 	}
 
-	applied := state.applyTodoWrite(items, merge)
+	applied, appliedOK := state.applyTodoWriteCAS(items, merge, expectedRevision, expectedVersion, requireCurrentRevision)
+	if !appliedOK {
+		revision, version := state.revisionVersion()
+		return fmt.Sprintf("control_plane_stale: todo_write expected revision=%d version=%d; current revision=%d version=%d", expectedRevision, expectedVersion, revision, version), codingToolOutcomeFailed
+	}
+	revision, version := state.revisionVersion()
 	checklist := formatCodingAgentTodoChecklist(applied)
+	checklist += fmt.Sprintf("\ncontrol_plane_revision=%d control_plane_version=%d", revision, version)
 	if onProgress != nil {
 		onProgress(formatCodingAgentTodoProgressLine(applied))
 	}

@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -347,9 +346,6 @@ func (a *App) KnowledgeClearAll() error {
 		return fmt.Errorf("purge knowledge base: %w", err)
 	}
 
-	// Reset the source count cache so hasKnowledgeSources returns false immediately.
-	atomic.StoreInt64(&knowledgeSourceCountCache, 0)
-	atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
 	log.Printf("[knowledge] ClearAll: all records deleted and database vacuumed")
 	return nil
 }
@@ -3092,9 +3088,6 @@ func (a *App) KnowledgeImportFiles(req knowledge.DirectoryImportRequest, filePat
 		log.Printf("[knowledge] ImportFiles: failed: %v", err)
 	} else {
 		log.Printf("[knowledge] ImportFiles: done total=%d imported=%d skipped=%d failed=%d", result.TotalFiles, result.ImportedFiles, result.SkippedFiles, result.FailedFiles)
-		if result.ImportedFiles > 0 {
-			invalidateKnowledgeSourceCountCache()
-		}
 	}
 	return result, err
 }
@@ -3620,9 +3613,6 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 }
 
 func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImportResult, err error) {
-	if err == nil && result.ImportedFiles > 0 {
-		invalidateKnowledgeSourceCountCache()
-	}
 	knowledgeImportJobsMu.Lock()
 	defer knowledgeImportJobsMu.Unlock()
 	value, ok := knowledgeImportJobs.Load(id)
@@ -3746,9 +3736,6 @@ func (a *App) KnowledgeImportDirectory(req knowledge.DirectoryImportRequest) (kn
 	req = a.normalizeKnowledgeImportRequest(req)
 	req.DryRun = false
 	result, err := store.ImportDirectory(a.knowledgeContext(), req)
-	if err == nil && result.ImportedFiles > 0 {
-		invalidateKnowledgeSourceCountCache()
-	}
 	return result, err
 }
 
@@ -3771,9 +3758,6 @@ func (a *App) KnowledgeSaveURL(rawURL string, saveScope string, topicHint string
 		Labels:      labels,
 		AutoLabels:  autoLabels,
 	})
-	if err == nil {
-		invalidateKnowledgeSourceCountCache()
-	}
 	return source, err
 }
 
@@ -3796,7 +3780,6 @@ func (a *App) KnowledgeSaveURLs(rawURLs []string, saveScope string, topicHint st
 		Labels:      labels,
 		AutoLabels:  autoLabels,
 	})
-	invalidateKnowledgeSourceCountCache()
 	return result, nil
 }
 
@@ -3826,9 +3809,6 @@ func (a *App) KnowledgeSaveText(req knowledge.TextSaveRequest) (knowledge.Source
 		req.ProjectPath = ""
 	}
 	source, err := store.SaveText(a.knowledgeContext(), req)
-	if err == nil {
-		invalidateKnowledgeSourceCountCache()
-	}
 	return source, err
 }
 

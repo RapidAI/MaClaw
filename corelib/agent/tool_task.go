@@ -122,7 +122,13 @@ func TaskDelete(store *task.Store, args map[string]interface{}) string {
 
 // TaskList returns a formatted list of all tasks.
 func TaskList(store *task.Store) string {
-	tasks := store.List()
+	return RenderTaskList(store.List())
+}
+
+// RenderTaskList formats an already-selected set of tasks. Callers that scope
+// by owner select first and render second, so the rendering cannot widen what
+// the selection narrowed.
+func RenderTaskList(tasks []*task.Task) string {
 	if len(tasks) == 0 {
 		return "当前没有任务。"
 	}

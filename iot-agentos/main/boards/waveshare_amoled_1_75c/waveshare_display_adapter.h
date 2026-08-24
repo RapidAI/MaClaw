@@ -282,10 +282,13 @@ static bool round_display_adapter_color_transfer_done(
     return task_woken == pdTRUE;
 }
 
-static esp_err_t round_display_adapter_wait_for_transfer_idle(void) {
+static esp_err_t round_display_adapter_wait_for_transfer_idle(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     if (!s_waveshare_display_transfer_pending) return ESP_OK;
     if (!s_waveshare_display_transfer_done) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_waveshare_display_transfer_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (ticks == 0) ticks = 1;
+    if (xSemaphoreTake(s_waveshare_display_transfer_done, ticks) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return s_waveshare_display_transfer_pending ? ESP_ERR_INVALID_STATE : ESP_OK;
@@ -394,7 +397,7 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
     }
     /* A late CO5300 callback belongs to the old source buffer. Drain that
      * exact transaction first; do not let it complete a newly queued frame. */
-    ESP_RETURN_ON_ERROR(round_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(round_display_adapter_wait_for_transfer_idle(1000),
                         "waveshare_display", "previous transfer still pending");
     while (xSemaphoreTake(s_waveshare_display_transfer_done, 0) == pdTRUE) {}
     s_waveshare_display_transfer_pending = true;
@@ -420,7 +423,7 @@ static esp_err_t round_display_adapter_draw_bitmap_sync(
  * ordinary brightness updates.  Scene policy stays in the shared renderer. */
 static esp_err_t round_display_adapter_enter_display_off(void) {
     if (!s_waveshare_display_panel) return ESP_ERR_INVALID_STATE;
-    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle();
+    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle(1000);
     if (idle_err != ESP_OK) return idle_err;
     esp_err_t err = esp_lcd_panel_disp_on_off(s_waveshare_display_panel, false);
     if (err != ESP_OK) return err;
@@ -429,7 +432,7 @@ static esp_err_t round_display_adapter_enter_display_off(void) {
 
 static esp_err_t round_display_adapter_wake_from_display_off(unsigned brightness) {
     if (!s_waveshare_display_panel || brightness > 100) return ESP_ERR_INVALID_ARG;
-    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle();
+    esp_err_t idle_err = round_display_adapter_wait_for_transfer_idle(1000);
     if (idle_err != ESP_OK) return idle_err;
     esp_err_t err = esp_lcd_panel_disp_on_off(s_waveshare_display_panel, true);
     if (err != ESP_OK) return err;

@@ -54,12 +54,23 @@ func newHTTPStatusError(status int, body []byte) error {
 // OpenAIChatRequestOptions controls how an OpenAI-compatible chat/completions
 // request is built.
 type OpenAIChatRequestOptions struct {
-	Stream         bool
-	Tools          []map[string]interface{}
-	ExtraBody      map[string]interface{}
-	PassThrough    map[string]interface{}
-	ToolChoice     interface{}
-	ResponseFormat interface{}
+	Stream                  bool
+	Tools                   []map[string]interface{}
+	ExplicitToolReplacement bool
+	ExtraBody               map[string]interface{}
+	PassThrough             map[string]interface{}
+	ToolChoice              interface{}
+	// ParallelToolCalls is an owner-supplied callable-surface policy. A nil
+	// pointer deliberately differs from false: nil leaves the provider default
+	// intact, while false must survive serialization for final-wire verification.
+	ParallelToolCalls *bool
+	ResponseFormat    interface{}
+	// PreserveResponseFormat is for host control-plane requests whose response
+	// is consumed by a validator rather than displayed to a user. Conservative
+	// compatibility sanitization normally drops response_format because many
+	// older providers reject it; a caller that sets this field owns the failure
+	// path and must not be silently downgraded to free-form text.
+	PreserveResponseFormat bool
 }
 
 var openAIChatPassThroughKeys = []string{
@@ -123,22 +134,22 @@ func buildOpenAIChatRequestBody(
 		"messages": messages,
 		"stream":   opts.Stream,
 	}
+	// A tool-bearing request is a replacement surface. Callers that intentionally
+	// clear a prior surface must state that intent: ordinary tool-less requests
+	// retain their existing compatibility semantics and do not acquire a tools
+	// field merely because their options slice is empty.
+	var tools []map[string]interface{}
 	if len(opts.Tools) > 0 && !ShouldOmitOpenAIToolsForInitialRequest(cfg, messages) {
-		tools := sanitizeOpenAIChatToolsForSDK(opts.Tools)
-		if cfg.NeedsConservativeOpenAICompatSanitization() {
-			tools = corelib.SanitizeCodeGenOpenAIChatTools(tools)
-		}
-		if len(tools) > 0 {
-			reqBody["tools"] = tools
-		}
+		tools = PrepareOpenAIChatToolsForWire(cfg, opts.Tools)
 	}
-	if opts.ToolChoice != nil {
-		if toolChoice := sanitizeOpenAIToolChoiceForProvider(cfg, opts.ToolChoice); toolChoice != nil {
-			reqBody["tool_choice"] = toolChoice
+	if len(tools) > 0 || opts.ExplicitToolReplacement {
+		if tools == nil {
+			tools = make([]map[string]interface{}, 0)
 		}
+		reqBody["tools"] = tools
 	}
 	if opts.ResponseFormat != nil {
-		if responseFormat := sanitizeOpenAIResponseFormatForProvider(cfg, opts.ResponseFormat); responseFormat != nil {
+		if responseFormat := sanitizeOpenAIResponseFormatForProvider(cfg, opts.ResponseFormat, opts.PreserveResponseFormat); responseFormat != nil {
 			reqBody["response_format"] = responseFormat
 		}
 	}
@@ -157,9 +168,35 @@ func buildOpenAIChatRequestBody(
 			reqBody[k] = v
 		}
 	}
+	// Apply host-owned invocation controls only after compatibility pass-through
+	// maps. A map must not silently override the immutable callable surface that
+	// the request owner will later bind to its manifest and receipt.
+	if opts.ToolChoice != nil {
+		if toolChoice := sanitizeOpenAIToolChoiceForProvider(cfg, opts.ToolChoice); toolChoice != nil {
+			reqBody["tool_choice"] = toolChoice
+		}
+	}
+	if opts.ParallelToolCalls != nil {
+		reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
+	}
 	ensureMaxOutputTokens(reqBody, cfg)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
+		if opts.PreserveResponseFormat && opts.ResponseFormat != nil {
+			if responseFormat := sanitizeOpenAIResponseFormatForProvider(cfg, opts.ResponseFormat, true); responseFormat != nil {
+				reqBody["response_format"] = responseFormat
+			}
+		}
+		if opts.ToolChoice != nil {
+			if toolChoice := sanitizeOpenAIToolChoiceForProvider(cfg, opts.ToolChoice); toolChoice != nil {
+				if opts.PreserveResponseFormat || isExplicitOpenAIToolChoice(toolChoice) {
+					reqBody["tool_choice"] = toolChoice
+				}
+			}
+		}
+		if opts.ParallelToolCalls != nil {
+			reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
+		}
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
 	// Explicit user choices are translated to the selected provider's native
@@ -200,6 +237,17 @@ func buildOpenAIChatRequestBody(
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
 	}
 	return reqBody
+}
+
+func isExplicitOpenAIToolChoice(toolChoice interface{}) bool {
+	switch value := toolChoice.(type) {
+	case string:
+		return strings.TrimSpace(value) != "" && strings.TrimSpace(value) != "auto"
+	case map[string]interface{}:
+		return len(value) > 0
+	default:
+		return toolChoice != nil
+	}
 }
 
 func ensureMaxOutputTokens(reqBody map[string]interface{}, cfg corelib.MaclawLLMConfig) {
@@ -318,6 +366,7 @@ func NewOpenAIChatRequest(
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 	ApplyProviderAuthHeaders(req, cfg)
+	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	return req, data, endpoint, nil
 }
@@ -1219,6 +1268,20 @@ func SanitizeOpenAIChatToolsForSDK(tools []map[string]interface{}) []map[string]
 	return sanitizeOpenAIChatToolsForSDK(tools)
 }
 
+// PrepareOpenAIChatToolsForWire returns the exact OpenAI-compatible tool
+// projection that BuildOpenAIChatRequestData serializes for cfg. Request
+// owners which bind a tool-surface receipt must freeze this projection before
+// calculating their manifest: conservative providers deliberately remove
+// unsupported JSON-Schema keywords, and hashing the pre-projection schema
+// would reject the client's own valid wire payload.
+func PrepareOpenAIChatToolsForWire(cfg corelib.MaclawLLMConfig, tools []map[string]interface{}) []map[string]interface{} {
+	prepared := sanitizeOpenAIChatToolsForSDK(tools)
+	if cfg.NeedsConservativeOpenAICompatSanitization() {
+		prepared = corelib.SanitizeCodeGenOpenAIChatTools(prepared)
+	}
+	return prepared
+}
+
 func sanitizeOpenAIToolParametersForSDK(params interface{}) interface{} {
 	clean := sanitizeOpenAIToolSchemaShape(params)
 	if clean != nil {
@@ -1397,24 +1460,17 @@ func sanitizeOpenAIResponseFormatForSDK(raw interface{}) map[string]interface{} 
 	}
 }
 
-func sanitizeOpenAIResponseFormatForProvider(cfg corelib.MaclawLLMConfig, raw interface{}) map[string]interface{} {
-	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
-		mm := toStringInterfaceMap(raw)
-		if mm == nil {
-			return nil
-		}
-		if strings.TrimSpace(stringValue(mm["type"])) == "json_schema" {
-			return map[string]interface{}{"type": "json_object"}
-		}
-	}
+func sanitizeOpenAIResponseFormatForProvider(cfg corelib.MaclawLLMConfig, raw interface{}, preserveContract bool) map[string]interface{} {
 	responseFormat := sanitizeOpenAIResponseFormatForSDK(raw)
 	if responseFormat == nil {
 		return nil
 	}
-	if !corelib.IsDeepSeekFlashOpenAICompat(cfg) {
-		return responseFormat
-	}
-	if responseFormat["type"] == "json_schema" {
+	// DeepSeek Flash advertises JSON-object mode but not the stricter schema
+	// dialect. Ordinary user-facing requests keep the established capability
+	// normalization. A caller that explicitly owns a machine-readable contract
+	// must instead preserve it and handle a provider capability failure; turning
+	// that request into generic JSON is a semantic downgrade.
+	if !preserveContract && corelib.IsDeepSeekFlashOpenAICompat(cfg) && responseFormat["type"] == "json_schema" {
 		return map[string]interface{}{"type": "json_object"}
 	}
 	return responseFormat
@@ -2135,7 +2191,22 @@ func DoOpenAIRequest(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, error) {
-	result, _, err := DoOpenAIRequestRaw(ctx, cfg, messages, tools, client)
+	return DoOpenAIRequestWithOptions(ctx, cfg, messages, tools, client, OpenAIChatRequestOptions{Stream: false, Tools: tools})
+}
+
+// DoOpenAIRequestWithOptions sends a non-streaming request whose callable
+// surface policy is explicitly supplied by the request owner.
+func DoOpenAIRequestWithOptions(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	opts OpenAIChatRequestOptions,
+) (*Response, error) {
+	opts.Stream = false
+	opts.Tools = tools
+	result, _, err := doOpenAIRequestRawWithOptions(ctx, cfg, messages, client, opts)
 	return result, err
 }
 
@@ -2146,10 +2217,12 @@ func DoOpenAIRequestRaw(
 	tools []map[string]interface{},
 	client *http.Client,
 ) (*Response, []byte, error) {
-	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
-		Stream: false,
-		Tools:  tools,
-	})
+	return doOpenAIRequestRawWithOptions(ctx, cfg, messages, client, OpenAIChatRequestOptions{Stream: false, Tools: tools})
+}
+
+func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, opts OpenAIChatRequestOptions) (*Response, []byte, error) {
+	tools := opts.Tools
+	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2170,64 +2243,17 @@ func DoOpenAIRequestRaw(
 		requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
 	}
 	log.Printf("[LLM] done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
-	if statusCode != http.StatusOK {
-		compactRetryAttempted := false
-		if ShouldRetryOpenAIWithoutTools(cfg, statusCode, messages, tools) {
-			log.Printf("[LLM] retry_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), traceFields)
-			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{Stream: false})
-			if err != nil {
-				return nil, body, err
-			}
-			retryStartedAt := time.Now()
-			body, statusCode, err = openAISDKChatRaw(ctx, cfg, reqBody, client)
-			if err != nil {
-				log.Printf("[LLM] retry_without_tools done %s model=%s configured_model=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
-				if statusCode == 0 {
-					return nil, body, fmt.Errorf("[%s] %w", endpoint, err)
-				}
-			}
-			requestSummary = ""
-			if statusCode != http.StatusOK {
-				requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
-			}
-			log.Printf("[LLM] retry_without_tools done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
-			if statusCode == http.StatusOK {
-				result, err := ParseNonStreamOpenAIResponseBody(body)
-				if err != nil {
-					return nil, body, err
-				}
-				return result, body, nil
-			}
-			if compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages); len(compactMessages) > 0 {
-				compactRetryAttempted = true
-				log.Printf("[LLM] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 %s", endpoint, upstreamModel, cfg.Model, traceFields)
-				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: false})
-				if err != nil {
-					return nil, body, err
-				}
-				compactStartedAt := time.Now()
-				body, statusCode, err = openAISDKChatRaw(ctx, cfg, reqBody, client)
-				if err != nil {
-					log.Printf("[LLM] retry_compact_without_tools done %s model=%s configured_model=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
-					if statusCode == 0 {
-						return nil, body, fmt.Errorf("[%s] %w", endpoint, err)
-					}
-				}
-				requestSummary = ""
-				if statusCode != http.StatusOK {
-					requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
-				}
-				log.Printf("[LLM] retry_compact_without_tools done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
-				if statusCode == http.StatusOK {
-					result, err := ParseNonStreamOpenAIResponseBody(body)
-					if err != nil {
-						return nil, body, err
-					}
-					return result, body, nil
-				}
-			}
+	if statusCode != http.StatusOK && TransparentRequestRetriesDisabled(ctx) {
+		if se := newHTTPStatusError(statusCode, body); se != nil {
+			return nil, body, se
 		}
-		if !compactRetryAttempted && ShouldRetryOpenAIWithCompact(cfg, statusCode, messages) {
+		if err != nil {
+			return nil, body, err
+		}
+		return nil, body, fmt.Errorf("llm http status %d body_len=%d", statusCode, len(body))
+	}
+	if statusCode != http.StatusOK && !TransparentRequestRetriesDisabled(ctx) {
+		if ShouldRetryOpenAIWithCompact(cfg, statusCode, messages, tools) {
 			if compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages); len(compactMessages) > 0 {
 				log.Printf("[LLM] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
 				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: false})
@@ -2273,15 +2299,13 @@ func DoOpenAIRequestRaw(
 	return result, body, nil
 }
 
-func ShouldRetryOpenAIWithoutTools(cfg corelib.MaclawLLMConfig, statusCode int, messages []interface{}, tools []map[string]interface{}) bool {
+// ShouldRetryOpenAIWithCompact permits a compatibility retry only for a
+// genuinely tool-free request. Compaction constructs a new, shorter dialogue;
+// carrying tools into the original request means that a tool call is still a
+// valid outcome, so retrying without them would change the request contract.
+func ShouldRetryOpenAIWithCompact(cfg corelib.MaclawLLMConfig, statusCode int, messages []interface{}, tools []map[string]interface{}) bool {
 	return statusCode == http.StatusBadRequest &&
-		len(tools) > 0 &&
-		cfg.NeedsConservativeOpenAICompatSanitization() &&
-		!hasOpenAIToolInteractionMessages(messages)
-}
-
-func ShouldRetryOpenAIWithCompact(cfg corelib.MaclawLLMConfig, statusCode int, messages []interface{}) bool {
-	return statusCode == http.StatusBadRequest &&
+		len(tools) == 0 &&
 		cfg.NeedsConservativeOpenAICompatSanitization() &&
 		len(CompactOpenAICompatMessagesForToollessRetry(cfg, messages)) > 0
 }
@@ -2335,16 +2359,30 @@ func isEmptyFunctionCall(raw interface{}) bool {
 
 // sseChunk represents a single SSE chunk from an OpenAI-compatible streaming response.
 type sseChunk struct {
+	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Delta struct {
 			Content          string                `json:"content"`
 			ReasoningContent string                `json:"reasoning_content"`
+			Reasoning        string                `json:"reasoning"`
+			Thinking         string                `json:"thinking"`
 			ToolCalls        []sseToolCallDelta    `json:"tool_calls"`
 			FunctionCall     *sseFunctionCallDelta `json:"function_call,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *Usage `json:"usage,omitempty"`
+}
+
+func openAISSEReasoningText(delta struct {
+	Content          string                `json:"content"`
+	ReasoningContent string                `json:"reasoning_content"`
+	Reasoning        string                `json:"reasoning"`
+	Thinking         string                `json:"thinking"`
+	ToolCalls        []sseToolCallDelta    `json:"tool_calls"`
+	FunctionCall     *sseFunctionCallDelta `json:"function_call,omitempty"`
+}) string {
+	return openAIReasoningText(delta.ReasoningContent, delta.Reasoning, delta.Thinking)
 }
 
 // sseToolCallDelta represents a tool call fragment in an SSE delta.
@@ -2371,6 +2409,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
+	var responseID string
 
 	// toolCalls accumulated by index
 	type toolCallAcc struct {
@@ -2400,6 +2439,13 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
+		if id := strings.TrimSpace(chunk.ID); id != "" {
+			if responseID == "" {
+				responseID = id
+			} else if responseID != id {
+				return nil, fmt.Errorf("OpenAI SSE stream response ID changed: %q -> %q", responseID, id)
+			}
+		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 		}
@@ -2409,7 +2455,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 
 		delta := chunk.Choices[0].Delta
 		contentBuf.WriteString(delta.Content)
-		reasoningBuf.WriteString(delta.ReasoningContent)
+		reasoningBuf.WriteString(openAISSEReasoningText(delta))
 
 		if chunk.Choices[0].FinishReason != "" {
 			finishReason = chunk.Choices[0].FinishReason
@@ -2464,10 +2510,17 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		return nil, fmt.Errorf("SSE stream read error: %w", err)
 	}
 
+	rawSSEContent := contentBuf.String()
+	visibleContent, taggedReasoning := splitOpenAIThinkingTags(rawSSEContent)
+	// Match the legacy think-tag sanitizer without altering a normal answer
+	// whose first character happens to be a backslash.
+	if strings.Contains(strings.ToLower(rawSSEContent), "<think>") {
+		visibleContent = strings.TrimPrefix(visibleContent, "\\")
+	}
 	msg := Message{
 		Role:             "assistant",
-		Content:          StripAllExtra(contentBuf.String()),
-		ReasoningContent: reasoningBuf.String(),
+		Content:          StripAllExtra(visibleContent),
+		ReasoningContent: mergeOpenAIReasoningText(reasoningBuf.String(), taggedReasoning),
 	}
 
 	// Assemble tool calls in index order
@@ -2505,7 +2558,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		}
 	}
 	if len(msg.ToolCalls) == 0 {
-		rawContent := contentBuf.String()
+		rawContent := visibleContent
 		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
 			msg.Content = ""
@@ -2518,6 +2571,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	return &Response{
+		ResponseID: responseID,
 		Choices: []Choice{{
 			Message:            msg,
 			FinishReason:       finishReason,

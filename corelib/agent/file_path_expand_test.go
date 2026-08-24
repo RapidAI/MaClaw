@@ -327,11 +327,11 @@ func TestFormatAutoExtractedDocuments_SharedBudget(t *testing.T) {
 	if sum > defaultAutoInjectMaxRunesTotal {
 		t.Fatalf("sum injected %d > total budget %d\n%v", sum, defaultAutoInjectMaxRunesTotal, blocks)
 	}
-	// Third should be truncated (15k+15k=30k, remaining 10k) or skipped if used exact.
+	// All three 15k files fit in the enlarged 120k shared budget. If this
+	// fixture is changed to exceed that budget, the third block must be capped.
 	if !strings.Contains(blocks[2], "truncated=true") && !strings.Contains(blocks[2], "budget exhausted") {
-		// remaining 10k → truncated true expected
-		if extractIntAttr(blocks[2], "injected_chars") > 10_000 {
-			t.Fatalf("third file should not exceed remaining budget:\n%s", blocks[2])
+		if extractIntAttr(blocks[2], "injected_chars") > defaultAutoInjectMaxRunesPerFile {
+			t.Fatalf("third file exceeds per-file budget:\n%s", blocks[2])
 		}
 	}
 }
@@ -349,6 +349,36 @@ func TestFormatAutoExtractedDocument_PlainJSONFallback(t *testing.T) {
 	}
 	if !strings.Contains(block, "hello") {
 		t.Fatalf("json body missing:\n%s", block)
+	}
+}
+
+func TestDocumentAutoExtractBudgetScalesWithContextWindow(t *testing.T) {
+	for _, tc := range []struct {
+		context            int
+		wantPer, wantTotal int
+	}{
+		{context: 32_000, wantPer: 26_666, wantTotal: 40_000},
+		{context: 200_000, wantPer: 66_666, wantTotal: 100_000},
+		{context: 400_000, wantPer: 120_000, wantTotal: 200_000},
+	} {
+		perFile, total := DocumentAutoExtractBudget(tc.context)
+		if perFile != tc.wantPer || total != tc.wantTotal {
+			t.Fatalf("DocumentAutoExtractBudget(%d) = (%d, %d), want (%d, %d)", tc.context, perFile, total, tc.wantPer, tc.wantTotal)
+		}
+	}
+}
+
+func TestFormatAutoExtractedDocument_RTFIsNotAutoInjectedAsRawControlText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.rtf")
+	body := `{\\rtf1\\ansi MaClaw confidential body}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if IsDocumentFilePath(path) {
+		t.Fatal("RTF must not be treated as a natively auto-extractable document")
+	}
+	if block := FormatAutoExtractedDocument(path); block != "" {
+		t.Fatalf("RTF must not inject raw control text, got:\n%s", block)
 	}
 }
 
@@ -428,6 +458,20 @@ func TestParseSelectedFilePathLines_WindowsAndUnix(t *testing.T) {
 	}
 	if !strings.Contains(rest, "For PDF") {
 		t.Fatalf("rest=%q", rest)
+	}
+}
+
+func TestSelectedLocalFilePathsFromPromptIgnoresHistoricalMarker(t *testing.T) {
+	oldPath := `C:\old\resume.pdf`
+	currentPath := `C:\current\resume.pdf`
+	historicalOnly := FilePathPromptPrefixHistorical + "\n" + oldPath + "\n"
+	if got := SelectedLocalFilePathsFromPrompt(historicalOnly); len(got) != 0 {
+		t.Fatalf("historical marker paths = %#v, want none", got)
+	}
+	text := historicalOnly + "\n" + FilePathPromptPrefix + "\n" + currentPath + "\n"
+	got := SelectedLocalFilePathsFromPrompt(text)
+	if len(got) != 1 || got[0] != currentPath {
+		t.Fatalf("current picker paths = %#v, want %q", got, currentPath)
 	}
 }
 

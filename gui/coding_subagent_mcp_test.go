@@ -58,8 +58,8 @@ func TestBuildCodingSubAgentMCPSection_WithTools(t *testing.T) {
 	if !strings.Contains(section, "playwright") {
 		t.Error("section should contain server name")
 	}
-	if !strings.Contains(section, "call_mcp_tool") {
-		t.Error("section should mention call_mcp_tool usage")
+	if !strings.Contains(section, "受限函数别名") {
+		t.Error("section should explain request-local MCP aliases")
 	}
 	if !strings.Contains(section, "必需参数: url") {
 		t.Error("section should show required args for navigate")
@@ -380,28 +380,34 @@ func TestSelectRelevantMCPToolsForTask_SkipsReachableRemoteServerWithoutCachedTo
 	}
 }
 
-func TestBuildCallMCPToolDefinition_Structure(t *testing.T) {
-	def := buildCallMCPToolDefinition()
+func TestBuildCodingMCPInvocationDefinition_Structure(t *testing.T) {
+	def := buildCodingMCPInvocationDefinition("mcp_01_alias", codingSubAgentMCPToolMatch{ToolName: "navigate"})
 
 	fn, ok := def["function"].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected function field")
 	}
 	name, _ := fn["name"].(string)
-	if name != "call_mcp_tool" {
-		t.Errorf("expected name=call_mcp_tool, got %q", name)
+	if name != "mcp_01_alias" {
+		t.Errorf("expected request-local alias, got %q", name)
 	}
 
 	params, ok := fn["parameters"].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected parameters field")
 	}
-	required, ok := params["required"].([]string)
+	props, ok := params["properties"].(map[string]interface{})
 	if !ok {
-		t.Fatal("expected required field")
+		t.Fatal("expected properties field")
 	}
-	if len(required) != 2 || required[0] != "server_id" || required[1] != "tool_name" {
-		t.Errorf("expected required=[server_id, tool_name], got %v", required)
+	if _, exists := props["server_id"]; exists {
+		t.Error("request-local MCP invocation must not accept a server selector")
+	}
+	if _, exists := props["tool_name"]; exists {
+		t.Error("request-local MCP invocation must not accept a tool selector")
+	}
+	if _, exists := props["arguments"]; !exists {
+		t.Error("request-local MCP invocation must accept business arguments")
 	}
 }
 
@@ -563,5 +569,107 @@ func TestExtractMCPToolRequiredArgs(t *testing.T) {
 	// Empty required array
 	if extractMCPToolRequiredArgs(map[string]interface{}{"required": []interface{}{}}) != nil {
 		t.Error("expected nil for empty required array")
+	}
+}
+
+// The SubAgent authorizes a call against its matched set, but the host resolves
+// server_id again over the whole inventory. These tests pin the two properties
+// that keep both resolutions on the same server: a reference that covers more
+// than one matched server is refused, and the call that goes out carries the
+// matched entry's identity instead of the string the model wrote.
+
+func TestExecuteCallMCPToolBindsInventoryIdentity(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedMCPTools: []codingSubAgentMCPToolMatch{
+			{ServerID: "pw-1", ServerName: "playwright", ToolName: "Navigate"},
+		},
+	}
+	// The model names the server by display name and gets the casing wrong.
+	args := map[string]interface{}{"server_id": "PlayWright", "tool_name": "navigate"}
+	cb.executeCallMCPTool(args)
+
+	if got := args["server_id"]; got != "PlayWright" {
+		t.Fatalf("compatibility input must not be mutated, got %v", got)
+	}
+	if got := args["tool_name"]; got != "navigate" {
+		t.Fatalf("compatibility input must not be mutated, got %v", got)
+	}
+}
+
+func TestExecuteCallMCPToolRefusesAmbiguousServerName(t *testing.T) {
+	matched := []codingSubAgentMCPToolMatch{
+		{ServerID: "pw-local", ServerName: "playwright", ToolName: "navigate"},
+		{ServerID: "pw-remote", ServerName: "playwright", ToolName: "navigate"},
+	}
+	cb := &codingSubAgentCallbacks{
+		subagent:        &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedMCPTools: matched,
+	}
+
+	// Precondition: a first-hit scan would have silently authorized pw-local,
+	// while the host resolves "playwright" over the full inventory and can land
+	// on the other server. That divergence is what the refusal prevents.
+	if matched[0].ServerID != "pw-local" {
+		t.Fatalf("test setup expects pw-local to be ordered first, got %q", matched[0].ServerID)
+	}
+
+	result := cb.executeCallMCPTool(map[string]interface{}{"server_id": "playwright", "tool_name": "navigate"})
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("outcome = %v, want blocked", result.Outcome)
+	}
+	if !strings.Contains(result.Text, "ambiguous") ||
+		!strings.Contains(result.Text, "pw-local") ||
+		!strings.Contains(result.Text, "pw-remote") {
+		t.Fatalf("ambiguity rejection should name both servers, got %q", result.Text)
+	}
+	if _, ok := cb.matchedMCPTool("playwright", "navigate"); ok {
+		t.Fatal("matchedMCPTool must fail closed on an ambiguous reference")
+	}
+}
+
+func TestExecuteCallMCPToolAcceptsServerIDWhenNamesCollide(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedMCPTools: []codingSubAgentMCPToolMatch{
+			{ServerID: "pw-local", ServerName: "playwright", ToolName: "navigate"},
+			{ServerID: "pw-remote", ServerName: "playwright", ToolName: "navigate"},
+		},
+	}
+	args := map[string]interface{}{"server_id": "pw-remote", "tool_name": "navigate"}
+	result := cb.executeCallMCPTool(args)
+
+	if result.Outcome == codingToolOutcomeBlocked {
+		t.Fatalf("a colliding display name must not block an exact server id: %q", result.Text)
+	}
+	if got := args["server_id"]; got != "pw-remote" {
+		t.Fatalf("delegated server_id = %v, want pw-remote", got)
+	}
+}
+
+func TestMatchedMCPToolTreatsRepeatedRowsForOneServerAsOne(t *testing.T) {
+	cb := &codingSubAgentCallbacks{matchedMCPTools: []codingSubAgentMCPToolMatch{
+		{ServerID: "pw-1", ServerName: "playwright", ToolName: "navigate"},
+		{ServerID: "PW-1", ServerName: "Playwright", ToolName: "Navigate"},
+	}}
+	tool, ok := cb.matchedMCPTool("playwright", "navigate")
+	if !ok {
+		t.Fatal("repeated rows describing one server must still resolve")
+	}
+	if tool.ServerID != "pw-1" {
+		t.Fatalf("resolved server id = %q, want pw-1", tool.ServerID)
+	}
+}
+
+func TestMatchedMCPToolFallsBackToServerNameWithoutID(t *testing.T) {
+	cb := &codingSubAgentCallbacks{matchedMCPTools: []codingSubAgentMCPToolMatch{
+		{ServerName: "playwright", ToolName: "navigate"},
+	}}
+	tool, ok := cb.matchedMCPTool("playwright", "navigate")
+	if !ok {
+		t.Fatal("an entry carrying only a display name must still resolve")
+	}
+	if got := codingSubAgentMCPBoundServerRef(tool); got != "playwright" {
+		t.Fatalf("bound server ref = %q, want the display name when the inventory gave no id", got)
 	}
 }

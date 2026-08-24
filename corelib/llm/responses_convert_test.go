@@ -498,6 +498,57 @@ func TestConvertToResponsesTools(t *testing.T) {
 	}
 }
 
+func TestConvertToResponsesTools_ClonesNestedParameters(t *testing.T) {
+	parameters := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{"type": "string"},
+		},
+	}
+	tools := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "read_file", "parameters": parameters,
+		},
+	}}
+
+	converted := ConvertToResponsesTools(tools)
+	convertedParameters := converted[0]["parameters"].(map[string]interface{})
+	convertedParameters["type"] = "array"
+	convertedParameters["properties"].(map[string]interface{})["path"].(map[string]interface{})["type"] = "integer"
+
+	if parameters["type"] != "object" {
+		t.Fatalf("source parameter type mutated: %#v", parameters)
+	}
+	sourcePath := parameters["properties"].(map[string]interface{})["path"].(map[string]interface{})
+	if sourcePath["type"] != "string" {
+		t.Fatalf("source nested parameter mutated: %#v", parameters)
+	}
+}
+
+func TestConvertToResponsesTools_ClonesNamedJSONCollectionTypes(t *testing.T) {
+	type namedSchema map[string]interface{}
+	type namedEnum []string
+	parameters := namedSchema{
+		"type": "object",
+		"properties": namedSchema{
+			"mode": namedSchema{"type": "string", "enum": namedEnum{"safe", "full"}},
+		},
+	}
+	tools := []map[string]interface{}{{
+		"type":     "function",
+		"function": map[string]interface{}{"name": "named", "parameters": parameters},
+	}}
+
+	converted := ConvertToResponsesTools(tools)
+	convertedParams := converted[0]["parameters"].(namedSchema)
+	convertedParams["properties"].(namedSchema)["mode"].(namedSchema)["enum"].(namedEnum)[0] = "rewritten"
+
+	if got := parameters["properties"].(namedSchema)["mode"].(namedSchema)["enum"].(namedEnum)[0]; got != "safe" {
+		t.Fatalf("source named schema mutated: %#v", parameters)
+	}
+}
+
 func TestConvertToResponsesTools_TypedFunction(t *testing.T) {
 	type functionDef struct {
 		Name        string                 `json:"name"`

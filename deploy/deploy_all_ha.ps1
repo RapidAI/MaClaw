@@ -14,6 +14,23 @@
 
 $ErrorActionPreference = 'Stop'
 
+function Import-InventoryDataFile {
+    param([string]$Path)
+
+    $importDataFile = Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue
+    if ($null -ne $importDataFile) {
+        return Import-PowerShellDataFile -LiteralPath $Path
+    }
+
+    # Windows PowerShell 5.1 lacks Import-PowerShellDataFile; deployment
+    # inventories are local generated PSD1 hashtables, so evaluate them in a child scope.
+    $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    return & {
+        param([string]$InventoryFile)
+        Invoke-Expression ([System.IO.File]::ReadAllText($InventoryFile))
+    } $resolvedPath
+}
+
 function Get-EnvOrDefault {
     param(
         [string]$Name,
@@ -89,7 +106,7 @@ function Get-ExistingClusterSecret {
     }
 
     try {
-        $data = Import-PowerShellDataFile -LiteralPath $Path
+        $data = Import-InventoryDataFile -Path $Path
         $secret = [string]$data.ClusterSecret
         if ([string]::IsNullOrWhiteSpace($secret)) {
             return ''
@@ -370,8 +387,8 @@ function Stage-DeployAssets {
     if ($hubCenterAdminIndex -notmatch '/admin/assets/js/problem-reports-tab\.js') {
         throw 'HubCenter admin page does not reference the problem reports script.'
     }
-    if ($hubCenterAdminIndex -notmatch '/admin/assets/js/petstore-admin\.js\?v=pet-store-admin-20260801-2' -or $hubCenterAdminIndex -notmatch '/admin/assets/css/admin-shell\.css\?v=pet-store-preview-toggle-20260731-1') {
-        throw 'HubCenter admin page does not reference the current Pet Store preview assets.'
+    if ($hubCenterAdminIndex -notmatch '/admin/assets/js/petstore-admin\.js\?v=[^"'']+' -or $hubCenterAdminIndex -notmatch '/admin/assets/css/admin-shell\.css\?v=[^"'']+') {
+        throw 'HubCenter admin page does not reference versioned Pet Store preview assets.'
     }
     $hubCenterPetStoreScript = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\petstore-admin.js') -Raw
     $hubCenterAdminShellCSS = Get-Content -LiteralPath (Join-Path $StageRoot 'hubcenter\web\admin\assets\css\admin-shell.css') -Raw
@@ -1175,7 +1192,10 @@ function Invoke-UrlStatusCheck {
         if ($Url -match '^https://') {
             $curlArgs += '--insecure'
         }
-        $curlArgs += @('--request', $Method)
+        $httpMethod = $Method.ToUpperInvariant()
+        if ($httpMethod -ne 'GET') {
+            $curlArgs += @('--request', $httpMethod)
+        }
         if (-not [string]::IsNullOrEmpty($Body) -and $Method -notin @('Get', 'Head')) {
             $curlArgs += @('--header', ("Content-Type: {0}" -f $ContentType), '--data', $Body)
         }

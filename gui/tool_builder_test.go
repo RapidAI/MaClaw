@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func TestDynamicToolBuilder_DoesNotEmitLegacyDynamicGateways(t *testing.T) {
+	r := NewToolRegistry()
+	for _, name := range []string{"manage_skill", "call_mcp_tool", "read_file"} {
+		r.Register(RegisteredTool{Name: name, Description: name + " description", Category: ToolCategoryBuiltin, Status: RegToolAvailable})
+	}
+
+	b := NewDynamicToolBuilder(r)
+	for _, defs := range [][]map[string]interface{}{b.BuildAll(), b.Build("run the installed skill")} {
+		for _, def := range defs {
+			name := extractToolName(def)
+			if name == "manage_skill" || name == "call_mcp_tool" {
+				t.Fatalf("generic builder emitted legacy dynamic gateway %q: %#v", name, defs)
+			}
+		}
+	}
+}
+
 func TestDynamicToolBuilder_BuildAll(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(RegisteredTool{Name: "a", Description: "tool a", Category: ToolCategoryBuiltin, Status: RegToolAvailable})

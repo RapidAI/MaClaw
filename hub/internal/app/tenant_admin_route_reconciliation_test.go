@@ -37,11 +37,7 @@ type tenantAdminRouteReconciliationCall struct {
 	tenantID string
 }
 
-func (s *tenantAdminRouteReconciliationSyncer) SyncUserRoute(_ context.Context, email string, tenantIDOpt ...string) error {
-	tenantID := ""
-	if len(tenantIDOpt) > 0 {
-		tenantID = tenantIDOpt[0]
-	}
+func (s *tenantAdminRouteReconciliationSyncer) SyncTenantAdminRoute(_ context.Context, email, tenantID string, _ ...string) error {
 	s.mu.Lock()
 	s.calls = append(s.calls, tenantAdminRouteReconciliationCall{email: email, tenantID: tenantID})
 	s.mu.Unlock()

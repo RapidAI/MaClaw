@@ -6,10 +6,15 @@
   var modulesByTab = {
     security: 'security-tab.js',
     approvalroles: 'security-tab.js',
+    httpthreat: 'httpthreat-tab.js',
     'digital-assets': 'digital-assets-tab.js',
     llmproviders: 'llm-provider-tab.js',
     modelservices: 'llm-service-tabs.js',
-    servicecards: 'llm-service-tabs.js'
+    servicecards: 'llm-service-tabs.js',
+    // The tenant System Settings page renders the New User Benefits panel
+    // from this module too. Load it before opening the page so the panel is
+    // available without first visiting Model Services.
+    system: 'llm-service-tabs.js'
   };
   var loads = Object.create(null);
   var navigationRequest = 0;

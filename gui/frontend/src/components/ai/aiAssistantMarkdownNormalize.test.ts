@@ -90,9 +90,33 @@ describe("normalizeInlineListMarkers ordered markers", () => {
         expect(normalizeInlineListMarkers("line1\\nline2")).toBe("line1\nline2");
     });
 
+    it("preserves serialized line-break-like TeX commands inside display math", () => {
+        const displayMath = "$$\n\\newline\nx + y\n$$\nAfter：1. item";
+        expect(normalizeInlineListMarkers(displayMath)).toBe("$$\n\\newline\nx + y\n$$\nAfter：\n1. item");
+
+        const bracketMath = "\\[\n\\newcommand{\\foo}{x}\n\\]\nAfter：1. item";
+        expect(normalizeInlineListMarkers(bracketMath)).toBe("\\[\n\\newcommand{\\foo}{x}\n\\]\nAfter：\n1. item");
+    });
+
+    it("preserves serialized line-break-like TeX commands inside inline math", () => {
+        const parenMath = "Value \\(\\newcommand{\\foo}{x}\\foo\\) After：1. item";
+        expect(normalizeInlineListMarkers(parenMath)).toBe("Value \\(\\newcommand{\\foo}{x}\\foo\\) After：\n1. item");
+
+        const dollarMath = "Value $\\newline x$ After：1. item";
+        expect(normalizeInlineListMarkers(dollarMath)).toBe("Value $\\newline x$ After：\n1. item");
+    });
+
     it("does not rewrite ordered markers inside fenced code blocks", () => {
         const input = "Before\n```text\n10. keep together\n```\nAfter";
         expect(normalizeInlineListMarkers(input)).toBe(input);
+    });
+
+    it("keeps tilde and longer-backtick fenced source opaque", () => {
+        const tilde = "Before\n~~~text\n完成。1. keep\n~~~\nAfter：1. change";
+        expect(normalizeInlineListMarkers(tilde)).toBe("Before\n~~~text\n完成。1. keep\n~~~\nAfter：\n1. change");
+
+        const longer = "````text\n完成。1. keep\n```\n2. still code\n````\nAfter：1. change";
+        expect(normalizeInlineListMarkers(longer)).toBe("````text\n完成。1. keep\n```\n2. still code\n````\nAfter：\n1. change");
     });
 
     it("leaves pure prose without ordered-marker shapes unchanged", () => {
@@ -131,6 +155,24 @@ describe("attachBareHeadingMarkers list-title attach", () => {
     it("attaches bare ### to an ordered-list title", () => {
         expect(attachBareHeadingMarkers(["###", "1. 生活指数"])).toEqual([
             "### 生活指数",
+        ]);
+    });
+
+    it("does not attach heading markers inside tilde or longer-backtick fences", () => {
+        expect(attachBareHeadingMarkers(["~~~text", "###", "source", "~~~", "###", "Title"])).toEqual([
+            "~~~text", "###", "source", "~~~", "### Title",
+        ]);
+        expect(attachBareHeadingMarkers(["````text", "###", "source", "```", "###", "source", "````"])).toEqual([
+            "````text", "###", "source", "```", "###", "source", "````",
+        ]);
+    });
+
+    it("does not attach heading markers inside display math, then resumes after it", () => {
+        expect(attachBareHeadingMarkers(["$$", "###", "x", "$$", "###", "Title"])).toEqual([
+            "$$", "###", "x", "$$", "### Title",
+        ]);
+        expect(attachBareHeadingMarkers(["\\[", "###", "x\\]", "###", "Title"])).toEqual([
+            "\\[", "###", "x\\]", "### Title",
         ]);
     });
 });

@@ -137,6 +137,50 @@ func (h *IMMessageHandler) resolveTaskContext(
 	return decision
 }
 
+// resolveTaskContextWithClassification is reserved for a recovery candidate
+// whose interrupted work must be explicitly associated with the current user
+// request. Normal foreground turns remain on ResolveFast so task switching
+// does not add an auxiliary LLM hop to every request.
+func (h *IMMessageHandler) resolveTaskContextWithClassification(
+	ctx context.Context,
+	userID, trimmedMsg string,
+	history []agent.ConversationEntry,
+	hasPendingAskUser bool,
+	isConfirmedResume bool,
+	explicitNewTask bool,
+) agent.TaskContextDecision {
+	h.ensureTaskContextManager()
+
+	var archived []agent.ArchivedTask
+	if h.taskArchive != nil {
+		archived = h.taskArchive.List(userID)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "task-context-recovery", OwnerID: userID})
+	lastAccess := time.Time{}
+	if h.memory != nil {
+		lastAccess = h.memory.LastAccessTime(userID)
+	}
+	decision := h.taskContextManager.Resolve(agent.ResolveInput{
+		Context:                 ctx,
+		OwnerID:                 userID,
+		UserMessage:             trimmedMsg,
+		History:                 history,
+		LastAccess:              lastAccess,
+		ArchivedTasks:           archived,
+		HasPendingAskUser:       hasPendingAskUser,
+		IsConfirmedResume:       isConfirmedResume,
+		HasIncompleteTaskMarker: hasIncompleteTaskMarker(history),
+		HasActiveBackgroundTask: h.hasActiveCommandBackgroundTaskForOwner(userID),
+		ExplicitNewTask:         explicitNewTask,
+	})
+	log.Printf("[TaskContext] recovery user=%s action=%s reason=%q source=%s historyLen=%d archivedLen=%d",
+		userID, decision.Action, decision.Reason, decision.Source, len(history), len(archived))
+	return decision
+}
+
 // archiveCurrentTask saves the current conversation as an archived task
 // before clearing history for a new task.
 func (h *IMMessageHandler) archiveCurrentTask(userID string, history []agent.ConversationEntry, status agent.ArchivedTaskStatus) {

@@ -92,6 +92,9 @@ func TestBuildProjectTabContextMessageIncludesSceneSources(t *testing.T) {
 	if !strings.Contains(message, "full: read_file") {
 		t.Fatalf("context message = %q, want read_file drill-down hint", message)
 	}
+	if strings.Contains(message, "Preserve full workflow design") {
+		t.Fatalf("catalog pointer must not dump warehouse body, got %q", message)
+	}
 }
 
 func TestGetProjectSceneReturnsSourceBackedArtifacts(t *testing.T) {

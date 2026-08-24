@@ -604,7 +604,8 @@ func TestOfferAndConsumePostRecordingChoice(t *testing.T) {
 		{Role: "assistant", Content: "正在打开录音"},
 	}
 	report := "[Recording completed]\nstatus: stopped\ntitle: 讨论\npath: C:\\tmp\\a.wav\nduration_sec: 12\nsize_bytes: 1000\nformat: wav\n"
-	resp := h.offerPostRecordingChoice("u1", "讨论", "现场录制", report, "zh", prior)
+	carried := agent.NewWorkingState("keep recording goal")
+	resp := h.offerPostRecordingChoice("u1", "讨论", "现场录制", report, "zh", prior, carried)
 	if resp == nil {
 		t.Fatal("expected response")
 	}
@@ -622,6 +623,11 @@ func TestOfferAndConsumePostRecordingChoice(t *testing.T) {
 	}
 	if !h.hasActivePendingPostRecording("u1", h.memory.Load("u1")) {
 		t.Fatal("pending should be active after offer")
+	}
+	if raw, ok := h.pendingPostRecording.Load("u1"); !ok {
+		t.Fatal("pending missing")
+	} else if pending := raw.(*pendingPostRecordingState); pending.WorkingState == nil || pending.WorkingState.Goal != "keep recording goal" {
+		t.Fatalf("post-recording lost working state: %#v", pending.WorkingState)
 	}
 
 	// Casual reply keeps pending and injects soft hint.
@@ -888,7 +894,7 @@ func TestOfferPostRecordingChoiceEnglish(t *testing.T) {
 	defer mem.Stop()
 	h := &IMMessageHandler{memory: mem}
 	report := "[Recording completed]\nstatus: stopped\ntitle: Standup\npath: /tmp/a.wav\nduration_sec: 5\nsize_bytes: 1000\nformat: wav\n"
-	resp := h.offerPostRecordingChoice("u2", "Standup", "", report, "en", nil)
+	resp := h.offerPostRecordingChoice("u2", "Standup", "", report, "en", nil, nil)
 	if resp == nil {
 		t.Fatal("expected response")
 	}

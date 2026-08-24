@@ -26,10 +26,10 @@ function Invoke-GoTestPackage {
 }
 
 # core: canary FNV, adaptive doctor checks, prompt stats / A/B / deny / export
-$doctorRun = "TestSharedLoop|TestAdaptivePrompt|TestRunIncludesAdaptive"
-$agentRun = "TestRecordLight|TestPromptProfile|TestResolvePromptProfile|TestShouldAB|TestFormatPrompt|TestAdaptivePromptHeartbeat|TestWritePromptProfile|TestMergePrompt|TestLoadPrompt"
+$doctorRun = "TestSharedLoop|TestAdaptivePrompt|TestRunIncludesAdaptive|TestWorkingState|TestRunIncludesWorkingState"
+$agentRun = "TestRecordLight|TestPromptProfile|TestResolvePromptProfile|TestShouldAB|TestFormatPrompt|TestAdaptivePromptHeartbeat|TestWritePromptProfile|TestMergePrompt|TestLoadPrompt|TestWorkingState|TestRunLoop_WorkingState"
 $cliRun = "TestSharedLoop"
-$guiRun = "TestPreviewSharedLoop|TestSharedLoopCanary|TestGetSharedAgentLoop|TestExportAdaptive|TestRunDoctor_Always|TestRunDoctor_Includes"
+$guiRun = "TestPreviewSharedLoop|TestSharedLoopCanary|TestGetSharedAgentLoop|TestExportAdaptive|TestRunDoctor_Always|TestRunDoctor_Includes|TestSharedActiveWorkingStateGoal|TestSharedLoopUserFacingText"
 $tuiRun = "TestFormatCanary|TestFirstNonFlagArg|TestSlashCanary"
 
 Invoke-GoTestPackage -Package "./corelib/doctor/" -Run $doctorRun -TimeoutSec 60

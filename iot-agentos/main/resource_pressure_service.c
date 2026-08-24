@@ -39,6 +39,24 @@ static bool s_storage_available;
 static char s_storage_label[16];
 static device_resource_pressure_level_t s_level;
 
+/* Platform Resource is the only physical sampler, but its result crosses a
+ * shared service boundary before it can admit optional work.  A successful
+ * return alone is insufficient: a broken private port must not turn an
+ * unversioned, truncated, or arithmetically inconsistent snapshot into a
+ * NORMAL/PRESSURE decision. */
+static bool resource_pressure_snapshot_is_valid(
+    const device_resource_pressure_snapshot_t *snapshot) {
+    if (!snapshot ||
+        snapshot->struct_size != sizeof(device_resource_pressure_snapshot_t) ||
+        snapshot->abi_version != DEVICE_RESOURCE_PRESSURE_ABI_VERSION) {
+        return false;
+    }
+    if (!snapshot->storage_available) {
+        return snapshot->storage_total_bytes == 0 && snapshot->storage_free_bytes == 0;
+    }
+    return snapshot->storage_free_bytes <= snapshot->storage_total_bytes;
+}
+
 /* Deinit owns both the coordinator and sampling locks. Keep one deadline so
  * a blocked coordinator cannot silently grant the sampling lock a second,
  * independent full timeout window. */
@@ -110,7 +128,7 @@ bool resource_pressure_service_get_snapshot(device_resource_pressure_snapshot_t 
     device_resource_pressure_snapshot_t snapshot;
     const bool sampled = platform_resource_sample(
         s_storage_label, s_storage_available, &snapshot);
-    if (!sampled) {
+    if (!sampled || !resource_pressure_snapshot_is_valid(&snapshot)) {
         xSemaphoreGive(s_lock);
         return false;
     }

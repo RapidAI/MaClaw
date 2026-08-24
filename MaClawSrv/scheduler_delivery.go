@@ -24,6 +24,11 @@ var (
 	// Optional live WeChat proactive sender (registered from HTTPServer / weixin runtime).
 	srvWeixinProactiveMu     sync.RWMutex
 	srvWeixinProactiveSender func(text string) (peer string, err error)
+
+	// Optional live WeChat exact-target file sender. It must send only to the
+	// supplied peer and must not fall back to the last-active conversation.
+	srvWeixinExactFileMu     sync.RWMutex
+	srvWeixinExactFileSender func(ctx context.Context, peer string, data []byte, fileName, mimeType string) error
 )
 
 // setSrvWeixinProactiveSender wires live WeChat proactive push for scheduled delivery.
@@ -38,6 +43,18 @@ func getSrvWeixinProactiveSender() func(text string) (peer string, err error) {
 	srvWeixinProactiveMu.RLock()
 	defer srvWeixinProactiveMu.RUnlock()
 	return srvWeixinProactiveSender
+}
+
+func setSrvWeixinExactFileSender(fn func(ctx context.Context, peer string, data []byte, fileName, mimeType string) error) {
+	srvWeixinExactFileMu.Lock()
+	defer srvWeixinExactFileMu.Unlock()
+	srvWeixinExactFileSender = fn
+}
+
+func getSrvWeixinExactFileSender() func(ctx context.Context, peer string, data []byte, fileName, mimeType string) error {
+	srvWeixinExactFileMu.RLock()
+	defer srvWeixinExactFileMu.RUnlock()
+	return srvWeixinExactFileSender
 }
 
 // deliverScheduledTaskResult pushes task output to configured channel targets.
@@ -163,7 +180,7 @@ func deliverSrvIMFileToTarget(ctx context.Context, svc *agentservice.Service, pr
 		if err != nil {
 			return err
 		}
-		return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: peer, FileData: data, FileName: fileName, MediaType: "file", IsGroup: isGroup, Strict: true})
+		return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: peer, FileData: data, FileName: fileName, MediaType: srvIMOutgoingMediaKind(mimeType), IsGroup: isGroup, Strict: true})
 	case scheduler.DeliveryChannelTelegram:
 		gw, err := newTelegramGatewayForPrincipal(svc, principal)
 		if err != nil {
@@ -177,7 +194,14 @@ func deliverSrvIMFileToTarget(ctx context.Context, svc *agentservice.Service, pr
 		if err != nil {
 			return fmt.Errorf("telegram: chat_id must be numeric: %q", peer)
 		}
-		return gw.SendMedia(ctx, telegram.OutgoingMedia{ChatID: chatID, FileType: "document", FileData: base64.StdEncoding.EncodeToString(data), FileName: fileName, MimeType: mimeType, Caption: strings.TrimSpace(caption)})
+		fileType := "document"
+		switch srvIMOutgoingMediaKind(mimeType) {
+		case "image":
+			fileType = "photo"
+		case "voice":
+			fileType = "voice"
+		}
+		return gw.SendMedia(ctx, telegram.OutgoingMedia{ChatID: chatID, FileType: fileType, FileData: base64.StdEncoding.EncodeToString(data), FileName: fileName, MimeType: mimeType, Caption: strings.TrimSpace(caption)})
 	case scheduler.DeliveryChannelQQ:
 		if target.Kind != "" && target.Kind != scheduler.DeliveryKindUser {
 			return fmt.Errorf("qq file delivery only supports kind=user")
@@ -190,12 +214,43 @@ func deliverSrvIMFileToTarget(ctx context.Context, svc *agentservice.Service, pr
 		if err != nil {
 			return err
 		}
-		return gw.SendMedia(ctx, qqbot.OutgoingMedia{OpenID: peer, FileType: 4, FileData: base64.StdEncoding.EncodeToString(data), FileName: fileName, MimeType: mimeType, Caption: strings.TrimSpace(caption)})
+		fileType := 4
+		switch srvIMOutgoingMediaKind(mimeType) {
+		case "image":
+			fileType = 1
+		case "voice":
+			fileType = 3
+		}
+		return gw.SendMedia(ctx, qqbot.OutgoingMedia{OpenID: peer, FileType: fileType, FileData: base64.StdEncoding.EncodeToString(data), FileName: fileName, MimeType: mimeType, Caption: strings.TrimSpace(caption)})
 	case scheduler.DeliveryChannelWeixin:
-		return fmt.Errorf("weixin exact file delivery is unavailable in MaClawSrv; use the active WeChat conversation")
+		if target.Kind == scheduler.DeliveryKindGroup || strings.TrimSpace(target.GroupID) != "" {
+			return fmt.Errorf("weixin file delivery only supports kind=user")
+		}
+		peer, _, err := resolveSrvMediaPeer(store, channel, target, false)
+		if err != nil {
+			return err
+		}
+		if scheduler.IsSelfPeerID(peer) {
+			return fmt.Errorf("weixin: exact target id is required")
+		}
+		send := getSrvWeixinExactFileSender()
+		if send == nil {
+			return fmt.Errorf("weixin file delivery unavailable")
+		}
+		return send(ctx, peer, data, fileName, mimeType)
 	default:
 		return fmt.Errorf("unsupported channel %q", channel)
 	}
+}
+
+func srvIMOutgoingMediaKind(mimeType string) string {
+	if _, ok := agentservice.ReviewedHostTrustedImageMIME("", mimeType); ok {
+		return "image"
+	}
+	if _, ok := agentservice.ReviewedHostTrustedAudioMIMEType("", mimeType); ok {
+		return "voice"
+	}
+	return "file"
 }
 
 func resolveSrvMediaPeer(store *scheduler.DeliveryStateStore, channel string, target scheduler.DeliveryTarget, allowGroup bool) (string, bool, error) {

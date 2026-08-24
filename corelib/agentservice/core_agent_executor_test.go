@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -135,6 +136,262 @@ func setupCaptureAgentService(t *testing.T, executor Executor) (*Service, Princi
 		t.Fatalf("CreateInstance: %v", err)
 	}
 	return svc, principal, *inst
+}
+
+func issueServiceTaskContinuationHandle(t *testing.T, svc *Service, principal Principal, session Session, rootTaskID string) string {
+	t.Helper()
+	resources, err := OpenDynamicSemanticRoutingResources(svc.DataRoot())
+	if err != nil {
+		t.Fatalf("open dynamic semantic routing resources: %v", err)
+	}
+	registry := dynamicSemanticRegistry(t)
+	routing, err := resources.Routing(registry, dynamicNeedResolverFunc(func(context.Context, DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+		return DynamicCapabilityNeedResolution{Managed: true, Needs: []coretool.CapabilityNeed{{ID: "need", Capability: "test.dynamic.execute", Required: true}}}, nil
+	}), nil, time.Minute)
+	if err != nil {
+		_ = resources.Close()
+		t.Fatalf("configure dynamic semantic routing: %v", err)
+	}
+	provider, _, _, err := ProjectMCPDynamicProvider(MCPToolEntry{
+		ServerID: "continuation-test",
+		ToolName: "lookup",
+		InputSchema: map[string]interface{}{
+			"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false,
+		},
+		Contract: testDynamicCapabilityContract(),
+	})
+	if err != nil {
+		_ = resources.Close()
+		t.Fatalf("project continuation provider: %v", err)
+	}
+	snapshot, err := coretool.NewToolCatalog(registry).Publish([]coretool.ProviderSpec{provider}, time.Now().UTC())
+	if err != nil {
+		_ = resources.Close()
+		t.Fatalf("publish continuation catalog: %v", err)
+	}
+	trustedSessionID := semanticTaskSessionID(principal, session)
+	plan, err := coretool.NewToolPlanner(registry).Plan(coretool.RouteRequest{
+		RootTaskID: rootTaskID,
+		SessionID:  trustedSessionID,
+		TurnID:     "initial",
+		Snapshot:   snapshot,
+		Needs:      []coretool.CapabilityNeed{{ID: "need", Capability: "test.dynamic.execute", Required: true}},
+	})
+	if err != nil {
+		_ = resources.Close()
+		t.Fatalf("plan continuation route: %v", err)
+	}
+	scope := coretool.InvocationScope{RootTaskID: rootTaskID, PlanID: plan.ID, SessionID: trustedSessionID, TurnID: "initial", PrincipalID: memoryOwnerIDForPrincipal(principal)}
+	if _, _, err := resources.coordinator.PublishSurface(coretool.SurfacePublishRequest{
+		Revision: coretool.RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest},
+		TenantID: principal.TenantID,
+		Issuer:   routing.Issuer,
+		GrantTTL: time.Minute,
+		Now:      time.Now().UTC(),
+	}); err != nil {
+		_ = resources.Close()
+		t.Fatalf("publish continuation route: %v", err)
+	}
+	handle, err := resources.coordinator.IssueTaskContinuationHandle(principal.TenantID, memoryOwnerIDForPrincipal(principal), trustedSessionID, rootTaskID, time.Minute, time.Now().UTC())
+	if err != nil {
+		_ = resources.Close()
+		t.Fatalf("issue continuation handle: %v", err)
+	}
+	svc.dynamicSemanticMu.Lock()
+	previous := svc.dynamicSemantic
+	svc.dynamicSemantic = resources
+	svc.dynamicSemanticMu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+	return handle.ID
+}
+
+func TestSendMessageConsumesOnlyScopeBoundTaskContinuationHandle(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	t.Cleanup(func() { _ = svc.Close() })
+	first, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleID := issueServiceTaskContinuationHandle(t, svc, principal, *first, "root-continuation")
+
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{SessionID: second.ID, Content: "continue", ContinuationHandle: handleID}); err == nil || !strings.Contains(err.Error(), "task continuation rejected") {
+		t.Fatalf("cross-session continuation error = %v", err)
+	}
+	messages, err := svc.store.ListMessages(second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("rejected continuation wrote messages: %#v", messages)
+	}
+
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{SessionID: first.ID, Content: "continue", ContinuationHandle: handleID}); err != nil {
+		t.Fatalf("same-scope continuation: %v", err)
+	}
+	if capture.req.TaskRelation == nil || !capture.req.TaskRelation.permitsContinuation(DynamicCapabilityNeedRequest{
+		RootTaskID: "root-continuation", Principal: principal, SessionID: semanticTaskSessionID(principal, *first),
+	}) {
+		t.Fatalf("executor did not receive verified task relation: %#v", capture.req.TaskRelation)
+	}
+	if capture.req.TaskRelation.RootTaskID != "root-continuation" {
+		t.Fatalf("continued root = %q", capture.req.TaskRelation.RootTaskID)
+	}
+
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{SessionID: first.ID, Content: "continue again", ContinuationHandle: handleID}); err == nil || !strings.Contains(err.Error(), "not_active") {
+		t.Fatalf("replayed continuation error = %v", err)
+	}
+}
+
+func TestSendMessageRefineCreatesOnlyServerBoundAmendmentDecision(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	t.Cleanup(func() { _ = svc.Close() })
+	session, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "refine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleID := issueServiceTaskContinuationHandle(t, svc, principal, *session, "root-refine")
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		SessionID: session.ID, Content: "改为先收集只读证据，再执行变更", ContinuationHandle: handleID, RefineTask: true,
+	}); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+	relation := capture.req.TaskRelation
+	if relation == nil || relation.Kind != TaskRelationRefine || !relation.permitsContinuation(DynamicCapabilityNeedRequest{
+		Principal: principal, RootTaskID: "root-refine", SessionID: semanticTaskSessionID(principal, *session),
+	}) {
+		t.Fatalf("verified refine relation=%#v", relation)
+	}
+	if relation.AmendmentCommandID == "" || relation.AmendmentDigest == "" || relation.AmendmentRevision == 0 || relation.AmendmentFencing == 0 {
+		t.Fatalf("missing server amendment binding=%#v", relation)
+	}
+}
+
+func TestSendMessageRefineRetriesOnlySameServerBoundAmendment(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	t.Cleanup(func() { _ = svc.Close() })
+	session, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "refine retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleID := issueServiceTaskContinuationHandle(t, svc, principal, *session, "root-refine-retry")
+	const amendment = "先验证证据，再执行变更"
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		SessionID: session.ID, Content: amendment, ContinuationHandle: handleID, RefineTask: true,
+	}); err != nil {
+		t.Fatalf("first refine: %v", err)
+	}
+	first := capture.req.TaskRelation
+	if first == nil || first.Kind != TaskRelationRefine {
+		t.Fatalf("first relation=%#v", first)
+	}
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		SessionID: session.ID, Content: amendment, ContinuationHandle: handleID, RefineTask: true,
+	}); err != nil {
+		t.Fatalf("same-amendment retry: %v", err)
+	}
+	retry := capture.req.TaskRelation
+	if retry == nil || retry.AmendmentCommandID != first.AmendmentCommandID || retry.AmendmentDigest != first.AmendmentDigest || retry.RootTaskID != first.RootTaskID {
+		t.Fatalf("retry must recover only the original command: first=%#v retry=%#v", first, retry)
+	}
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		SessionID: session.ID, Content: "改成直接执行", ContinuationHandle: handleID, RefineTask: true,
+	}); err == nil || !strings.Contains(err.Error(), "not_active") {
+		t.Fatalf("different amendment replay err=%v", err)
+	}
+	messages, err := svc.store.ListMessages(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The two accepted attempts each complete a user/assistant exchange; the
+	// rejected alternate amendment must not add a third user message or run.
+	if len(messages) != 4 {
+		t.Fatalf("rejected alternate amendment wrote messages=%#v", messages)
+	}
+}
+
+func TestSendMessageRejectsRefineWithoutExplicitTaskHandle(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	t.Cleanup(func() { _ = svc.Close() })
+	session, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "refine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{SessionID: session.ID, Content: "改一下", RefineTask: true}); err == nil || !strings.Contains(err.Error(), "requires continuation handle") {
+		t.Fatalf("missing handle refine err=%v", err)
+	}
+	messages, err := svc.store.ListMessages(session.ID)
+	if err != nil || len(messages) != 0 {
+		t.Fatalf("rejected refine wrote messages=%#v err=%v", messages, err)
+	}
+}
+
+func TestCoreDynamicSemanticRefinePublishesAtomicChildSurface(t *testing.T) {
+	dataRoot := t.TempDir()
+	resources, err := OpenDynamicSemanticRoutingResources(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resources.Close()
+	registry := dynamicSemanticRegistry(t)
+	routing, err := resources.Routing(registry, dynamicNeedResolverFunc(func(_ context.Context, request DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+		return DynamicCapabilityNeedResolution{Managed: true, Needs: []coretool.CapabilityNeed{{ID: "need", Capability: "test.dynamic.execute", Required: true}}}, nil
+	}), nil, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &atomicMCPInventoryProviderStub{
+		boundMCPProviderStub: &boundMCPProviderStub{},
+		entries:              []MCPToolEntry{{ServerID: "refine", ToolName: "lookup", InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}, Contract: testDynamicCapabilityContract()}},
+		lifecycle:            CompleteDynamicCatalogLifecycle(),
+	}
+	principal := Principal{TenantID: "refine-tenant", UserID: "refine-user"}
+	loopID, rootID := "refine-session", "refine-root"
+	parentCallback := &coreAgentCallbacks{ctx: context.Background(), principal: principal, userText: "find", loopID: loopID, dynamicOperationScope: rootID, mcpProvider: provider, dynamicSemanticRouting: &routing}
+	if defs, managed := parentCallback.dynamicSemanticToolDefinitions(); !managed || len(defs) != 1 {
+		t.Fatalf("parent defs=%#v managed=%v", defs, managed)
+	}
+	parentScope := parentCallback.dynamicSemanticSurface.scope
+	parent, err := routing.RouteState.CurrentRevision(parentScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := resources.coordinator.IssueTaskContinuationHandle(principal.TenantID, memoryOwnerIDForPrincipal(principal), loopID, rootID, time.Minute, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, command, err := resources.coordinator.PrepareTaskRefinement(handle.ID, principal.TenantID, memoryOwnerIDForPrincipal(principal), loopID, coretool.SchemaDigest([]byte("task-amendment/v1\x00also summarize")), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation := verifiedTaskRelationDecision(TaskRelationDecision{
+		Kind: TaskRelationRefine, RootTaskID: rootID, ContinuationHandle: continuation.ID,
+		AmendmentCommandID: command.ID, AmendmentDigest: command.Digest, AmendmentRevision: command.ParentRevision, AmendmentFencing: command.ParentFencingToken,
+	}, principal, loopID)
+	childCallback := &coreAgentCallbacks{ctx: context.Background(), principal: principal, userText: "also summarize", loopID: loopID, dynamicOperationScope: "refine-operation", taskRelation: relation, mcpProvider: provider, dynamicSemanticRouting: &routing}
+	if defs, managed := childCallback.dynamicSemanticToolDefinitions(); !managed || len(defs) != 1 {
+		t.Fatalf("child defs=%#v managed=%v", defs, managed)
+	}
+	childScope := childCallback.dynamicSemanticSurface.scope
+	state, err := routing.RouteState.Open(childScope, childCallback.dynamicSemanticSurface.plan, time.Now().UTC())
+	if err != nil || state.Revision == nil || state.Revision.Revision != parent.Revision+1 || state.Amendment == nil || state.Amendment.CommandID != command.ID {
+		t.Fatalf("child state=%#v err=%v", state, err)
+	}
+	if state.ParentRevision == nil || state.ParentRevision.Revision != parent.Revision || childScope.TurnID == parentScope.TurnID {
+		t.Fatalf("child parent=%#v childScope=%#v parentScope=%#v", state.ParentRevision, childScope, parentScope)
+	}
+	if _, err := resources.coordinator.ValidateTaskAmendmentCommand(command.ID, principal.TenantID, memoryOwnerIDForPrincipal(principal), loopID, rootID, time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "not_active") {
+		t.Fatalf("child publish must consume amendment command: %v", err)
+	}
 }
 
 func TestBuildConversationIncludesVisionAttachment(t *testing.T) {
@@ -264,7 +521,7 @@ func TestSendMessageRejectsInvalidAttachments(t *testing.T) {
 		data string
 	}{
 		{name: "bad base64", data: "not-base64"},
-		{name: "too large", data: base64.StdEncoding.EncodeToString(make([]byte, coreim.ThirdPartyMaxDirectBytes+1))},
+		{name: "too large unrecognized", data: base64.StdEncoding.EncodeToString(make([]byte, coreim.ThirdPartyMaxDirectBytes+1))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
@@ -273,8 +530,8 @@ func TestSendMessageRejectsInvalidAttachments(t *testing.T) {
 				Content: "read",
 				Attachments: []agent.MessageAttachment{{
 					Type:     "file",
-					FileName: "note.txt",
-					MimeType: "text/plain",
+					FileName: "payload.bin",
+					MimeType: "application/octet-stream",
 					Data:     tc.data,
 				}},
 			})
@@ -282,6 +539,53 @@ func TestSendMessageRejectsInvalidAttachments(t *testing.T) {
 				t.Fatalf("expected attachment validation error")
 			}
 		})
+	}
+}
+
+func TestSendMessageAcceptsReviewedHostAudioOverDirectLimit(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	payload := make([]byte, coreim.ThirdPartyMaxDirectBytes+1)
+	_, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		AgentID: "default",
+		Title:   "attachments",
+		Content: "transcribe",
+		Attachments: []agent.MessageAttachment{{
+			Type:     "audio",
+			FileName: "recording.wav",
+			MimeType: "audio/wav",
+			Data:     base64.StdEncoding.EncodeToString(payload),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage trusted audio: %v", err)
+	}
+	if len(capture.req.Message.Attachments) != 1 || capture.req.Message.Attachments[0].MimeType != "audio/wav" {
+		t.Fatalf("executor attachments = %#v", capture.req.Message.Attachments)
+	}
+}
+
+func TestSendMessageAcceptsReviewedHostUnnamedPDFOverDirectLimit(t *testing.T) {
+	capture := &captureExecutor{}
+	svc, principal, inst := setupCaptureAgentService(t, capture)
+	payload := append([]byte("%PDF-1.4\n"), make([]byte, coreim.ThirdPartyMaxDirectBytes)...)
+	_, _, _, err := svc.SendMessage(context.Background(), principal, inst.ID, SendMessageInput{
+		AgentID: "default",
+		Title:   "attachments",
+		Content: "read",
+		Attachments: []agent.MessageAttachment{{
+			Type:     "file",
+			FileName: "file",
+			MimeType: "application/octet-stream",
+			Data:     base64.StdEncoding.EncodeToString(payload),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage unnamed pdf: %v", err)
+	}
+	got := capture.req.Message.Attachments
+	if len(got) != 1 || got[0].MimeType != "application/pdf" || got[0].FileName != "document.pdf" {
+		t.Fatalf("executor attachments = %#v", got)
 	}
 }
 
@@ -1278,14 +1582,14 @@ func TestKnowledgeAutoRecallFormatsEvidenceWithCitation(t *testing.T) {
 		Snippet:   "马勇博士共有 3 项发明专利。",
 	}
 
-	if got := knowledgeSourceLabel(r); got != "材料原文" {
-		t.Fatalf("knowledgeSourceLabel = %q", got)
+	if got := knowledge.FormatSourceLabel(r); got != "材料原文" {
+		t.Fatalf("FormatSourceLabel = %q", got)
 	}
-	if got := knowledgeCitationLabel(r); !strings.Contains(got, "section 3") || !strings.Contains(got, "page 7") || !strings.Contains(got, "专利记录") {
-		t.Fatalf("knowledgeCitationLabel missing evidence details: %q", got)
+	if got := knowledge.FormatCitationLabel(r); !strings.Contains(got, "section 3") || !strings.Contains(got, "page 7") || !strings.Contains(got, "专利记录") {
+		t.Fatalf("FormatCitationLabel missing evidence details: %q", got)
 	}
-	if got := knowledgeSnippet(r); got != "马勇博士共有 3 项发明专利。" {
-		t.Fatalf("knowledgeSnippet = %q", got)
+	if got := knowledge.BestContentText(r); got != "马勇博士共有 3 项发明专利。" {
+		t.Fatalf("BestContentText = %q", got)
 	}
 }
 
@@ -1304,8 +1608,8 @@ func TestKnowledgeAutoRecallLabelsDoNotExposeImageImportPath(t *testing.T) {
 		},
 	}
 	for name, label := range map[string]string{
-		"source":   knowledgeSourceLabel(r),
-		"citation": knowledgeCitationLabel(r),
+		"source":   knowledge.FormatSourceLabel(r),
+		"citation": knowledge.FormatCitationLabel(r),
 	} {
 		if strings.Contains(label, privatePath) || strings.Contains(label, "file://") {
 			t.Fatalf("auto-recall %s leaked image path: %q", name, label)
@@ -1339,19 +1643,17 @@ func TestCoreAgentBuildSystemPromptAutoRecallsKnowledgeAfterFirstTurn(t *testing
 	cb := &coreAgentCallbacks{knowledgeStore: store}
 	prompt := cb.BuildSystemPrompt("马勇博士有几个专利？", false)
 
-	if !strings.Contains(prompt, "知识库参考") || !strings.Contains(prompt, "马勇博士共有 3 项发明专利") {
-		t.Fatalf("expected knowledge auto recall on follow-up turns, got %q", prompt)
+	if strings.Contains(prompt, "知识库参考（自动检索）") || strings.Contains(prompt, "马勇博士共有 3 项发明专利") {
+		t.Fatalf("core first/follow-up prompt must not dump auto-recall bodies, got %q", prompt)
 	}
 }
 
 func TestCoreAgentEnterpriseAutoRecallFromDataDirNoopEmpty(t *testing.T) {
 	t.Setenv(agent.PromptProfileEnvKey, "full")
-	// Empty dataDir with no enterprise libs must not panic or inject header.
 	cb := &coreAgentCallbacks{dataDir: t.TempDir()}
-	var b strings.Builder
-	cb.appendKnowledgeAutoRecall(&b, "公司报销政策是什么")
-	if strings.Contains(b.String(), "企业知识库参考") {
-		t.Fatalf("unexpected enterprise header: %q", b.String())
+	prompt := cb.BuildSystemPrompt("公司报销政策是什么", true)
+	if strings.Contains(prompt, "企业知识库参考") || strings.Contains(prompt, agent.EnterpriseKnowledgeAutoRecallHeader) {
+		t.Fatalf("core prompt must not dump enterprise auto-recall, got %q", prompt)
 	}
 }
 
@@ -2560,6 +2862,29 @@ func TestCoreAgentBuildToolsDisablesBashByDefault(t *testing.T) {
 	}
 }
 
+func TestCoreAgentBuildToolsReturnsRequestLocalSchemas(t *testing.T) {
+	cb := &coreAgentCallbacks{}
+	first := cb.BuildTools("")
+	second := cb.BuildTools("")
+	if len(first) == 0 || len(second) == 0 {
+		t.Fatal("expected core tool definitions")
+	}
+	firstParams := first[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	firstParams["request_local_mutation"] = true
+	if properties, ok := firstParams["properties"].(map[string]interface{}); ok {
+		properties["request_local_mutation"] = map[string]interface{}{"type": "string"}
+	}
+	secondParams := second[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if _, leaked := secondParams["request_local_mutation"]; leaked {
+		t.Fatal("parameter mutation leaked into successor core request")
+	}
+	if properties, ok := secondParams["properties"].(map[string]interface{}); ok {
+		if _, leaked := properties["request_local_mutation"]; leaked {
+			t.Fatal("nested parameter mutation leaked into successor core request")
+		}
+	}
+}
+
 func TestCoreAgentBuildTools_LightFiltersCodingTools(t *testing.T) {
 	t.Setenv(agent.PromptProfileEnvKey, "light")
 	cb := &coreAgentCallbacks{
@@ -2587,6 +2912,152 @@ func TestCoreAgentBuildTools_LightFiltersCodingTools(t *testing.T) {
 	// (fail-open would re-include bash — so absence of bash is the key assert.)
 	if len(tools) == 0 {
 		t.Fatal("expected some light tools to remain (or empty if none allowed)")
+	}
+}
+
+func TestCoreAgentBuildTools_ManagedDynamicSemanticSurfaceDoesNotUnionLegacyTools(t *testing.T) {
+	registry := coretool.NewCapabilityRegistry("core-dynamic-surface")
+	if err := registry.Register(coretool.CapabilityDescriptor{
+		ID: "test.dynamic.read", Version: "v1", Owner: "test", Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	routing := DynamicSemanticRouting{
+		Registry: registry,
+		Resolver: dynamicNeedResolverFunc(func(context.Context, DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+			return DynamicCapabilityNeedResolution{Managed: true, Needs: []coretool.CapabilityNeed{{ID: "need", Capability: "test.dynamic.read", Required: true}}}, nil
+		}),
+		Issuer: func() *coretool.InvocationIssuer {
+			issuer, err := coretool.NewInvocationIssuer(make([]byte, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return issuer
+		}(),
+		ExecutionStore: coretool.NewMemoryPlanExecutionStore(),
+		RouteState:     coretool.NewMemoryRouteStateStore(),
+		HostCalls:      coretool.NewMemoryHostCallJournal(),
+		GrantTTL:       time.Minute,
+	}
+	provider := &atomicMCPInventoryProviderStub{
+		boundMCPProviderStub: &boundMCPProviderStub{},
+		entries: []MCPToolEntry{{
+			ServerID: "server", ToolName: "read", InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
+			Contract: DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.read", Quality: 1}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}},
+		}},
+		lifecycle: CompleteDynamicCatalogLifecycle(),
+	}
+	cb := &coreAgentCallbacks{
+		ctx: context.Background(), principal: Principal{TenantID: "tenant", UserID: "user"}, userText: "read current data",
+		loopID: "session", dynamicOperationScope: "root", mcpProvider: provider, dynamicSemanticRouting: &routing,
+		lastPromptProfile: agent.PromptProfileLight,
+	}
+	tools := cb.BuildTools(cb.userText)
+	if len(tools) != 1 {
+		t.Fatalf("managed semantic surface leaked legacy tools: %#v", tools)
+	}
+	name := tooldef.Name(tools[0])
+	if !strings.HasPrefix(name, "invoke_") || !cb.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight) {
+		t.Fatalf("semantic invocation was not the sole light-safe surface: name=%q tools=%#v", name, tools)
+	}
+	if !cb.ManagedSemanticTurn() {
+		t.Fatal("managed semantic turn was not marked")
+	}
+	if cb.UpgradeLightPromptToFull("tool_deny_retry:bash") {
+		t.Fatal("managed semantic turn must not light→full upgrade")
+	}
+	if !cb.CurrentPromptProfile().IsLight() {
+		t.Fatal("managed semantic turn must keep the light prompt profile")
+	}
+	after := cb.BuildTools(cb.userText)
+	if len(after) != 1 || tooldef.Name(after[0]) != name {
+		t.Fatalf("upgrade attempt changed the semantic surface: %#v", after)
+	}
+}
+
+func TestCoreAgentBuildSystemPromptInitializesManagedSurfaceBeforeTools(t *testing.T) {
+	registry := coretool.NewCapabilityRegistry("core-dynamic-surface")
+	if err := registry.Register(coretool.CapabilityDescriptor{
+		ID: "test.dynamic.read", Version: "v1", Owner: "test", Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	routing := DynamicSemanticRouting{
+		Registry: registry,
+		Resolver: dynamicNeedResolverFunc(func(context.Context, DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+			return DynamicCapabilityNeedResolution{Managed: true, Needs: []coretool.CapabilityNeed{{ID: "need", Capability: "test.dynamic.read", Required: true}}}, nil
+		}),
+		Issuer: func() *coretool.InvocationIssuer {
+			issuer, err := coretool.NewInvocationIssuer(make([]byte, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return issuer
+		}(),
+		ExecutionStore: coretool.NewMemoryPlanExecutionStore(),
+		RouteState:     coretool.NewMemoryRouteStateStore(),
+		HostCalls:      coretool.NewMemoryHostCallJournal(),
+		GrantTTL:       time.Minute,
+	}
+	provider := &atomicMCPInventoryProviderStub{
+		boundMCPProviderStub: &boundMCPProviderStub{},
+		entries: []MCPToolEntry{{
+			ServerID: "server", ToolName: "read", InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
+			Contract: DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.read", Quality: 1}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}},
+		}},
+		lifecycle: CompleteDynamicCatalogLifecycle(),
+	}
+	cb := &coreAgentCallbacks{
+		ctx: context.Background(), principal: Principal{TenantID: "tenant", UserID: "user"}, userText: "read current data",
+		loopID: "session", dynamicOperationScope: "root", mcpProvider: provider, dynamicSemanticRouting: &routing,
+		imMessageHandler: func(map[string]interface{}) string { return "ok" },
+		imFileHandler:    func(map[string]interface{}) string { return "ok" },
+	}
+	prompt := cb.BuildSystemPrompt(cb.userText, true)
+	if !cb.ManagedSemanticTurn() {
+		t.Fatal("BuildSystemPrompt must initialize the managed surface; the loop builds the prompt first")
+	}
+	if !cb.CurrentPromptProfile().IsLight() {
+		t.Fatal("read-only managed turn must stay on the light profile")
+	}
+	if strings.Contains(prompt, "Specified IM file delivery") || strings.Contains(prompt, "Then call send_to_im(path=") {
+		t.Fatalf("managed prompt still teaches soup IM delivery: %s", prompt)
+	}
+	if cb.dynamicSemanticSurface == nil || len(cb.dynamicSemanticSurface.grants) != 0 {
+		t.Fatalf("prompt must plan without issuing grants: %#v", cb.dynamicSemanticSurface)
+	}
+	tools := cb.BuildTools(cb.userText)
+	if len(tools) != 1 {
+		t.Fatalf("prompt-first init must not change the later tool surface: %#v", tools)
+	}
+	if len(cb.dynamicSemanticSurface.grants) == 0 {
+		t.Fatal("BuildTools must be the grant-issue boundary")
+	}
+}
+
+func TestCoreAgentPromptFirstResolverFailureDoesNotRestoreLegacyTools(t *testing.T) {
+	routing := DynamicSemanticRouting{
+		Registry: coretool.NewCapabilityRegistry("core-dynamic-surface"),
+		Resolver: dynamicNeedResolverFunc(func(context.Context, DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+			return DynamicCapabilityNeedResolution{}, errors.New("resolver unavailable")
+		}),
+	}
+	cb := &coreAgentCallbacks{
+		ctx: context.Background(), principal: Principal{TenantID: "tenant", UserID: "user"}, userText: "read current data",
+		loopID: "session", dynamicOperationScope: "root", dynamicSemanticRouting: &routing,
+		allowLocalBash: true, localBashTrustedSingleUser: true,
+		localBashTenantID: "tenant", localBashUserID: "user",
+	}
+	_ = cb.BuildSystemPrompt(cb.userText, true)
+	if !cb.ManagedSemanticTurn() {
+		t.Fatal("resolver failure must stay fail-closed after the prompt-first init")
+	}
+	tools := cb.BuildTools(cb.userText)
+	for _, def := range tools {
+		switch name := tooldef.Name(def); name {
+		case "bash", "manage_skill", "call_mcp_tool", "discover_tool", "web_search":
+			t.Fatalf("resolver failure restored legacy tool %q: %#v", name, tools)
+		}
 	}
 }
 
@@ -3361,6 +3832,58 @@ func TestCoreAgentSystemPromptRequiresExactIMFileTargetResolution(t *testing.T) 
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("system prompt missing %q: %s", want, prompt)
 		}
+	}
+}
+
+func TestCoreAgentManagedSystemPromptOmitsSoupDeliveryAndSkillCue(t *testing.T) {
+	t.Setenv(agent.PromptProfileEnvKey, "full")
+	cb := &coreAgentCallbacks{
+		appCfg:                     corelib.AppConfig{},
+		dynamicSemanticInitialized: true,
+		dynamicSemanticManaged:     true,
+		imMessageHandler:           func(map[string]interface{}) string { return "ok" },
+		imFileHandler:              func(map[string]interface{}) string { return "ok" },
+	}
+	prompt := cb.BuildSystemPrompt("南京天气，生成pdf报告", true)
+	if !cb.ManagedSemanticTurn() {
+		t.Fatal("prompt build must observe the already-initialized managed surface")
+	}
+	if !strings.Contains(prompt, "不要传 path") {
+		t.Fatalf("managed prompt missing bound-delivery warning: %s", prompt)
+	}
+	for _, soup := range []string{
+		"Specified IM file delivery",
+		"Then call send_to_im(path=",
+		"spawn_coding_agent",
+		"直接 send_file 该 MP3",
+		"write_file, edit_file, ripgrep",
+	} {
+		if strings.Contains(prompt, soup) {
+			t.Fatalf("managed prompt still teaches %q: %s", soup, prompt)
+		}
+	}
+}
+
+func TestCoreAgentManagedMutatingPlanForcesFullPrompt(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		appCfg:                     corelib.AppConfig{},
+		dynamicSemanticInitialized: true,
+		dynamicSemanticManaged:     true,
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			plan: coretool.ToolPlan{Selections: []coretool.PlannedSelection{{
+				Effects: []coretool.EffectClass{coretool.EffectLocalMutation},
+			}}},
+		},
+	}
+	prompt := cb.BuildSystemPrompt("南京天气，生成pdf报告", true)
+	if cb.CurrentPromptProfile().IsLight() {
+		t.Fatal("document.generate on a managed turn must not keep the light 'do not generate documents' principles")
+	}
+	if !strings.Contains(prompt, "不要传 path") {
+		t.Fatalf("forced-full managed prompt missing bound-delivery warning: %s", prompt)
+	}
+	if strings.Contains(prompt, "不要写文件、不要执行命令、不要生成文档") {
+		t.Fatalf("forced-full managed prompt still uses light anti-document principles: %s", prompt)
 	}
 }
 

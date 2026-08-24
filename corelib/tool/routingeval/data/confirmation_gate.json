@@ -1,0 +1,136 @@
+{
+  "category": "confirmation_gate",
+  "category_id": 7,
+  "title": "confirmation is a plan dependency, not a model-visible tool",
+  "design_ref": "10.1 item 7",
+  "format_note": "require_confirmation marks the selection and adds a confirmation: need-id requirement. ReadySelections without a trusted fact excludes it.",
+  "samples": [
+    {
+      "id": "deliver-requires-confirmation",
+      "title": "File deliver with a confirmation constraint is not ready",
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "constraints": [
+        {"id": "confirm-deliver", "capability": "artifact.deliver.current_channel", "effect": "require_confirmation", "authority": "policy"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution", "requires_confirmation": false},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery", "requires_confirmation": true}
+        ],
+        "ready_without_facts": ["generate"]
+      }
+    },
+    {
+      "id": "expired-confirmation-is-ignored",
+      "title": "Expired confirmation_granted does not satisfy the gate",
+      "notes": "10.1 item 7/12: ValidUntil in the past is not a trusted confirmation. The selection stays planned but TrustedSatisfiedDependencies is empty.",
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "constraints": [
+        {"id": "confirm-deliver", "capability": "artifact.deliver.current_channel", "effect": "require_confirmation", "authority": "policy"}
+      ],
+      "facts": [
+        {
+          "id": "stale-approval",
+          "kind": "confirmation_granted",
+          "authority": "runtime",
+          "valid_seconds": -1,
+          "attributes": {"root_task_id": "task-eval", "confirmation_requirement": "confirmation:deliver"}
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution", "requires_confirmation": false},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery", "requires_confirmation": true}
+        ],
+        "ready_without_facts": ["generate"],
+        "trusted_confirmations": []
+      }
+    },
+    {
+      "id": "live-confirmation-satisfies-requirement",
+      "title": "Unexpired runtime confirmation_granted satisfies the exact requirement",
+      "notes": "The fact is bound to this RootTaskID and confirmation:deliver. It cannot be reused as a generic authorized flag.",
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "constraints": [
+        {"id": "confirm-deliver", "capability": "artifact.deliver.current_channel", "effect": "require_confirmation", "authority": "policy"}
+      ],
+      "facts": [
+        {
+          "id": "live-approval",
+          "kind": "confirmation_granted",
+          "authority": "runtime",
+          "valid_seconds": 3600,
+          "attributes": {"root_task_id": "task-eval", "confirmation_requirement": "confirmation:deliver"}
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution", "requires_confirmation": false},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery", "requires_confirmation": true}
+        ],
+        "ready_without_facts": ["generate"],
+        "trusted_confirmations": ["confirmation:deliver"]
+      }
+    }
+  ]
+}

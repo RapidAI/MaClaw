@@ -20,10 +20,19 @@ export interface LLMProvider {
     token_expires_at?: number;
     oauth_access_token?: string;
     agent_type?: string; // "openclaw" (default) or "claude_code"
+    /** Set when this provider was imported from a local coding agent. */
+    import_source?: string;
+    /** Provider-specific model IDs, when discovered from the service. */
+    models?: string[];
     /** Model IDs whose image-input capability has been confirmed. */
     vision_models?: string[];
     supports_vision?: boolean; // whether the model supports image input
     wire_api?: string; // "chat" (default), "responses", or "responses-ws"
+}
+
+export function isOpenCodeProvider(provider: Pick<LLMProvider, "name" | "agent_type"> | null | undefined) {
+    if (!provider) return false;
+    return provider.name === "OpenCode" || (provider.agent_type || "").trim() === "OpenCode";
 }
 
 export const NONE_PROVIDER = "__none__";
@@ -35,14 +44,15 @@ export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string;
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
     { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
     { name: "\u667a\u8c31\u9f99\u867e", url: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.1", context_length: 180000 },
-    { name: "\u667a\u8c31\u7f16\u7a0b", url: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.1", context_length: 180000, protocol: "anthropic", agent_type: "claude code 2.0" },
+    { name: "\u667a\u8c31\u7f16\u7a0b", url: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.3", context_length: 400000, protocol: "anthropic", agent_type: "claude code 2.0" },
     { name: "Kimi (\u6708\u4e4b\u6697\u9762)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
     { name: "\u8baf\u98de\u661f\u8fb0", url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", model: "astron-code-latest", context_length: 128000 },
     { name: "Doubao (\u8c46\u5305)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
     { name: "\u706b\u5c71\u5f15\u64ce Agent Plan", url: "https://ark.cn-beijing.volces.com/api/plan/v3", model: "glm-5.2", context_length: 128000, protocol: "openai", wire_api: "responses" },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "\u817e\u8baf\u4e91", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
-    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-4.5", context_length: 400000, auth_type: "oauth", wire_api: "responses" },
+    { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-4.6", context_length: 400000, auth_type: "oauth", wire_api: "responses" },
+    { name: "OpenCode", url: "https://opencode.ai/zen/v1", model: "big-pickle", context_length: 128000, agent_type: "OpenCode" },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
     { name: "Together AI", url: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf", context_length: 128000 },
     { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", context_length: 128000 },
@@ -63,6 +73,94 @@ export const labelStyle: CSSProperties = {
 export const readonlyStyle: CSSProperties = {
     ...inputStyle, background: colors.bg, color: colors.textMuted, cursor: "default",
 };
+
+const secretLikeFieldRe = /(api[_-]?key|authorization|bearer|token|secret|password)\s*[:=]\s*\S+/gi;
+
+function redactProviderTestError(text: string): string {
+    return String(text || "").replace(secretLikeFieldRe, "[redacted]").trim();
+}
+
+function normalizeProviderTestErrorText(raw: string): string {
+    let text = String(raw || "").trim();
+    for (;;) {
+        const next = text
+            .replace(/^Error invoking '[^']+':\s*/i, "")
+            .replace(/^Error:\s*/i, "")
+            .trim();
+        if (next === text) return text;
+        text = next;
+    }
+}
+
+function extractJSONObject(text: string): { type?: string; message?: string; error?: { type?: string; message?: string } } | null {
+    const start = text.indexOf("{");
+    if (start < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (ch === "\\") escaped = true;
+            else if (ch === "\"") inString = false;
+            continue;
+        }
+        if (ch === "\"") {
+            inString = true;
+            continue;
+        }
+        if (ch === "{") depth++;
+        else if (ch === "}") {
+            depth--;
+            if (depth === 0) {
+                try {
+                    return JSON.parse(text.slice(start, i + 1)) as { type?: string; message?: string; error?: { type?: string; message?: string } };
+                } catch {
+                    return null;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+export function isProviderTestCancelMessage(raw: string): boolean {
+    const text = normalizeProviderTestErrorText(raw).toLowerCase();
+    return text === "cancelled" || text === "canceled" || text === "已取消";
+}
+
+export function formatProviderTestError(raw: string, t: (en: string, zhHans: string, zhHant?: string) => string): string {
+    const text = normalizeProviderTestErrorText(raw);
+    if (!text) return text;
+    const lower = text.toLowerCase();
+    if (lower.includes("free promotion has ended") || lower.includes("免费活动已结束")) {
+        return t(
+            "This model is no longer free. Choose another model, then Test & Save.",
+            "该免费模型活动已结束。请更换其他模型后再检测并保存。",
+        );
+    }
+    const parsed = extractJSONObject(text);
+    if (parsed) {
+        const type = String(parsed.type || parsed.error?.type || "");
+        const message = redactProviderTestError(String(parsed.message || parsed.error?.message || ""));
+        if (type.toLowerCase() === "modelerror" && message) {
+            return t(
+                `This model is unavailable: ${message}. Choose another model, then Test & Save.`,
+                `当前模型不可用：${message}。请更换其他模型后再检测并保存。`,
+            );
+        }
+        if (message) return message;
+    }
+    return redactProviderTestError(text);
+}
+
+export function formatProviderTestErrorOrFallback(raw: string, t: (en: string, zhHans: string, zhHant?: string) => string): string {
+    return formatProviderTestError(raw, t) || t(
+        "Connection failed. Check the API URL, key, and model.",
+        "连接失败，请检查 API 地址、密钥和模型。",
+    );
+}
 
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -152,6 +250,8 @@ export interface HubLLMActiveGrant {
     card_order_id?: string;
     starts_at?: string;
     expires_at?: string;
+    permanent?: boolean;
+    rolling_five_hour?: boolean;
     active?: boolean;
     effective?: boolean;
     status?: string;
@@ -162,6 +262,18 @@ export interface HubLLMActiveGrant {
     credits_available?: number;
     retry_after_seconds?: number;
     retry_after_at?: string;
+    period_limits?: {
+        five_hour?: number;
+        daily?: number;
+        weekly?: number;
+        monthly?: number;
+    };
+    period_usage?: {
+        five_hour?: { window_start?: string; window_end?: string; credits_used?: number; rolling?: boolean };
+        daily?: { window_start?: string; window_end?: string; credits_used?: number };
+        weekly?: { window_start?: string; window_end?: string; credits_used?: number };
+        monthly?: { window_start?: string; window_end?: string; credits_used?: number };
+    };
 }
 
 export interface HubLLMServiceStatus {

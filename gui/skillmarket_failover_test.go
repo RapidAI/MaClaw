@@ -1314,6 +1314,7 @@ func TestSubmitSkill_RefreshesSessionViaHubMachineLoginOn401(t *testing.T) {
 	app := &App{testHomeDir: tmpHome}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
 		RemoteEmail:             "user@example.com",
 		RemoteMachineID:         "m_test",
 		RemoteViewerToken:       "viewer-token",

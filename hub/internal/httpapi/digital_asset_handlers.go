@@ -21,21 +21,25 @@ const maxDigitalAssetUploadFileBytes int64 = 50 << 20
 const maxDigitalAssetLibraryJSONBytes int64 = 1 << 20
 
 type digitalAssetLibraryPatchRequest struct {
-	Name           *string  `json:"name"`
-	Description    *string  `json:"description"`
-	ACLMode        *string  `json:"acl_mode"`
-	Departments    []string `json:"departments"`
-	SyncEnabled    *bool    `json:"sync_enabled"`
-	SetACL         bool     `json:"set_acl"`
-	DepartmentsSet bool     `json:"-"`
+	Name               *string  `json:"name"`
+	Description        *string  `json:"description"`
+	ACLMode            *string  `json:"acl_mode"`
+	Departments        []string `json:"departments"`
+	SyncEnabled        *bool    `json:"sync_enabled"`
+	LibraryKind        *string  `json:"library_kind"`
+	AcceptsSubmissions *bool    `json:"accepts_submissions"`
+	SetACL             bool     `json:"set_acl"`
+	DepartmentsSet     bool     `json:"-"`
 }
 
 type digitalAssetLibraryCreateRequest struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	ACLMode     string   `json:"acl_mode"`
-	Departments []string `json:"departments"`
-	SyncEnabled *bool    `json:"sync_enabled"`
+	Name               string   `json:"name"`
+	Description        string   `json:"description"`
+	ACLMode            string   `json:"acl_mode"`
+	Departments        []string `json:"departments"`
+	SyncEnabled        *bool    `json:"sync_enabled"`
+	LibraryKind        string   `json:"library_kind"`
+	AcceptsSubmissions *bool    `json:"accepts_submissions"`
 }
 
 func readDigitalAssetLibraryJSON(r io.Reader) ([]byte, error) {
@@ -224,8 +228,10 @@ func CreateDigitalAssetLibraryAdminHandler(svc *digitalasset.Service) http.Handl
 				Mode:        req.ACLMode,
 				Departments: req.Departments,
 			},
-			SyncEnabled: req.SyncEnabled,
-			Actor:       actor,
+			SyncEnabled:        req.SyncEnabled,
+			LibraryKind:        req.LibraryKind,
+			AcceptsSubmissions: req.AcceptsSubmissions,
+			Actor:              actor,
 		})
 		if err != nil {
 			writeDigitalAssetError(w, err)
@@ -259,7 +265,7 @@ func PatchDigitalAssetLibraryAdminHandler(svc *digitalasset.Service) http.Handle
 			}
 			acl = &digitalasset.ACL{Mode: *req.ACLMode, Departments: req.Departments}
 		}
-		lib, err := svc.UpdateLibraryMeta(r.Context(), resolveDigitalAssetTenant(r), id, req.Name, req.Description, acl, req.SyncEnabled, actor)
+		lib, err := svc.UpdateLibraryMeta(r.Context(), resolveDigitalAssetTenant(r), id, req.Name, req.Description, acl, req.SyncEnabled, actor, req.LibraryKind, req.AcceptsSubmissions)
 		if err != nil {
 			writeDigitalAssetError(w, err)
 			return
@@ -1003,6 +1009,259 @@ func DigitalAssetSyncPackageHandler(svc *digitalasset.Service, identity *auth.Id
 	}
 }
 
+const maxDigitalAssetSubmissionJSONBytes int64 = digitalasset.MaxSubmissionPackageBytes + (1 << 20)
+
+type digitalAssetSubmitRequest struct {
+	LibraryID     string          `json:"library_id"`
+	Kind          string          `json:"kind"`
+	Title         string          `json:"title"`
+	Summary       string          `json:"summary"`
+	SourceShareID string          `json:"source_share_id"`
+	Package       json.RawMessage `json:"package"`
+}
+
+type digitalAssetReviewRequest struct {
+	LibraryID  string `json:"library_id"`
+	ReviewNote string `json:"review_note"`
+}
+
+func readDigitalAssetSubmissionJSON(r io.Reader) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(r, maxDigitalAssetSubmissionJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > maxDigitalAssetSubmissionJSONBytes {
+		return nil, fmt.Errorf("request body exceeds %d bytes", maxDigitalAssetSubmissionJSONBytes)
+	}
+	return payload, nil
+}
+
+// ListDigitalAssetContributableLibrariesHandler GET /api/digital-assets/libraries/contributable
+func ListDigitalAssetContributableLibrariesHandler(svc *digitalasset.Service, identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		viewer, err := authenticateViewerRequest(r, identity)
+		if err != nil || viewer == nil {
+			writeError(w, http.StatusUnauthorized, "VIEWER_UNAUTHORIZED", "viewer authorization required")
+			return
+		}
+		if !digitalAssetsFeatureGateForTenant(svc, w, r, viewer.TenantID) {
+			return
+		}
+		items, err := svc.ListContributableLibraries(r.Context(), viewer.TenantID, viewer.Email, strings.TrimSpace(r.URL.Query().Get("kind")))
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// CreateDigitalAssetSubmissionHandler POST /api/digital-assets/submissions
+func CreateDigitalAssetSubmissionHandler(svc *digitalasset.Service, identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		viewer, err := authenticateViewerRequest(r, identity)
+		if err != nil || viewer == nil {
+			writeError(w, http.StatusUnauthorized, "VIEWER_UNAUTHORIZED", "viewer authorization required")
+			return
+		}
+		if !digitalAssetsFeatureGateForTenant(svc, w, r, viewer.TenantID) {
+			return
+		}
+		payload, err := readDigitalAssetSubmissionJSON(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		var req digitalAssetSubmitRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		row, err := svc.SubmitExperience(r.Context(), digitalasset.SubmitExperienceInput{
+			TenantID:        viewer.TenantID,
+			LibraryID:       req.LibraryID,
+			SubmitterUserID: viewer.UserID,
+			SubmitterEmail:  viewer.Email,
+			Kind:            req.Kind,
+			Title:           req.Title,
+			Summary:         req.Summary,
+			SourceShareID:   req.SourceShareID,
+			PackageJSON:     []byte(req.Package),
+		})
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, digitalasset.SubmissionToView(row, nil))
+	}
+}
+
+// ListMyDigitalAssetSubmissionsHandler GET /api/digital-assets/submissions
+func ListMyDigitalAssetSubmissionsHandler(svc *digitalasset.Service, identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		viewer, err := authenticateViewerRequest(r, identity)
+		if err != nil || viewer == nil {
+			writeError(w, http.StatusUnauthorized, "VIEWER_UNAUTHORIZED", "viewer authorization required")
+			return
+		}
+		if !digitalAssetsFeatureGateForTenant(svc, w, r, viewer.TenantID) {
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		items, total, err := svc.ListSubmissions(r.Context(), store.DigitalAssetSubmissionFilter{
+			TenantID:        viewer.TenantID,
+			SubmitterUserID: viewer.UserID,
+			Status:          strings.TrimSpace(r.URL.Query().Get("status")),
+			Kind:            strings.TrimSpace(r.URL.Query().Get("kind")),
+			Limit:           limit,
+			Offset:          offset,
+		})
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		views := make([]digitalasset.SubmissionView, 0, len(items))
+		for _, item := range items {
+			views = append(views, digitalasset.SubmissionToView(item, nil))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": views, "total": total, "offset": offset, "limit": limit})
+	}
+}
+
+// WithdrawDigitalAssetSubmissionHandler POST /api/digital-assets/submissions/{id}/withdraw
+func WithdrawDigitalAssetSubmissionHandler(svc *digitalasset.Service, identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		viewer, err := authenticateViewerRequest(r, identity)
+		if err != nil || viewer == nil {
+			writeError(w, http.StatusUnauthorized, "VIEWER_UNAUTHORIZED", "viewer authorization required")
+			return
+		}
+		if !digitalAssetsFeatureGateForTenant(svc, w, r, viewer.TenantID) {
+			return
+		}
+		row, err := svc.WithdrawSubmission(r.Context(), viewer.TenantID, r.PathValue("id"), viewer.UserID)
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, digitalasset.SubmissionToView(row, nil))
+	}
+}
+
+// ListDigitalAssetSubmissionsAdminHandler GET /api/admin/digital-assets/submissions
+func ListDigitalAssetSubmissionsAdminHandler(svc *digitalasset.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !digitalAssetsFeatureGate(svc, w, r) {
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		items, total, err := svc.ListSubmissions(r.Context(), store.DigitalAssetSubmissionFilter{
+			TenantID:  resolveDigitalAssetTenant(r),
+			LibraryID: strings.TrimSpace(r.URL.Query().Get("library_id")),
+			Status:    strings.TrimSpace(r.URL.Query().Get("status")),
+			Kind:      strings.TrimSpace(r.URL.Query().Get("kind")),
+			Limit:     limit,
+			Offset:    offset,
+		})
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		views := make([]digitalasset.SubmissionView, 0, len(items))
+		for _, item := range items {
+			views = append(views, digitalasset.SubmissionToView(item, svc.SubmissionPreviewTitles(item, 8)))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": views, "total": total, "offset": offset, "limit": limit})
+	}
+}
+
+// GetDigitalAssetSubmissionAdminHandler GET /api/admin/digital-assets/submissions/{id}
+func GetDigitalAssetSubmissionAdminHandler(svc *digitalasset.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !digitalAssetsFeatureGate(svc, w, r) {
+			return
+		}
+		row, err := svc.GetSubmission(r.Context(), resolveDigitalAssetTenant(r), r.PathValue("id"))
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, digitalasset.SubmissionToView(row, svc.SubmissionPreviewTitles(row, 40)))
+	}
+}
+
+// ApproveDigitalAssetSubmissionAdminHandler POST /api/admin/digital-assets/submissions/{id}/approve
+func ApproveDigitalAssetSubmissionAdminHandler(svc *digitalasset.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !digitalAssetsFeatureGate(svc, w, r) {
+			return
+		}
+		var req digitalAssetReviewRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		actor := ""
+		actorID := ""
+		if a := AdminFromContext(r.Context()); a != nil {
+			actor = a.Email
+			if actor == "" {
+				actor = a.Username
+			}
+			actorID = a.ID
+		}
+		row, err := svc.ApproveSubmission(r.Context(), digitalasset.ReviewSubmissionInput{
+			TenantID:     resolveDigitalAssetTenant(r),
+			SubmissionID: r.PathValue("id"),
+			LibraryID:    req.LibraryID,
+			Actor:        actor,
+			ActorUserID:  actorID,
+			Note:         req.ReviewNote,
+		})
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, digitalasset.SubmissionToView(row, nil))
+	}
+}
+
+// RejectDigitalAssetSubmissionAdminHandler POST /api/admin/digital-assets/submissions/{id}/reject
+func RejectDigitalAssetSubmissionAdminHandler(svc *digitalasset.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !digitalAssetsFeatureGate(svc, w, r) {
+			return
+		}
+		var req digitalAssetReviewRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+			return
+		}
+		actor := ""
+		actorID := ""
+		if a := AdminFromContext(r.Context()); a != nil {
+			actor = a.Email
+			if actor == "" {
+				actor = a.Username
+			}
+			actorID = a.ID
+		}
+		row, err := svc.RejectSubmission(r.Context(), digitalasset.ReviewSubmissionInput{
+			TenantID:     resolveDigitalAssetTenant(r),
+			SubmissionID: r.PathValue("id"),
+			Actor:        actor,
+			ActorUserID:  actorID,
+			Note:         req.ReviewNote,
+		})
+		if err != nil {
+			writeDigitalAssetError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, digitalasset.SubmissionToView(row, nil))
+	}
+}
+
 func writeDigitalAssetError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, digitalasset.ErrFeatureDisabled):
@@ -1013,6 +1272,8 @@ func writeDigitalAssetError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "not found") // 404-on-deny
 	case errors.Is(err, digitalasset.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+	case errors.Is(err, digitalasset.ErrConflict):
+		writeError(w, http.StatusConflict, "CONFLICT", err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, "DIGITAL_ASSET_ERROR", err.Error())
 	}

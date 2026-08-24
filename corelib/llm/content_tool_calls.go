@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -12,18 +13,43 @@ import (
 var (
 	contentXMLToolCallBlockRe        = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>\s*(.*?)\s*</tool_call>`)
 	contentAngleToolCallOpenRe       = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>`)
+	contentXMLToolCallOpenToEndRe    = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
 	contentCodexToolCallBlockRe      = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>(.*?)</turn>`)
 	contentCodexToolCallMarkerRe     = regexp.MustCompile(`(?is)<turn:\s*tool_call\b`)
 	contentPlainToolCallMarkerRe     = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*`)
 	contentCodexToolInvokeRe         = regexp.MustCompile(`(?s)<invoke\b([^>]*)>(.*?)</invoke>`)
 	contentCodexToolParameterRe      = regexp.MustCompile(`(?s)<parameter\b([^>]*)>(.*?)</parameter>`)
 	contentCodexToolAttributeRe      = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_:-]*)\s*=\s*"([^"]*)"`)
+	contentFunctionEqBlockRe         = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>(.*?)</function>`)
+	contentFunctionEqOpenRe          = regexp.MustCompile(`(?is)<function=([A-Za-z0-9_.-]+)>`)
+	contentGLMArgPairRe              = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
+	contentQwenParamEqRe             = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
+	contentLeadingToolNameRe         = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
+	dsmlSpacedFenceRe                = regexp.MustCompile(`(?i)\|\s*DSML\s*\|`)
+	dsmlLooseOpenRe                  = regexp.MustCompile(`(?i)<\s*\|DSML\|`)
+	dsmlLooseCloseRe                 = regexp.MustCompile(`(?i)</\s*\|DSML\|`)
+	dsmlTagSpaceRe                   = regexp.MustCompile(`(?i)(</?)\|DSML\|\s+`)
+	dsmlAltCloseRe                   = regexp.MustCompile(`(?i)<\|DSML\|/([A-Za-z_]+)>`)
+	dsmlCollapsePipeSpaceRe          = regexp.MustCompile(`\s*\|\s*`)
+	dsmlCollapseOpenSpaceRe          = regexp.MustCompile(`<\s+`)
+	dsmlParameterOpenRe              = regexp.MustCompile(`(?i)<\|DSML\|parameter`)
+	dsmlParameterCloseRe             = regexp.MustCompile(`(?i)</\|DSML\|parameter>`)
+	contentDSMLBlockRe               = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\s*>(.*?)</\|DSML\|(?:tool_calls|function_calls)>`)
+	contentDSMLBlockOpenRe           = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\b`)
+	contentDSMLInvokeRe              = regexp.MustCompile(`(?is)<\|DSML\|invoke\b([^>]*)>(.*?)</\|DSML\|invoke>`)
+	contentDSMLInvokeOpenRe          = regexp.MustCompile(`(?is)<\|DSML\|invoke\b`)
+	contentDSMLMarkerRe              = regexp.MustCompile(`(?i)<\s*[|\x{FF5C}]\s*DSML\s*[|\x{FF5C}]\s*(?:tool_calls|function_calls|invoke|parameter)\b`)
 	MalformedContentToolCallErrorMsg = "模型返回了无法解析的工具调用，已拦截原始工具 XML。请重试，或切换更兼容 OpenAI tool_calls 的模型。"
 )
 
 // ParseContentToolCallsDetailed extracts tool calls emitted in assistant
 // content by OpenAI-compatible providers that fail to populate tool_calls.
 func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
+	if looksLikeDSMLContent(content) {
+		if calls, malformed := parseDSMLContentToolCalls(content); len(calls) > 0 || malformed {
+			return calls, malformed
+		}
+	}
 	matches := contentXMLToolCallBlockRe.FindAllStringSubmatch(content, -1)
 	var calls []ToolCall
 	malformed := false
@@ -32,14 +58,23 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 			malformed = true
 			continue
 		}
-		call, ok := parseContentJSONToolCallPayload(strings.TrimSpace(m[1]))
-		if ok {
-			calls = append(calls, call)
-		} else {
+		body := strings.TrimSpace(m[1])
+		parsed, fragMalformed := parseContentToolCallFragments(m[0], body)
+		if len(parsed) > 0 {
+			calls = append(calls, parsed...)
+		}
+		if fragMalformed && len(parsed) == 0 {
 			malformed = true
 		}
 	}
-	codexCalls, codexMalformed := parseCodexContentToolCalls(content)
+	fnCalls, fnMalformed := parseFunctionEqContentToolCalls(contentResidualAfterXMLToolCalls(content))
+	if len(fnCalls) > 0 {
+		calls = append(calls, fnCalls...)
+	}
+	if fnMalformed {
+		malformed = true
+	}
+	codexCalls, codexMalformed := parseCodexContentToolCalls(contentXMLToolCallBlockRe.ReplaceAllString(content, ""))
 	if len(codexCalls) > 0 {
 		calls = append(calls, codexCalls...)
 	}
@@ -67,6 +102,9 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 	if plainMalformed {
 		malformed = true
 	}
+	if malformed && len(calls) == 0 {
+		logMalformedContentToolCall(content)
+	}
 	return calls, malformed
 }
 
@@ -82,12 +120,69 @@ func parseUnclosedAngleContentToolCalls(content string) ([]ToolCall, bool) {
 		if strings.Contains(strings.ToLower(rest), "</tool_call>") {
 			continue
 		}
-		raw, ok := extractJSONObjectAfter(rest)
-		if !ok {
+		open := content[match[0]:match[1]]
+		parsed, fragMalformed := parseContentToolCallFragments(open, strings.TrimSpace(rest))
+		if len(parsed) > 0 {
+			calls = append(calls, parsed...)
+			continue
+		}
+		if fragMalformed {
+			malformed = true
+		}
+	}
+	return calls, malformed
+}
+
+func parseContentToolCallFragments(open, body string) ([]ToolCall, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil, true
+	}
+	if call, ok := parseContentJSONToolCallPayload(body); ok {
+		return []ToolCall{call}, false
+	}
+	if looksLikeFunctionEqToolBody(body) {
+		if fnCalls, fnMalformed := parseFunctionEqContentToolCalls(body); len(fnCalls) > 0 {
+			return fnCalls, fnMalformed
+		} else if fnMalformed {
+			return nil, true
+		}
+	}
+	if call, ok := parseMarkupContentToolCall(open, body); ok {
+		return []ToolCall{call}, false
+	}
+	if raw, ok := extractJSONObjectAfter(body); ok {
+		if call, parsed := parseContentJSONToolCallPayload(raw); parsed {
+			return []ToolCall{call}, false
+		}
+	}
+	return nil, true
+}
+
+func looksLikeFunctionEqToolBody(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return false
+	}
+	if idx := strings.IndexByte(trimmed, '<'); idx > 0 {
+		trimmed = strings.TrimSpace(trimmed[idx:])
+	}
+	return strings.HasPrefix(strings.ToLower(trimmed), "<function=")
+}
+
+func parseFunctionEqContentToolCalls(content string) ([]ToolCall, bool) {
+	matches := contentFunctionEqBlockRe.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil, contentFunctionEqOpenRe.MatchString(content)
+	}
+	var calls []ToolCall
+	malformed := false
+	for _, m := range matches {
+		if len(m) < 3 {
 			malformed = true
 			continue
 		}
-		call, ok := parseContentJSONToolCallPayload(raw)
+		call, ok := parseNamedMarkupToolCall(strings.TrimSpace(m[1]), strings.TrimSpace(m[2]))
 		if ok {
 			calls = append(calls, call)
 		} else {
@@ -95,6 +190,148 @@ func parseUnclosedAngleContentToolCalls(content string) ([]ToolCall, bool) {
 		}
 	}
 	return calls, malformed
+}
+
+func parseMarkupContentToolCall(full, body string) (ToolCall, bool) {
+	open := full
+	if end := strings.IndexByte(full, '>'); end >= 0 {
+		open = full[:end+1]
+	}
+	attrs := parseCodexContentAttrs(open)
+	if call, ok := parseNamedMarkupToolCall(attrs["name"], body); ok {
+		return call, true
+	}
+	if loc := contentCodexToolInvokeRe.FindStringSubmatch(body); len(loc) >= 3 {
+		if call, ok := parseCodexContentInvoke(loc); ok {
+			return call, true
+		}
+	}
+	if loc := contentFunctionEqBlockRe.FindStringSubmatch(body); len(loc) >= 3 {
+		if call, ok := parseNamedMarkupToolCall(loc[1], loc[2]); ok {
+			return call, true
+		}
+	}
+	if name, rest, ok := splitLeadingToolName(body); ok {
+		if call, parsed := parseNamedMarkupToolCall(name, rest); parsed {
+			return call, true
+		}
+	}
+	return ToolCall{}, false
+}
+
+func parseNamedMarkupToolCall(name, body string) (ToolCall, bool) {
+	name = strings.TrimSpace(html.UnescapeString(name))
+	body = strings.TrimSpace(body)
+	if name == "" && body != "" {
+		if next, rest, ok := splitLeadingToolName(body); ok {
+			name = next
+			body = rest
+		}
+	}
+	if name == "" {
+		return ToolCall{}, false
+	}
+	if args, ok := parseMarkupToolCallArguments(body); ok {
+		return normalizePlainContentToolCall(name, args)
+	}
+	if call, ok := parseContentJSONToolCallPayload(body); ok {
+		if strings.TrimSpace(call.Function.Name) == "" {
+			call.Function.Name = name
+		}
+		return call, true
+	}
+	if args, ok := extractJSONObjectAfter(body); ok {
+		return normalizePlainContentToolCall(name, json.RawMessage(args))
+	}
+	return ToolCall{}, false
+}
+
+func contentResidualAfterXMLToolCalls(content string) string {
+	residual := contentXMLToolCallBlockRe.ReplaceAllString(content, "")
+	residual = contentCodexToolCallBlockRe.ReplaceAllString(residual, "")
+	residual = contentXMLToolCallOpenToEndRe.ReplaceAllString(residual, "")
+	return strings.TrimSpace(residual)
+}
+
+func parseMarkupToolCallArguments(body string) (json.RawMessage, bool) {
+	if pairs := contentGLMArgPairRe.FindAllStringSubmatch(body, -1); len(pairs) > 0 {
+		return marshalMarkupArgPairs(pairs)
+	}
+	if pairs := contentQwenParamEqRe.FindAllStringSubmatch(body, -1); len(pairs) > 0 {
+		return marshalMarkupArgPairs(pairs)
+	}
+	if params := contentCodexToolParameterRe.FindAllStringSubmatch(body, -1); len(params) > 0 {
+		args := make(map[string]interface{}, len(params))
+		for _, p := range params {
+			if len(p) < 3 {
+				return nil, false
+			}
+			paramName := strings.TrimSpace(parseCodexContentAttrs(p[1])["name"])
+			if paramName == "" {
+				return nil, false
+			}
+			args[paramName] = strings.TrimSpace(html.UnescapeString(p[2]))
+		}
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return nil, false
+		}
+		return raw, true
+	}
+	return nil, false
+}
+
+func marshalMarkupArgPairs(pairs [][]string) (json.RawMessage, bool) {
+	args := make(map[string]interface{}, len(pairs))
+	for _, p := range pairs {
+		if len(p) < 3 {
+			return nil, false
+		}
+		key := strings.TrimSpace(html.UnescapeString(p[1]))
+		if key == "" {
+			return nil, false
+		}
+		args[key] = strings.TrimSpace(html.UnescapeString(p[2]))
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+func splitLeadingToolName(body string) (string, string, bool) {
+	m := contentLeadingToolNameRe.FindStringSubmatch(body)
+	if len(m) < 2 {
+		return "", body, false
+	}
+	name := strings.TrimSpace(m[1])
+	if name == "" {
+		return "", body, false
+	}
+	rest := strings.TrimSpace(body[len(m[0]):])
+	if rest == "" || rest[0] == '<' || rest[0] == '{' {
+		return name, rest, true
+	}
+	return "", body, false
+}
+
+func logMalformedContentToolCall(content string) {
+	kind := "unknown"
+	lower := strings.ToLower(content)
+	switch {
+	case strings.Contains(lower, "<function="):
+		kind = "function"
+	case strings.Contains(lower, "<arg_key>"):
+		kind = "glm_arg_key"
+	case strings.Contains(lower, "<turn: tool_call"):
+		kind = "codex"
+	case strings.Contains(lower, "<tool_call"):
+		kind = "tool_call"
+	case strings.Contains(lower, "tool_call"):
+		kind = "plain"
+	}
+	log.Printf("[LLM] intercepted unparseable content tool markup kind=%s bytes=%d", kind, len(content))
 }
 
 func parseBareJSONContentToolCalls(content string) ([]ToolCall, bool) {
@@ -246,15 +483,6 @@ func (f *contentToolCallDeltaFilter) drain(force bool) {
 	if s == "" {
 		return
 	}
-	lower := strings.ToLower(s)
-	if idx := firstContentToolCallMarkerIndex(lower); idx >= 0 {
-		if idx > 0 {
-			f.downstream(s[:idx])
-		}
-		f.suppressed = true
-		f.pending.Reset()
-		return
-	}
 	if looksLikeBareJSONToolCallStreamPrefix(s) {
 		if !force {
 			return
@@ -265,16 +493,19 @@ func (f *contentToolCallDeltaFilter) drain(force bool) {
 			return
 		}
 	}
-	if partial := contentToolCallMarkerSuffixLen(lower); partial > 0 && !force {
-		if len(s) > partial {
-			f.downstream(s[:len(s)-partial])
-			f.pending.Reset()
-			f.pending.WriteString(s[len(s)-partial:])
-		}
+	visible, hold, suppress := HoldContentToolCallStream(s, force)
+	if visible != "" {
+		f.downstream(visible)
+	}
+	if suppress {
+		f.suppressed = true
+		f.pending.Reset()
 		return
 	}
-	f.downstream(s)
 	f.pending.Reset()
+	if hold != "" {
+		f.pending.WriteString(hold)
+	}
 }
 
 func looksLikeBareJSONToolCallStreamPrefix(content string) bool {
@@ -292,19 +523,72 @@ func looksLikeBareJSONToolCallStreamPrefix(content string) bool {
 	return false
 }
 
-func firstContentToolCallMarkerIndex(lower string) int {
+// FirstContentToolCallMarkerIndex is the first byte index of a content-emitted
+// tool-call marker (XML, Codex, DSML, or plain TOOL_CALL). Stream filters use
+// this so DeepSeek DSML is hidden the same way as <tool_call>.
+func FirstContentToolCallMarkerIndex(s string) int {
+	return firstContentToolCallMarkerIndex(s)
+}
+
+// ContentToolCallMarkerSuffixLen is the trailing byte count that may still
+// grow into a content tool-call marker. Stream filters must hold that suffix.
+func ContentToolCallMarkerSuffixLen(s string) int {
+	return contentToolCallMarkerSuffixLen(s)
+}
+
+// HoldContentToolCallStream splits buffered stream text into a safe visible
+// prefix and an unconfirmed suffix. suppress means the rest of the stream is
+// a tool-call body and must not reach the chat. On flush, a partial DSML
+// fence is dropped instead of leaked.
+func HoldContentToolCallStream(s string, force bool) (visible, hold string, suppress bool) {
+	if idx := firstContentToolCallMarkerIndex(s); idx >= 0 {
+		if idx > 0 {
+			visible = s[:idx]
+		}
+		return visible, "", true
+	}
+	partial := contentToolCallMarkerSuffixLen(s)
+	if partial <= 0 {
+		return s, "", false
+	}
+	visible = s[:len(s)-partial]
+	suffix := s[len(s)-partial:]
+	if !force {
+		return visible, suffix, false
+	}
+	if dropPartialContentToolCallOnFlush(suffix) {
+		return visible, "", true
+	}
+	return s, "", false
+}
+
+func dropPartialContentToolCallOnFlush(suffix string) bool {
+	collapsed := collapseDSMLFence(suffix)
+	if strings.HasPrefix(collapsed, "<|") {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimLeft(suffix, " \t\r\n"))
+	return strings.HasPrefix(lower, "<tool_call") || strings.HasPrefix(lower, "<turn: tool_call") || strings.HasPrefix(lower, "<function=")
+}
+
+func firstContentToolCallMarkerIndex(s string) int {
+	lower := strings.ToLower(s)
 	best := -1
-	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "<function=", "tool_call\n", "tool_call\r\n", "tool_call {"} {
 		if idx := strings.Index(lower, marker); idx >= 0 && (best < 0 || idx < best) {
 			best = idx
 		}
 	}
+	if loc := contentDSMLMarkerRe.FindStringIndex(s); loc != nil && (best < 0 || loc[0] < best) {
+		best = loc[0]
+	}
 	return best
 }
 
-func contentToolCallMarkerSuffixLen(lower string) int {
+func contentToolCallMarkerSuffixLen(s string) int {
+	lower := strings.ToLower(s)
 	best := 0
-	for _, marker := range []string{"<tool_call", "<turn: tool_call", "tool_call\n", "tool_call\r\n", "tool_call {"} {
+	for _, marker := range []string{"<tool_call", "<turn: tool_call", "<function=", "tool_call\n", "tool_call\r\n", "tool_call {"} {
 		max := len(marker) - 1
 		if len(lower) < max {
 			max = len(lower)
@@ -316,7 +600,51 @@ func contentToolCallMarkerSuffixLen(lower string) int {
 			}
 		}
 	}
+	if n := dsmlOpenSuffixLen(s); n > best {
+		best = n
+	}
 	return best
+}
+
+func looksLikeDSMLContent(s string) bool {
+	if contentDSMLMarkerRe.MatchString(s) {
+		return true
+	}
+	return strings.Contains(collapseDSMLFence(s), "<|dsml|")
+}
+
+func collapseDSMLFence(s string) string {
+	s = strings.ToLower(strings.ReplaceAll(s, "\uFF5C", "|"))
+	s = dsmlCollapseOpenSpaceRe.ReplaceAllString(s, "<")
+	return dsmlCollapsePipeSpaceRe.ReplaceAllString(s, "|")
+}
+
+func dsmlOpenSuffixLen(s string) int {
+	idx := strings.LastIndex(s, "<")
+	if idx < 0 {
+		return 0
+	}
+	tail := s[idx:]
+	if contentDSMLMarkerRe.MatchString(tail) {
+		return 0
+	}
+	collapsed := collapseDSMLFence(tail)
+	for _, marker := range []string{"<|dsml|tool_calls", "<|dsml|function_calls", "<|dsml|invoke", "<|dsml|parameter"} {
+		if len(collapsed) < len(marker) && strings.HasPrefix(marker, collapsed) {
+			return len(s) - idx
+		}
+	}
+	return 0
+}
+
+func normalizeDSMLMarkup(s string) string {
+	s = strings.ReplaceAll(s, "\uFF5C", "|")
+	s = dsmlSpacedFenceRe.ReplaceAllString(s, "|DSML|")
+	s = dsmlLooseOpenRe.ReplaceAllString(s, "<|DSML|")
+	s = dsmlLooseCloseRe.ReplaceAllString(s, "</|DSML|")
+	s = strings.ReplaceAll(s, "|DSML| /", "|DSML|/")
+	s = dsmlTagSpaceRe.ReplaceAllString(s, "${1}|DSML|")
+	return dsmlAltCloseRe.ReplaceAllString(s, "</|DSML|$1>")
 }
 
 func parsePlainContentToolCalls(content string) ([]ToolCall, bool) {
@@ -550,9 +878,20 @@ func parseCodexContentToolCalls(content string) ([]ToolCall, bool) {
 			malformed = true
 			continue
 		}
-		invokes := contentCodexToolInvokeRe.FindAllStringSubmatch(block[1], -1)
+		body := strings.TrimSpace(block[1])
+		if body == "" {
+			continue
+		}
+		invokes := contentCodexToolInvokeRe.FindAllStringSubmatch(body, -1)
 		if len(invokes) == 0 {
-			malformed = true
+			parsed, fragMalformed := parseContentToolCallFragments(block[0], body)
+			if len(parsed) > 0 {
+				calls = append(calls, parsed...)
+				continue
+			}
+			if fragMalformed {
+				malformed = true
+			}
 			continue
 		}
 		for _, inv := range invokes {
@@ -562,6 +901,71 @@ func parseCodexContentToolCalls(content string) ([]ToolCall, bool) {
 			} else {
 				malformed = true
 			}
+		}
+	}
+	return calls, malformed
+}
+
+func parseDSMLContentToolCalls(content string) ([]ToolCall, bool) {
+	content = normalizeDSMLMarkup(content)
+	blocks := contentDSMLBlockRe.FindAllStringSubmatch(content, -1)
+	if len(blocks) == 0 {
+		invokes := contentDSMLInvokeRe.FindAllStringSubmatch(content, -1)
+		if len(invokes) == 0 {
+			return nil, contentDSMLBlockOpenRe.MatchString(content) || contentDSMLInvokeOpenRe.MatchString(content)
+		}
+		return parseDSMLInvokes(invokes)
+	}
+	var calls []ToolCall
+	malformed := false
+	for _, block := range blocks {
+		if len(block) < 2 {
+			malformed = true
+			continue
+		}
+		invokes := contentDSMLInvokeRe.FindAllStringSubmatch(block[1], -1)
+		if len(invokes) == 0 {
+			malformed = true
+			continue
+		}
+		parsed, invMalformed := parseDSMLInvokes(invokes)
+		calls = append(calls, parsed...)
+		if invMalformed {
+			malformed = true
+		}
+	}
+	residual := strings.TrimSpace(contentDSMLBlockRe.ReplaceAllString(content, ""))
+	if residual != "" {
+		if extra := contentDSMLInvokeRe.FindAllStringSubmatch(residual, -1); len(extra) > 0 {
+			parsed, extraMalformed := parseDSMLInvokes(extra)
+			calls = append(calls, parsed...)
+			if extraMalformed {
+				malformed = true
+			}
+			residual = strings.TrimSpace(contentDSMLInvokeRe.ReplaceAllString(residual, ""))
+		}
+		if contentDSMLBlockOpenRe.MatchString(residual) || contentDSMLInvokeOpenRe.MatchString(residual) {
+			malformed = true
+		}
+	}
+	return calls, malformed
+}
+
+func parseDSMLInvokes(invokes [][]string) ([]ToolCall, bool) {
+	var calls []ToolCall
+	malformed := false
+	for _, inv := range invokes {
+		if len(inv) < 3 {
+			malformed = true
+			continue
+		}
+		body := dsmlParameterOpenRe.ReplaceAllString(inv[2], "<parameter")
+		body = dsmlParameterCloseRe.ReplaceAllString(body, "</parameter>")
+		call, ok := parseCodexContentInvoke([]string{inv[0], inv[1], body})
+		if ok {
+			calls = append(calls, call)
+		} else {
+			malformed = true
 		}
 	}
 	return calls, malformed
@@ -623,6 +1027,7 @@ func makeContentToolCallWithID(id, callType, name, args string) ToolCall {
 	if id == "" {
 		id = randomContentToolCallID()
 	}
+	args = sanitizeContentToolCallArguments(name, args)
 	return ToolCall{
 		ID:   id,
 		Type: normalizeToolCallType(callType),
@@ -634,6 +1039,35 @@ func makeContentToolCallWithID(id, callType, name, args string) ToolCall {
 			Arguments: args,
 		},
 	}
+}
+
+// sanitizeContentToolCallArguments keeps content-emitted web_search payloads
+// executable. DeepSeek DSML (and similar XML) often includes count/max_results
+// or a destination hint. The host schema is query-only with
+// additionalProperties=false; leftover fields consume the one-shot grant and
+// never unlock generate_pdf. Structured OpenAI tool_calls are not rewritten
+// here — that path still fail-closes on forged extras.
+func sanitizeContentToolCallArguments(name, args string) string {
+	if !strings.EqualFold(strings.TrimSpace(name), "web_search") {
+		return args
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(args), &obj); err != nil || obj == nil {
+		return args
+	}
+	query, _ := obj["query"].(string)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return args
+	}
+	if len(obj) == 1 {
+		return args
+	}
+	out, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		return args
+	}
+	return string(out)
 }
 
 func normalizeToolCallType(callType string) string {

@@ -11,6 +11,12 @@ func TestHasExplicitTrigger(t *testing.T) {
 		{"用 computer use 测一下计算器", true},
 		{"try computer_use mode", true},
 		{"computer-use please", true},
+		{"Use @computer, then click Save", true},
+		{"The computer use workflow is ready", true},
+		{"contact@computer.example", false},
+		{"@computerized report", false},
+		{"mycomputer use notes", false},
+		{"computer_user profile", false},
 		// Semantic desktop phrasing is NOT an explicit trigger — activation is
 		// decided by the unified intent classifier (corelib/intent).
 		{"打开word程序写一份简历", false},

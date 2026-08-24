@@ -17,9 +17,21 @@ import (
 
 // ResponsesAPIRequestOptions controls how a Responses API request is built.
 type ResponsesAPIRequestOptions struct {
-	Stream    bool
-	Tools     []map[string]interface{}
-	ExtraBody map[string]interface{}
+	Stream                  bool
+	Tools                   []map[string]interface{}
+	ExplicitToolReplacement bool
+	ExtraBody               map[string]interface{}
+	// ToolChoice and ParallelToolCalls are the request owner's explicit
+	// callable-surface controls. They intentionally cannot be supplied via
+	// ExtraBody, whose reserved-key filter would otherwise make their authority
+	// depend on mutable map composition.
+	ToolChoice        interface{}
+	ParallelToolCalls *bool
+	// PreserveResponseFormat keeps a host control-plane response contract when
+	// a conservative OpenAI-compatible relay sanitizes ordinary chat fields.
+	// The caller owns the protocol-failure path, so silently dropping the
+	// contract would incorrectly turn a machine-readable request into prose.
+	PreserveResponseFormat bool
 }
 
 // responsesReservedKeys are top-level keys that ExtraBody must not override.
@@ -78,12 +90,14 @@ func BuildResponsesAPIRequestData(
 	if converted.Instructions != "" {
 		reqBody["instructions"] = converted.Instructions
 	}
-	toolsInput := opts.Tools
-	toolsInput = sanitizeOpenAIChatToolsForSDK(toolsInput)
-	if cfg.NeedsConservativeOpenAICompatSanitization() {
-		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(toolsInput)
-	}
-	if tools := ConvertToResponsesTools(toolsInput); len(tools) > 0 {
+	toolsInput := PrepareOpenAIChatToolsForWire(cfg, opts.Tools)
+	tools := ConvertToResponsesTools(toolsInput)
+	if len(tools) > 0 || opts.ExplicitToolReplacement {
+		// An explicit replacement must remain [] after conversion, never nil
+		// (which JSON encodes as null) or omitted.
+		if tools == nil {
+			tools = make([]map[string]interface{}, 0)
+		}
 		reqBody["tools"] = tools
 	}
 	if opts.ExtraBody != nil {
@@ -95,7 +109,7 @@ func BuildResponsesAPIRequestData(
 			}
 		}
 		if _, ok := opts.ExtraBody["text"]; !ok {
-			if format := responsesTextFormatFromChatResponseFormat(opts.ExtraBody["response_format"]); format != nil {
+			if format := responsesTextFormatFromChatResponseFormat(cfg, opts.ExtraBody["response_format"], opts.PreserveResponseFormat); format != nil {
 				reqBody["text"] = map[string]interface{}{"format": format}
 			}
 		}
@@ -105,6 +119,14 @@ func BuildResponsesAPIRequestData(
 			continue
 		}
 		reqBody[k] = v
+	}
+	if opts.ToolChoice != nil {
+		if toolChoice := sanitizeResponsesToolChoice(opts.ToolChoice); toolChoice != nil {
+			reqBody["tool_choice"] = toolChoice
+		}
+	}
+	if opts.ParallelToolCalls != nil {
+		reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
 	}
 	// Explicit user choices are translated to each provider's native shape;
 	// auto preserves the endpoint's own default.
@@ -136,14 +158,54 @@ func BuildResponsesAPIRequestData(
 	}
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
+		if opts.PreserveResponseFormat && opts.ExtraBody != nil {
+			if format := responsesTextFormatFromChatResponseFormat(cfg, opts.ExtraBody["response_format"], true); format != nil {
+				reqBody["text"] = map[string]interface{}{"format": format}
+			}
+		}
+		if opts.ToolChoice != nil {
+			if toolChoice := sanitizeResponsesToolChoice(opts.ToolChoice); toolChoice != nil {
+				reqBody["tool_choice"] = toolChoice
+			}
+		}
+		if opts.ParallelToolCalls != nil {
+			reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
+		}
 	}
 
 	body, err = json.Marshal(reqBody)
 	return endpoint, body, err
 }
 
-func responsesTextFormatFromChatResponseFormat(raw interface{}) map[string]interface{} {
-	format := sanitizeOpenAIResponseFormatForSDK(raw)
+func sanitizeResponsesToolChoice(raw interface{}) interface{} {
+	switch value := raw.(type) {
+	case string:
+		switch strings.TrimSpace(value) {
+		case "none", "auto", "required":
+			return strings.TrimSpace(value)
+		default:
+			return nil
+		}
+	default:
+		choice := toStringInterfaceMap(raw)
+		if choice == nil || strings.TrimSpace(stringValue(choice["type"])) != "function" {
+			return nil
+		}
+		name := strings.TrimSpace(stringValue(choice["name"]))
+		if name == "" {
+			return nil
+		}
+		return map[string]interface{}{"type": "function", "name": name}
+	}
+}
+
+func responsesTextFormatFromChatResponseFormat(cfg corelib.MaclawLLMConfig, raw interface{}, preserveContract bool) map[string]interface{} {
+	// Keep this conversion aligned with Chat Completions.  A provider may expose
+	// a Responses-shaped endpoint while supporting only JSON-object mode; sending
+	// the stricter schema in that case turns a valid control-plane request into a
+	// transport rejection.  This is provider capability normalization, never an
+	// intent/text-based routing exception.
+	format := sanitizeOpenAIResponseFormatForProvider(cfg, raw, preserveContract)
 	if format == nil {
 		return nil
 	}
@@ -180,6 +242,7 @@ func NewResponsesAPIRequest(
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 	ApplyProviderAuthHeaders(req, cfg)
+	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 	// Codex subscription headers for chatgpt.com/backend-api
 	if IsCodexSubscriptionEndpoint(cfg.URL) {

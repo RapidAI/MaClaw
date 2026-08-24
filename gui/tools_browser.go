@@ -59,6 +59,7 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	// Create OCR provider (shared process-wide native PP-OCRv6 engine).
 	ocrSidecar := sharedNativeOCRProvider()
 	compositeOCR := browser.NewCompositeOCRProvider(ocrSidecar)
+	browser.SetObserveOCR(compositeOCR)
 
 	// Create BrowserTaskSupervisor
 	sessionFn := func() (*browser.Session, error) {
@@ -137,6 +138,14 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 			return result
 		},
 	})
+	// Catalog registration only: the browser family drives an external effect
+	// without a trusted receipt boundary, so no intent rule maps LabelBrowser
+	// to this capability and managed routing stays disabled for it. Only the
+	// merged entry is annotated; the individual browser_* handlers are internal
+	// dispatch targets, never separate catalog providers.
+	annotateSemanticTool(registry, MergedBrowserToolName, []tool.CapabilityProvision{{
+		Capability: tool.CapabilityBrowserControlWeb, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
 }
 
 func browserToolRequiresSessionID(toolName string) bool {

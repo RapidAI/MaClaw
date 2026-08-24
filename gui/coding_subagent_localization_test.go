@@ -190,6 +190,21 @@ func TestBugFixExistingEditRequiresLocalization(t *testing.T) {
 	}
 }
 
+func TestHorizonCLIEditSkipsLocalizationGate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bug.go")
+	if err := os.WriteFile(path, []byte("package bug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: dir, horizonPosture: true},
+		task:     &TaskItem{Title: "fix crash bug", Description: "panic on save"},
+	}
+	if got := cb.requireLocalizationBeforeExistingBugEdit(path, false); got != "" {
+		t.Fatalf("horizon CLI must skip localization gate, got %q", got)
+	}
+}
+
 func TestCodeNavigationFallbackFindsDefinition(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("..", ".codegraph")); err != nil {
 		t.Skip("workspace CodeGraph state unavailable")
@@ -923,6 +938,49 @@ func TestReportLocalizationReturnsStoredNormalizedEvidence(t *testing.T) {
 	}
 	if strings.Count(result.Text, `request -\u003e Run`) != 1 {
 		t.Fatalf("accepted response should contain deduplicated evidence: %s", result.Text)
+	}
+}
+
+func TestLocalizationEvidenceCannotAuthorizeEditAfterStaticSurfaceReplacement(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Title: "fix parser bug", Description: "existing parser crashes"},
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug", 0)
+	report := cb.executeReportLocalization(map[string]interface{}{
+		"root_cause_file": "root.go", "causal_path": []interface{}{"request -> root"},
+		"reproduction": "focused test fails", "supporting_evidence": []interface{}{"stack trace"},
+		"research_decision": "not_needed", "research_reason": "repository-only", "confidence": .8,
+	})
+	if report.Outcome != codingToolOutcomeSuccess || !strings.Contains(report.Text, "control_plane_revision=1") {
+		t.Fatalf("report=%#v", report)
+	}
+	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); blocked != "" {
+		t.Fatalf("current revision evidence should authorize root edit: %s", blocked)
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug again", 1)
+	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); !strings.Contains(blocked, "submit report_localization") {
+		t.Fatalf("replacement must invalidate old localization evidence, got %q", blocked)
+	}
+}
+
+func TestRemoteLocalizationEvidenceCannotAuthorizeEditAfterStaticSurfaceReplacement(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}, task: "fix parser bug", taskContext: "existing parser crashes"}
+	_ = cb.BuildToolsForModelRequest("fix parser bug", 0)
+	report := cb.executeRemoteReportLocalization(map[string]interface{}{
+		"root_cause_file": "root.go", "causal_path": []interface{}{"request -> root"},
+		"reproduction": "focused test fails", "supporting_evidence": []interface{}{"stack trace"},
+		"research_decision": "not_needed", "research_reason": "repository-only", "confidence": .8,
+	})
+	if !strings.Contains(report, "control_plane_revision=1") {
+		t.Fatalf("report=%q", report)
+	}
+	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, true); blocked != "" {
+		t.Fatalf("current remote revision evidence should authorize root edit: %s", blocked)
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug again", 1)
+	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, true); !strings.Contains(blocked, "submit report_localization") {
+		t.Fatalf("remote replacement must invalidate old localization evidence, got %q", blocked)
 	}
 }
 

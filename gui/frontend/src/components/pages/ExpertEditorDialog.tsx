@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { ExpertDefinition, ExpertOptimizeDraft, GeneratedExpertProfile } from '../ai/expertTypes';
+import type { ExpertCapabilityRule, ExpertDefinition, ExpertOptimizeDraft, GeneratedExpertProfile } from '../ai/expertTypes';
 import { buildPromptLineDiff, changedNames, omitOptimizationReviewFields, summarizePromptDiff } from '../ai/expertOptimizationDiff';
 import './UtilitiesPage.css';
 import {
@@ -91,6 +91,7 @@ type ExpertSavePayload = {
     skills: string[];
     optimized_from_id: string;
     about: string;
+    capability_rules?: ExpertCapabilityRule[];
 };
 
 function parseToolNames(raw: string | null | undefined): ToolNameEntry[] {
@@ -756,6 +757,8 @@ export const ExpertEditorDialog = ({ lang, expert, optimizeDraft, onClose, onSav
                 // Always include lineage/about so edits never silently drop them.
                 optimized_from_id: optimizedFromId,
                 about: about.trim(),
+                // Control-plane rules are not edited here; pass them through.
+                capability_rules: expert?.capability_rules,
             };
             const editId = expert?.id || draftUpdateId;
             if (editing && editId) payload.id = editId;

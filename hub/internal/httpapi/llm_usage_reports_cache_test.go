@@ -200,10 +200,11 @@ func TestLLMUsageReportHandlerUsesTenantScopedSettings(t *testing.T) {
 		t.Fatalf("save tenant usage report: %v", err)
 	}
 
+	handler := GetLLMUsageReportHandler(system, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/usage-report?period=monthly&month=2026-04", nil)
 	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: "tenant_a"}))
 	rec := httptest.NewRecorder()
-	GetLLMUsageReportHandler(system, nil)(rec, req)
+	handler(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -213,5 +214,69 @@ func TestLLMUsageReportHandlerUsesTenantScopedSettings(t *testing.T) {
 	}
 	if resp.Summary.TotalTokens != 123 || len(resp.Rows) != 1 || resp.Rows[0].ID != "tenant@example.com" {
 		t.Fatalf("tenant report should not read global settings, summary=%+v rows=%#v", resp.Summary, resp.Rows)
+	}
+
+	defaultReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/usage-report?period=monthly&month=2026-04", nil)
+	defaultReq = defaultReq.WithContext(context.WithValue(defaultReq.Context(), adminUserContextKey, &store.AdminUser{Scope: "tenant", TenantID: store.DefaultTenantID}))
+	defaultRec := httptest.NewRecorder()
+	handler(defaultRec, defaultReq)
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("default tenant status = %d body=%s", defaultRec.Code, defaultRec.Body.String())
+	}
+	var defaultResp llmUsageReportResponse
+	if err := json.Unmarshal(defaultRec.Body.Bytes(), &defaultResp); err != nil {
+		t.Fatalf("decode default tenant response: %v", err)
+	}
+	if defaultResp.Summary.TotalTokens != 900 || len(defaultResp.Rows) != 1 || defaultResp.Rows[0].ID != "global@example.com" {
+		t.Fatalf("default tenant report inherited a previous tenant scope, summary=%+v rows=%#v", defaultResp.Summary, defaultResp.Rows)
+	}
+}
+
+func TestLLMUsageAccumulatorFlushKeepsTenantUsageSeparated(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantA := scopedSystemSettingsForTenant("tenant_a", system)
+	tenantB := scopedSystemSettingsForTenant("tenant_b", system)
+	accumulator := &llmUsageAccumulator{
+		pending:  map[store.SystemSettingsRepository]*pendingSystemUsage{},
+		interval: time.Hour,
+	}
+
+	accumulator.enqueue(tenantA, "provider-a", corelib.TokenUsageStat{TotalTokens: 123, Requests: 1}, "user-a", "a@example.com", nil, nil, 0, "")
+	accumulator.enqueue(tenantB, "provider-b", corelib.TokenUsageStat{TotalTokens: 456, Requests: 1}, "user-b", "b@example.com", nil, nil, 0, "")
+	accumulator.flush(ctx)
+
+	for _, tc := range []struct {
+		name   string
+		system store.SystemSettingsRepository
+		email  string
+		tokens int64
+	}{
+		{name: "tenant a", system: tenantA, email: "a@example.com", tokens: 123},
+		{name: "tenant b", system: tenantB, email: "b@example.com", tokens: 456},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, err := loadLLMUsageReports(ctx, tc.system)
+			if err != nil {
+				t.Fatalf("load usage reports: %v", err)
+			}
+			var actual int64
+			for _, day := range report.Days {
+				if entry := day.Users[tc.email]; entry != nil {
+					actual += entry.Totals.TotalTokens
+				}
+			}
+			if actual != tc.tokens {
+				t.Fatalf("tokens for %s = %d, want %d; reports=%#v", tc.email, actual, tc.tokens, report)
+			}
+		})
+	}
+
+	globalReport, err := loadLLMUsageReports(ctx, system)
+	if err != nil {
+		t.Fatalf("load default tenant usage reports: %v", err)
+	}
+	if len(globalReport.Days) != 0 {
+		t.Fatalf("default tenant received tenant usage: %#v", globalReport)
 	}
 }

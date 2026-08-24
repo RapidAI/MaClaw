@@ -66,12 +66,34 @@ func normalizeCodingRequestDecision(decision codingRequestDecision) (codingReque
 		return codingRequestDecision{}, false
 	}
 }
+
+const codingRequestClassifierSystemPrompt = `Classify the user's coding-workbench request by intent. Return JSON only.
+
+Schema: {"kind":"inquiry|operational|implementation","needs_plan":true|false}
+
+inquiry: the user wants explanation, inspection, location, or an answer. It is read-only: never run commands or change files.
+operational: the user wants an existing project run, built, tested, or demonstrated, with no source change requested. It may run commands but must not change source files.
+implementation: the user asks to modify, create, fix, refactor, delete, or clear workspace files. Clearing or emptying the current project directory is implementation, never operational.
+needs_plan is true for an implementation request that is more than one local edit: several files, a feature plus tests, UI plus logic, a richer rewrite, or more than one distinct deliverable. One-line typo, rename, or comment-only fixes stay needs_plan=false.
+Questions about how a command works are inquiry, even when they mention build, test, run, or compile. A question asking you to actually run something is operational.
+Do not infer intent from isolated words; judge the complete request.`
+
 func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingRequestDecision {
+	// An explicit workspace wipe is file mutation. Do not let the lightweight
+	// classifier call it operational and send the agent to run an existing binary.
+	if codingRequestLooksExplicitWorkspaceClear(normalizeCodingWorkspaceClearText(userText)) {
+		return codingRequestDecision{Kind: codingRequestImplementation, NeedsPlan: false}
+	}
 	fallback := codingRequestDecision{
 		Kind:      codingRequestImplementation,
-		NeedsPlan: codingRequestNeedsPlanFallback(userText),
+		NeedsPlan: codingRequestNeedsPlanFallback(userText) || codingRequestLooksModeratelyComplex(userText),
 	}
 	if h == nil || h.client == nil || strings.TrimSpace(userText) == "" {
+		return fallback
+	}
+	// Rewrite / multi-step asks already have a local plan floor. Waiting on the
+	// classifier here only delays the first user-visible restatement.
+	if codingRequestLooksModeratelyComplex(userText) {
 		return fallback
 	}
 	cfg := h.getCodingLightweightLLMConfig()
@@ -81,21 +103,51 @@ func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingR
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return fallback
 	}
-	const system = `Classify the user's coding-workbench request by intent. Return JSON only.
-
-Schema: {"kind":"inquiry|operational|implementation","needs_plan":true|false}
-
-inquiry: the user wants explanation, inspection, location, or an answer. It is read-only: never run commands or change files.
-operational: the user wants an existing project run, built, tested, or demonstrated, with no source change requested. It may run commands but must not change source files.
-implementation: the user asks to modify, create, fix, or refactor code.
-needs_plan is true only for an implementation request with several coupled steps, broad impact, or meaningful risk. Simple implementation requests execute directly. Questions about how a command works are inquiry, even when they mention build, test, run, or compile. A question asking you to actually run something is operational.
-Do not infer intent from isolated words; judge the complete request.`
-	if decision, ok := parseCodingRequestDecision(h.callLightweightLLMOnce(cfg, system, userText, 5)); ok {
-		return decision
+	if decision, ok := parseCodingRequestDecision(h.callLightweightLLMOnce(cfg, codingRequestClassifierSystemPrompt, userText, 5)); ok {
+		return applyCodingRequestPlanFloor(decision, userText)
 	}
 	// A missing or malformed classifier answer must never grant a looser mode.
 	// Defaulting to implementation preserves normal review/safety boundaries.
 	return fallback
+}
+
+func applyCodingRequestPlanFloor(decision codingRequestDecision, userText string) codingRequestDecision {
+	if decision.Kind == codingRequestImplementation && codingRequestLooksModeratelyComplex(userText) {
+		decision.NeedsPlan = true
+	}
+	return decision
+}
+
+func codingRequestLooksModeratelyComplex(userText string) bool {
+	text := strings.ToLower(strings.TrimSpace(userText))
+	if text == "" || codingRequestLooksExplicitWorkspaceClear(userText) {
+		return false
+	}
+	if numberedStepCount(userText) >= codingWorkbenchPlanMinTasks {
+		return true
+	}
+	compact := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\t' || r == '\n' {
+			return -1
+		}
+		return r
+	}, text)
+	for _, marker := range []string{
+		"然后", "並且", "并且", "同时", "同時", "以及", "再加上",
+		"加测试", "加測試", "写测试", "寫測試", "andtest", "withtest", "unittests",
+		"豪华", "豪華", "完整功能", "端到端", "end-to-end", "endtoend",
+		"多文件", "多个文件", "severalfiles", "implementand", "实现并", "實現並",
+		"图形界面", "图形版", "圖形界面", "界面版", "重写", "重寫", "rewrite",
+		"移植到", "portto", "win32", "gdi",
+	} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	if strings.Contains(text, "and then") || strings.Contains(text, "plus test") || strings.Contains(text, "with tests") {
+		return true
+	}
+	return false
 }
 
 func parseCodingRequestDecision(raw string) (codingRequestDecision, bool) {
@@ -212,7 +264,7 @@ func rejectCodingInquiryShellCommand(command string) string {
 	}
 	for _, segment := range segments {
 		if !codingInquiryShellSegmentAllowed(segment) {
-			return fmt.Sprintf("only read-only inspection commands are available for a repository inquiry: %s", command)
+			return fmt.Sprintf("a repository inquiry runs only read-only inspection commands without approval: %s", command)
 		}
 	}
 	return ""
@@ -264,20 +316,320 @@ func codingInquiryShellSegmentAllowed(segment []string) bool {
 	}
 }
 
-func codingInquiryGitSubcommandAllowed(args []string) bool {
-	for _, arg := range args {
+// gitReadOnlySubcommands only ever report repository state, whatever arguments
+// they are given, so they need no further inspection.  Some of them (ls-remote)
+// contact a remote, which is still a read: it cannot change local or remote
+// refs.
+var gitReadOnlySubcommands = map[string]bool{
+	"status": true, "diff": true, "log": true, "show": true, "ls-files": true,
+	"rev-parse": true, "blame": true, "grep": true, "cat-file": true,
+	"ls-remote": true, "ls-tree": true, "rev-list": true, "describe": true,
+	"shortlog": true, "whatchanged": true, "diff-tree": true, "diff-index": true,
+	"for-each-ref": true, "merge-base": true, "name-rev": true, "check-ignore": true,
+	"count-objects": true, "verify-commit": true, "verify-tag": true, "annotate": true,
+	"show-ref": true, "show-branch": true,
+}
+
+// codingInquiryGitSubcommand returns the git subcommand (the first non-flag
+// token) together with the arguments that follow it.
+func codingInquiryGitSubcommand(args []string) (string, []string) {
+	for i, arg := range args {
 		arg = strings.TrimSpace(normalizeShellCommandToken(arg))
 		if arg == "" || strings.HasPrefix(arg, "-") {
 			continue
 		}
-		switch strings.ToLower(arg) {
-		case "status", "diff", "log", "show", "ls-files", "rev-parse", "blame", "grep", "cat-file":
+		return strings.ToLower(arg), args[i+1:]
+	}
+	return "", nil
+}
+
+func codingInquiryGitSubcommandAllowed(args []string) bool {
+	sub, rest := codingInquiryGitSubcommand(args)
+	if sub == "" {
+		return false
+	}
+	if gitArgsHaveUnsafeOption(args) || gitHasConfigInjectionOption(args) {
+		return false
+	}
+	switch sub {
+	case "ls-remote":
+		// ls-remote is the one read-only subcommand here that takes a URL, and
+		// a `helper::payload` URL (ext::, fd::) hands a command line to git's
+		// transport layer, so it may only name an ordinary remote.
+		for _, raw := range rest {
+			if gitTransportHelperURL(strings.TrimSpace(normalizeShellCommandToken(raw))) {
+				return false
+			}
+		}
+		return true
+	case "grep":
+		// `git grep -O<pager>` opens the matching files with an arbitrary
+		// command.  The gate sees lowercased text, so the unrelated `-o` of
+		// other subcommands cannot be told apart from `-O` and this check is
+		// kept scoped to grep, which has no `-o` of its own.
+		for _, raw := range rest {
+			arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+			if strings.HasPrefix(arg, "-o") || gitFlagName(arg) == "--open-files-in-pager" {
+				return false
+			}
+		}
+		return true
+	}
+	if gitReadOnlySubcommands[sub] {
+		return true
+	}
+	// branch/tag/remote report state in their listing form but create, delete,
+	// or rewrite refs as soon as they are given a target, so they are admitted
+	// only while their arguments stay in listing form.  Anything we cannot
+	// classify fails closed.
+	switch sub {
+	case "branch":
+		return gitBranchListingOnly(rest)
+	case "tag":
+		return gitTagListingOnly(rest)
+	case "remote":
+		return gitRemoteListingOnly(rest)
+	}
+	return false
+}
+
+// gitFlagName strips an inline `=value` so `--sort=x` matches `--sort`.
+func gitFlagName(arg string) string {
+	return strings.ToLower(strings.SplitN(arg, "=", 2)[0])
+}
+
+// gitArgsHaveUnsafeOption rejects options that turn an otherwise read-only git
+// subcommand into a file write or a command execution.  `--output` writes a
+// path without ever using a shell redirect, so the redirect guard cannot see
+// it; `--upload-pack`/`--exec`/`--receive-pack` name a program for git to run;
+// and `--exec-path` moves the directory git resolves its helper programs from,
+// including the `git-remote-*` transport helpers.
+func gitArgsHaveUnsafeOption(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		switch gitFlagName(arg) {
+		case "--output", "--upload-pack", "--exec", "--receive-pack", "--exec-path":
 			return true
+		}
+	}
+	return false
+}
+
+// gitHasConfigInjectionOption reports whether a git command carries a
+// pre-subcommand `-c key=value` or `--config-env`.  Both let a caller point git
+// at an arbitrary pager, alias, or transport helper, which is command
+// execution.  The scan stops at the subcommand so that `git log -c`, where `-c`
+// merely asks for a combined diff, stays available.
+//
+// The shell text reaching this gate has already been lowercased, so `-c` and
+// git's unrelated `-C <path>` cannot be told apart here and both are refused.
+func gitHasConfigInjectionOption(args []string) bool {
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			return false
+		}
+		switch gitFlagName(arg) {
+		case "-c", "--config-env":
+			return true
+		}
+	}
+	return false
+}
+
+// gitTransportHelperURL reports whether an argument is a `helper::payload`
+// remote URL.  git runs `git-remote-<helper>` for these, and the built-in ext
+// and fd helpers treat the payload as a command line.  Callers must only apply
+// this to arguments that are remote URLs: an ordinary search pattern such as
+// `std::vector` has the same shape.
+func gitTransportHelperURL(arg string) bool {
+	idx := strings.Index(arg, "::")
+	if idx <= 0 {
+		return false
+	}
+	for _, r := range arg[:idx] {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '+', r == '-', r == '.':
 		default:
 			return false
 		}
 	}
-	return false
+	return true
+}
+
+// gitRefFilterFlags select which refs to list.  They take a commit or pattern
+// operand and force git into list mode, so a name following one of them is a
+// filter argument rather than a ref being created.
+var gitRefFilterFlags = map[string]bool{
+	"--contains": true, "--no-contains": true,
+	"--merged": true, "--no-merged": true, "--points-at": true,
+}
+
+// gitRefFormatValueFlags shape the listing output and take a separate operand
+// that is never a ref name.
+var gitRefFormatValueFlags = map[string]bool{"--sort": true, "--format": true}
+
+// gitBranchDisplayFlags are safe on their own but do not put git into list
+// mode, so they never license a positional argument.
+var gitBranchDisplayFlags = map[string]bool{
+	"-l": true, "-a": true, "--all": true, "-r": true, "--remotes": true,
+	"-v": true, "-vv": true, "--verbose": true, "--show-current": true,
+	"-i": true, "--ignore-case": true, "--color": true, "--no-color": true,
+	"--column": true, "--no-column": true,
+}
+
+var gitTagDisplayFlags = map[string]bool{
+	"-i": true, "--ignore-case": true, "--color": true, "--no-color": true,
+	"--column": true, "--no-column": true,
+}
+
+// gitShortFlagCluster reports whether a single-dash token is a cluster of the
+// listed safe short flags, so that `-av` is read as `-a -v`.  Digits pass so
+// that git tag's `-n<num>` keeps working; they are never flags themselves.
+func gitShortFlagCluster(arg string, safe string) bool {
+	if len(arg) < 2 || !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") || strings.Contains(arg, "=") {
+		return false
+	}
+	for _, r := range arg[1:] {
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if !strings.ContainsRune(safe, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// gitFlagConsumesNext reports whether the token after a value-taking flag is
+// that flag's operand.  An inline `=value` carries its own operand, and these
+// flags take an optional value, so a following flag is not consumed.
+func gitFlagConsumesNext(arg string, rest []string) bool {
+	if strings.Contains(arg, "=") || len(rest) == 0 {
+		return false
+	}
+	next := strings.TrimSpace(normalizeShellCommandToken(rest[0]))
+	return next != "" && !strings.HasPrefix(next, "-")
+}
+
+func gitBranchListingOnly(args []string) bool {
+	listing := false
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			// In list mode this is a shell pattern; otherwise it names a branch
+			// to create, rename, or reset.
+			if !listing {
+				return false
+			}
+			continue
+		}
+		flag := gitFlagName(arg)
+		switch {
+		case flag == "--list":
+			listing = true
+		case gitRefFilterFlags[flag]:
+			listing = true
+			if gitFlagConsumesNext(arg, args[i+1:]) {
+				i++
+			}
+		case gitRefFormatValueFlags[flag]:
+			if gitFlagConsumesNext(arg, args[i+1:]) {
+				i++
+			}
+		case gitBranchDisplayFlags[flag], gitShortFlagCluster(arg, "arvil"):
+			// `-l` deliberately stays here rather than entering list mode:
+			// before git 2.19 it meant --create-reflog, so `git branch -l name`
+			// could still create a branch.  None of the clustered short flags
+			// enter list mode either, so `-av` cannot license a branch name.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func gitTagListingOnly(args []string) bool {
+	listing := false
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(normalizeShellCommandToken(args[i]))
+		if arg == "" {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			// In list mode this is a pattern; otherwise it names a tag to create.
+			if !listing {
+				return false
+			}
+			continue
+		}
+		flag := gitFlagName(arg)
+		switch {
+		case flag == "-l" || flag == "--list":
+			listing = true
+		case gitRefFilterFlags[flag]:
+			listing = true
+			if gitFlagConsumesNext(arg, args[i+1:]) {
+				i++
+			}
+		case gitRefFormatValueFlags[flag]:
+			if gitFlagConsumesNext(arg, args[i+1:]) {
+				i++
+			}
+		case gitTagDisplayFlags[flag]:
+		case gitShortFlagCluster(arg, "iln"):
+			// -n[<num>] prints annotation lines and, like -l, only exists in
+			// list mode, so either one licenses a trailing pattern.
+			if strings.ContainsAny(arg, "ln") {
+				listing = true
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func gitRemoteListingOnly(args []string) bool {
+	mode := ""
+	for _, raw := range args {
+		arg := strings.TrimSpace(normalizeShellCommandToken(raw))
+		if arg == "" {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			switch gitFlagName(arg) {
+			case "-v", "--verbose", "-n", "--all", "--push":
+				continue
+			default:
+				return false
+			}
+		}
+		if gitTransportHelperURL(arg) {
+			return false
+		}
+		if mode == "" {
+			switch strings.ToLower(arg) {
+			case "show", "get-url":
+				mode = strings.ToLower(arg)
+				continue
+			default:
+				return false
+			}
+		}
+		// A trailing remote name for `remote show` / `remote get-url`.
+	}
+	return true
 }
 
 func filterRemoteCodingInquiryTools(tools []map[string]interface{}) []map[string]interface{} {
@@ -364,7 +716,11 @@ func rejectCodingOperationalShellCommand(command string) string {
 			return fmt.Sprintf("%s is unavailable for a run/build/demo request; ask for an implementation change instead", cmd)
 		case "git":
 			if !codingInquiryGitSubcommandAllowed(args) {
-				return "mutating git commands are unavailable for a run/build/demo request"
+				sub, _ := codingInquiryGitSubcommand(args)
+				if sub == "" {
+					return "a git command needs a read-only subcommand for a run/build/demo request"
+				}
+				return fmt.Sprintf("git %s is not a read-only git subcommand, so a run/build/demo request does not run it without approval", sub)
 			}
 		case "sed", "perl":
 			for _, arg := range args {
@@ -556,7 +912,8 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 		return fallbackSingle("")
 	}
 	// Short follow-ups in an ongoing session usually mean "continue/fix", not replan.
-	if sessionMem.TurnCount > 0 && utf8.RuneCountInString(userText) < 80 && numberedStepCount(userText) < 2 {
+	// A short rewrite ("改为图形界面版") is still a new product-level change.
+	if sessionMem.TurnCount > 0 && utf8.RuneCountInString(userText) < 80 && numberedStepCount(userText) < 2 && !codingRequestLooksModeratelyComplex(userText) {
 		return fallbackSingle("short follow-up")
 	}
 
@@ -564,11 +921,20 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if userPlan := extractUserProvidedCodingPlan(userText); len(userPlan) >= codingWorkbenchPlanMinTasks {
 		tasks = userPlan
 		log.Printf("[coding-plan] using user-provided steps user=%s steps=%d", userID, len(tasks))
+	} else if codingRestatementFallbackIsSpecific(userText, sessionMem) {
+		// Rewrite follow-ups already have a host restatement. Do not wait on a
+		// planner LLM that usually falls back to the same two-step plan.
+		tasks = defaultModerateCodingPlan(userText, sessionMem.RequirementRestatement)
+		log.Printf("[coding-plan] host rewrite plan user=%s steps=%d", userID, len(tasks))
 	} else {
 		if onProgress != nil {
 			onProgress("复杂编程任务：正在自动规划步骤…")
 		}
 		_, tasks = h.planCodingWorkbenchTasks(userID, userText, projectPath, sessionMem)
+		if len(tasks) < codingWorkbenchPlanMinTasks && codingRequestLooksModeratelyComplex(userText) {
+			tasks = defaultModerateCodingPlan(userText, sessionMem.RequirementRestatement)
+			log.Printf("[coding-plan] host fallback moderate plan user=%s steps=%d", userID, len(tasks))
+		}
 		if len(tasks) < codingWorkbenchPlanMinTasks {
 			return fallbackSingle(fmt.Sprintf("planner returned %d tasks", len(tasks)))
 		}
@@ -576,19 +942,26 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 	if len(tasks) > codingWorkbenchPlanMaxTasks {
 		tasks = tasks[:codingWorkbenchPlanMaxTasks]
 	}
-	tasks = finalizeCodingWorkbenchTasks(tasks, userText)
+	goalText := codingPlanGoalText(userText, sessionMem.RequirementRestatement)
+	tasks = finalizeCodingWorkbenchTasks(tasks, goalText)
 	// Allow independent explore-only steps to run in parallel waves (TaskRunner MaxParallel).
 	tasks = softenExploreOnlyPlanDeps(tasks)
 	if len(tasks) < codingWorkbenchPlanMinTasks {
 		return fallbackSingle("finalize dropped below min steps")
 	}
 	// Always rebuild markdown after finalize so indices/deps match execution.
-	planMarkdown = formatCodingWorkbenchPlanMarkdown(userText, tasks)
+	planMarkdown = formatCodingWorkbenchPlanMarkdown(goalText, tasks)
 	// Single sticky write: execution plan + seed session goal when empty.
 	if userID != "" {
 		sessionSeed := ""
 		if strings.TrimSpace(sessionMem.SessionPlan) == "" {
-			sessionSeed = truncateRunesV2(userText, 400)
+			sessionSeed = strings.TrimSpace(sessionMem.RequirementRestatement)
+			if codingSessionContextLooksGeneric(sessionSeed) {
+				sessionSeed = ""
+			}
+			if sessionSeed == "" && !codingSessionContextLooksGeneric(userText) && utf8.RuneCountInString(userText) >= 12 {
+				sessionSeed = truncateRunesV2(userText, 400)
+			}
 		}
 		h.persistCodingWorkbenchPlans(userID, planMarkdown, sessionSeed)
 		// Seed step statuses as pending for live Todo UI.
@@ -606,17 +979,11 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("已规划 %d 个执行步骤，等待批准后执行", len(tasks)))
 		}
-		if onToken != nil {
-			onToken("\n\n## 已生成执行计划（待确认）\n\n" + planMarkdown + "\n\n")
-		}
 		log.Printf("[coding-plan] multi-step plan awaiting approve user=%s steps=%d", userID, len(tasks))
 		return tasks, planMarkdown, true
 	}
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("已规划 %d 个执行步骤，开始按计划实现", len(tasks)))
-	}
-	if onToken != nil {
-		onToken("\n\n## 自动规划\n\n" + planMarkdown + "\n\n---\n\n## 按计划执行\n\n")
 	}
 	log.Printf("[coding-plan] multi-step plan user=%s steps=%d", userID, len(tasks))
 	return tasks, planMarkdown, true

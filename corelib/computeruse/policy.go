@@ -144,6 +144,13 @@ func (p *Policy) AllowClickAt(x, y int, windowTitle string) error {
 	return nil
 }
 
+// SetAllowPixelClick updates whether raw x,y clicks are permitted.
+func (p *Policy) SetAllowPixelClick(allow bool) {
+	if p != nil {
+		p.allowPixelClick = allow
+	}
+}
+
 // AllowPixelClick reports whether raw x,y clicks are permitted.
 func (p *Policy) AllowPixelClick() bool {
 	if p == nil {

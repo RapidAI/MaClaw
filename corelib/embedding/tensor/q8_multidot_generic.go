@@ -54,11 +54,51 @@ func q8DualMultiDot8T(out0, out1 *[8]float32, a []float32, t *Q8Tensor, row0, ro
 	q8DualMultiDot8(out0, out1, a, t.Data, row0, row1, nBlocks, K)
 }
 
+func dualOutGemmDual8(gate, up, a []float32, wG, wU *Q8Tensor, M, N, K, ns, ne, nBlocks int) int {
+	return 0
+}
+
+func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq int) bool {
+	return false
+}
+
+func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq int) bool {
+	return false
+}
+
+func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, N, K int, eps float32) bool {
+	return false
+}
+
+func q8DualMultiDot3T(out *[8]float32, a []float32, t *Q8Tensor, row0, row1, nBlocks, K int) bool {
+	return false
+}
+
+func q8QuadMultiDot3(out *[12]float32, a []float32, t *Q8Tensor, row0, nBlocks, K int) bool {
+	return false
+}
+
 func q8TryDual8AccumN512(out, a []float32, t *Q8Tensor, m, n, nBlocks, K int, bn0, bn1 float32) bool {
 	return false
 }
 
 func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne, nBlocks int) bool {
+	return false
+}
+
+func tryGemmaFusedPlain(out, a []float32, b *Q8Tensor, M, N, K, ns, ne int) bool {
+	return false
+}
+
+func q8DualOut4T(outG, outU *[8]float32, a []float32, wG, wU *Q8Tensor, row0, row1, nBlocks, K int) bool {
+	return false
+}
+
+func dualOutVNNIM4(gate, up, a []float32, wG, wU *Q8Tensor, N, ns, ne, nBlocks int) bool {
+	return false
+}
+
+func gemmaDualOutM3N24(gate, up, a []float32, wG, wU *Q8Tensor, N, ns, ne int) bool {
 	return false
 }
 

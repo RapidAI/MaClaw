@@ -2,7 +2,6 @@ package tool
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 )
@@ -41,12 +40,10 @@ type LocalMCPToolProvider interface {
 	CallTool(serverID, toolName string, args map[string]interface{}) (string, error)
 }
 
-// DefinitionGenerator dynamically generates the Agent's tool definition
-// list by merging builtin tool definitions with tools from healthy MCP Servers
-// and running local (stdio) MCP Servers.
-// Supports deferred loading: tools in DeferredTools are excluded from the
-// initial prompt and can be discovered via SearchDeferred (inspired by
-// Claude Code's ToolSearchTool pattern).
+// DefinitionGenerator renders the static legacy host catalog. Dynamic MCP
+// inventory may still be retained by its providers for lifecycle/semantic
+// routing, but it is never converted into an unbound legacy model function.
+// Supports deferred loading for static entries only.
 type DefinitionGenerator struct {
 	mcpProvider      MCPServerProvider
 	localMCPProvider LocalMCPToolProvider
@@ -107,10 +104,9 @@ func (g *DefinitionGenerator) MCPProvider() MCPServerProvider { return g.mcpProv
 // LocalMCPProvider returns the local MCP tool provider (may be nil).
 func (g *DefinitionGenerator) LocalMCPProvider() LocalMCPToolProvider { return g.localMCPProvider }
 
-// Generate produces the complete tool definition list: builtin + dynamic MCP tools.
-// Dynamic tool names that conflict with builtin names get a server_id prefix.
-// Only tools from healthy remote MCP Servers and running local MCP Servers are included.
-// Tools in the deferred set are excluded (use SearchDeferred to find them).
+// Generate produces static legacy host definitions. Dynamic MCP calls require
+// a managed surface that binds provider identity, observed schema and contract
+// outside model arguments.
 func (g *DefinitionGenerator) Generate() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(g.builtinDefs))
 	for _, def := range g.builtinDefs {
@@ -121,76 +117,6 @@ func (g *DefinitionGenerator) Generate() []map[string]interface{} {
 		if name != "" && g.deferredTools[name] {
 			continue
 		}
-		result = append(result, def)
-	}
-
-	builtinNames := make(map[string]bool, len(g.builtinDefs))
-	for _, def := range g.builtinDefs {
-		if name := ExtractToolName(def); name != "" {
-			if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
-				continue
-			}
-			builtinNames[name] = true
-		}
-	}
-
-	dynamicNames := make(map[string]string)
-	type pendingTool struct {
-		serverID string
-		tool     MCPToolView
-	}
-	var pending []pendingTool
-
-	if g.mcpProvider != nil {
-		servers := g.mcpProvider.ListServers()
-		for _, srv := range servers {
-			if srv.HealthStatus != "healthy" {
-				continue
-			}
-			tools := g.mcpProvider.GetServerTools(srv.ID)
-			for _, t := range tools {
-				pending = append(pending, pendingTool{serverID: srv.ID, tool: t})
-				if _, exists := dynamicNames[t.Name]; !exists {
-					dynamicNames[t.Name] = srv.ID
-				} else {
-					dynamicNames[t.Name] = ""
-				}
-			}
-		}
-	}
-
-	if g.localMCPProvider != nil {
-		for _, ts := range g.localMCPProvider.GetAllTools() {
-			for _, t := range ts.Tools {
-				pending = append(pending, pendingTool{serverID: ts.ServerID, tool: t})
-				if _, exists := dynamicNames[t.Name]; !exists {
-					dynamicNames[t.Name] = ts.ServerID
-				} else {
-					dynamicNames[t.Name] = ""
-				}
-			}
-		}
-	}
-
-	for _, p := range pending {
-		name := p.tool.Name
-		if IsDisabledExternalCodingSessionTool(name) || isInternalBrowserDispatchToolName(name) {
-			continue
-		}
-		if g.deferredTools[name] {
-			continue
-		}
-		needsPrefix := builtinNames[name]
-		if !needsPrefix {
-			if ownerID := dynamicNames[name]; ownerID == "" {
-				needsPrefix = true
-			}
-		}
-		finalName := name
-		if needsPrefix {
-			finalName = fmt.Sprintf("%s_%s", p.serverID, name)
-		}
-		def := MCPToolToDefinition(finalName, p.tool)
 		result = append(result, def)
 	}
 
@@ -323,8 +249,9 @@ func (g *DefinitionGenerator) SearchDeferred(query string, maxResults int) []map
 	return matches
 }
 
-// GenerateDeferred returns only the deferred tool definitions (the complement
-// of Generate). Used by SearchDeferred and for tool discovery prompts.
+// GenerateDeferred returns only deferred static tool definitions. Dynamic MCP
+// inventory is intentionally absent because a legacy discovery result cannot
+// create a provider binding or model authorization.
 func (g *DefinitionGenerator) GenerateDeferred() []map[string]interface{} {
 	var result []map[string]interface{}
 	for _, def := range g.builtinDefs {
@@ -337,33 +264,5 @@ func (g *DefinitionGenerator) GenerateDeferred() []map[string]interface{} {
 		}
 	}
 
-	// Also include deferred MCP tools.
-	if g.mcpProvider != nil {
-		for _, srv := range g.mcpProvider.ListServers() {
-			if srv.HealthStatus != "healthy" {
-				continue
-			}
-			for _, t := range g.mcpProvider.GetServerTools(srv.ID) {
-				if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
-					continue
-				}
-				if g.deferredTools[t.Name] {
-					result = append(result, MCPToolToDefinition(t.Name, t))
-				}
-			}
-		}
-	}
-	if g.localMCPProvider != nil {
-		for _, ts := range g.localMCPProvider.GetAllTools() {
-			for _, t := range ts.Tools {
-				if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
-					continue
-				}
-				if g.deferredTools[t.Name] {
-					result = append(result, MCPToolToDefinition(t.Name, t))
-				}
-			}
-		}
-	}
 	return result
 }

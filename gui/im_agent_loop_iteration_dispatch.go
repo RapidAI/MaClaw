@@ -20,12 +20,14 @@ type agentLoopIterationDispatchOptions struct {
 	RequestContext                context.Context
 	UserID                        string
 	UserText                      string
+	TaskAnchor                    *taskIdentityAnchor
 	Iteration                     int
 	Platform                      string
 	Config                        corelib.MaclawLLMConfig
 	HTTPClient                    *http.Client
 	BaseTools                     []map[string]interface{}
 	Tools                         *[]map[string]interface{}
+	ClientToolNames               []string
 	ToolsTokenBudget              *int
 	Conversation                  *[]interface{}
 	History                       *[]agent.ConversationEntry
@@ -70,11 +72,13 @@ type agentLoopMainIterationsOptions struct {
 	RequestContext                context.Context
 	UserID                        string
 	UserText                      string
+	TaskAnchor                    *taskIdentityAnchor
 	Platform                      string
 	Config                        corelib.MaclawLLMConfig
 	HTTPClient                    *http.Client
 	BaseTools                     []map[string]interface{}
 	Tools                         []map[string]interface{}
+	ClientToolNames               []string
 	ToolsTokenBudget              int
 	Conversation                  []interface{}
 	History                       []agent.ConversationEntry
@@ -135,12 +139,14 @@ func (h *IMMessageHandler) runAgentLoopMainIterations(opts agentLoopMainIteratio
 			RequestContext:                opts.RequestContext,
 			UserID:                        opts.UserID,
 			UserText:                      opts.UserText,
+			TaskAnchor:                    opts.TaskAnchor,
 			Iteration:                     iteration,
 			Platform:                      opts.Platform,
 			Config:                        opts.Config,
 			HTTPClient:                    opts.HTTPClient,
 			BaseTools:                     opts.BaseTools,
 			Tools:                         &result.Tools,
+			ClientToolNames:               opts.ClientToolNames,
 			ToolsTokenBudget:              &result.ToolsTokenBudget,
 			Conversation:                  &result.Conversation,
 			History:                       &result.History,
@@ -198,6 +204,10 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 			log.Printf("[agent-loop-iter] slow phase=%s owner=%q request_id=%q loop=%q iteration=%d elapsed=%s", phase, opts.UserID, requestID, loopID, opts.Iteration, elapsed.Round(time.Millisecond))
 		}
 	}
+	// Round preparation compacts history and recalculates the working budget.
+	// It must use the same routed snapshot that will issue the LLM request;
+	// otherwise a context-only escalation first takes effect one round late.
+	roundCfg := activeAgentLoopConfig(opts.RunState, opts.Config)
 	phaseStartedAt := time.Now()
 	roundPrep := h.prepareAgentLoopRound(agentLoopRoundPrepOptions{
 		Context:                 opts.Context,
@@ -208,7 +218,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		MinIterations:           opts.MinIterations,
 		ConfigMax:               opts.ConfigMax,
 		ChatFinalizeGrace:       opts.ChatFinalizeGrace,
-		Config:                  opts.Config,
+		Config:                  roundCfg,
 		Conversation:            *opts.Conversation,
 		Tools:                   *opts.Tools,
 		ToolsTokenBudget:        *opts.ToolsTokenBudget,
@@ -256,10 +266,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	}
 
 	// Prefer run-state ActiveConfig so mid-loop escalations take effect.
-	llmCfg := opts.Config
-	if opts.RunState != nil && strings.TrimSpace(opts.RunState.ActiveConfig.Model) != "" {
-		llmCfg = opts.RunState.ActiveConfig
-	}
+	llmCfg := roundCfg
 	requestBreakdown := agent.EstimateLoopInputBreakdown(*opts.Conversation, *opts.Tools)
 	agent.RecordLoopInputBreakdown(requestBreakdown)
 	opts.Telemetry.InputBreakdown = requestBreakdown
@@ -460,14 +467,17 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		Context:                    opts.Context,
 		UserID:                     opts.UserID,
 		UserText:                   opts.UserText,
+		TaskAnchor:                 opts.TaskAnchor,
 		Iteration:                  opts.Iteration,
 		Platform:                   opts.Platform,
+		Config:                     llmCfg,
 		MessageContent:             msgContent,
 		LengthContinuationText:     opts.RunState.LengthContinuationBuffer.String(),
 		Choice:                     choice,
 		Phase:                      opts.Phase,
 		Tools:                      *opts.Tools,
 		BaseTools:                  opts.BaseTools,
+		ClientToolNames:            opts.ClientToolNames,
 		Conversation:               *opts.Conversation,
 		History:                    *opts.History,
 		VisibleArtifacts:           opts.VisibleArtifacts,
@@ -512,4 +522,11 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		log.Printf("[agent-loop-iter] done owner=%q request_id=%q loop=%q iteration=%d elapsed=%s llm=%s tool=%s", opts.UserID, requestID, loopID, opts.Iteration, elapsed.Round(time.Millisecond), llmElapsed.Round(time.Millisecond), toolPath.ToolExecElapsed.Round(time.Millisecond))
 	}
 	return agentLoopIterationDispatchResult{}
+}
+
+func activeAgentLoopConfig(run *agentLoopRunState, fallback corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if run == nil || strings.TrimSpace(run.ActiveConfig.Model) == "" {
+		return fallback
+	}
+	return run.ActiveConfig
 }

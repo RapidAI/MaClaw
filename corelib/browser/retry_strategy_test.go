@@ -21,6 +21,18 @@ func TestRetryStrategyUsesShortDeterministicWaits(t *testing.T) {
 	}
 }
 
+func TestClassifyFailurePolicyDeniedDoesNotRetry(t *testing.T) {
+	r := NewRetryStrategy(3, 3, nil)
+	err := policyDenied("browser policy blocked URL scheme: javascript")
+	if got := r.ClassifyFailure(err, StepSpec{Action: "navigate"}); got != FailureNetworkBlocked {
+		t.Fatalf("ClassifyFailure=%v", got)
+	}
+	decision := r.Decide(FailureNetworkBlocked, StepSpec{Action: "navigate"}, 0, nil)
+	if decision.ShouldRetry {
+		t.Fatalf("policy denied should not retry: %+v", decision)
+	}
+}
+
 func TestRetryStrategyCapsDefaultTimeoutRetries(t *testing.T) {
 	r := NewRetryStrategy(3, 3, nil)
 	first := r.Decide(FailureTimeout, StepSpec{Action: "wait"}, 0, nil)

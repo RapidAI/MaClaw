@@ -838,28 +838,28 @@ func TestDetectAvailableToolExecutionPromise(t *testing.T) {
 	}
 }
 
-func TestPinConditionalToolAfterSuccessRequiresSucceededOutcome(t *testing.T) {
+func TestPinConditionalToolAfterSuccessDoesNotPersistToolName(t *testing.T) {
 	h := &IMMessageHandler{toolRouter: NewToolRouter(NewToolDefinitionGenerator(nil, nil))}
 
 	h.pinConditionalToolAfterSuccess("", "ssh", toolExecutionResult{Outcome: toolOutcomeUncertain, FailureKind: toolFailureNone})
 	if h.toolRouter.IsSessionPinned("ssh") {
-		t.Fatal("uncertain outcome should not session-pin ssh")
+		t.Fatal("uncertain outcome must not persist ssh")
 	}
 
 	h.pinConditionalToolAfterSuccess("", "ssh", toolExecutionResult{Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone})
-	if !h.toolRouter.IsSessionPinned("ssh") {
-		t.Fatal("succeeded outcome should session-pin ssh")
+	if h.toolRouter.IsSessionPinned("ssh") {
+		t.Fatal("successful legacy execution must not persist ssh")
 	}
 }
 
-func TestConditionalToolPinsAreScopedToAssistantOwner(t *testing.T) {
+func TestConditionalToolSuccessDoesNotCreateOwnerPin(t *testing.T) {
 	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
 	h := &IMMessageHandler{toolRouter: router}
 	result := toolExecutionResult{Outcome: toolOutcomeSucceeded, FailureKind: toolFailureNone}
 	h.pinConditionalToolAfterSuccess("desktop-user:D:/tasks/one", "ssh", result)
 
-	if !router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
-		t.Fatal("owner that used ssh should retain its pin")
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("owner that used ssh must not retain a tool-name pin")
 	}
 	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/two", "ssh") {
 		t.Fatal("second project session inherited ssh pin from first project")
@@ -871,7 +871,7 @@ func TestConditionalToolPinsAreScopedToAssistantOwner(t *testing.T) {
 	}
 }
 
-func TestRouteForSessionAndPinAugmentAreScopedToAssistantOwner(t *testing.T) {
+func TestRouteForSessionRejectsLegacyDiagnosticPins(t *testing.T) {
 	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
 	ownerA := "desktop-user:D:/tasks/one"
 	ownerB := "desktop-user:D:/tasks/two"
@@ -881,21 +881,20 @@ func TestRouteForSessionAndPinAugmentAreScopedToAssistantOwner(t *testing.T) {
 		toolDef("read_file", "read file", nil, nil),
 	}
 
-	if !toolListContainsName(router.RouteForSession(ownerA, "continue", tools, coretool.RouteOptions{SkipUnifiedClassifier: true}), "ssh") {
-		t.Fatal("owner A should retain its ssh pin on a later unrelated message")
+	if toolListContainsName(router.RouteForSession(ownerA, "continue", tools, coretool.RouteOptions{SkipUnifiedClassifier: true}), "ssh") {
+		t.Fatal("owner A pin must not retain ssh on an unrelated message")
 	}
 	if toolListContainsName(router.RouteForSession(ownerB, "continue", tools, coretool.RouteOptions{SkipUnifiedClassifier: true}), "ssh") {
-		t.Fatal("owner B must not receive owner A's ssh pin during routing")
+		t.Fatal("owner B must not receive an owner A diagnostic pin during routing")
 	}
-	if got := router.SessionPinnedToolsMissingForSession(ownerB, map[string]bool{}); len(got) != 0 {
-		t.Fatalf("owner B missing session pins = %v, want none", got)
-	}
-	if got := router.SessionPinnedToolsMissingForSession(ownerA, map[string]bool{}); len(got) != 1 || got[0] != "ssh" {
-		t.Fatalf("owner A missing session pins = %v, want ssh", got)
+	for _, owner := range []string{ownerA, ownerB} {
+		if got := router.SessionPinnedToolsMissingForSession(owner, map[string]bool{}); len(got) != 0 {
+			t.Fatalf("owner %q missing session pins = %v, want none", owner, got)
+		}
 	}
 }
 
-func TestDiscoverToolSessionPinsConditionalTool(t *testing.T) {
+func TestDiscoverToolDoesNotPinConditionalTool(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{Name: "ssh", Description: "SSH remote server access", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
 		t.Fatalf("Register ssh: %v", err)
@@ -906,15 +905,15 @@ func TestDiscoverToolSessionPinsConditionalTool(t *testing.T) {
 	if !strings.Contains(out, "ssh") {
 		t.Fatalf("discover output should mention ssh, got %q", out)
 	}
-	if !h.toolRouter.IsSessionPinned("ssh") {
-		t.Fatal("discover_tool should session-pin conditional tools so they appear in subsequent iterations")
+	if h.toolRouter.IsSessionPinned("ssh") {
+		t.Fatal("discover_tool must not turn ssh into a sticky tool authorization")
 	}
-	if !strings.Contains(out, "activated") {
-		t.Fatal("discover output should show ssh as activated")
+	if strings.Contains(out, "Activated tools are now available") {
+		t.Fatal("discover output must not promise immediate tool authorization")
 	}
 }
 
-func TestDiscoverToolPinsConditionalToolForExplicitOwner(t *testing.T) {
+func TestDiscoverToolDoesNotPinConditionalToolForExplicitOwner(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := registry.Register(RegisteredTool{Name: "ssh", Description: "SSH remote server access", Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
 		t.Fatalf("Register ssh: %v", err)
@@ -926,20 +925,19 @@ func TestDiscoverToolPinsConditionalToolForExplicitOwner(t *testing.T) {
 	if !strings.Contains(out, "ssh") {
 		t.Fatalf("discover output should mention ssh, got %q", out)
 	}
-	if !router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
-		t.Fatal("discover_tool should pin ssh for the requesting owner")
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("discover_tool must not pin ssh for the requesting owner")
 	}
 	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/two", "ssh") {
 		t.Fatal("discover_tool leaked an owner-scoped ssh pin into a second project")
 	}
 }
 
-func TestDiscoverToolRuntimeOwnerDoesNotUseLastStartedLoop(t *testing.T) {
+func TestDiscoverToolRuntimeOwnerDoesNotCreateToolPin(t *testing.T) {
 	registry := NewToolRegistry()
 	router := NewToolRouter(NewToolDefinitionGenerator(nil, nil))
-	// Simulate project B being the last loop started. The tool call below is
-	// explicitly for project A and must not consult this global compatibility
-	// pointer when it pins a discovered conditional tool.
+	// Simulate project B being the last loop started. Discovery for project A
+	// must not leak a legacy tool-name pin into either owner.
 	h := &IMMessageHandler{
 		registry:       registry,
 		toolRouter:     router,
@@ -963,11 +961,11 @@ func TestDiscoverToolRuntimeOwnerDoesNotUseLastStartedLoop(t *testing.T) {
 	if result.Outcome != toolOutcomeSucceeded {
 		t.Fatalf("discover result = %+v, want success", result)
 	}
-	if !router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
-		t.Fatal("runtime owner should receive the discovered ssh pin")
+	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/one", "ssh") {
+		t.Fatal("runtime owner must not receive a discovered ssh pin")
 	}
 	if router.IsSessionPinnedForSession("desktop-user:D:/tasks/two", "ssh") {
-		t.Fatal("discover_tool used the last-started session instead of runtime owner")
+		t.Fatal("discover_tool must not pin the last-started session")
 	}
 }
 
@@ -1530,8 +1528,8 @@ func assertNoCodingSessionTools(t *testing.T, tools []map[string]interface{}) {
 	}
 }
 
-// TestGetTools_CacheWithin5Seconds verifies that repeated calls within 5s
-// return the cached result without regenerating.
+// TestGetTools_CacheWithin5Seconds verifies that repeated calls within 5s use
+// the inventory cache while returning independent request-local definitions.
 func TestGetTools_CacheWithin5Seconds(t *testing.T) {
 	handler := &IMMessageHandler{
 		app: &App{},
@@ -1543,7 +1541,8 @@ func TestGetTools_CacheWithin5Seconds(t *testing.T) {
 
 	// First call populates cache.
 	tools1 := handler.getTools()
-	// Second call should return same slice from cache.
+	// Second call should read the same inventory cache, but not receive the
+	// cached slice/maps themselves.
 	tools2 := handler.getTools()
 
 	if len(tools1) != len(tools2) {
@@ -1557,6 +1556,37 @@ func TestGetTools_CacheWithin5Seconds(t *testing.T) {
 
 	if cacheTime.IsZero() {
 		t.Error("expected toolsCacheTime to be set after getTools()")
+	}
+	if len(tools1) == 0 || len(tools2) == 0 {
+		t.Fatal("expected non-empty definitions")
+	}
+	if &tools1[0] == &tools2[0] {
+		t.Fatal("getTools returned the same definition slice across requests")
+	}
+	tools1[0]["request_local_mutation"] = true
+	function1, _ := tools1[0]["function"].(map[string]interface{})
+	function2, _ := tools2[0]["function"].(map[string]interface{})
+	if function1 != nil {
+		function1["request_local_mutation"] = true
+	}
+	if _, leaked := tools2[0]["request_local_mutation"]; leaked {
+		t.Fatal("top-level tool definition mutation leaked into successor request")
+	}
+	if _, leaked := function2["request_local_mutation"]; leaked {
+		t.Fatal("nested tool definition mutation leaked into successor request")
+	}
+	handler.toolsMu.RLock()
+	cached := handler.cachedTools
+	handler.toolsMu.RUnlock()
+	if len(cached) == 0 {
+		t.Fatal("expected inventory cache to remain populated")
+	}
+	if _, leaked := cached[0]["request_local_mutation"]; leaked {
+		t.Fatal("request-local mutation leaked into cached inventory")
+	}
+	cachedFunction, _ := cached[0]["function"].(map[string]interface{})
+	if _, leaked := cachedFunction["request_local_mutation"]; leaked {
+		t.Fatal("nested request-local mutation leaked into cached inventory")
 	}
 }
 
@@ -1888,15 +1918,18 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 	}
 
 	runCase("登录 4090 服务器，host home.rapidai.tech 端口 33", true)
-	// Reset session between independent test cases so the ssh pin from
-	// the first case doesn't carry over. In production, session-pinned
-	// tools persist across messages (which is the desired behavior for
-	// follow-up SSH operations), but these are independent test scenarios.
+	// Reset remains harmless for callers that own other per-session state; the
+	// router itself no longer retains tool-name authority across messages.
 	router.ResetSession()
 	runCase("我要查询数据库", false)
 }
 
 func TestRouteTools_WiresHandlerUnifiedClassifierIntoRouter(t *testing.T) {
+	// The handler's turn-level semantic classification reaches routing through
+	// RouteOptions.PreResolved (production: prepareAgentLoopTools passes
+	// ctx.Runtime.SemanticIntent). Routing never starts a new tree/LLM call of
+	// its own (see TestRouteToolsCompatibilityPathSkipsTreeLLM); a direct
+	// routeTools call without a pre-resolved intent fails closed by contract.
 	handler := &IMMessageHandler{app: &App{}}
 	handler.registry = NewToolRegistry()
 	registerBuiltinTools(handler.registry, handler)
@@ -1912,17 +1945,15 @@ func TestRouteTools_WiresHandlerUnifiedClassifierIntoRouter(t *testing.T) {
 	if len(tools) <= maxToolBudget {
 		t.Fatalf("need more than %d tools to test routing, got %d", maxToolBudget, len(tools))
 	}
-	handler.unifiedClassifier = intent.New(intent.Config{
-		Embedder: embedding.NoopEmbedder{},
-		LLMFunc: func(_, _ string) (string, error) {
-			return `{"top":[{"skill":"ssh","score":0.95,"reason":"server operation"}]}`, nil
-		},
-		LLMTimeout: time.Second,
-	})
 
 	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
 	handler.SetToolRouter(router)
-	routed := handler.routeTools("将驱网服务器上的 19080 端口反代到 ve.mypapers.top", tools)
+	sshIntent := &intent.ClassificationResult{
+		Primary:    intent.LabelSSH,
+		Confidence: 0.95,
+		ToolNames:  intent.NewToolAffinityRegistry().Resolve(intent.LabelSSH, nil),
+	}
+	routed := handler.routeSessionTools("", "将驱网服务器上的 19080 端口反代到 ve.mypapers.top", tools, false, sshIntent)
 	foundSSH := false
 	foundCallMCPTool := false
 	for _, tool := range routed {
@@ -1934,7 +1965,7 @@ func TestRouteTools_WiresHandlerUnifiedClassifierIntoRouter(t *testing.T) {
 		}
 	}
 	if !foundSSH {
-		t.Fatalf("expected ssh to be routed from handler unified classifier")
+		t.Fatalf("expected ssh to be routed from the turn's semantic classification")
 	}
 	if foundCallMCPTool {
 		t.Fatalf("call_mcp_tool should be hidden when ssh is routed")
@@ -2056,6 +2087,150 @@ func TestPreCheckToolArgsForAgentLoopReturnsMCPValidationToLLM(t *testing.T) {
 	}
 	if strings.Contains(result.Text, "task panel") || strings.Contains(result.Text, "form") {
 		t.Fatalf("agent-loop validation must not route to manual AgentView form: %q", result.Text)
+	}
+}
+
+func TestExecuteToolReturnsMissingMCPArgsToAgentWithoutOpeningView(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "call_mcp_tool",
+		Description: "Call MCP tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"server_id": map[string]interface{}{"type": "string"},
+				"tool_name": map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "object"},
+			},
+			"required": []interface{}{"server_id", "tool_name"},
+		},
+		Handler: func(map[string]interface{}) string {
+			t.Fatal("call_mcp_tool handler must not run when nested MCP args are incomplete")
+			return "ran"
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["ews"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "ews", Name: "ews-mcp"},
+		tools: []MCPToolView{{
+			Name: "find_person",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":         map[string]interface{}{"type": "string"},
+					"include_stats": map[string]interface{}{"type": "boolean"},
+					"max_results":   map[string]interface{}{"type": "integer"},
+				},
+				"required": []interface{}{"query"},
+			},
+		}},
+		running: true,
+	}
+	app := &App{localMCPManager: mgr}
+	handler := &IMMessageHandler{app: app, registry: registry}
+
+	result := handler.executeToolDetailed("call_mcp_tool", `{"server_id":"ews","tool_name":"find_person","arguments":{"include_stats":true,"max_results":50}}`, nil)
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureMissingParameters {
+		t.Fatalf("expected missing-parameter failure, got outcome=%s failure=%s text=%q", result.Outcome, result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "query") || !strings.Contains(result.Text, "Missing required MCP argument") {
+		t.Fatalf("execution fallback should tell LLM which MCP argument to recover, got: %q", result.Text)
+	}
+	if strings.Contains(result.Text, "task panel") || strings.Contains(result.Text, "form") {
+		t.Fatalf("MCP execution must not route to manual AgentView form: %q", result.Text)
+	}
+	prechecked := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"ews","tool_name":"find_person","arguments":{"include_stats":true,"max_results":50}}`, 1)
+	if prechecked == nil || prechecked.Text != result.Text || prechecked.Outcome != result.Outcome || prechecked.FailureKind != result.FailureKind {
+		t.Fatalf("agent-loop precheck and execution fallback must agree: precheck=%#v fallback=%#v", prechecked, result)
+	}
+	if got := app.agentViewSeq(); got != 0 {
+		t.Fatalf("agent MCP missing parameters must not open a task panel, emitted view sequence = %d", got)
+	}
+}
+
+func TestToolCallMCPToolMissingArgsDoesNotOpenTaskPanel(t *testing.T) {
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["ews"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "ews", Name: "ews-mcp"},
+		tools: []MCPToolView{{
+			Name: "find_person",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []interface{}{"query"},
+			},
+		}},
+		running: true,
+	}
+	app := &App{localMCPManager: mgr}
+	handler := &IMMessageHandler{app: app}
+
+	out := handler.toolCallMCPTool(map[string]interface{}{
+		"server_id": "ews",
+		"tool_name": "find_person",
+		"arguments": map[string]interface{}{"include_stats": true},
+	})
+	if !strings.Contains(out, "query") || !strings.Contains(out, "Missing required MCP argument") {
+		t.Fatalf("expected retryable MCP validation text, got: %q", out)
+	}
+	if strings.Contains(out, "task panel") || strings.Contains(out, mcpAgentViewCorrectionMessage) {
+		t.Fatalf("direct MCP execution must not open the correction panel: %q", out)
+	}
+	if got := app.agentViewSeq(); got != 0 {
+		t.Fatalf("toolCallMCPTool must not emit AgentView on missing args, seq=%d", got)
+	}
+}
+
+func TestPreCheckToolArgsForAgentLoopPromotesTopLevelMCPQuery(t *testing.T) {
+	registry := NewToolRegistry()
+	if err := registry.Register(RegisteredTool{
+		Name:        "call_mcp_tool",
+		Description: "Call MCP tool",
+		Category:    ToolCategoryBuiltin,
+		Status:      RegToolAvailable,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"server_id": map[string]interface{}{"type": "string"},
+				"tool_name": map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "object"},
+			},
+			"required": []interface{}{"server_id", "tool_name"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	mgr := NewLocalMCPManager(nil)
+	mgr.clients["ews"] = &LocalMCPClient{
+		entry: corelib.LocalMCPServerEntry{ID: "ews", Name: "ews-mcp"},
+		tools: []MCPToolView{{
+			Name: "find_person",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []interface{}{"query"},
+			},
+		}},
+		running: true,
+	}
+	handler := &IMMessageHandler{app: &App{localMCPManager: mgr}, registry: registry}
+
+	result := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"ews","tool_name":"find_person","query":"王展毅"}`, 2)
+	if result != nil {
+		t.Fatalf("top-level query should be promoted into arguments, got: %+v", result)
+	}
+
+	blank := handler.preCheckToolArgsForAgentLoop("call_mcp_tool", `{"server_id":"ews","tool_name":"find_person","arguments":{"query":"  "}}`, 3)
+	if blank == nil || blank.FailureKind != toolFailureMissingParameters || !strings.Contains(blank.Text, "query") {
+		t.Fatalf("blank query should stay in the agent loop as a missing argument, got: %+v", blank)
 	}
 }
 
@@ -2292,7 +2467,7 @@ func TestRouteTools_WithRouterKeepsMISDataForBusinessTransactionIntent(t *testin
 	}))
 	handler.SetToolRouter(router)
 
-	routed := handler.routeTools("继续处理上次差旅报销录入，打开未完成事务", tools)
+	routed := router.RouteWithOptions("继续处理上次差旅报销录入，打开未完成事务", tools, coretool.RouteOptions{PreferEmbeddingOnly: false})
 	foundMISData := false
 	for _, tool := range routed {
 		if extractToolName(tool) == "mis_data" {
@@ -3008,18 +3183,18 @@ func TestBuildToolDefinitions_IncludesListProviders(t *testing.T) {
 			fn, _ := tool["function"].(map[string]interface{})
 			params, _ := fn["parameters"].(map[string]interface{})
 			props, _ := params["properties"].(map[string]interface{})
-			if _, ok := props["tool"]; !ok {
-				t.Error("list_providers missing 'tool' parameter")
+			if _, ok := props["coding_tool"]; !ok {
+				t.Error("list_providers missing 'coding_tool' parameter")
 			}
 			required, _ := params["required"].([]string)
 			hasToolRequired := false
 			for _, r := range required {
-				if r == "tool" {
+				if r == "coding_tool" {
 					hasToolRequired = true
 				}
 			}
 			if !hasToolRequired {
-				t.Error("list_providers should have 'tool' in required list")
+				t.Error("list_providers should have 'coding_tool' in required list")
 			}
 			break
 		}
@@ -3678,9 +3853,10 @@ func TestRouteTools_SSHIntentKeepsBashButHidesMCPGateway(t *testing.T) {
 	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
 	handler.unifiedClassifier = testIntentClassifier("ssh")
 	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	router.SetUnifiedClassifier(handler.unifiedClassifier)
 	handler.SetToolRouter(router)
 
-	routed := handler.routeTools("configure nginx on production server", tools)
+	routed := router.RouteWithOptions("configure nginx on production server", tools, coretool.RouteOptions{PreferEmbeddingOnly: false})
 	foundBash := false
 	for _, tool := range routed {
 		name := extractToolName(tool)

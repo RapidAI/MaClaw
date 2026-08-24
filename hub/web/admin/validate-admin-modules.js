@@ -18,6 +18,7 @@ const expectedScripts = [
   'governance-tab.js',
   'marketplace-tab.js',
   'security-tab.js',
+  'httpthreat-tab.js',
   'machines-tab.js',
   've-tab.js',
   'im-tab.js',
@@ -40,7 +41,7 @@ const expectedScripts = [
   'overview-config-agent.js',
   'admin-bootstrap.js'
 ];
-const lazyAdminScripts = new Set(['security-tab.js', 'digital-assets-tab.js', 'llm-provider-tab.js', 'llm-service-tabs.js']);
+const lazyAdminScripts = new Set(['security-tab.js', 'httpthreat-tab.js', 'digital-assets-tab.js', 'llm-provider-tab.js', 'llm-service-tabs.js']);
 const removedLegacyFiles = [
   'llmproviders.js',
   'usagestats.js',
@@ -590,6 +591,26 @@ function assertDataI18nKeysHaveTranslations() {
   }
 }
 
+function assertHtmlI18nKeysAreEager() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const eagerSource = expectedScripts.filter(function(name) {
+    return !lazyAdminScripts.has(name);
+  }).map(read).join('\n');
+  const keyPattern = /\bdata-i18n="([^"]+)"/g;
+  const seen = Object.create(null);
+  let match;
+  while ((match = keyPattern.exec(html))) {
+    const key = match[1];
+    if (seen[key]) continue;
+    seen[key] = true;
+    const objectKey = new RegExp('(?:^|[\\s,{])' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*:');
+    const assignedKey = new RegExp('\\.' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=');
+    if (!objectKey.test(eagerSource) && !assignedKey.test(eagerSource)) {
+      fail('index.html data-i18n key is not available before lazy modules load: ' + key);
+    }
+  }
+}
+
 function assertScopedRefreshHooks() {
   [['llm-provider-tab.js', 'llmProviderTenantScopedRefresh'], ['usage-stats-tab.js', 'usageStatsTenantScoped']].forEach(function(entry) {
     const content = read(entry[0]);
@@ -625,6 +646,19 @@ function assertScopedRefreshHooks() {
   if (llmProvidersSection.includes('id="llmProviderList"')) {
     fail('index.html must keep provider list out of the LLM EndPoint tab.');
   }
+
+  ['llsClassHeadQS', '?group_id=', 'llsRenderClassHeadPanel', 'classify-preview?service_group_id=', 'class-traffic?service_group_id=', 'llsParseGoldClass', 'llsGoldSelect', 'llsFmtTryResult', 'llsSourceLabel', 'llsSnapTrain', 'llsJsArg(id)', '_llsTrainBusy', '_llsTrafficSeq', 'llsWinButtons', '_llsTrafficDataWin', '_llsHeadBusy', 'llsShowPromoteForm', 'llsPostPipeline', 'llsHeadIsUnused', 'headUnusedOfficial', 'headHasSamples', 'classTrafficDesc', 'llsCachedHead', 'tryRun', 'llsFmtHeadVersions', 'llsFmtHeadTest', 'class-head/score', 'scoreLLMClassHead', 'llsHeadTestCompareBtn', 'headEmbedderOff', 'headNeedShadow', 'headNeedServing', 'headAdoptReady', 'headNeedDistribute', 'llsHeadDistributing'].forEach(function(marker) {
+    if (!llmService.includes(marker)) {
+      fail('llm-service-tabs.js must keep per-group head/traffic APIs: ' + marker);
+    }
+  });
+  if (llmService.includes("llsLoadClassTraffic(\\'' + llsEsc(id)")) {
+    fail('llm-service-tabs.js traffic/try onclick must use llsJsArg, not llsEsc inside quotes');
+  }
+  if (llmService.includes("window.prompt(llsX('headPromptReason')") || llmService.includes("window.prompt(llsX('headPromptOverride')")) {
+    fail('llm-service-tabs.js pipeline override must use an inline form, not stacked prompts');
+  }
+
   if (!llmService.includes("id: 'modelservices'") || !llmService.includes('window.loadLlmProviders')) {
     fail('llm-service-tabs.js must load provider configuration when Model Services opens.');
   }
@@ -851,10 +885,12 @@ function assertAdminApiRoutesRegistered() {
   const router = fs.readFileSync(routerPath, 'utf8');
   const migrationHandlerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'migration_handlers.go');
   const migrationHandler = fs.existsSync(migrationHandlerPath) ? fs.readFileSync(migrationHandlerPath, 'utf8') : '';
+  const httpThreatHandlerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'httpthreat_handler.go');
+  const httpThreatHandler = fs.existsSync(httpThreatHandlerPath) ? fs.readFileSync(httpThreatHandlerPath, 'utf8') : '';
   const routes = [];
   const routePattern = /mux\.HandleFunc\("(GET|POST|PUT|PATCH|DELETE) (\/api\/admin\/[^" ]+)/g;
   let routeMatch;
-  [router, migrationHandler].forEach(function(content) {
+  [router, migrationHandler, httpThreatHandler].forEach(function(content) {
     routePattern.lastIndex = 0;
     while ((routeMatch = routePattern.exec(content))) {
       routes.push(routeMatch[2]);
@@ -906,6 +942,68 @@ function assertModuleExports(name) {
   });
 }
 
+function assertDigitalAssetsNavigationI18n() {
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const admin = read('admin.js');
+  [
+    'id="navDigitalAssets" data-i18n="digitalAssetsTabTitle"',
+    'id="navDigitalAssetsDesc" data-i18n="digitalAssetsNavDesc"'
+  ].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html must register Digital Assets navigation text with core i18n: ' + marker);
+    }
+  });
+  [
+    "I18N.en.digitalAssetsTabTitle = 'Digital Assets';",
+    "I18N.en.digitalAssetsNavDesc = 'Enterprise knowledge libraries';",
+    "I18N.en.digitalAssetsTabSubtitle = 'Tenant enterprise knowledge libraries, ACL, import and client sync.';",
+    "I18N.en.digitalAssetsCreate = 'New library';",
+    "I18N.en.digitalAssetsReload = 'Reload';",
+    "I18N.zh.digitalAssetsTabTitle = '\\u6570\\u5b57\\u8d44\\u4ea7';",
+    "I18N.zh.digitalAssetsNavDesc = '\\u4f01\\u4e1a\\u77e5\\u8bc6\\u5e93';",
+    "I18N.zh.digitalAssetsTabSubtitle = '\\u79df\\u6237\\u4f01\\u4e1a\\u77e5\\u8bc6\\u5e93\\u3001ACL\\u3001\\u5bfc\\u5165\\u4e0e\\u5ba2\\u6237\\u7aef\\u540c\\u6b65\\u3002';",
+    "I18N.zh.digitalAssetsCreate = '\\u65b0\\u5efa\\u5e93';",
+    "I18N.zh.digitalAssetsReload = '\\u5237\\u65b0';"
+  ].forEach(function(marker) {
+    if (!admin.includes(marker)) {
+      fail('admin.js is missing Digital Assets core i18n text: ' + marker);
+    }
+  });
+  if (!admin.includes("'digital-assets':['digitalAssetsTabTitle','digitalAssetsTabSubtitle']")) {
+    fail('admin.js tabMeta must register digital-assets before the lazy module loads.');
+  }
+  if (!admin.includes('function getAdminLang()') || !admin.includes('window.getAdminLang = getAdminLang')) {
+    fail('admin.js must expose getAdminLang for lazy modules and dialogs.');
+  }
+  const module = read('digital-assets-tab.js');
+  if (!module.includes('if (typeof global.tr === \'function\') return global.tr(key, vars || {});')) {
+    fail('digital-assets-tab.js must follow the active admin language via global.tr.');
+  }
+  if (!module.includes('global.AdminTabRegistry.onLanguageChange(applyDigitalAssetsI18n)')) {
+    fail('digital-assets-tab.js must re-render on language change.');
+  }
+  if (!module.includes("panel.classList.contains('active')") || !module.includes('renderDetail({ skipGroups: true })')) {
+    fail('digital-assets-tab.js language refresh must stay on the active tab and skip department reloads.');
+  }
+  [
+    ['digitalAssetsTabTitle', 'Digital Assets', '\\u6570\\u5b57\\u8d44\\u4ea7'],
+    ['digitalAssetsNavDesc', 'Enterprise knowledge libraries', '\\u4f01\\u4e1a\\u77e5\\u8bc6\\u5e93'],
+    ['digitalAssetsTabSubtitle', 'Tenant enterprise knowledge libraries, ACL, import and client sync.', '\\u79df\\u6237\\u4f01\\u4e1a\\u77e5\\u8bc6\\u5e93\\u3001ACL\\u3001\\u5bfc\\u5165\\u4e0e\\u5ba2\\u6237\\u7aef\\u540c\\u6b65\\u3002'],
+    ['digitalAssetsCreate', 'New library', '\\u65b0\\u5efa\\u5e93'],
+    ['digitalAssetsReload', 'Reload', '\\u5237\\u65b0']
+  ].forEach(function(entry) {
+    const key = entry[0];
+    const en = entry[1];
+    const zh = entry[2];
+    if (!module.includes(key + ": '" + en + "'") && !module.includes(key + ': \'' + en + '\'')) {
+      fail('digital-assets-tab.js must keep eager nav i18n in sync: ' + key + ' en');
+    }
+    if (!module.includes(key + ": '" + zh + "'") && !module.includes(key + ': \'' + zh + '\'')) {
+      fail('digital-assets-tab.js must keep eager nav i18n in sync: ' + key + ' zh');
+    }
+  });
+}
+
 function assertUserReferralNavigationI18nLifecycle() {
   const html = fs.readFileSync(indexPath, 'utf8');
   const admin = read('admin.js');
@@ -939,6 +1037,11 @@ function assertUserReferralNavigationI18nLifecycle() {
   if (content.indexOf(initialRender) <= content.indexOf(languageListener)) {
     fail('user-referrals-tab.js must render navigation i18n when the module loads, after registering language changes.');
   }
+  ['isSystemFreeServiceGroup', 'isRewardServiceGroup', 'isMeteredAccessPolicy', 'grant_required', 'system-free'].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('user-referrals-tab.js must keep system-free out of referral reward groups: ' + marker);
+    }
+  });
 }
 
 function assertLegacyMirrorRemoved() {
@@ -976,6 +1079,27 @@ function assertLLMProviderPricingHooks() {
   });
 }
 
+function assertLLMProviderBillingScheduleHooks() {
+  const content = read('llm-provider-tab.js');
+  [
+    'credit_multiplier_schedule',
+    'llmProviderBillingSection',
+    'billingTitle',
+    'Asia/Shanghai',
+    'llmProviderAddScheduleWindow',
+    'llmProviderApplyBillingI18n',
+    'timezone'
+  ].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('llm-provider-tab.js is missing vendor billing marker: ' + marker);
+    }
+  });
+  const html = read('index.html');
+  if (!html.includes('id="llmProviderModalOverlay"')) {
+    fail('index.html must keep the LLM provider editor modal for vendor billing');
+  }
+}
+
 function assertMaClawComputeProviderGate() {
   const content = read('maclaw-compute-module.js');
   [
@@ -995,7 +1119,12 @@ function assertMaClawComputeProviderGate() {
     'noAvailableCompute',
     'noAvailableComputeAction',
     'AdminTabRegistry.onLanguageChange',
-    'window.gatedAddProvider'
+    'window.gatedAddProvider',
+    'renderOfficialProviderBilling',
+    'credit_multiplier_schedule',
+    'billingTimeOfUse',
+    'current_multiplier',
+    'item.paused'
   ].forEach(function(marker) {
     if (!content.includes(marker)) {
       fail('maclaw-compute-module.js is missing compute gate marker: ' + marker);
@@ -1184,6 +1313,7 @@ expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
 assertLazyScriptLoading();
+assertDigitalAssetsNavigationI18n();
 assertUserReferralNavigationI18nLifecycle();
 // Legacy modules may still contain pre-existing localized source. Keep the
 // invitation module in the same ASCII-only contract as the other modern admin
@@ -1199,6 +1329,7 @@ assertEmptyTextNodesAreOwned();
 assertBlankPlaceholdersAreOwned();
 assertBlankControlsAreOwned();
 assertDataI18nKeysHaveTranslations();
+assertHtmlI18nKeysAreEager();
 assertAdminApiRoutesRegistered();
 assertGlobalAdminRuntimeHooks();
 assertScopedRefreshHooks();
@@ -1212,6 +1343,7 @@ assertUserReferralPanelIsolation();
 assertLegacyMirrorRemoved();
 assertRemovedLegacyFilesDocumented();
 assertLLMProviderPricingHooks();
+assertLLMProviderBillingScheduleHooks();
 assertMaClawComputeProviderGate();
 assertSecurityDefaultGroupUsesName();
 assertSecurityTenantSchemaGuards();

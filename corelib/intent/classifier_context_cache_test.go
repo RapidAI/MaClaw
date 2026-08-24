@@ -1,6 +1,8 @@
 package intent
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,5 +92,90 @@ func TestLLMOnlyPathUsesConfiguredTimeout(t *testing.T) {
 	}
 	if !result.Degraded || result.Primary != LabelUnknown {
 		t.Fatalf("result = primary=%s degraded=%v, want degraded unknown on timeout", result.Primary, result.Degraded)
+	}
+}
+
+func TestClassifyContextCancelsTreeAndDoesNotCacheDegradedResult(t *testing.T) {
+	started := make(chan struct{})
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			return `{"top":[{"skill":"coding","score":0.95}]}`, nil
+		},
+		LLMTimeout: time.Second,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan ClassificationResult, 1)
+	go func() { resultCh <- uic.ClassifyContext(ctx, MessageContext{UserID: "u-1", Text: "fix failing tests"}) }()
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("tree classification did not start")
+	}
+	select {
+	case result := <-resultCh:
+		if !result.Degraded {
+			t.Fatalf("cancelled classification = %+v, want degraded", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled tree classification did not return")
+	}
+
+	result := uic.Classify(MessageContext{UserID: "u-1", Text: "fix failing tests"})
+	if result.Primary != LabelCoding || result.Degraded || calls.Load() != 2 {
+		t.Fatalf("fresh classification = %+v calls=%d, want authoritative uncached result", result, calls.Load())
+	}
+}
+
+func TestClassifyContextAlreadyCancelledDoesNotUseCacheOrStartTree(t *testing.T) {
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			calls.Add(1)
+			return `{"top":[{"skill":"coding","score":0.95}]}`, nil
+		},
+	})
+	msg := MessageContext{UserID: "u-1", Text: "fix failing tests"}
+	if got := uic.Classify(msg); got.Primary != LabelCoding || calls.Load() != 1 {
+		t.Fatalf("initial classification = %+v calls=%d", got, calls.Load())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := uic.ClassifyContext(ctx, msg)
+	if !got.Degraded || got.Primary != LabelUnknown || calls.Load() != 1 {
+		t.Fatalf("cancelled classification = %+v calls=%d, want uncached degraded result", got, calls.Load())
+	}
+}
+
+func TestClassificationCacheIsPrincipalScopedAndCollisionSafe(t *testing.T) {
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			calls.Add(1)
+			return `{"top":[{"skill":"coding","score":0.95}]}`, nil
+		},
+	})
+
+	// These inputs collided under the former delimiter-only cache key.
+	left := MessageContext{UserID: "tenant-a", Text: "x\x00y", RecentHistory: []string{"z"}}
+	right := MessageContext{UserID: "tenant-a\x00x", Text: "y", RecentHistory: []string{"z"}}
+	if classificationCacheKey(1, left) == classificationCacheKey(1, right) {
+		t.Fatal("distinct semantic inputs must not share a cache key")
+	}
+
+	first := uic.Classify(MessageContext{UserID: "alice", Text: "fix failing tests"})
+	second := uic.Classify(MessageContext{UserID: "bob", Text: "fix failing tests"})
+	if first.Primary != LabelCoding || second.Primary != LabelCoding || calls.Load() != 2 {
+		t.Fatalf("principal-scoped calls=%d first=%+v second=%+v, want two independent classifications", calls.Load(), first, second)
 	}
 }

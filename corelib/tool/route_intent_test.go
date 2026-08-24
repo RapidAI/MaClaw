@@ -33,27 +33,6 @@ func TestShouldAttemptRouteIntentRewrite(t *testing.T) {
 	}
 }
 
-func TestExpandExcludes_ProtectsCoreFileTools(t *testing.T) {
-	intent := &RouteIntent{
-		Intent:        "search",
-		QueryForRoute: "search web",
-		MustExclude:   []string{"bash", "read_file", "record_audio"},
-		Confidence:    0.9,
-	}
-	available := map[string]bool{"bash": true, "read_file": true, "record_audio": true, "web_search": true}
-	ex := intent.ExpandExcludes(available)
-	got := map[string]bool{}
-	for _, n := range ex {
-		got[n] = true
-	}
-	if got["bash"] || got["read_file"] {
-		t.Fatalf("core file tools must not be excluded via rewrite: %v", ex)
-	}
-	if !got["record_audio"] {
-		t.Fatalf("record_audio may be excluded when model asks: %v", ex)
-	}
-}
-
 func TestParseRouteIntentJSON(t *testing.T) {
 	raw := "```json\n{\"intent\":\"start_recording\",\"query_for_route\":\"打开桌面长时会议录音\",\"tool_families\":[\"recording\"],\"must_include\":[\"record_audio\"],\"must_exclude\":[],\"confidence\":0.9}\n```"
 	intent := ParseRouteIntentJSON(raw)
@@ -92,104 +71,43 @@ func TestParseRouteIntentJSON_MissingConfidenceDefaultsUsable(t *testing.T) {
 	}
 }
 
-func TestExpandPins_CaseInsensitiveToolNames(t *testing.T) {
-	intent := &RouteIntent{
-		Intent:        "coding",
-		QueryForRoute: "search code",
-		MustInclude:   []string{"glob", "RIPGREP"},
-		Confidence:    0.9,
-	}
-	available := map[string]bool{"Glob": true, "ripgrep": true, "bash": true}
-	pins := intent.ExpandPins(available)
-	got := map[string]bool{}
-	for _, p := range pins {
-		got[p] = true
-	}
-	if !got["Glob"] {
-		t.Fatalf("expected canonical Glob, got %v", pins)
-	}
-	if !got["ripgrep"] {
-		t.Fatalf("expected ripgrep, got %v", pins)
-	}
-}
-
-func TestHasStrongLocalRouteSignal(t *testing.T) {
-	if !HasStrongLocalRouteSignal("会议录音") {
-		t.Fatal("meeting recording should be strong local")
-	}
-	if !HasStrongLocalRouteSignal("take a screenshot") {
-		t.Fatal("screenshot should be strong local")
-	}
-	if HasStrongLocalRouteSignal("弄一下") {
-		t.Fatal("vague message should not be strong local")
-	}
-}
-
-func TestRouteIntentExpandPins(t *testing.T) {
-	intent := &RouteIntent{
-		Intent:        "start_recording",
-		QueryForRoute: "start desktop meeting recording now",
-		ToolFamilies:  []string{"recording"},
-		MustInclude:   []string{"record_audio"},
-		Confidence:    0.9,
-	}
-	available := map[string]bool{"record_audio": true, "asr": true, "bash": true}
-	pins := intent.ExpandPins(available)
-	found := false
-	for _, p := range pins {
-		if p == "record_audio" {
-			found = true
+func TestHasStrongLocalRouteSignalNeverAuthorizesFreeFormText(t *testing.T) {
+	for _, msg := range []string{"会议录音", "take a screenshot", "弄一下"} {
+		if HasStrongLocalRouteSignal(msg) {
+			t.Fatalf("free-form wording %q must not authorize routing", msg)
 		}
-	}
-	if !found {
-		t.Fatalf("expected record_audio pin, got %v", pins)
-	}
-}
-
-func TestRouteWithOptions_PinsMustInclude(t *testing.T) {
-	router := NewRouter(nil)
-	var tools []map[string]interface{}
-	for name := range CoreToolNames {
-		tools = append(tools, makeToolDef(name, "core "+name))
-	}
-	// Non-core tool that only gets in via pin.
-	tools = append(tools, makeToolDef("office", "generate documents and presentations"))
-	for i := 0; i < 40; i++ {
-		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "noise tool unrelated"))
-	}
-
-	intent := &RouteIntent{
-		Intent:        "office",
-		QueryForRoute: "create a formal powerpoint presentation for product launch",
-		MustInclude:   []string{"office"},
-		Confidence:    0.95,
-	}
-	result := router.RouteWithOptions("弄一下", tools, RouteOptions{Intent: intent})
-	if !routedToolNames(result)["office"] {
-		t.Fatalf("pinned office tool missing from route result: %v", result)
 	}
 }
 
 func TestRouteWithOptions_UsesRewrittenQuery(t *testing.T) {
 	router := NewRouter(nil)
+	// Keep the core set small so candidate slots remain (a full core set would
+	// consume MaxToolBudget and skip candidate scoring entirely).
 	var tools []map[string]interface{}
-	for name := range CoreToolNames {
+	for _, name := range []string{"bash", "read_file", "write_file", "edit_file", "memory"} {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
 	tools = append(tools, makeToolDef("session_search", "search past chat sessions and conversation history"))
-	// Non-core: specialized meeting recorder description so rewritten query hits it.
-	tools = append(tools, makeToolDef("office", "create word excel powerpoint documents slides pdf"))
+	// Non-core, non-conditional candidate whose description only matches the
+	// rewritten query. (Conditional tools like office stay UIC-gated: a rewrite
+	// query alone must not force-include them — that is the planner's job.)
+	tools = append(tools, makeToolDef("deck_maker", "create powerpoint slides presentation deck"))
+	// A second partial match keeps min-max normalization well-defined (a
+	// single-element score map normalizes to zero by design).
+	tools = append(tools, makeToolDef("slide_viewer", "view existing slides"))
+	for i := 0; i < 10; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("noise_%d", i), "qqqzzz nonmatching gibberish"))
+	}
 
-	// Original message is useless for retrieval; rewrite points at office.
+	// Original message is useless for retrieval; rewrite points at deck_maker.
 	intent := &RouteIntent{
 		Intent:        "office",
 		QueryForRoute: "create powerpoint slides presentation deck",
-		MustInclude:   []string{"office"},
 		Confidence:    0.9,
 	}
 	result := router.RouteWithOptions("弄一下", tools, RouteOptions{Intent: intent})
-	if !routedToolNames(result)["office"] {
-		t.Fatalf("expected office via rewritten intent, got %v", routedToolNames(result))
+	if !routedToolNames(result)["deck_maker"] {
+		t.Fatalf("expected deck_maker via rewritten intent, got %v", routedToolNames(result))
 	}
 }
 

@@ -1,0 +1,4 @@
+# Dedicated non-release proof for the profile-neutral Sleep Schedule natural
+# end marker lifecycle. Fangtang is only the physical build/HIL carrier.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_TEST=y

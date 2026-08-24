@@ -40,6 +40,14 @@ bool round_display_service_ready(void);
 esp_err_t round_display_service_set_brightness(unsigned percent);
 esp_err_t round_display_service_enter_display_off(void);
 esp_err_t round_display_service_wake_from_display_off(void);
+/* System Sleep PREPARE physical fence.  This only waits for an already queued
+ * panel transfer to complete; it does not issue panel commands or turn the
+ * display task into a terminal lifecycle operation. */
+esp_err_t round_display_service_wait_for_scanout_idle(uint32_t timeout_ms);
+/* Reversible retained-animation fence for a future physical sleep
+ * transaction. This remains a private round Display service contract. */
+esp_err_t round_display_service_prepare_system_sleep(uint32_t timeout_ms);
+void round_display_service_abort_system_sleep_prepare(void);
 esp_err_t round_display_service_draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                                   const void *pixels);
 uint16_t *round_display_service_stripe_buffer(void);

@@ -27,11 +27,13 @@ Every page action must pass the returned `session_id`.
 {"action":"navigate","session_id":"browser-session-...","url":"https://example.com/login"}
 {"action":"click","session_id":"browser-session-...","ref":"@e1"}
 {"action":"type","session_id":"browser-session-...","ref":"@e2","text":"testuser"}
+{"action":"hover","session_id":"browser-session-...","ref":"@e3"}
+{"action":"press","session_id":"browser-session-...","key":"Enter"}
 {"action":"wait","session_id":"browser-session-...","duration_ms":1000}
-{"action":"screenshot","session_id":"browser-session-...","full_page":true}
+{"action":"select","session_id":"browser-session-...","ref":"@e4","value":"cn"}
 ```
 
-Do not use CDP target ids such as `CA8EC545` as `session_id`. Target ids are tab ids, not browser agent sessions.
+Do not use `screenshot`, `eval`, or `click_at`. Do not use CDP target ids such as `CA8EC545` as `session_id`. Target ids are tab ids, not browser agent sessions.
 
 ## Run Multi-Step Task
 

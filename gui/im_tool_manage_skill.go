@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -85,6 +86,34 @@ func classifyManageSkillAction(action string) manageSkillAction {
 	default:
 		return manageSkillAction(strings.TrimSpace(action))
 	}
+}
+
+// legacyModelManageSkillActionAllowed identifies the deliberately tiny
+// compatibility subset of the merged manage_skill gateway. The merged schema
+// is not a static capability: most actions let model arguments select an
+// installed Skill, a Hub package, or a mutable Skill directory. Those choices
+// need the dynamic semantic catalog's reviewed binding, not a legacy function
+// name plus a top-level argument allow-list.
+//
+// Listing is the sole read-only inventory operation retained for legacy turns.
+// It does not accept a provider, package, Skill, or run identity from the
+// model. status is intentionally excluded: an arbitrary run_id is an
+// unbound, cross-run resource reference and can also cause a long poll.
+func legacyModelManageSkillActionAllowed(argumentsJSON string) bool {
+	args := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(normalizeAgentLoopToolArgumentsJSON(argumentsJSON)), &args); err != nil {
+		return false
+	}
+	action, ok := args["action"].(string)
+	return ok && classifyManageSkillAction(action) == manageSkillActionList
+}
+
+func isLegacyModelManageSkillGateway(name, argumentsJSON string) bool {
+	return strings.TrimSpace(name) == "manage_skill" && !legacyModelManageSkillActionAllowed(argumentsJSON)
+}
+
+func legacyModelManageSkillGatewayDeniedText() string {
+	return "[system rejected] dynamic_skill_requires_managed_surface: legacy model calls may only list Skill inventory. Running, inspecting, installing, searching, mutating, uploading, or querying a Skill run requires a managed semantic binding. Request a managed semantic replan."
 }
 
 // toolManageSkill dispatches the merged manage_skill tool to individual handlers.

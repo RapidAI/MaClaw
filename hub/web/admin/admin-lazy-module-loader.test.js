@@ -104,6 +104,15 @@ async function runTests() {
   assertEqual(runtime.opened.length, 2, 'cached lazy tab should still open normally');
 
   {
+    const systemRuntime = createRuntime();
+    vm.runInNewContext(source, systemRuntime.global, { filename: 'admin-lazy-module-loader.js' });
+    await systemRuntime.global.openTab('system');
+    assertEqual(systemRuntime.scripts.length, 1, 'tenant system settings should load the LLM benefits module');
+    assertEqual(systemRuntime.scripts[0].src, '/admin/llm-service-tabs.js', 'system settings should load the LLM benefits module');
+    assertEqual(systemRuntime.opened.length, 1, 'system settings should open after the benefits module loads');
+  }
+
+  {
     const pendingRuntime = createRuntime();
     pendingRuntime.deferScriptLoad();
     vm.runInNewContext(source, pendingRuntime.global, { filename: 'admin-lazy-module-loader.js' });

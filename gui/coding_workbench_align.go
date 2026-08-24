@@ -323,7 +323,11 @@ func (h *IMMessageHandler) replaceStickyPendingCodingPlanMarkdown(userID, markdo
 			t.Index = i + 1
 		}
 	}
-	md := formatCodingWorkbenchPlanMarkdown(pending.UserText, tasks)
+	goal := pending.UserText
+	if mem := h.getStickyCodingWorkbenchMemory(userID); strings.TrimSpace(mem.RequirementRestatement) != "" {
+		goal = mem.RequirementRestatement
+	}
+	md := formatCodingWorkbenchPlanMarkdown(goal, tasks)
 	if strings.TrimSpace(md) == "" {
 		md = markdown
 	}
@@ -572,10 +576,12 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	}
 	steps := append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
 	payload := map[string]interface{}{
-		"user_id":        userID,
-		"project_path":   projectPath,
-		"step_statuses":  steps,
-		"execution_plan": strings.TrimSpace(mem.ExecutionPlan),
+		"user_id":                 userID,
+		"project_path":            projectPath,
+		"step_statuses":           steps,
+		"execution_plan":          strings.TrimSpace(mem.ExecutionPlan),
+		"requirement_restatement": strings.TrimSpace(mem.RequirementRestatement),
+		"pending_approval":        strings.TrimSpace(mem.PendingPlanJSON) != "",
 	}
 	h.app.emitEvent("coding-workbench-steps", payload)
 }
@@ -622,7 +628,7 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 }
 
 // formatCodingStepsChecklist renders a compact Claude Code-style checklist
-// for streaming into the chat when a multi-step plan is active.
+// for logs and sticky Todo. Do not stream it into the user chat answer.
 func formatCodingStepsChecklist(steps []codingWorkbenchStepStatus) string {
 	if len(steps) == 0 {
 		return ""
@@ -746,7 +752,7 @@ func (h *IMMessageHandler) saveStickyCodingCheckpoint(userID, label string) codi
 	if len(files) > 30 {
 		files = files[:30]
 	}
-	projectPath := strings.TrimSpace(mem.ProjectPath)
+	projectPath := h.codingSessionWorkRoot(userID, mem)
 	hooks := loadCodingWorkbenchHooks(projectPath)
 	if preCP := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_checkpoint"); preCP.Report != "" {
 		log.Printf("[coding-hooks] pre_checkpoint: %s", truncateRunesForSubAgent(preCP.Report, 160))
@@ -1617,12 +1623,40 @@ func codingPlanApproveActions() []IMResponseAction {
 	}
 }
 
+func compactCodingPlanMarkdownForUser(markdown string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(markdown, "\n") {
+		trim := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trim, "\u63cf\u8ff0:"):
+			if rest := strings.TrimSpace(strings.TrimPrefix(trim, "\u63cf\u8ff0:")); rest != "" {
+				b.WriteString(rest)
+				b.WriteString("\n")
+			}
+		case strings.HasPrefix(trim, "Files:"):
+			if rest := strings.TrimSpace(strings.TrimPrefix(trim, "Files:")); rest != "" {
+				b.WriteString(rest)
+				b.WriteString("\n")
+			}
+		case strings.HasPrefix(trim, "\u4f9d\u8d56:"):
+			continue
+		case strings.HasPrefix(trim, "**\u76ee\u6807**:"):
+			// Goal is shown once under 需求理解, not again as a labeled row.
+			continue
+		default:
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func formatPendingPlanApprovalText(markdown string, stepCount int) string {
 	var b strings.Builder
 	b.WriteString("## 需要确认执行计划\n\n")
-	b.WriteString(fmt.Sprintf("这个请求会影响多个步骤，已整理为 **%d** 步。确认后才会开始修改；也可以跳过计划按原请求直接执行。\n\n", stepCount))
-	if strings.TrimSpace(markdown) != "" {
-		b.WriteString(markdown)
+	b.WriteString(fmt.Sprintf("\u786e\u8ba4\u540e\u624d\u4f1a\u6539\u6587\u4ef6\u3002\u5171 **%d** \u6b65\u3002\n\n", stepCount))
+	if userPlan := compactCodingPlanMarkdownForUser(markdown); userPlan != "" {
+		b.WriteString(userPlan)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("可用命令：`/plan approve` · `/plan skip` · `/plan reject` · `/plan mode auto|approve|off`\n")

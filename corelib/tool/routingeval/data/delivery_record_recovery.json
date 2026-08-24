@@ -1,0 +1,50 @@
+{
+  "category": "delivery_record_recovery",
+  "category_id": 36,
+  "title": "delivery record recovery",
+  "design_ref": "10.1 item 36",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "deliver-record",
+      "title": "Delivery selection does not imply a send",
+      "needs": [
+        {
+          "id": "deliver",
+          "capability": "artifact.deliver.current_channel",
+          "qualifiers": {
+            "format": "file"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "deliver_adapter",
+            "effects": [
+              "external_effect"
+            ],
+            "capabilities": [
+              {
+                "capability": "artifact.deliver.current_channel",
+                "qualifiers": {
+                  "format": "file"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "deliver",
+            "capability": "artifact.deliver.current_channel",
+            "phase": "delivery"
+          }
+        ]
+      },
+      "notes": "Outbox replay is in semantic_outbox_fencing_test.go."
+    }
+  ]
+}

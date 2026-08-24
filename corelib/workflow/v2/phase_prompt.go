@@ -28,7 +28,7 @@ office(action="read_document", file_path="完整路径")
 - Word：.docx（新）、.doc（旧 Word 97-2003）
 - Excel：.xlsx/.csv（新）、.xls（旧）；结构化表格可用 office(action="read_excel", file_path="...")
 - PowerPoint：.pptx（新）、.ppt（旧 PowerPoint 97-2003）
-- 文本：.txt/.md（也可用 read_file）
+- 文本数据：.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log（也可用 read_file）
 
 等价 action：read_doc / read_docx / read_pdf / read_word  
 可选 max_chars；截断时用 next_offset 继续。
@@ -1465,8 +1465,8 @@ title: 第2页标题
 **方式一：交底书/申请材料文件（file_mode）**
 - 先用内置工具提取文档文本（不要对二进制文档用 read_file）：
   - 若消息中已有「系统已自动解析文档正文」/ auto_extract：**优先直接用注入正文**；仅 truncated=true 或失败时再 office 分页
-  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx
-  - .txt/.md：read_file
+  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log
+  - 上述文本数据也可用 read_file；需要字符偏移分页时优先 read_document
   - 先检查 office 返回的 error_class；encrypted、malformed、source_changed、input_too_large、output_too_large 必须遵循原提示，禁止对同一文件用 craft_tool、Skill、bash、PowerShell COM、LibreOffice 或其他解析器绕过；encrypted 不接收密码也不支持密码解密
   - 仅普通 office 失败或不支持的格式（.rtf/.odt/.wps 等）：必须 craft_tool(task="读取路径并提取纯文本...") 生成解析脚本
   - 上述允许的恢复路径仍失败：manage_skill 搜索文档解析 Skill；或 bash（python-docx / pymupdf / PowerShell COM / LibreOffice）
@@ -2078,8 +2078,8 @@ Check the form data above for the input mode:
 - The file path is shown above as "Disclosure File Path / 交底书文件路径". Replace FILE_PATH below with that value.
 - Extract text (never use read_file on binary Office/PDF):
   0. If the message already contains auto-extracted body ("系统已自动解析文档正文" / auto_extract markers): use that first; only call office when truncated=true or extract failed
-  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx
-  2. .txt/.md: read_file
+  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log
+  2. Those text-based files may also use read_file; prefer read_document when offset-based paging is needed
   3. First inspect office error_class. For encrypted, malformed, source_changed, input_too_large, or output_too_large: follow the returned safety, version, or resource guidance; do NOT retry the same file through craft_tool, Skill, bash, PowerShell COM, LibreOffice, or another parser. Encrypted Office files do not accept passwords and password decryption is unsupported.
   4. Only for an ordinary office failure or an unsupported format (.rtf/.odt/.wps/etc.): MUST call craft_tool(task="Read FILE_PATH and print full plain text to stdout; use Python/COM/LibreOffice as needed; no GUI")
   5. If that allowed recovery fails, then manage_skill search/run for document parsers, or bash helpers

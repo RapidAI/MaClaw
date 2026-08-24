@@ -29,9 +29,17 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	// control-plane prompt focused on the user's request, otherwise attachment
 	// marker text can re-open Computer Use even after the final tool filter
 	// removed it.
-	promptMessage := agent.CompactQueryForEmbedding(computerUseRoutingText(msg.Text, msg.Attachments))
+	routingText := computerUseRoutingText(msg.Text, msg.Attachments)
+	if loopCtx != nil && strings.TrimSpace(loopCtx.ComputerUseRoutingText) == "" {
+		loopCtx.ComputerUseRoutingText = routingText
+	}
+	if loopCtx != nil {
+		syncComputerUseTurn(h, loopCtx, msg.UserID, msg.Text)
+	}
+	intentText := semanticUserIntentText(msg.Text)
+	promptMessage := agent.CompactQueryForEmbedding(intentText)
 	if strings.TrimSpace(promptMessage) == "" {
-		promptMessage = msg.Text
+		promptMessage = intentText
 	}
 	profile := ExecutionProfile{}
 	if loopCtx != nil {
@@ -115,7 +123,7 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 	// The desktopWorkflowDocOverride says "输出文档后，仍然需要附带确认提示" which
 	// directly contradicts the phase prompt and can cause the LLM to self-confirm.
 	isV2WorkflowLoop := workflowAgentLoop && h.isWorkflowV2Active(policyOwnerID)
-	if !profile.IsLight() && !isV2WorkflowLoop {
+	if !profile.IsLight() && !isV2WorkflowLoop && !loopContextIsSemanticManaged(loopCtx) {
 		platformKind := normalizeIMMessagePlatformKind(msg.Platform)
 		if platformKind.IsDesktop() {
 			systemPrompt += desktopWorkflowDocOverride()
@@ -192,9 +200,10 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 	var b strings.Builder
 	b.WriteString(prompt)
 	b.WriteString("\n")
-	b.WriteString("Use the smallest sufficient action. Prefer one relevant tool call when live data is needed, then answer immediately.\n")
-	b.WriteString("Do not inspect local files, run shell commands, manage projects, start group discussions, change memory, or create tasks for this profile.\n")
-	b.WriteString("If the user request turns out to require code, files, project context, multi-step planning, or missing parameters, say briefly that the full agent path is needed instead of improvising.\n")
+	b.WriteString("Use the smallest sufficient action. Prefer one listed lookup tool when live data is needed, then answer immediately.\n")
+	b.WriteString("Do not inspect local files, run shell commands, manage projects, start group discussions, change memory, create tasks, or generate files.\n")
+	b.WriteString("Do not ask the user to re-authorize tools. If a listed lookup already returned evidence, answer from that evidence.\n")
+	b.WriteString("If the request needs code, files, project context, or multi-step planning, say those tools are not in this turn instead of improvising.\n")
 	b.WriteString(fmt.Sprintf("Current local time: %s\n", now.Format("2006-01-02 15:04:05 -0700")))
 	b.WriteString(fmt.Sprintf("Execution profile: layer=%s task=%s confidence=%.2f reason=%s\n", profile.Layer, profile.TaskType, profile.Confidence, profile.Reason))
 	if clientContext := buildClientCapabilityPrompt(msg.ClientCapabilities); clientContext != "" {
@@ -209,7 +218,7 @@ func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) strin
 		b.WriteString(bindingPrompt)
 		b.WriteByte('\n')
 	}
-	return b.String()
+	return ensureSemanticGrantPromptFence(b.String())
 }
 
 func buildClientCapabilityPrompt(capabilities *agent.ClientCapabilities) string {
@@ -312,9 +321,15 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		promptABSample = agent.IsQualityABReason(classified.Reason)
 		promptSoftFull = agent.IsSoftFullUpgradeReason(classified.Reason)
 	}
-	// Env override always wins for operator debugging (light|full).
+	// Env override always wins for operator debugging (light|full), except
+	// when the semantic plan already declared a mutating or external effect.
 	if p, ok := agent.EnvPromptProfileOverride(); ok {
 		promptProfile = p
+		promptABSample = false
+		promptSoftFull = false
+	}
+	if loopCtx != nil && loopCtx.Runtime.SemanticIntent != nil && semanticIntentRequiresFullProfile(*loopCtx.Runtime.SemanticIntent) {
+		promptProfile = agent.PromptProfileFull
 		promptABSample = false
 		promptSoftFull = false
 	}
@@ -338,9 +353,10 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			TrialReflect:            trialReflectEnabled,
 			SuppressCodingGateRules: suppressV2CodingRules,
 			PromptProfile:           promptProfile,
+			ManagedSemantic:         loopContextIsSemanticManaged(loopCtx),
 		},
 		MemoryStore:      h.memoryStore,
-		SkipMemoryRecall: true, // GUI handles memory recall in appendGUIEpilogue (with memory index, derived facts, knowledge auto-recall, frozen snapshot caching)
+		SkipMemoryRecall: true, // GUI writes catalog + pull hint in appendGUIEpilogue; warehouse bodies stay in tools.
 		HasKnowledgeBase: true,
 		// EffectiveProjectDir: uses the SAME resolution function as tool execution,
 		// ensuring the LLM's understanding of "project directory" matches the actual
@@ -398,16 +414,16 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		if loopCtx != nil {
 			platform = runtimePlatformFromLoopContext(loopCtx)
 		}
-		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressV2CodingRules, platform)
+		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressV2CodingRules, platform, loopContextIsSemanticManaged(loopCtx))
 	}
 
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.
 	deps.PostSSHRules = func(b *strings.Builder) {
-		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg, promptUserID)
+		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg, promptUserID, loopContextIsSemanticManaged(loopCtx))
 	}
 
 	// PostCodingWorkflow: inject GUI full coding workflow (pro mode 9-step).
-	if isProMode {
+	if isProMode && !loopContextIsSemanticManaged(loopCtx) {
 		deps.PostCodingWorkflow = func(b *strings.Builder) {
 			h.appendGUIPostCodingWorkflow(b, cfg)
 		}
@@ -639,10 +655,9 @@ func (h *IMMessageHandler) buildNicknameInstruction() string {
 }
 
 // appendMemorySection appends a lightweight "## 用户记忆" section containing:
-//   - A compressed one-line summary of user_fact entries (always present)
-//   - Proactive recall of relevant memories based on userMessage (if non-empty)
-//   - A hint that other memories can be recalled via memory(action: recall)
-//   - Full memory management guide only on first turn (isFirstTurn=true)
+//   - A catalog/index of the store (counts and tags, not claims)
+//   - A hint that warehouse content must be pulled via retrieval tools
+//   - Full memory management guide in the session-stable snapshot
 //
 // Frozen snapshot caching (Requirement 5.1, 5.2, 5.8):
 // On the first message of a session (per userID), the full memory section is
@@ -672,16 +687,13 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	}
 	_ = isFirstTurn // guide is always included in the session-stable snapshot
 
-	// --- Dynamic part: proactive recall (executed per message, NOT frozen) ---
+	// --- Dynamic part: catalog + pull hint (per message, not frozen) ---
 	msg := ""
 	if len(userMessage) > 0 {
 		msg = userMessage[0]
 	}
-	// Derive strict project mode from the synthesized userID pattern.
-	// When a Project Tab sends a message, the userID is synthesized as
-	// "desktop-user:{projectPath}" (see SendAIAssistantMessage). This
-	// signals that proactive recall should use RecallDynamicStrict to
-	// exclude other projects' entries.
+	// Project Tab owner IDs ("desktop-user:{projectPath}") scope the
+	// catalog index to that project. Warehouse bodies stay in tools.
 	strictProject := isProjectTabUserID(userID)
 	h.appendProactiveRecallForUser(b, msg, strictProject, userID, eventContext)
 }
@@ -805,9 +817,10 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 		return
 	}
 	strictOwner := isIsolatedAssistantSessionUserID(userID)
-	opts := corememory.StaticUserMemoryPromptOptions("\n"+corememory.PromptSectionUserMemory, isFirstTurn && !strictOwner, corememory.BuildIMMemoryGuidePrompt())
-	opts.UserFacts.OwnerID = userID
-	opts.UserFacts.StrictOwner = strictOwner
+	b.WriteString("\n")
+	b.WriteString(corememory.PromptSectionUserMemory)
+	b.WriteByte('\n')
+	opts := corememory.RecallHintAndGuidePromptOptions(isFirstTurn && !strictOwner, corememory.BuildIMMemoryGuidePrompt())
 	b.WriteString(h.memoryStore.StaticMemorySectionForPrompt(opts))
 }
 
@@ -825,10 +838,8 @@ func isProjectTabUserID(userID string) bool {
 		!isACPAssistantSessionUserID(userID)
 }
 
-// appendProactiveRecall performs per-message proactive recall and appends
-// results to the system prompt. Unlike the static section, this is NOT frozen
-// — each user message triggers a fresh recall so the LLM always sees memories
-// relevant to the current query.
+// appendProactiveRecall writes the per-message catalog (index + pull hint).
+// Warehouse memory bodies stay in tools; this is not frozen with the static snapshot.
 func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string, strictProject bool, eventContext ...lifecycle.EventContext) {
 	h.appendProactiveRecallForUser(b, msg, strictProject, h.promptRuntimeUserID(nil), eventContext...)
 }
@@ -837,13 +848,7 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	if h.memoryStore == nil || msg == "" {
 		return
 	}
-	// Match WarmQueryEmbedding: recall on intent+paths, not 20k–40k auto-extract bodies.
-	// Full expanded text still goes to the agent user turn; only the recall query is compacted.
-	msg = agent.CompactQueryForEmbedding(msg)
-	if msg == "" {
-		return
-	}
-	recallStart := time.Now()
+	_ = eventContext
 
 	projectPath := ""
 	if strictProject {
@@ -853,7 +858,7 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 		// the global current project which may differ from the Tab's project.
 		projectPath = projectPathFromUserID(userID)
 	}
-	// Local tab (and any non-strict owner): align recall scope with the same
+	// Local tab (and any non-strict owner): align catalog scope with the same
 	// working directory tools/system-prompt use. Do NOT fall back to
 	// ResolveProject()/Projects list or user home — that is what made agents
 	// "ignore" the top-bar directory and chase Pictures from memory.
@@ -871,144 +876,14 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	// global experience; no ordinary/shared/raw memory crosses this boundary.
 	opts.Recall.StrictOwner = isIsolatedAssistantSessionUserID(userID)
 	opts.Recall.AllowArchivedExperience = isIsolatedAssistantSessionUserID(userID)
-	opts.EventContext = firstLifecycleEventContext(eventContext)
-	opts.Recall.Provider = h.proactiveExperienceProviderForUser(userID)
-	promptContext, relevant, ok := h.proactiveContextForPromptWithBudget(msg, opts, userID, projectPath, strictProject)
-	primaryRecallElapsed := time.Since(recallStart)
-	if !ok {
-		log.Printf("[proactive_recall] skipped slow recall user=%q userMsg=%d chars projectPath=%q strictProject=%v budget=%s elapsed=%v", userID, len(msg), projectPath, strictProject, imProactiveRecallBudget, primaryRecallElapsed)
-		log.Printf("[perf] stage=proactive_recall user=%q elapsed=%s project=%q strict_project=%v recalled=%d status=%q budget=%s", userID, primaryRecallElapsed.Round(time.Millisecond), projectPath, strictProject, 0, "timeout", imProactiveRecallBudget)
-		return
-	}
-	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(relevant), primaryRecallElapsed)
+	// CatalogOnly: index + pull hint only. Skip BM25/embedding and the 2.5s
+	// budgeted goroutine that used to dump warehouse bodies.
+	promptContext, _ := h.memoryStore.ProactiveContextForPrompt("", opts)
 	b.WriteString(promptContext)
-	if len(relevant) > 0 {
-		log.Printf("[proactive_recall] injected %d entries (with index) into system prompt", len(relevant))
-	}
-
-	totalRecallElapsed := time.Since(recallStart)
-	if totalRecallElapsed > 200*time.Millisecond {
-		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
-	}
-	log.Printf("[perf] stage=proactive_recall user=%q elapsed=%s project=%q strict_project=%v recalled=%d prompt_context_len=%d", userID, totalRecallElapsed.Round(time.Millisecond), projectPath, strictProject, len(relevant), len(promptContext))
-}
-
-var imProactiveRecallBudget = 2500 * time.Millisecond
-var imProactiveRecallStaleAfter = 30 * time.Second
-
-type imProactiveRecallResult struct {
-	promptContext string
-	relevant      []corememory.Entry
-	generation    uint64
-}
-
-type proactiveRecallState struct {
-	startedAt      time.Time
-	snapshotUserID string
-}
-
-func (h *IMMessageHandler) proactiveContextForPromptWithBudget(msg string, opts corememory.ProactivePromptOptions, userID string, projectPath string, strictProject bool) (string, []corememory.Entry, bool) {
-	if h == nil || h.memoryStore == nil {
-		return "", nil, true
-	}
-	recallKey := userID
-	if recallKey == "" {
-		recallKey = projectPath
-	}
-	if recallKey == "" {
-		recallKey = "__default__"
-	}
-	state, ok := h.beginProactiveRecall(recallKey, userID, projectPath, strictProject)
-	if !ok {
-		return "", nil, false
-	}
-	// Dynamic recall is deliberately outside the frozen prompt snapshot. It can
-	// still race a GUI deletion, though: the recall may have read an entry just
-	// before the store mutation and complete just after it. Reuse the per-owner
-	// snapshot generation as a lightweight cancellation fence so that stale
-	// recall output is never appended to a prompt after a memory refresh.
-	snapshotUserID := memorySnapshotUserID(userID)
-	generation := h.snapshotGeneration(snapshotUserID)
-	startedAt := time.Now()
-	resultC := make(chan imProactiveRecallResult, 1)
-	go func(generation uint64) {
-		promptContext, relevant := h.memoryStore.ProactiveContextForPrompt(msg, opts)
-		resultC <- imProactiveRecallResult{promptContext: promptContext, relevant: relevant, generation: generation}
-	}(generation)
-	select {
-	case result := <-resultC:
-		h.endProactiveRecall(recallKey, state)
-		if !h.isCurrentMemoryPromptGeneration(snapshotUserID, result.generation) {
-			log.Printf("[proactive_recall] discarded stale result user=%q projectPath=%q strictProject=%v", userID, projectPath, strictProject)
-			return "", nil, true
-		}
-		return result.promptContext, result.relevant, true
-	case <-time.After(imProactiveRecallBudget):
-		go func() {
-			result := <-resultC
-			h.endProactiveRecall(recallKey, state)
-			log.Printf("[proactive_recall] late result user=%q projectPath=%q strictProject=%v recalled=%d elapsed=%v", userID, projectPath, strictProject, len(result.relevant), time.Since(startedAt).Round(time.Millisecond))
-		}()
-		return "", nil, false
-	}
 }
 
 func (h *IMMessageHandler) isCurrentMemoryPromptGeneration(userID string, generation uint64) bool {
 	return h != nil && h.snapshotGeneration(userID) == generation
-}
-
-func (h *IMMessageHandler) beginProactiveRecall(recallKey string, userID string, projectPath string, strictProject bool) (proactiveRecallState, bool) {
-	state := proactiveRecallState{startedAt: time.Now(), snapshotUserID: memorySnapshotUserID(userID)}
-	actual, loaded := h.proactiveRecallInFlight.LoadOrStore(recallKey, state)
-	if !loaded {
-		return state, true
-	}
-	existing, ok := actual.(proactiveRecallState)
-	if ok && time.Since(existing.startedAt) > imProactiveRecallStaleAfter {
-		if h.proactiveRecallInFlight.CompareAndSwap(recallKey, actual, state) {
-			log.Printf("[proactive_recall] replacing stale in-flight recall user=%q projectPath=%q strictProject=%v age=%v", userID, projectPath, strictProject, time.Since(existing.startedAt).Round(time.Millisecond))
-			return state, true
-		}
-	}
-	log.Printf("[proactive_recall] skip duplicate in-flight recall user=%q projectPath=%q strictProject=%v", userID, projectPath, strictProject)
-	return proactiveRecallState{}, false
-}
-
-func memorySnapshotUserID(userID string) string {
-	if userID = strings.TrimSpace(userID); userID != "" {
-		return userID
-	}
-	return desktopUserID
-}
-
-func (h *IMMessageHandler) endProactiveRecall(recallKey string, state proactiveRecallState) {
-	h.proactiveRecallInFlight.CompareAndDelete(recallKey, state)
-}
-
-func (h *IMMessageHandler) proactiveExperienceProvider() lifecycle.Provider {
-	return h.proactiveExperienceProviderForUser(h.promptRuntimeUserID(nil))
-}
-
-func (h *IMMessageHandler) proactiveExperienceProviderForUser(userID string) lifecycle.Provider {
-	if h == nil || h.memoryStore == nil {
-		return nil
-	}
-	providers := []lifecycle.Provider{corememory.NewExperienceProvider(h.memoryStore)}
-	if exec := h.getSkillExecutor(); exec != nil {
-		skills := exec.loadSkills()
-		if len(skills) > 0 {
-			providers = append(providers, cskill.NewExperienceProvider(skills))
-			providers = append(providers, cskill.NewGovernanceDraftProvider(skills, cskill.SkillMaintenancePlanOptions{MaxActions: 12}))
-		}
-	}
-	return lifecycle.NewCompositeProvider(providers...)
-}
-
-func firstLifecycleEventContext(values []lifecycle.EventContext) lifecycle.EventContext {
-	if len(values) == 0 {
-		return lifecycle.EventContext{}
-	}
-	return values[0]
 }
 
 // RefreshMemorySnapshot regenerates the cached memory snapshot for the given
@@ -1074,15 +949,6 @@ func (h *IMMessageHandler) RefreshAllMemorySnapshots() {
 	// stale publish impossible, and GUI deletion must not wait on prompt work.
 	h.frozenMemorySnapshots.Range(collect)
 	h.snapshotWarmInflight.Range(collect)
-	// Dynamic recall is not frozen, but an in-flight lookup can still have read
-	// pre-mutation content. Include those owners so its generation fence drops
-	// that old result before it can be appended to a prompt.
-	h.proactiveRecallInFlight.Range(func(_, value any) bool {
-		if state, ok := value.(proactiveRecallState); ok {
-			userIDs[memorySnapshotUserID(state.snapshotUserID)] = struct{}{}
-		}
-		return true
-	})
 	for userID := range userIDs {
 		h.invalidateMemorySnapshot(userID, false)
 	}
@@ -1147,12 +1013,15 @@ type matchedKnowledgeSkill struct {
 // Both categories use the same trigger-matching and token-budget mechanism.
 // The section is placed after the memory section and before tool definitions.
 // When no skills match the current user message, the section is omitted.
-func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userMessage string) {
+func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userMessage, ownerID string) {
 	if h.app == nil || h.getSkillExecutor() == nil || userMessage == "" {
 		return
 	}
 
 	skills := h.getSkillExecutor().List()
+	// Documentation for a skill learned in another experience pool is the same
+	// context bleed as advertising the skill itself, so it is filtered here too.
+	skills = filterSkillsForExperienceDomain(h.skillExperienceDomainForOwner(ownerID), skills)
 	if len(skills) == 0 {
 		return
 	}

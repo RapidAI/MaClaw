@@ -836,6 +836,23 @@ func hasRecentTaskOutputTag(tags []string) bool {
 	return false
 }
 
+// IsDurableTaskManagementEntry reports whether an entry is a user-created
+// task-management row. These must survive capacity eviction: the sidebar
+// list is rebuilt only from active memory, while the task directories
+// themselves stay on disk.
+func IsDurableTaskManagementEntry(e *Entry) bool {
+	if e == nil {
+		return false
+	}
+	if MapToCanonical(e.Category) != CategoryTaskArtifact {
+		return false
+	}
+	if hasTag(e.Tags, "task_management") || hasTag(e.Tags, "task_user_created") || hasTag(e.Tags, "task_user_saved") {
+		return true
+	}
+	return hasTag(e.Tags, "manual_task") && hasTag(e.Tags, "recent_task")
+}
+
 func isRecentTaskOutputEntry(e *Entry) bool {
 	if e == nil {
 		return false

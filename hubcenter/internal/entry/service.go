@@ -122,6 +122,37 @@ func (s *Service) EmailHasHubTenantLink(ctx context.Context, email, hubID, tenan
 	return false, nil
 }
 
+// EmailHasHubTenantAdministratorLink reports whether an email belongs to a
+// tenant administrator for the requested Hub and tenant. Administrator
+// inventory is intentionally distinct from ordinary-user routing: an email
+// may have both roles, but a normal-user link alone must never authorize an
+// administrator-only operation.
+func (s *Service) EmailHasHubTenantAdministratorLink(ctx context.Context, email, hubID, tenantID string) (bool, error) {
+	if s == nil || s.links == nil {
+		return false, nil
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	hubID = strings.TrimSpace(hubID)
+	rawTenantID := strings.TrimSpace(tenantID)
+	tenantID = normalizeCapabilityTenantID(rawTenantID)
+	if email == "" || hubID == "" || rawTenantID == "" {
+		return false, nil
+	}
+	links, err := s.links.ListByEmail(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	for _, link := range links {
+		if link == nil || !isHubTenantAdminLink(link) {
+			continue
+		}
+		if strings.TrimSpace(link.HubID) == hubID && normalizeCapabilityTenantID(link.TenantID) == tenantID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Service) Rebuild(ctx context.Context) error {
 	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, false)
 	if err != nil {

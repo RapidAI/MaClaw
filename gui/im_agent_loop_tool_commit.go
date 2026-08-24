@@ -9,7 +9,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type agentLoopToolCommitOptions struct {
@@ -229,11 +228,12 @@ func redactToolCallMap(m map[string]interface{}, toolCallID, redactedID string) 
 }
 
 func (h *IMMessageHandler) pinConditionalToolAfterSuccess(userID, toolName string, execResult toolExecutionResult) {
-	if h == nil || h.toolRouter == nil || execResult.Outcome != toolOutcomeSucceeded || execResult.FailureKind != toolFailureNone || !tool.ShouldPinConditionalTool(toolName) {
-		return
-	}
-	h.toolRouter.ActivateSessionToolForSession(userID, toolName)
-	log.Printf("[ToolPin] session-pinned conditional tool %q", toolName)
+	// Successful execution contributes task evidence through the semantic
+	// execution/route state. It must not make a legacy tool name sticky.
+	_ = h
+	_ = userID
+	_ = toolName
+	_ = execResult
 }
 
 func (h *IMMessageHandler) recordAgentLoopToolTrace(ctx *LoopContext, tc llm.ToolCall, traceResult string, rawResult string, execResult toolExecutionResult) {

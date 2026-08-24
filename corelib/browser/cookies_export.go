@@ -87,37 +87,38 @@ func ExportAuthHeadersForURL(rawURL string) (map[string]string, error) {
 // one users log into).
 func mostRecentLiveAgentSession() *BrowserAgentSession {
 	browserAgentMu.Lock()
-	defer browserAgentMu.Unlock()
-	var best *BrowserAgentSession
+	candidates := make([]*BrowserAgentSession, 0, len(browserAgentSessions))
 	for _, sess := range browserAgentSessions {
-		if sess == nil {
-			continue
+		if sess != nil {
+			candidates = append(candidates, sess)
 		}
-		sess.mu.RLock()
-		s := sess.session
-		var alive bool
-		if s != nil {
-			s.mu.Lock()
-			alive = s.client != nil && s.client.IsAlive()
-			s.mu.Unlock()
-		}
-		sess.mu.RUnlock()
-		if !alive {
+	}
+	browserAgentMu.Unlock()
+	var best *BrowserAgentSession
+	for _, sess := range candidates {
+		if !sess.cdpClient().IsAlive() {
 			continue
 		}
 		if best == nil {
 			best = sess
 			continue
 		}
+		sess.mu.RLock()
+		sessMode := sess.Mode
+		sessLast := sess.LastActivityAt
+		sess.mu.RUnlock()
+		best.mu.RLock()
 		bestPersistent := best.Mode == SessionModePersistent
-		sessPersistent := sess.Mode == SessionModePersistent
+		bestLast := best.LastActivityAt
+		best.mu.RUnlock()
+		sessPersistent := sessMode == SessionModePersistent
 		if sessPersistent != bestPersistent {
 			if sessPersistent {
 				best = sess
 			}
 			continue
 		}
-		if sess.LastActivityAt.After(best.LastActivityAt) {
+		if sessLast.After(bestLast) {
 			best = sess
 		}
 	}

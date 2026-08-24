@@ -36,6 +36,12 @@ const UserDataMigrationInstancesMock = vi.fn();
 const UserDataMigrationStatusMock = vi.fn();
 const StartUserDataMigrationImportMock = vi.fn();
 const GetUserDataMigrationJobMock = vi.fn();
+const ClaimReferralHandoffMock = vi.fn();
+const GetReferralRegistrationStatusMock = vi.fn();
+const RegisterReferralEmailMock = vi.fn();
+const RegisterReferralPhoneMock = vi.fn();
+const ActivateReferralRemoteEmailMock = vi.fn();
+const ActivateReferralRemotePhoneMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -72,6 +78,12 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     UserDataMigrationStatus: (...args: unknown[]) => UserDataMigrationStatusMock(...args),
     StartUserDataMigrationImport: (...args: unknown[]) => StartUserDataMigrationImportMock(...args),
     GetUserDataMigrationJob: (...args: unknown[]) => GetUserDataMigrationJobMock(...args),
+    ClaimReferralHandoff: (...args: unknown[]) => ClaimReferralHandoffMock(...args),
+    GetReferralRegistrationStatus: (...args: unknown[]) => GetReferralRegistrationStatusMock(...args),
+    RegisterReferralEmail: (...args: unknown[]) => RegisterReferralEmailMock(...args),
+    RegisterReferralPhone: (...args: unknown[]) => RegisterReferralPhoneMock(...args),
+    ActivateReferralRemoteEmail: (...args: unknown[]) => ActivateReferralRemoteEmailMock(...args),
+    ActivateReferralRemotePhone: (...args: unknown[]) => ActivateReferralRemotePhoneMock(...args),
 }));
 
 import { OnboardingWizard } from '../OnboardingWizard';
@@ -132,6 +144,16 @@ describe('OnboardingWizard registration', () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false, skip_llm_config: false });
         RedeemHubLLMServiceMock.mockResolvedValue({ active: false, skip_llm_config: false });
         CancelCodeGenSSOPollingMock.mockResolvedValue(undefined);
+        ClaimReferralHandoffMock.mockResolvedValue({
+            registration_session: 'referral-session',
+            tenant: { id: 'tenant-referral' },
+            registration_method: 'email',
+        });
+        GetReferralRegistrationStatusMock.mockResolvedValue({ registration_status: 'continue' });
+        RegisterReferralEmailMock.mockResolvedValue(undefined);
+        RegisterReferralPhoneMock.mockResolvedValue(undefined);
+        ActivateReferralRemoteEmailMock.mockResolvedValue({ email: 'user@example.com' });
+        ActivateReferralRemotePhoneMock.mockResolvedValue({ email: 'phone:13800138000' });
     });
 
     afterEach(() => {
@@ -297,6 +319,74 @@ describe('OnboardingWizard registration', () => {
         await continueRegistrationIdentity();
         expect(await screen.findByText('Service redeem code')).toBeTruthy();
         expect(screen.getByPlaceholderText('Enter service redeem code (optional)')).toBeTruthy();
+    });
+
+    it('binds a completed referral email registration without another OTP or registration', async () => {
+        ClaimReferralHandoffMock.mockResolvedValue({
+            registration_session: 'completed-referral-session',
+            tenant: { id: 'tenant-referral' },
+            registration_method: 'email',
+            registration_status: 'registered_rewarded',
+            registered_identity: 'registered@example.com',
+            registered_identity_type: 'email',
+        });
+        GetReferralRegistrationStatusMock.mockResolvedValue({ registration_status: 'registered_rewarded' });
+        ActivateReferralRemoteEmailMock.mockResolvedValue({ email: 'registered@example.com' });
+
+        render(<OnboardingWizard {...baseProps} referralHandoff="opaque-one-time-handoff" />);
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('registered@example.com')).toBeTruthy();
+            expect(screen.getByText(/account is registered. bind this device to continue/i)).toBeTruthy();
+        });
+        expect(screen.queryByLabelText('Email verification code')).toBeNull();
+        expect(screen.queryByPlaceholderText('Enter invitation code (optional)')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        await waitFor(() => {
+            expect(ActivateReferralRemoteEmailMock).toHaveBeenCalledWith(
+                'http://hub.example.com',
+                'registered@example.com',
+                'tenant-referral',
+                'completed-referral-session',
+            );
+        });
+        expect(RegisterReferralEmailMock).not.toHaveBeenCalled();
+        expect(RegisterReferralPhoneMock).not.toHaveBeenCalled();
+        expect(GetReferralRegistrationStatusMock).not.toHaveBeenCalled();
+        expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a completed email referral on email enrollment if the tenant later switches to phone-only', async () => {
+        ClaimReferralHandoffMock.mockResolvedValue({
+            registration_session: 'completed-email-after-method-change',
+            tenant: { id: 'tenant-referral' },
+            registration_method: 'phone',
+            registration_status: 'registered_rewarded',
+            registered_identity: 'registered@example.com',
+            registered_identity_type: 'email',
+        });
+        ActivateReferralRemoteEmailMock.mockResolvedValue({ email: 'registered@example.com' });
+
+        render(<OnboardingWizard {...baseProps} referralHandoff="opaque-email-method-change" />);
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('registered@example.com')).toBeTruthy();
+        });
+        expect(screen.queryByLabelText('Phone')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+        await waitFor(() => {
+            expect(ActivateReferralRemoteEmailMock).toHaveBeenCalledWith(
+                'http://hub.example.com',
+                'registered@example.com',
+                'tenant-referral',
+                'completed-email-after-method-change',
+            );
+        });
+        expect(ActivateReferralRemotePhoneMock).not.toHaveBeenCalled();
     });
 
     it('associates the identity-only user ID label with its input', async () => {

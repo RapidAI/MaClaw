@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -31,8 +32,28 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// advertise steering acceptance.
 	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
 
-	// Strangler: eligible chat/background turns use shared corelib/agent.RunLoop.
-	if h.shouldUseSharedAgentLoop(ctx, userID, attachments) {
+	// A capability-managed turn has a grant-bound executor only on the shared
+	// loop.  It must not be controlled by the legacy/shared strangler flag:
+	// selecting legacy here would discard SemanticSurface and re-open the
+	// keyword/name router.  The shared eligibility gate remains relevant to
+	// ungoverned capability families during their migration.
+	semanticManaged := ctx != nil && ctx.Runtime.SemanticIntent != nil && imSemanticIntentIsManagedForLoop(ctx.WorkflowAgentLoop, *ctx.Runtime.SemanticIntent)
+	// A withdrawn family must not claim the strangler bypass it is being
+	// withdrawn from. The turn is refused either way by the planning gate, so
+	// this only keeps the loop choice and its log honest.
+	if semanticManaged {
+		if _, withdrawn := semanticWithdrawnCapabilityLabel(h, userID, *ctx.Runtime.SemanticIntent); withdrawn {
+			semanticManaged = false
+		}
+	}
+	useSharedLoop := false
+	if !semanticManaged {
+		useSharedLoop = h.shouldUseSharedAgentLoop(ctx, userID, attachments)
+	}
+	if semanticManaged || useSharedLoop {
+		if semanticManaged && !useSharedLoop {
+			log.Printf("[agent-loop] semantic managed turn bypasses legacy strangler owner=%q request_id=%q loop=%q", userID, ctx.Runtime.RequestID, ctx.ID)
+		}
 		return h.runAgentLoopShared(ctx, userID, systemPrompt, history, userText, attachments, onProgress, onToken, onNewRound, onStreamDone, minIterations, platform)
 	}
 
@@ -139,6 +160,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		Telemetry:        telemetry,
 		SendProgress:     sendProgress,
 	})
+	if startState.HostReject != nil {
+		if startState.Cleanup != nil {
+			startState.Cleanup()
+		}
+		return startState.HostReject
+	}
 	trajRecorder = startState.Recorder
 	trajCleanup = startState.Cleanup
 	cfg := startState.Config
@@ -147,6 +174,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	phase := startState.Phase
 	baseTools := startState.BaseTools
 	tools := startState.Tools
+	clientToolNames := startState.ClientToolNames
 	toolsTokenBudget := startState.ToolsTokenBudget
 	httpClient := startState.HTTPClient
 	recorder := startState.Recorder
@@ -179,11 +207,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		RequestContext:                loopCtx,
 		UserID:                        userID,
 		UserText:                      userText,
+		TaskAnchor:                    startState.TaskAnchor,
 		Platform:                      platform,
 		Config:                        cfg,
 		HTTPClient:                    httpClient,
 		BaseTools:                     baseTools,
 		Tools:                         tools,
+		ClientToolNames:               clientToolNames,
 		ToolsTokenBudget:              toolsTokenBudget,
 		Conversation:                  conversation,
 		History:                       history,
@@ -230,11 +260,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	return h.finishAgentLoopAndRecordTelemetry(agentLoopCompletionOptions{
-		Context:                ctx,
-		RequestContext:         loopCtx,
-		UserID:                 userID,
-		UserText:               userText,
-		Config:                 cfg,
+		Context:        ctx,
+		RequestContext: loopCtx,
+		UserID:         userID,
+		UserText:       userText,
+		// Main iterations may have escalated from a light route. The bonus round
+		// must inherit that active snapshot, including its context budget.
+		Config:                 completionConfigFromRunState(runState, cfg),
 		Conversation:           conversation,
 		History:                history,
 		Tools:                  tools,
@@ -268,4 +300,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		ChatFinalizeGrace:      chatFinalizeGrace,
 		ConversationStartedAt:  conversationStartedAt,
 	}, telemetry)
+}
+
+func completionConfigFromRunState(run *agentLoopRunState, fallback corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if run == nil || strings.TrimSpace(run.ActiveConfig.Model) == "" {
+		return fallback
+	}
+	return run.ActiveConfig
 }

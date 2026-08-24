@@ -7,21 +7,15 @@ import (
 )
 
 func applyImplicitInFlightRecoveryDecision(msg IMUserMessage, trimmed string, slot *agent.UnfinishedTaskSlot, decision explicitTaskSlotDecision) explicitTaskSlotDecision {
-	if slot == nil || !isInFlightRecoverySlot(slot) || msg.IsBackground {
-		return decision
-	}
-	if decision.ResumeSlotID != "" || decision.StartNewTask || decision.DismissSlotID != "" || isSlotActionCommand(trimmed) {
-		return decision
-	}
-	if strings.TrimSpace(trimmed) == "" {
-		return decision
-	}
-	if shouldResumeIncompleteTask(trimmed) {
-		decision.ResumeSlotID = slot.SlotID
-		return decision
-	}
-	decision.StartNewTask = true
-	decision.DismissSlotID = slot.SlotID
+	// Recovery is a semantic task-association decision. Do not decide it from
+	// a phrase such as "continue", or decide a fresh task from the absence of
+	// that phrase: either rule is vulnerable to wording changes and can bind
+	// interrupted side-effect evidence to the wrong request. Explicit UI
+	// commands remain authoritative; all ordinary messages reach the trusted
+	// task-context classifier in applyUnifiedTaskContextDecision.
+	_ = msg
+	_ = trimmed
+	_ = slot
 	return decision
 }
 

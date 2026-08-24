@@ -453,11 +453,23 @@ func TestRuntimeVirtualEmployeeDiscussionMessageIncludesAttachmentContext(t *tes
 	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
 		t.Fatalf("decode message response: %v", err)
 	}
-	if !strings.Contains(out.Message.Content, "2602.06052v3.pdf") || !strings.Contains(out.Message.Content, "[Hub attachments received]") {
+	if !strings.Contains(out.Message.Content, "2602.06052v3.pdf") || !strings.Contains(out.Message.Content, "[Hub attachments received]") || !strings.Contains(out.Message.Content, "trusted host input") {
 		t.Fatalf("attachment context missing from runtime message: %s", out.Message.Content)
 	}
-	if !strings.Contains(out.Message.Content, "local_path=") || !strings.Contains(out.Message.Content, ".hub-attachments") {
-		t.Fatalf("downloaded local path missing from runtime message: %s", out.Message.Content)
+	if strings.Contains(out.Message.Content, "local_path=") || strings.Contains(out.Message.Content, ".hub-attachments") || strings.Contains(out.Message.Content, "[file_base64") {
+		t.Fatalf("trusted Hub document leaked a workspace path: %s", out.Message.Content)
+	}
+	tenant, user, inst := platformRuntimeForTest(t, svc, "emp-001")
+	sessions, err := svc.ListSessions(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, inst.ID, agentservice.ListSessionsInput{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	messages, err := svc.ListMessages(t.Context(), agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}, inst.ID, sessions[0].ID, agentservice.ListMessagesInput{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) == 0 || len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Type != "file" || messages[0].Attachments[0].MimeType != "application/pdf" || messages[0].Attachments[0].SourceMediaID != "hub-ve-file:file-1" {
+		t.Fatalf("trusted Hub document was not published: %#v", messages)
 	}
 }
 
@@ -591,7 +603,7 @@ func TestPlatformAttachmentMaxBytesForUsesSharedDocumentLimit(t *testing.T) {
 }
 func TestEnrichPlatformMessageTreatsMislabelledOfficeTextAttachmentAsFile(t *testing.T) {
 	server := &HTTPServer{}
-	content := server.enrichPlatformMessageContentWithAttachments(
+	content, atts := server.enrichPlatformMessageContentWithAttachments(
 		httptest.NewRequest(http.MethodPost, "/", nil),
 		platformRuntimeBinding{Instance: agentservice.Instance{Workspace: t.TempDir()}},
 		platformVirtualEmployeeMessageRequest{HubDiscussionID: "discussion-1"},
@@ -603,11 +615,82 @@ func TestEnrichPlatformMessageTreatsMislabelledOfficeTextAttachmentAsFile(t *tes
 		}}},
 		nil,
 	)
-	if strings.Contains(content, "- text: cover.png") || !strings.Contains(content, "- file: cover.docx") {
+	if strings.Contains(content, "- text: cover.png") || !strings.Contains(content, "cover.docx") || !strings.Contains(content, "trusted host input") {
 		t.Fatalf("mislabelled Office text attachment context = %q", content)
 	}
-	if !strings.Contains(content, "local_path=") || !strings.Contains(content, ".docx") {
-		t.Fatalf("mislabelled Office text attachment lacks normalized local path: %q", content)
+	if strings.Contains(content, "local_path=") || strings.Contains(content, ".hub-attachments") {
+		t.Fatalf("trusted Office text attachment leaked a workspace path: %q", content)
+	}
+	if len(atts) != 1 || atts[0].Type != "file" || atts[0].MimeType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || atts[0].SourceMediaID != "hub-ve-text:discussion-1:cover.docx" {
+		t.Fatalf("trusted Office text attachment = %#v", atts)
+	}
+}
+
+func TestEnrichPlatformMessageKeepsUnrecognizedLocalPath(t *testing.T) {
+	server := &HTTPServer{}
+	content, atts := server.enrichPlatformMessageContentWithAttachments(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		platformRuntimeBinding{Instance: agentservice.Instance{Workspace: t.TempDir()}},
+		platformVirtualEmployeeMessageRequest{HubDiscussionID: "discussion-1"},
+		"inspect",
+		platformMessageAttachments{Text: []platformTextAttachment{{
+			Filename:  "archive.zip",
+			MimeType:  "application/zip",
+			Content:   base64.StdEncoding.EncodeToString([]byte("PK-not-a-document")),
+			LocalPath: `C:\evil\secret.zip`,
+		}}},
+		nil,
+	)
+	if len(atts) != 0 {
+		t.Fatalf("unrecognized zip must not become a trusted attachment: %#v", atts)
+	}
+	if !strings.Contains(content, "local_path=") || !strings.Contains(content, "archive.zip") {
+		t.Fatalf("unrecognized attachment should keep staged path: %q", content)
+	}
+	if strings.Contains(content, `C:\evil`) || strings.Contains(content, "/evil/") {
+		t.Fatalf("payload local_path must not be trusted: %q", content)
+	}
+}
+
+func TestEnrichPlatformMessagePublishesTrustedAudio(t *testing.T) {
+	server := &HTTPServer{}
+	wav := testWAVBytes()
+	content, atts := server.enrichPlatformMessageContentWithAttachments(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		platformRuntimeBinding{Instance: agentservice.Instance{Workspace: t.TempDir()}},
+		platformVirtualEmployeeMessageRequest{HubDiscussionID: "discussion-audio"},
+		"转写一下",
+		platformMessageAttachments{File: []platformFileAttachment{{
+			Filename:  "clip.wav",
+			MimeType:  "audio/wav",
+			LocalPath: `C:\evil\recording.wav`,
+		}}},
+		nil,
+	)
+	if len(atts) != 0 {
+		t.Fatalf("audio without host-downloaded bytes must not publish: %#v", atts)
+	}
+	if strings.Contains(content, `C:\evil`) {
+		t.Fatalf("payload local_path must not be trusted: %q", content)
+	}
+	content, atts = server.enrichPlatformMessageContentWithAttachments(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		platformRuntimeBinding{Instance: agentservice.Instance{Workspace: t.TempDir()}},
+		platformVirtualEmployeeMessageRequest{HubDiscussionID: "discussion-audio"},
+		"转写一下",
+		platformMessageAttachments{Text: []platformTextAttachment{{
+			Filename:  "clip.wav",
+			MimeType:  "audio/wav",
+			Content:   base64.StdEncoding.EncodeToString(wav),
+			LocalPath: `C:\evil\recording.wav`,
+		}}},
+		nil,
+	)
+	if len(atts) != 1 || atts[0].Type != "audio" || atts[0].MimeType != "audio/wav" {
+		t.Fatalf("trusted audio attachment = %#v", atts)
+	}
+	if strings.Contains(content, "local_path=") || strings.Contains(content, `C:\evil`) || strings.Contains(content, "[voice_base64") {
+		t.Fatalf("trusted audio leaked a bypass marker: %q", content)
 	}
 }
 

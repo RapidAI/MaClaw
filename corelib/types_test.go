@@ -277,3 +277,151 @@ func TestMaclawLLMProviderCodexSubscriptionOAuthToken(t *testing.T) {
 		t.Fatal("ChatGPT Codex provider was not recognized")
 	}
 }
+
+func TestMigrateZhipuCodingModel(t *testing.T) {
+	for _, name := range []string{ZhipuCodingProviderName, "智谱 GLM (Coding)", "Zhipu GLM Coding", "zhipu glm coding"} {
+		if got := MigrateZhipuCodingModel(name, "GLM-5.2"); got != ZhipuCodingDefaultModel {
+			t.Fatalf("provider %q GLM-5.2 = %q, want %q", name, got, ZhipuCodingDefaultModel)
+		}
+	}
+	if got := MigrateZhipuCodingModel(ZhipuCodingProviderName, "GLM-5.3"); got != ZhipuCodingDefaultModel {
+		t.Fatalf("official ID casing = %q, want %q", got, ZhipuCodingDefaultModel)
+	}
+	if got := MigrateZhipuCodingModel(ZhipuCodingProviderName, "glm-5.3[1m]"); got != "glm-5.3[1m]" {
+		t.Fatalf("suffix variant overwritten: %q", got)
+	}
+	if got := MigrateZhipuCodingModel(ZhipuCodingProviderName, "GLM-5.3[1m]"); got != "glm-5.3[1m]" {
+		t.Fatalf("suffix ID casing = %q, want glm-5.3[1m]", got)
+	}
+	if got := MigrateZhipuCodingModel(ZhipuCodingProviderName, "glm-5-turbo"); got != "glm-5-turbo" {
+		t.Fatalf("custom model overwritten: %q", got)
+	}
+	if got := MigrateZhipuCodingModel("DeepSeek", "GLM-5.2"); got != "GLM-5.2" {
+		t.Fatalf("unrelated provider migrated: %q", got)
+	}
+	if !MaclawLLMProviderNameEqual(ZhipuCodingProviderName, "Zhipu GLM Coding") {
+		t.Fatal("GUI and TUI Zhipu coding names should match")
+	}
+	if MaclawLLMProviderNameEqual(ZhipuCodingProviderName, "DeepSeek") {
+		t.Fatal("unrelated provider names matched")
+	}
+}
+
+func TestApplyZhipuCodingConfigMigration(t *testing.T) {
+	orig := []MaclawLLMProvider{{
+		Name: ZhipuCodingProviderName, Model: "GLM-5.2",
+	}, {
+		Name: "DeepSeek", Model: "GLM-5.2",
+	}}
+	cfg := AppConfig{
+		MaclawLLMCurrentProvider: ZhipuCodingProviderName,
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders:       orig,
+	}
+	ApplyZhipuCodingConfigMigration(&cfg)
+	if orig[0].Model != "GLM-5.2" {
+		t.Fatalf("shared provider slice mutated: %q", orig[0].Model)
+	}
+	if cfg.MaclawLLMModel != ZhipuCodingDefaultModel {
+		t.Fatalf("flat model = %q, want %q", cfg.MaclawLLMModel, ZhipuCodingDefaultModel)
+	}
+	if cfg.MaclawLLMProviders[0].Model != ZhipuCodingDefaultModel {
+		t.Fatalf("zhipu provider model = %q, want %q", cfg.MaclawLLMProviders[0].Model, ZhipuCodingDefaultModel)
+	}
+	if cfg.MaclawLLMProviders[1].Model != "GLM-5.2" {
+		t.Fatalf("unrelated provider overwritten: %q", cfg.MaclawLLMProviders[1].Model)
+	}
+
+	custom := AppConfig{
+		MaclawLLMCurrentProvider: ZhipuCodingProviderName,
+		MaclawLLMModel:           "glm-5-turbo",
+		MaclawLLMProviders:       []MaclawLLMProvider{{Name: ZhipuCodingProviderName, Model: "glm-5-turbo"}},
+	}
+	ApplyZhipuCodingConfigMigration(&custom)
+	if custom.MaclawLLMModel != "glm-5-turbo" || custom.MaclawLLMProviders[0].Model != "glm-5-turbo" {
+		t.Fatalf("custom model overwritten: %#v", custom)
+	}
+
+	profiles := &MaclawLLMProfiles{
+		Assistant: MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2"},
+		Coding:    MaclawLLMProfile{InheritAssistant: true},
+		Caption:   MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2"},
+	}
+	withProfiles := AppConfig{
+		MaclawLLMCurrentProvider: ZhipuCodingProviderName,
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			ID: "llmp_zhipu", Name: ZhipuCodingProviderName, Model: "GLM-5.2",
+		}},
+		MaclawLLMProfiles: profiles,
+	}
+	ApplyZhipuCodingConfigMigration(&withProfiles)
+	if profiles.Assistant.Model != "GLM-5.2" {
+		t.Fatalf("shared profile pointer mutated: %q", profiles.Assistant.Model)
+	}
+	if withProfiles.MaclawLLMProfiles == profiles {
+		t.Fatal("expected a copied profile pointer")
+	}
+	if withProfiles.MaclawLLMProfiles.Assistant.Model != ZhipuCodingDefaultModel {
+		t.Fatalf("assistant profile = %q, want %q", withProfiles.MaclawLLMProfiles.Assistant.Model, ZhipuCodingDefaultModel)
+	}
+	if withProfiles.MaclawLLMProfiles.Caption.Model != ZhipuCodingDefaultModel {
+		t.Fatalf("caption profile = %q, want %q", withProfiles.MaclawLLMProfiles.Caption.Model, ZhipuCodingDefaultModel)
+	}
+
+	inherited := &MaclawLLMProfiles{
+		Assistant: MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2"},
+		Coding:    MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2", InheritAssistant: true},
+	}
+	withInherited := AppConfig{
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			ID: "llmp_zhipu", Name: ZhipuCodingProviderName, Model: "GLM-5.2",
+		}},
+		MaclawLLMProfiles: inherited,
+	}
+	ApplyZhipuCodingConfigMigration(&withInherited)
+	if inherited.Coding.Model != "GLM-5.2" {
+		t.Fatalf("shared inherited coding profile mutated: %q", inherited.Coding.Model)
+	}
+	if withInherited.MaclawLLMProfiles.Coding.Model != ZhipuCodingDefaultModel {
+		t.Fatalf("inherited coding profile = %q, want %q", withInherited.MaclawLLMProfiles.Coding.Model, ZhipuCodingDefaultModel)
+	}
+
+	hashID := MaclawLLMLegacyProviderID(ZhipuCodingProviderName)
+	hashed := AppConfig{
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			Name: ZhipuCodingProviderName, Model: "GLM-5.2",
+		}},
+		MaclawLLMProfiles: &MaclawLLMProfiles{
+			Assistant: MaclawLLMProfile{ProviderID: hashID, Model: "GLM-5.2"},
+		},
+	}
+	ApplyZhipuCodingConfigMigration(&hashed)
+	if hashed.MaclawLLMProfiles.Assistant.Model != ZhipuCodingDefaultModel {
+		t.Fatalf("hash-id profile = %q, want %q", hashed.MaclawLLMProfiles.Assistant.Model, ZhipuCodingDefaultModel)
+	}
+
+	assigned := AppConfig{
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			ID: "llmp_real", Name: ZhipuCodingProviderName, Model: "GLM-5.2",
+		}},
+		MaclawLLMProfiles: &MaclawLLMProfiles{
+			Assistant: MaclawLLMProfile{ProviderID: hashID, Model: "GLM-5.2"},
+		},
+	}
+	ApplyZhipuCodingConfigMigration(&assigned)
+	if assigned.MaclawLLMProfiles.Assistant.Model != ZhipuCodingDefaultModel {
+		t.Fatalf("hash-id after real ID = %q, want %q", assigned.MaclawLLMProfiles.Assistant.Model, ZhipuCodingDefaultModel)
+	}
+
+	implied := AppConfig{
+		MaclawLLMModel: "GLM-5.2",
+		MaclawLLMProviders: []MaclawLLMProvider{{
+			Name: ZhipuCodingProviderName, Model: "GLM-5.2",
+		}},
+	}
+	ApplyZhipuCodingConfigMigration(&implied)
+	if implied.MaclawLLMModel != ZhipuCodingDefaultModel {
+		t.Fatalf("implied current flat model = %q, want %q", implied.MaclawLLMModel, ZhipuCodingDefaultModel)
+	}
+}

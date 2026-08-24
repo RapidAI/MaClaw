@@ -4,6 +4,8 @@
  */
 (function(global) {
   var digitalAssetsMaxAclDepartments = 512;
+  // Nav/header keys also live in admin.js so the sidebar localizes before this
+  // lazy module loads. Keep both copies in sync.
   if (typeof I18N !== 'undefined') {
     I18N.en = Object.assign({}, I18N.en, {
       digitalAssetsTabTitle: 'Digital Assets',
@@ -129,7 +131,28 @@
       digitalAssetsDeleteLibraryTitle: 'Delete library',
       digitalAssetsDeleteLibraryConfirm: 'Delete library "{name}"? This cannot be undone from the admin list (soft delete).',
       digitalAssetsDeleteSourcesTitle: 'Delete files',
-      digitalAssetsAclConfirmTitle: 'Save restricted access'
+      digitalAssetsAclConfirmTitle: 'Save restricted access',
+      digitalAssetsCardMeta: 'rev {rev} | src {src} | sync {sync}',
+      digitalAssetsRevLabel: 'rev {rev}',
+      digitalAssetsSyncOn: 'on',
+      digitalAssetsSyncOff: 'off',
+      digitalAssetsKind: 'Library type',
+      digitalAssetsKindBusiness: 'Business',
+      digitalAssetsKindTechnical: 'Technical',
+      digitalAssetsKindPrompt: 'Library type: business or technical',
+      digitalAssetsAcceptsSubmissions: 'Accept member contributions',
+      digitalAssetsAcceptsHint: 'When on, members can submit personal experience for admin review.',
+      digitalAssetsQueueSection: 'Contribution queue',
+      digitalAssetsQueueEmpty: 'No pending contributions for this library.',
+      digitalAssetsQueueLoadFailed: 'Failed to load contributions: {error}',
+      digitalAssetsQueueApprove: 'Approve',
+      digitalAssetsQueueReject: 'Reject',
+      digitalAssetsQueueRejectPrompt: 'Why is this contribution rejected?',
+      digitalAssetsQueueRejected: 'Rejected.',
+      digitalAssetsQueueApproved: 'Approved and imported.',
+      digitalAssetsQueueMeta: '{kind} · {count} item(s) · {email}',
+      digitalAssetsKindBadgeBusiness: 'business',
+      digitalAssetsKindBadgeTechnical: 'technical'
     });
     I18N.zh = Object.assign({}, I18N.zh, {
       digitalAssetsTabTitle: '\u6570\u5b57\u8d44\u4ea7',
@@ -255,7 +278,28 @@
       digitalAssetsDeleteLibraryTitle: '\u5220\u9664\u5e93',
       digitalAssetsDeleteLibraryConfirm: '\u786e\u5b9a\u5220\u9664\u5e93\u300c{name}\u300d\uff1f\u7ba1\u7406\u5217\u8868\u4e2d\u5c06\u8f6f\u5220\u9664\u3002',
       digitalAssetsDeleteSourcesTitle: '\u5220\u9664\u6587\u4ef6',
-      digitalAssetsAclConfirmTitle: '\u4fdd\u5b58\u9650\u5b9a\u8bbf\u95ee'
+      digitalAssetsAclConfirmTitle: '\u4fdd\u5b58\u9650\u5b9a\u8bbf\u95ee',
+      digitalAssetsCardMeta: '\u7248\u672c {rev} | \u6587\u4ef6 {src} | \u540c\u6b65 {sync}',
+      digitalAssetsRevLabel: '\u7248\u672c {rev}',
+      digitalAssetsSyncOn: '\u5f00',
+      digitalAssetsSyncOff: '\u5173',
+      digitalAssetsKind: '\u5e93\u7c7b\u578b',
+      digitalAssetsKindBusiness: '\u4e1a\u52a1',
+      digitalAssetsKindTechnical: '\u6280\u672f',
+      digitalAssetsKindPrompt: '\u5e93\u7c7b\u578b\uff1abusiness \u6216 technical',
+      digitalAssetsAcceptsSubmissions: '\u63a5\u53d7\u6210\u5458\u6295\u7a3f',
+      digitalAssetsAcceptsHint: '\u5f00\u542f\u540e\u6210\u5458\u53ef\u628a\u4e2a\u4eba\u7ecf\u9a8c\u6295\u7a3f\u5230\u6b64\u5e93\uff0c\u7ba1\u7406\u5458\u5ba1\u6279\u540e\u5165\u5e93\u3002',
+      digitalAssetsQueueSection: '\u6295\u7a3f\u961f\u5217',
+      digitalAssetsQueueEmpty: '\u8be5\u5e93\u6682\u65e0\u5f85\u5ba1\u6295\u7a3f\u3002',
+      digitalAssetsQueueLoadFailed: '\u52a0\u8f7d\u6295\u7a3f\u5931\u8d25\uff1a{error}',
+      digitalAssetsQueueApprove: '\u6279\u51c6',
+      digitalAssetsQueueReject: '\u62d2\u7edd',
+      digitalAssetsQueueRejectPrompt: '\u8bf7\u8bf4\u660e\u62d2\u7edd\u539f\u56e0\u3002',
+      digitalAssetsQueueRejected: '\u5df2\u62d2\u7edd\u3002',
+      digitalAssetsQueueApproved: '\u5df2\u6279\u51c6\u5e76\u5165\u5e93\u3002',
+      digitalAssetsQueueMeta: '{kind} \u00b7 {count} \u6761 \u00b7 {email}',
+      digitalAssetsKindBadgeBusiness: '\u4e1a\u52a1',
+      digitalAssetsKindBadgeTechnical: '\u6280\u672f'
     });
   }
 
@@ -297,6 +341,8 @@
     contentHasMore: false,
     contentScrollTop: 0,
     contentComposing: false,
+    submissions: [],
+    submissionsLoading: false,
     contentJobsPollTimer: null,
     contentJobsPollToken: 0,
     contentAutoFillRounds: 0,
@@ -367,8 +413,10 @@
   }
 
   function tr(key, vars) {
-    const lang = (typeof global.getAdminLang === 'function' ? global.getAdminLang() : 'zh') || 'zh';
-    const table = (I18N && I18N[lang]) || (I18N && I18N.en) || {};
+    if (typeof global.tr === 'function') return global.tr(key, vars || {});
+    const lang = (typeof global.getAdminLang === 'function' ? global.getAdminLang() : global.currentLang) || 'en';
+    const normalized = String(lang).toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    const table = (I18N && I18N[normalized]) || (I18N && I18N.en) || {};
     let s = table[key] || (I18N && I18N.en && I18N.en[key]) || key;
     if (vars) Object.keys(vars).forEach(function(k) { s = s.replace('{' + k + '}', vars[k]); });
     return s;
@@ -734,12 +782,16 @@
         updateAclEmptyWarn();
         return;
       }
+      var acceptsEl = byID('digitalAssetsAcceptsSubmissions');
+      var kindEl = byID('digitalAssetsLibraryKind');
       var body = {
         acl_mode: payload.acl_mode,
         departments: payload.departments,
         sync_enabled: payload.sync_enabled,
-        set_acl: true
+        set_acl: true,
+        accepts_submissions: !acceptsEl || !!acceptsEl.checked
       };
+      if (kindEl && kindEl.value) body.library_kind = kindEl.value;
       state.aclSaving = true;
       var btn = byID('digitalAssetsAclSaveBtn');
       if (btn) {
@@ -1904,9 +1956,11 @@
       return '<button type="button" class="digital-assets-library-card' + active + '" data-id="' + escapeHtml(item.id) + '"'
         + (item.id === state.selectedId ? ' aria-current="true"' : '') + '>'
         + '<strong>' + escapeHtml(item.name || item.id) + '</strong>'
-        + '<small>rev ' + escapeHtml(String(item.content_rev || 0))
-        + ' | src ' + escapeHtml(String(item.source_count || 0))
-        + ' | sync ' + (item.sync_enabled ? 'on' : 'off') + '</small>'
+        + '<small>' + escapeHtml((item.library_kind === 'technical' ? tr('digitalAssetsKindBadgeTechnical') : tr('digitalAssetsKindBadgeBusiness')) + ' · ' + tr('digitalAssetsCardMeta', {
+          rev: String(item.content_rev || 0),
+          src: String(item.source_count || 0),
+          sync: item.sync_enabled ? tr('digitalAssetsSyncOn') : tr('digitalAssetsSyncOff')
+        })) + '</small>'
         + '<small>' + escapeHtml(aclSummaryText(item)) + '</small>'
         + '</button>';
     }).join('');
@@ -1921,11 +1975,88 @@
         }
         state.selectedId = id;
         renderList();
-        renderDetail();
+        loadLibrarySubmissions(id).then(function() { renderDetail(); });
         // Second click on the same library opens contents (first click only selects).
         if (reselect && id) openContentDialog(id);
       });
     });
+  }
+
+  function renderSubmissionQueue(item) {
+    var rows = (state.submissions || []).filter(function(s) {
+      return s && s.library_id === item.id && (s.status === 'submitted' || s.status === 'import_failed');
+    });
+    var body = '';
+    if (state.submissionsLoading) {
+      body = '<div class="item-meta">' + escapeHtml(tr('digitalAssetsAclDepartmentsLoading')) + '</div>';
+    } else if (!rows.length) {
+      body = '<div class="item-meta">' + escapeHtml(tr('digitalAssetsQueueEmpty')) + '</div>';
+    } else {
+      body = rows.map(function(s) {
+        var titles = (s.preview_titles || []).slice(0, 4).join(' / ');
+        return '<div class="item" style="margin-top:8px;padding:10px 12px">'
+          + '<div class="item-title">' + escapeHtml(s.title || s.id) + '</div>'
+          + '<div class="item-meta">' + escapeHtml(tr('digitalAssetsQueueMeta', {
+            kind: s.kind || '',
+            count: String(s.item_count || 0),
+            email: s.submitter_email || ''
+          })) + '</div>'
+          + (s.summary ? '<div class="item-meta" style="margin-top:4px">' + escapeHtml(s.summary) + '</div>' : '')
+          + (titles ? '<div class="item-meta">' + escapeHtml(titles) + '</div>' : '')
+          + '<div class="actions" style="margin-top:8px">'
+          + actionButton('digitalAssetsApprove-' + s.id, tr('digitalAssetsQueueApprove'), 'primary')
+          + actionButton('digitalAssetsReject-' + s.id, tr('digitalAssetsQueueReject'), 'danger')
+          + '</div></div>';
+      }).join('');
+    }
+    return sectionTitle(tr('digitalAssetsQueueSection')) + body;
+  }
+
+  async function loadLibrarySubmissions(libraryId) {
+    if (!libraryId) {
+      state.submissions = [];
+      return;
+    }
+    state.submissionsLoading = true;
+    try {
+      var data = await api('/api/admin/digital-assets/submissions?library_id=' + encodeURIComponent(libraryId) + '&limit=50');
+      state.submissions = (data && data.items) || [];
+    } catch (err) {
+      state.submissions = [];
+      showToast(tr('digitalAssetsQueueLoadFailed', { error: String(err && err.message || err) }), 'error');
+    } finally {
+      state.submissionsLoading = false;
+    }
+  }
+
+  async function approveSubmission(id) {
+    try {
+      await api('/api/admin/digital-assets/submissions/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: '{}' });
+      showToast(tr('digitalAssetsQueueApproved'), 'success');
+      await global.loadDigitalAssetLibraries();
+    } catch (err) {
+      showToast(String(err && err.message || err), 'error');
+    }
+  }
+
+  async function rejectSubmission(id) {
+    if (isAdminDialogOpen()) return;
+    var note = await showPrompt(tr('digitalAssetsQueueRejectPrompt'), {
+      title: tr('digitalAssetsQueueReject'),
+      required: true
+    });
+    if (!note) return;
+    try {
+      await api('/api/admin/digital-assets/submissions/' + encodeURIComponent(id) + '/reject', {
+        method: 'POST',
+        body: JSON.stringify({ review_note: note })
+      });
+      showToast(tr('digitalAssetsQueueRejected'), 'success');
+      await loadLibrarySubmissions(state.selectedId);
+      renderDetail({ skipGroups: true, skipCapture: true });
+    } catch (err) {
+      showToast(String(err && err.message || err), 'error');
+    }
   }
 
   function renderMergePanel(item) {
@@ -1941,7 +2072,7 @@
       return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(31,34,48,.06);cursor:pointer;margin:0">'
         + '<input type="checkbox" class="digital-assets-merge-src" value="' + escapeHtml(src.id) + '" style="margin-top:3px">'
         + '<span style="min-width:0"><span class="item-title" style="font-size:13px">' + escapeHtml(src.name || src.id) + '</span>'
-        + '<div class="item-meta">rev ' + escapeHtml(String(src.content_rev || 0)) + '</div></span></label>';
+        + '<div class="item-meta">' + escapeHtml(tr('digitalAssetsRevLabel', { rev: String(src.content_rev || 0) })) + '</div></span></label>';
     }).join('');
     return '<div class="item" style="margin-top:10px;padding:12px 14px">'
       + '<div class="item-title" style="font-size:14px">' + escapeHtml(tr('digitalAssetsMergeTitle', { name: item.name || item.id })) + '</div>'
@@ -1979,6 +2110,15 @@
       + actionButton('digitalAssetsViewContentBtn', tr('digitalAssetsViewContent'), 'primary')
       + '</div>'
       + (item.description ? '<p style="margin:10px 0 0">' + escapeHtml(item.description) + '</p>' : '')
+      + '<div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">'
+      + '<label>' + escapeHtml(tr('digitalAssetsKind')) + ' <select id="digitalAssetsLibraryKind" class="input">'
+      + '<option value="business"' + (item.library_kind !== 'technical' ? ' selected' : '') + '>' + escapeHtml(tr('digitalAssetsKindBusiness')) + '</option>'
+      + '<option value="technical"' + (item.library_kind === 'technical' ? ' selected' : '') + '>' + escapeHtml(tr('digitalAssetsKindTechnical')) + '</option>'
+      + '</select></label>'
+      + '<label><input type="checkbox" id="digitalAssetsAcceptsSubmissions"' + (item.accepts_submissions !== false ? ' checked' : '') + '> ' + escapeHtml(tr('digitalAssetsAcceptsSubmissions')) + '</label>'
+      + '</div>'
+      + '<div class="item-meta" style="margin-top:6px">' + escapeHtml(tr('digitalAssetsAcceptsHint')) + '</div>'
+      + renderSubmissionQueue(item)
       + renderAclPanel(viewItem)
       + sectionTitle(tr('digitalAssetsImportSection'))
       + '<div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin:0">'
@@ -2002,9 +2142,10 @@
       + '</div>';
 
     wireDetailHandlers(item);
+    wireSubmissionHandlers();
     applyDeptFilter();
     // Lazy-load department tree for ACL multi-select (first open / refresh).
-    if (!state.securityGroupsLoaded && !state.securityGroupsLoading) {
+    if (!opts.skipGroups && !state.securityGroupsLoaded && !state.securityGroupsLoading) {
       loadSecurityGroups({ renderDetail: true });
     }
   }
@@ -2142,6 +2283,16 @@
         if (!ok || state.deleteLibraryBusy) return;
         deleteLibrary(item.id);
       });
+    });
+  }
+
+  function wireSubmissionHandlers() {
+    (state.submissions || []).forEach(function(s) {
+      if (!s || !s.id) return;
+      var approveBtn = byID('digitalAssetsApprove-' + s.id);
+      if (approveBtn) approveBtn.addEventListener('click', function() { approveSubmission(s.id); });
+      var rejectBtn = byID('digitalAssetsReject-' + s.id);
+      if (rejectBtn) rejectBtn.addEventListener('click', function() { rejectSubmission(s.id); });
     });
   }
 
@@ -2358,6 +2509,7 @@
           && !state.items.some(function(x) { return x.id === state.aclDraft.libraryId; })) {
         clearAclDraft();
       }
+      await loadLibrarySubmissions(state.selectedId);
       renderList();
       renderDetail();
       renderOverlays();
@@ -2391,10 +2543,16 @@
         confirmText: tr('digitalAssetsCreate')
       });
       if (!name) return;
+      const kindAnswer = await showPrompt(tr('digitalAssetsKindPrompt'), {
+        title: tr('digitalAssetsKind'),
+        placeholder: 'business'
+      });
+      var kind = String(kindAnswer || 'business').trim().toLowerCase();
+      if (kind !== 'technical') kind = 'business';
       try {
         await api('/api/admin/digital-assets/libraries', {
           method: 'POST',
-          body: JSON.stringify({ name: name, acl_mode: 'all_members', sync_enabled: true })
+          body: JSON.stringify({ name: name, acl_mode: 'all_members', sync_enabled: true, library_kind: kind, accepts_submissions: true })
         });
         showToast(tr('digitalAssetsCreateDone'), 'success');
         await global.loadDigitalAssetLibraries();
@@ -2406,6 +2564,15 @@
     }
   };
 
+  function applyDigitalAssetsI18n() {
+    var panel = byID('tab-digital-assets');
+    if (panel && panel.classList.contains('active')) {
+      renderList();
+      renderDetail({ skipGroups: true });
+    }
+    if (state.contentOpen || state.progress) renderOverlays();
+  }
+
   if (typeof global.tabMeta === 'object') global.tabMeta['digital-assets'] = ['digitalAssetsTabTitle', 'digitalAssetsTabSubtitle'];
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.registerTab === 'function') {
     global.AdminTabRegistry.registerTab({
@@ -2414,6 +2581,9 @@
       subtitle: function() { return tr('digitalAssetsTabSubtitle'); },
       onOpen: function() { global.loadDigitalAssetLibraries({ refreshGroups: true }); }
     });
+  }
+  if (global.AdminTabRegistry && typeof global.AdminTabRegistry.onLanguageChange === 'function') {
+    global.AdminTabRegistry.onLanguageChange(applyDigitalAssetsI18n);
   }
   global.stopDigitalAssetsForUnauthorizedScope = stopDigitalAssetsForUnauthorizedScope;
 })(window);

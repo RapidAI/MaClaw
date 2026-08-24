@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -1730,8 +1729,6 @@ func (a *App) importUserDataMigrationKnowledgeSnapshot(path, workDir string) (kn
 	if err := userDataMigrationKnowledgeImportError(result); err != nil {
 		return result, err
 	}
-	atomic.StoreInt64(&knowledgeSourceCountCache, int64(result.Sources))
-	atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
 	_ = workDir
 	return result, nil
 }
@@ -1758,8 +1755,6 @@ func (a *App) prepareUserDataMigrationKnowledgeRollback(workDir string) (func() 
 		if err := userDataMigrationKnowledgeImportError(result); err != nil {
 			return err
 		}
-		atomic.StoreInt64(&knowledgeSourceCountCache, int64(result.Sources))
-		atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
 		return nil
 	}, nil
 }

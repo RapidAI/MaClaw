@@ -475,6 +475,64 @@ func TestToolReadDocument_MaxCharsCapped(t *testing.T) {
 	}
 }
 
+func TestToolReadDocument_DefaultPageFitsDocumentPreviewBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "default-page.json")
+	text := strings.Repeat("文", defaultOfficeReadMaxRunes+1)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := ToolReadDocument(map[string]interface{}{"file_path": path})
+	if !strings.Contains(out, "# truncated: true") || !strings.Contains(out, "# next_offset: ") {
+		t.Fatalf("default document page was not bounded: %q", out)
+	}
+	projection, err := ProjectToolResult("read_document", "", out)
+	if err != nil {
+		t.Fatalf("ProjectToolResult() error = %v", err)
+	}
+	if projection.Spilled || projection.Handle != nil {
+		t.Fatalf("default document page unexpectedly spilled: %+v", projection)
+	}
+	if projection.Preview != out {
+		t.Fatalf("default document page was unexpectedly truncated: got %d bytes, want %d", len(projection.Preview), len(out))
+	}
+}
+
+func TestDocumentReadMaxRunesForContextScalesWithProjectionBudget(t *testing.T) {
+	if got := DocumentReadMaxRunesForContext(200_000); got != 40_301 {
+		t.Fatalf("200K context max runes = %d, want 40301", got)
+	}
+	if got := DocumentReadMaxRunesForContext(400_000); got != 81_968 {
+		t.Fatalf("400K context max runes = %d, want 81968", got)
+	}
+}
+
+func TestToolReadDocumentWithContextLineNumbersFitsProjectionBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "numbered-lines.json")
+	// Each source rune is its own line. This maximizes the LNNN: expansion and
+	// verifies that the automatic context-sized page still stays inline.
+	text := strings.Repeat("\u4e2d\n", DocumentReadMaxRunesForContext(400_000)+1)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := ToolReadDocumentWithContext(map[string]interface{}{
+		"file_path":    path,
+		"line_numbers": true,
+	}, 400_000)
+	if !strings.Contains(out, "# truncated: true") || !strings.Contains(out, "# next_offset: ") {
+		t.Fatalf("numbered document page was not bounded: %q", out)
+	}
+	projection, err := ProjectToolResultWithContext("read_document", "", out, 400_000)
+	if err != nil {
+		t.Fatalf("ProjectToolResultWithContext() error = %v", err)
+	}
+	if projection.Spilled || projection.Handle != nil {
+		t.Fatalf("automatic numbered page unexpectedly spilled: %+v", projection)
+	}
+	if projection.Preview != out {
+		t.Fatalf("automatic numbered page was unexpectedly truncated: got %d bytes, want %d", len(projection.Preview), len(out))
+	}
+}
+
 func TestExtractOfficeTextCached_DoesNotRetainLargeResult(t *testing.T) {
 	clearOfficeReadEnvironment(t)
 	t.Setenv("MACLAW_OFFICE_READ_ENGINE", "officeread")
@@ -1543,7 +1601,7 @@ func TestExtractDocxText(t *testing.T) {
 
 func TestExtractOfficeText_UnknownExt(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "note.rtf")
+	path := filepath.Join(dir, "note.odt")
 	if err := os.WriteFile(path, []byte("{\\rtf1}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1551,7 +1609,7 @@ func TestExtractOfficeText_UnknownExt(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unsupported error")
 	}
-	if format != "rtf" && format != "unknown" {
+	if format != "odt" && format != "unknown" {
 		// format may be "rtf" from extension
 		t.Fatalf("format=%q", format)
 	}
@@ -1559,6 +1617,30 @@ func TestExtractOfficeText_UnknownExt(t *testing.T) {
 	out := ToolReadDocument(map[string]interface{}{"file_path": path})
 	if !strings.Contains(out, "craft_tool") {
 		t.Fatalf("expected craft_tool, got: %s", out)
+	}
+}
+
+func TestToolReadDocumentPagesTextBasedDataFormats(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		content  string
+	}{
+		{name: "json", filename: "payload.json", content: `{"name":"MaClaw","items":[1,2,3]}`},
+		{name: "xml", filename: "payload.xml", content: `<root><item>MaClaw</item></root>`},
+		{name: "yaml", filename: "payload.yaml", content: "name: MaClaw\nitems:\n  - one\n"},
+		{name: "log", filename: "service.log", content: "2026-08-15 started\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.filename)
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := ToolReadDocument(map[string]interface{}{"file_path": path})
+			if !strings.Contains(out, "# format: "+tc.name) || !strings.Contains(out, strings.TrimSpace(tc.content)) || !strings.Contains(out, "# truncated: false") {
+				t.Fatalf("ToolReadDocument() = %q", out)
+			}
+		})
 	}
 }
 

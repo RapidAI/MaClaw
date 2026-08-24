@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 func TestDoSimpleLLMRequest_OpenAISSEFallback(t *testing.T) {
@@ -132,6 +133,71 @@ func TestDoSimpleLLMRequest_UsesResponsesWireAPI(t *testing.T) {
 	}
 	if _, ok := gotBody["messages"]; ok {
 		t.Fatalf("request body leaked chat messages: %#v", gotBody)
+	}
+}
+
+func TestDoSimpleLLMRequestContextWithOptionsSendsStrictIntentContract(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wireAPI string
+	}{
+		{name: "chat"},
+		{name: "responses", wireAPI: "responses"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if tc.wireAPI == "responses" {
+					_, _ = w.Write([]byte(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"top\":[{\"skill\":\"live_data\",\"score\":0.9,\"workflow_type\":\"\"}]}"}]}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"top\":[{\"skill\":\"live_data\",\"score\":0.9,\"workflow_type\":\"\"}]"},"finish_reason":"stop"}]}`))
+			}))
+			defer srv.Close()
+
+			cfg := corelib.MaclawLLMConfig{URL: srv.URL + "/v1", Model: "test-model", WireAPI: tc.wireAPI}
+			response, err := DoSimpleLLMRequestContextWithOptions(context.Background(), cfg, []interface{}{map[string]interface{}{"role": "user", "content": "classify"}}, srv.Client(), 2*time.Second, SimpleLLMRequestOptions{
+				ResponseFormat:         intent.TreeResponseFormat(),
+				PreserveResponseFormat: true,
+			})
+			if err != nil || response.Content == "" {
+				t.Fatalf("response=%#v err=%v", response, err)
+			}
+			if tc.wireAPI == "responses" {
+				text, _ := gotBody["text"].(map[string]interface{})
+				format, _ := text["format"].(map[string]interface{})
+				if format["type"] != "json_schema" || format["strict"] != true {
+					t.Fatalf("Responses text.format = %#v, want strict JSON schema", format)
+				}
+				return
+			}
+			format, _ := gotBody["response_format"].(map[string]interface{})
+			if format["type"] != "json_schema" {
+				t.Fatalf("Chat response_format = %#v, want JSON schema", format)
+			}
+		})
+	}
+}
+
+func TestDoSimpleLLMRequestContextWithOptionsRejectsUnsupportedStructuredProtocol(t *testing.T) {
+	called := false
+	client := &http.Client{Transport: agentRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, errors.New("request must not be sent")
+	})}
+	_, err := DoSimpleLLMRequestContextWithOptions(context.Background(), corelib.MaclawLLMConfig{URL: "https://example.invalid", Model: "claude-test", Protocol: "anthropic"}, nil, client, time.Second, SimpleLLMRequestOptions{
+		ResponseFormat:         intent.TreeResponseFormat(),
+		PreserveResponseFormat: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported for Anthropic") {
+		t.Fatalf("error = %v, want explicit structured-output capability failure", err)
+	}
+	if called {
+		t.Fatal("Anthropic request was sent after structured-output capability failure")
 	}
 }
 

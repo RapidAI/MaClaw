@@ -98,6 +98,15 @@ static inline esp_err_t compact_connectivity_adapter_quiesce_cellular_transport(
     return ml307_transport_quiesce(timeout_ms);
 }
 
+static inline esp_err_t compact_connectivity_adapter_prepare_system_sleep(
+    uint32_t timeout_ms) {
+    return ml307_transport_prepare_system_sleep(timeout_ms);
+}
+
+static inline void compact_connectivity_adapter_abort_system_sleep_prepare(void) {
+    ml307_transport_abort_system_sleep_prepare();
+}
+
 static inline esp_err_t compact_connectivity_adapter_stream_body_reader(
     void *context, void *buffer, size_t requested, size_t *read_bytes) {
     if (!context || !buffer || !read_bytes || requested > UINT32_MAX) {
@@ -170,7 +179,7 @@ static inline bool compact_connectivity_adapter_load_transport_selection(
     bool cellular = CONFIG_MACLAW_FANGTANG_DEFAULT_4G;
     bool saved = false;
     if (configuration_service_load_transport_selection(cellular, &cellular,
-                                                        &saved) != ESP_OK) {
+                                                        &saved) != DEVICE_STATUS_OK) {
         return false;
     }
     if (saved) {
@@ -183,7 +192,7 @@ static inline bool compact_connectivity_adapter_load_transport_selection(
                                                               &stock_type);
     if (stock_status == DEVICE_STATUS_OK && (stock_type == 0 || stock_type == 1)) {
         cellular = stock_type == 1;
-        if (configuration_service_set_transport_selection(cellular) != ESP_OK) {
+        if (configuration_service_set_transport_selection(cellular) != DEVICE_STATUS_OK) {
             return false;
         }
     } else if (stock_status != DEVICE_STATUS_OK && stock_status != DEVICE_STATUS_NOT_FOUND) {
@@ -202,7 +211,7 @@ static inline bool compact_connectivity_adapter_apply_startup_transport_toggle(
     *out_cellular = current_cellular;
     if (!toggle_requested) return false;
     const bool selected = !current_cellular;
-    if (configuration_service_set_transport_selection(selected) != ESP_OK) return false;
+    if (configuration_service_set_transport_selection(selected) != DEVICE_STATUS_OK) return false;
     *out_cellular = selected;
     return true;
 }

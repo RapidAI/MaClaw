@@ -32,6 +32,60 @@ export function isCodeFileDirty(file: Pick<CodeFile, 'opType' | 'content' | 'ori
     return file.original !== file.content;
 }
 
+/** Line-level add/remove counts for Codex-style preview badges. */
+export interface CodeFileLineDelta {
+    added: number;
+    removed: number;
+}
+
+/** Split preview text into lines. A trailing newline does not add an empty line. */
+export function splitCodeFileLines(text: string): string[] {
+    if (!text) return [];
+    const normalized = text.replace(/\r\n/g, "\n").replace(/\n$/, "");
+    if (!normalized) return [];
+    return normalized.split("\n");
+}
+
+/**
+ * Bag-of-lines delta for tab / breadcrumb badges.
+ * Reads are always 0/0. Creates (or missing original) count every line as added.
+ */
+export function computeCodeFileLineDelta(
+    file: Pick<CodeFile, "opType" | "content" | "original">,
+): CodeFileLineDelta {
+    if (file.opType === "read") {
+        return { added: 0, removed: 0 };
+    }
+    const next = splitCodeFileLines(file.content || "");
+    if (file.opType === "create" || file.original === undefined) {
+        return { added: next.length, removed: 0 };
+    }
+    const prev = splitCodeFileLines(file.original);
+    const bag = new Map<string, number>();
+    for (const line of prev) {
+        bag.set(line, (bag.get(line) || 0) + 1);
+    }
+    let common = 0;
+    for (const line of next) {
+        const n = bag.get(line) || 0;
+        if (n > 0) {
+            bag.set(line, n - 1);
+            common += 1;
+        }
+    }
+    return { added: next.length - common, removed: prev.length - common };
+}
+
+export function codeFileLineDeltaHasChange(delta: CodeFileLineDelta): boolean {
+    return delta.added > 0 || delta.removed > 0;
+}
+
+/** `+12 -3`, or empty when both sides are zero. */
+export function formatCodeFileLineDelta(delta: CodeFileLineDelta): string {
+    if (!codeFileLineDeltaHasChange(delta)) return "";
+    return `+${delta.added} -${delta.removed}`;
+}
+
 /** UI state for the code preview panel. */
 export interface CodePreviewUIState {
     active: boolean;              // panel is visible
@@ -360,6 +414,59 @@ export function applyActivatePassive(state: CodePreviewUIState): CodePreviewUISt
         ...state,
         active: true,
     };
+}
+
+/** Normalize slashes so trail paths can match preview keys. */
+export function normalizeCodePreviewPath(path: string): string {
+    return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/**
+ * Resolve a trail path (`hello_world.cpp`, `gui/a.go`) to an open preview key.
+ * Exact path / absPath first, then unique suffix, then unique basename.
+ */
+export function resolveCodePreviewFilePath(
+    requested: string,
+    files: Map<string, CodeFile>,
+): string | undefined {
+    const wanted = normalizeCodePreviewPath(requested.trim());
+    if (!wanted || files.size === 0) return undefined;
+    const wantedBase = wanted.split("/").pop() || wanted;
+    const entries = [...files.entries()];
+
+    for (const [filePath, file] of entries) {
+        if (filePath === requested.trim() || normalizeCodePreviewPath(filePath) === wanted) {
+            return filePath;
+        }
+        if (file.absPath && normalizeCodePreviewPath(file.absPath) === wanted) {
+            return filePath;
+        }
+    }
+
+    const suffixHits = entries.filter(([filePath, file]) => {
+        const keys = [normalizeCodePreviewPath(filePath)];
+        if (file.absPath) keys.push(normalizeCodePreviewPath(file.absPath));
+        return keys.some((key) => key.endsWith(`/${wanted}`) || wanted.endsWith(`/${key}`));
+    });
+    if (suffixHits.length === 1) return suffixHits[0][0];
+
+    const baseHits = entries.filter(([filePath, file]) => {
+        const keys = [normalizeCodePreviewPath(filePath)];
+        if (file.absPath) keys.push(normalizeCodePreviewPath(file.absPath));
+        return keys.some((key) => (key.split("/").pop() || "") === wantedBase);
+    });
+    if (baseHits.length === 1) return baseHits[0][0];
+    return undefined;
+}
+
+/** Select a trail file and reopen the preview (explicit user click). */
+export function applyFocusPreviewFile(
+    state: CodePreviewUIState,
+    requested: string,
+): CodePreviewUIState {
+    const resolved = resolveCodePreviewFilePath(requested, state.files);
+    if (!resolved) return state;
+    return applyReopenPanel(applySelectFile(state, resolved));
 }
 
 /**
@@ -752,6 +859,10 @@ export function useCodePreviewState(activeTabProjectPath?: string, previewEnable
         setState(prev => applySelectFile(prev, filePath));
     }, []);
 
+    const focusFile = useCallback((filePath: string) => {
+        setState(prev => applyFocusPreviewFile(prev, filePath));
+    }, []);
+
     const openWorkspaceFile = useCallback((file: CodeFile) => {
         setState(prev => applyOpenWorkspaceFile(prev, file));
     }, []);
@@ -805,6 +916,7 @@ export function useCodePreviewState(activeTabProjectPath?: string, previewEnable
         reopenPanel,
         activatePassive,
         selectFile,
+        focusFile,
         openWorkspaceFile,
         closeFile,
         closeOtherFiles,

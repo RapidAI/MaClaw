@@ -1006,3 +1006,40 @@ func TestUpsertGeneratedInsightAppliesDerivedDefaults(t *testing.T) {
 		t.Fatalf("unexpected generated insight derived metadata: %+v", entry)
 	}
 }
+
+func TestUpsertTaskArtifactReactivatesDormantDurableEntry(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	now := time.Now()
+	if err := store.Save(Entry{
+		Title:      "Dormant task",
+		Content:    "# Dormant task\n\nCreated from task management.",
+		Category:   CategoryTaskArtifact,
+		SourceType: "manual",
+		Tags:       []string{"manual_task", "recent_task", "C:/tasks/dormant", "task_management"},
+		Status:     StatusDormant,
+		CreatedAt:  now.Add(-30 * 24 * time.Hour),
+		UpdatedAt:  now.Add(-30 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.UpsertTaskArtifact(TaskArtifactUpsertOptions{
+		Title:            "Dormant task",
+		Content:          "# Dormant task\n\nCreated from task management.\nRecovered.",
+		Tags:             []string{"manual_task", "recent_task", "C:/tasks/dormant", "task_management"},
+		IdentityTagCount: 3,
+		SourceType:       "manual",
+	})
+	if err != nil || !result.Updated {
+		t.Fatalf("upsert result=%+v err=%v", result, err)
+	}
+	entries := store.List(CategoryTaskArtifact, "")
+	if len(entries) != 1 || entries[0].Status != StatusActive {
+		t.Fatalf("entries = %#v, want one active durable task", entries)
+	}
+}

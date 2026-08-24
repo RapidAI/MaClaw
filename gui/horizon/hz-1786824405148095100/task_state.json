@@ -1,0 +1,15 @@
+{
+  "task_id": "hz-1786824405148095100",
+  "user_goal": "add tests",
+  "status": "idle",
+  "round_index": 0,
+  "max_rounds": 25,
+  "policy": {
+    "owner_id": "u1",
+    "project_root": "C:\\Users\\ma139\\AppData\\Local\\Temp\\TestHandleHorizonIMRouteAdmitAndFollowUp802923823\\001",
+    "horizon_task_id": "hz-1786824405148095100",
+    "round_index": 0
+  },
+  "completed": false,
+  "updated_at": "2026-08-15T20:06:45.1480951Z"
+}

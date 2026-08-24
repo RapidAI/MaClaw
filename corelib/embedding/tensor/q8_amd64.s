@@ -4,7 +4,7 @@
 
 // func dotQ8RowScaledAVX2(a *float32, data *byte, scales *float32, rowOff, nBlocks int) float32
 // Frame: a+0, data+8, scales+16, rowOff+24, nBlocks+32, ret+40 = 44 → pad 48
-TEXT ·dotQ8RowScaledAVX2(SB), NOSPLIT, $0-48
+TEXT ·dotQ8RowScaledAVX2(SB), NOSPLIT, $0-44
 	MOVQ a+0(FP), SI
 	MOVQ data+8(FP), DI
 	MOVQ scales+16(FP), R8

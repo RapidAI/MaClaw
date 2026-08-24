@@ -26,6 +26,11 @@ typedef struct {
 esp_err_t compact_input_service_initialize(void);
 void compact_input_service_read_raw(compact_input_raw_state_t *out_state);
 bool compact_input_service_has_volume_keys(void);
+/* A key-only profile without dedicated volume controls can expose two bounded
+ * release-time hold thresholds for the normalized volume +/- intents. Zero
+ * means that the profile has no alternate gesture. */
+int64_t compact_input_service_local_volume_increase_hold_us(void);
+int64_t compact_input_service_local_volume_decrease_hold_us(void);
 int64_t compact_input_service_activate_debounce_us(void);
 int64_t compact_input_service_volume_debounce_us(void);
 int64_t compact_input_service_long_press_us(void);
@@ -44,9 +49,20 @@ esp_err_t compact_input_service_start_scanner(compact_input_publish_cb_t publish
  * queues.  A timeout intentionally retains the task/semaphore ownership for
  * a later lifecycle pass. */
 esp_err_t compact_input_service_stop_scanner(uint32_t timeout_ms);
+/* Future-MCU-sleep fence for the retained GPIO scanner. PREPARE parks the
+ * current task generation after its last physical read. Once it has closed
+ * admission, including an ACK timeout, only the owning Power transaction's
+ * ABORT may resume that generation; neither operation reinitializes the
+ * board adapter. */
+esp_err_t compact_input_service_prepare_system_sleep(uint32_t timeout_ms);
+void compact_input_service_abort_system_sleep_prepare(void);
 /* Releases only unpublished scanner preparation after failed startup.  It is
  * never a board deinit or a way to reclaim a running scanner. */
 void compact_input_service_discard_unpublished_scanner_state(void);
+/* Compact boards currently expose no command-cancel gesture distinct from
+ * their normal physical-key semantics.  Keep that deliberate no-op below the
+ * selected Input HAL so business policy never needs a board-port branch. */
+void compact_input_service_set_command_cancel_enabled(bool enabled);
 void compact_input_service_run_startup_selector(void);
 bool compact_input_service_consume_startup_selector_result(uint32_t window_ms);
 bool compact_input_service_response_paging_uses_volume_keys(void);

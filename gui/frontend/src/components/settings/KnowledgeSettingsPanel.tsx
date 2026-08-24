@@ -4,7 +4,7 @@ import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKno
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 
 type Props = {
@@ -1327,9 +1327,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [executionContext, setExecutionContext] = useState<{ source?: string; action?: string; dryRun?: boolean } | null>(null);
     const [importJob, setImportJob] = useState<ImportJob | null>(null);
     const [importDialogKey, setImportDialogKey] = useState(0);
-    const [autoRecallEnabled, setAutoRecallEnabled] = useState(true);
-    const [autoRecallMinScore, setAutoRecallMinScore] = useState('');
-    const [autoRecallSaving, setAutoRecallSaving] = useState(false);
     const [operationResult, setOperationResult] = useState<any>(null);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
@@ -1339,6 +1336,10 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [fileForm, setFileForm] = useState({ directory: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '', includeExts: '', excludeGlobs: '', recursive: true, autoLabels: true, dryRun: false, maxFileBytes: 10485760 });
     const [exchangeForm, setExchangeForm] = useState({ redactSensitive: true, importPath: '', dryRun: true, overwrite: false, replaceAll: false });
     const [hubShareForm, setHubShareForm] = useState({ hubURL: '', hubToken: '', title: '', description: '', visibilityScope: 'hub', visibilityUsers: '', ttl: '7d', includeDisabled: false });
+    const [showContributeDialog, setShowContributeDialog] = useState(false);
+    const [contributeForm, setContributeForm] = useState({ libraryID: '', title: '', summary: '' });
+    const [contributeLibraries, setContributeLibraries] = useState<Array<{ id?: string; name?: string }>>([]);
+    const [mySubmissions, setMySubmissions] = useState<any[]>([]);
     const [hubImportForm, setHubImportForm] = useState({ hubURL: '', hubToken: '', knowledgeID: '', shareLink: '', dryRun: true });
     const [syncForm, setSyncForm] = useState({ hubURL: '', hubToken: '', tenantID: '', email: '', hubCenterURL: '', hubID: '', tenantName: '', password: '', passwordConfirm: '', conflictStrategy: '' });
     const [syncStatus, setSyncStatus] = useState<any>(null);
@@ -1489,10 +1490,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         void LoadConfig()
             .then((cfg: any) => {
                 if (cancelled || !cfg) return;
-                // Default on when field is absent (matches AppConfig.IsKnowledgeAutoRecallEnabled).
-                setAutoRecallEnabled(cfg.knowledge_auto_recall_enabled !== false);
-                const minScore = Number(cfg.knowledge_auto_recall_min_score || 0);
-                setAutoRecallMinScore(minScore > 0 ? String(minScore) : '');
                 setHubShareForm(prev => ({
                     ...prev,
                     hubURL: prev.hubURL || cfg.remote_hub_url || '',
@@ -1517,26 +1514,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             .catch(() => {});
         return () => { cancelled = true; };
     }, []);
-
-    const saveAutoRecallSettings = useCallback(async (enabled: boolean, minScoreRaw: string) => {
-        setAutoRecallSaving(true);
-        setError('');
-        try {
-            const parsed = Number(String(minScoreRaw || '').trim());
-            const minScore = Number.isFinite(parsed) && parsed > 0 ? Math.min(10, parsed) : 0;
-            await PatchConfigFields({
-                knowledge_auto_recall_enabled: enabled,
-                knowledge_auto_recall_min_score: minScore,
-            });
-            setAutoRecallEnabled(enabled);
-            setAutoRecallMinScore(minScore > 0 ? String(minScore) : '');
-            notifySuccess(t('Auto-recall settings saved.', '自动召回设置已保存。'));
-        } catch (err: any) {
-            setError(err?.message || String(err));
-        } finally {
-            setAutoRecallSaving(false);
-        }
-    }, [notifySuccess, t]);
 
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
@@ -1885,6 +1862,67 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         });
     };
 
+    const loadContributeLibraries = async () => {
+        try {
+            const items = await DigitalAssetListContributableLibraries('business');
+            setContributeLibraries(items || []);
+        } catch {
+            setContributeLibraries([]);
+        }
+    };
+
+    const loadMySubmissions = async () => {
+        try {
+            const items = await DigitalAssetListMySubmissions();
+            setMySubmissions(items || []);
+        } catch {
+            setMySubmissions([]);
+        }
+    };
+
+    const openContributeDialog = async () => {
+        setError('');
+        setShowContributeDialog(true);
+        await loadContributeLibraries();
+        await loadMySubmissions();
+    };
+
+    const contributeKnowledgeToOrg = async () => {
+        const summary = contributeForm.summary.trim();
+        if (!summary) {
+            setError(t('Write why this experience helps the organization.', '请写明这条经验对组织的价值。'));
+            return;
+        }
+        if (!contributeForm.libraryID.trim()) {
+            setError(t('Select a target enterprise library.', '请选择目标企业数字资产库。'));
+            return;
+        }
+        await runTask('contributeToOrg', async () => {
+            const result = await KnowledgeContributeToOrg({
+                library_id: contributeForm.libraryID.trim(),
+                title: contributeForm.title.trim(),
+                summary,
+                source_ids: selectedExportSourceIDs,
+                redact_sensitive: exchangeForm.redactSensitive,
+            } as any);
+            setShowContributeDialog(false);
+            await loadMySubmissions();
+            return result;
+        }, {
+            successMessage: t('Submitted to the organization. An admin will review it.', '已投稿到组织，等待管理员审批。'),
+        });
+    };
+
+    const withdrawMySubmission = async (id: string) => {
+        await runTask('withdrawSubmission', async () => {
+            const result = await DigitalAssetWithdrawSubmission(id);
+            await loadMySubmissions();
+            return result;
+        }, {
+            successMessage: t('Submission withdrawn.', '已撤回投稿。'),
+        });
+    };
+
     const openHubShareDialog = () => {
         setError('');
         setShowHubShareDialog(true);
@@ -1927,6 +1965,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         if (activeTab !== 'export' || mySharesAttempted || mySharesLoading) return;
         // Auto-load once when export tab is opened (Hub URL/token may still be empty → shows error/empty).
         void loadMyHubShares();
+        void loadMySubmissions();
     }, [activeTab, mySharesAttempted, mySharesLoading, loadMyHubShares]);
 
     const openEditMyHubShare = (share: any) => {
@@ -2671,55 +2710,6 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                         <Stat label={t('Quality', '质量')} value={summary?.qualityAvgScore ?? 0} />
                         <Stat label={t('Actions', '动作')} value={summary?.actions?.length ?? 0} />
                     </div>
-                    <PanelBlock title={t('Chat auto-recall', '对话自动召回')}>
-                        <span className="knowledge-muted-line">
-                            {t(
-                                'When enabled, relevant knowledge is silently injected into the AI system prompt on each user message. Manual knowledge_search tools stay available either way.',
-                                '开启后，每条用户消息会静默检索知识库并注入系统提示。关闭后仅停用自动召回，knowledge_search 等工具仍可用。',
-                            )}
-                        </span>
-                        <div className="knowledge-checkbox-row" style={{ marginTop: 10 }}>
-                            <label className="knowledge-checkbox">
-                                <input
-                                    type="checkbox"
-                                    checked={autoRecallEnabled}
-                                    disabled={autoRecallSaving}
-                                    onChange={e => {
-                                        const next = e.target.checked;
-                                        setAutoRecallEnabled(next);
-                                        void saveAutoRecallSettings(next, autoRecallMinScore);
-                                    }}
-                                />
-                                {t('Enable knowledge auto-recall', '启用知识库自动召回')}
-                            </label>
-                        </div>
-                        <div className="knowledge-compact-grid" style={{ marginTop: 10, maxWidth: 360 }}>
-                            <label className="knowledge-field">
-                                <span className="knowledge-field-label">{t('Min score (optional)', '最低分数（可选）')}</span>
-                                <input
-                                    className="knowledge-input"
-                                    type="number"
-                                    min={0}
-                                    max={10}
-                                    step={0.1}
-                                    placeholder={t('Default 0.3', '默认 0.3')}
-                                    value={autoRecallMinScore}
-                                    disabled={autoRecallSaving || !autoRecallEnabled}
-                                    onChange={e => setAutoRecallMinScore(e.target.value)}
-                                    onBlur={() => {
-                                        if (!autoRecallEnabled) return;
-                                        void saveAutoRecallSettings(true, autoRecallMinScore);
-                                    }}
-                                />
-                            </label>
-                        </div>
-                        <span className="knowledge-field-hint">
-                            {t(
-                                'Higher min score = fewer, stricter injections. Leave empty for the default 0.3 threshold.',
-                                '最低分越高，注入越严格、越少。留空使用默认阈值 0.3。',
-                            )}
-                        </span>
-                    </PanelBlock>
                     <div className="knowledge-two-column">
                         <PanelBlock title={t('Health Signals', '健康信号')}>
                             <KeyValueList values={[...(summary?.gradeEntries || []), ...(summary?.signalEntries || []), ...(summary?.findingEntries || [])]} empty={t('No health signals.', '暂无健康信号。')} />
@@ -2873,6 +2863,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                             ? t('Share Selected to Hub', '分享已选到 Hub')
                                             : t('Share Full to Hub', '分享整库到 Hub')}
                                     </button>
+                                    <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => void openContributeDialog()}>
+                                        {selectedExportSourceIDs.length
+                                            ? t('Submit selected to organization', '投稿已选到组织')
+                                            : t('Submit to organization', '投稿到组织')}
+                                    </button>
                                 </div>
                             </div>
                             {exportResult ? (
@@ -2906,6 +2901,53 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                             {t('Share to Hub', '发布到 Hub')}
                                         </button>
                                     </div>
+                                </div>
+                            ) : null}
+                            {showContributeDialog ? (
+                                <div className="knowledge-share-modal-overlay" role="presentation">
+                                    <section className="knowledge-share-modal" role="dialog" aria-modal="true">
+                                        <div className="knowledge-share-modal__header">
+                                            <div>
+                                                <strong>{t('Submit personal experience to the organization', '把个人经验投稿到组织数字资产')}</strong>
+                                                <span className="knowledge-muted-line">{t('An admin must approve before this becomes an enterprise library.', '管理员审批后才会进入企业库并同步给同事。')}</span>
+                                            </div>
+                                            <button type="button" className="knowledge-modal-close" onClick={() => setShowContributeDialog(false)}>×</button>
+                                        </div>
+                                        <div className="knowledge-share-modal__body">
+                                            <select className="knowledge-input" value={contributeForm.libraryID} onChange={event => setContributeForm({ ...contributeForm, libraryID: event.target.value })}>
+                                                <option value="">{t('Select a business digital-asset library', '选择业务数字资产库')}</option>
+                                                {contributeLibraries.map(lib => (
+                                                    <option key={lib.id} value={lib.id}>{lib.name || lib.id}</option>
+                                                ))}
+                                            </select>
+                                            <input className="knowledge-input" value={contributeForm.title} onChange={event => setContributeForm({ ...contributeForm, title: event.target.value })} placeholder={t('Title (optional)', '标题（可选）')} />
+                                            <textarea className="knowledge-input knowledge-textarea knowledge-textarea--compact" value={contributeForm.summary} onChange={event => setContributeForm({ ...contributeForm, summary: event.target.value })} placeholder={t('Why this helps the organization', '为什么这对组织有用')} />
+                                            <span className="knowledge-muted-line">{selectedExportSourceIDs.length
+                                                ? t(`Submitting ${selectedExportSourceIDs.length} selected source(s).`, `将投稿已选择的 ${selectedExportSourceIDs.length} 个来源。`)
+                                                : t('No source is selected, so the whole eligible personal library will be submitted.', '未选择来源时将投稿整库中符合条件的个人知识。')}</span>
+                                            {error ? <div className="knowledge-alert knowledge-alert--error" role="alert">{error}</div> : null}
+                                        </div>
+                                        <div className="knowledge-share-modal__footer">
+                                            <button type="button" className="knowledge-button knowledge-button--secondary" onClick={() => setShowContributeDialog(false)}>{t('Cancel', '取消')}</button>
+                                            <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={() => void contributeKnowledgeToOrg()}>
+                                                {busy === 'contributeToOrg' ? t('Submitting...', '投稿中...') : t('Submit for review', '提交审批')}
+                                            </button>
+                                        </div>
+                                    </section>
+                                </div>
+                            ) : null}
+                            {mySubmissions.length ? (
+                                <div className="knowledge-share-result" role="status">
+                                    <strong>{t('My contributions', '我的投稿')}</strong>
+                                    {mySubmissions.map(item => (
+                                        <div key={item.id} className="knowledge-muted-line" style={{ marginTop: 8 }}>
+                                            <div><code>{item.title || item.id}</code> · {item.status} · {item.library_id}</div>
+                                            {item.review_note ? <div>{t('Review note', '审批说明')}: {item.review_note}</div> : null}
+                                            {item.status === 'submitted' ? (
+                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => void withdrawMySubmission(item.id)}>{t('Withdraw', '撤回')}</button>
+                                            ) : null}
+                                        </div>
+                                    ))}
                                 </div>
                             ) : null}
                             {showHubShareDialog ? (

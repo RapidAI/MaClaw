@@ -1,0 +1,5 @@
+# Dedicated non-release EchoEar-2ST SAFE_MODE proof artifact.
+# The fault is injected only after the shared local-ready dependency set is
+# established, before any radio, gateway or ordinary interaction work starts.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_SAFE_MODE_TEST_LOCAL_READY_FAILURE=y

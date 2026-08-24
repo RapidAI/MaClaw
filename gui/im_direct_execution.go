@@ -68,10 +68,17 @@ func (h *IMMessageHandler) tryDirectExecutionProfile(msg IMUserMessage, loopCtx 
 }
 
 func (h *IMMessageHandler) tryImmediateCurrentTimeDirect(msg IMUserMessage, providedLoopCtx *LoopContext) (*IMAgentResponse, bool) {
-	if h == nil || !isLocalCurrentTimeQuery(msg.Text) {
+	if h == nil || providedLoopCtx != nil {
 		return nil, false
 	}
-	if providedLoopCtx != nil {
+	// The deterministic-clock shortcut predates capability materialization.
+	// Once a semantic classifier is available, keep this family on the same
+	// governed path as every other managed intent instead of matching wording
+	// and calling current_datetime by name.
+	if h.getUnifiedClassifier() != nil {
+		return nil, false
+	}
+	if !isLocalCurrentTimeQuery(msg.Text) {
 		return nil, false
 	}
 	if _, forced := hardStructuralFullExecutionProfile(msg, false, false); forced {

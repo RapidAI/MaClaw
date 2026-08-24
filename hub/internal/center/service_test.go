@@ -149,6 +149,42 @@ func TestSyncUserRouteReportsMissingCenterRegistration(t *testing.T) {
 	}
 }
 
+func TestSyncTenantAdminRouteUsesDedicatedEndpoint(t *testing.T) {
+	var gotPath string
+	var gotPayload syncUserLinkRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	settings := newFakeSettingsRepo()
+	svc := NewService(cfg, settings)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{Registered: true, HubID: "hub_admin_sync", HubSecret: "secret_admin_sync"})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := svc.SyncTenantAdminRoute(context.Background(), "New@Example.com", "tenant_acme", "Old@Example.com"); err != nil {
+		t.Fatalf("SyncTenantAdminRoute() error = %v", err)
+	}
+	if gotPath != "/api/hubs/hub_admin_sync/tenant-admin-links/sync" {
+		t.Fatalf("sync path = %q", gotPath)
+	}
+	if gotPayload.Email != "new@example.com" || gotPayload.PreviousEmail != "old@example.com" || gotPayload.TenantID != "tenant_acme" || gotPayload.HubSecret != "secret_admin_sync" {
+		t.Fatalf("sync payload = %#v", gotPayload)
+	}
+	if gotPayload.TenantAdminInventoryRevision == "" {
+		t.Fatal("tenant-admin sync must include an inventory revision")
+	}
+}
+
 func TestRegistrationCapabilitiesSeparateActiveTenantAdminsFromUsers(t *testing.T) {
 	svc := NewService(config.Default(), newFakeSettingsRepo())
 	svc.SetStatsProviders(fakeCenterUsers{items: []*store.User{
@@ -185,6 +221,9 @@ func TestRegistrationCapabilitiesSeparateActiveTenantAdminsFromUsers(t *testing.
 	adminCounts, ok := caps["tenant_admin_counts"].(map[string]int)
 	if !ok || adminCounts["tenant_acme"] != 1 {
 		t.Fatalf("tenant admin counts=%#v", caps["tenant_admin_counts"])
+	}
+	if revision, ok := caps["tenant_admin_inventory_revision"].(string); !ok || revision == "" {
+		t.Fatalf("tenant admin inventory revision=%#v", caps["tenant_admin_inventory_revision"])
 	}
 }
 
@@ -714,6 +753,12 @@ func TestSendHeartbeatStoresGenericAuthorizationPayloads(t *testing.T) {
 			"status": "online",
 			"authorizations": {
 				"llm_compute": {
+					"provider_billing": [{
+						"provider_id": "deepseek",
+						"timezone": "Asia/Shanghai",
+						"credit_multiplier": 1,
+						"credit_multiplier_schedule": [{"days":[1,2,3,4,5],"start":"00:30","end":"08:30","multiplier":0.5}]
+					}],
 					"tenants": {
 						"tenant_acme": {
 							"hub_id": "hub_auth_payload",
@@ -735,6 +780,10 @@ func TestSendHeartbeatStoresGenericAuthorizationPayloads(t *testing.T) {
 
 	settings := newFakeSettingsRepo()
 	svc := NewService(cfg, settings)
+	var gotCompute json.RawMessage
+	svc.SetAuthorizationPayloadListener(func(payloads map[string]json.RawMessage) {
+		gotCompute = append(json.RawMessage(nil), payloads["llm_compute"]...)
+	})
 	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
 		Registered: true,
 		HubID:      "hub_auth_payload",
@@ -755,6 +804,9 @@ func TestSendHeartbeatStoresGenericAuthorizationPayloads(t *testing.T) {
 	}
 	if !strings.Contains(string(status.Authorizations["llm_compute"]), "external_payload") {
 		t.Fatalf("llm_compute authorization payload = %s", string(status.Authorizations["llm_compute"]))
+	}
+	if !strings.Contains(string(gotCompute), "deepseek") {
+		t.Fatalf("authorization listener did not receive provider_billing: %s", string(gotCompute))
 	}
 }
 

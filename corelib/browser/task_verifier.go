@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -21,9 +22,15 @@ func NewTaskVerifier(ocr OCRProvider, sessionFn func() (*Session, error)) *TaskV
 
 // Verify checks all criteria and returns a combined result.
 func (v *TaskVerifier) Verify(criteria []CriterionSpec) (*VerifyResult, error) {
+	if v == nil || v.sessionFn == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
 	sess, err := v.sessionFn()
 	if err != nil {
 		return nil, fmt.Errorf("browser session: %w", err)
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("browser session not connected")
 	}
 
 	result := &VerifyResult{Passed: true}
@@ -61,22 +68,33 @@ func (v *TaskVerifier) checkOne(sess *Session, c CriterionSpec) CriterionResult 
 }
 
 func (v *TaskVerifier) checkDOMExists(sess *Session, c CriterionSpec) CriterionResult {
-	err := sess.WaitForSelector(c.Selector, 5)
+	if sess == nil {
+		return CriterionResult{Criterion: c, Passed: false, Error: "browser session not connected"}
+	}
+	sel, _ := json.Marshal(c.Selector)
+	raw, err := sess.Eval(`(function(){` + pierceFindJS + `; return String(countDeepFrames(document, ` + string(sel) + `)); })()`)
 	if err != nil {
-		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("selector %q not found: %v", c.Selector, err)}
+		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("element not found: %v", err)}
+	}
+	if strings.TrimSpace(raw) == "0" || strings.TrimSpace(raw) == "" {
+		return CriterionResult{Criterion: c, Passed: false, Error: "element not found"}
 	}
 	return CriterionResult{Criterion: c, Passed: true, Actual: "exists"}
 }
 
 func (v *TaskVerifier) checkDOMText(sess *Session, c CriterionSpec) CriterionResult {
-	text, err := sess.GetText(c.Selector)
+	if sess == nil {
+		return CriterionResult{Criterion: c, Passed: false, Error: "browser session not connected"}
+	}
+	sel, _ := json.Marshal(c.Selector)
+	raw, err := sess.Eval(`(function(){` + pierceFindJS + `; const el = findInFrames(document, ` + string(sel) + `); return el ? String(el.innerText || el.textContent || '') : ''; })()`)
 	if err != nil {
-		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("get text %q: %v", c.Selector, err)}
+		return CriterionResult{Criterion: c, Passed: false, Error: fmt.Sprintf("get text: %v", err)}
 	}
-	if strings.Contains(text, c.Pattern) {
-		return CriterionResult{Criterion: c, Passed: true, Actual: truncate(text, 200)}
+	if strings.Contains(raw, c.Pattern) {
+		return CriterionResult{Criterion: c, Passed: true, Actual: truncate(raw, 200)}
 	}
-	return CriterionResult{Criterion: c, Passed: false, Actual: truncate(text, 200),
+	return CriterionResult{Criterion: c, Passed: false, Actual: truncate(raw, 200),
 		Error: fmt.Sprintf("text does not contain %q", c.Pattern)}
 }
 
@@ -142,8 +160,11 @@ func (v *TaskVerifier) checkConsoleNoError(sess *Session, c CriterionSpec) Crite
 // WaitForStable waits until the page has no new network activity for 1 second.
 // Uses a simple heuristic: poll document.readyState + check for pending XHR.
 func (v *TaskVerifier) WaitForStable(timeout time.Duration) error {
+	if v == nil || v.sessionFn == nil {
+		return nil
+	}
 	sess, err := v.sessionFn()
-	if err != nil {
+	if err != nil || sess == nil {
 		return err
 	}
 	return sess.WaitForStable(timeout, 300*time.Millisecond)

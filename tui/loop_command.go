@@ -256,7 +256,7 @@ func (c *tuiLoopCycleCallbacks) RouteTurn(userText string) (corelib.MaclawLLMCon
 	}
 	cfg, d, ok := c.parent.app.routeTurn(userText, llm.ClassifyHints{ToolHeavy: true})
 	if ok {
-		c.activeLLM.set(cfg)
+		c.activeLLM.setRoute(cfg, d)
 	}
 	return cfg, d, ok
 }
@@ -338,6 +338,10 @@ func (c *tuiLoopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.parent.app.toolRegistry.ExecuteCtx(ctx, name, args)
 }
 
+func (c *tuiLoopCycleCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return projectTUIToolResult(name, result, c.GetLLMConfig())
+}
+
 func (c *tuiLoopCycleCallbacks) IsToolAllowed(name string) bool {
 	if c == nil || c.parent == nil || c.parent.app == nil {
 		return true
@@ -369,6 +373,19 @@ func (c *tuiLoopCycleCallbacks) OnToolResult(name string) {
 		c.parent.prog.Send(views.ChatStreamMsg{Type: "tool_result", Tool: name})
 	}
 }
+
+func (c *tuiLoopCycleCallbacks) EscalateAfterToolExecution(name string) {
+	_ = name
+	if c != nil && c.parent != nil {
+		escalateTUIActiveLLMAfterTool(c.parent.app, &c.activeLLM)
+	}
+}
+
+func (c *tuiLoopCycleCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	return c != nil && c.activeLLM.consumeSurfaceRefresh()
+}
+
 func (c *tuiLoopCycleCallbacks) ShouldStop() bool { return c.parent.IsCancelled() }
 
 func (c *tuiLoopCycleCallbacks) EarlyStop() (bool, string, string) {

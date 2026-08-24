@@ -869,6 +869,40 @@ func TestEmailHasHubTenantLinkRejectsHubTenantAdminInventory(t *testing.T) {
 	}
 }
 
+func TestEmailHasHubTenantAdministratorLinkRequiresAdministratorInventory(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_cardstore_admin", OwnerEmail: "owner@example.com", Name: "Card Store Admin", BaseURL: "https://hub.example.com", Status: "online", CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	// The shared identity deliberately has both roles. The administrator check
+	// must rely on its administrator inventory entry, not its user route.
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "hul_user_shared", HubID: hub.ID, TenantID: "tenant_acme", Email: "shared@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create ordinary user link: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "hul_hub_admin_" + hub.ID + "_shared", HubID: hub.ID, TenantID: "tenant_acme", Email: "shared@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create tenant administrator link: %v", err)
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: "hul_user_only", HubID: hub.ID, TenantID: "tenant_acme", Email: "user-only@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create ordinary-only user link: %v", err)
+	}
+
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	ok, err := svc.EmailHasHubTenantAdministratorLink(ctx, "SHARED@example.com", hub.ID, "tenant_acme")
+	if err != nil || !ok {
+		t.Fatalf("administrator link should authorize card-store admin operation, ok=%v err=%v", ok, err)
+	}
+	ok, err = svc.EmailHasHubTenantAdministratorLink(ctx, "user-only@example.com", hub.ID, "tenant_acme")
+	if err != nil {
+		t.Fatalf("ordinary user lookup: %v", err)
+	}
+	if ok {
+		t.Fatal("ordinary user link must not authorize card-store admin operation")
+	}
+}
+
 func TestResolveByEmailIgnoresOwnerHubLinksForEntryRouting(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

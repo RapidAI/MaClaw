@@ -5,6 +5,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // Q8Tensor holds a reference to Q8_0 quantized data (typically mmap-backed).
@@ -15,6 +16,7 @@ import (
 // PrepareScales(). When present, dequant skips f16→f32 conversion on the hot path.
 type Q8Tensor struct {
 	Data   []byte    // raw Q8_0 blocks
+	Packed []byte    // optional packed int8 qs, 32 bytes/block, row-major (no f16 hole)
 	Scales []float32 // optional preconverted f32 scales, row-major by block
 	Rows   int       // number of rows (outer dimension)
 	Cols   int       // number of columns (inner dimension, must be multiple of 32)
@@ -54,6 +56,88 @@ func (t *Q8Tensor) PrepareScales() {
 	t.Scales = scales
 }
 
+func (t *Q8Tensor) packedNeed() int {
+	if t == nil || t.Cols < q8BlockSize || t.Rows <= 0 {
+		return 0
+	}
+	return t.Rows * t.Cols
+}
+
+// PackQS copies Q8_0 payloads into a hole-free 32-byte-block layout so Dual3
+// AVX-512 can use aligned VPMOVSXBD instead of 34-byte GGUF blocks.
+func (t *Q8Tensor) PackQS() {
+	need := t.packedNeed()
+	if need == 0 || t.Packed != nil {
+		return
+	}
+	buf := make([]byte, need+64)
+	off := int(uintptr(unsafe.Pointer(&buf[0])) % 64)
+	if off != 0 {
+		buf = buf[64-off:]
+	}
+	t.PackQSFrom(buf)
+}
+
+// PackQSFrom packs into dst (must be at least packedNeed() bytes) and
+// returns the unused tail. Gemma uses this to place every layer's qs in one
+// arena so Dual3 N-split workers share a single TLB-friendly region.
+func (t *Q8Tensor) PackQSFrom(dst []byte) []byte {
+	need := t.packedNeed()
+	if t == nil || t.Packed != nil || need == 0 {
+		return dst
+	}
+	nBlocks := t.Cols / q8BlockSize
+	if len(t.Data) < t.Rows*nBlocks*q8BlockBytes || len(dst) < need {
+		return dst
+	}
+	src := t.Data
+	di := 0
+	si := 0
+	for r := 0; r < t.Rows; r++ {
+		for b := 0; b < nBlocks; b++ {
+			copy(dst[di:di+q8BlockSize], src[si+2:si+2+q8BlockSize])
+			di += q8BlockSize
+			si += q8BlockBytes
+		}
+	}
+	t.Packed = dst[:need]
+	return dst[need:]
+}
+
+// FaultInPacked touches packed qs pages (separate from mmap Data).
+func (t *Q8Tensor) FaultInPacked() {
+	if t == nil {
+		return
+	}
+	p := t.Packed
+	n := len(p)
+	if n == 0 {
+		return
+	}
+	for i := 0; i < n; i += 4096 {
+		_ = p[i]
+	}
+	_ = p[n-1]
+}
+
+// FaultIn touches every mmap page of Q8 payload so the first MatMul after
+// Open does not pay demand paging. PrepareScales only reads the 2-byte scale
+// at the start of each 34-byte block.
+func (t *Q8Tensor) FaultIn() {
+	if t == nil {
+		return
+	}
+	data := t.Data
+	n := len(data)
+	if n == 0 {
+		return
+	}
+	for i := 0; i < n; i += 4096 {
+		_ = data[i]
+	}
+	_ = data[n-1]
+}
+
 const (
 	q8BlockSize  = 32
 	q8BlockBytes = 2 + q8BlockSize // 34 bytes per block
@@ -80,6 +164,9 @@ var matMulMaxParallel int32
 // SetMatMulMaxParallel sets the internal parallelism limit.
 func SetMatMulMaxParallel(n int) { atomic.StoreInt32(&matMulMaxParallel, int32(n)) }
 
+// MatMulMaxParallelForTest returns the process-global cap (0 = default).
+func MatMulMaxParallelForTest() int { return int(atomic.LoadInt32(&matMulMaxParallel)) }
+
 func getMatMulWorkers() int {
 	// Prefer pool size (capped) so dispatch cost stays low.
 	return poolWorkers()
@@ -91,7 +178,14 @@ func getMatMulWorkers() int {
 // Each B row is dequantized ONCE then dotted against all M A rows (N-outer).
 // Parallelizes across N with a work-size floor to avoid oversubscription.
 func MatMulQ8(out, a []float32, b *Q8Tensor, M, N, K int) {
-	MatMulQ8Bias(out, a, b, nil, M, N, K)
+	MatMulQ8N(out, a, b, M, N, K, 0)
+}
+
+// MatMulQ8N is MatMulQ8 with a per-call worker cap.
+// maxWorkers==1 never enqueues the process-wide matmul jobQueue (serial kernels).
+// maxWorkers==0 uses the existing shouldParallel / poolWorkers path.
+func MatMulQ8N(out, a []float32, b *Q8Tensor, M, N, K, maxWorkers int) {
+	MatMulQ8BiasN(out, a, b, nil, M, N, K, maxWorkers)
 }
 
 // argmaxPartials holds per-worker best buffers for MatMulQ8Argmax (pooled).
@@ -127,6 +221,8 @@ func (t *q8ArgmaxTask) runRange(ns, ne int) {
 }
 
 var q8ArgmaxTaskPool = sync.Pool{New: func() any { return new(q8ArgmaxTask) }}
+
+var fusedPadPool = sync.Pool{New: func() any { p := make([]float32, 4*1152); return &p }}
 
 func getArgmaxPartials(nw, M int) *argmaxPartials {
 	p := argmaxPartialPool.Get().(*argmaxPartials)
@@ -884,7 +980,20 @@ func argmaxQ8Row(a []float32, b *Q8Tensor, bias []float32, N, K int) int {
 // K=512) hot in L1 while streaming all B rows. N-outer would reload A for every
 // B row (A is ~200KB for M=100,K=512 — larger than L1).
 func MatMulQ8Bias(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
+	MatMulQ8BiasN(out, a, b, bias, M, N, K, 0)
+}
+
+// MatMulQ8BiasN is MatMulQ8Bias with a per-call worker cap (see MatMulQ8N).
+func MatMulQ8BiasN(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, maxWorkers int) {
 	if M <= 0 || N <= 0 || K <= 0 {
+		return
+	}
+	if maxWorkers == 1 {
+		if M == 1 {
+			matMulQ8Serial_M1(out, a, b, bias, N, K)
+			return
+		}
+		matMulQ8SerialM(out, a, b, bias, M, N, K)
 		return
 	}
 	if M == 1 {
@@ -895,8 +1004,6 @@ func MatMulQ8Bias(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int) {
 		matMulQ8Serial_M1(out, a, b, bias, N, K)
 		return
 	}
-	// Encoder-style: parallelize over N (partition B), M-tile outer inside
-	// each worker so the A panel stays hot for that worker's B slice.
 	if shouldParallel(M, N, K) {
 		matMulQ8ParallelN_MTile(out, a, b, bias, M, N, K)
 		return
@@ -1192,7 +1299,12 @@ func useQ8DequantOnce(M, N, K int, hasScales bool) bool {
 		return false
 	}
 	if hasScales {
-		// K=512/560/768 encoder shapes; not K=2048 FFN down-proj.
+		// Gemma K=768: fused N24 Q8 (AVX-512 dual) beats dequant-once+f32
+		// by skipping the dequant store (profile: 17% dequantRowScaledDual).
+		if K == 768 {
+			return false
+		}
+		// K=512/560 encoder shapes; not K=2048 FFN down-proj.
 		return M >= 8 && K <= 1024
 	}
 	return M >= 32 && K <= 768
@@ -1461,6 +1573,47 @@ func matMulQ8RangeFusedGeneric(out, a []float32, b *Q8Tensor, bias []float32, M,
 			}
 		}
 	}
+	// Pad leftover 1–3 rows after M=8/M=4 tiles, and whole M=1–2 tiles
+	// (Medium last 8-row chunk is M=2). Short GEMM is M=3 at m=0 → DualDot2.
+	if m < M && (m > 0 || M <= 2) && hasScales && !relu && !accum && bias == nil && (nBlocks == 24 || nBlocks == 36) {
+		rows := M - m
+		ap := fusedPadPool.Get().(*[]float32)
+		aPad := *ap
+		need := 4 * K
+		if cap(aPad) < need {
+			aPad = make([]float32, need)
+			*ap = aPad
+		} else {
+			aPad = aPad[:need]
+		}
+		clear(aPad)
+		copy(aPad, a[m*K:M*K])
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			q8DualMultiDot4T(&dDual0, aPad, b, n, n+1, nBlocks, K)
+			for r := 0; r < rows; r++ {
+				out[(m+r)*N+n] = dDual0[r]
+				out[(m+r)*N+n+1] = dDual0[r+4]
+			}
+		}
+		fusedPadPool.Put(ap)
+		return
+	}
+	if hasScales && !relu && !accum && bias == nil && m < M {
+		for n := ns; n+1 < ne; n += 2 {
+			for r := m; r < M; r++ {
+				v0, v1 := DotQ8RowDualScaled(a[r*K:r*K+K], b, n, n+1)
+				out[r*N+n] = v0
+				out[r*N+n+1] = v1
+			}
+		}
+		if n := ns + (ne-ns)/2*2; n < ne {
+			for r := m; r < M; r++ {
+				out[r*N+n] = DotQ8RowScaled(a[r*K:r*K+K], b, n)
+			}
+		}
+		return
+	}
 	for ; m < M; m++ {
 		aRow := a[m*K : m*K+K]
 		n := ns
@@ -1525,6 +1678,10 @@ func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, n
 	var d4 [4]float32
 	var d8 [8]float32
 	hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
+
+	if !relu && !accum && bias == nil && tryGemmaFusedPlain(out, a, b, M, N, K, ns, ne) {
+		return
+	}
 
 	if !useQ8DequantOnce(M, N, K, hasScales) {
 		// Fused path: dual-B q8 multiDot; uses f32 Scales when available (K=2048 FFN).
@@ -2406,6 +2563,44 @@ func storeDot8Accum(out []float32, m, n, N int, d *[8]float32, bn float32) {
 	out[(m+7)*N+n] += d[7] + bn
 }
 
+// gemmaStoreTailCol writes one leftover B column for rows of A (odd N-split).
+func gemmaStoreTailCol(out, a []float32, b *Q8Tensor, rows, N, K, n int) {
+	if n < 0 || rows <= 0 || b == nil {
+		return
+	}
+	for r := 0; r < rows; r++ {
+		out[r*N+n] = DotQ8RowScaled(a[r*K:(r+1)*K], b, n)
+	}
+}
+
+// gemmaStoreM3N4 writes 3 A rows × 4 B cols from quad-3 accums.
+func gemmaStoreM3N4(out []float32, n, stride int, d *[12]float32) {
+	out[n] = d[0]
+	out[n+1] = d[3]
+	out[n+2] = d[6]
+	out[n+3] = d[9]
+	out[stride+n] = d[1]
+	out[stride+n+1] = d[4]
+	out[stride+n+2] = d[7]
+	out[stride+n+3] = d[10]
+	out[2*stride+n] = d[2]
+	out[2*stride+n+1] = d[5]
+	out[2*stride+n+2] = d[8]
+	out[2*stride+n+3] = d[11]
+}
+
+func storeDual3Plain(out []float32, m, n, N int, d *[8]float32) {
+	base := m*N + n
+	out[base] = d[0]
+	out[base+1] = d[4]
+	base += N
+	out[base] = d[1]
+	out[base+1] = d[5]
+	base += N
+	out[base] = d[2]
+	out[base+1] = d[6]
+}
+
 // storeDual4Plain: encoder pure store (no ReLU/accum). Pair-adjacent columns.
 func storeDual4Plain(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32) {
 	if N == 512 {
@@ -2418,6 +2613,22 @@ func storeDual4Plain(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float32
 		out[base+1025] = d[6] + bn1
 		out[base+1536] = d[3] + bn0
 		out[base+1537] = d[7] + bn1
+		return
+	}
+	switch N {
+	case 256, 768, 1152:
+		base := m*N + n
+		out[base] = d[0] + bn0
+		out[base+1] = d[4] + bn1
+		base += N
+		out[base] = d[1] + bn0
+		out[base+1] = d[5] + bn1
+		base += N
+		out[base] = d[2] + bn0
+		out[base+1] = d[6] + bn1
+		base += N
+		out[base] = d[3] + bn0
+		out[base+1] = d[7] + bn1
 		return
 	}
 	base := m * N

@@ -5,6 +5,37 @@ import (
 	"testing"
 )
 
+func TestRMSNorm_Dim256And768MatchesFormula(t *testing.T) {
+	eps := float32(1e-6)
+	for _, n := range []int{256, 768} {
+		x := make([]float32, n)
+		w := make([]float32, n)
+		for i := 0; i < n; i++ {
+			x[i] = float32((i%17)-8) * 0.05
+			w[i] = 1 + float32(i%5)*0.01
+		}
+		got := make([]float32, n)
+		copy(got, x)
+		RMSNorm(got, got, w, eps)
+		var ss float64
+		for i := 0; i < n; i++ {
+			ss += float64(x[i]) * float64(x[i])
+		}
+		scale := 1.0 / math.Sqrt(ss/float64(n)+float64(eps))
+		var maxd float32
+		for i := 0; i < n; i++ {
+			want := float32(float64(x[i]) * float64(w[i]) * scale)
+			d := float32(math.Abs(float64(got[i] - want)))
+			if d > maxd {
+				maxd = d
+			}
+		}
+		if maxd > 2e-4 {
+			t.Fatalf("n=%d RMSNorm vs formula max|Δ|=%g", n, maxd)
+		}
+	}
+}
+
 func TestMatMulWorkersForSmallWideMatrix(t *testing.T) {
 	SetMatMulMaxParallel(12)
 	defer SetMatMulMaxParallel(0)
@@ -164,6 +195,63 @@ func TestSoftmaxWeightedSumStrided_MatchesSoftmaxThenWeightedSum(t *testing.T) {
 	for i := range got {
 		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-5 {
 			t.Fatalf("got[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSoftmaxWeightedSumBatched3_Dim256MatchesSequential(t *testing.T) {
+	// Gemma short Embed: seq=3, headDim=256, one batched nQ=3 tile (not leftover nQ=1).
+	const rows, dim, nQ = 3, 256, 3
+	values := make([]float32, rows*dim)
+	for i := range values {
+		values[i] = float32((i%17)-8) * 0.1
+	}
+	scoresBatched := make([]float32, nQ*rows)
+	scoresSeq := make([]float32, nQ*rows)
+	for t := 0; t < nQ; t++ {
+		for r := 0; r < rows; r++ {
+			v := float32(t-3)*0.2 + float32(r-8)*0.05
+			scoresBatched[t*rows+r] = v
+			scoresSeq[t*rows+r] = v
+		}
+	}
+	got := make([]float32, nQ*dim)
+	want := make([]float32, nQ*dim)
+	SoftmaxWeightedSumBatched(got, scoresBatched, values, nQ, rows, dim, dim, dim, 0, 0)
+	for t := 0; t < nQ; t++ {
+		SoftmaxWeightedSumStrided(want[t*dim:(t+1)*dim], scoresSeq[t*rows:(t+1)*rows], values, rows, dim, dim)
+	}
+	for i := range got {
+		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-4 {
+			t.Fatalf("idx %d: got %v want %v diff %v", i, got[i], want[i], diff)
+		}
+	}
+}
+
+func TestSoftmaxWeightedSumBatched4_Dim256MatchesSequential(t *testing.T) {
+	const rows, dim, nQ = 16, 256, 4
+	values := make([]float32, rows*dim)
+	for i := range values {
+		values[i] = float32((i%17)-8) * 0.1
+	}
+	scoresBatched := make([]float32, nQ*rows)
+	scoresSeq := make([]float32, nQ*rows)
+	for t := 0; t < nQ; t++ {
+		for r := 0; r < rows; r++ {
+			v := float32(t-3)*0.2 + float32(r-8)*0.05
+			scoresBatched[t*rows+r] = v
+			scoresSeq[t*rows+r] = v
+		}
+	}
+	got := make([]float32, nQ*dim)
+	want := make([]float32, nQ*dim)
+	SoftmaxWeightedSumBatched(got, scoresBatched, values, nQ, rows, dim, dim, dim, 0, 0)
+	for t := 0; t < nQ; t++ {
+		SoftmaxWeightedSumStrided(want[t*dim:(t+1)*dim], scoresSeq[t*rows:(t+1)*rows], values, rows, dim, dim)
+	}
+	for i := range got {
+		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-4 {
+			t.Fatalf("idx %d: got %v want %v diff %v", i, got[i], want[i], diff)
 		}
 	}
 }

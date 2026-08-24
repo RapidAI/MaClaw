@@ -1,6 +1,9 @@
 #pragma once
 
-/* Internal implementation boundary for the Device API input lifecycle. */
+/* Internal implementation boundary for the Device API input lifecycle.
+ * A successful physical scanner join permits a fresh queue/publisher
+ * generation; failed joins remain closed until an explicit recovery owner
+ * exists. */
 
 #include "device_api.h"
 

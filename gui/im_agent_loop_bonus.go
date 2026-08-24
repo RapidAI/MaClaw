@@ -157,7 +157,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		}
 		execResult := workflowReject
 		if workflowAllowed {
-			execResult = h.executeBonusRoundTool(tc, toolOnProgress, opts.Phase, opts.HTTPClient, opts.UserID, opts.Context)
+			execResult = h.executeBonusRoundToolWithConfig(tc, toolOnProgress, opts.Phase, opts.HTTPClient, opts.UserID, opts.Context, opts.Config)
 		}
 		toolResult := execResult.Text
 		if workflowAllowed {
@@ -172,14 +172,15 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		if IsSubAgentContext(toolResult) {
 			toolResult = ExtractSubAgentContext(toolResult)
 		}
-		if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) && execResult.Outcome == toolOutcomeSucceeded && execResult.FailureKind == toolFailureNone {
-			h.toolRouter.ActivateSessionToolForSession(opts.UserID, tc.Function.Name)
-			log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
-		}
 		if opts.StreamDone {
 			toolExecElapsed += time.Since(toolExecStartedAt)
 		}
-		truncated := truncateToolResultForToolWithSession(tc.Function.Name, opts.UserID, toolResult)
+		projectionOwnerID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
+		proj, err := agent.ProjectToolResultWithContext(tc.Function.Name, projectionOwnerID, toolResult, opts.Config.EffectiveContextTokens())
+		truncated := proj.Preview
+		if err != nil && truncated == "" {
+			truncated = truncateToolResultForToolWithSession(tc.Function.Name, projectionOwnerID, toolResult)
+		}
 		if opts.RecordToolResult != nil {
 			opts.RecordToolResult(tc.ID, truncated, tc.Function.Name, execResult.Outcome.String())
 		}
@@ -210,6 +211,13 @@ func (h *IMMessageHandler) workflowAllowsBonusRoundToolCall(userID string, ctx *
 }
 
 func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase, httpClient *http.Client, userID string, ctx *LoopContext) toolExecutionResult {
+	return h.executeBonusRoundToolWithConfig(tc, onProgress, phase, httpClient, userID, ctx, h.getMaclawLLMConfig())
+}
+
+// executeBonusRoundToolWithConfig keeps a bonus round bound to the routed
+// configuration that produced it. In particular, an office document read must
+// not silently shrink to the desktop primary model's context window.
+func (h *IMMessageHandler) executeBonusRoundToolWithConfig(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase, httpClient *http.Client, userID string, ctx *LoopContext, cfg corelib.MaclawLLMConfig) toolExecutionResult {
 	policyUserID := h.workflowPolicyOwnerID(userID, ctx)
 	if allowed, result := h.workflowAllowsBonusRoundToolCall(userID, ctx, tc); !allowed {
 		return result
@@ -252,5 +260,5 @@ func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress too
 		execCtx, cancel = ctx.Context()
 		defer cancel()
 	}
-	return h.executeToolDetailedWithRuntimeContext(execCtx, policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), tc.Function.Name, tc.Function.Arguments, "", onProgress)
+	return h.executeToolDetailedWithRuntimeContextAndContextTokens(withTrustedAuditPrincipal(execCtx, userID), policyUserID, loopContextHasExplicitRuntimeOwner(ctx), runtimePlatformFromLoopContext(ctx), cfg.EffectiveContextTokens(), tc.Function.Name, tc.Function.Arguments, "", onProgress)
 }

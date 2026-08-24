@@ -96,34 +96,19 @@ func (h *SkillMarketHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // MachineLogin handles POST /api/v1/auth/machine-login.
-// Issues a SkillMarket session token for a registered Hub machine.
-// The machine proves its identity via viewer_token (issued during Hub enrollment).
-// This enables "Hub registration auto-grants SkillMarket access" flow.
-//
-// Security: The viewer_token is trusted as a proof of
-// Hub enrollment — only legitimate clients receive one during the enroll flow.
-// For additional security in strict environments, switch upload auth mode to "token"
-// and require users to complete full SkillMarket registration.
+// Issues a SkillMarket session token for an enrolled Hub machine. HubCenter
+// asks the registered Hub to authenticate the viewer token and verify that the
+// requested machine belongs to its user. Client-provided IDs are never trusted.
 func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Account     string `json:"account"`
 		UserID      string `json:"user_id"`
 		Email       string `json:"email"`
+		HubID       string `json:"hub_id"`
 		MachineID   string `json:"machine_id"`
 		ViewerToken string `json:"viewer_token"`
 	}
 	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
-		return
-	}
-	account := strings.TrimSpace(req.Account)
-	if account == "" {
-		account = strings.TrimSpace(req.UserID)
-	}
-	if account == "" {
-		account = strings.TrimSpace(req.Email)
-	}
-	if account == "" {
-		smError(w, http.StatusBadRequest, "account is required")
 		return
 	}
 	viewerToken := strings.TrimSpace(req.ViewerToken)
@@ -136,15 +121,40 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 		smError(w, http.StatusBadRequest, "machine_id is required")
 		return
 	}
-	// Minimal viewer_token format validation: must be at least 16 chars
-	// (real tokens from Hub enrollment are 32+ hex chars or JWT-like strings).
-	if len(viewerToken) < 16 {
-		smError(w, http.StatusUnauthorized, "invalid viewer_token")
+	hubID := strings.TrimSpace(req.HubID)
+	if hubID == "" {
+		smError(w, http.StatusBadRequest, "hub_id is required")
 		return
 	}
+	if h.hubVerifier == nil {
+		smError(w, http.StatusServiceUnavailable, "Hub identity verification is unavailable")
+		return
+	}
+	principal, err := h.hubVerifier.AuthenticateViewerMachine(r.Context(), hubID, viewerToken, machineID)
+	if err != nil || principal == nil || strings.TrimSpace(principal.UserID) == "" {
+		smError(w, http.StatusUnauthorized, "viewer authentication failed")
+		return
+	}
+	userID := strings.TrimSpace(principal.UserID)
+	if requestedUserID := strings.TrimSpace(req.UserID); requestedUserID != "" && requestedUserID != userID {
+		smError(w, http.StatusUnauthorized, "user_id does not match authenticated viewer")
+		return
+	}
+	contact := strings.TrimSpace(req.Account)
+	if contact == "" {
+		contact = strings.TrimSpace(req.Email)
+	}
+	if contact == "" {
+		contact = strings.TrimSpace(principal.Email)
+	}
+	if contact == "" {
+		contact = userID
+	}
 
-	// EnsureAccount creates the SkillMarket account if it doesn't exist.
-	user, err := h.userSvc.EnsureAccount(r.Context(), account)
+	// The Hub user ID is the durable market principal. The contact is retained
+	// only for moderation/audit information, so a bound phone and email always
+	// reach the same purchases and submissions.
+	user, err := h.userSvc.EnsureAccountWithID(r.Context(), userID, contact)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
 		return
@@ -154,7 +164,7 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 		_ = h.authSvc.AutoVerify(r.Context(), user.ID)
 	}
 	// Issue session token.
-	sess, err := h.authSvc.CreateSessionForUser(r.Context(), user.ID, account)
+	sess, err := h.authSvc.CreateSessionForUser(r.Context(), user.ID, user.Email)
 	if err != nil {
 		smError(w, http.StatusInternalServerError, "create session: "+err.Error())
 		return

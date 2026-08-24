@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime';
-import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, GetRemoteRegistrationProfile, PatchConfigFields, ProbeRemoteHub, ReadErrorLog, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../wailsjs/go/main/App';
+import { CreateMobileAuthDesktopQRSession, GetEmbedAccelInfo, GetHubUserRanking, GetRemoteRegistrationProfile, PatchConfigFields, ProbeRemoteHub, ReadErrorLog, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../wailsjs/go/main/App';
 import { QRCodeSVG } from 'qrcode.react';
 import { MouseEvent, useCallback, useEffect, useRef, useState } from 'react';
 import remarkGfm from 'remark-gfm';
@@ -398,6 +398,14 @@ export function AboutPanel({
         );
     };
 
+    const [accelInfo, setAccelInfo] = useState<{ backend?: string; device?: string; npu_present?: boolean; reason?: string }>({});
+    useEffect(() => {
+        GetEmbedAccelInfo()
+            .then((info: { backend?: string; device?: string; npu_present?: boolean; reason?: string }) => setAccelInfo(info || {}))
+            .catch(() => setAccelInfo({}));
+    }, []);
+    const showHwAccelBadge = accelInfo.backend === 'amd-npu';
+
     const [showHealthDialog, setShowHealthDialog] = useState(false);
     const [showSystemDoctor, setShowSystemDoctor] = useState(false);
     const [showSecurityEvents, setShowSecurityEvents] = useState(false);
@@ -549,7 +557,14 @@ export function AboutPanel({
                         <img src={currentIcon} alt="Logo" className="about-hero-card__icon" />
                     </div>
                     <div className="about-hero-card__body">
-                        <h2 className="about-hero-card__title">{renderProductName()}</h2>
+                        <h2 className="about-hero-card__title">
+                            {renderProductName()}
+                            {showHwAccelBadge ? (
+                                <span className="about-hw-accel-badge" title={accelInfo.device || t("aboutHwAccelTooltip")}>
+                                    {t("aboutHwAccelBadge")}
+                                </span>
+                            ) : null}
+                        </h2>
                         <p className="about-hero-card__slogan">{slogan}</p>
                         <div className="about-version-row">
                             <span className="about-version-badge">{t("version")} {appVersion}</span>

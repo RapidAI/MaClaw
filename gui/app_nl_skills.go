@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -46,6 +47,7 @@ type NLSkillDefinition struct {
 	CreatedAt           time.Time                   `json:"created_at"`
 	Source              string                      `json:"source"`
 	SourceProject       string                      `json:"source_project"`
+	ExperienceDomain    string                      `json:"experience_domain,omitempty"` // "coding" | "general"; empty = universal
 	ExecutionClass      string                      `json:"execution_class,omitempty"`
 	HubSkillID          string                      `json:"hub_skill_id,omitempty"`
 	HubVersion          string                      `json:"hub_version,omitempty"`
@@ -356,6 +358,14 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 			}
 			if strings.TrimSpace(configSkill.SkillID) == "" && strings.TrimSpace(fs.SkillID) != "" {
 				configSkill.SkillID = fs.SkillID
+			}
+			// The experience domain is a definition field owned by skill.yaml,
+			// while a learned skill's config entry is only an identity/stats
+			// overlay that never carries it. Without propagating the disk value
+			// every self-learned skill would load as universal and be
+			// advertised in both experience pools.
+			if strings.TrimSpace(fs.ExperienceDomain) != "" {
+				configSkill.ExperienceDomain = fs.ExperienceDomain
 			}
 			// Disk-derived learned/crafted classification must win over weak
 			// config overlays (empty/file/manual). External marketplace sources
@@ -1774,6 +1784,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Status:              s.Status,
 			Source:              s.Source,
 			SourceProject:       s.SourceProject,
+			ExperienceDomain:    corelib.NormalizeSkillExperienceDomain(s.ExperienceDomain),
 			ExecutionClass:      classifySkillExecutionClass(s),
 			HubSkillID:          s.HubSkillID,
 			HubVersion:          s.HubVersion,
@@ -2338,12 +2349,28 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 		return output, nil
 	}
 
+	e.recordSkillExecution(func(s corelib.NLSkillEntry) bool {
+		return s.Name == target.Name || s.MatchesName(name)
+	}, output, execErr)
+
+	if execErr != nil {
+		return output, execErr
+	}
+	return output, nil
+}
+
+// recordSkillExecution books usage statistics against the entry the caller
+// identifies. The caller supplies the predicate because how an entry was
+// selected decides what may be credited: a display-name run tolerates the
+// alias match it already used to find the skill, while a stable-identity run
+// must not credit a concurrent replacement that merely kept the name.
+func (e *SkillExecutor) recordSkillExecution(matches func(corelib.NLSkillEntry) bool, output string, execErr error) {
 	// Update usage statistics under skill-list mutate lock (not e.mu / configMu inversion).
 	e.skillListMutateMu.Lock()
 	skills := e.loadSkills()
 	shouldEmitUsageEvent := false
 	for i, s := range skills {
-		if s.Name == target.Name || s.MatchesName(name) {
+		if matches(s) {
 			skills[i].UsageCount++
 			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
 			if execErr == nil {
@@ -2357,7 +2384,7 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 			shouldEmitUsageEvent = true
 
 			// Auto-rate hub skills after execution.
-			if normalizeSkillEntrySource(s.Source) == skillEntrySourceHub && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
+			if normalizeSkillEntrySource(s.Source) == skillEntrySourceHub && s.HubSkillID != "" && e.app != nil && e.app.capabilityGapDetector != nil {
 				go e.app.capabilityGapDetector.autoRate(
 					context.Background(), s.HubSkillID, output, execErr,
 				)
@@ -2371,11 +2398,185 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 	if shouldEmitUsageEvent && e.app != nil {
 		e.app.emitEvent(EventSkillUsageUpdated)
 	}
+}
 
+// ExecuteInstalledWithArgs runs exactly the Skill the installer just wrote.
+//
+// The install paths used to hand the freshly imported display name back to
+// Execute/ExecuteWithArgs, which resolve through MatchesName. That helper also
+// matches HubSkillID, DirName and the SkillDir basename, and the lookup takes
+// the first hit in list order without reporting ambiguity, while Register only
+// refuses an exact Name collision. A pre-existing entry carrying the new
+// skill's name under one of those other keys therefore wins the lookup, so a
+// scanned and audited package could install while a different one runs.
+//
+// SkillRunner.resolveLoadedSkillForRun already resolves stable identity first
+// and refuses ambiguous hits; this brings the synchronous executor's install
+// path to the same discipline. The installer holds the entry it registered, so
+// there is nothing here that needs a name lookup at all.
+func (e *SkillExecutor) ExecuteInstalledWithArgs(installed corelib.NLSkillEntry, runArgs map[string]interface{}) (string, error) {
+	if e == nil {
+		return "", fmt.Errorf("skill executor not initialized")
+	}
+	target, err := e.resolveInstalledSkillEntry(installed)
+	if err != nil {
+		return "", err
+	}
+	stableID := agentservice.DynamicSkillStableID(*target)
+	result := e.executeSkillEntryDetailed(target, target.Name, runArgs)
+	output, execErr := result.Output, result.Err
+	e.recordSkillExecution(func(s corelib.NLSkillEntry) bool {
+		return agentservice.DynamicSkillStableID(s) == stableID
+	}, output, execErr)
 	if execErr != nil {
 		return output, execErr
 	}
 	return output, nil
+}
+
+// resolveInstalledSkillEntry is resolveRegisteredInstalledEntry plus the
+// active-status requirement that the display-name lookup applied, so the
+// synchronous executor keeps reporting a disabled skill as not found.
+func (e *SkillExecutor) resolveInstalledSkillEntry(installed corelib.NLSkillEntry) (*corelib.NLSkillEntry, error) {
+	target, err := e.resolveRegisteredInstalledEntry(installed)
+	if err != nil {
+		return nil, err
+	}
+	if normalizeSkillEntryStatus(target.Status) != skillEntryStatusActive {
+		return nil, fmt.Errorf("installed skill %q is not active", target.Name)
+	}
+	return target, nil
+}
+
+// resolveRegisteredInstalledEntry finds the registered entry for a
+// just-installed package by its immutable identity and fails closed on
+// anything it cannot prove is that same package.
+//
+// It deliberately does not filter by status. SkillRunner resolves regardless
+// of status so it can tell a caller that a skill is disabled or still needs
+// setup, and that diagnostic is worth more than a uniform rejection here.
+func (e *SkillExecutor) resolveRegisteredInstalledEntry(installed corelib.NLSkillEntry) (*corelib.NLSkillEntry, error) {
+	stableID := strings.TrimSpace(agentservice.DynamicSkillStableID(installed))
+	if stableID == "" {
+		return nil, fmt.Errorf("installed skill has no stable identity")
+	}
+	digest := agentservice.DynamicSkillContentDigest(installed)
+
+	var target *corelib.NLSkillEntry
+	for _, s := range e.loadSkills() {
+		if agentservice.DynamicSkillStableID(s) != stableID {
+			continue
+		}
+		// Two runtime entries for one package identity is an ambiguous install
+		// observation, not a licence to run the first one.
+		if target != nil {
+			return nil, fmt.Errorf("installed skill %q resolves to more than one registered entry", installed.Name)
+		}
+		entryCopy := s
+		target = &entryCopy
+	}
+	if target == nil {
+		return nil, fmt.Errorf("installed skill %q is not registered", installed.Name)
+	}
+	// Register normalizes Status/Source/CreatedAt/Triggers, none of which the
+	// content digest covers, so a mismatch here means the definition itself
+	// changed between registration and execution.
+	if agentservice.DynamicSkillContentDigest(*target) != digest {
+		return nil, fmt.Errorf("installed skill %q changed between registration and execution", target.Name)
+	}
+	return target, nil
+}
+
+// executeBoundSkill executes precisely the Skill instance admitted to the
+// semantic catalog. Unlike ExecuteWithArgs, it deliberately does not accept
+// aliases or resolve a display name a second time: a model-visible adapter is
+// authorized for one StableID + Name + Version + ContentDigest tuple only.
+//
+// arguments are business parameters already validated by the semantic
+// invocation boundary. This method owns the runner envelope, so a dynamic
+// provider cannot smuggle SkillRunner control fields alongside its arguments.
+func (e *SkillExecutor) executeBoundSkill(stableID, name, version, contentDigest string, arguments map[string]interface{}) (string, error) {
+	if e == nil {
+		return "", fmt.Errorf("skill_binding_stale")
+	}
+	stableID = strings.TrimSpace(stableID)
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	contentDigest = strings.TrimSpace(contentDigest)
+	if stableID == "" || name == "" || contentDigest == "" {
+		return "", fmt.Errorf("skill_binding_stale")
+	}
+
+	var target *corelib.NLSkillEntry
+	for _, entry := range e.loadSkills() {
+		if agentservice.DynamicSkillStableID(entry) != stableID {
+			continue
+		}
+		// Stable IDs are immutable package identities. More than one runtime
+		// entry for a bound identity is an ambiguous lifecycle observation, not
+		// a license to select the first matching name or alias.
+		if target != nil {
+			return "", fmt.Errorf("skill_binding_stale")
+		}
+		entryCopy := entry
+		target = &entryCopy
+	}
+	if target == nil || strings.TrimSpace(target.Name) != name ||
+		strings.TrimSpace(target.Version) != version ||
+		agentservice.DynamicSkillContentDigest(*target) != contentDigest ||
+		!semanticSkillIsRunnable(*target) {
+		return "", fmt.Errorf("skill_binding_stale")
+	}
+
+	runArgs := map[string]interface{}{"args": cloneSemanticSkillArguments(arguments)}
+	execResult := e.executeSkillStepsDetailed(target, runArgs)
+	output, execErr := execResult.Output, execResult.Err
+
+	// Account only against the exact entry we executed. A concurrent
+	// replacement must never receive the previous binding's usage or error
+	// statistics merely because it retained a name/alias.
+	e.skillListMutateMu.Lock()
+	skills := e.loadSkills()
+	shouldEmitUsageEvent := false
+	for i, entry := range skills {
+		if agentservice.DynamicSkillStableID(entry) != stableID ||
+			strings.TrimSpace(entry.Name) != name ||
+			strings.TrimSpace(entry.Version) != version ||
+			agentservice.DynamicSkillContentDigest(entry) != contentDigest {
+			continue
+		}
+		skills[i].UsageCount++
+		skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
+		if execErr == nil {
+			skills[i].SuccessCount++
+			skills[i].LastError = ""
+		} else {
+			skills[i].FailureCount++
+			skills[i].LastError = formatExecErrorForStorage(execErr)
+		}
+		_ = e.saveSkills(skills)
+		shouldEmitUsageEvent = true
+		if normalizeSkillEntrySource(entry.Source) == skillEntrySourceHub && entry.HubSkillID != "" && e.app != nil && e.app.capabilityGapDetector != nil {
+			go e.app.capabilityGapDetector.autoRate(context.Background(), entry.HubSkillID, output, execErr)
+		}
+		break
+	}
+	e.skillListMutateMu.Unlock()
+	if shouldEmitUsageEvent && e.app != nil {
+		e.app.emitEvent(EventSkillUsageUpdated)
+	}
+	return output, execErr
+}
+
+func cloneSemanticSkillArguments(arguments map[string]interface{}) map[string]interface{} {
+	if len(arguments) == 0 {
+		return map[string]interface{}{}
+	}
+	cloned := make(map[string]interface{}, len(arguments))
+	for key, value := range arguments {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 type namedSkillExecutionResult struct {
@@ -2384,18 +2585,53 @@ type namedSkillExecutionResult struct {
 }
 
 func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[string]interface{}) namedSkillExecutionResult {
-	var target *corelib.NLSkillEntry
-	for _, s := range e.loadSkills() {
-		if s.MatchesName(name) && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
-			cp := s
-			target = &cp
-			break
+	target, err := e.resolveActiveSkillByName(name)
+	if err != nil {
+		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: err}}
+	}
+	return e.executeSkillEntryDetailed(target, name, runArgs)
+}
+
+// resolveActiveSkillByName resolves a display name or stable identity to a
+// single active skill.
+//
+// It shares resolveLoadedSkillForRun with SkillRunner rather than taking the
+// first MatchesName hit in list order. That buys two properties the old scan
+// did not have: a stable identity (SkillID / HubSkillID / Publisher:Name)
+// outranks a loose display-name or directory match, and several matches are
+// reported as ambiguous instead of silently resolving to whichever entry the
+// skill list happened to hold first. Pipeline sub-skill steps and MaClaw App
+// workflows arrive here with a name written into a definition, so "whichever
+// came first" was a package substitution waiting for an alias collision.
+//
+// Only active entries are considered, which is what the previous lookup did:
+// a disabled entry must not shadow a runnable one at this boundary.
+func (e *SkillExecutor) resolveActiveSkillByName(name string) (*corelib.NLSkillEntry, error) {
+	loaded := e.loadSkills()
+	active := make([]corelib.NLSkillEntry, 0, len(loaded))
+	for _, s := range loaded {
+		if normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
+			active = append(active, s)
 		}
 	}
-
-	if target == nil {
-		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q not found or disabled", name)}}
+	target, err := resolveLoadedSkillForRun(name, active)
+	if err != nil {
+		return nil, err
 	}
+	if target == nil {
+		return nil, fmt.Errorf("skill %q not found or disabled", name)
+	}
+	return target, nil
+}
+
+// executeSkillEntryDetailed runs an already-resolved entry. The guards live
+// here rather than in the lookup so they apply however the caller found the
+// entry, including the stable-identity lookup used after installation.
+//
+// rejectedAs is the identifier to name in a rejection message; callers that
+// resolved by display name pass the query, so the message still quotes what
+// the caller asked for.
+func (e *SkillExecutor) executeSkillEntryDetailed(target *corelib.NLSkillEntry, rejectedAs string, runArgs map[string]interface{}) namedSkillExecutionResult {
 	// Agent-guided project workflows are instructions for an interactive AI
 	// assistant, never a generic executable skill. This protects all callers
 	// of ExecuteWithArgs (including pipeline sub-skill execution) in addition
@@ -2404,7 +2640,7 @@ func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[stri
 		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q is an agent-guided workflow, not an executable skill; use Start with AI Agent", target.Name)}, Entry: target}
 	}
 	if isShellBrowserAutomationSkillEntry(*target) {
-		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: browserAutomationSkillRejectedError(name)}, Entry: target}
+		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: browserAutomationSkillRejectedError(rejectedAs)}, Entry: target}
 	}
 
 	execResult := e.executeSkillStepsDetailed(target, runArgs)
@@ -5757,6 +5993,12 @@ func writePackageViewSkillYAML(dir string, entry *corelib.NLSkillEntry) error {
 		return fmt.Errorf("skill package directory is empty")
 	}
 	skillYAML := buildSkillYAMLFileFromPackageEntry(entry)
+	// Every caller here builds an outbound package (market zip, expert archive,
+	// hub upload). The experience domain records which local pool a skill was
+	// distilled from, which says nothing to a recipient who installs it
+	// deliberately — and shipping it would hide the skill from half of their
+	// agents. Cleared on the generated file only, never on the caller's entry.
+	skillYAML.ExperienceDomain = ""
 	yamlData, err := skill.FormatSkillYAMLFile(skillYAML)
 	if err != nil {
 		return fmt.Errorf("generate skill.yaml failed: %w", err)
@@ -5774,6 +6016,7 @@ func buildSkillYAMLFileFromPackageEntry(entry *corelib.NLSkillEntry) *skill.Skil
 		Description:             entry.Description,
 		Triggers:                append([]string(nil), entry.Triggers...),
 		Status:                  entry.Status,
+		ExperienceDomain:        corelib.NormalizeSkillExperienceDomain(entry.ExperienceDomain),
 		Platforms:               append([]string(nil), entry.Platforms...),
 		RequiresGUI:             entry.RequiresGUI,
 		ProducesArtifact:        &producesArtifact,

@@ -133,6 +133,19 @@ func TestPreserveManagedAuthSecretsKeepsOAuthKey(t *testing.T) {
 	}
 }
 
+func TestOverlayManagedAuthFromListReplacesStaleOAuthKey(t *testing.T) {
+	got := overlayManagedAuthFromList(
+		corelib.MaclawLLMProvider{Name: "xAI-Grok", AuthType: "oauth", Key: "expired-token", TokenExpiresAt: 1},
+		[]corelib.MaclawLLMProvider{{
+			Name: "xAI-Grok", AuthType: "oauth", Key: "refreshed-token",
+			OAuthAccessToken: "refreshed-raw", RefreshToken: "refresh", TokenExpiresAt: 99,
+		}},
+	)
+	if got.Key != "refreshed-token" || got.OAuthAccessToken != "refreshed-raw" || got.RefreshToken != "refresh" || got.TokenExpiresAt != 99 {
+		t.Fatalf("overlayManagedAuthFromList() = %#v, want refreshed secrets", got)
+	}
+}
+
 func TestUrlsMatchForModelFetch(t *testing.T) {
 	if !urlsMatchForModelFetch("https://api.githubcopilot.com", "https://api.githubcopilot.com/") {
 		t.Fatal("expected trailing slash match")
@@ -317,6 +330,67 @@ func TestGetMaclawLLMProvidersHydratesOAuthKeyFromCredentialStore(t *testing.T) 
 	}
 	if got != "copilot-short-lived" {
 		t.Fatalf("GitHub Copilot Key = %q, want copilot-short-lived from credential store", got)
+	}
+}
+
+func TestCompleteStoredOAuthCredentialFillsMissingRefreshToken(t *testing.T) {
+	got := completeStoredOAuthCredential(&oauth.StoredCredential{
+		Type:        "oauth",
+		AccessToken: "expired-token",
+		ExpiresAt:   1,
+	}, corelib.MaclawLLMProvider{
+		Key: "config-key", RefreshToken: "config-refresh", OAuthAccessToken: "config-raw", TokenExpiresAt: 99,
+	})
+	if got == nil || got.AccessToken != "expired-token" || got.RefreshToken != "config-refresh" || got.RawAccessToken != "config-raw" {
+		t.Fatalf("completeStoredOAuthCredential() = %#v, want store access token plus config refresh", got)
+	}
+	if got.ExpiresAt != 1 {
+		t.Fatalf("ExpiresAt = %d, want store expiry kept", got.ExpiresAt)
+	}
+}
+
+func TestCompleteStoredOAuthCredentialBootstrapsFromRefreshOnly(t *testing.T) {
+	got := completeStoredOAuthCredential(nil, corelib.MaclawLLMProvider{RefreshToken: "config-refresh", TokenExpiresAt: 42})
+	if got == nil || got.RefreshToken != "config-refresh" || got.Type != "oauth" {
+		t.Fatalf("completeStoredOAuthCredential() = %#v, want bootstrap from refresh token", got)
+	}
+	if got.ExpiresAt != 42 {
+		t.Fatalf("ExpiresAt = %d, want provider expiry when creating a store row", got.ExpiresAt)
+	}
+}
+
+func TestCompleteStoredOAuthCredentialKeepsUnknownStoreExpiry(t *testing.T) {
+	got := completeStoredOAuthCredential(&oauth.StoredCredential{
+		Type: "oauth", AccessToken: "store-token",
+	}, corelib.MaclawLLMProvider{TokenExpiresAt: 1, RefreshToken: ""})
+	if got == nil || got.ExpiresAt != 0 {
+		t.Fatalf("ExpiresAt = %d, want 0 so an existing store row is not treated as expired", got.ExpiresAt)
+	}
+	if got.IsExpired() {
+		t.Fatal("completed store credential with unknown expiry should not be expired")
+	}
+}
+
+func TestApplyStoredOAuthCredentialMirrorsConfigSyncMapping(t *testing.T) {
+	store := oauth.NewFileCredentialStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err := store.Modify("github-copilot", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "gh-long-lived",
+			RawAccessToken: "copilot-short-lived",
+			RefreshToken:   "refresh-token",
+			ExpiresAt:      123,
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{credentialStore: store}
+	got := app.applyStoredOAuthCredential(corelib.MaclawLLMProvider{
+		Name: "GitHub Copilot", AuthType: "oauth", Key: "stale", OAuthAccessToken: "stale-raw",
+	})
+	if got.Key != "gh-long-lived" || got.OAuthAccessToken != "copilot-short-lived" || got.RefreshToken != "refresh-token" || got.TokenExpiresAt != 123 {
+		t.Fatalf("applyStoredOAuthCredential() = %#v, want config-sync field mapping", got)
 	}
 }
 
@@ -530,6 +604,69 @@ func TestSaveMaclawLLMProfilesPreservesIndependentCodingModel(t *testing.T) {
 	}
 	if got := app.GetCodingLLMConfig().Model; got != "coding-new" {
 		t.Fatalf("coding model = %q, want coding-new", got)
+	}
+}
+
+func TestCaptionLLMProfileOptionalAndResolves(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "assistant", Name: "Assistant", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "text-model", ConnectionTestPassed: true},
+			{ID: "vision", Name: "Vision", URL: "https://vision.example.test/v1", Key: "vision-key", Model: "caption-model", SupportsVision: true, VisionModels: []string{"caption-model"}, ConnectionTestPassed: true},
+		},
+		MaclawLLMCurrentProvider: "Assistant",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "text-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if got := app.GetCaptionLLMConfig(); got.Model != "" || got.URL != "" {
+		t.Fatalf("unset caption should be empty, got %#v", got)
+	}
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("panel: %v", err)
+	}
+	if state.Caption.Configured {
+		t.Fatalf("unset caption summary should not be configured: %#v", state.Caption)
+	}
+
+	updated := state.Profiles
+	updated.Caption = corelib.MaclawLLMProfile{ProviderID: "vision", Model: "caption-model"}
+	if err := app.SaveMaclawLLMProfiles(updated, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles caption: %v", err)
+	}
+	got := app.GetCaptionLLMConfig()
+	if got.ProviderName != "Vision" || got.Model != "caption-model" || got.Profile != maclawLLMProfileCaption {
+		t.Fatalf("caption config = %#v", got)
+	}
+	if !got.SupportsVision {
+		t.Fatal("caption model should report vision support")
+	}
+	state, err = app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("panel after save: %v", err)
+	}
+	if !state.Caption.Configured || state.Caption.Model != "caption-model" {
+		t.Fatalf("caption summary = %#v", state.Caption)
+	}
+	foundVisionList := false
+	for _, provider := range state.Providers {
+		if provider.ID == "vision" {
+			foundVisionList = len(provider.VisionModels) == 1 && provider.VisionModels[0] == "caption-model"
+			break
+		}
+	}
+	if !foundVisionList {
+		t.Fatalf("assignment providers should expose caption vision_models: %#v", state.Providers)
 	}
 }
 
@@ -760,6 +897,112 @@ func TestFetchMaclawLLMProfileModelsResolvesProviderByStableID(t *testing.T) {
 	}
 }
 
+func TestFetchMaclawLLMProfileModelsRefreshesOpenCodeCatalog(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"big-pickle"},{"id":"hy3-free"},{"id":"gpt-5.5"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				ID:           "oc",
+				Name:         "Zen Import",
+				URL:          srv.URL + "/zen/v1",
+				Key:          "zen-key",
+				Model:        "big-pickle",
+				ImportSource: configfile.ExternalAgentSourceOpenCode,
+				AgentType:    configfile.ExternalAgentTypeOpenCode,
+				Models:       []string{"big-pickle"},
+			},
+		},
+		MaclawLLMCurrentProvider: "Zen Import",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	items, err := app.FetchMaclawLLMProfileModels("oc")
+	if err != nil {
+		t.Fatalf("FetchMaclawLLMProfileModels: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("live catalog hits = %d, want 1 (must not use stale Models)", hits)
+	}
+	if len(items) < 2 {
+		t.Fatalf("items = %+v, want live catalog not stale [big-pickle]", items)
+	}
+	var sawHy3, sawPaid bool
+	for _, item := range items {
+		if item.ID == "hy3-free" {
+			sawHy3 = true
+		}
+		if item.ID == "gpt-5.5" {
+			sawPaid = true
+		}
+	}
+	if !sawHy3 {
+		t.Fatalf("items = %+v, missing newly listed hy3-free", items)
+	}
+	if !sawPaid {
+		t.Fatalf("items = %+v, missing paid gpt-5.5 from keyed catalog", items)
+	}
+}
+
+func TestFetchProviderModelsKeepsKeyedOpenCodePaidCatalog(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer zen-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"big-pickle"},{"id":"hy3-free"},{"id":"gpt-5.5"}]}`))
+	}))
+	defer srv.Close()
+
+	orig := http.DefaultTransport
+	setFetchProviderModelsHTTPClientForTest(&http.Client{
+		Timeout: 15 * time.Second,
+		Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Hostname() != "opencode.ai" {
+				return orig.RoundTrip(req)
+			}
+			proxy, err := http.NewRequestWithContext(req.Context(), req.Method, srv.URL+req.URL.RequestURI(), req.Body)
+			if err != nil {
+				return nil, err
+			}
+			proxy.Header = req.Header.Clone()
+			return orig.RoundTrip(proxy)
+		}),
+	})
+	t.Cleanup(func() { setFetchProviderModelsHTTPClientForTest(nil) })
+
+	app := &App{}
+	items, err := app.FetchProviderModels(configfile.OpenCodeZenBaseURL, "zen-key", "openai", configfile.ExternalAgentTypeOpenCode)
+	if err != nil {
+		t.Fatalf("FetchProviderModels: %v", err)
+	}
+	var sawPaid, sawFree bool
+	for _, item := range items {
+		if item.ID == "gpt-5.5" {
+			sawPaid = true
+		}
+		if item.ID == "hy3-free" {
+			sawFree = true
+		}
+	}
+	if !sawPaid || !sawFree {
+		t.Fatalf("keyed Zen catalog = %+v, want gpt-5.5 and hy3-free", items)
+	}
+}
+
 func TestLegacyModelWritesAreRejectedForProfileManagedConfig(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -975,6 +1218,383 @@ func TestProfilePanelStateListsOnlyConnectionTestedProviders(t *testing.T) {
 	}
 }
 
+func TestProfilePanelStateListsCurrentUntestedProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{ID: "grok", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.5", AuthType: "oauth", WireAPI: "responses"},
+		},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "passed", Model: "passed-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if len(state.Providers) != 2 {
+		t.Fatalf("assignment providers = %#v, want tested provider and current Grok", state.Providers)
+	}
+	names := map[string]bool{}
+	for _, provider := range state.Providers {
+		names[provider.Name] = true
+	}
+	if !names["Passed provider"] || !names["xAI-Grok"] {
+		t.Fatalf("assignment providers = %#v, want Passed provider and xAI-Grok", state.Providers)
+	}
+
+	profiles := state.Profiles
+	profiles.Assistant = corelib.MaclawLLMProfile{ProviderID: "grok", Model: "grok-4.5"}
+	if err := app.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles current Grok: %v", err)
+	}
+}
+
+func TestProfilePanelStateListsAssignedUntestedProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{ID: "grok", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.5", AuthType: "oauth", WireAPI: "responses"},
+		},
+		MaclawLLMCurrentProvider: "Passed provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "grok", Model: "grok-4.5"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	names := map[string]bool{}
+	for _, provider := range state.Providers {
+		names[provider.Name] = true
+	}
+	if !names["Passed provider"] || !names["xAI-Grok"] {
+		t.Fatalf("assignment providers = %#v, want assigned Grok kept in the picker", state.Providers)
+	}
+}
+
+func TestProfilePanelStateOmitsCurrentOAuthProviderWithoutCredentials(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{ID: "grok", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-4.5", AuthType: "oauth", WireAPI: "responses"},
+		},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "passed", Model: "passed-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	for _, provider := range state.Providers {
+		if provider.Name == "xAI-Grok" {
+			t.Fatalf("unsigned current Grok appeared in assignment list: %#v", state.Providers)
+		}
+	}
+}
+
+func TestSaveMaclawLLMProfilesKeepsHashAssignedUntestedProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	hashID := corelib.MaclawLLMLegacyProviderID("xAI-Grok")
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.5", AuthType: "oauth", WireAPI: "responses"},
+		},
+		MaclawLLMCurrentProvider: "Passed provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: hashID, Model: "grok-4.5"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if err := app.SaveMaclawLLMProfiles(state.Profiles, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles hash-assigned Grok: %v", err)
+	}
+}
+
+func TestSaveMaclawLLMProfilesKeepsCodingWhenUncheckingInherit(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{ID: "grok", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "oauth-token", Model: "grok-4.5", AuthType: "oauth", WireAPI: "responses"},
+		},
+		MaclawLLMCurrentProvider: "Passed provider",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "grok", Model: "grok-4.5"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	profiles := state.Profiles
+	profiles.Coding.InheritAssistant = false
+	profiles.Coding.ProviderID = profiles.Assistant.ProviderID
+	profiles.Coding.Model = profiles.Assistant.Model
+	if err := app.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles uncheck inherit onto assigned Grok: %v", err)
+	}
+}
+
+func TestProfilePanelStateListsCurrentZhipuCodingAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "passed", Name: "Passed provider", URL: "https://passed.example/v1", Key: "key", Model: "passed-model", ConnectionTestPassed: true},
+			{ID: "zhipu", Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Key: "glm-key", Model: "glm-5-turbo"},
+		},
+		MaclawLLMCurrentProvider: "Zhipu GLM Coding",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "passed", Model: "passed-model"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	names := map[string]bool{}
+	for _, provider := range state.Providers {
+		names[provider.Name] = true
+	}
+	if !names[corelib.ZhipuCodingProviderName] {
+		t.Fatalf("assignment providers = %#v, want TUI-aliased current 智谱编程 listed", state.Providers)
+	}
+}
+
+func TestProfilePanelStateListsTUIZhipuCurrentWithoutProfiles(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "zhipu", Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/coding/paas/v4", Key: "glm-key", Model: "glm-5-turbo"},
+		},
+		MaclawLLMCurrentProvider: "Zhipu GLM Coding",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if len(state.Providers) != 1 || state.Providers[0].Name != corelib.ZhipuCodingProviderName {
+		t.Fatalf("assignment providers = %#v, want synthesized TUI-aliased 智谱编程", state.Providers)
+	}
+	if providers := app.GetMaclawLLMProviders(); providers.Current != corelib.ZhipuCodingProviderName {
+		t.Fatalf("GetMaclawLLMProviders current = %q, want 智谱编程", providers.Current)
+	}
+	if cfg := app.GetMaclawLLMConfig(); cfg.ProviderName != corelib.ZhipuCodingProviderName {
+		t.Fatalf("GetMaclawLLMConfig provider = %q, want 智谱编程", cfg.ProviderName)
+	}
+}
+
+func TestGetMaclawLLMProvidersDoesNotInsertZhipuDefaultWhenTUIAliasExists(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "zhipu", Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Key: "glm-key", Model: "glm-5-turbo", Protocol: "anthropic"},
+		},
+		MaclawLLMCurrentProvider: "Zhipu GLM Coding",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	count := 0
+	var zhipu corelib.MaclawLLMProvider
+	for _, provider := range data.Providers {
+		if !corelib.IsZhipuCodingProviderName(provider.Name) {
+			continue
+		}
+		count++
+		zhipu = provider
+	}
+	if count != 1 {
+		t.Fatalf("zhipu coding providers = %d, want 1 (TUI alias should occupy the 智谱编程 default slot); providers=%+v", count, data.Providers)
+	}
+	if zhipu.Name != "Zhipu GLM Coding" || zhipu.Key != "glm-key" {
+		t.Fatalf("kept zhipu provider = %+v, want TUI-named entry with credentials", zhipu)
+	}
+	if data.Current != "Zhipu GLM Coding" {
+		t.Fatalf("current = %q, want TUI alias kept for the existing provider tab", data.Current)
+	}
+}
+
+func TestGetMaclawLLMProvidersDropsEmptyZhipuDefaultWhenTUIAliasExists(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "empty", Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: corelib.ZhipuCodingDefaultModel, Protocol: "anthropic"},
+			{ID: "zhipu", Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Key: "glm-key", Model: "glm-5-turbo", Protocol: "anthropic"},
+		},
+		MaclawLLMCurrentProvider: "Zhipu GLM Coding",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	count := 0
+	var zhipu corelib.MaclawLLMProvider
+	for _, provider := range data.Providers {
+		if !corelib.IsZhipuCodingProviderName(provider.Name) {
+			continue
+		}
+		count++
+		zhipu = provider
+	}
+	if count != 1 {
+		t.Fatalf("zhipu coding providers = %d, want 1 after dropping the empty GUI default; providers=%+v", count, data.Providers)
+	}
+	if zhipu.ID != "zhipu" || zhipu.Key != "glm-key" {
+		t.Fatalf("kept zhipu provider = %+v, want credentialed TUI alias", zhipu)
+	}
+}
+
+func TestSaveMaclawLLMProvidersKeepsOAuthConnectionTestAcrossTokenRotation(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "old-token", Model: "grok-4.5",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "new-token", Model: "grok-4.5",
+		AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+	}}, "xAI-Grok"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !saved.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatal("OAuth token rotation cleared connection-test eligibility")
+	}
+}
+
+func TestSaveMaclawLLMProvidersKeepsOAuthConnectionTestWhenProtocolFilled(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "old-token", Model: "grok-4.5",
+			AuthType: "oauth", WireAPI: "responses", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "old-token", Model: "grok-4.5",
+		AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+	}}, "xAI-Grok"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !saved.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatal("filling omitted openai protocol cleared connection-test eligibility")
+	}
+}
+
+func TestSaveMaclawLLMProvidersKeepsOAuthConnectionTestWhenWireAPIFilled(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "old-token", Model: "grok-4.5",
+			AuthType: "oauth", Protocol: "openai", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.SaveMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		ID: "xai", Name: "xAI-Grok", URL: "https://api.x.ai/v1", Key: "old-token", Model: "grok-4.5",
+		AuthType: "oauth", Protocol: "openai", WireAPI: "responses", ConnectionTestPassed: true,
+	}}, "xAI-Grok"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !saved.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatal("filling omitted Grok responses wire_api cleared connection-test eligibility")
+	}
+}
+
 func TestSaveMaclawLLMProfilesRejectsUntestedProviderSelection(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1043,6 +1663,39 @@ func TestMarkMaclawLLMProviderConnectionTestPassedRejectsChangedModel(t *testing
 	}
 	if cfg.MaclawLLMProviders[0].ConnectionTestPassed {
 		t.Fatal("stale probe marked the changed provider as tested")
+	}
+}
+
+func TestMarkMaclawLLMProviderConnectionTestPassedAcceptsXAIReadTimeDefaults(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "xAI-Grok", URL: "https://old.x.ai/v1", Key: "oauth-token", AuthType: "oauth",
+		}},
+		MaclawLLMCurrentProvider: "xAI-Grok",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if err := app.markMaclawLLMProviderConnectionTestPassed("xAI-Grok", corelib.MaclawLLMConfig{
+		ProviderID: corelib.MaclawLLMLegacyProviderID("xAI-Grok"),
+		URL:        "https://api.x.ai/v1",
+		Model:      "grok-4.6",
+		Protocol:   "openai",
+		WireAPI:    "responses",
+		AuthType:   "oauth",
+	}); err != nil {
+		t.Fatalf("mark xAI read-time defaults: %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.MaclawLLMProviders[0].ConnectionTestPassed {
+		t.Fatal("successful xAI probe did not persist connection_test_passed")
 	}
 }
 
@@ -1117,6 +1770,130 @@ func TestSaveMaclawLLMProvidersKeepsTestedProviderIDAcrossRename(t *testing.T) {
 	}
 	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.ProviderID != "provider" {
 		t.Fatalf("rename invalidated assistant profile: %#v", saved.MaclawLLMProfiles)
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersRefreshesExpiredOAuthBeforeProbe(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}`))
+	}))
+	defer srv.Close()
+
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("xai-grok", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:        "oauth",
+			AccessToken: "expired-token",
+			ExpiresAt:   time.Now().Add(-time.Hour).Unix(),
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				Name: "xAI-Grok", URL: srv.URL, Key: "expired-token", Model: "grok-4.5",
+				AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+				TokenExpiresAt: time.Now().Add(-time.Hour).Unix(),
+			},
+			{ID: "other", Name: "Other", URL: "https://other.example/v1", Model: "other", IsCustom: true, ConnectionTestPassed: true},
+		},
+		MaclawLLMCurrentProvider: "Other",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	_, err := app.TestAndSaveMaclawLLMProviders([]corelib.MaclawLLMProvider{
+		{
+			Name: "xAI-Grok", URL: srv.URL, Model: "grok-4.5",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+		},
+		{ID: "other", Name: "Other", URL: "https://other.example/v1", Model: "other", IsCustom: true, ConnectionTestPassed: true},
+	}, "xAI-Grok", "xAI-Grok")
+	if err == nil || !strings.Contains(err.Error(), "re-login") {
+		t.Fatalf("TestAndSaveMaclawLLMProviders() error = %v, want expired OAuth re-login", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("probe requests = %d, want 0 before refresh/re-login", got)
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersUsesStoreOAuthToken(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	var sawStoreToken atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer store-fresh" {
+			sawStoreToken.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}`))
+	}))
+	defer srv.Close()
+
+	store := oauth.NewFileCredentialStore(filepath.Join(tmpHome, "credentials.json"))
+	if err := store.Modify("xai-grok", func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+		return &oauth.StoredCredential{
+			Type:           "oauth",
+			AccessToken:    "store-fresh",
+			RawAccessToken: "store-fresh",
+			RefreshToken:   "refresh-token",
+			ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+		}, nil
+	}); err != nil {
+		t.Fatalf("store.Modify: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome, credentialStore: store}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				ID: "grok", Name: "xAI-Grok", URL: srv.URL, Key: "config-stale", Model: "grok-4.5",
+				AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+			},
+			{ID: "other", Name: "Other", URL: "https://other.example/v1", Model: "other", IsCustom: true, ConnectionTestPassed: true},
+		},
+		MaclawLLMCurrentProvider: "Other",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	if _, err := app.TestAndSaveMaclawLLMProviders([]corelib.MaclawLLMProvider{
+		{
+			ID: "grok", Name: "xAI-Grok", URL: srv.URL, Model: "grok-4.5",
+			AuthType: "oauth", Protocol: "openai", WireAPI: "responses",
+		},
+		{ID: "other", Name: "Other", URL: "https://other.example/v1", Model: "other", IsCustom: true, ConnectionTestPassed: true},
+	}, "xAI-Grok", "xAI-Grok"); err != nil {
+		t.Fatalf("TestAndSaveMaclawLLMProviders: %v", err)
+	}
+	if !sawStoreToken.Load() {
+		t.Fatal("probe used the stale config token, want credential-store token")
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	var grok corelib.MaclawLLMProvider
+	for _, provider := range saved.MaclawLLMProviders {
+		if provider.Name == "xAI-Grok" {
+			grok = provider
+			break
+		}
+	}
+	if !grok.ConnectionTestPassed || grok.Key != "store-fresh" {
+		t.Fatalf("saved Grok = %#v, want store token and passed connection test", grok)
 	}
 }
 
@@ -2066,6 +2843,53 @@ func TestMaterializeProviderByNameUsesImportedCodexAPIKeyWhenNoOAuthJWTExists(t 
 	}
 	if cfg.Key != "sk-imported-key" {
 		t.Fatalf("materialized key = %q, want imported API key", cfg.Key)
+	}
+}
+
+func TestFormatMaclawLLMTestErrorOpenCodeEndedFreePromotion(t *testing.T) {
+	body := []byte(`{"type":"ModelError","message":"Free promotion has ended for DeepSeek V4 Flash Free. You can continue using the model by subscribing to OpenCode Go - https://opencode.ai/go"}`)
+	err := formatMaclawLLMTestError(fmt.Errorf("%w %s", &llm.HTTPStatusError{
+		StatusCode: http.StatusUnauthorized,
+		Body:       body,
+	}, body), corelib.MaclawLLMConfig{AgentType: "OpenCode", ProviderName: "OpenCode"})
+	if err == nil {
+		t.Fatal("formatMaclawLLMTestError() error = nil, want ended-promotion error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "免费活动已结束") {
+		t.Fatalf("error = %q, want ended-promotion guidance", got)
+	}
+	if strings.Contains(got, "认证失败") || strings.Contains(got, "重新登录") {
+		t.Fatalf("ended free promotion must not look like an invalid API key: %q", got)
+	}
+}
+
+func TestFormatMaclawLLMTestErrorOpenCodeEndedPromotionFromString(t *testing.T) {
+	err := formatMaclawLLMTestError(fmt.Errorf(`POST "https://opencode.ai/zen/v1/chat/completions": 401 Unauthorized {"type":"ModelError","message":"Free promotion has ended for DeepSeek V4 Flash Free."}`), corelib.MaclawLLMConfig{
+		ProviderName: "OpenCode",
+		AgentType:    "OpenCode",
+	})
+	if err == nil {
+		t.Fatal("formatMaclawLLMTestError() error = nil, want ended-promotion error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "OpenCode") || !strings.Contains(got, "免费活动已结束") {
+		t.Fatalf("error = %q, want named OpenCode ended-promotion guidance", got)
+	}
+}
+
+func TestFormatMaclawLLMTestErrorTruncatesRunes(t *testing.T) {
+	long := strings.Repeat("测", 600)
+	err := formatMaclawLLMTestError(fmt.Errorf("%s", long), corelib.MaclawLLMConfig{ProviderName: "OpenCode"})
+	if err == nil {
+		t.Fatal("formatMaclawLLMTestError() error = nil, want truncated error")
+	}
+	got := []rune(err.Error())
+	if len(got) != 515 { // 512 runes + "..."
+		t.Fatalf("truncated rune length = %d, want 515; error=%q", len(got), err)
+	}
+	if string(got[:512]) != strings.Repeat("测", 512) || string(got[512:]) != "..." {
+		t.Fatalf("truncated error = %q, want 512 测 runes then ...", err)
 	}
 }
 
@@ -3578,8 +4402,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if xaiGrok.URL != "https://api.x.ai/v1" {
 		t.Errorf("xAI-Grok URL = %q, want %q", xaiGrok.URL, "https://api.x.ai/v1")
 	}
-	if xaiGrok.Model != "grok-4.5" {
-		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-4.5")
+	if xaiGrok.Model != "grok-4.6" {
+		t.Errorf("xAI-Grok Model = %q, want %q", xaiGrok.Model, "grok-4.6")
 	}
 	if xaiGrok.Protocol != "openai" {
 		t.Errorf("xAI-Grok Protocol = %q, want %q", xaiGrok.Protocol, "openai")
@@ -3594,6 +4418,23 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("xAI-Grok ContextLength = %d, want %d", xaiGrok.ContextLength, 400000)
 	}
 
+	openCode, ok := findProviderByName(providers, "OpenCode")
+	if !ok {
+		t.Fatalf("providers missing OpenCode: %+v", providers)
+	}
+	if openCode.URL != "https://opencode.ai/zen/v1" {
+		t.Errorf("OpenCode URL = %q", openCode.URL)
+	}
+	if openCode.Model != "big-pickle" {
+		t.Errorf("OpenCode Model = %q, want big-pickle", openCode.Model)
+	}
+	if openCode.AgentType != "OpenCode" {
+		t.Errorf("OpenCode AgentType = %q", openCode.AgentType)
+	}
+	if openCode.AuthType == "oauth" {
+		t.Errorf("OpenCode should use API key, not OAuth")
+	}
+
 	zhipuCoding, ok := findProviderByName(providers, "智谱编程")
 	if !ok {
 		t.Fatalf("providers missing 智谱编程: %+v", providers)
@@ -3601,8 +4442,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if zhipuCoding.URL != "https://open.bigmodel.cn/api/anthropic" {
 		t.Errorf("智谱编程 URL = %q, want %q", zhipuCoding.URL, "https://open.bigmodel.cn/api/anthropic")
 	}
-	if zhipuCoding.Model != "GLM-5.2" {
-		t.Errorf("智谱编程 Model = %q, want %q", zhipuCoding.Model, "GLM-5.2")
+	if zhipuCoding.Model != zhipuCodingDefaultModel {
+		t.Errorf("智谱编程 Model = %q, want %q", zhipuCoding.Model, zhipuCodingDefaultModel)
 	}
 	if zhipuCoding.Protocol != "anthropic" {
 		t.Errorf("智谱编程 Protocol = %q, want %q", zhipuCoding.Protocol, "anthropic")
@@ -3628,7 +4469,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "xAI-Grok", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}
@@ -3724,6 +4565,329 @@ func TestGetMaclawLLMProviders_BackfillsVolcengineAgentPlanProvider(t *testing.T
 	}
 }
 
+func TestGetMaclawLLMProviders_BackfillsOpenCodeProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "OpenAI", URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5.4", AuthType: "oauth"},
+			{Name: "Custom1", IsCustom: true},
+			{Name: "Custom2", IsCustom: true},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	provider, ok := findProviderByName(data.Providers, "OpenCode")
+	if !ok {
+		t.Fatalf("providers missing OpenCode card: %+v", data.Providers)
+	}
+	if provider.URL != configfile.OpenCodeZenBaseURL {
+		t.Fatalf("OpenCode URL = %q, want %q", provider.URL, configfile.OpenCodeZenBaseURL)
+	}
+	if provider.Model != "big-pickle" || provider.Protocol != "openai" || provider.AgentType != configfile.ExternalAgentTypeOpenCode {
+		t.Fatalf("OpenCode config = model %q protocol %q agent %q", provider.Model, provider.Protocol, provider.AgentType)
+	}
+	if provider.AuthType == "oauth" || provider.ImportSource != "" || provider.IsCustom {
+		t.Fatalf("OpenCode should be a regular API-key preset: %+v", provider)
+	}
+	xaiIdx, openCodeIdx := -1, -1
+	for i, p := range data.Providers {
+		switch p.Name {
+		case "xAI-Grok":
+			xaiIdx = i
+		case "OpenCode":
+			openCodeIdx = i
+		}
+	}
+	if xaiIdx < 0 || openCodeIdx < 0 || openCodeIdx != xaiIdx+1 {
+		t.Fatalf("OpenCode should sit after xAI-Grok, xai=%d opencode=%d", xaiIdx, openCodeIdx)
+	}
+}
+
+func TestGetMaclawLLMProviders_PromotesImportedOpenCodeToPreset(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "DeepSeek",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Key: "sk-keep", Model: "deepseek-chat"},
+			{
+				Name:         configfile.ExternalAgentProviderOpenCode,
+				URL:          configfile.OpenCodeZenBaseURL,
+				Key:          "zen-key",
+				Model:        "hy3-free",
+				ImportSource: configfile.ExternalAgentSourceOpenCode,
+				AgentType:    configfile.ExternalAgentTypeOpenCode,
+				Models:       []string{"big-pickle", "gpt-5.5", "hy3-free"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	provider, ok := findProviderByName(data.Providers, "OpenCode")
+	if !ok {
+		t.Fatal("OpenCode missing")
+	}
+	if provider.ImportSource != "" {
+		t.Fatalf("imported OpenCode was not promoted to builtin: %+v", provider)
+	}
+	if provider.Key != "zen-key" || provider.Model != "hy3-free" {
+		t.Fatalf("promoted OpenCode lost credentials or model: %+v", provider)
+	}
+	if !containsStringFold(provider.Models, "gpt-5.5") {
+		t.Fatalf("paid catalog dropped after promote: %#v", provider.Models)
+	}
+}
+
+func TestGetMaclawLLMProviders_DoesNotRewriteOtherPresetWithOpenCodeUserAgent(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: "DeepSeek",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				Name:      "DeepSeek",
+				URL:       "https://api.deepseek.com/v1",
+				Key:       "sk-keep",
+				Model:     "deepseek-v4-flash",
+				AgentType: configfile.ExternalAgentTypeOpenCode,
+				Models:    []string{"deepseek-v4-flash", "deepseek-reasoner"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	deepseek, ok := findProviderByName(data.Providers, "DeepSeek")
+	if !ok {
+		t.Fatal("DeepSeek missing")
+	}
+	if deepseek.Model != "deepseek-v4-flash" {
+		t.Fatalf("DeepSeek model rewritten: %q", deepseek.Model)
+	}
+	if deepseek.URL != "https://api.deepseek.com/v1" {
+		t.Fatalf("DeepSeek URL rewritten: %q", deepseek.URL)
+	}
+	if !containsStringFold(deepseek.Models, "deepseek-reasoner") {
+		t.Fatalf("DeepSeek models were filtered as OpenCode free list: %#v", deepseek.Models)
+	}
+}
+
+func TestIsOpenCodeZenURLRequiresZenHost(t *testing.T) {
+	if isOpenCodeZenURL("https://api.deepseek.com/v1") {
+		t.Fatal("non-zen URL must not be treated as OpenCode catalog")
+	}
+	if !isOpenCodeZenURL(configfile.OpenCodeZenBaseURL) {
+		t.Fatal("zen URL must be treated as OpenCode catalog")
+	}
+	if isOpenCodeZenURL("https://evil.example/redirect?next=https://opencode.ai/zen/v1") {
+		t.Fatal("opencode.ai/zen in a query string must not count as the Zen host")
+	}
+	if isOpenCodeZenProvider(corelib.MaclawLLMProvider{
+		Name:      "DeepSeek",
+		URL:       "https://api.deepseek.com/v1",
+		AgentType: configfile.ExternalAgentTypeOpenCode,
+	}) {
+		t.Fatal("DeepSeek with OpenCode User-Agent is not the OpenCode provider")
+	}
+}
+
+func TestNormalizeOpenCodeProviderForcesZenIdentity(t *testing.T) {
+	defaults, ok := findProviderByName(defaultMaclawLLMProviders(), "OpenCode")
+	if !ok {
+		t.Fatal("default OpenCode missing")
+	}
+	got := normalizeOpenCodeProvider(corelib.MaclawLLMProvider{
+		Name:         "OpenCode",
+		URL:          "https://legacy.example/v1",
+		Key:          "zen-key",
+		Model:        "hy3-free",
+		Protocol:     "anthropic",
+		AgentType:    "openclaw",
+		ImportSource: configfile.ExternalAgentSourceOpenCode,
+		Models:       []string{"hy3-free", "gpt-5.5"},
+	}, defaults)
+	if got.ImportSource != "" || got.Protocol != "openai" || got.AgentType != configfile.ExternalAgentTypeOpenCode {
+		t.Fatalf("zen identity not forced: %+v", got)
+	}
+	if got.URL != configfile.OpenCodeZenBaseURL || got.Key != "zen-key" || got.Model != "hy3-free" {
+		t.Fatalf("credentials/model not preserved: %+v", got)
+	}
+	if !containsStringFold(got.Models, "gpt-5.5") {
+		t.Fatalf("paid catalog dropped: %#v", got.Models)
+	}
+}
+
+func TestNormalizeMaclawLLMProvidersKeepsOpenCodePaidModel(t *testing.T) {
+	got := normalizeMaclawLLMProviders([]corelib.MaclawLLMProvider{{
+		Name:   "OpenCode",
+		URL:    configfile.OpenCodeZenBaseURL,
+		Key:    "zen-key",
+		Model:  "gpt-5.5",
+		Models: []string{"gpt-5.5", "hy3-free"},
+	}})
+	if len(got) != 1 {
+		t.Fatalf("providers = %+v", got)
+	}
+	if got[0].Model != "gpt-5.5" {
+		t.Fatalf("paid model was rewritten: %q", got[0].Model)
+	}
+	if !containsStringFold(got[0].Models, "gpt-5.5") {
+		t.Fatalf("paid catalog dropped: %#v", got[0].Models)
+	}
+	if got[0].ImportSource != "" || got[0].AgentType != configfile.ExternalAgentTypeOpenCode {
+		t.Fatalf("preset identity missing: %+v", got[0])
+	}
+}
+
+func TestEffectiveMaclawLLMProfilesKeepsOpenCodePaidModel(t *testing.T) {
+	providers := []corelib.MaclawLLMProvider{{
+		ID:        "oc",
+		Name:      "OpenCode",
+		URL:       configfile.OpenCodeZenBaseURL,
+		Key:       "zen-key",
+		Model:     "hy3-free",
+		AgentType: configfile.ExternalAgentTypeOpenCode,
+	}}
+	cfg := corelib.AppConfig{
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "oc", Model: "gpt-5.5"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}
+	profiles, err := effectiveMaclawLLMProfiles(cfg, providers, "OpenCode")
+	if err != nil {
+		t.Fatalf("effectiveMaclawLLMProfiles: %v", err)
+	}
+	if profiles.Assistant.Model != "gpt-5.5" {
+		t.Fatalf("profile model = %q, want paid gpt-5.5", profiles.Assistant.Model)
+	}
+}
+
+func TestSaveMaclawLLMProfilesKeepsOpenCodePaidModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				ID:                   "oc",
+				Name:                 "OpenCode",
+				URL:                  configfile.OpenCodeZenBaseURL,
+				Key:                  "zen-key",
+				Model:                "hy3-free",
+				AgentType:            configfile.ExternalAgentTypeOpenCode,
+				ConnectionTestPassed: true,
+			},
+		},
+		MaclawLLMCurrentProvider: "OpenCode",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "oc", Model: "hy3-free"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	updated := state.Profiles
+	updated.Assistant.Model = "gpt-5.5"
+	if err := app.SaveMaclawLLMProfiles(updated, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles: %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaclawLLMProfiles == nil || cfg.MaclawLLMProfiles.Assistant.Model != "gpt-5.5" {
+		t.Fatalf("paid OpenCode model was rewritten: %+v", cfg.MaclawLLMProfiles)
+	}
+	resolved := app.GetMaclawLLMConfig()
+	if resolved.Model != "gpt-5.5" {
+		t.Fatalf("resolved OpenCode model = %q, want gpt-5.5", resolved.Model)
+	}
+}
+
+func TestSetMaclawLLMCurrentModelKeepsOpenCodePaidModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{
+				Name:      "OpenCode",
+				URL:       configfile.OpenCodeZenBaseURL,
+				Key:       "zen-key",
+				Model:     "hy3-free",
+				AgentType: configfile.ExternalAgentTypeOpenCode,
+			},
+		},
+		MaclawLLMCurrentProvider: "OpenCode",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	if err := app.SetMaclawLLMCurrentModel("gpt-5.5"); err != nil {
+		t.Fatalf("SetMaclawLLMCurrentModel: %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MaclawLLMModel != "gpt-5.5" {
+		t.Fatalf("legacy model = %q, want gpt-5.5", cfg.MaclawLLMModel)
+	}
+	oc, ok := findProviderByName(cfg.MaclawLLMProviders, "OpenCode")
+	if !ok || oc.Model != "gpt-5.5" {
+		t.Fatalf("provider model = %+v", oc)
+	}
+}
+
+func TestConstrainOpenCodeModel(t *testing.T) {
+	provider := corelib.MaclawLLMProvider{
+		Name:  "OpenCode",
+		URL:   configfile.OpenCodeZenBaseURL,
+		Key:   "zen-key",
+		Model: "hy3-free",
+	}
+	if got := constrainOpenCodeModel(provider, "big-pickle"); got != "big-pickle" {
+		t.Fatalf("free model rewritten: %q", got)
+	}
+	if got := constrainOpenCodeModel(provider, "gpt-5.5"); got != "gpt-5.5" {
+		t.Fatalf("paid model remapped: %q", got)
+	}
+	if got := constrainOpenCodeModel(provider, ""); got != "hy3-free" {
+		t.Fatalf("empty model = %q, want provider model", got)
+	}
+	if got := constrainOpenCodeModel(corelib.MaclawLLMProvider{Name: "DeepSeek"}, "deepseek-v4-flash"); got != "deepseek-v4-flash" {
+		t.Fatalf("non-OpenCode model rewritten: %q", got)
+	}
+}
+
 func TestGetMaclawLLMProviders_MigratesXAIGrokAPIKeyConfigToOAuth(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -3752,8 +4916,8 @@ func TestGetMaclawLLMProviders_MigratesXAIGrokAPIKeyConfigToOAuth(t *testing.T) 
 	if provider.URL != "https://api.x.ai/v1" {
 		t.Fatalf("xAI-Grok URL = %q, want current endpoint", provider.URL)
 	}
-	if provider.Model != "grok-4.5" {
-		t.Fatalf("xAI-Grok Model = %q, want current default grok-4.5", provider.Model)
+	if provider.Model != "grok-4.6" {
+		t.Fatalf("xAI-Grok Model = %q, want current default grok-4.6", provider.Model)
 	}
 	if provider.Key != "" || provider.OAuthAccessToken != "" || provider.RefreshToken != "" || provider.TokenExpiresAt != 0 {
 		t.Fatalf("legacy xAI API credentials were retained: %+v", provider)
@@ -3781,17 +4945,183 @@ func TestNormalizeXAIProviderMigratesFormerGrokBuildDefault(t *testing.T) {
 		Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-build", ContextLength: 256000,
 		Protocol: "openai", AuthType: "oauth", WireAPI: "responses",
 	}, defaults)
-	if provider.Model != "grok-4.5" {
+	if provider.Model != "grok-4.6" {
 		t.Fatalf("legacy grok-build default was not migrated: %q", provider.Model)
 	}
 	if provider.ContextLength != 400000 {
 		t.Fatalf("legacy 256K context window was not migrated: %d", provider.ContextLength)
 	}
 
+	provider.Model = "grok-4.5"
+	provider = normalizeXAIProvider(provider, defaults)
+	if provider.Model != "grok-4.6" {
+		t.Fatalf("former grok-4.5 default was not migrated: %q", provider.Model)
+	}
+
 	provider.Model = "grok-4.1-fast"
 	provider = normalizeXAIProvider(provider, defaults)
 	if provider.Model != "grok-4.1-fast" {
 		t.Fatalf("explicit OAuth model selection was overwritten: %q", provider.Model)
+	}
+}
+
+func TestNormalizeZhipuCodingProviderMigratesFormerDefaults(t *testing.T) {
+	for _, legacy := range []string{"", "GLM-5.2", "glm-5.1", "glm-5"} {
+		provider := normalizeZhipuCodingProvider(corelib.MaclawLLMProvider{
+			Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: legacy,
+			Protocol: "anthropic", AgentType: "claude code 2.0",
+		})
+		if provider.Model != zhipuCodingDefaultModel {
+			t.Fatalf("legacy 智谱编程 model %q was not migrated: %q", legacy, provider.Model)
+		}
+	}
+
+	provider := normalizeZhipuCodingProvider(corelib.MaclawLLMProvider{
+		Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5-turbo",
+		Protocol: "anthropic", AgentType: "claude code 2.0",
+	})
+	if provider.Model != "glm-5-turbo" {
+		t.Fatalf("explicit 智谱编程 model was overwritten: %q", provider.Model)
+	}
+}
+
+func TestGetMaclawLLMProviders_MigratesZhipuCodingFormerDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: zhipuCodingProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0"},
+			{Name: "Custom1", IsCustom: true},
+			{Name: "Custom2", IsCustom: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	provider, ok := findProviderByName(data.Providers, zhipuCodingProviderName)
+	if !ok {
+		t.Fatalf("providers missing 智谱编程: %+v", data.Providers)
+	}
+	if provider.Model != zhipuCodingDefaultModel {
+		t.Fatalf("智谱编程 Model = %q, want migrated %q", provider.Model, zhipuCodingDefaultModel)
+	}
+}
+
+func TestGetMaclawLLMConfig_MigratesZhipuCodingProfileModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: zhipuCodingProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "llmp_zhipu", Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0"},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	cfg := app.GetMaclawLLMConfig()
+	if cfg.Model != zhipuCodingDefaultModel {
+		t.Fatalf("resolved 智谱编程 model = %q, want migrated %q", cfg.Model, zhipuCodingDefaultModel)
+	}
+	if cfg.ProviderName != zhipuCodingProviderName {
+		t.Fatalf("resolved provider = %q, want %q", cfg.ProviderName, zhipuCodingProviderName)
+	}
+}
+
+func TestGetMaclawLLMProfilePanelState_MigratesZhipuCodingProviderModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: zhipuCodingProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "llmp_zhipu", Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ConnectionTestPassed: true},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if state.Profiles.Assistant.Model != zhipuCodingDefaultModel {
+		t.Fatalf("profile model = %q, want migrated %q", state.Profiles.Assistant.Model, zhipuCodingDefaultModel)
+	}
+	var providerModel string
+	for _, provider := range state.Providers {
+		if provider.ID == "llmp_zhipu" || provider.Name == zhipuCodingProviderName {
+			providerModel = provider.Model
+			break
+		}
+	}
+	if providerModel != zhipuCodingDefaultModel {
+		t.Fatalf("panel provider model = %q, want migrated %q", providerModel, zhipuCodingDefaultModel)
+	}
+}
+
+func TestSaveMaclawLLMProfiles_PersistsMigratedZhipuCodingDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMCurrentProvider: zhipuCodingProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{ID: "llmp_zhipu", Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ConnectionTestPassed: true},
+		},
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "llmp_zhipu", Model: "GLM-5.2"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	updated := state.Profiles
+	updated.Assistant.Model = "GLM-5.2"
+	if err := app.SaveMaclawLLMProfiles(updated, state.Revision); err != nil {
+		t.Fatalf("SaveMaclawLLMProfiles: %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.Model != zhipuCodingDefaultModel {
+		t.Fatalf("saved profile model = %#v, want %q", saved.MaclawLLMProfiles, zhipuCodingDefaultModel)
+	}
+	if saved.MaclawLLMModel != zhipuCodingDefaultModel {
+		t.Fatalf("saved flat model = %q, want %q", saved.MaclawLLMModel, zhipuCodingDefaultModel)
+	}
+	if len(saved.MaclawLLMProviders) == 0 || saved.MaclawLLMProviders[0].Model != zhipuCodingDefaultModel {
+		t.Fatalf("saved provider model = %#v, want %q", saved.MaclawLLMProviders, zhipuCodingDefaultModel)
 	}
 }
 

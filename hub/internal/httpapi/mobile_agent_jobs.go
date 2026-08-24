@@ -41,6 +41,7 @@ type mobileAgentJobRecord struct {
 	Query         string
 	DocumentID    string
 	DocumentTitle string
+	RecordingID   string
 	Status        string
 	Answer        string
 	Message       string
@@ -57,10 +58,11 @@ type mobileAgentJobRecord struct {
 }
 
 type mobileAgentJobCreateRequest struct {
-	Query      string              `json:"query"`
-	Context    []string            `json:"context,omitempty"`
-	Messages   []mobileChatMessage `json:"messages,omitempty"`
-	DocumentID string              `json:"document_id,omitempty"`
+	Query       string              `json:"query"`
+	Context     []string            `json:"context,omitempty"`
+	Messages    []mobileChatMessage `json:"messages,omitempty"`
+	DocumentID  string              `json:"document_id,omitempty"`
+	RecordingID string              `json:"recording_id,omitempty"`
 }
 
 // MobileAgentJobsHandler creates and lists long-running assistant jobs.
@@ -130,6 +132,13 @@ func mobileAgentJobCreate(w http.ResponseWriter, r *http.Request, principal *aut
 		}
 		docTitle = draft.Title
 	}
+	recID := strings.TrimSpace(req.RecordingID)
+	if recID != "" {
+		if _, ok := mobileLookupOwnedRecording(principal, recID); !ok {
+			writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "bound recording not found or not owned by viewer")
+			return
+		}
+	}
 
 	now := time.Now().UTC()
 	job := mobileAgentJobRecord{
@@ -139,6 +148,7 @@ func mobileAgentJobCreate(w http.ResponseWriter, r *http.Request, principal *aut
 		Query:         query,
 		DocumentID:    docID,
 		DocumentTitle: docTitle,
+		RecordingID:   recID,
 		Status:        mobileAgentJobStatusQueued,
 		Message:       "queued",
 		AuthHeader:    strings.TrimSpace(r.Header.Get("Authorization")),
@@ -225,6 +235,9 @@ func mobileAgentJobPayload(job mobileAgentJobRecord) map[string]any {
 		if job.DocumentTitle != "" {
 			m["document_title"] = job.DocumentTitle
 		}
+	}
+	if job.RecordingID != "" {
+		m["recording_id"] = job.RecordingID
 	}
 	if job.RequestID != "" {
 		m["llm_request_id"] = job.RequestID
@@ -358,7 +371,7 @@ func mobileRunAgentJob(jobID string, principal *auth.ViewerPrincipal, officialLL
 		return
 	}
 
-	answer, requestID, runErr := mobileRunAgentLoop(ctx, baseReq, principal, officialLLM, delegated, useDelegated, chatMessages, nil)
+	answer, requestID, runErr := mobileRunAgentLoop(ctx, baseReq, principal, officialLLM, delegated, useDelegated, chatMessages, nil, mobileTrustedAgentAttachments(principal, job.DocumentID, job.RecordingID))
 	if runErr != nil {
 		msg := strings.TrimSpace(runErr.Error())
 		if msg == "" {
@@ -435,6 +448,12 @@ func mobileEnqueueAgentJobFromSearch(
 		}
 		docTitle = draft.Title
 	}
+	recID := strings.TrimSpace(req.RecordingID)
+	if recID != "" {
+		if _, ok := mobileLookupOwnedRecording(principal, recID); !ok {
+			return mobileAgentJobRecord{}, fmt.Errorf("recording not found")
+		}
+	}
 	now := time.Now().UTC()
 	job := mobileAgentJobRecord{
 		JobID:         fmt.Sprintf("mobagent_%d", now.UnixNano()),
@@ -443,6 +462,7 @@ func mobileEnqueueAgentJobFromSearch(
 		Query:         query,
 		DocumentID:    docID,
 		DocumentTitle: docTitle,
+		RecordingID:   recID,
 		Status:        mobileAgentJobStatusQueued,
 		Message:       "queued",
 		AuthHeader:    strings.TrimSpace(r.Header.Get("Authorization")),

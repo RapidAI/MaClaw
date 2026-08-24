@@ -96,6 +96,7 @@ func CurrentContextCheckpointStats() ContextCheckpointStats {
 // structured checkpoint. The exact removed JSON is stored behind a
 // read_tool_result handle, so summarization is never the sole information source.
 func CheckpointConversation(conversation []interface{}, opts ContextCheckpointOptions) ContextCheckpointResult {
+	conversation = FoldComputerUseObserves(conversation)
 	result := ContextCheckpointResult{Conversation: conversation}
 	if len(conversation) <= 3 || opts.ContextLimit <= 0 {
 		result.Reason = "insufficient_context"

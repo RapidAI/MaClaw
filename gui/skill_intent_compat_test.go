@@ -247,6 +247,22 @@ func TestShouldPreferSkillForTask_QueryIntentBlocked(t *testing.T) {
 	}
 }
 
+func TestInitialAgentLoopPhaseIgnoresPickerFilenameSkillHints(t *testing.T) {
+	h := &IMMessageHandler{}
+	text := "北京天气\n\n" + filePathPromptPrefix + "\nC:\\tmp\\weather-report.jpg"
+	phase := h.initialAgentLoopPhase(text, nil)
+	if phase.ForceSkillPreference {
+		t.Fatal("picker filename containing report must not force skill preference")
+	}
+	if !shouldPreferSkillForTask(text) {
+		t.Fatal("control: raw picker text with report.jpg must trip the skill hint so the strip is doing the work")
+	}
+	phase = h.initialAgentLoopPhase("杭州天气，生成pdf报告", nil)
+	if !phase.ForceSkillPreference {
+		t.Fatal("an explicit PDF request must still prefer skills")
+	}
+}
+
 func TestShouldPreferSkillForTask_GenerateIntentAllowed(t *testing.T) {
 	if !shouldPreferSkillForTask("生成一份PDF报告") {
 		t.Error("should return true for generate intent with pdf keyword")

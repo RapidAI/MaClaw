@@ -1,5 +1,7 @@
 package guiautomation
 
+import "fmt"
+
 // InputSimulator provides cross-platform input event simulation.
 type InputSimulator interface {
 	// Click performs a left mouse click at the given screen coordinates.
@@ -18,13 +20,31 @@ type InputSimulator interface {
 	DragDrop(fromX, fromY, toX, toY int) error
 }
 
+// ErrUnsupportedPlatform is returned when no input backend exists so callers
+// do not treat a missing simulator as a successful click or type.
+var ErrUnsupportedPlatform = fmt.Errorf("input simulation not supported on this platform")
+
 // noopInputSimulator is a no-op fallback for unsupported platforms.
 type noopInputSimulator struct{}
 
-func (n *noopInputSimulator) Click(x, y int) error                    { return nil }
-func (n *noopInputSimulator) RightClick(x, y int) error               { return nil }
-func (n *noopInputSimulator) DoubleClick(x, y int) error              { return nil }
-func (n *noopInputSimulator) Type(text string) error                  { return nil }
-func (n *noopInputSimulator) KeyCombo(keys ...string) error           { return nil }
-func (n *noopInputSimulator) Scroll(x, y, deltaX, deltaY int) error   { return nil }
-func (n *noopInputSimulator) DragDrop(fromX, fromY, toX, toY int) error { return nil }
+func (n *noopInputSimulator) Click(x, y int) error {
+	return ErrUnsupportedPlatform
+}
+func (n *noopInputSimulator) RightClick(x, y int) error {
+	return ErrUnsupportedPlatform
+}
+func (n *noopInputSimulator) DoubleClick(x, y int) error {
+	return ErrUnsupportedPlatform
+}
+func (n *noopInputSimulator) Type(text string) error {
+	return ErrUnsupportedPlatform
+}
+func (n *noopInputSimulator) KeyCombo(keys ...string) error {
+	return ErrUnsupportedPlatform
+}
+func (n *noopInputSimulator) Scroll(x, y, deltaX, deltaY int) error {
+	return ErrUnsupportedPlatform
+}
+func (n *noopInputSimulator) DragDrop(fromX, fromY, toX, toY int) error {
+	return ErrUnsupportedPlatform
+}

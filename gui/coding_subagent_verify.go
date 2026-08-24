@@ -124,6 +124,46 @@ func detectCMakeVerifyCommand(projectPath string) string {
 	return ""
 }
 
+// runPostLoopVerification executes one host-selected verification command and
+// records it in the same audit ledger used by normal bash calls. Recovery uses
+// it to obtain direct exit-status evidence without entering a mutating fix loop.
+func (s *CodingSubAgent) runPostLoopVerification(
+	cb *codingSubAgentCallbacks,
+	result *agent.LoopResult,
+	verifyCmd string,
+	workingDir string,
+	traj *TrajectoryRecorder,
+) bool {
+	if cb == nil || result == nil || strings.TrimSpace(verifyCmd) == "" || cb.ShouldStop() {
+		return false
+	}
+	if strings.TrimSpace(workingDir) == "" {
+		workingDir = s.projectPath
+	}
+	log.Printf("[coding-subagent-verify] running recovered verifier %q", verifyCmd)
+	if s.onProgress != nil {
+		s.onProgress("验证中: " + verifyCmd)
+	}
+	verifyArgs := fmt.Sprintf(`{"command":%q,"working_dir":%q,"timeout":60}`, verifyCmd, workingDir)
+	verifyResult := cb.ExecuteTool("bash", verifyArgs)
+	ledgerKnown, ledgerFailed := commandLedgerVerificationOutcome(cb, verifyCmd)
+	verifyFailed := postLoopVerificationFailed(verifyResult, ledgerKnown, ledgerFailed)
+	outcome := "succeeded"
+	if verifyFailed {
+		outcome = "failed"
+	}
+	recordSubAgentPostLoopVerify(traj, 1, verifyCmd, verifyArgs, verifyResult, outcome)
+	result.ToolCalls++
+	if verifyFailed {
+		log.Printf("[coding-subagent-verify] recovered verification FAILED")
+		return false
+	}
+	if s.onProgress != nil {
+		s.onProgress("验证通过")
+	}
+	return true
+}
+
 // runPostLoopVerifyFixCycle runs automatic verification after the main coding
 // loop completes. If verification fails, injects the error into the same
 // conversation and lets the model fix it (up to maxRounds times).
@@ -151,7 +191,8 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 		// Run verification command
 		verifyArgs := fmt.Sprintf(`{"command":%q,"working_dir":%q,"timeout":60}`, verifyCmd, s.projectPath)
 		verifyResult := cb.ExecuteTool("bash", verifyArgs)
-		verifyFailed := isSubAgentVerificationFailure(verifyResult)
+		ledgerKnown, ledgerFailed := commandLedgerVerificationOutcome(cb, verifyCmd)
+		verifyFailed := postLoopVerificationFailed(verifyResult, ledgerKnown, ledgerFailed)
 		outcome := "succeeded"
 		if verifyFailed {
 			outcome = "failed"
@@ -253,6 +294,42 @@ func isSubAgentVerificationFailure(output string) bool {
 	return false
 }
 
+// postLoopVerificationFailed combines the tool's textual result with the
+// command ledger. When the verifier appears in the ledger, its exit outcome
+// is authoritative: successful tests may intentionally print phrases such as
+// "exit status" or "build failed" as fixture data. Text remains a fallback
+// only when no matching command result was recorded.
+func postLoopVerificationFailed(output string, ledgerKnown, ledgerFailed bool) bool {
+	if ledgerKnown {
+		return ledgerFailed
+	}
+	return isSubAgentVerificationFailure(output)
+}
+
+// commandLedgerVerificationOutcome returns the final matching verifier result.
+// Commands are searched newest-first so a successful retry supersedes an
+// earlier failed attempt.
+func commandLedgerVerificationOutcome(cb *codingSubAgentCallbacks, verifyCmd string) (known, failed bool) {
+	if cb == nil {
+		return false, false
+	}
+	want := normalizedSubAgentVerificationCommand(verifyCmd)
+	if want == "" {
+		return false, false
+	}
+	commands := cb.getCommandsRun()
+	for i := len(commands) - 1; i >= 0; i-- {
+		if normalizedSubAgentVerificationCommand(commands[i].Command) == want {
+			return true, !commands[i].Succeeded
+		}
+	}
+	return false, false
+}
+
+func normalizedSubAgentVerificationCommand(command string) string {
+	return strings.ToLower(strings.Join(strings.Fields(command), " "))
+}
+
 // truncateForSubAgentVerify truncates verification output to fit in a fix prompt
 // while preserving the most useful error information.
 func truncateForSubAgentVerify(output string, maxTokens int) string {
@@ -264,9 +341,11 @@ func truncateForSubAgentVerify(output string, maxTokens int) string {
 	return truncateSubAgentBashResult(output)
 }
 
-// hasSubAgentSelfVerified checks if the model already ran a verification
-// command during the loop AND the last such command succeeded.
-// Only skips post-loop verify when model both ran AND passed verification.
+// hasSubAgentSelfVerified checks whether the loop already produced a fresh,
+// auditable verification result. It deliberately shares the quality gate's
+// command classifier instead of keeping a smaller text-pattern list: otherwise
+// the post-loop verifier can skip recovery for a command that the final audit
+// will reject.
 func hasSubAgentSelfVerified(cb *codingSubAgentCallbacks) bool {
 	if cb == nil {
 		return false
@@ -275,38 +354,14 @@ func hasSubAgentSelfVerified(cb *codingSubAgentCallbacks) bool {
 	if len(commands) == 0 {
 		return false
 	}
-
-	// Check if any command looks like a verification command
-	verifyPatterns := []string{
-		"go build", "go test", "go vet",
-		"cargo test", "cargo check", "cargo build",
-		"npm run build", "npm run test", "npm run lint", "npm run typecheck",
-		"yarn build", "yarn test", "yarn lint",
-		"pytest", "python -m pytest",
-		"make test", "make check", "make build",
-		"cmake --build",
-		"tsc", "eslint", "prettier --check",
-	}
-
-	// Find the LAST verification command and check if it succeeded.
-	// If the last verify failed, post-loop verify should still trigger
-	// (model may have given up without fixing).
-	lastVerifyIdx := -1
 	for i := len(commands) - 1; i >= 0; i-- {
-		cmdLower := strings.ToLower(commands[i].Command)
-		for _, pattern := range verifyPatterns {
-			if strings.Contains(cmdLower, pattern) {
-				lastVerifyIdx = i
-				break
-			}
+		command := commands[i]
+		if isUnsafeSubAgentVerificationCommand(command.Command) {
+			return false
 		}
-		if lastVerifyIdx >= 0 {
-			break
+		if isSubAgentVerificationCommand(command.Command) {
+			return command.Succeeded
 		}
 	}
-
-	if lastVerifyIdx < 0 {
-		return false // never ran verification
-	}
-	return commands[lastVerifyIdx].Succeeded
+	return false
 }

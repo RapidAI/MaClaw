@@ -342,19 +342,10 @@ func (oe *OnlineExtractor) classifyAndApply(
 	// Similar memories exist -> LLM classifies operation.
 	classified, err := oe.classifyOperation(ctx, llmCaller, content, similar)
 	if err != nil {
-		// On LLM failure, default to ADD (safe: may create a near-duplicate,
-		// but the async semantic dedup will clean it up later).
-		entry := Entry{
-			Content:   content,
-			Category:  cat,
-			Tags:      tags,
-			Entities:  fact.ParsedEntities(),
-			ValidAt:   validAt,
-			InvalidAt: invalidAt,
-			OwnerID:   ownerID,
-		}
-		op, _ := oe.saveGovernedExtractedEntry(entry)
-		return op, nil
+		// Classify failure must not invent a new memory. ADD here is the
+		// warehouse-corruption loop: a restated snippet becomes the next
+		// task's "user fact".
+		return OpNoop, nil
 	}
 
 	// Execute the classified operation.
@@ -666,10 +657,32 @@ func filterMessagesForExtraction(messages []ConversationMessage) []ConversationM
 			}
 			filtered = append(filtered, m)
 		default:
+			if extractionLooksLikeWarehouseRestatement(m) {
+				continue
+			}
 			filtered = append(filtered, m)
 		}
 	}
 	return filtered
+}
+
+func extractionLooksLikeWarehouseRestatement(m ConversationMessage) bool {
+	if m.Role != "assistant" && m.Role != "tool" {
+		return false
+	}
+	for _, marker := range []string{
+		"[知识库]",
+		"[企业知识]",
+		"根据知识库中的资料",
+		"根据记忆中的记录",
+		"知识库参考（自动检索）",
+		"企业知识库参考（自动检索）",
+	} {
+		if strings.Contains(m.Content, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // categoryFromString converts a string category to the Category type.

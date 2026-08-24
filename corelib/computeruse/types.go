@@ -32,6 +32,11 @@ type MarkedElement struct {
 	Confidence   float64 `json:"confidence"`
 	Source       string  `json:"source"`
 	Interactable bool    `json:"interactable"`
+	// Handle is a platform locator (UIA AutomationId, AX path). Empty means
+	// actuation falls back to the element's screen-space center.
+	Handle string `json:"handle,omitempty"`
+	// Patterns lists known accessibility patterns (invoke, value, toggle, …).
+	Patterns []string `json:"patterns,omitempty"`
 	// Window is the title of the top-level window owning this element's center
 	// ("" when unknown). Policy metadata — kept out of TextForModel.
 	Window string `json:"window,omitempty"`
@@ -45,6 +50,13 @@ type ScreenMeta struct {
 	ScreenIndex int     `json:"screen_index"` // -1 = all/stitched
 	OriginX     int     `json:"origin_x"`
 	OriginY     int     `json:"origin_y"`
+	// VisionWidth/Height are the pixel size of the screenshot sent to a vision
+	// model. Zero means the model image matches Width/Height (no resize).
+	VisionWidth  int `json:"vision_width,omitempty"`
+	VisionHeight int `json:"vision_height,omitempty"`
+	// CropTitle is set when observe captured a single top-level window instead
+	// of a full monitor. Empty means the capture is a monitor/desktop region.
+	CropTitle string `json:"crop_title,omitempty"`
 }
 
 // ObserveResult is the structured outcome of one observation step.

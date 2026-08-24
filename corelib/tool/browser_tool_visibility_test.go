@@ -54,7 +54,7 @@ func TestDefinitionGeneratorHidesInternalBrowserDispatchTools(t *testing.T) {
 	}
 
 	names := toolDefinitionNames(gen.Generate())
-	if names["browser_click"] || names["srv_browser_click"] {
+	if names["browser_click"] || names["srv_browser_click"] || names["notes"] {
 		t.Fatalf("Generate leaked internal browser dispatch tool: %#v", names)
 	}
 	if !names["browser"] || !names["bash"] {
@@ -62,11 +62,11 @@ func TestDefinitionGeneratorHidesInternalBrowserDispatchTools(t *testing.T) {
 	}
 
 	deferredNames := toolDefinitionNames(gen.GenerateDeferred())
-	if deferredNames["browser_click"] || deferredNames["srv_browser_click"] {
-		t.Fatalf("GenerateDeferred leaked internal browser dispatch tool: %#v", deferredNames)
+	if deferredNames["browser_click"] || deferredNames["srv_browser_click"] || deferredNames["notes"] {
+		t.Fatalf("GenerateDeferred leaked dynamic MCP inventory: %#v", deferredNames)
 	}
-	if !deferredNames["notes"] || deferredNames["browser"] {
-		t.Fatalf("GenerateDeferred should keep non-internal deferred tools: %#v", deferredNames)
+	if deferredNames["browser"] {
+		t.Fatalf("GenerateDeferred should not include non-deferred static tools: %#v", deferredNames)
 	}
 }
 

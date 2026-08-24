@@ -204,8 +204,11 @@ func TestTaskRunner_FinalReport(t *testing.T) {
 	runner.RunAll(context.Background(), tasks, nil, nil)
 
 	report := runner.FinalReport()
-	if !containsSubstr(report, "1 通过") || !containsSubstr(report, "1 失败") {
-		t.Errorf("report missing expected counts:\n%s", report)
+	if strings.Contains(report, "## ") || strings.Contains(report, "执行报告") || strings.Contains(report, "[ERR]") {
+		t.Errorf("report should be engineer prose, got:\n%s", report)
+	}
+	if !containsSubstr(report, "works") || !containsSubstr(report, "compile error") {
+		t.Errorf("report missing task outcome:\n%s", report)
 	}
 }
 

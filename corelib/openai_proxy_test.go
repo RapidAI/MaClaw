@@ -891,6 +891,39 @@ func TestOpenAICompatResponsesRequestToChatAcceptsNestedFunctionToolChoice(t *te
 	}
 }
 
+func TestOpenAICompatResponsesRequestToChatPreservesStrictJSONSchemaContract(t *testing.T) {
+	body := map[string]interface{}{
+		"model": "test-model",
+		"input": "classify this request",
+		"text": map[string]interface{}{
+			"format": map[string]interface{}{
+				"type":   "json_schema",
+				"name":   "intent_tree",
+				"strict": true,
+				"schema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"top": map[string]interface{}{"type": "array"},
+					},
+				},
+			},
+		},
+	}
+
+	chat, _, err := OpenAICompatResponsesRequestToChat(body)
+	if err != nil {
+		t.Fatalf("convert request: %v", err)
+	}
+	format, ok := chat["response_format"].(map[string]interface{})
+	if !ok || format["type"] != "json_schema" {
+		t.Fatalf("response_format = %#v, want json_schema", chat["response_format"])
+	}
+	jsonSchema, ok := format["json_schema"].(map[string]interface{})
+	if !ok || jsonSchema["name"] != "intent_tree" || jsonSchema["strict"] != true {
+		t.Fatalf("json_schema = %#v, want preserved strict contract", format["json_schema"])
+	}
+}
+
 func TestOpenAICompatResponsesRequestToChatDropsResponsesOnlyFields(t *testing.T) {
 	body := map[string]interface{}{
 		"model":                "test-model",

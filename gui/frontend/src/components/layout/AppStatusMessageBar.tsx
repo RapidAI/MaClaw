@@ -1,6 +1,4 @@
 import type { CSSProperties } from 'react';
-import type { CodingAgentProgress } from '../ai/CodingAgentProgressStatus';
-import { CodingAgentCompactStatus } from './CodingAgentCompactStatus';
 
 type AppStatusMessageBarProps = {
     status: string;
@@ -21,9 +19,6 @@ type AppStatusMessageBarProps = {
     lobsterHalf: string;
     onOpenIMSettings: () => void;
     onOpenLLMSettings: () => void;
-    codingAgentProgress?: CodingAgentProgress | null;
-    /** Prefer explicit theme so coding-agent failure chrome remaps on dark. */
-    isDark?: boolean;
     /**
      * row — full-width strip under main content (tool pages).
      * inline — compact cluster for the AI quick-settings bar (same row as chips).
@@ -50,8 +45,6 @@ export const AppStatusMessageBar = ({
     lobsterHalf,
     onOpenIMSettings,
     onOpenLLMSettings,
-    codingAgentProgress = null,
-    isDark,
     variant = 'row',
 }: AppStatusMessageBarProps) => {
     const lansengerConnected = showLansenger && lansengerStatus === 'connected';
@@ -65,7 +58,7 @@ export const AppStatusMessageBar = ({
     const installStatus = String(backgroundInstallStatus || '').trim();
     // Collapse entirely when idle so neither the tool-page strip nor the AI
     // quick-settings row reserves empty height.
-    if (!statusText && !showWarning && !codingAgentProgress && !installStatus) {
+    if (!statusText && !showWarning && !installStatus) {
         return null;
     }
     const successMarker = installStatus.startsWith('?') || installStatus.startsWith('??');
@@ -119,7 +112,7 @@ export const AppStatusMessageBar = ({
         flexShrink: inline ? 1 : undefined,
         overflow: inline ? 'hidden' : undefined,
     };
-    const hasSide = !!(showWarning || codingAgentProgress || installStatus);
+    const hasSide = !!(showWarning || installStatus);
 
     return (
         <div
@@ -163,15 +156,6 @@ export const AppStatusMessageBar = ({
                                         : (lang?.startsWith('zh') ? 'IM not connected' : 'IM not connected')}
                         </span>
                     </span>
-                )}
-                {codingAgentProgress && (
-                    <CodingAgentCompactStatus
-                        progress={codingAgentProgress}
-                        lang={lang}
-                        testId="app-status-coding-agent"
-                        variant="status-bar"
-                        isDark={isDark}
-                    />
                 )}
                 {installStatus && (
                     <span

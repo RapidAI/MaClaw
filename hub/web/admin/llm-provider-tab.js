@@ -1,4 +1,4 @@
-/* * LLM provider admin extension. * ASCII only. Chinese text must use \uXXXX escapes. */const LLM_PROVIDER_I18N = {  en: {    navLabel: 'LLM EndPoint', navDesc: 'Endpoint routing and unified API', tabTitle: 'LLM EndPoint', tabSubtitle: 'Configure LLM endpoints, token usage, connection tests, and the unified OpenAI v1 endpoint.', reload: 'Reload', enabled: 'Enable unified LLM service', smartRoute: 'Smart route single-device LLM', defaultProvider: 'Default provider', exposeTitle: 'Unified OpenAI v1 Endpoint', exposeDesc: 'Select provider by `model`, `X-LLM-Provider`, or `?provider=`.', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: 'Available Models', authLabel: 'Authentication', hints: 'Hints', editorTitle: 'EndPoint Editor', editorDesc: 'Create or update provider credentials and model mapping.', listTitle: 'Configured EndPoints', listDesc: 'Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.', providerId: 'Provider ID', providerName: 'Display Name', apiUrl: 'API Base URL', apiKey: 'API Key', model: 'Upstream Model', protocol: 'Protocol', wireApi: 'Wire API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / Agent Type', agentTypeHint: 'Examples: openclaw, claude-code/2.0.0, cline', maxConcurrency: 'Upstream Concurrency', maxQueueWaiters: 'Max Queue Length', queueTimeoutMs: 'Queue Timeout (ms)', concurrencyUnlimited: 'Unlimited', queueUnlimited: 'Unlimited', queueTimeoutUnlimited: 'Wait with request timeout', inFlight: 'In Flight', queueWaiters: 'Queued', add: 'New Provider', remove: 'Remove', save: 'Save', createAction: 'Create EndPoint', updateAction: 'Update EndPoint', test: 'Test Connection', cancel: 'Cancel', createTitle: 'New EndPoint', editTitle: 'Edit EndPoint', createDone: 'EndPoint created.', updateDone: 'EndPoint updated.', noSelection: 'No provider selected', selected: 'Selected', defaultBadge: 'Default', hasKey: 'API key saved', noKey: 'No API key', usageInput: 'Input', usageOutput: 'Output', usageTotal: 'Total', saveDone: 'LLM EndPoint registry saved.', saveDoneEmpty: 'Global LLM settings saved. No provider is configured yet.', nothingToSave: 'No provider to save yet. Click New Provider first.', edit: 'Edit', providerDraftMissing: 'Enter provider ID and display name before saving.', providerDraftSaved: 'Provider draft prepared.', saveFailed: 'Save LLM EndPoints failed: {error}', loadFailed: 'Load LLM EndPoints failed: {error}', addDone: 'Provider draft added.', removeDone: 'EndPoint removed.', removeConfirm: 'Remove provider {id}?', providerRequired: 'Add a provider first.', duplicateId: 'Provider ID already exists: {id}', apiKeyKeep: 'Configured (leave empty to keep)', apiKeyEnter: 'Enter API key', testRunning: 'Testing...', testOk: 'Connection ok ({ms}ms): {reply}', testFail: 'Connection failed: {error}', emptyList: 'No providers configured yet.', hintEmpty: 'Use model=<provider id> to select a provider on the unified endpoint.', authEmpty: 'Use Authorization: Bearer <viewer access token> from hub email sign-in.', generateTestKey: 'Generate Test API Key', testKeyRunning: 'Generating test API key...', testKeyDone: 'Test API key ready for {email}.', testKeyFail: 'Generate test API key failed: {error}', testKeyResult: 'Email: {email}\nAuthorization: Bearer {token}\nExpires: {days} days', modelsEmpty: '-', searchPlaceholder: 'Search by provider ID, name, or model', clearSearch: 'Clear', emptyFilter: 'No matching providers.', allProtocols: 'All Protocols', allKeyStates: 'All Key States', withKey: 'With Key', withoutKey: 'Without Key', countSummary: 'Total {total}, filtered {filtered}', uaShort: 'UA', providerIdPlaceholder: 'provider-id', providerNamePlaceholder: 'Provider Name', apiUrlPlaceholder: 'https://api.example.com/v1', modelPlaceholder: 'gpt-4.1', agentTypePlaceholder: 'openclaw', export: 'Export JSON', import: 'Import JSON', exportDone: 'LLM EndPoint JSON exported.', exportEmpty: 'No LLM EndPoint configuration to export yet.', importDone: 'LLM EndPoint JSON imported.', importFailed: 'Import LLM EndPoint JSON failed: {error}', importInvalid: 'Import JSON must include a providers array.', importBusy: 'Please finish the current editor changes before importing.'  },  zh: {    navLabel: '\u6a21\u578b\u63a5\u5165\u70b9', navDesc: '\u7aef\u70b9\u8def\u7531\u4e0e\u7edf\u4e00 API', tabTitle: '\u6a21\u578b\u63a5\u5165\u70b9', tabSubtitle: '\u914d\u7f6e LLM EndPoint\u3001token \u7528\u91cf\u3001\u8fde\u63a5\u6d4b\u8bd5\u4e0e\u7edf\u4e00 OpenAI v1 \u63a5\u53e3\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', enabled: '\u542f\u7528\u7edf\u4e00 LLM \u670d\u52a1', smartRoute: '\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM', defaultProvider: '\u9ed8\u8ba4\u670d\u52a1\u5546', exposeTitle: '\u7edf\u4e00 OpenAI v1 \u5bf9\u5916\u63a5\u53e3', exposeDesc: '\u53ef\u901a\u8fc7 `model`\u3001`X-LLM-Provider` \u6216 `?provider=` \u9009\u62e9\u670d\u52a1\u5546\u3002', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: '\u53ef\u7528\u6a21\u578b', authLabel: '\u9274\u6743\u65b9\u5f0f', hints: '\u63d0\u793a', editorTitle: 'EndPoint \u7f16\u8f91\u5668', editorDesc: '\u521b\u5efa\u6216\u66f4\u65b0\u670d\u52a1\u5546\u914d\u7f6e\u3001\u5bc6\u94a5\u548c\u6a21\u578b\u6620\u5c04\u3002', listTitle: '\u5df2\u914d\u7f6e EndPoint', listDesc: 'token \u7528\u91cf\u4ece\u7edf\u4e00 OpenAI v1 \u7aef\u70b9\u7684\u8bf7\u6c42\u4e2d\u7d2f\u79ef\u7edf\u8ba1\u3002', providerId: '\u670d\u52a1\u5546 ID', providerName: '\u663e\u793a\u540d\u79f0', apiUrl: 'API \u57fa\u5730\u5740', apiKey: 'API Key', model: '\u4e0a\u6e38\u6a21\u578b', protocol: '\u534f\u8bae', wireApi: '\u4f20\u8f93 API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / \u5ba2\u6237\u7aef\u7c7b\u578b', agentTypeHint: '\u793a\u4f8b\uff1aopenclaw\u3001claude-code/2.0.0\u3001cline', maxConcurrency: '\u4e0a\u6e38\u5e76\u53d1\u6570', maxQueueWaiters: '\u6700\u5927\u6392\u961f\u957f\u5ea6', queueTimeoutMs: '\u6392\u961f\u8d85\u65f6\uff08ms\uff09', concurrencyUnlimited: '\u4e0d\u9650\u5236', queueUnlimited: '\u4e0d\u9650\u5236', queueTimeoutUnlimited: '\u8ddf\u968f\u8bf7\u6c42\u8d85\u65f6\u7b49\u5f85', inFlight: '\u6267\u884c\u4e2d', queueWaiters: '\u6392\u961f\u4e2d', add: '\u65b0\u5efa\u670d\u52a1\u5546', remove: '\u5220\u9664', save: '\u4fdd\u5b58', createAction: '\u521b\u5efa EndPoint', updateAction: '\u66f4\u65b0 EndPoint', test: '\u6d4b\u8bd5\u8fde\u63a5', cancel: '\u53d6\u6d88', createTitle: '\u65b0\u5efa EndPoint', editTitle: '\u7f16\u8f91 EndPoint', createDone: 'EndPoint \u5df2\u65b0\u5efa\u3002', updateDone: 'EndPoint \u5df2\u66f4\u65b0\u3002', noSelection: '\u672a\u9009\u62e9\u670d\u52a1\u5546', selected: '\u5df2\u9009\u4e2d', defaultBadge: '\u9ed8\u8ba4', hasKey: '\u5df2\u4fdd\u5b58 API Key', noKey: '\u672a\u914d\u7f6e API Key', usageInput: '\u8f93\u5165', usageOutput: '\u8f93\u51fa', usageTotal: '\u603b\u8ba1', saveDone: 'LLM EndPoint \u914d\u7f6e\u5df2\u4fdd\u5b58\u3002', saveDoneEmpty: '\u5df2\u4fdd\u5b58 LLM \u5168\u5c40\u8bbe\u7f6e\uff0c\u4f46\u5f53\u524d\u8fd8\u6ca1\u6709\u914d\u7f6e\u670d\u52a1\u5546\u3002', nothingToSave: '\u8fd8\u6ca1\u6709\u53ef\u4fdd\u5b58\u7684\u670d\u52a1\u5546\uff0c\u8bf7\u5148\u70b9\u51fb\u65b0\u5efa\u670d\u52a1\u5546\u3002', edit: '\u4fee\u6539', providerDraftMissing: '\u4fdd\u5b58\u524d\u8bf7\u5148\u586b\u5199\u670d\u52a1\u5546 ID \u548c\u663e\u793a\u540d\u79f0\u3002', providerDraftSaved: '\u5f53\u524d\u670d\u52a1\u5546\u8349\u7a3f\u5df2\u5199\u5165\u3002', saveFailed: '\u4fdd\u5b58 LLM EndPoint \u5931\u8d25: {error}', loadFailed: '\u52a0\u8f7d LLM EndPoint \u5931\u8d25: {error}', addDone: '\u5df2\u65b0\u589e\u670d\u52a1\u5546\u8349\u7a3f\u3002', removeDone: 'EndPoint \u5df2\u5220\u9664\u3002', removeConfirm: '\u786e\u8ba4\u5220\u9664\u670d\u52a1\u5546 {id} \u5417\uff1f', providerRequired: '\u8bf7\u5148\u65b0\u589e\u670d\u52a1\u5546\u3002', duplicateId: '\u670d\u52a1\u5546 ID \u5df2\u5b58\u5728: {id}', apiKeyKeep: '\u5df2\u914d\u7f6e\uff08\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8\uff09', apiKeyEnter: '\u8bf7\u8f93\u5165 API Key', testRunning: '\u6d4b\u8bd5\u4e2d...', testOk: '\u8fde\u63a5\u6210\u529f ({ms}ms): {reply}', testFail: '\u8fde\u63a5\u5931\u8d25: {error}', emptyList: '\u6682\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002', hintEmpty: '\u53ef\u4f7f\u7528 model=<provider id> \u5728\u7edf\u4e00\u7aef\u70b9\u9009\u62e9\u670d\u52a1\u5546\u3002', authEmpty: '\u4f7f\u7528 HUB \u90ae\u7bb1\u767b\u5f55\u540e\u8fd4\u56de\u7684 viewer access token\uff0c\u901a\u8fc7 Authorization: Bearer <token> \u8c03\u7528\u3002', generateTestKey: '\u751f\u6210\u6d4b\u8bd5 API Key', testKeyRunning: '\u6b63\u5728\u751f\u6210\u6d4b\u8bd5 API Key...', testKeyDone: '\u5df2\u4e3a {email} \u751f\u6210\u6d4b\u8bd5 API Key\u3002', testKeyFail: '\u751f\u6210\u6d4b\u8bd5 API Key \u5931\u8d25: {error}', testKeyResult: 'Email: {email}\nAuthorization: Bearer {token}\n\u6709\u6548\u671f: {days} \u5929', modelsEmpty: '-', searchPlaceholder: '\u6309\u670d\u52a1\u5546 ID\u3001\u540d\u79f0\u6216\u6a21\u578b\u641c\u7d22', clearSearch: '\u6e05\u9664', emptyFilter: '\u6682\u65e0\u5339\u914d\u7684\u670d\u52a1\u5546\u3002', allProtocols: '\u5168\u90e8\u534f\u8bae', allKeyStates: '\u5168\u90e8 Key \u72b6\u6001', withKey: '\u5df2\u914d\u7f6e Key', withoutKey: '\u672a\u914d\u7f6e Key', countSummary: '\u603b\u5171 {total} \u4e2a\uff0c\u5f53\u524d {filtered} \u4e2a', uaShort: 'UA', providerIdPlaceholder: 'provider-id', providerNamePlaceholder: '\u670d\u52a1\u5546\u540d\u79f0', apiUrlPlaceholder: 'https://api.example.com/v1', modelPlaceholder: 'gpt-4.1', agentTypePlaceholder: 'openclaw', export: '\u5bfc\u51fa JSON', import: '\u5bfc\u5165 JSON', exportDone: 'LLM EndPoint JSON \u5df2\u5bfc\u51fa\u3002', exportEmpty: '\u5f53\u524d\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 LLM EndPoint \u914d\u7f6e\u3002', importDone: 'LLM EndPoint JSON \u5df2\u5bfc\u5165\u3002', importFailed: '\u5bfc\u5165 LLM EndPoint JSON \u5931\u8d25: {error}', importInvalid: '\u5bfc\u5165 JSON \u5fc5\u987b\u5305\u542b providers \u6570\u7ec4\u3002', importBusy: '\u8bf7\u5148\u5904\u7406\u5f53\u524d\u7f16\u8f91\u4e2d\u7684\u53d8\u66f4\uff0c\u518d\u6267\u884c\u5bfc\u5165\u3002'  }};const lp = (key, vars = {}) => ((LLM_PROVIDER_I18N[currentLang] || LLM_PROVIDER_I18N.en)[key] || LLM_PROVIDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');let llmProviderRegistryCache = null;let llmProviderSelectedId = '';let llmProviderDialogMode = 'create';let llmProviderIdManuallyEdited = false;let llmProviderLastSuggestedId = '';let llmProviderPage = 1;let llmProviderFilter = '';let llmProviderProtocolFilter = '';let llmProviderKeyFilter = 'all';let llmProviderCardTestState = {};const llmProviderPageSize = 12;function lpUsage(usage) { return { input_tokens: Number(usage && usage.input_tokens || 0), output_tokens: Number(usage && usage.output_tokens || 0), total_tokens: Number(usage && usage.total_tokens || 0), cached_input_tokens: Number(usage && usage.cached_input_tokens || 0), cache_write_tokens: Number(usage && usage.cache_write_tokens || 0), requests: Number(usage && usage.requests || 0), cached_requests: Number(usage && usage.cached_requests || 0) }; }function lpMetricLabel(kind) { var zh = { requests: '\u8bf7\u6c42\u6570', cacheRate: 'Prompt \u7f13\u5b58\u7387', cacheReuseRate: '\u7f13\u5b58\u590d\u7528\u7387', cacheRead: 'Cache Read', cacheWrite: 'Cache Write' }; var en = { requests: 'Requests', cacheRate: 'Prompt Cache Rate', cacheReuseRate: 'Cache Reuse', cacheRead: 'Cache Read', cacheWrite: 'Cache Write' }; return ((currentLang === 'zh' ? zh : en)[kind]) || kind; }function lpRatePercent(hit,total){ hit=Number(hit||0); total=Number(total||0); if(!total) return '0%'; return ((hit*100/total).toFixed(1).replace(/\.0$/,'')) + '%'; }function lpClone(provider) { return { id: provider && provider.id || '', name: provider && provider.name || '', api_url: provider && provider.api_url || '', api_key: provider && provider.api_key || '', has_api_key: !!(provider && provider.has_api_key), model: provider && provider.model || '', protocol: provider && provider.protocol || 'openai', wire_api: provider && provider.wire_api || 'chat', agent_type: provider && provider.agent_type || '', max_concurrency: Number(provider && provider.max_concurrency || 0), max_queue_waiters: Number(provider && provider.max_queue_waiters || 0), queue_timeout_ms: Number(provider && provider.queue_timeout_ms || 0), in_flight: Number(provider && provider.in_flight || 0), queue_waiters: Number(provider && provider.queue_waiters || 0), usage: lpUsage(provider && provider.usage) }; }function lpById(id) { return (llmProviderRegistryCache && llmProviderRegistryCache.providers || []).find(function(p) { return p.id === id; }) || null; }function lpNormalizeId(value) { return String(value || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''); }function lpNextId() { const used = new Set((llmProviderRegistryCache && llmProviderRegistryCache.providers || []).map(function(p) { return p.id; })); let i = 1; while (used.has('provider-' + i)) i++; return 'provider-' + i; }function lpEnsureSelection() { const providers = llmProviderRegistryCache && llmProviderRegistryCache.providers || []; if (!providers.length) { llmProviderSelectedId = ''; return; } if (!lpById(llmProviderSelectedId)) llmProviderSelectedId = llmProviderRegistryCache.current_provider_id || providers[0].id; if (!llmProviderRegistryCache.current_provider_id || !lpById(llmProviderRegistryCache.current_provider_id)) llmProviderRegistryCache.current_provider_id = llmProviderSelectedId; }function lpApiKeyPlaceholder(provider) { return provider && provider.has_api_key ? lp('apiKeyKeep') : lp('apiKeyEnter'); }function lpSuggestIdFromName(name) {  const normalized = lpNormalizeId(name || '');  return normalized || lpNextId();}function resetLLMProviderIdSuggestionState() {  llmProviderIdManuallyEdited = false;  llmProviderLastSuggestedId = '';}function syncLLMProviderIdSuggestion() {  if (llmProviderDialogMode !== 'create') return;  const idInput = document.getElementById('llmProviderId');  const nameInput = document.getElementById('llmProviderName');  if (!idInput || !nameInput) return;  const currentId = String(idInput.value || '').trim();  if (llmProviderIdManuallyEdited && currentId && currentId !== llmProviderLastSuggestedId) return;  const suggested = lpSuggestIdFromName(nameInput.value);  llmProviderLastSuggestedId = suggested;  idInput.value = suggested;}function initLLMProviderFormBindings() {  if (initLLMProviderFormBindings.done) return;  initLLMProviderFormBindings.done = true;  const idInput = document.getElementById('llmProviderId');  const nameInput = document.getElementById('llmProviderName');  if (nameInput) {    nameInput.addEventListener('input', function() {      syncLLMProviderIdSuggestion();    });  }  if (idInput) {    idInput.addEventListener('input', function() {      if (llmProviderDialogMode !== 'create') return;      const currentId = lpNormalizeId(idInput.value);      if (!currentId || currentId === llmProviderLastSuggestedId) {        llmProviderIdManuallyEdited = false;        if (currentId) llmProviderLastSuggestedId = currentId;        return;      }      llmProviderIdManuallyEdited = true;    });  }}initLLMProviderFormBindings.done = false;function validateLLMProvider(provider, opts) {  const requireKey = !!(opts && opts.requireKey);  if (!provider || !provider.id || !provider.name || !provider.api_url || !provider.model) return { ok: false, message: lp('providerDraftMissing') };  if (requireKey && !String(provider.api_key || '').trim()) return { ok: false, message: lp('apiKeyEnter') };  return { ok: true, message: '' };}function scrollLLMProviderCardIntoView(id) {  if (!id) return;  const card = document.querySelector('[data-provider-id="' + String(id).replace(/"/g, '\"') + '"]');  if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });}function ensureLLMProviderPageInRange(total) {  const totalPages = Math.max(1, Math.ceil(Number(total || 0) / llmProviderPageSize));  llmProviderPage = Math.min(totalPages, Math.max(1, Number(llmProviderPage || 1)));  return totalPages;}function syncLLMProviderPageWithSelection(providers) {  const list = providers || [];  const selectedIndex = list.findIndex(function(p) { return p.id === llmProviderSelectedId; });  const totalPages = ensureLLMProviderPageInRange(list.length);  if (selectedIndex >= 0) llmProviderPage = Math.floor(selectedIndex / llmProviderPageSize) + 1;  return totalPages;}function changeLLMProviderPage(step) {  const filteredCount = filterLLMProviders(llmProviderRegistryCache && llmProviderRegistryCache.providers || []).length;  const totalPages = ensureLLMProviderPageInRange(filteredCount);  llmProviderPage = Math.min(totalPages, Math.max(1, llmProviderPage + step));  renderLLMProviders();}function setLLMProviderFilter(value) {  llmProviderFilter = String(value || '').trim().toLowerCase();  llmProviderPage = 1;  renderLLMProviders();}function setLLMProviderProtocolFilter(value) {  llmProviderProtocolFilter = String(value || '').trim().toLowerCase();  llmProviderPage = 1;  renderLLMProviders();}function setLLMProviderKeyFilter(value) {  llmProviderKeyFilter = String(value || 'all').trim().toLowerCase() || 'all';  llmProviderPage = 1;  renderLLMProviders();}function filterLLMProviders(providers) {  const keyword = String(llmProviderFilter || '').trim().toLowerCase();  const protocolFilter = String(llmProviderProtocolFilter || '').trim().toLowerCase();  const keyFilter = String(llmProviderKeyFilter || 'all').trim().toLowerCase();  return (providers || []).filter(function(p) {    const matchesKeyword = !keyword || [p.id, p.name, p.model].some(function(v) { return String(v || '').toLowerCase().indexOf(keyword) >= 0; });    const matchesProtocol = !protocolFilter || String(p.protocol || 'openai').toLowerCase() === protocolFilter;    const hasKey = !!p.has_api_key;    const matchesKey = keyFilter === 'all' || (keyFilter === 'with_key' && hasKey) || (keyFilter === 'without_key' && !hasKey);    return matchesKeyword && matchesProtocol && matchesKey;  });}function applyLLMProviderScopeUI() {  var enabled = document.getElementById('llmProvidersEnabled');  if (enabled && enabled.parentElement && enabled.parentElement.parentElement) enabled.parentElement.parentElement.style.display = 'none';  var smart = document.getElementById('llmProvidersSmartRouteSingle');  if (smart && smart.parentElement && smart.parentElement.parentElement) smart.parentElement.parentElement.style.display = 'none';}function ensureLLMProviderModalUI() {  var overlay = document.getElementById('llmProviderModalOverlay');  if (overlay && window.AdminUI && typeof AdminUI.bindModalOverlayDismiss === 'function') {    AdminUI.bindModalOverlayDismiss(overlay, closeLLMProviderDialog);  }  var testResult = document.getElementById('llmProviderTestResult');  if (testResult) testResult.classList.add('hidden');  initLLMProviderFormBindings();  initLLMProviderGlobalBindings();}function updateLLMProviderEditorCopy(mode) {  const editing = mode === 'edit';  _s('llmProviderEditorTitle', 'textContent', editing ? lp('editTitle') : lp('createTitle'));  _s('llmProviderEditorDesc', 'textContent', lp('editorDesc'));  _s('llmProviderSaveBtn', 'textContent', editing ? lp('updateAction') : lp('createAction'));  _s('llmProviderCancelBtn', 'textContent', lp('cancel'));  _s('llmProviderTestBtn', 'textContent', lp('test'));}function applyLLMProviderEditorMode() {  var idInput = document.getElementById('llmProviderId');  if (idInput) idInput.readOnly = llmProviderDialogMode === 'edit';}function openLLMProviderDialog(mode) {  ensureLLMProviderModalUI();  var overlay = document.getElementById('llmProviderModalOverlay');  if (!overlay) return;  llmProviderDialogMode = mode === 'edit' ? 'edit' : 'create';  if (llmProviderDialogMode === 'edit') {    llmProviderIdManuallyEdited = true;    llmProviderLastSuggestedId = document.getElementById('llmProviderId') && document.getElementById('llmProviderId').value || '';  }  updateLLMProviderEditorCopy(llmProviderDialogMode);  applyLLMProviderEditorMode();  var overlay = document.getElementById('llmProviderModalOverlay');  if (overlay) overlay.classList.add('show');  var testResult = document.getElementById('llmProviderTestResult');  if (testResult) { testResult.classList.add('hidden'); testResult.textContent = ''; }  var first = document.getElementById('llmProviderId');  if (first && typeof first.focus === 'function') first.focus();}function llmProviderDialogOpen() {  var overlay = document.getElementById('llmProviderModalOverlay');  return !!(overlay && overlay.classList.contains('show'));}function closeLLMProviderDialog() {  var overlay = document.getElementById('llmProviderModalOverlay');  if (overlay) overlay.classList.remove('show');  var testResult = document.getElementById('llmProviderTestResult');  if (testResult) { testResult.classList.add('hidden'); testResult.textContent = ''; }}function setLLMProviderTestKeyResult(message) {  var result = document.getElementById('llmProvidersTestKeyResult');  if (!result) return;  if (!message) { result.classList.add('hidden'); result.textContent = ''; return; }  result.classList.remove('hidden');  result.textContent = message;}function applyLLMProvidersI18n() {  _s('navLLMProviders', 'textContent', lp('navLabel'));  _s('navLLMProvidersDesc', 'textContent', lp('navDesc'));  _s('llmProvidersTabTitle', 'textContent', lp('tabTitle'));  _s('llmProvidersTabSubtitle', 'textContent', lp('tabSubtitle'));  _s('llmProvidersReloadBtn', 'textContent', lp('reload'));  _s('llmProvidersExportBtn', 'textContent', lp('export'));  _s('llmProvidersImportBtn', 'textContent', lp('import'));  _s('llmProvidersEnabledLabel', 'textContent', lp('enabled'));  _s('llmProvidersSmartRouteSingleLabel', 'textContent', lp('smartRoute'));  _s('llmProvidersCurrentLabel', 'textContent', lp('defaultProvider'));  _s('llmProvidersExposeTitle', 'textContent', lp('exposeTitle'));  _s('llmProvidersExposeDesc', 'textContent', lp('exposeDesc'));  _s('llmProvidersAPIBaseURLLabel', 'textContent', lp('apiBaseUrl'));  _s('llmProvidersExposeURLLabel', 'textContent', lp('exposeUrl'));  _s('llmProvidersModelsURLLabel', 'textContent', lp('modelsUrl'));  _s('llmProvidersAvailableModelsLabel', 'textContent', lp('availableModels'));  _s('llmProvidersAuthLabel', 'textContent', lp('authLabel'));  _s('llmProvidersGenerateTestKeyBtn', 'textContent', lp('generateTestKey'));  _s('llmProvidersHintsLabel', 'textContent', lp('hints'));  _s('llmProviderEditorTitle', 'textContent', lp('editorTitle'));  _s('llmProviderEditorDesc', 'textContent', lp('editorDesc'));  _s('llmProviderListTitle', 'textContent', lp('listTitle'));  _s('llmProviderListDesc', 'textContent', lp('listDesc'));  _s('llmProviderIdLabel', 'textContent', lp('providerId'));  _s('llmProviderNameLabel', 'textContent', lp('providerName'));  _s('llmProviderApiUrlLabel', 'textContent', lp('apiUrl'));  _s('llmProviderApiKeyLabel', 'textContent', lp('apiKey'));  _s('llmProviderModelLabel', 'textContent', lp('model'));  _s('llmProviderProtocolLabel', 'textContent', lp('protocol'));  _s('llmProviderWireApiLabel', 'textContent', lp('wireApi'));  _s('llmProviderAgentTypeLabel', 'textContent', lp('agentType'));  _s('llmProviderAgentTypeHint', 'textContent', lp('agentTypeHint'));  _s('llmProviderWireApiChat', 'textContent', lp('wireChat'));  _s('llmProviderWireApiResponses', 'textContent', lp('wireResponses'));  _s('llmProviderWireApiResponsesWS', 'textContent', lp('wireResponsesWS'));  _s('llmProviderMaxConcurrencyLabel', 'textContent', lp('maxConcurrency'));  _s('llmProviderCreateBtn', 'textContent', lp('add'));  _s('llmProvidersSaveBtn', 'textContent', lp('save'));  _s('llmProviderSaveBtn', 'textContent', lp('save'));  _s('llmProviderTestBtn', 'textContent', lp('test'));  _s('llmProviderCancelBtn', 'textContent', lp('cancel'));  _s('llmProviderId', 'placeholder', lp('providerIdPlaceholder'));  _s('llmProviderName', 'placeholder', lp('providerNamePlaceholder'));  _s('llmProviderApiUrl', 'placeholder', lp('apiUrlPlaceholder'));  _s('llmProviderApiKey', 'placeholder', lp('apiKeyEnter'));  _s('llmProviderModel', 'placeholder', lp('modelPlaceholder'));  _s('llmProviderAgentType', 'placeholder', lp('agentTypePlaceholder'));  _s('llmProviderModalCloseBtn', 'ariaLabel', tr('closeDialog'));  updateLLMProviderEditorCopy(llmProviderDialogMode === 'edit' ? 'edit' : 'create');  applyLLMProviderEditorMode();  applyLLMProviderScopeUI();  renderLLMProviders();}function renderLLMProviders() {
+/* * LLM provider admin extension. * ASCII only. Chinese text must use \uXXXX escapes. */const LLM_PROVIDER_I18N = {  en: {    navLabel: 'LLM EndPoint', navDesc: 'Endpoint routing and unified API', tabTitle: 'LLM EndPoint', tabSubtitle: 'Configure LLM endpoints, token usage, connection tests, and the unified OpenAI v1 endpoint.', reload: 'Reload', enabled: 'Enable unified LLM service', smartRoute: 'Smart route single-device LLM', defaultProvider: 'Default provider', exposeTitle: 'Unified OpenAI v1 Endpoint', exposeDesc: 'Select provider by `model`, `X-LLM-Provider`, or `?provider=`.', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: 'Available Models', authLabel: 'Authentication', hints: 'Hints', editorTitle: 'EndPoint Editor', editorDesc: 'Create or update provider credentials and model mapping.', listTitle: 'Configured EndPoints', listDesc: 'Token usage accumulates from calls sent through the unified OpenAI v1 endpoint.', providerId: 'Provider ID', providerName: 'Display Name', apiUrl: 'API Base URL', apiKey: 'API Key', model: 'Upstream Model', protocol: 'Protocol', wireApi: 'Wire API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / Agent Type', agentTypeHint: 'Examples: openclaw, claude-code/2.0.0, cline', maxConcurrency: 'Upstream Concurrency', maxQueueWaiters: 'Max Queue Length', queueTimeoutMs: 'Queue Timeout (ms)', concurrencyUnlimited: 'Unlimited', queueUnlimited: 'Unlimited', queueTimeoutUnlimited: 'Wait with request timeout', inFlight: 'In Flight', queueWaiters: 'Queued', add: 'New Provider', remove: 'Remove', save: 'Save', createAction: 'Create EndPoint', updateAction: 'Update EndPoint', test: 'Test Connection', cancel: 'Cancel', createTitle: 'New EndPoint', editTitle: 'Edit EndPoint', createDone: 'EndPoint created.', updateDone: 'EndPoint updated.', noSelection: 'No provider selected', selected: 'Selected', defaultBadge: 'Default', lbGroup: 'LB', hasKey: 'API key saved', noKey: 'No API key', usageInput: 'Input', usageOutput: 'Output', usageTotal: 'Total', saveDone: 'LLM EndPoint registry saved.', saveDoneEmpty: 'Global LLM settings saved. No provider is configured yet.', nothingToSave: 'No provider to save yet. Click New Provider first.', edit: 'Edit', providerDraftMissing: 'Enter provider ID and display name before saving.', providerDraftSaved: 'Provider draft prepared.', saveFailed: 'Save LLM EndPoints failed: {error}', loadFailed: 'Load LLM EndPoints failed: {error}', addDone: 'Provider draft added.', removeDone: 'EndPoint removed.', removeConfirm: 'Remove provider {id}?', providerRequired: 'Add a provider first.', duplicateId: 'Provider ID already exists: {id}', apiKeyKeep: 'Configured (leave empty to keep)', apiKeyEnter: 'Enter API key', testRunning: 'Testing...', testOk: 'Connection ok ({ms}ms): {reply}', testFail: 'Connection failed: {error}', emptyList: 'No providers configured yet.', hintEmpty: 'Use model=<provider id> to select a provider on the unified endpoint.', authEmpty: 'Use Authorization: Bearer <viewer access token> from hub email sign-in.', generateTestKey: 'Generate Test API Key', testKeyRunning: 'Generating test API key...', testKeyDone: 'Test API key ready for {email}.', testKeyFail: 'Generate test API key failed: {error}', testKeyResult: 'Email: {email}\nAuthorization: Bearer {token}\nExpires: {days} days', modelsEmpty: '-', searchPlaceholder: 'Search by provider ID, name, or model', clearSearch: 'Clear', emptyFilter: 'No matching providers.', allProtocols: 'All Protocols', allKeyStates: 'All Key States', withKey: 'With Key', withoutKey: 'Without Key', countSummary: 'Total {total}, filtered {filtered}', uaShort: 'UA', providerIdPlaceholder: 'provider-id', providerNamePlaceholder: 'Provider Name', apiUrlPlaceholder: 'https://api.example.com/v1', modelPlaceholder: 'gpt-4.1', agentTypePlaceholder: 'openclaw', export: 'Export JSON', import: 'Import JSON', exportDone: 'LLM EndPoint JSON exported.', exportEmpty: 'No LLM EndPoint configuration to export yet.', importDone: 'LLM EndPoint JSON imported.', importFailed: 'Import LLM EndPoint JSON failed: {error}', importInvalid: 'Import JSON must include a providers array.', importBusy: 'Please finish the current editor changes before importing.'  },  zh: {    navLabel: '\u6a21\u578b\u63a5\u5165\u70b9', navDesc: '\u7aef\u70b9\u8def\u7531\u4e0e\u7edf\u4e00 API', tabTitle: '\u6a21\u578b\u63a5\u5165\u70b9', tabSubtitle: '\u914d\u7f6e LLM EndPoint\u3001token \u7528\u91cf\u3001\u8fde\u63a5\u6d4b\u8bd5\u4e0e\u7edf\u4e00 OpenAI v1 \u63a5\u53e3\u3002', reload: '\u91cd\u65b0\u52a0\u8f7d', enabled: '\u542f\u7528\u7edf\u4e00 LLM \u670d\u52a1', smartRoute: '\u5355\u8bbe\u5907\u667a\u80fd\u8def\u7531 LLM', defaultProvider: '\u9ed8\u8ba4\u670d\u52a1\u5546', lbGroup: 'LB', exposeTitle: '\u7edf\u4e00 OpenAI v1 \u5bf9\u5916\u63a5\u53e3', exposeDesc: '\u53ef\u901a\u8fc7 `model`\u3001`X-LLM-Provider` \u6216 `?provider=` \u9009\u62e9\u670d\u52a1\u5546\u3002', apiBaseUrl: 'API Base URL', exposeUrl: 'Chat Completions URL', modelsUrl: 'Models URL', availableModels: '\u53ef\u7528\u6a21\u578b', authLabel: '\u9274\u6743\u65b9\u5f0f', hints: '\u63d0\u793a', editorTitle: 'EndPoint \u7f16\u8f91\u5668', editorDesc: '\u521b\u5efa\u6216\u66f4\u65b0\u670d\u52a1\u5546\u914d\u7f6e\u3001\u5bc6\u94a5\u548c\u6a21\u578b\u6620\u5c04\u3002', listTitle: '\u5df2\u914d\u7f6e EndPoint', listDesc: 'token \u7528\u91cf\u4ece\u7edf\u4e00 OpenAI v1 \u7aef\u70b9\u7684\u8bf7\u6c42\u4e2d\u7d2f\u79ef\u7edf\u8ba1\u3002', providerId: '\u670d\u52a1\u5546 ID', providerName: '\u663e\u793a\u540d\u79f0', apiUrl: 'API \u57fa\u5730\u5740', apiKey: 'API Key', model: '\u4e0a\u6e38\u6a21\u578b', protocol: '\u534f\u8bae', wireApi: '\u4f20\u8f93 API', wireChat: 'Chat Completions', wireResponses: 'Responses API', wireResponsesWS: 'Responses WS', agentType: 'User-Agent / \u5ba2\u6237\u7aef\u7c7b\u578b', agentTypeHint: '\u793a\u4f8b\uff1aopenclaw\u3001claude-code/2.0.0\u3001cline', maxConcurrency: '\u4e0a\u6e38\u5e76\u53d1\u6570', maxQueueWaiters: '\u6700\u5927\u6392\u961f\u957f\u5ea6', queueTimeoutMs: '\u6392\u961f\u8d85\u65f6\uff08ms\uff09', concurrencyUnlimited: '\u4e0d\u9650\u5236', queueUnlimited: '\u4e0d\u9650\u5236', queueTimeoutUnlimited: '\u8ddf\u968f\u8bf7\u6c42\u8d85\u65f6\u7b49\u5f85', inFlight: '\u6267\u884c\u4e2d', queueWaiters: '\u6392\u961f\u4e2d', add: '\u65b0\u5efa\u670d\u52a1\u5546', remove: '\u5220\u9664', save: '\u4fdd\u5b58', createAction: '\u521b\u5efa EndPoint', updateAction: '\u66f4\u65b0 EndPoint', test: '\u6d4b\u8bd5\u8fde\u63a5', cancel: '\u53d6\u6d88', createTitle: '\u65b0\u5efa EndPoint', editTitle: '\u7f16\u8f91 EndPoint', createDone: 'EndPoint \u5df2\u65b0\u5efa\u3002', updateDone: 'EndPoint \u5df2\u66f4\u65b0\u3002', noSelection: '\u672a\u9009\u62e9\u670d\u52a1\u5546', selected: '\u5df2\u9009\u4e2d', defaultBadge: '\u9ed8\u8ba4', hasKey: '\u5df2\u4fdd\u5b58 API Key', noKey: '\u672a\u914d\u7f6e API Key', usageInput: '\u8f93\u5165', usageOutput: '\u8f93\u51fa', usageTotal: '\u603b\u8ba1', saveDone: 'LLM EndPoint \u914d\u7f6e\u5df2\u4fdd\u5b58\u3002', saveDoneEmpty: '\u5df2\u4fdd\u5b58 LLM \u5168\u5c40\u8bbe\u7f6e\uff0c\u4f46\u5f53\u524d\u8fd8\u6ca1\u6709\u914d\u7f6e\u670d\u52a1\u5546\u3002', nothingToSave: '\u8fd8\u6ca1\u6709\u53ef\u4fdd\u5b58\u7684\u670d\u52a1\u5546\uff0c\u8bf7\u5148\u70b9\u51fb\u65b0\u5efa\u670d\u52a1\u5546\u3002', edit: '\u4fee\u6539', providerDraftMissing: '\u4fdd\u5b58\u524d\u8bf7\u5148\u586b\u5199\u670d\u52a1\u5546 ID \u548c\u663e\u793a\u540d\u79f0\u3002', providerDraftSaved: '\u5f53\u524d\u670d\u52a1\u5546\u8349\u7a3f\u5df2\u5199\u5165\u3002', saveFailed: '\u4fdd\u5b58 LLM EndPoint \u5931\u8d25: {error}', loadFailed: '\u52a0\u8f7d LLM EndPoint \u5931\u8d25: {error}', addDone: '\u5df2\u65b0\u589e\u670d\u52a1\u5546\u8349\u7a3f\u3002', removeDone: 'EndPoint \u5df2\u5220\u9664\u3002', removeConfirm: '\u786e\u8ba4\u5220\u9664\u670d\u52a1\u5546 {id} \u5417\uff1f', providerRequired: '\u8bf7\u5148\u65b0\u589e\u670d\u52a1\u5546\u3002', duplicateId: '\u670d\u52a1\u5546 ID \u5df2\u5b58\u5728: {id}', apiKeyKeep: '\u5df2\u914d\u7f6e\uff08\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8\uff09', apiKeyEnter: '\u8bf7\u8f93\u5165 API Key', testRunning: '\u6d4b\u8bd5\u4e2d...', testOk: '\u8fde\u63a5\u6210\u529f ({ms}ms): {reply}', testFail: '\u8fde\u63a5\u5931\u8d25: {error}', emptyList: '\u6682\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002', hintEmpty: '\u53ef\u4f7f\u7528 model=<provider id> \u5728\u7edf\u4e00\u7aef\u70b9\u9009\u62e9\u670d\u52a1\u5546\u3002', authEmpty: '\u4f7f\u7528 HUB \u90ae\u7bb1\u767b\u5f55\u540e\u8fd4\u56de\u7684 viewer access token\uff0c\u901a\u8fc7 Authorization: Bearer <token> \u8c03\u7528\u3002', generateTestKey: '\u751f\u6210\u6d4b\u8bd5 API Key', testKeyRunning: '\u6b63\u5728\u751f\u6210\u6d4b\u8bd5 API Key...', testKeyDone: '\u5df2\u4e3a {email} \u751f\u6210\u6d4b\u8bd5 API Key\u3002', testKeyFail: '\u751f\u6210\u6d4b\u8bd5 API Key \u5931\u8d25: {error}', testKeyResult: 'Email: {email}\nAuthorization: Bearer {token}\n\u6709\u6548\u671f: {days} \u5929', modelsEmpty: '-', searchPlaceholder: '\u6309\u670d\u52a1\u5546 ID\u3001\u540d\u79f0\u6216\u6a21\u578b\u641c\u7d22', clearSearch: '\u6e05\u9664', emptyFilter: '\u6682\u65e0\u5339\u914d\u7684\u670d\u52a1\u5546\u3002', allProtocols: '\u5168\u90e8\u534f\u8bae', allKeyStates: '\u5168\u90e8 Key \u72b6\u6001', withKey: '\u5df2\u914d\u7f6e Key', withoutKey: '\u672a\u914d\u7f6e Key', countSummary: '\u603b\u5171 {total} \u4e2a\uff0c\u5f53\u524d {filtered} \u4e2a', uaShort: 'UA', providerIdPlaceholder: 'provider-id', providerNamePlaceholder: '\u670d\u52a1\u5546\u540d\u79f0', apiUrlPlaceholder: 'https://api.example.com/v1', modelPlaceholder: 'gpt-4.1', agentTypePlaceholder: 'openclaw', export: '\u5bfc\u51fa JSON', import: '\u5bfc\u5165 JSON', exportDone: 'LLM EndPoint JSON \u5df2\u5bfc\u51fa\u3002', exportEmpty: '\u5f53\u524d\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 LLM EndPoint \u914d\u7f6e\u3002', importDone: 'LLM EndPoint JSON \u5df2\u5bfc\u5165\u3002', importFailed: '\u5bfc\u5165 LLM EndPoint JSON \u5931\u8d25: {error}', importInvalid: '\u5bfc\u5165 JSON \u5fc5\u987b\u5305\u542b providers \u6570\u7ec4\u3002', importBusy: '\u8bf7\u5148\u5904\u7406\u5f53\u524d\u7f16\u8f91\u4e2d\u7684\u53d8\u66f4\uff0c\u518d\u6267\u884c\u5bfc\u5165\u3002'  }};const lp = (key, vars = {}) => ((LLM_PROVIDER_I18N[currentLang] || LLM_PROVIDER_I18N.en)[key] || LLM_PROVIDER_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');let llmProviderRegistryCache = null;let llmProviderSelectedId = '';let llmProviderDialogMode = 'create';let llmProviderIdManuallyEdited = false;let llmProviderLastSuggestedId = '';let llmProviderPage = 1;let llmProviderFilter = '';let llmProviderProtocolFilter = '';let llmProviderKeyFilter = 'all';let llmProviderCardTestState = {};const llmProviderPageSize = 12;function lpUsage(usage) { return { input_tokens: Number(usage && usage.input_tokens || 0), output_tokens: Number(usage && usage.output_tokens || 0), total_tokens: Number(usage && usage.total_tokens || 0), cached_input_tokens: Number(usage && usage.cached_input_tokens || 0), cache_write_tokens: Number(usage && usage.cache_write_tokens || 0), requests: Number(usage && usage.requests || 0), cached_requests: Number(usage && usage.cached_requests || 0) }; }function lpMetricLabel(kind) { var zh = { requests: '\u8bf7\u6c42\u6570', cacheRate: 'Prompt \u7f13\u5b58\u7387', cacheReuseRate: '\u7f13\u5b58\u590d\u7528\u7387', cacheRead: 'Cache Read', cacheWrite: 'Cache Write' }; var en = { requests: 'Requests', cacheRate: 'Prompt Cache Rate', cacheReuseRate: 'Cache Reuse', cacheRead: 'Cache Read', cacheWrite: 'Cache Write' }; return ((currentLang === 'zh' ? zh : en)[kind]) || kind; }function lpRatePercent(hit,total){ hit=Number(hit||0); total=Number(total||0); if(!total) return '0%'; return ((hit*100/total).toFixed(1).replace(/\.0$/,'')) + '%'; }function lpClone(provider) { return { id: provider && provider.id || '', name: provider && provider.name || '', api_url: provider && provider.api_url || '', api_key: provider && provider.api_key || '', has_api_key: !!(provider && provider.has_api_key), model: provider && provider.model || '', protocol: provider && provider.protocol || 'openai', wire_api: provider && provider.wire_api || 'chat', agent_type: provider && provider.agent_type || '', max_concurrency: Number(provider && provider.max_concurrency || 0), max_queue_waiters: Number(provider && provider.max_queue_waiters || 0), queue_timeout_ms: Number(provider && provider.queue_timeout_ms || 0), in_flight: Number(provider && provider.in_flight || 0), queue_waiters: Number(provider && provider.queue_waiters || 0), current_multiplier: Number(provider && provider.current_multiplier || 0), lb_group: provider && provider.lb_group || '', lb_group_size: Number(provider && provider.lb_group_size || 0), lb_eligible: !!(provider && provider.lb_eligible), usage: lpUsage(provider && provider.usage) }; }function lpById(id) { return (llmProviderRegistryCache && llmProviderRegistryCache.providers || []).find(function(p) { return p.id === id; }) || null; }function lpNormalizeId(value) { return String(value || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''); }function lpNextId() { const used = new Set((llmProviderRegistryCache && llmProviderRegistryCache.providers || []).map(function(p) { return p.id; })); let i = 1; while (used.has('provider-' + i)) i++; return 'provider-' + i; }function lpEnsureSelection() { const providers = llmProviderRegistryCache && llmProviderRegistryCache.providers || []; if (!providers.length) { llmProviderSelectedId = ''; return; } if (!lpById(llmProviderSelectedId)) llmProviderSelectedId = llmProviderRegistryCache.current_provider_id || providers[0].id; if (!llmProviderRegistryCache.current_provider_id || !lpById(llmProviderRegistryCache.current_provider_id)) llmProviderRegistryCache.current_provider_id = llmProviderSelectedId; }function lpApiKeyPlaceholder(provider) { return provider && provider.has_api_key ? lp('apiKeyKeep') : lp('apiKeyEnter'); }function lpSuggestIdFromName(name) {  const normalized = lpNormalizeId(name || '');  return normalized || lpNextId();}function resetLLMProviderIdSuggestionState() {  llmProviderIdManuallyEdited = false;  llmProviderLastSuggestedId = '';}function syncLLMProviderIdSuggestion() {  if (llmProviderDialogMode !== 'create') return;  const idInput = document.getElementById('llmProviderId');  const nameInput = document.getElementById('llmProviderName');  if (!idInput || !nameInput) return;  const currentId = String(idInput.value || '').trim();  if (llmProviderIdManuallyEdited && currentId && currentId !== llmProviderLastSuggestedId) return;  const suggested = lpSuggestIdFromName(nameInput.value);  llmProviderLastSuggestedId = suggested;  idInput.value = suggested;}function initLLMProviderFormBindings() {  if (initLLMProviderFormBindings.done) return;  initLLMProviderFormBindings.done = true;  const idInput = document.getElementById('llmProviderId');  const nameInput = document.getElementById('llmProviderName');  if (nameInput) {    nameInput.addEventListener('input', function() {      syncLLMProviderIdSuggestion();    });  }  if (idInput) {    idInput.addEventListener('input', function() {      if (llmProviderDialogMode !== 'create') return;      const currentId = lpNormalizeId(idInput.value);      if (!currentId || currentId === llmProviderLastSuggestedId) {        llmProviderIdManuallyEdited = false;        if (currentId) llmProviderLastSuggestedId = currentId;        return;      }      llmProviderIdManuallyEdited = true;    });  }}initLLMProviderFormBindings.done = false;function validateLLMProvider(provider, opts) {  const requireKey = !!(opts && opts.requireKey);  if (!provider || !provider.id || !provider.name || !provider.api_url || !provider.model) return { ok: false, message: lp('providerDraftMissing') };  if (requireKey && !String(provider.api_key || '').trim()) return { ok: false, message: lp('apiKeyEnter') };  return { ok: true, message: '' };}function scrollLLMProviderCardIntoView(id) {  if (!id) return;  const card = document.querySelector('[data-provider-id="' + String(id).replace(/"/g, '\"') + '"]');  if (card && typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });}function ensureLLMProviderPageInRange(total) {  const totalPages = Math.max(1, Math.ceil(Number(total || 0) / llmProviderPageSize));  llmProviderPage = Math.min(totalPages, Math.max(1, Number(llmProviderPage || 1)));  return totalPages;}function syncLLMProviderPageWithSelection(providers) {  const list = providers || [];  const selectedIndex = list.findIndex(function(p) { return p.id === llmProviderSelectedId; });  const totalPages = ensureLLMProviderPageInRange(list.length);  if (selectedIndex >= 0) llmProviderPage = Math.floor(selectedIndex / llmProviderPageSize) + 1;  return totalPages;}function changeLLMProviderPage(step) {  const filteredCount = filterLLMProviders(llmProviderRegistryCache && llmProviderRegistryCache.providers || []).length;  const totalPages = ensureLLMProviderPageInRange(filteredCount);  llmProviderPage = Math.min(totalPages, Math.max(1, llmProviderPage + step));  renderLLMProviders();}function setLLMProviderFilter(value) {  llmProviderFilter = String(value || '').trim().toLowerCase();  llmProviderPage = 1;  renderLLMProviders();}function setLLMProviderProtocolFilter(value) {  llmProviderProtocolFilter = String(value || '').trim().toLowerCase();  llmProviderPage = 1;  renderLLMProviders();}function setLLMProviderKeyFilter(value) {  llmProviderKeyFilter = String(value || 'all').trim().toLowerCase() || 'all';  llmProviderPage = 1;  renderLLMProviders();}function filterLLMProviders(providers) {  const keyword = String(llmProviderFilter || '').trim().toLowerCase();  const protocolFilter = String(llmProviderProtocolFilter || '').trim().toLowerCase();  const keyFilter = String(llmProviderKeyFilter || 'all').trim().toLowerCase();  return (providers || []).filter(function(p) {    const matchesKeyword = !keyword || [p.id, p.name, p.model].some(function(v) { return String(v || '').toLowerCase().indexOf(keyword) >= 0; });    const matchesProtocol = !protocolFilter || String(p.protocol || 'openai').toLowerCase() === protocolFilter;    const hasKey = !!p.has_api_key;    const matchesKey = keyFilter === 'all' || (keyFilter === 'with_key' && hasKey) || (keyFilter === 'without_key' && !hasKey);    return matchesKeyword && matchesProtocol && matchesKey;  });}function applyLLMProviderScopeUI() {  var enabled = document.getElementById('llmProvidersEnabled');  if (enabled && enabled.parentElement && enabled.parentElement.parentElement) enabled.parentElement.parentElement.style.display = 'none';  var smart = document.getElementById('llmProvidersSmartRouteSingle');  if (smart && smart.parentElement && smart.parentElement.parentElement) smart.parentElement.parentElement.style.display = 'none';}function ensureLLMProviderModalUI() {  var overlay = document.getElementById('llmProviderModalOverlay');  if (overlay && window.AdminUI && typeof AdminUI.bindModalOverlayDismiss === 'function') {    AdminUI.bindModalOverlayDismiss(overlay, closeLLMProviderDialog);  }  var testResult = document.getElementById('llmProviderTestResult');  if (testResult) testResult.classList.add('hidden');  initLLMProviderFormBindings();  initLLMProviderGlobalBindings();}function updateLLMProviderEditorCopy(mode) {  const editing = mode === 'edit';  _s('llmProviderEditorTitle', 'textContent', editing ? lp('editTitle') : lp('createTitle'));  _s('llmProviderEditorDesc', 'textContent', lp('editorDesc'));  _s('llmProviderSaveBtn', 'textContent', editing ? lp('updateAction') : lp('createAction'));  _s('llmProviderCancelBtn', 'textContent', lp('cancel'));  _s('llmProviderTestBtn', 'textContent', lp('test'));}function applyLLMProviderEditorMode() {  var idInput = document.getElementById('llmProviderId');  if (idInput) idInput.readOnly = llmProviderDialogMode === 'edit';}function openLLMProviderDialog(mode) {  ensureLLMProviderModalUI();  var overlay = document.getElementById('llmProviderModalOverlay');  if (!overlay) return;  llmProviderDialogMode = mode === 'edit' ? 'edit' : 'create';  if (llmProviderDialogMode === 'edit') {    llmProviderIdManuallyEdited = true;    llmProviderLastSuggestedId = document.getElementById('llmProviderId') && document.getElementById('llmProviderId').value || '';  }  updateLLMProviderEditorCopy(llmProviderDialogMode);  applyLLMProviderEditorMode();  var overlay = document.getElementById('llmProviderModalOverlay');  if (overlay) overlay.classList.add('show');  var testResult = document.getElementById('llmProviderTestResult');  if (testResult) { testResult.classList.add('hidden'); testResult.textContent = ''; }  var first = document.getElementById('llmProviderId');  if (first && typeof first.focus === 'function') first.focus();}function llmProviderDialogOpen() {  var overlay = document.getElementById('llmProviderModalOverlay');  return !!(overlay && overlay.classList.contains('show'));}function closeLLMProviderDialog() {  var overlay = document.getElementById('llmProviderModalOverlay');  if (overlay) overlay.classList.remove('show');  var testResult = document.getElementById('llmProviderTestResult');  if (testResult) { testResult.classList.add('hidden'); testResult.textContent = ''; }}function setLLMProviderTestKeyResult(message) {  var result = document.getElementById('llmProvidersTestKeyResult');  if (!result) return;  if (!message) { result.classList.add('hidden'); result.textContent = ''; return; }  result.classList.remove('hidden');  result.textContent = message;}function applyLLMProvidersI18n() {  _s('navLLMProviders', 'textContent', lp('navLabel'));  _s('navLLMProvidersDesc', 'textContent', lp('navDesc'));  _s('llmProvidersTabTitle', 'textContent', lp('tabTitle'));  _s('llmProvidersTabSubtitle', 'textContent', lp('tabSubtitle'));  _s('llmProvidersReloadBtn', 'textContent', lp('reload'));  _s('llmProvidersExportBtn', 'textContent', lp('export'));  _s('llmProvidersImportBtn', 'textContent', lp('import'));  _s('llmProvidersEnabledLabel', 'textContent', lp('enabled'));  _s('llmProvidersSmartRouteSingleLabel', 'textContent', lp('smartRoute'));  _s('llmProvidersCurrentLabel', 'textContent', lp('defaultProvider'));  _s('llmProvidersExposeTitle', 'textContent', lp('exposeTitle'));  _s('llmProvidersExposeDesc', 'textContent', lp('exposeDesc'));  _s('llmProvidersAPIBaseURLLabel', 'textContent', lp('apiBaseUrl'));  _s('llmProvidersExposeURLLabel', 'textContent', lp('exposeUrl'));  _s('llmProvidersModelsURLLabel', 'textContent', lp('modelsUrl'));  _s('llmProvidersAvailableModelsLabel', 'textContent', lp('availableModels'));  _s('llmProvidersAuthLabel', 'textContent', lp('authLabel'));  _s('llmProvidersGenerateTestKeyBtn', 'textContent', lp('generateTestKey'));  _s('llmProvidersHintsLabel', 'textContent', lp('hints'));  _s('llmProviderEditorTitle', 'textContent', lp('editorTitle'));  _s('llmProviderEditorDesc', 'textContent', lp('editorDesc'));  _s('llmProviderListTitle', 'textContent', lp('listTitle'));  _s('llmProviderListDesc', 'textContent', lp('listDesc'));  _s('llmProviderIdLabel', 'textContent', lp('providerId'));  _s('llmProviderNameLabel', 'textContent', lp('providerName'));  _s('llmProviderApiUrlLabel', 'textContent', lp('apiUrl'));  _s('llmProviderApiKeyLabel', 'textContent', lp('apiKey'));  _s('llmProviderModelLabel', 'textContent', lp('model'));  _s('llmProviderProtocolLabel', 'textContent', lp('protocol'));  _s('llmProviderWireApiLabel', 'textContent', lp('wireApi'));  _s('llmProviderAgentTypeLabel', 'textContent', lp('agentType'));  _s('llmProviderAgentTypeHint', 'textContent', lp('agentTypeHint'));  _s('llmProviderWireApiChat', 'textContent', lp('wireChat'));  _s('llmProviderWireApiResponses', 'textContent', lp('wireResponses'));  _s('llmProviderWireApiResponsesWS', 'textContent', lp('wireResponsesWS'));  _s('llmProviderMaxConcurrencyLabel', 'textContent', lp('maxConcurrency'));  _s('llmProviderCreateBtn', 'textContent', lp('add'));  _s('llmProvidersSaveBtn', 'textContent', lp('save'));  _s('llmProviderSaveBtn', 'textContent', lp('save'));  _s('llmProviderTestBtn', 'textContent', lp('test'));  _s('llmProviderCancelBtn', 'textContent', lp('cancel'));  _s('llmProviderId', 'placeholder', lp('providerIdPlaceholder'));  _s('llmProviderName', 'placeholder', lp('providerNamePlaceholder'));  _s('llmProviderApiUrl', 'placeholder', lp('apiUrlPlaceholder'));  _s('llmProviderApiKey', 'placeholder', lp('apiKeyEnter'));  _s('llmProviderModel', 'placeholder', lp('modelPlaceholder'));  _s('llmProviderAgentType', 'placeholder', lp('agentTypePlaceholder'));  _s('llmProviderModalCloseBtn', 'ariaLabel', tr('closeDialog'));  updateLLMProviderEditorCopy(llmProviderDialogMode === 'edit' ? 'edit' : 'create');  applyLLMProviderEditorMode();  applyLLMProviderScopeUI();  renderLLMProviders();}function renderLLMProviders() {
   if (!document.getElementById('llmProviderList')) return;
   if (!llmProviderRegistryCache) {
     _s('llmProviderList', 'innerHTML', '<div class="hint">' + lp('emptyList') + '</div>');
@@ -81,6 +81,7 @@
     const isDefault = p.id === llmProviderRegistryCache.current_provider_id;
     const keyBadge = p.has_api_key ? '<span class="badge ok" style="font-size:10px;padding:4px 8px">' + escapeHtml(lp('hasKey')) + '</span>' : '<span class="badge warn" style="font-size:10px;padding:4px 8px">' + escapeHtml(lp('noKey')) + '</span>';
     const defaultBadge = isDefault ? '<span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(lp('defaultBadge')) + '</span>' : '';
+    const lbBadge = p.lb_group ? '<span class="badge info" style="font-size:10px;padding:4px 8px">' + escapeHtml(lp('lbGroup') + ' · ' + p.lb_group) + '</span>' : '';
     const concurrency = Number(p.max_concurrency || 0);
     const concurrencyText = concurrency > 0 ? String(concurrency) : lp('concurrencyUnlimited');
 
@@ -97,7 +98,7 @@
     const testText = testState && testState.message ? escapeHtml(testState.message) : '';
     return '<div class="item" data-provider-id="' + escapeHtml(p.id) + '" style="margin-bottom:6px;padding:0;overflow:hidden;border:' + (isSelected ? '1px solid rgba(47,128,237,.3)' : '1px solid var(--line)') + ';box-shadow:none;cursor:pointer" onclick="selectLLMProvider(this.dataset.providerId)">'
       + '<div class="row" style="grid-template-columns:1.1fr 1fr .55fr .68fr .58fr .74fr .62fr 1.72fr;gap:8px;padding:9px 10px;border:none;background:' + (isSelected ? '#f8fbff' : '#fff') + '">'
-      + '<div style="min-width:0"><div style="display:flex;align-items:center;gap:5px;min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.name || p.id) + '</div>' + defaultBadge + '</div><div class="item-meta mono" style="margin-top:2px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.id) + '</div></div>'
+      + '<div style="min-width:0"><div style="display:flex;align-items:center;gap:5px;min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.name || p.id) + '</div>' + defaultBadge + lbBadge + '</div><div class="item-meta mono" style="margin-top:2px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.id) + '</div></div>'
       + '<div style="min-width:0"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.model || '-') + '</div><div class="item-meta mono" style="margin-top:2px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(p.api_url || '-') + '</div></div>'
       + '<div><div class="mono" style="font-size:11px">' + escapeHtml(p.protocol || 'openai') + '</div><div class="item-meta" style="margin-top:2px;font-size:10px">' + escapeHtml(p.wire_api || 'chat') + '</div></div>'
       + '<div>' + keyBadge + '</div>'
@@ -127,7 +128,15 @@ Object.assign(LLM_PROVIDER_I18N.en, {
   usageCost: 'Charge',
   pricePerMShort: 'Price / 1M',
   inputPriceShort: 'In',
-  outputPriceShort: 'Out'
+  outputPriceShort: 'Out',
+  inputCreditsPer10k: 'Input Credits / 10k',
+  outputCreditsPer10k: 'Output Credits / 10k',
+  inputRMBPer10k: 'Input RMB / 10k (ref)',
+  outputRMBPer10k: 'Output RMB / 10k (ref)',
+  minimumRequestCredits: 'Minimum Credits / request',
+  pricingTimezone: 'Pricing Timezone',
+  pricingVersion: 'Pricing Version',
+  creditsHint: 'Credits fields are the service-provider base price; RMB is display-only.'
 });
 Object.assign(LLM_PROVIDER_I18N.zh, {
   inputPricePerM: '\u8f93\u5165\u4ef7\u683c / 100\u4e07 Tokens\uff08\u5143\uff09',
@@ -136,13 +145,37 @@ Object.assign(LLM_PROVIDER_I18N.zh, {
   usageCost: '\u8ba1\u8d39',
   pricePerMShort: 'M Token \u5355\u4ef7',
   inputPriceShort: '\u8f93\u5165',
-  outputPriceShort: '\u8f93\u51fa'
+  outputPriceShort: '\u8f93\u51fa',
+  inputCreditsPer10k: '\u8f93\u5165 Credits / \u4e07',
+  outputCreditsPer10k: '\u8f93\u51fa Credits / \u4e07',
+  inputRMBPer10k: '\u8f93\u5165 RMB / \u4e07\uff08\u53c2\u8003\uff09',
+  outputRMBPer10k: '\u8f93\u51fa RMB / \u4e07\uff08\u53c2\u8003\uff09',
+  minimumRequestCredits: '\u5355\u6b21\u6700\u4f4e\u6d88\u8d39 Credits',
+  pricingTimezone: '\u8ba1\u8d39\u65f6\u533a',
+  pricingVersion: '\u8ba1\u8d39\u7248\u672c',
+  creditsHint: 'Credits \u4e3a\u670d\u52a1\u5546\u57fa\u7840\u5355\u4ef7\uff1bRMB \u4ec5\u5c55\u793a\u3002'
 });
 function llmProviderNormalizePricePerM(value, fallback) {
   fallback = Number(fallback || 0);
   if (value === undefined || value === null || value === '') return fallback >= 0 ? fallback : 0;
   value = Number(value);
   return Number.isFinite(value) && value >= 0 ? value : (fallback >= 0 ? fallback : 0);
+}
+function llmProviderNormalizeTokenPricing(src) {
+  var p = src && typeof src === 'object' ? src : {};
+  function num(k) { var v = p[k]; if (v === undefined || v === null || v === '') return undefined; var n = Number(v); return Number.isFinite(n) && n >= 0 ? n : undefined; }
+  var tp = {};
+  var inC = num('input_credits_per_10k'); if (inC !== undefined) tp.input_credits_per_10k = inC;
+  var outC = num('output_credits_per_10k'); if (outC !== undefined) tp.output_credits_per_10k = outC;
+  var inRMB = num('input_rmb_per_10k'); if (inRMB !== undefined) tp.input_rmb_per_10k = inRMB;
+  var outRMB = num('output_rmb_per_10k'); if (outRMB !== undefined) tp.output_rmb_per_10k = outRMB;
+  var minC = num('minimum_request_credits'); if (minC !== undefined) tp.minimum_request_credits = minC;
+  if (p.timezone) tp.timezone = String(p.timezone).trim();
+  if (p.version) tp.version = String(p.version).trim();
+  return tp;
+}
+function llmProviderHasTokenPricing(tp) {
+  return !!(tp && ((tp.input_credits_per_10k > 0) || (tp.output_credits_per_10k > 0) || (tp.minimum_request_credits > 0)));
 }
 function llmProviderFormatMoney(value) {
   var n = Number(value || 0);
@@ -191,6 +224,7 @@ if (baseLpClonePricing) {
     var next = baseLpClonePricing(provider);
     next.input_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(provider && provider.input_price_per_m_tokens_rmb, 1);
     next.output_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(provider && provider.output_price_per_m_tokens_rmb, 2);
+    next.token_pricing = llmProviderNormalizeTokenPricing(provider && provider.token_pricing);
     return next;
   };
 }
@@ -205,12 +239,63 @@ function llmProviderEnsurePricingInputs() {
   outputWrap.innerHTML = '<label id="llmProviderOutputPricePerMLabel"></label><input id="llmProviderOutputPricePerM" type="number" min="0" step="0.0001" placeholder="2">';
   anchor.parentElement.insertBefore(outputWrap, anchor.nextSibling);
   anchor.parentElement.insertBefore(inputWrap, outputWrap);
+  var hint = document.createElement('div');
+  hint.className = 'hint';
+  hint.id = 'llmProviderCreditsHint';
+  hint.style.gridColumn = '1 / -1';
+  anchor.parentElement.appendChild(hint);
+  var tpIn = document.createElement('div');
+  tpIn.innerHTML = '<label id="llmProviderInputCreditsLabel"></label><input id="llmProviderInputCredits10k" type="number" min="0" step="0.01" placeholder="1">';
+  var tpOut = document.createElement('div');
+  tpOut.innerHTML = '<label id="llmProviderOutputCreditsLabel"></label><input id="llmProviderOutputCredits10k" type="number" min="0" step="0.01" placeholder="4">';
+  var tpRMBIn = document.createElement('div');
+  tpRMBIn.innerHTML = '<label id="llmProviderInputRMBLabel"></label><input id="llmProviderInputRMB10k" type="number" min="0" step="0.01" placeholder="0.02">';
+  var tpRMBOut = document.createElement('div');
+  tpRMBOut.innerHTML = '<label id="llmProviderOutputRMBLabel"></label><input id="llmProviderOutputRMB10k" type="number" min="0" step="0.01" placeholder="0.08">';
+  var tpMin = document.createElement('div');
+  tpMin.innerHTML = '<label id="llmProviderMinCreditsLabel"></label><input id="llmProviderMinCredits" type="number" min="0" step="0.01" placeholder="0.1">';
+  var tpTz = document.createElement('div');
+  tpTz.innerHTML = '<label id="llmProviderPricingTimezoneLabel"></label><input id="llmProviderPricingTimezone" placeholder="Asia/Shanghai">';
+  var tpVer = document.createElement('div');
+  tpVer.innerHTML = '<label id="llmProviderPricingVersionLabel"></label><input id="llmProviderPricingVersion" placeholder="2026-08-23-v1">';
+  anchor.parentElement.appendChild(tpIn);
+  anchor.parentElement.appendChild(tpOut);
+  anchor.parentElement.appendChild(tpRMBIn);
+  anchor.parentElement.appendChild(tpRMBOut);
+  anchor.parentElement.appendChild(tpMin);
+  anchor.parentElement.appendChild(tpTz);
+  anchor.parentElement.appendChild(tpVer);
+}
+function llmProviderWriteTokenPricingForm(provider) {
+  llmProviderEnsurePricingInputs();
+  provider = provider || {};
+  var tp = llmProviderNormalizeTokenPricing(provider.token_pricing);
+  _s('llmProviderInputCredits10k', 'value', tp.input_credits_per_10k !== undefined ? String(tp.input_credits_per_10k) : '');
+  _s('llmProviderOutputCredits10k', 'value', tp.output_credits_per_10k !== undefined ? String(tp.output_credits_per_10k) : '');
+  _s('llmProviderInputRMB10k', 'value', tp.input_rmb_per_10k !== undefined ? String(tp.input_rmb_per_10k) : '');
+  _s('llmProviderOutputRMB10k', 'value', tp.output_rmb_per_10k !== undefined ? String(tp.output_rmb_per_10k) : '');
+  _s('llmProviderMinCredits', 'value', tp.minimum_request_credits !== undefined ? String(tp.minimum_request_credits) : '');
+  _s('llmProviderPricingTimezone', 'value', tp.timezone || '');
+  _s('llmProviderPricingVersion', 'value', tp.version || '');
+}
+function llmProviderReadTokenPricingForm() {
+  llmProviderEnsurePricingInputs();
+  return llmProviderNormalizeTokenPricing({
+    input_credits_per_10k: document.getElementById('llmProviderInputCredits10k') && document.getElementById('llmProviderInputCredits10k').value,
+    output_credits_per_10k: document.getElementById('llmProviderOutputCredits10k') && document.getElementById('llmProviderOutputCredits10k').value,
+    input_rmb_per_10k: document.getElementById('llmProviderInputRMB10k') && document.getElementById('llmProviderInputRMB10k').value,
+    output_rmb_per_10k: document.getElementById('llmProviderOutputRMB10k') && document.getElementById('llmProviderOutputRMB10k').value,
+    minimum_request_credits: document.getElementById('llmProviderMinCredits') && document.getElementById('llmProviderMinCredits').value,
+    timezone: document.getElementById('llmProviderPricingTimezone') && document.getElementById('llmProviderPricingTimezone').value,
+    version: document.getElementById('llmProviderPricingVersion') && document.getElementById('llmProviderPricingVersion').value
+  });
 }
 function llmProviderWritePricingForm(provider) {
   llmProviderEnsurePricingInputs();
   provider = provider || {};
   _s('llmProviderInputPricePerM', 'value', String(llmProviderNormalizePricePerM(provider.input_price_per_m_tokens_rmb, 1)));
   _s('llmProviderOutputPricePerM', 'value', String(llmProviderNormalizePricePerM(provider.output_price_per_m_tokens_rmb, 2)));
+  llmProviderWriteTokenPricingForm(provider);
 }
 function llmProviderReadPricingForm() {
   llmProviderEnsurePricingInputs();
@@ -226,6 +311,14 @@ if (baseApplyLLMProvidersI18nPricing) {
     llmProviderEnsurePricingInputs();
     _s('llmProviderInputPricePerMLabel', 'textContent', lp('inputPricePerM'));
     _s('llmProviderOutputPricePerMLabel', 'textContent', lp('outputPricePerM'));
+    _s('llmProviderInputCreditsLabel', 'textContent', lp('inputCreditsPer10k'));
+    _s('llmProviderOutputCreditsLabel', 'textContent', lp('outputCreditsPer10k'));
+    _s('llmProviderInputRMBLabel', 'textContent', lp('inputRMBPer10k'));
+    _s('llmProviderOutputRMBLabel', 'textContent', lp('outputRMBPer10k'));
+    _s('llmProviderMinCreditsLabel', 'textContent', lp('minimumRequestCredits'));
+    _s('llmProviderPricingTimezoneLabel', 'textContent', lp('pricingTimezone'));
+    _s('llmProviderPricingVersionLabel', 'textContent', lp('pricingVersion'));
+    _s('llmProviderCreditsHint', 'textContent', lp('creditsHint'));
   };
   applyLLMProvidersI18n();
 }
@@ -236,6 +329,7 @@ if (baseReadSelectedLLMProviderFormPricing) {
     var pricing = llmProviderReadPricingForm();
     next.input_price_per_m_tokens_rmb = pricing.input_price_per_m_tokens_rmb;
     next.output_price_per_m_tokens_rmb = pricing.output_price_per_m_tokens_rmb;
+    next.token_pricing = llmProviderReadTokenPricingForm();
     return next;
   };
 }
@@ -261,6 +355,7 @@ if (baseBuildLLMProviderPayloadPricing) {
       var src = lpById(p.id) || p;
       p.input_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(src && src.input_price_per_m_tokens_rmb, 1);
       p.output_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(src && src.output_price_per_m_tokens_rmb, 2);
+      p.token_pricing = llmProviderNormalizeTokenPricing(src && src.token_pricing);
       return p;
     });
     return payload;
@@ -280,6 +375,7 @@ if (baseImportedPayloadPricing) {
       var src = sourceByID[p && p.id || ''] || sourceProviders[idx] || p;
       p.input_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(src && src.input_price_per_m_tokens_rmb, 1);
       p.output_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(src && src.output_price_per_m_tokens_rmb, 2);
+      p.token_pricing = llmProviderNormalizeTokenPricing(src && src.token_pricing);
       return p;
     });
     return payload;
@@ -928,6 +1024,103 @@ showLLMEndpointAccessLogs = async function() {
 window.showLLMEndpointAccessLogs = showLLMEndpointAccessLogs;
 window.reloadLLMEndpointAccessLogs = reloadLLMEndpointAccessLogs;
 window.llmProviderToggleAccessLogRequest = llmProviderToggleAccessLogRequest;
+// Directional time-of-use pricing belongs to the provider.  The Hub service
+// group applies its multiplier later and must never rewrite these prices.
+Object.assign(LLM_PROVIDER_I18N.en, {
+  tokenPriceSchedule: 'Time-of-use token prices', tokenPriceScheduleHint: 'A matching window overrides only filled fields; the first match wins.',
+  tokenPriceAdd: 'Add price window', tokenPriceRemove: 'Remove', tokenPriceWindowID: 'Window ID'
+});
+Object.assign(LLM_PROVIDER_I18N.zh, {
+  tokenPriceSchedule: '\u5206\u65f6 Token \u5355\u4ef7', tokenPriceScheduleHint: '\u547d\u4e2d\u65f6\u6bb5\u4ec5\u8986\u76d6\u5df2\u586b\u5b57\u6bb5\uff0c\u9996\u4e2a\u547d\u4e2d\u7684\u65f6\u6bb5\u751f\u6548\u3002',
+  tokenPriceAdd: '\u6dfb\u52a0\u5355\u4ef7\u65f6\u6bb5', tokenPriceRemove: '\u5220\u9664', tokenPriceWindowID: '\u65f6\u6bb5 ID'
+});
+var llmProviderTokenPriceSchedule = [];
+function llmProviderNormalizeTokenPriceWindow(window, index) {
+  window = window || {};
+  var out = { id: String(window.id || 'price-' + (index + 1)).trim(), days: llmProviderUniqueWeekdays(window.days), start: llmProviderNormalizeScheduleClock(window.start), end: llmProviderNormalizeScheduleClock(window.end) };
+  if (out.days.length === 7) out.days = [];
+  ['input_credits_per_10k','output_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
+    if (window[key] === undefined || window[key] === null || window[key] === '') return;
+    var number = Number(window[key]);
+    if (Number.isFinite(number) && number >= 0) out[key] = number;
+  });
+  return out;
+}
+function llmProviderCloneTokenPriceSchedule(windows) {
+  return (windows || []).map(llmProviderNormalizeTokenPriceWindow).map(function(window) {
+    if (!window.start) window.start = '00:00';
+    if (!window.end) window.end = '08:00';
+    return window;
+  });
+}
+function llmProviderEnsureTokenPriceSchedule() {
+  if (document.getElementById('llmProviderTokenPriceSchedule')) return;
+  var anchor = document.getElementById('llmProviderCreditsHint');
+  if (!anchor || !anchor.parentElement) return;
+  var section = document.createElement('div');
+  section.id = 'llmProviderTokenPriceSchedule';
+  section.className = 'hint';
+  section.style.cssText = 'grid-column:1 / -1;margin-top:8px;padding-top:10px;border-top:1px solid var(--line)';
+  section.innerHTML = '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><strong id="llmProviderTokenPriceScheduleTitle" style="color:var(--ink)"></strong><div id="llmProviderTokenPriceScheduleHint" style="margin-top:4px"></div></div><button class="btn-ghost" type="button" id="llmProviderTokenPriceAddBtn" onclick="llmProviderAddTokenPriceWindow()"></button></div><div id="llmProviderTokenPriceScheduleList"></div>';
+  anchor.parentElement.appendChild(section);
+}
+function llmProviderTokenPriceRowHTML(window, index) {
+  var days = llmProviderUniqueWeekdays(window.days);
+  var everyday = !days.length;
+  var weekdays = llmProviderDaysAreWeekdays(days);
+  var chips = llmProviderBillingWeekdayKeys.map(function(key, day) {
+    var active = everyday || days.indexOf(day) >= 0;
+    return '<button type="button" onclick="llmProviderToggleTokenPriceDay(' + index + ',' + day + ')" style="min-height:28px;padding:0 8px;border:1px solid ' + (active ? '#4f46e5' : 'var(--line)') + ';border-radius:8px;background:' + (active ? '#eef2ff' : '#fff') + ';color:' + (active ? '#4338ca' : 'inherit') + ';font-size:12px;font-weight:700">' + escapeHtml(lp(key)) + '</button>';
+  }).join('');
+  function priceField(key, label) { return '<div><label>' + escapeHtml(label) + '</label><input type="number" min="0" step="0.01" value="' + escapeHtml(window[key] === undefined ? '' : String(window[key])) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'' + key + '\',this.value)"></div>'; }
+  return '<div style="margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff">'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px"><button type="button" onclick="llmProviderSetTokenPricePreset(' + index + ',\'everyday\')" class="btn-ghost">' + escapeHtml(lp('billingEveryday')) + '</button><button type="button" onclick="llmProviderSetTokenPricePreset(' + index + ',\'weekdays\')" class="btn-ghost">' + escapeHtml(lp('billingWeekdays')) + '</button></div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' + chips + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:8px;align-items:end;margin-top:8px"><div><label>' + escapeHtml(lp('billingStart')) + '</label><input type="time" value="' + escapeHtml(window.start) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'start\',this.value)"></div><div><label>' + escapeHtml(lp('billingEnd')) + '</label><input type="time" value="' + escapeHtml(window.end) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'end\',this.value)"></div><div><label>' + escapeHtml(lp('tokenPriceWindowID')) + '</label><input value="' + escapeHtml(window.id) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'id\',this.value)"></div><button class="btn-ghost" type="button" onclick="llmProviderRemoveTokenPriceWindow(' + index + ')">' + escapeHtml(lp('tokenPriceRemove')) + '</button></div>'
+    + '<div class="grid2" style="margin-top:8px">' + priceField('input_credits_per_10k', lp('inputCreditsPer10k')) + priceField('output_credits_per_10k', lp('outputCreditsPer10k')) + priceField('input_rmb_per_10k', lp('inputRMBPer10k')) + priceField('output_rmb_per_10k', lp('outputRMBPer10k')) + priceField('minimum_request_credits', lp('minimumRequestCredits')) + '</div></div>';
+}
+function llmProviderRenderTokenPriceSchedule() { var root = document.getElementById('llmProviderTokenPriceScheduleList'); if (root) root.innerHTML = llmProviderTokenPriceSchedule.map(llmProviderTokenPriceRowHTML).join(''); }
+function llmProviderWriteTokenPriceSchedule(provider) { llmProviderEnsureTokenPriceSchedule(); llmProviderTokenPriceSchedule = llmProviderCloneTokenPriceSchedule(provider && provider.token_pricing && provider.token_pricing.price_schedule); llmProviderRenderTokenPriceSchedule(); }
+function llmProviderReadTokenPriceSchedule() { return llmProviderCloneTokenPriceSchedule(llmProviderTokenPriceSchedule); }
+window.llmProviderAddTokenPriceWindow = function() { var base = llmProviderReadTokenPricingForm(); llmProviderTokenPriceSchedule.push({ id: 'price-' + (llmProviderTokenPriceSchedule.length + 1), days: [], start: '00:00', end: '08:00', input_credits_per_10k: base.input_credits_per_10k, output_credits_per_10k: base.output_credits_per_10k, input_rmb_per_10k: base.input_rmb_per_10k, output_rmb_per_10k: base.output_rmb_per_10k }); llmProviderRenderTokenPriceSchedule(); };
+window.llmProviderRemoveTokenPriceWindow = function(index) { llmProviderTokenPriceSchedule.splice(index, 1); llmProviderRenderTokenPriceSchedule(); };
+window.llmProviderSetTokenPricePreset = function(index, preset) { var window = llmProviderTokenPriceSchedule[index]; if (!window) return; window.days = preset === 'weekdays' ? [1,2,3,4,5] : []; llmProviderRenderTokenPriceSchedule(); };
+window.llmProviderToggleTokenPriceDay = function(index, day) { var window = llmProviderTokenPriceSchedule[index]; if (!window) return; var days = llmProviderUniqueWeekdays(window.days); if (!days.length) days = [0,1,2,3,4,5,6]; var position = days.indexOf(day); if (position >= 0) days.splice(position, 1); else days.push(day); window.days = llmProviderUniqueWeekdays(days); if (window.days.length === 7) window.days = []; llmProviderRenderTokenPriceSchedule(); };
+window.llmProviderSetTokenPriceField = function(index, key, value) { var window = llmProviderTokenPriceSchedule[index]; if (!window) return; if (key === 'start' || key === 'end') window[key] = llmProviderNormalizeScheduleClock(value); else if (key === 'id') window.id = String(value || '').trim(); else if (value === '') delete window[key]; else { var number = Number(value); if (Number.isFinite(number) && number >= 0) window[key] = number; } };
+function llmProviderApplyTokenPriceScheduleI18n() { llmProviderEnsureTokenPriceSchedule(); _s('llmProviderTokenPriceScheduleTitle', 'textContent', lp('tokenPriceSchedule')); _s('llmProviderTokenPriceScheduleHint', 'textContent', lp('tokenPriceScheduleHint')); _s('llmProviderTokenPriceAddBtn', 'textContent', lp('tokenPriceAdd')); llmProviderRenderTokenPriceSchedule(); }
+const baseApplyLLMProvidersI18nTokenPriceSchedule = typeof applyLLMProvidersI18n === 'function' ? applyLLMProvidersI18n : null;
+if (baseApplyLLMProvidersI18nTokenPriceSchedule) { applyLLMProvidersI18n = function() { baseApplyLLMProvidersI18nTokenPriceSchedule(); llmProviderApplyTokenPriceScheduleI18n(); }; applyLLMProvidersI18n(); }
+const baseWriteTokenPricingFormTokenPriceSchedule = typeof llmProviderWriteTokenPricingForm === 'function' ? llmProviderWriteTokenPricingForm : null;
+if (baseWriteTokenPricingFormTokenPriceSchedule) { llmProviderWriteTokenPricingForm = function(provider) { baseWriteTokenPricingFormTokenPriceSchedule(provider); llmProviderWriteTokenPriceSchedule(provider); }; }
+const baseReadTokenPricingFormTokenPriceSchedule = typeof llmProviderReadTokenPricingForm === 'function' ? llmProviderReadTokenPricingForm : null;
+if (baseReadTokenPricingFormTokenPriceSchedule) { llmProviderReadTokenPricingForm = function() { var pricing = baseReadTokenPricingFormTokenPriceSchedule(); var schedule = llmProviderReadTokenPriceSchedule(); if (schedule.length) pricing.price_schedule = schedule; return pricing; }; }
+
+// The registry response is the source of truth between editor sessions. Keep
+// billing-related fields in the front-end cache; otherwise a page refresh (or
+// saving an unrelated endpoint field) would erase provider-owned prices.
+const baseLpCloneTokenPricing = lpClone;
+lpClone = function(provider) {
+  var clone = baseLpCloneTokenPricing(provider);
+  provider = provider || {};
+  clone.input_price_per_m_tokens_rmb = provider.input_price_per_m_tokens_rmb;
+  clone.output_price_per_m_tokens_rmb = provider.output_price_per_m_tokens_rmb;
+  clone.token_pricing = llmProviderCloneTokenPriceSchedule(provider.token_pricing && provider.token_pricing.price_schedule).length
+    ? Object.assign({}, llmProviderNormalizeTokenPricing(provider.token_pricing), { price_schedule: llmProviderCloneTokenPriceSchedule(provider.token_pricing.price_schedule) })
+    : llmProviderNormalizeTokenPricing(provider.token_pricing);
+  clone.timezone = provider.timezone || '';
+  clone.credit_multiplier = Number(provider.credit_multiplier || 0);
+  clone.credit_multiplier_schedule = llmProviderCloneSchedule(provider.credit_multiplier_schedule);
+  clone.upstream_timeout_sec = Number(provider.upstream_timeout_sec || 0);
+  clone.circuit_breaker_threshold = Number(provider.circuit_breaker_threshold || 0);
+  clone.circuit_breaker_cooldown_ms = Number(provider.circuit_breaker_cooldown_ms || 0);
+  clone.failure_backoff_base_ms = Number(provider.failure_backoff_base_ms || 0);
+  clone.failure_backoff_max_ms = Number(provider.failure_backoff_max_ms || 0);
+  clone.consecutive_failures = Number(provider.consecutive_failures || 0);
+  clone.circuit_open = !!provider.circuit_open;
+  clone.circuit_open_until = provider.circuit_open_until || '';
+  clone.backoff_until = provider.backoff_until || '';
+  return clone;
+};
 
 Object.assign(LLM_PROVIDER_I18N.en, {
   accessLogFilterUpstreamHost: 'Upstream Host',
@@ -1135,7 +1328,7 @@ function exportLLMEndpointAccessLogsCSV() {
     showToast(lp('accessLogExportEmpty'), 'info');
     return;
   }
-  var rows = [['time','provider','upstream_host','client_ip','email','requested_model','authorized_model','input_tokens','output_tokens','total_tokens','input_cost_rmb','output_cost_rmb','total_cost_rmb','status','error_code','request_body']];
+  var rows = [['time','provider','upstream_host','client_ip','email','requested_model','authorized_model','input_tokens','output_tokens','total_tokens','credit_multiplier','credits','input_cost_rmb','output_cost_rmb','total_cost_rmb','status','error_code','request_body']];
   logs.forEach(function(item) {
     var meta = item.metadata || {};
     rows.push([
@@ -1149,6 +1342,8 @@ function exportLLMEndpointAccessLogsCSV() {
       Number(item.input_tokens || 0),
       Number(item.output_tokens || 0),
       Number(item.total_tokens || 0),
+      item.billing_recorded ? Number(item.credit_multiplier || 0) : '',
+      item.billing_recorded ? Number(item.credits || 0) : '',
       llmProviderFormatMoney(item.input_cost_rmb),
       llmProviderFormatMoney(item.output_cost_rmb),
       llmProviderFormatMoney(item.total_cost_rmb),
@@ -1236,6 +1431,7 @@ renderLLMEndpointAccessLogDialog = function() {
         + '<div><button class="btn-ghost" type="button" id="llmEndpointAccessLogToggle_' + reqId + '" onclick="llmProviderToggleAccessLogRequest(\'' + reqId + '\')">' + escapeHtml(lp('accessLogShowRequest')) + '</button></div>'
         + '</div>'
         + '<div class="hint" style="padding:0 10px 8px">' + escapeHtml(lp('accessLogRequestHidden')) + '</div>'
+        + '<div id="llmEndpointAccessLogBilling_' + reqId + '" class="llm-accesslog-billing mono" style="padding:4px 10px 8px;font-weight:700">' + escapeHtml(llmProviderAccessLogBillingLine(item)) + '</div>'
         + '<pre id="llmEndpointAccessLogRequest_' + reqId + '" class="console hidden" style="min-height:120px;max-height:260px;margin:0 10px 0">' + escapeHtml(item.request_body || '-') + '</pre>'
         + '</div>';
     }).join('');
@@ -1924,6 +2120,297 @@ if (baseBuildLLMProviderPayloadMaclawOfficialCurrent) {
     return payload;
   };
 }
+
+Object.assign(LLM_PROVIDER_I18N.en, {
+  billingTitle: 'Vendor time-of-use rates',
+  billingHint: 'These are the upstream vendor billing rules. Routing markup is separate. Credits are charged at the rate in effect when the request starts.',
+  billingTimezone: 'Timezone',
+  billingDefaultMultiplier: 'Default multiplier',
+  billingSchedule: 'Time windows',
+  billingAddWindow: 'Add window',
+  billingRemoveWindow: 'Remove',
+  billingEveryday: 'Every day',
+  billingWeekdays: 'Weekdays',
+  billingStart: 'Start',
+  billingEnd: 'End',
+  billingWindowMultiplier: 'Multiplier',
+  weekdaySun: 'Sun', weekdayMon: 'Mon', weekdayTue: 'Tue', weekdayWed: 'Wed', weekdayThu: 'Thu', weekdayFri: 'Fri', weekdaySat: 'Sat'
+});
+Object.assign(LLM_PROVIDER_I18N.zh, {
+  billingTitle: '\u4e0a\u6e38\u8ba1\u8d39\u89c4\u5219',
+  billingHint: '\u8fd9\u662f\u670d\u52a1\u5546\u672c\u8eab\u7684\u5206\u65f6\u8ba1\u8d39\u89c4\u5219\uff0c\u8def\u7531\u52a0\u4ef7\u4e0d\u5728\u8fd9\u91cc\u4fee\u6539\u3002\u6309\u8bf7\u6c42\u5f00\u59cb\u65f6\u523b\u7684\u8d39\u7387\u6263\u8d39\u3002',
+  billingTimezone: '\u65f6\u533a',
+  billingDefaultMultiplier: '\u9ed8\u8ba4\u500d\u7387',
+  billingSchedule: '\u5206\u65f6\u65f6\u6bb5',
+  billingAddWindow: '\u6dfb\u52a0\u65f6\u6bb5',
+  billingRemoveWindow: '\u5220\u9664',
+  billingEveryday: '\u6bcf\u5929',
+  billingWeekdays: '\u5de5\u4f5c\u65e5',
+  billingStart: '\u5f00\u59cb',
+  billingEnd: '\u7ed3\u675f',
+  billingWindowMultiplier: '\u500d\u7387',
+  weekdaySun: '\u65e5', weekdayMon: '\u4e00', weekdayTue: '\u4e8c', weekdayWed: '\u4e09', weekdayThu: '\u56db', weekdayFri: '\u4e94', weekdaySat: '\u516d'
+});
+
+var llmProviderBillingWeekdayKeys = ['weekdaySun','weekdayMon','weekdayTue','weekdayWed','weekdayThu','weekdayFri','weekdaySat'];
+var llmProviderBillingTimezoneOptions = ['Asia/Shanghai','Asia/Hong_Kong','Asia/Tokyo','UTC','America/New_York','Europe/London'];
+var llmProviderBillingSchedule = [];
+
+function llmProviderCloneSchedule(windows) {
+  return (windows || []).map(function(w) {
+    return { days: (w.days || []).slice(), start: w.start || '', end: w.end || '', multiplier: Number(w.multiplier || 1) || 1 };
+  });
+}
+
+function llmProviderUniqueWeekdays(days) {
+  var seen = {};
+  var out = [];
+  (days || []).forEach(function(day) {
+    var n = Number(day);
+    if (!Number.isInteger(n) || n < 0 || n > 6 || seen[n]) return;
+    seen[n] = true;
+    out.push(n);
+  });
+  return out;
+}
+
+function llmProviderDaysAreWeekdays(days) {
+  var sorted = llmProviderUniqueWeekdays(days).slice().sort();
+  return sorted.length === 5 && sorted.join(',') === '1,2,3,4,5';
+}
+
+function llmProviderNormalizeScheduleClock(value) {
+  var match = /^(\d{1,2}):(\d{2})/.exec(String(value || '').trim());
+  if (!match) return String(value || '').trim();
+  var hour = Number(match[1]);
+  var minute = Number(match[2]);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    return String(value || '').trim();
+  }
+  return (hour < 10 ? '0' : '') + hour + ':' + (minute < 10 ? '0' : '') + minute;
+}
+
+function llmProviderEnsureBillingSection() {
+  if (document.getElementById('llmProviderBillingSection')) return;
+  var hint = document.getElementById('llmProviderResilienceHint');
+  if (!hint || !hint.parentElement) return;
+  var section = document.createElement('div');
+  section.id = 'llmProviderBillingSection';
+  section.style.cssText = 'margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.72)';
+  section.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px"><div><div class="item-title" id="llmProviderBillingTitle" style="font-size:13px"></div><div class="item-meta" id="llmProviderBillingHint" style="margin-top:4px"></div></div><button class="btn-ghost" type="button" id="llmProviderBillingAddBtn" onclick="llmProviderAddScheduleWindow()"></button></div>'
+    + '<div class="grid2" style="margin-top:10px"><div><label id="llmProviderTimezoneLabel"></label><select id="llmProviderTimezone"></select></div><div><label id="llmProviderCreditMultiplierLabel"></label><input id="llmProviderCreditMultiplier" type="number" min="0.01" step="0.05" value="1"></div></div>'
+    + '<div class="item-meta" id="llmProviderScheduleLabel" style="margin-top:10px"></div><div id="llmProviderScheduleList"></div>';
+  hint.parentElement.insertBefore(section, hint);
+}
+
+function llmProviderWriteBillingForm(provider) {
+  llmProviderEnsureBillingSection();
+  provider = provider || {};
+  var timezone = String(provider.timezone || 'Asia/Shanghai').trim() || 'Asia/Shanghai';
+  var options = llmProviderBillingTimezoneOptions.slice();
+  if (timezone && options.indexOf(timezone) < 0) options.unshift(timezone);
+  var select = document.getElementById('llmProviderTimezone');
+  if (select) {
+    select.innerHTML = options.map(function(v) {
+      return '<option value="' + escapeHtml(v) + '"' + (v === timezone ? ' selected' : '') + '>' + escapeHtml(v) + '</option>';
+    }).join('');
+    select.value = timezone;
+  }
+  _s('llmProviderCreditMultiplier', 'value', String(Number(provider.credit_multiplier || 1) || 1));
+  llmProviderBillingSchedule = llmProviderCloneSchedule(provider.credit_multiplier_schedule);
+  llmProviderRenderBillingSchedule();
+}
+
+function llmProviderReadBillingForm() {
+  llmProviderEnsureBillingSection();
+  return {
+    timezone: String(document.getElementById('llmProviderTimezone') && document.getElementById('llmProviderTimezone').value || 'Asia/Shanghai').trim() || 'Asia/Shanghai',
+    credit_multiplier: Number(document.getElementById('llmProviderCreditMultiplier') && document.getElementById('llmProviderCreditMultiplier').value || 1) || 1,
+    credit_multiplier_schedule: llmProviderCloneSchedule(llmProviderBillingSchedule).filter(function(w) { return w.start && w.end && w.start !== w.end; }).map(function(w) {
+      w.start = llmProviderNormalizeScheduleClock(w.start);
+      w.end = llmProviderNormalizeScheduleClock(w.end);
+      return w;
+    })
+  };
+}
+
+function llmProviderScheduleRowHTML(item, index) {
+  var days = llmProviderUniqueWeekdays(item && item.days);
+  var everyday = !days.length;
+  var weekdays = llmProviderDaysAreWeekdays(days);
+  var chips = llmProviderBillingWeekdayKeys.map(function(key, day) {
+    var active = everyday || days.indexOf(day) >= 0;
+    return '<button type="button" onclick="llmProviderToggleScheduleDay(' + index + ',' + day + ')" style="min-height:28px;padding:0 8px;border:1px solid ' + (active ? '#4f46e5' : 'var(--line)') + ';border-radius:8px;background:' + (active ? '#eef2ff' : '#fff') + ';color:' + (active ? '#4338ca' : 'inherit') + ';font-size:12px;font-weight:700">' + escapeHtml(lp(key)) + '</button>';
+  }).join('');
+  return '<div style="margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff">'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px">'
+    + '<button type="button" onclick="llmProviderSetSchedulePreset(' + index + ',\'everyday\')" style="min-height:28px;padding:0 8px;border:1px solid ' + (everyday ? '#4f46e5' : 'var(--line)') + ';border-radius:8px;background:' + (everyday ? '#eef2ff' : '#fff') + ';color:' + (everyday ? '#4338ca' : 'inherit') + ';font-size:12px;font-weight:700">' + escapeHtml(lp('billingEveryday')) + '</button>'
+    + '<button type="button" onclick="llmProviderSetSchedulePreset(' + index + ',\'weekdays\')" style="min-height:28px;padding:0 8px;border:1px solid ' + (weekdays ? '#4f46e5' : 'var(--line)') + ';border-radius:8px;background:' + (weekdays ? '#eef2ff' : '#fff') + ';color:' + (weekdays ? '#4338ca' : 'inherit') + ';font-size:12px;font-weight:700">' + escapeHtml(lp('billingWeekdays')) + '</button>'
+    + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' + chips + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:8px;align-items:end;margin-top:8px">'
+    + '<div><label>' + escapeHtml(lp('billingStart')) + '</label><input type="time" value="' + escapeHtml((item && item.start) || '00:00') + '" oninput="llmProviderSetScheduleField(' + index + ',\'start\',this.value)" onchange="llmProviderSetScheduleField(' + index + ',\'start\',this.value)"></div>'
+    + '<div><label>' + escapeHtml(lp('billingEnd')) + '</label><input type="time" value="' + escapeHtml((item && item.end) || '08:00') + '" oninput="llmProviderSetScheduleField(' + index + ',\'end\',this.value)" onchange="llmProviderSetScheduleField(' + index + ',\'end\',this.value)"></div>'
+    + '<div><label>' + escapeHtml(lp('billingWindowMultiplier')) + '</label><input type="number" min="0.01" step="0.05" value="' + escapeHtml(String((item && item.multiplier) || 1)) + '" oninput="llmProviderSetScheduleField(' + index + ',\'multiplier\',this.value)" onchange="llmProviderSetScheduleField(' + index + ',\'multiplier\',this.value)"></div>'
+    + '<button class="btn-ghost" type="button" onclick="llmProviderRemoveScheduleWindow(' + index + ')">' + escapeHtml(lp('billingRemoveWindow')) + '</button>'
+    + '</div></div>';
+}
+
+function llmProviderRenderBillingSchedule() {
+  var el = document.getElementById('llmProviderScheduleList');
+  if (!el) return;
+  el.innerHTML = (llmProviderBillingSchedule || []).map(llmProviderScheduleRowHTML).join('');
+}
+
+window.llmProviderAddScheduleWindow = function() {
+  llmProviderBillingSchedule.push({ days: [1,2,3,4,5], start: '00:30', end: '08:30', multiplier: 0.5 });
+  llmProviderRenderBillingSchedule();
+};
+window.llmProviderRemoveScheduleWindow = function(index) {
+  llmProviderBillingSchedule.splice(index, 1);
+  llmProviderRenderBillingSchedule();
+};
+window.llmProviderSetSchedulePreset = function(index, preset) {
+  var item = llmProviderBillingSchedule[index];
+  if (!item) return;
+  item.days = preset === 'weekdays' ? [1,2,3,4,5] : [];
+  llmProviderRenderBillingSchedule();
+};
+window.llmProviderToggleScheduleDay = function(index, day) {
+  var item = llmProviderBillingSchedule[index];
+  if (!item) return;
+  var days = llmProviderUniqueWeekdays(item.days);
+  if (!days.length) days = [0,1,2,3,4,5,6];
+  var pos = days.indexOf(day);
+  if (pos >= 0) days.splice(pos, 1);
+  else days.push(day);
+  days = llmProviderUniqueWeekdays(days);
+  item.days = days.length === 7 ? [] : days;
+  llmProviderRenderBillingSchedule();
+};
+window.llmProviderSetScheduleField = function(index, key, value) {
+  var item = llmProviderBillingSchedule[index];
+  if (!item) return;
+  if (key === 'multiplier') {
+    var n = Number(value);
+    if (Number.isFinite(n) && n > 0) item.multiplier = n;
+  } else item[key] = llmProviderNormalizeScheduleClock(value);
+};
+
+const baseLpCloneBilling = typeof lpClone === 'function' ? lpClone : null;
+if (baseLpCloneBilling) {
+  lpClone = function(provider) {
+    var next = baseLpCloneBilling(provider);
+    var billing = llmProviderReadBillingFromSource(provider);
+    next.timezone = billing.timezone;
+    next.credit_multiplier = billing.credit_multiplier;
+    next.credit_multiplier_schedule = billing.credit_multiplier_schedule;
+    return next;
+  };
+}
+
+function llmProviderReadBillingFromSource(provider) {
+  return {
+    timezone: String(provider && provider.timezone || 'Asia/Shanghai').trim() || 'Asia/Shanghai',
+    credit_multiplier: Number(provider && provider.credit_multiplier || 1) || 1,
+    credit_multiplier_schedule: llmProviderCloneSchedule(provider && provider.credit_multiplier_schedule)
+  };
+}
+
+function llmProviderApplyBillingI18n() {
+  llmProviderEnsureBillingSection();
+  _s('llmProviderBillingTitle', 'textContent', lp('billingTitle'));
+  _s('llmProviderBillingHint', 'textContent', lp('billingHint'));
+  _s('llmProviderTimezoneLabel', 'textContent', lp('billingTimezone'));
+  _s('llmProviderCreditMultiplierLabel', 'textContent', lp('billingDefaultMultiplier'));
+  _s('llmProviderScheduleLabel', 'textContent', lp('billingSchedule'));
+  _s('llmProviderBillingAddBtn', 'textContent', lp('billingAddWindow'));
+  llmProviderRenderBillingSchedule();
+}
+
+const baseApplyLLMProvidersI18nBilling = typeof applyLLMProvidersI18n === 'function' ? applyLLMProvidersI18n : null;
+if (baseApplyLLMProvidersI18nBilling) {
+  applyLLMProvidersI18n = function() {
+    baseApplyLLMProvidersI18nBilling();
+    llmProviderApplyBillingI18n();
+  };
+  applyLLMProvidersI18n();
+}
+
+const baseReadSelectedLLMProviderFormBilling = typeof readSelectedLLMProviderForm === 'function' ? readSelectedLLMProviderForm : null;
+if (baseReadSelectedLLMProviderFormBilling) {
+  readSelectedLLMProviderForm = function() {
+    var next = baseReadSelectedLLMProviderFormBilling();
+    var billing = llmProviderReadBillingForm();
+    next.timezone = billing.timezone;
+    next.credit_multiplier = billing.credit_multiplier;
+    next.credit_multiplier_schedule = billing.credit_multiplier_schedule;
+    return next;
+  };
+}
+
+const baseClearLLMProviderFormBilling = typeof clearLLMProviderForm === 'function' ? clearLLMProviderForm : null;
+if (baseClearLLMProviderFormBilling) {
+  clearLLMProviderForm = function() {
+    baseClearLLMProviderFormBilling();
+    llmProviderWriteBillingForm({});
+  };
+}
+
+const baseOpenLLMProviderDialogBilling = typeof openLLMProviderDialog === 'function' ? openLLMProviderDialog : null;
+if (baseOpenLLMProviderDialogBilling) {
+  openLLMProviderDialog = function(mode) {
+    baseOpenLLMProviderDialogBilling(mode);
+    llmProviderWriteBillingForm(mode === 'edit' ? lpById(llmProviderSelectedId) : {});
+    llmProviderApplyBillingI18n();
+  };
+}
+
+const baseBuildLLMProviderPayloadBilling = typeof buildLLMProviderPayload === 'function' ? buildLLMProviderPayload : null;
+if (baseBuildLLMProviderPayloadBilling) {
+  buildLLMProviderPayload = function() {
+    var payload = baseBuildLLMProviderPayloadBilling();
+    payload.providers = (payload.providers || []).map(function(p) {
+      var src = lpById(p.id) || p;
+      var billing = llmProviderReadBillingFromSource(src);
+      p.timezone = billing.timezone;
+      p.credit_multiplier = billing.credit_multiplier;
+      p.credit_multiplier_schedule = billing.credit_multiplier_schedule;
+      p.input_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(src && src.input_price_per_m_tokens_rmb, 1);
+      p.output_price_per_m_tokens_rmb = llmProviderNormalizePricePerM(src && src.output_price_per_m_tokens_rmb, 2);
+      p.token_pricing = llmProviderNormalizeTokenPricing(src && src.token_pricing);
+      var priceSchedule = llmProviderReadTokenPriceSchedule();
+      if (src && src.id === llmProviderSelectedId && llmProviderDialogOpen()) priceSchedule = llmProviderReadTokenPriceSchedule();
+      else priceSchedule = llmProviderCloneTokenPriceSchedule(src && src.token_pricing && src.token_pricing.price_schedule);
+      if (priceSchedule.length) p.token_pricing.price_schedule = priceSchedule;
+      return p;
+    });
+    return payload;
+  };
+}
+
+const baseImportedPayloadBilling = typeof llmProviderImportedPayload === 'function' ? llmProviderImportedPayload : null;
+if (baseImportedPayloadBilling) {
+  llmProviderImportedPayload = function(raw) {
+    var sourceProviders = raw && Array.isArray(raw.providers) ? raw.providers : [];
+    var sourceByID = {};
+    sourceProviders.forEach(function(src) {
+      var id = lpNormalizeId(src && src.id || '');
+      if (id) sourceByID[id] = src;
+    });
+    var payload = baseImportedPayloadBilling(raw);
+    payload.providers = (payload.providers || []).map(function(p, idx) {
+      var src = sourceByID[p && p.id || ''] || sourceProviders[idx] || p;
+      var billing = llmProviderReadBillingFromSource(src);
+      p.timezone = billing.timezone;
+      p.credit_multiplier = billing.credit_multiplier;
+      p.credit_multiplier_schedule = billing.credit_multiplier_schedule;
+      return p;
+    });
+    return payload;
+  };
+}
+
 const baseSetCurrentLLMProviderMaclawOfficialCurrent = typeof setCurrentLLMProvider === 'function' ? setCurrentLLMProvider : null;
 if (baseSetCurrentLLMProviderMaclawOfficialCurrent) {
   setCurrentLLMProvider = function(id) {
@@ -1931,3 +2418,35 @@ if (baseSetCurrentLLMProviderMaclawOfficialCurrent) {
     syncLLMProviderCurrentSelectOptions();
   };
 }
+
+Object.assign(LLM_PROVIDER_I18N.en, {
+  accessLogBilling: 'This request: multiplier {multiplier}, credits deducted {credits}',
+  accessLogBillingUnknown: 'This request: multiplier and deducted credits were not recorded.'
+});
+Object.assign(LLM_PROVIDER_I18N.zh, {
+  accessLogBilling: '\u8be5\u6b21\u8bf7\u6c42\uff1a\u500d\u7387 {multiplier}\uff0c\u6263\u9664 credits {credits}',
+  accessLogBillingUnknown: '\u8be5\u6b21\u8bf7\u6c42\uff1a\u672a\u8bb0\u5f55\u500d\u7387\u4e0e\u6240\u6263 credits\u3002'
+});
+function llmProviderFormatCredits(value) {
+  var n = Number(value || 0);
+  if (!Number.isFinite(n)) n = 0;
+  return n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '') || '0';
+}
+function llmProviderFormatMultiplier(value) {
+  var n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '1';
+  return n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '') || '1';
+}
+function llmProviderAccessLogBillingLine(item) {
+  if (!item || !item.billing_recorded) return lp('accessLogBillingUnknown');
+  return lp('accessLogBilling', { multiplier: llmProviderFormatMultiplier(item.credit_multiplier), credits: llmProviderFormatCredits(item.credits) });
+}
+llmProviderToggleAccessLogRequest = function(id) {
+  var body = document.getElementById('llmEndpointAccessLogRequest_' + id);
+  var btn = document.getElementById('llmEndpointAccessLogToggle_' + id);
+  if (!body || !btn) return;
+  var opening = body.classList.contains('hidden');
+  body.classList.toggle('hidden', !opening);
+  btn.textContent = opening ? lp('accessLogHideRequest') : lp('accessLogShowRequest');
+};
+window.llmProviderToggleAccessLogRequest = llmProviderToggleAccessLogRequest;

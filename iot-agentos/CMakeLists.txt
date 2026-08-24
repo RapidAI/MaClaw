@@ -5,6 +5,15 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # identity at configure time, so keep one independently reproducible resolved
 # closure per board instead of allowing the last local profile build to rewrite
 # a shared dependencies.lock.
+# ESP-IDF also runs a preliminary `cmake -P` requirements pass where command
+# line cache entries are not guaranteed to survive.  The wrapper exports the
+# same selected identity in the environment; recover it before setting the
+# build property so that pass cannot fall back to the generic lock and prune a
+# different profile's managed components (notably Waveshare touch support).
+if((NOT DEFINED MACLAW_PROFILE OR MACLAW_PROFILE STREQUAL "") AND
+   DEFINED ENV{MACLAW_PROFILE} AND NOT "$ENV{MACLAW_PROFILE}" STREQUAL "")
+    set(MACLAW_PROFILE "$ENV{MACLAW_PROFILE}")
+endif()
 if(DEFINED MACLAW_PROFILE AND NOT MACLAW_PROFILE STREQUAL "")
     idf_build_set_property(DEPENDENCIES_LOCK
                            "${CMAKE_CURRENT_SOURCE_DIR}/dependencies.lock.${MACLAW_PROFILE}")

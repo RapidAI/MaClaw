@@ -1,0 +1,87 @@
+{
+  "category": "artifact_chain",
+  "category_id": 3,
+  "title": "artifact chain capture/generate then deliver",
+  "design_ref": "10.1 item 3",
+  "format_note": "Planner-level producer/consumer DAG only.",
+  "samples": [
+    {
+      "id": "capture-then-image-deliver",
+      "title": "Desktop capture then current-channel image deliver",
+      "notes": "Capture produces image/png, deliver consumes it.",
+      "needs": [
+        {"id": "capture", "capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "image"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "capture_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}}],
+            "produces": [{"kind": "image", "mime_type": "image/png", "required": true}]
+          },
+          {
+            "adapter": "image_deliver_adapter",
+            "kind": "channel",
+            "provider_id": "lansenger",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "image"}}],
+            "consumes": [{"kind": "image", "mime_type": "image/png", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "capture", "capability": "visual.capture.desktop", "adapter": "capture_adapter", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "adapter": "image_deliver_adapter", "phase": "delivery"}
+        ],
+        "artifact_edges": [{"consumer_need": "deliver", "producer_need": "capture"}],
+        "ready_without_facts": ["capture"]
+      }
+    },
+    {
+      "id": "search-generate-file-deliver",
+      "title": "Lookup then PDF generate then file deliver",
+      "notes": "document.generate slice: lookup after-edge plus generate ArtifactRef consumed by file deliver.",
+      "input_text": "query nanjing weather and generate pdf report",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "provider_id": "lansenger",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "adapter": "search_adapter", "phase": "execution"},
+          {"need_id": "generate", "capability": "document.generate.file", "adapter": "generate_adapter", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "adapter": "file_deliver_adapter", "phase": "delivery"}
+        ],
+        "artifact_edges": [{"consumer_need": "deliver", "producer_need": "generate"}],
+        "ready_without_facts": ["search"]
+      }
+    }
+  ]
+}

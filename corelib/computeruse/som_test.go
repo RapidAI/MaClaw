@@ -35,6 +35,30 @@ func TestBuildMarks_AssociatesOCRAndDropsSyntheticNames(t *testing.T) {
 	}
 }
 
+func TestAssociateOCRLabelPrefersIoUOverNearestCenter(t *testing.T) {
+	bbox := [4]int{0, 0, 80, 40}
+	ocr := []taskengine.OCRResult{
+		{Text: "near", BBox: [4]int{36, 16, 8, 8}, Confidence: 0.9},
+		{Text: "label", BBox: [4]int{5, 5, 70, 30}, Confidence: 0.8},
+	}
+	got := associateOCRLabel(bbox, ocr)
+	if got != "label" {
+		t.Fatalf("got %q want label", got)
+	}
+}
+
+func TestAssociateOCRLabelSkipsZeroSizeBoxes(t *testing.T) {
+	bbox := [4]int{0, 0, 80, 40}
+	ocr := []taskengine.OCRResult{
+		{Text: "ghost", BBox: [4]int{10, 10, 0, 0}, Confidence: 0.99},
+		{Text: "ok", BBox: [4]int{8, 8, 20, 12}, Confidence: 0.5},
+	}
+	got := associateOCRLabel(bbox, ocr)
+	if got != "ok" {
+		t.Fatalf("got %q want ok", got)
+	}
+}
+
 func TestRenderTextObserve_NoBase64(t *testing.T) {
 	res := &ObserveResult{
 		Mode:    ObserveTextPrimary,
@@ -61,6 +85,25 @@ func TestRenderTextObserve_NoBase64(t *testing.T) {
 	}
 }
 
+func TestRenderVisionObserve_NoElementsOrBase64(t *testing.T) {
+	res := &ObserveResult{
+		Mode:          ObserveVisionAssist,
+		Meta:          ScreenMeta{Width: 1920, Height: 1080, ScaleFactor: 1, VisionWidth: 1568, VisionHeight: 882},
+		Windows:       []string{"Chrome"},
+		ScreenshotB64: "iVBORw0KGgo",
+	}
+	text := RenderVisionObserve(res)
+	if strings.Contains(text, res.ScreenshotB64) {
+		t.Fatal("screenshot bytes must not appear in vision observe text")
+	}
+	if !strings.Contains(text, "perception=llm_vision") || !strings.Contains(text, "image=1568x882") {
+		t.Fatalf("missing vision hints: %s", text)
+	}
+	if strings.Contains(text, "elements (") {
+		t.Fatal("vision observe must not use the text-primary elements dump")
+	}
+}
+
 func TestResolveRef(t *testing.T) {
 	els := []MarkedElement{{Ref: "e2", CenterX: 5, CenterY: 6}}
 	m, err := ResolveRef(els, "e2")
@@ -73,6 +116,16 @@ func TestResolveRef(t *testing.T) {
 	}
 	if _, err := ResolveRef(els, "e9"); err == nil {
 		t.Fatal("expected stale_ref")
+	}
+}
+
+func TestBuildMarks_PreservesHandleAndPatterns(t *testing.T) {
+	els := []taskengine.UIElement{
+		{Type: "Button", Name: "OK", BBox: [4]int{0, 0, 10, 10}, Source: "accessibility", Handle: "OkBtn", Patterns: []string{"invoke"}, Interactable: true, Confidence: 1},
+	}
+	marks := BuildMarks(els, nil)
+	if len(marks) != 1 || marks[0].Handle != "OkBtn" || len(marks[0].Patterns) != 1 {
+		t.Fatalf("marks=%+v", marks)
 	}
 }
 

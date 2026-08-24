@@ -178,3 +178,54 @@ func TestConvertToAnthropicMessages_InputTextNormalized(t *testing.T) {
 		t.Fatalf("block type = %v, want normalized text", got)
 	}
 }
+
+func TestConvertToAnthropicTools_ClonesNestedParameters(t *testing.T) {
+	parameters := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"query": map[string]interface{}{"type": "string"},
+		},
+	}
+	tools := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "search", "parameters": parameters,
+		},
+	}}
+
+	converted := ConvertToAnthropicTools(tools)
+	convertedParameters := converted[0]["input_schema"].(map[string]interface{})
+	convertedParameters["type"] = "array"
+	convertedParameters["properties"].(map[string]interface{})["query"].(map[string]interface{})["type"] = "integer"
+
+	if parameters["type"] != "object" {
+		t.Fatalf("source parameter type mutated: %#v", parameters)
+	}
+	sourceQuery := parameters["properties"].(map[string]interface{})["query"].(map[string]interface{})
+	if sourceQuery["type"] != "string" {
+		t.Fatalf("source nested parameter mutated: %#v", parameters)
+	}
+}
+
+func TestConvertToAnthropicTools_ClonesNamedJSONCollectionTypes(t *testing.T) {
+	type namedSchema map[string]interface{}
+	type namedEnum []string
+	parameters := namedSchema{
+		"type": "object",
+		"properties": namedSchema{
+			"format": namedSchema{"type": "string", "enum": namedEnum{"json", "text"}},
+		},
+	}
+	tools := []map[string]interface{}{{
+		"type":     "function",
+		"function": map[string]interface{}{"name": "named", "parameters": parameters},
+	}}
+
+	converted := ConvertToAnthropicTools(tools)
+	convertedParams := converted[0]["input_schema"].(namedSchema)
+	convertedParams["properties"].(namedSchema)["format"].(namedSchema)["enum"].(namedEnum)[0] = "rewritten"
+
+	if got := parameters["properties"].(namedSchema)["format"].(namedSchema)["enum"].(namedEnum)[0]; got != "json" {
+		t.Fatalf("source named schema mutated: %#v", parameters)
+	}
+}

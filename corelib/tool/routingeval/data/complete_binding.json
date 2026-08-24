@@ -1,0 +1,50 @@
+{
+  "category": "complete_binding",
+  "category_id": 38,
+  "title": "complete binding",
+  "design_ref": "10.1 item 38",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "binding-contains-search",
+      "title": "Selected binding names the search adapter",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "search",
+            "capability": "information.search.web",
+            "adapter": "search_adapter"
+          }
+        ]
+      },
+      "notes": "Binding drift is in agentservice dynamic binding tests."
+    }
+  ]
+}

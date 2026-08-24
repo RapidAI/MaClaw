@@ -433,7 +433,22 @@ func matMulRangeDualAdd(out, a, b, bias []float32, M, N, K, ns, ne int) {
 
 // Dot computes the dot product of two vectors using SIMD acceleration.
 func Dot(a, b []float32) float32 {
+	n := len(a)
+	if n == 256 && len(b) >= 256 {
+		return dot256(a, b)
+	}
 	return vek32.Dot(a, b)
+}
+
+func dot256Scalar(a, b []float32) float32 {
+	var s0, s1, s2, s3 float32
+	for i := 0; i < 256; i += 4 {
+		s0 += a[i] * b[i]
+		s1 += a[i+1] * b[i+1]
+		s2 += a[i+2] * b[i+2]
+		s3 += a[i+3] * b[i+3]
+	}
+	return s0 + s1 + s2 + s3
 }
 
 // Axpy computes y[i] += a * x[i] (BLAS-style), in-place on y.
@@ -475,6 +490,46 @@ func putAxpyBuf(buf []float32) {
 // RMSNorm computes RMS normalization: out[i] = x[i] / rms(x) * weight[i].
 // out and x may alias (in-place normalization).
 // Uses SIMD for both the sum-of-squares and the fused scale*weight multiply.
+// RMSNormRows applies RMSNorm independently to seq rows of dim.
+func RMSNormRows(out, x, weight []float32, seq, dim int, eps float32) {
+	if seq <= 0 || dim <= 0 {
+		return
+	}
+	for s := 0; s < seq; s++ {
+		off := s * dim
+		RMSNorm(out[off:off+dim], x[off:off+dim], weight, eps)
+	}
+}
+
+// RoPESeq applies RoPEPrecomputed at every sequence position.
+func RoPESeq(x []float32, nHeads, headDim, seq int, cosTable, sinTable []float32) {
+	if seq <= 0 || nHeads <= 0 || headDim <= 0 {
+		return
+	}
+	half := headDim / 2
+	stride := nHeads * headDim
+	for s := 0; s < seq; s++ {
+		RoPEPrecomputed(x[s*stride:(s+1)*stride], nHeads, headDim, cosTable[s*half:(s+1)*half], sinTable[s*half:(s+1)*half])
+	}
+}
+
+// RMSNormRoPESeq is F5: per-head RMSNorm then RoPE on the same subspace.
+func RMSNormRoPESeq(x, weight, cosTable, sinTable []float32, seq, nHeads, headDim int, eps float32) {
+	if seq <= 0 || nHeads <= 0 || headDim <= 0 {
+		return
+	}
+	half := headDim / 2
+	stride := nHeads * headDim
+	for s := 0; s < seq; s++ {
+		base := s * stride
+		for h := 0; h < nHeads; h++ {
+			off := base + h*headDim
+			RMSNorm(x[off:off+headDim], x[off:off+headDim], weight, eps)
+		}
+		RoPEPrecomputed(x[base:base+stride], nHeads, headDim, cosTable[s*half:(s+1)*half], sinTable[s*half:(s+1)*half])
+	}
+}
+
 func RMSNorm(out, x, weight []float32, eps float32) {
 	n := len(x)
 	ss := vek32.Dot(x, x) // sum of squares via SIMD dot product
@@ -811,8 +866,7 @@ func SoftmaxWeightedSumStrided(out, scores, values []float32, rows, stride, dim 
 		clear(out[:dim])
 		return
 	}
-	if dim == 128 {
-		// Hot path for SenseVoice headDim=128: fuse invSum into weights on the fly.
+	if dim == 128 || dim == 256 {
 		weightedSumStridedScaled(out, scores, values, rows, stride, dim, inv)
 		return
 	}
@@ -920,6 +974,12 @@ func SoftmaxWeightedSumBatched(out, scores, values []float32, nQ, rows, vStride,
 	// Contiguous headDim=128 + small batch: specialized kernel.
 	if dim == 128 && vStride == 128 && (nQ == 8 || nQ == 4) {
 		weightedSumBatchedContig128(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
+		return
+	}
+	// Gemma GQA headDim=256, nQ=3/4: reuse the 128 kernels on V halves so each
+	// 256-vector is loaded once per query tile. nQ=3 is short Embed (seq=3).
+	if dim == 256 && vStride == 256 && (nQ == 4 || nQ == 3) {
+		weightedSumBatchedContig256n4(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
 		return
 	}
 	// Generic fallback: fold inv per query via scaled weighted sum.
@@ -1032,11 +1092,86 @@ func weightedSumBatchedContig128(out, scores, values []float32, nQ, rows, outStr
 	}
 }
 
+// weightedSumBatchedContig256n4: nQ=4 queries × contiguous V [rows][256].
+// Splits each V row into 128-wide halves and reuses the existing AVX kernels.
+func weightedSumBatchedContig256n4(out, scores, values []float32, nQ, rows, outStride, hOff, qf int, invs [8]float32) {
+	const dim, half = 256, 128
+	if rows <= 0 || nQ < 3 {
+		return
+	}
+	o0 := out[(qf+0)*outStride+hOff : (qf+0)*outStride+hOff+dim]
+	o1 := out[(qf+1)*outStride+hOff : (qf+1)*outStride+hOff+dim]
+	o2 := out[(qf+2)*outStride+hOff : (qf+2)*outStride+hOff+dim]
+	var dummy [256]float32
+	o3 := dummy[:]
+	inv0, inv1, inv2, inv3 := invs[0], invs[1], invs[2], float32(0)
+	if nQ >= 4 {
+		o3 = out[(qf+3)*outStride+hOff : (qf+3)*outStride+hOff+dim]
+		inv3 = invs[3]
+	} else {
+		// nQ=3: n4 kernel still indexes scores[3*rows+r]; keep a zero 4th query row.
+		var pad [4 * 512]float32
+		copy(pad[:nQ*rows], scores[:nQ*rows])
+		scores = pad[:]
+	}
+	r := 0
+	if rows >= 2 {
+		va, vb := values[:dim], values[dim:2*dim]
+		wsumBatched4SetAdd128Dual(
+			o0[:half], o1[:half], o2[:half], o3[:half], va[:half], vb[:half],
+			scores[0*rows]*inv0, scores[1*rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+			scores[0*rows+1]*inv0, scores[1*rows+1]*inv1, scores[2*rows+1]*inv2, scores[3*rows+1]*inv3,
+		)
+		wsumBatched4SetAdd128Dual(
+			o0[half:], o1[half:], o2[half:], o3[half:], va[half:], vb[half:],
+			scores[0*rows]*inv0, scores[1*rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+			scores[0*rows+1]*inv0, scores[1*rows+1]*inv1, scores[2*rows+1]*inv2, scores[3*rows+1]*inv3,
+		)
+		r = 2
+	} else if rows == 1 {
+		v := values[:dim]
+		wsumBatched4Set128(
+			o0[:half], o1[:half], o2[:half], o3[:half], v[:half],
+			scores[0]*inv0, scores[rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+		)
+		wsumBatched4Set128(
+			o0[half:], o1[half:], o2[half:], o3[half:], v[half:],
+			scores[0]*inv0, scores[rows]*inv1, scores[2*rows]*inv2, scores[3*rows]*inv3,
+		)
+		return
+	}
+	for ; r+1 < rows; r += 2 {
+		va := values[r*dim : (r+1)*dim]
+		vb := values[(r+1)*dim : (r+2)*dim]
+		wsumBatched4Add128Dual(
+			o0[:half], o1[:half], o2[:half], o3[:half], va[:half], vb[:half],
+			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+			scores[0*rows+r+1]*inv0, scores[1*rows+r+1]*inv1, scores[2*rows+r+1]*inv2, scores[3*rows+r+1]*inv3,
+		)
+		wsumBatched4Add128Dual(
+			o0[half:], o1[half:], o2[half:], o3[half:], va[half:], vb[half:],
+			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+			scores[0*rows+r+1]*inv0, scores[1*rows+r+1]*inv1, scores[2*rows+r+1]*inv2, scores[3*rows+r+1]*inv3,
+		)
+	}
+	for ; r < rows; r++ {
+		vrow := values[r*dim : (r+1)*dim]
+		wsumBatched4Add128(
+			o0[:half], o1[:half], o2[:half], o3[:half], vrow[:half],
+			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+		)
+		wsumBatched4Add128(
+			o0[half:], o1[half:], o2[half:], o3[half:], vrow[half:],
+			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
+		)
+	}
+}
+
 // weightedSumStridedScaled: out = sum_r (weights[r]*scale) * values[r*stride:].
 func weightedSumStridedScaled(out, weights, values []float32, rows, stride, dim int, scale float32) {
 	// Contiguous V rows (stride==dim): better locality after head packing.
-	if stride == dim && dim == 128 {
-		weightedSumContig128(out, weights, values, rows, scale)
+	if stride == dim && (dim == 128 || dim == 256) {
+		weightedSumContigN(out, weights, values, rows, dim, scale)
 		return
 	}
 	w0 := weights[0] * scale
@@ -1078,10 +1213,9 @@ func weightedSumStridedScaled(out, weights, values []float32, rows, stride, dim 
 	}
 }
 
-// weightedSumContig128: out = sum_r (weights[r]*scale) * values[r][128].
-// 16-wide unroll; contiguous rows stream well after packing V heads.
-func weightedSumContig128(out, weights, values []float32, rows int, scale float32) {
-	const dim = 128
+// weightedSumContigN: out = sum_r (weights[r]*scale) * values[r][dim].
+// dim must be a multiple of 16 (Gemma headDim=256, SenseVoice=128).
+func weightedSumContigN(out, weights, values []float32, rows, dim int, scale float32) {
 	w0 := weights[0] * scale
 	v0 := values[:dim]
 	for i := 0; i < dim; i += 16 {

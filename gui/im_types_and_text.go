@@ -54,13 +54,17 @@ type IMAgentResponse struct {
 	CodingRuntimeRecovery *CodingRuntimeRecoveryReview  `json:"coding_runtime_recovery,omitempty"`
 	RecoverableSession    *IMResponseRecoverableSession `json:"recoverable_session,omitempty"`
 	ImageKey              string                        `json:"image_key,omitempty"`
-	FileData              string                        `json:"file_data,omitempty"`
-	FileName              string                        `json:"file_name,omitempty"`
-	FileMimeType          string                        `json:"file_mime_type,omitempty"`
-	VoiceData             string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
-	VoiceFileName         string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
-	VoiceMimeType         string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
-	VoiceParts            []IMVoicePart                 `json:"voice_parts,omitempty"`     // ordered long-form speech for hardware clients
+	// SemanticDelivery is executor-private routing metadata for a prepared
+	// artifact hand-off. Gateways use it to record their observed outcome after
+	// sending ImageKey; it is never serialized to a client or model.
+	SemanticDelivery *semanticDeliveryProjection `json:"-"`
+	FileData         string                      `json:"file_data,omitempty"`
+	FileName         string                      `json:"file_name,omitempty"`
+	FileMimeType     string                      `json:"file_mime_type,omitempty"`
+	VoiceData        string                      `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
+	VoiceFileName    string                      `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
+	VoiceMimeType    string                      `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
+	VoiceParts       []IMVoicePart               `json:"voice_parts,omitempty"`     // ordered long-form speech for hardware clients
 	// PendingVoiceParts arms a hardware result transaction before deferred TTS
 	// parts are synthesized. Unlike VoiceParts it carries no audio payload, so
 	// the terminal result can cross Hub immediately without waiting for TTS.
@@ -81,6 +85,7 @@ type IMAgentResponse struct {
 	RunID           string `json:"run_id,omitempty"`
 	RequestID       string `json:"request_id,omitempty"`
 	SessionKey      string `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
+	EventScopeID    string `json:"event_scope_id,omitempty"`
 	// CodingRuntimeTaskID / CodingRuntimeAttemptID are opaque ledger references
 	// for hosts such as ACP. They are projection metadata only: clients cannot
 	// use them to replay a prior model or tool invocation.
@@ -238,7 +243,7 @@ func (c *sessionStartLLMCaller) ChatCallContext(ctx context.Context, messages []
 	for i, m := range messages {
 		iface[i] = m
 	}
-	result, err := doSimpleLLMRequest(ctx, cfg, iface, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
+	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), iface, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
 	if err != nil {
 		return "", err
 	}

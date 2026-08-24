@@ -1,0 +1,6 @@
+# Dedicated non-release proof for the shared DISPLAY_OFF PREPARE -> COMMIT
+# lease fence.  Fangtang is deliberately used only as a build/HIL carrier;
+# the proof is in the profile-neutral Power Lease Service and creates no
+# Fangtang-specific business or panel branch.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_POWER_LEASE_DISPLAY_OFF_COMMIT_TEST=y

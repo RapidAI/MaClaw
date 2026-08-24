@@ -13,6 +13,7 @@ import (
 type SecurityCallContext struct {
 	UserMessage     string
 	SessionID       string
+	UserID          string
 	RecentApprovals []string
 }
 

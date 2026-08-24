@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"unicode"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type executionLayer string
@@ -27,11 +29,26 @@ type ExecutionProfile struct {
 	RequiredCapabilities []string
 	DirectToolName       string
 	ToolBudget           int
-	IterationBudget      int
+	// SchemaTokenBudget is the trusted host cap on CatalogRenderer schema
+	// tokens for a managed plan. Zero means unlimited. It is independent of
+	// ToolBudget and must never be inferred from the selection count.
+	SchemaTokenBudget int
+	IterationBudget   int
 }
 
 func (p ExecutionProfile) IsLight() bool {
 	return strings.EqualFold(strings.TrimSpace(p.Layer), string(executionLayerLight))
+}
+
+// PromptIsLight is the loop-authorizer view of this profile. An empty prompt
+// profile follows the execution layer so a light lookup cannot skip the
+// light-safe grant filter.
+func (p ExecutionProfile) PromptIsLight() bool {
+	pp := strings.TrimSpace(p.PromptProfile)
+	if pp == "" {
+		return p.IsLight()
+	}
+	return agent.NormalizePromptProfile(pp).IsLight()
 }
 
 func (p ExecutionProfile) IsDirect() bool {
@@ -60,20 +77,57 @@ func (h *IMMessageHandler) classifyIMExecutionProfile(msg IMUserMessage, workflo
 }
 
 func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, *intent.ClassificationResult) {
-	if profile, forced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
-		return profile, nil
+	return h.classifyIMExecutionProfileAndSemanticContext(context.Background(), msg, workflowAgentLoop, isAskUserResponse, nil)
+}
+
+// classifyIMExecutionProfileAndSemanticContext preserves the authoritative
+// semantic verdict used by capability materialization, while making its L3
+// work part of the enclosing turn's cancellation tree.
+func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx context.Context, msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, recentHistory []string) (ExecutionProfile, *intent.ClassificationResult) {
+	structuralProfile, structurallyForced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse)
+	// Keep the pre-semantic deterministic clock shortcut only for deployments
+	// without UIC. Once UIC exists, LabelCurrentTime is capability-managed and
+	// must go through the same catalog/grant path as the other managed families.
+	if h.getUnifiedClassifier() == nil {
+		if profile, ok := localCurrentTimeExecutionProfile(msg.Text, h.executionContractForRegisteredToolName); ok {
+			return profile, nil
+		}
+		if structurallyForced {
+			return structuralProfile, nil
+		}
 	}
-	if profile, ok := localCurrentTimeExecutionProfile(msg.Text, h.executionContractForRegisteredToolName); ok {
-		return profile, nil
+	// Classification must still happen for a structurally-full turn.  The
+	// execution profile controls budgets, while the semantic result controls
+	// capability selection; returning early for attachments/background/workflow
+	// shapes used to leave a governed request without SemanticIntent and let it
+	// re-enter the legacy router.
+	var semantic *intent.ClassificationResult
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		result := uic.ClassifyContext(ctx, intent.MessageContext{
+			Text:          semanticUserIntentText(msg.Text),
+			UserID:        msg.UserID,
+			RecentHistory: recentHistory,
+		})
+		semantic = &result
+	}
+	normalizeSemanticClassificationForTurn(semantic)
+	if structurallyForced {
+		return structuralProfile, semantic
+	}
+	if semantic != nil && imSemanticIntentIsManaged(*semantic) {
+		return classifyIMExecutionProfileWithSemanticAndContracts(msg, workflowAgentLoop, isAskUserResponse, semantic, h.executionContractForRegisteredToolName), semantic
 	}
 	if profile, forced := lengthFullExecutionProfile(msg); forced {
-		return profile, nil
+		return profile, semantic
 	}
 	// ACP Mode B short turns: force light without embedding/UIC. Avoids
 	// multi-second tool-routing fusion and oversized full prompts for chatty
 	// editor messages while real coding asks (paths/URLs/fences/long text)
 	// still hit full via structural/length gates above.
 	if acpPreferLightProfile(msg) {
+		// Keep the light profile, not the UIC result: a short ACP turn must
+		// not become a closed managed grant. Loop start leftover then treats
+		// the unset SemanticIntent as a chat leftover, not CoreToolNames+UIC.
 		return ExecutionProfile{
 			Layer:                string(executionLayerLight),
 			TaskType:             "general",
@@ -84,18 +138,6 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessa
 			ToolBudget:           8,
 			IterationBudget:      3,
 		}, nil
-	}
-	// Execution-profile routing only needs a rough intent signal to choose
-	// light vs full agent. Full UIC fusion waits on the tree/LLM channel
-	// (often multi-second). Embedding-only keeps pre-loop under ~100ms while
-	// remaining conservative: degraded/low-confidence still maps to full.
-	var semantic *intent.ClassificationResult
-	if uic := h.getUnifiedClassifier(); uic != nil {
-		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
-			Text:   msg.Text,
-			UserID: msg.UserID,
-		})
-		semantic = &result
 	}
 	profile := classifyIMExecutionProfileWithSemanticAndContracts(msg, workflowAgentLoop, isAskUserResponse, semantic, h.executionContractForRegisteredToolName)
 	return profile, semantic
@@ -108,6 +150,13 @@ func classifyIMExecutionProfileWithSemantic(msg IMUserMessage, workflowAgentLoop
 func classifyIMExecutionProfileWithSemanticAndContracts(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, semantic *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
 	if profile, forced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
 		return profile
+	}
+	normalizeSemanticClassificationForTurn(semantic)
+	// A supplied semantic result is authoritative for this decision. Do not
+	// reintroduce a wording-based direct route before checking whether that
+	// label belongs to a capability-managed family.
+	if semantic != nil && imSemanticIntentIsManaged(*semantic) {
+		return executionProfileFromSemanticIntent(semantic, contractForTool)
 	}
 	if profile, ok := localCurrentTimeExecutionProfile(msg.Text, contractForTool); ok {
 		return profile
@@ -161,14 +210,64 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 	if result == nil {
 		return fullExecutionProfile("semantic classifier unavailable")
 	}
-	if result.Degraded {
+	// Sub-floor search/live_data is a chat turn (gate 7). Do not promote it to
+	// a full degraded profile or a managed lookup budget; that is how a typo
+	// like 「北京天所」 paid for web tools after UIC kept the hint.
+	if semanticNeedsChatProjection(*result) {
+		reason := "semantic lookup hint below floor"
+		if semanticReadOnlyUnderstandFamily(*result) {
+			reason = "semantic understand hint below floor"
+		}
+		return ExecutionProfile{
+			Layer:           string(executionLayerLight),
+			TaskType:        "general",
+			PromptProfile:   "light",
+			Confidence:      result.Confidence,
+			Reason:          reason,
+			ToolBudget:      8,
+			IterationBudget: 3,
+		}
+	}
+	readOnlyHint := semanticReadOnlyGovernedHint(*result)
+	if result.Degraded && !readOnlyHint {
 		return fullExecutionProfile("semantic classifier degraded")
 	}
 	if result.WorkflowType != "" {
 		return fullExecutionProfile("semantic workflow intent")
 	}
-	if result.Confidence < 0.80 {
+	if !semanticClassificationMeetsResolverFloor(*result) && !semanticClassificationPlansBelowResolverFloor(*result) {
 		return fullExecutionProfile("semantic confidence below light threshold")
+	}
+	// Capability-managed families are materialized only through the semantic
+	// catalog/planner. In particular, an old UIC ToolNames projection must not
+	// turn a governed outcome into a direct name-based execution path.
+	if managed, unmapped := imSemanticIntentCoverage(*result); managed {
+		if unmapped != "" {
+			// The semantic router will fail closed with an explicit coverage
+			// error. Keep a full profile here so an incomplete migration never
+			// narrows a multi-capability request to the light lookup loop.
+			return fullExecutionProfile("semantic capability migration coverage incomplete")
+		}
+		// The capability surface remains grant-bound even on a light turn. The
+		// profile only budgets the agent loop; semanticPlanForTurn replaces its
+		// tool list before the model sees it, so this does not reopen the legacy
+		// name-router or direct execution path.
+		if semanticIntentRequiresFullProfile(*result) {
+			return fullExecutionProfile("semantic capability-managed mutating intent")
+		}
+		if result.Primary == intent.LabelSearch || result.Primary == intent.LabelLiveData {
+			return ExecutionProfile{
+				Layer:                string(executionLayerLight),
+				TaskType:             string(result.Primary),
+				PromptProfile:        "light",
+				Confidence:           result.Confidence,
+				Reason:               "semantic capability-managed lookup",
+				RequiredCapabilities: []string{"information.search.web"},
+				ToolBudget:           1,
+				IterationBudget:      3,
+			}
+		}
+		return fullExecutionProfile("semantic capability-managed intent")
 	}
 	if toolName, contract := directToolFromSemanticResult(*result, contractForTool); toolName != "" {
 		return ExecutionProfile{
@@ -197,6 +296,30 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 		}
 	default:
 		return fullExecutionProfile("semantic intent requires full agent")
+	}
+}
+
+func semanticIntentRequiresFullProfile(result intent.ClassificationResult) bool {
+	for _, label := range result.Labels() {
+		for _, tmpl := range imSemanticIntentRuleSet[label] {
+			if semanticCapabilityRequiresFullProfile(string(tmpl.Capability)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func semanticCapabilityRequiresFullProfile(capability string) bool {
+	switch strings.TrimSpace(capability) {
+	case "information.search.web", "information.current_time", "document.read.local", "visual.render.live_data",
+		"visual.capture.desktop",
+		string(tool.CapabilityFSReadLocal), string(tool.CapabilityRepoInspectVCS),
+		string(tool.CapabilityInformationFetchWeb), string(tool.CapabilityAudioTranscribeSpeech),
+		string(tool.CapabilitySecurityAuditRead), string(tool.CapabilityKnowledgeReadLocal):
+		return false
+	default:
+		return capability != ""
 	}
 }
 

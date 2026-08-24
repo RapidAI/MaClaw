@@ -35,6 +35,7 @@ var ErrEmailBlocked = errors.New("email blocked")
 var ErrIPBlocked = errors.New("ip blocked")
 var ErrInvalidConfirmationToken = errors.New("invalid confirmation token")
 var ErrHubNotFound = errors.New("hub not found")
+var ErrViewerMachineUnauthorized = errors.New("viewer machine unauthorized")
 var ErrDigitalEmployeeQuotaDecrease = errors.New("digital employee quota cannot decrease")
 var ErrDigitalEmployeeQuotaRequired = errors.New("digital employee quota must be greater than zero when enabled")
 var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization years must be at least one when enabled")
@@ -212,6 +213,15 @@ type HeartbeatHubUpdate struct {
 	Capabilities          map[string]any
 }
 
+// ViewerMachinePrincipal is the Hub-authenticated identity used when
+// HubCenter creates a SkillMarket session for an enrolled desktop client.
+type ViewerMachinePrincipal struct {
+	TenantID  string `json:"tenant_id"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	MachineID string `json:"machine_id"`
+}
+
 type MigrateUserRequest struct {
 	Email          string `json:"email"`
 	TenantID       string `json:"tenant_id,omitempty"`
@@ -325,6 +335,10 @@ type UserRegistrationReport struct {
 
 type Service struct {
 	registrationMu sync.Mutex
+	// tenantAdminInventoryMu serializes direct administrator updates with
+	// heartbeat inventory reconciliation. This makes the revision comparison
+	// below a real ordering barrier rather than a best-effort observation.
+	tenantAdminInventoryMu sync.Mutex
 
 	hubs                 store.HubRepository
 	links                store.HubUserLinkRepository
@@ -851,7 +865,57 @@ func (s *Service) HeartbeatHub(ctx context.Context, hubID string) error {
 	return s.HeartbeatHubWithSecret(ctx, hubID, "", nil, nil)
 }
 
+// AuthenticateViewerMachine asks the registered Hub to validate the viewer
+// token and confirm that machineID belongs to the resulting user. HubCenter
+// authenticates itself to the Hub with the registered hub-secret hash.
+func (s *Service) AuthenticateViewerMachine(ctx context.Context, hubID, viewerToken, machineID string) (*ViewerMachinePrincipal, error) {
+	hubID = strings.TrimSpace(hubID)
+	viewerToken = strings.TrimSpace(viewerToken)
+	machineID = strings.TrimSpace(machineID)
+	if hubID == "" || viewerToken == "" || machineID == "" {
+		return nil, ErrViewerMachineUnauthorized
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return nil, err
+	}
+	if hub == nil || hub.IsDisabled || strings.TrimSpace(hub.BaseURL) == "" || strings.TrimSpace(hub.HubSecretHash) == "" {
+		return nil, ErrViewerMachineUnauthorized
+	}
+	payload, err := json.Marshal(map[string]string{"machine_id": machineID})
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/") + "/api/center/skillmarket-authenticate"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("X-HubCenter-Verify", hub.HubSecretHash)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, ErrViewerMachineUnauthorized
+	}
+	var principal ViewerMachinePrincipal
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&principal); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(principal.UserID) == "" || strings.TrimSpace(principal.MachineID) != machineID {
+		return nil, ErrViewerMachineUnauthorized
+	}
+	return &principal, nil
+}
+
 func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret string, invitationCodeRequired *bool, update *HeartbeatHubUpdate) error {
+	s.tenantAdminInventoryMu.Lock()
+	defer s.tenantAdminInventoryMu.Unlock()
 	hub, err := s.hubs.GetByID(ctx, hubID)
 	if err != nil {
 		return err
@@ -892,8 +956,13 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		hub.EnrollmentMode = normalizeEnrollmentMode(update.EnrollmentMode)
 		hub.CorporateEmailDomain = corporateEmailDomain
 		hub.AcceptPublicSignup = acceptPublicSignup
+		applyTenantAdminInventory := false
 		if update.Capabilities != nil {
 			capabilities = capabilitiesWithCorporateEmailDomains(update.Capabilities, corporateEmailDomains, corporateEmailDomain)
+			applyTenantAdminInventory = shouldApplyTenantAdminInventory(hubCapabilities(hub), capabilities)
+			if !applyTenantAdminInventory {
+				preserveTenantAdminInventoryCapabilities(capabilities, hubCapabilities(hub))
+			}
 			capJSON, err := json.Marshal(capabilities)
 			if err != nil {
 				return err
@@ -915,7 +984,11 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 			return err
 		}
 		if update.Capabilities != nil {
-			if err := s.syncHubUserInventoriesFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
+			if applyTenantAdminInventory {
+				if err := s.syncHubUserInventoriesFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
+					return err
+				}
+			} else if err := s.syncHubTenantUserEmailInventory(ctx, hub.ID, tenantUserEmailCapabilityMap(capabilities), now); err != nil {
 				return err
 			}
 		}
@@ -1036,6 +1109,27 @@ func (s *Service) confirmHubRegistration(ctx context.Context, hub *store.HubInst
 
 func (s *Service) ListHubs(ctx context.Context) ([]*store.HubInstance, error) {
 	return s.hubs.ListAll(ctx)
+}
+
+// ResolveHubTenantDisplayNames returns the admin-facing hub server name and
+// tenant name for a sold compute card. Missing hubs return empty names.
+func (s *Service) ResolveHubTenantDisplayNames(ctx context.Context, hubID, tenantID string) (hubName, tenantName string) {
+	hubID = strings.TrimSpace(hubID)
+	if s == nil || s.hubs == nil || hubID == "" {
+		return "", ""
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil || hub == nil {
+		return "", ""
+	}
+	hubName = strings.TrimSpace(hub.Name)
+	if display, ok, err := s.hubAdminDisplayName(ctx, hub.ID); err == nil && ok {
+		hubName = display
+	}
+	if hubName == "" {
+		hubName = strings.TrimSpace(hub.ID)
+	}
+	return hubName, tenantDashboardName(hubCapabilities(hub), tenantID)
 }
 
 func (s *Service) ListEnterpriseMailDomains(ctx context.Context) ([]EnterpriseMailDomainItem, error) {
@@ -3305,6 +3399,82 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 	return nil
 }
 
+// SyncHubTenantAdminLink records a Hub-reported tenant administrator without
+// creating an ordinary user route. An identity may hold both roles, but each
+// role is represented by its own link type.
+func (s *Service) SyncHubTenantAdminLink(ctx context.Context, hubID, rawSecret, email, tenantID, previousEmail string, inventoryRevisionOpt ...string) error {
+	s.tenantAdminInventoryMu.Lock()
+	defer s.tenantAdminInventoryMu.Unlock()
+	hubID = strings.TrimSpace(hubID)
+	email = normalizeEmail(email)
+	rawTenantID := strings.TrimSpace(tenantID)
+	tenantID = normalizeHubSyncTenantID(rawTenantID)
+	previousEmail = normalizeEmail(previousEmail)
+	inventoryRevision := ""
+	if len(inventoryRevisionOpt) > 0 {
+		inventoryRevision = normalizeTenantAdminInventoryRevision(inventoryRevisionOpt[0])
+	}
+	if hubID == "" || email == "" || rawTenantID == "" {
+		return errors.New("hub id, tenant id, and administrator email are required")
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return err
+	}
+	if hub == nil || rawSecret == "" || hub.HubSecretHash != hashToken(rawSecret) {
+		return ErrHubUnauthorized
+	}
+	if hub.Status == "pending_confirmation" {
+		return ErrHubPendingConfirmation
+	}
+	if hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubDisabled
+	}
+	if s.links == nil {
+		return nil
+	}
+	if inventoryRevision != "" {
+		caps := hubCapabilities(hub)
+		if !shouldApplyTenantAdminInventoryRevision(caps, inventoryRevision) {
+			return nil
+		}
+		caps["tenant_admin_inventory_revision"] = inventoryRevision
+		data, err := json.Marshal(caps)
+		if err != nil {
+			return err
+		}
+		updatedHub := *hub
+		updatedHub.CapabilitiesJSON = string(data)
+		updatedHub.UpdatedAt = time.Now()
+		if err := s.hubs.UpdateRegistration(ctx, &updatedHub); err != nil {
+			return err
+		}
+		hub = &updatedHub
+		s.recordHubInstance(ctx, hub)
+	}
+	// Remove a superseded identity before publishing the replacement. Otherwise
+	// a failed delete would leave two addresses authorized as tenant admins.
+	if previousEmail != "" && previousEmail != email {
+		previousID := hubTenantAdminLinkIDForTenant(hubID, tenantID, previousEmail)
+		if err := s.links.DeleteByID(ctx, previousID); err != nil {
+			return err
+		}
+		if s.sync != nil {
+			s.sync.DeleteHubUserLink(ctx, previousID)
+		}
+	}
+	now := time.Now()
+	link := &store.HubUserLink{ID: hubTenantAdminLinkIDForTenant(hubID, tenantID, email), HubID: hubID, TenantID: tenantID, Email: email, IsDefault: false, CreatedAt: now, UpdatedAt: now}
+	if err := s.links.Upsert(ctx, link); err != nil {
+		return err
+	}
+	if s.sync != nil {
+		s.sync.AppendHubUserLink(ctx, link)
+	}
+	s.refreshRoutesForce(ctx)
+	return nil
+}
+
 func (s *Service) DeleteHubUserLink(ctx context.Context, hubID, rawSecret, email string, tenantIDOpt ...string) error {
 	hubID = strings.TrimSpace(hubID)
 	email = normalizeEmail(email)
@@ -3514,6 +3684,50 @@ func (s *Service) syncHubUserInventoriesFromCapabilities(ctx context.Context, hu
 		return nil
 	}
 	return s.syncHubTenantAdminEmailInventory(ctx, hubID, tenantAdminEmailCapabilityMap(caps), users, now)
+}
+
+func normalizeTenantAdminInventoryRevision(value any) string {
+	revision := strings.TrimSpace(fmt.Sprint(value))
+	if revision == "" || revision == "<nil>" {
+		return ""
+	}
+	if _, err := time.Parse(time.RFC3339Nano, revision); err != nil {
+		return ""
+	}
+	return revision
+}
+
+func shouldApplyTenantAdminInventoryRevision(currentCaps map[string]any, incomingRevision string) bool {
+	incomingRevision = normalizeTenantAdminInventoryRevision(incomingRevision)
+	if incomingRevision == "" {
+		return true
+	}
+	currentRevision := normalizeTenantAdminInventoryRevision(currentCaps["tenant_admin_inventory_revision"])
+	if currentRevision == "" {
+		return true
+	}
+	incomingAt, _ := time.Parse(time.RFC3339Nano, incomingRevision)
+	currentAt, _ := time.Parse(time.RFC3339Nano, currentRevision)
+	return !incomingAt.Before(currentAt)
+}
+
+func shouldApplyTenantAdminInventory(currentCaps, incomingCaps map[string]any) bool {
+	if _, advertised := incomingCaps["tenant_admin_emails"]; !advertised {
+		return true
+	}
+	return shouldApplyTenantAdminInventoryRevision(currentCaps, normalizeTenantAdminInventoryRevision(incomingCaps["tenant_admin_inventory_revision"]))
+}
+
+// preserveTenantAdminInventoryCapabilities prevents an older heartbeat from
+// overwriting the authoritative inventory already held by HubCenter.
+func preserveTenantAdminInventoryCapabilities(incomingCaps, currentCaps map[string]any) {
+	for _, key := range []string{"tenant_admin_emails", "tenant_admin_counts", "tenant_admin_inventory_revision"} {
+		if value, ok := currentCaps[key]; ok {
+			incomingCaps[key] = value
+		} else {
+			delete(incomingCaps, key)
+		}
+	}
 }
 
 func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID string, tenantEmails map[string][]string, now time.Time) error {

@@ -1,0 +1,156 @@
+{
+  "category": "cross_scope_isolation",
+  "category_id": 31,
+  "title": "plans and facts do not leak across root, session, or channel scope",
+  "design_ref": "10.1 item 31",
+  "format_note": "RootTaskID, SessionID and ChannelScope are part of the snapshot digest. A confirmation bound to another root cannot satisfy this plan.",
+  "samples": [
+    {
+      "id": "group-a-generate",
+      "title": "Group A session and root produce a distinct plan identity",
+      "context": {"root_task_id": "root-group-a", "session_id": "user-1", "channel": "lansenger"},
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ]
+      }
+    },
+    {
+      "id": "group-b-same-user",
+      "title": "Same user, different RootTaskID, must not share plan identity",
+      "notes": "SessionGovernedTask keys on channel+user+destination; planner identity also includes RootTaskID so a new loop cannot inherit the previous plan ID.",
+      "context": {"root_task_id": "root-group-b", "session_id": "user-1", "channel": "lansenger"},
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "plan_id_differs": "group-a-generate",
+        "equivalent_to": "group-a-generate"
+      }
+    },
+    {
+      "id": "desktop-dm-same-user",
+      "title": "Private desktop scope is not the lansenger group plan",
+      "context": {"root_task_id": "root-group-a", "session_id": "user-1", "channel": "desktop"},
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "plan_id_differs": "group-a-generate",
+        "equivalent_to": "group-a-generate"
+      }
+    },
+    {
+      "id": "foreign-root-confirmation-ignored",
+      "title": "confirmation_granted for another RootTaskID does not satisfy this plan",
+      "context": {"root_task_id": "root-group-a", "session_id": "user-1", "channel": "lansenger"},
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "constraints": [
+        {"id": "confirm-deliver", "capability": "artifact.deliver.current_channel", "effect": "require_confirmation", "authority": "policy"}
+      ],
+      "facts": [
+        {
+          "id": "other-root-approval",
+          "kind": "confirmation_granted",
+          "authority": "runtime",
+          "valid_seconds": 3600,
+          "attributes": {"root_task_id": "root-group-b", "confirmation_requirement": "confirmation:deliver"}
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution", "requires_confirmation": false},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery", "requires_confirmation": true}
+        ],
+        "trusted_confirmations": [],
+        "plan_id_differs": "group-a-generate"
+      }
+    }
+  ]
+}

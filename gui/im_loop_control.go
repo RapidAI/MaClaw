@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -39,12 +41,16 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("missing userID")
 	}
+	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
 	ctx := h.getSessionLoopCtx(userID)
 	taskText := h.sessionLoopTaskText(userID)
 	if ctx == nil {
 		ctx, taskText, _ = h.legacyLoopSnapshotForUser(userID)
 	}
 	if ctx == nil {
+		if cancelledHorizon {
+			return "horizon", nil
+		}
 		return "", fmt.Errorf("no active session to cancel")
 	}
 	ctx.Cancel()
@@ -67,6 +73,34 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	return taskText, nil
 }
 
+// RequestCancelSessionForUser starts cancellation without waiting for the
+// current goroutine to unwind. IM control commands use this path so a user can
+// always stop a tool or model call that is holding the session mutex. The loop
+// context's cancellation hooks still revoke any durable coding-runtime work.
+func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", fmt.Errorf("missing userID")
+	}
+	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
+	ctx := h.getSessionLoopCtx(userID)
+	taskText := h.sessionLoopTaskText(userID)
+	if ctx == nil {
+		ctx, taskText, _ = h.legacyLoopSnapshotForUser(userID)
+	}
+	if ctx == nil {
+		if cancelledHorizon {
+			return "horizon", nil
+		}
+		return "", fmt.Errorf("no active session to cancel")
+	}
+	ctx.Cancel()
+	// Close steering acceptance before clearing pending bags. Otherwise a guide
+	// can be acknowledged after the stop command but before the loop observes it.
+	h.markTaskCancelledByUser(userID)
+	return taskText, nil
+}
+
 // cancelAllSessionsForShutdown is a non-blocking lifecycle cancellation used
 // when an isolated hardware runtime is removed. Waiting here would make an
 // unbind/Hub-disconnect depend on a stuck model or tool request; each loop
@@ -75,6 +109,7 @@ func (h *IMMessageHandler) cancelAllSessionsForShutdown() {
 	if h == nil {
 		return
 	}
+	h.cancelAllHorizonSessions("shutdown")
 	h.sessionLoops.Range(func(_, value any) bool {
 		state, ok := value.(*sessionLoopState)
 		if !ok || state == nil {
@@ -575,14 +610,77 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	if loopCtx == nil {
 		loopCtx = NewLoopContext("chat", h.getMaclawAgentMaxIterations(), httpClient)
 	}
-	if strings.TrimSpace(loopCtx.Runtime.RequestID) == "" {
+	// A supplied LoopContext can be reused by callers. Every new inbound turn
+	// must discard its previous ephemeral semantic identity along with the
+	// runtime envelope. An explicit different RequestID proves replacement; an
+	// omitted RequestID does too, because runtimeContextFromIMMessage will mint
+	// a fresh host request ID for this inbound message. Treating an omitted ID
+	// as "keep the old one" used to make a reused context retain the prior
+	// root/turn identity, platform and trace even though the next message had no
+	// verified continuation handle. RequestID is used solely to detect this
+	// replacement here; it is never embedded into the semantic root, turn, or
+	// session identity.
+	incomingRuntime := runtimeContextFromIMMessage(msg)
+	incomingFingerprint := imIngressFingerprint(msg, incomingRuntime)
+	incomingRequestID := incomingRuntime.RequestID
+	priorRequestID := strings.TrimSpace(loopCtx.Runtime.RequestID)
+	// A request ID only identifies a transport retry inside its authenticated
+	// ingress envelope. It is neither a semantic continuation handle nor a
+	// cross-channel/global principal key. Reusing the same string for a
+	// different conversation, actor or channel therefore starts a new turn and
+	// must not retain the old private route identity or policy owner.
+	sameIngress := sameIMRuntimeIngress(loopCtx.Runtime, incomingRuntime)
+	// Retrying a request means resending the same authenticated ingress payload,
+	// not merely reusing its transport ID. This prevents a changed request from
+	// inheriting a prior semantic identity, policy owner, or client-tool binding.
+	// An empty prior fingerprint is deliberately non-equivalent for a populated
+	// turn: old/reused contexts must rotate once rather than gain a compatibility
+	// path that has never attested their payload.
+	samePayload := loopCtx.ingressFingerprint != "" && loopCtx.ingressFingerprint == incomingFingerprint
+	resetRuntime := priorRequestID == "" || strings.TrimSpace(msg.RequestID) == "" || incomingRequestID != priorRequestID || !sameIngress || !samePayload
+	if resetRuntime {
 		policyOwnerID := strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID)
-		loopCtx.Runtime = runtimeContextFromIMMessage(msg)
-		if policyOwnerID != "" {
+		// A supplied runtime without a request ID is an initial host envelope,
+		// so it may carry an explicit policy owner. Once it has represented an
+		// actual inbound request, retain that owner only for the same trusted
+		// ingress envelope; a same-named request from another user/channel has
+		// no authority to inherit it.
+		// A policy/workflow owner can survive only an authenticated retry of the
+		// same ingress payload. Keeping it for a same-channel but changed body
+		// would let a caller re-label a new request as an old privileged turn.
+		preservePolicyOwner := priorRequestID == "" || (sameIngress && samePayload)
+		// A reused LoopContext can receive its replacement before an old provider
+		// response has reached the shared-loop callback. Identity rotation alone
+		// would make the old scope unreachable from this context while leaving its
+		// already-issued grant durable and live. Fence the old generation first;
+		// this revokes its request surface/materializations/grants without closing
+		// CancelC, which belongs to the reusable loop object rather than a turn.
+		loopCtx.ReplaceSemanticTurn()
+		loopCtx.Runtime = incomingRuntime
+		loopCtx.ingressFingerprint = incomingFingerprint
+		// These fields are an ingress envelope, not a continuation capability.
+		// They must stay aligned with the fresh Runtime above; retaining a prior
+		// platform/user/run could select a stale channel policy or merge audit
+		// events from independent requests.
+		loopCtx.Platform = msg.Platform
+		loopCtx.UserID = msg.UserID
+		loopCtx.Lang = msg.Lang
+		loopCtx.JobID = ""
+		loopCtx.RunID = ""
+		if preservePolicyOwner && policyOwnerID != "" {
 			loopCtx.Runtime.PolicyOwnerID = policyOwnerID
 			loopCtx.Runtime.WorkflowOwnerID = policyOwnerID
 		}
 	}
+	if !resetRuntime {
+		// Keep the host-computed value in sync explicitly so a retry can never
+		// inherit a zero/stale fingerprint through a manually supplied context.
+		loopCtx.ingressFingerprint = incomingFingerprint
+	}
+	// Leftover flags and leftover-stamped projections are turn-local. A reused
+	// Runtime must not keep the previous generate pin, privilege strip, or
+	// unknown+chat leftover identity that would look like a new miss.
+	resetLoopSemanticLeftoverState(loopCtx)
 	if loopCtx.HTTPClient == nil {
 		loopCtx.HTTPClient = httpClient
 	}
@@ -596,6 +694,7 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	if strings.TrimSpace(loopCtx.UserID) == "" {
 		loopCtx.UserID = msg.UserID
 	}
+	loopCtx.CodingTaskIngressToken = strings.TrimSpace(msg.CodingTaskIngressToken)
 	if strings.TrimSpace(loopCtx.Lang) == "" {
 		loopCtx.Lang = msg.Lang
 	}
@@ -606,6 +705,7 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	} else {
 		loopCtx.ClientToolContext = nil
 	}
+	loopCtx.DeliveryTarget = bindLoopDeliveryTarget(loopCtx, msg)
 	if h.traceService != nil && loopCtx.RunID == "" {
 		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, msg.Text, msg.Platform, msg.UserID, h.traceProjectPath())
 		loopCtx.JobID = job.JobID
@@ -619,6 +719,143 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	loopCtx.SkipNeedsConfirmGate = skipNeedsConfirmGate
 	loopCtx.IsAskUserResponse = isAskUserResponse
 	return loopCtx
+}
+
+// sameIMRuntimeIngress compares only host-authenticated envelope fields. It
+// deliberately excludes RequestID (a retry key) and PolicyOwnerID (a host
+// execution binding which may legitimately differ from the conversation
+// owner). A semantic continuation needs its own verified handle; matching this
+// envelope merely allows a transport retry to retain its in-flight context.
+func sameIMRuntimeIngress(previous, incoming RuntimeContext) bool {
+	return previous.Source == incoming.Source &&
+		previous.Actor == incoming.Actor &&
+		previous.Conversation == incoming.Conversation
+}
+
+// imIngressFingerprint binds RequestID retry semantics to the entire
+// request-local surface. It intentionally includes the body, attachments and
+// client tool/target declarations, but excludes host-managed cancellation,
+// trace IDs and CodingTaskIngressToken. The latter is an independently
+// one-shot capability and must never become a retry identity input.
+func imIngressFingerprint(msg IMUserMessage, runtime RuntimeContext) string {
+	type fingerprintInput struct {
+		Source             RuntimeSourceRef
+		Actor              RuntimeActorRef
+		Conversation       RuntimeConversationRef
+		Text               string
+		MessageType        string
+		Lang               string
+		Attachments        []MessageAttachment
+		ClientTools        []agent.ClientToolDefinition
+		ClientToolContext  *agent.ClientToolContext
+		DeliveryTarget     *agent.DeliveryTarget
+		AssistantBinding   *agent.AssistantBinding
+		ClientCapabilities *agent.ClientCapabilities
+		StartNewTask       bool
+		ResumeSlotID       string
+		DismissSlotID      string
+		ResumeSessionID    string
+		DismissSessionID   string
+		UIAction           bool
+		SlashCommand       string
+	}
+	payload, err := json.Marshal(fingerprintInput{
+		Source: runtime.Source, Actor: runtime.Actor, Conversation: runtime.Conversation,
+		Text: msg.Text, MessageType: msg.MessageType, Lang: msg.Lang,
+		Attachments: msg.Attachments, ClientTools: msg.ClientTools,
+		ClientToolContext: msg.ClientToolContext, DeliveryTarget: msg.DeliveryTarget,
+		AssistantBinding: msg.AssistantBinding, ClientCapabilities: msg.ClientCapabilities,
+		StartNewTask: msg.StartNewTask, ResumeSlotID: msg.ResumeSlotID, DismissSlotID: msg.DismissSlotID,
+		ResumeSessionID: msg.ResumeRecoverableSessionID, DismissSessionID: msg.DismissRecoverableSessionID,
+		UIAction: msg.UIAction, SlashCommand: msg.SlashCommand,
+	})
+	if err != nil {
+		// JSON marshalling only fails for malformed dynamic schemas. Make that a
+		// guaranteed fresh value instead of retaining a prior turn on failure.
+		return "invalid:" + generateID()
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+// bindLoopDeliveryTarget copies a complete inbound target when it matches this
+// turn's channel. Empty or cross-channel pointers are treated as missing so a
+// desktop chat can still bind its host-owned current-channel destination.
+// Weixin/Lansenger stay fail-closed unless the gateway supplied a real inbound
+// destination; this helper must not invent one for them.
+func bindLoopDeliveryTarget(loopCtx *LoopContext, msg IMUserMessage) *agent.DeliveryTarget {
+	platform := strings.TrimSpace(msg.Platform)
+	userID := strings.TrimSpace(msg.UserID)
+	if loopCtx != nil {
+		if platform == "" {
+			platform = strings.TrimSpace(loopCtx.Platform)
+		}
+		if userID == "" {
+			userID = strings.TrimSpace(loopCtx.UserID)
+		}
+	}
+	if target := copyInboundDeliveryTarget(msg.DeliveryTarget, platform); target != nil {
+		return target
+	}
+	return hostOwnedCurrentChannelDeliveryTarget(platform, userID)
+}
+
+func copyInboundDeliveryTarget(target *agent.DeliveryTarget, platform string) *agent.DeliveryTarget {
+	if target == nil {
+		return nil
+	}
+	destination := strings.TrimSpace(target.DestinationID)
+	if !semanticTrustedDispatchDestination(destination) {
+		return nil
+	}
+	scope := strings.TrimSpace(target.ChannelScope)
+	want := normalizeIMMessagePlatformKind(platform).ChannelScope()
+	if want == "" {
+		return nil
+	}
+	if !strings.EqualFold(scope, want) && !strings.EqualFold(scope, strings.TrimSpace(platform)) {
+		return nil
+	}
+	return &agent.DeliveryTarget{ChannelScope: want, DestinationID: destination}
+}
+
+func trustedLoopDeliveryTarget(loop *LoopContext) *agent.DeliveryTarget {
+	if loop == nil || loop.DeliveryTarget == nil {
+		return nil
+	}
+	rawScope := strings.TrimSpace(loop.DeliveryTarget.ChannelScope)
+	destination := strings.TrimSpace(loop.DeliveryTarget.DestinationID)
+	if !semanticTrustedDispatchDestination(destination) {
+		return nil
+	}
+	scope := normalizeIMMessagePlatformKind(rawScope).ChannelScope()
+	if scope == "" {
+		return nil
+	}
+	return &agent.DeliveryTarget{ChannelScope: scope, DestinationID: destination}
+}
+
+// hostOwnedCurrentChannelDeliveryTarget returns the trusted current-channel
+// destination for local chat UIs that never attach an inbound IM target.
+func hostOwnedCurrentChannelDeliveryTarget(platform, userID string) *agent.DeliveryTarget {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	kind := normalizeIMMessagePlatformKind(platform)
+	switch kind {
+	case imMessagePlatformDesktop, imMessagePlatformTUI:
+		destination := "user:" + userID
+		if !semanticTrustedDispatchDestination(destination) {
+			return nil
+		}
+		return &agent.DeliveryTarget{
+			ChannelScope:  kind.ChannelScope(),
+			DestinationID: destination,
+		}
+	default:
+		return nil
+	}
 }
 
 // beginPureCodingRuntime registers a pure local/remote coding SubAgent turn as

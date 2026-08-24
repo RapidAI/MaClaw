@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 const (
@@ -403,8 +404,8 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 	if value := strings.TrimSpace(in.HubMessageID); value != "" {
 		metadata["ve_hub_message_id"] = value
 	}
-	content = s.enrichPlatformMessageContentWithAttachments(r, binding, in, content, attachments, metadata)
-	log.Printf("[platform-runtime] discussion send start employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s content_chars=%d", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, len([]rune(content)))
+	content, hostAttachments := s.enrichPlatformMessageContentWithAttachments(r, binding, in, content, attachments, metadata)
+	log.Printf("[platform-runtime] discussion send start employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s content_chars=%d attachments=%d", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, len([]rune(content)), len(hostAttachments))
 
 	// Check if Hub supports streaming (indicated by Accept: text/event-stream header).
 	wantsSSE := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
@@ -429,7 +430,7 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 		log.Printf("[VE-STREAMING] ===== NOT STREAMING: Hub did not send Accept: text/event-stream =====")
 	}
 
-	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken})
+	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, Attachments: hostAttachments, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken})
 	if err != nil {
 		log.Printf("[platform-runtime] discussion send failed employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s run_id=%s duration=%s err=%v", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformRunID(run), time.Since(started), err)
 		if sseWriter != nil {
@@ -445,11 +446,25 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 		return
 	}
 	log.Printf("[platform-runtime] discussion send ok employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s session=%s message=%s run_id=%s duration=%s", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformSessionID(sess), platformMessageID(msg), platformRunID(run), time.Since(started))
+	apiMsg := cloneSanitizedAssistantMessage(msg)
 	if sseWriter != nil {
-		sseWriter.WriteDone(msg.Content, sess, sanitizeRunPtrForAPI(s.svc.DataRoot(), run), msg)
+		content := ""
+		if apiMsg != nil {
+			content = apiMsg.Content
+		}
+		sseWriter.WriteDone(content, sess, sanitizeRunPtrForAPI(s.svc.DataRoot(), run), apiMsg)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "employee_id": employeeID})
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": apiMsg, "employee_id": employeeID})
+}
+
+func cloneSanitizedAssistantMessage(msg *agentservice.Message) *agentservice.Message {
+	if msg == nil {
+		return nil
+	}
+	cp := *msg
+	cp.Content = textutil.SanitizeVisibleChatText(msg.Content)
+	return &cp
 }
 
 func platformRuntimeLogID(value string) string {
@@ -544,41 +559,98 @@ type platformMessageAttachments struct {
 	File  []platformFileAttachment `json:"file_attachments"`
 }
 
-func (s *HTTPServer) enrichPlatformMessageContentWithAttachments(r *http.Request, binding platformRuntimeBinding, in platformVirtualEmployeeMessageRequest, content string, attachments platformMessageAttachments, metadata map[string]string) string {
+func (s *HTTPServer) enrichPlatformMessageContentWithAttachments(r *http.Request, binding platformRuntimeBinding, in platformVirtualEmployeeMessageRequest, content string, attachments platformMessageAttachments, metadata map[string]string) (string, []agent.MessageAttachment) {
 	attachments = limitPlatformMessageAttachments(attachments)
 	count := platformMessageAttachmentCount(attachments)
 	if count == 0 {
-		return content
+		return content, nil
 	}
 	if metadata != nil {
 		metadata["ve_attachment_count"] = fmt.Sprint(count)
 	}
-	var b strings.Builder
-	b.WriteString(strings.TrimSpace(content))
-	b.WriteString("\n\n[Hub attachments received]\n")
+	var published []agent.MessageAttachment
+	var notes []string
+	legacyPath := false
 	for _, att := range attachments.Text {
-		name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
-		name = safePlatformAttachmentFilename(name)
-		kind := "text"
-		if agent.IsBinaryDocumentAttachment(att.Filename, att.MimeType) {
-			kind = "file"
+		note, hostAtt, usedPath := s.platformTextAttachmentNote(binding.Instance.Workspace, in.HubDiscussionID, att)
+		if note != "" {
+			notes = append(notes, note)
 		}
-		line := fmt.Sprintf("- %s: %s", kind, firstPlatformNonEmpty(name, "attachment.txt"))
-		if localPath, err := materializePlatformTextAttachment(binding.Instance.Workspace, in.HubDiscussionID, att); err == nil && localPath != "" {
-			line += fmt.Sprintf("; local_path=%s", localPath)
-		} else if err != nil {
-			line += fmt.Sprintf("; unavailable=%s", err.Error())
+		if hostAtt != nil {
+			published = append(published, *hostAtt)
 		}
-		b.WriteString(line + "\n")
+		legacyPath = legacyPath || usedPath
 	}
 	for _, att := range attachments.Image {
-		b.WriteString(s.platformFileAttachmentLine(r, binding, in.HubDiscussionID, "image", att) + "\n")
+		note, hostAtt, usedPath := s.platformFileAttachmentNote(r, binding, in.HubDiscussionID, "image", att)
+		if note != "" {
+			notes = append(notes, note)
+		}
+		if hostAtt != nil {
+			published = append(published, *hostAtt)
+		}
+		legacyPath = legacyPath || usedPath
 	}
 	for _, att := range attachments.File {
-		b.WriteString(s.platformFileAttachmentLine(r, binding, in.HubDiscussionID, "file", att) + "\n")
+		note, hostAtt, usedPath := s.platformFileAttachmentNote(r, binding, in.HubDiscussionID, "file", att)
+		if note != "" {
+			notes = append(notes, note)
+		}
+		if hostAtt != nil {
+			published = append(published, *hostAtt)
+		}
+		legacyPath = legacyPath || usedPath
 	}
-	b.WriteString("Use local_path when present to inspect the attachment.\n")
-	return b.String()
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(content))
+	if len(notes) > 0 {
+		b.WriteString("\n\n[Hub attachments received]\n")
+		b.WriteString(strings.Join(notes, "\n"))
+		b.WriteByte('\n')
+		if legacyPath {
+			b.WriteString("Use local_path when present to inspect the attachment.\n")
+		}
+	}
+	return b.String(), published
+}
+
+func (s *HTTPServer) platformTextAttachmentNote(workspace, discussionID string, att platformTextAttachment) (string, *agent.MessageAttachment, bool) {
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+	name = safePlatformAttachmentFilename(name)
+	data, err := decodePlatformTextAttachment(att.Content)
+	if err == nil && len(data) > 0 {
+		if hostAtt, ok := platformTrustedHostAttachment(name, att.MimeType, platformTrustedTextSourceMediaID(discussionID, name), data); ok {
+			return fmt.Sprintf("- %s %s attached as trusted host input (%d bytes)", hostAtt.Type, hostAtt.FileName, len(data)), &hostAtt, false
+		}
+	}
+	kind := "text"
+	if agent.IsBinaryDocumentAttachment(att.Filename, att.MimeType) {
+		kind = "file"
+	}
+	line := fmt.Sprintf("- %s: %s", kind, firstPlatformNonEmpty(name, "attachment.txt"))
+	if localPath, err := materializePlatformTextAttachment(workspace, discussionID, att); err == nil && localPath != "" {
+		return line + fmt.Sprintf("; local_path=%s", localPath), nil, true
+	} else if err != nil {
+		return line + fmt.Sprintf("; unavailable=%s", err.Error()), nil, false
+	}
+	return line, nil, false
+}
+
+func (s *HTTPServer) platformFileAttachmentNote(r *http.Request, binding platformRuntimeBinding, discussionID, kind string, att platformFileAttachment) (string, *agent.MessageAttachment, bool) {
+	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
+	name = safePlatformAttachmentFilename(name)
+	data, attachmentID, err := s.fetchPlatformFileAttachment(r, binding, discussionID, att)
+	if err == nil && len(data) > 0 {
+		if hostAtt, ok := platformTrustedHostAttachment(name, att.MimeType, platformTrustedFileSourceMediaID(attachmentID), data); ok {
+			return fmt.Sprintf("- %s %s attached as trusted host input (%d bytes)", hostAtt.Type, hostAtt.FileName, len(data)), &hostAtt, false
+		}
+		localPath, stageErr := stagePlatformFileAttachment(binding.Instance.Workspace, discussionID, att, attachmentID, data)
+		if stageErr == nil && localPath != "" {
+			return platformFileAttachmentLegacyLine(kind, att, localPath, nil), nil, true
+		}
+		return platformFileAttachmentLegacyLine(kind, att, "", stageErr), nil, false
+	}
+	return platformFileAttachmentLegacyLine(kind, att, "", err), nil, false
 }
 
 func platformMessageAttachmentCount(attachments platformMessageAttachments) int {
@@ -697,6 +769,14 @@ func decodePlatformTextAttachment(content string) ([]byte, error) {
 }
 
 func (s *HTTPServer) platformFileAttachmentLine(r *http.Request, binding platformRuntimeBinding, discussionID, kind string, att platformFileAttachment) string {
+	localPath, err := s.downloadPlatformFileAttachment(r, binding, discussionID, att)
+	if err == nil && localPath != "" {
+		return platformFileAttachmentLegacyLine(kind, att, localPath, nil)
+	}
+	return platformFileAttachmentLegacyLine(kind, att, "", err)
+}
+
+func platformFileAttachmentLegacyLine(kind string, att platformFileAttachment, localPath string, err error) string {
 	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
 	name = safePlatformAttachmentFilename(name)
 	if name == "" {
@@ -712,7 +792,7 @@ func (s *HTTPServer) platformFileAttachmentLine(r *http.Request, binding platfor
 	if att.SizeBytes > 0 {
 		parts = append(parts, fmt.Sprintf("size_bytes=%d", att.SizeBytes))
 	}
-	if localPath, err := s.downloadPlatformFileAttachment(r, binding, discussionID, att); err == nil && localPath != "" {
+	if strings.TrimSpace(localPath) != "" {
 		parts = append(parts, "local_path="+localPath)
 	} else if strings.TrimSpace(att.FileURL) != "" {
 		parts = append(parts, "file_url="+strings.TrimSpace(att.FileURL))
@@ -723,24 +803,52 @@ func (s *HTTPServer) platformFileAttachmentLine(r *http.Request, binding platfor
 	return strings.Join(parts, "; ")
 }
 
-func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding platformRuntimeBinding, discussionID string, att platformFileAttachment) (string, error) {
-	if strings.TrimSpace(att.FileURL) == "" || strings.TrimSpace(binding.Instance.Workspace) == "" {
-		return "", nil
+func platformTrustedHostAttachment(fileName, mimeType, sourceID string, data []byte) (agent.MessageAttachment, bool) {
+	return srvTrustedIncomingHostAttachment(srvTrustedIncomingMedia{
+		FileName:      fileName,
+		MimeType:      mimeType,
+		SourceMediaID: sourceID,
+		Data:          data,
+	})
+}
+
+func platformTrustedFileSourceMediaID(attachmentID string) string {
+	if id := strings.TrimSpace(attachmentID); id != "" {
+		return "hub-ve-file:" + id
+	}
+	return ""
+}
+
+func platformTrustedTextSourceMediaID(discussionID, fileName string) string {
+	discussionID = strings.TrimSpace(discussionID)
+	if discussionID == "" {
+		return ""
+	}
+	name := safePlatformAttachmentFilename(fileName)
+	if name == "" {
+		return "hub-ve-text:" + discussionID
+	}
+	return "hub-ve-text:" + discussionID + ":" + name
+}
+
+func (s *HTTPServer) fetchPlatformFileAttachment(r *http.Request, binding platformRuntimeBinding, discussionID string, att platformFileAttachment) ([]byte, string, error) {
+	if s == nil || s.svc == nil || r == nil || strings.TrimSpace(att.FileURL) == "" {
+		return nil, "", nil
 	}
 	cfg, err := s.svc.GetUserConfig(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID})
 	if err != nil || cfg == nil {
-		return "", err
+		return nil, "", err
 	}
 	participantID := firstPlatformNonEmpty(cfg.AppConfig.RemoteMachineID, r.Header.Get("X-VE-Hub-Employee-ID"))
 	downloadURL, attachmentID, err := platformAttachmentDownloadURL(cfg.AppConfig.RemoteHubURL, att.FileURL, discussionID, participantID)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), platformAttachmentTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return "", err
+		return nil, attachmentID, err
 	}
 	if token := strings.TrimSpace(cfg.AppConfig.RemoteMachineToken); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -750,12 +858,27 @@ func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding pla
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, attachmentID, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("download failed HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, attachmentID, fmt.Errorf("download failed HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	maxBytes := platformAttachmentMaxBytesFor(att.Filename, att.MimeType)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, attachmentID, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, attachmentID, fmt.Errorf("attachment too large")
+	}
+	return data, attachmentID, nil
+}
+
+func stagePlatformFileAttachment(workspace, discussionID string, att platformFileAttachment, attachmentID string, data []byte) (string, error) {
+	if strings.TrimSpace(workspace) == "" || len(data) == 0 {
+		return "", nil
 	}
 	name := agent.NormalizeBinaryDocumentAttachmentFilename(att.Filename, att.MimeType)
 	name = safePlatformAttachmentFilename(name)
@@ -765,33 +888,23 @@ func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding pla
 	if attachmentID != "" {
 		name = safePlatformAttachmentFilename(attachmentID + "-" + name)
 	}
-	dir := filepath.Join(binding.Instance.Workspace, ".hub-attachments", safePlatformAttachmentFilename(discussionID))
+	dir := filepath.Join(workspace, ".hub-attachments", safePlatformAttachmentFilename(discussionID))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	path := uniquePlatformAttachmentPath(dir, name)
-	tmp, err := os.CreateTemp(dir, ".download-*")
-	if err != nil {
-		return "", err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	maxBytes := platformAttachmentMaxBytesFor(att.Filename, att.MimeType)
-	size, copyErr := io.Copy(tmp, io.LimitReader(resp.Body, maxBytes+1))
-	closeErr := tmp.Close()
-	if copyErr != nil {
-		return "", copyErr
-	}
-	if closeErr != nil {
-		return "", closeErr
-	}
-	if size > maxBytes {
-		return "", fmt.Errorf("attachment too large")
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func (s *HTTPServer) downloadPlatformFileAttachment(r *http.Request, binding platformRuntimeBinding, discussionID string, att platformFileAttachment) (string, error) {
+	data, attachmentID, err := s.fetchPlatformFileAttachment(r, binding, discussionID, att)
+	if err != nil || len(data) == 0 {
+		return "", err
+	}
+	return stagePlatformFileAttachment(binding.Instance.Workspace, discussionID, att, attachmentID, data)
 }
 
 func uniquePlatformAttachmentPath(dir, name string) string {
@@ -2546,6 +2659,7 @@ func (s *platformSSEWriter) WriteHeader() {
 }
 
 func (s *platformSSEWriter) WriteChunk(chunk string) {
+	chunk = textutil.VisibleChatStreamDelta(chunk)
 	if chunk == "" {
 		return
 	}
@@ -2565,6 +2679,7 @@ func (s *platformSSEWriter) WriteError(errMsg string) {
 }
 
 func (s *platformSSEWriter) WriteDone(content string, sess any, run any, msg any) {
+	content = textutil.SanitizeVisibleChatText(content)
 	data, _ := json.Marshal(map[string]any{"done": true, "content": content, "session": sess, "run": run, "message": msg})
 	fmt.Fprintf(s.w, "data: %s\n\n", data)
 	if s.flusher != nil {

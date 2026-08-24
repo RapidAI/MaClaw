@@ -1,5 +1,8 @@
-import React from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconBell } from "./WorkbenchIcons";
+import { NotificationDetail } from "./NotificationDetail";
+import { overlayTheme, type Theme } from "./aiAssistantPanelTheme";
+import type { AdminNotification as SharedNotification } from "./useNotifications";
 
 export type NotificationCategory =
     | "system_announcement"
@@ -10,15 +13,7 @@ export type NotificationCategory =
 
 export type NotificationPriority = "normal" | "important" | "urgent";
 
-export interface AdminNotification {
-    id: string;
-    title: string;
-    content: string;
-    category: NotificationCategory;
-    priority: NotificationPriority;
-    is_read: boolean;
-    created_at: string;
-}
+export type AdminNotification = SharedNotification;
 
 export interface NotificationPanelTheme {
     bg: string;
@@ -37,6 +32,9 @@ export interface NotificationPanelProps {
     onMarkAllRead: () => void;
     onSelectNotification: (notification: AdminNotification) => void;
     onClose: () => void;
+    selectedNotification?: AdminNotification | null;
+    onBackFromDetail?: () => void;
+    detailTheme?: Theme;
     lang?: string;
     theme: NotificationPanelTheme;
 }
@@ -78,6 +76,66 @@ const ALL_CATEGORIES: (NotificationCategory | null)[] = [
     "custom",
 ];
 
+export function stripMarkdownPreview(markdown: string | null | undefined): string {
+    return String(markdown ?? "")
+        .replace(/!\[[^\]]*]\([^)]*\)/g, "")
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        .replace(/[`*_~>#]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+const CATEGORY_VALUES: NotificationCategory[] = [
+    "system_announcement",
+    "feature_update",
+    "security_alert",
+    "maintenance",
+    "custom",
+];
+
+export function asNotificationCategory(value: string | null | undefined): NotificationCategory | null {
+    return value && CATEGORY_VALUES.includes(value as NotificationCategory)
+        ? (value as NotificationCategory)
+        : null;
+}
+
+function resolveDetailTheme(panel: NotificationPanelTheme, detail?: Theme): Theme {
+    if (detail) return detail;
+    return {
+        ...overlayTheme,
+        bg: panel.bg,
+        text: panel.text,
+        textMuted: panel.textMuted,
+        headingColor: panel.headingColor,
+        divider: panel.divider,
+        titleBarBg: panel.bg,
+        titleBarBorder: panel.divider,
+        fieldBg: panel.inputBarBg,
+        fieldBorder: panel.inputBarBorder,
+    };
+}
+
+let notificationItemStylesInjected = false;
+function ensureNotificationItemStyles() {
+    if (notificationItemStylesInjected) return;
+    notificationItemStylesInjected = true;
+    const style = document.createElement("style");
+    style.textContent = `
+.notification-item-row:hover,
+.notification-item-row:focus-visible {
+  background: var(--notif-hover-bg) !important;
+}
+.notification-item-row:focus-visible {
+  outline: 2px solid var(--notif-focus-ring);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .notification-item-row { transition: none !important; }
+}
+`;
+    document.head.appendChild(style);
+}
+
 function formatRelativeTime(isoString: string, lang?: string): string {
     const now = Date.now();
     const then = new Date(isoString).getTime();
@@ -104,7 +162,8 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
     theme: t,
     onSelect,
 }) => {
-    const meta = CATEGORY_META[notification.category];
+    ensureNotificationItemStyles();
+    const meta = CATEGORY_META[notification.category] ?? CATEGORY_META.custom;
     const categoryLabel = lang?.startsWith("zh") ? meta.labelZh : meta.labelEn;
     const priorityText =
         notification.priority === "urgent"
@@ -118,28 +177,35 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
             : notification.priority === "important"
               ? { color: "#f59e0b", fontWeight: 600 }
               : undefined;
+    const titleText = (notification.title || "").trim();
+    const contentPreview = stripMarkdownPreview(notification.content || "");
+    const hasDistinctPreview = Boolean(contentPreview) && contentPreview !== titleText;
+    const hasMoreToRead = titleText.length > 28 || hasDistinctPreview;
 
     return (
         <div
+            className="notification-item-row"
             data-testid={`notification-item-${notification.id}`}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(notification)}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelect(notification);
+                }
+            }}
             style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: "3px",
-                padding: "8px 14px",
+                gap: "4px",
+                padding: "10px 14px",
                 cursor: "pointer",
                 borderBottom: `1px solid ${t.divider}`,
                 background: notification.is_read ? "transparent" : `${t.headingColor}08`,
-                transition: "background 0.1s ease",
-            }}
-            onMouseEnter={(e) => {
-                e.currentTarget.style.background = `${t.headingColor}12`;
-            }}
-            onMouseLeave={(e) => {
-                e.currentTarget.style.background = notification.is_read
-                    ? "transparent"
-                    : `${t.headingColor}08`;
+                transition: "background 0.15s ease",
+                ["--notif-hover-bg" as string]: `${t.headingColor}12`,
+                ["--notif-focus-ring" as string]: t.headingColor,
             }}
         >
             <div
@@ -200,16 +266,51 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
                     fontSize: "13px",
                     fontWeight: notification.is_read ? 400 : 600,
                     color: t.text,
+                    lineHeight: 1.45,
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
                     overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    wordBreak: "break-word",
                 }}
             >
                 {notification.title}
             </span>
+
+            {hasDistinctPreview && (
+                <span
+                    data-testid={`notification-item-preview-${notification.id}`}
+                    style={{
+                        fontSize: "12px",
+                        lineHeight: 1.5,
+                        color: t.textMuted,
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    {contentPreview}
+                </span>
+            )}
+
+            {hasMoreToRead && (
+                <span
+                    style={{
+                        fontSize: "11px",
+                        color: t.textMuted,
+                        fontWeight: 500,
+                        alignSelf: "flex-start",
+                    }}
+                >
+                    {localizeText(lang, "View full notice", "查看全文", "查看全文")}
+                </span>
+            )}
         </div>
     );
 });
+NotificationItem.displayName = "NotificationItem";
 
 export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     notifications,
@@ -218,27 +319,132 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     onMarkAllRead,
     onSelectNotification,
     onClose,
+    selectedNotification,
+    onBackFromDetail,
+    detailTheme,
     lang,
     theme: t,
 }) => {
+    const panelRef = useRef<HTMLDivElement>(null);
+    const onCloseRef = useRef(onClose);
+    const onBackRef = useRef(onBackFromDetail);
+    const selectedRef = useRef(selectedNotification);
+    const lastSelectedIdRef = useRef<string | null>(null);
+    onCloseRef.current = onClose;
+    onBackRef.current = onBackFromDetail;
+    selectedRef.current = selectedNotification;
+    if (selectedNotification?.id) {
+        lastSelectedIdRef.current = selectedNotification.id;
+    }
+
     const filteredNotifications = categoryFilter
         ? notifications.filter((n) => n.category === categoryFilter)
         : notifications;
     const hasUnread = notifications.some((n) => !n.is_read);
+    const viewingDetail = Boolean(selectedNotification);
+    const resolvedDetailTheme = resolveDetailTheme(t, detailTheme);
+    const preferredHeight = viewingDetail ? 520 : 460;
+    const [maxPanelHeight, setMaxPanelHeight] = useState(preferredHeight);
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") return;
+            const active = document.activeElement;
+            const focusInsidePanel = !active
+                || active === document.body
+                || Boolean(panelRef.current?.contains(active));
+            if (focusInsidePanel) {
+                event.preventDefault();
+            }
+            if (selectedRef.current) {
+                (onBackRef.current ?? onCloseRef.current)();
+                return;
+            }
+            onCloseRef.current();
+        };
+        const onPointerDown = (event: globalThis.MouseEvent) => {
+            const target = event.target as Element | null;
+            if (!target) return;
+            if (panelRef.current?.contains(target)) return;
+            if (target.closest?.("[data-notification-anchor='true']")) return;
+            if (target.closest?.("[data-notification-toast='true']")) return;
+            onCloseRef.current();
+        };
+        document.addEventListener("keydown", onKeyDown);
+        document.addEventListener("mousedown", onPointerDown);
+        return () => {
+            document.removeEventListener("keydown", onKeyDown);
+            document.removeEventListener("mousedown", onPointerDown);
+        };
+    }, []);
+
+    useLayoutEffect(() => {
+        const root = panelRef.current;
+        if (!root) return;
+
+        const measure = () => {
+            // Do not fall back to offsetParent: the title bar is position:relative
+            // and only 38px tall, which makes available space look empty.
+            const clip = root.closest("[data-testid='ai-panel-root']");
+            const clipBottom = clip instanceof HTMLElement
+                ? clip.getBoundingClientRect().bottom
+                : window.innerHeight;
+            const top = root.getBoundingClientRect().top;
+            const available = Math.floor(clipBottom - top - 8);
+            setMaxPanelHeight(available > 0 ? Math.min(preferredHeight, available) : preferredHeight);
+        };
+
+        measure();
+        const clip = root.closest("[data-testid='ai-panel-root']");
+        const observer = typeof ResizeObserver === "function" && clip instanceof HTMLElement
+            ? new ResizeObserver(measure)
+            : null;
+        if (clip instanceof HTMLElement) observer?.observe(clip);
+        window.addEventListener("resize", measure);
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", measure);
+        };
+    }, [preferredHeight, viewingDetail]);
+
+    useEffect(() => {
+        const root = panelRef.current;
+        if (!root) return;
+        if (viewingDetail) {
+            root.querySelector<HTMLElement>("[data-testid='notification-detail-back']")
+                ?.focus({ preventScroll: true });
+            return;
+        }
+        const lastId = lastSelectedIdRef.current;
+        const escapedId = lastId && typeof CSS !== "undefined" && typeof CSS.escape === "function"
+            ? CSS.escape(lastId)
+            : lastId;
+        const lastItem = escapedId
+            ? root.querySelector<HTMLElement>(`[data-testid='notification-item-${escapedId}']`)
+            : null;
+        (lastItem ?? root).focus({ preventScroll: true });
+    }, [viewingDetail]);
 
     return (
         <div
+            ref={panelRef}
             data-testid="notification-panel"
+            role="dialog"
+            aria-modal="false"
+            tabIndex={-1}
+            aria-label={localizeText(lang, "Notifications", "通知", "通知")}
             style={{
                 position: "absolute",
                 top: "100%",
-                right: 0,
-                width: "340px",
-                maxHeight: "420px",
+                right: 8,
+                width: "min(400px, calc(100% - 16px))",
+                maxHeight: maxPanelHeight,
+                height: viewingDetail ? maxPanelHeight : undefined,
+                outline: "none",
                 background: t.bg,
                 border: `1px solid ${t.divider}`,
-                borderRadius: "8px",
-                boxShadow: "0 4px 24px rgba(0, 0, 0, 0.15)",
+                borderRadius: "10px",
+                boxShadow: "0 4px 8px rgba(15, 23, 42, 0.12)",
                 display: "flex",
                 flexDirection: "column",
                 zIndex: 1000,
@@ -246,6 +452,16 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
             }}
             onClick={(e) => e.stopPropagation()}
         >
+            {viewingDetail && selectedNotification ? (
+                <NotificationDetail
+                    notification={selectedNotification}
+                    onBack={onBackFromDetail ?? onClose}
+                    onClose={onClose}
+                    theme={resolvedDetailTheme}
+                    lang={lang}
+                />
+            ) : (
+            <>
             <div
                 style={{
                     display: "flex",
@@ -307,7 +523,9 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     return (
                         <button
                             key={cat ?? "all"}
+                            type="button"
                             data-testid={`notification-filter-${cat ?? "all"}`}
+                            aria-pressed={isActive}
                             onClick={() => onCategoryChange(cat)}
                             style={{
                                 padding: "3px 8px",
@@ -353,7 +571,9 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     >
                         <span style={{ opacity: 0.45, display: "inline-flex" }}><IconBell size={28} /></span>
                         <span>
-                            {localizeText(lang, "No notifications", "没有通知", "沒有通知")}
+                            {categoryFilter
+                                ? localizeText(lang, "No notifications in this category", "该分类没有通知", "該分類沒有通知")
+                                : localizeText(lang, "No notifications", "没有通知", "沒有通知")}
                         </span>
                     </div>
                 ) : (
@@ -398,6 +618,8 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                     {localizeText(lang, "Mark all as read", "全部标为已读", "全部標為已讀")}
                 </button>
             </div>
+            </>
+            )}
         </div>
     );
 };

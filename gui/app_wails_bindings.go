@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/session"
@@ -1748,10 +1749,49 @@ type AIAssistantBackgroundTaskResult struct {
 }
 
 type AIAssistantStreamEvent struct {
-	RequestID   string `json:"request_id,omitempty"`
-	Text        string `json:"text,omitempty"`
-	SessionKey  string `json:"session_key,omitempty"` // userID for per-tab event routing
-	DisplayText string `json:"display_text,omitempty"`
+	RequestID    string `json:"request_id,omitempty"`
+	Text         string `json:"text,omitempty"`
+	SessionKey   string `json:"session_key,omitempty"` // userID for per-tab event routing
+	DisplayText  string `json:"display_text,omitempty"`
+	EventScopeID string `json:"event_scope_id,omitempty"`
+	// Sequence is monotonic within one foreground request. The UI uses it to
+	// retain the exact thought/tool arrival order when transports batch events.
+	Sequence uint64 `json:"sequence,omitempty"`
+}
+
+type aiAssistantStreamEventEmitter struct {
+	app        *App
+	requestID  string
+	sessionKey string
+	sequence   atomic.Uint64
+}
+
+func (e *aiAssistantStreamEventEmitter) emit(name, value string) {
+	if e == nil || e.app == nil {
+		return
+	}
+	payload, err := json.Marshal(e.payload(value))
+	if err != nil {
+		log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
+		return
+	}
+	e.app.emitEvent(name, string(payload))
+}
+
+func newAIAssistantStreamEventEmitter(app *App, requestID, sessionKey string) *aiAssistantStreamEventEmitter {
+	return &aiAssistantStreamEventEmitter{app: app, requestID: requestID, sessionKey: sessionKey}
+}
+
+func (e *aiAssistantStreamEventEmitter) payload(value string) AIAssistantStreamEvent {
+	if e == nil {
+		return AIAssistantStreamEvent{Text: value}
+	}
+	return AIAssistantStreamEvent{
+		RequestID:  e.requestID,
+		Text:       value,
+		SessionKey: e.sessionKey,
+		Sequence:   e.sequence.Add(1),
+	}
 }
 
 const (
@@ -1878,7 +1918,20 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		a.bindAssistantTabWorkingDir(tabID, userID)
 	}
 	if projectPath != "" {
-		executionProjectPath := a.EffectiveWorkingDirForOwner(userID)
+		// Resolve the execution directory the same way the other project-task
+		// consumers do (im_tools_local.go, recentTaskExecutionProjectPath): a
+		// tab-bound override wins, then the task's persistent workingDir tag /
+		// managed workspace subdirectory, then the global default. Using only
+		// EffectiveWorkingDirForOwner here skipped the task's own workingDir,
+		// so a "continue" on a task with a configured worktree never created
+		// or entered that directory.
+		executionProjectPath := a.BoundWorkingDirForOwner(userID)
+		if executionProjectPath == "" {
+			executionProjectPath = a.recentTaskExecutionProjectPath(projectPath)
+		}
+		if executionProjectPath == "" {
+			executionProjectPath = a.EffectiveWorkingDirForOwner(userID)
+		}
 		if executionProjectPath != projectPath {
 			log.Printf("[AI assistant] route tab to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
 			if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
@@ -2207,13 +2260,23 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		DismissRecoverableSessionID: strings.TrimSpace(req.DismissRecoverableSessionID),
 		UIAction:                    req.UIAction,
 	}
-	emitEvent := func(name, value string) {
-		payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value, SessionKey: userID})
-		if err != nil {
-			log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
-			return
+	// A Coding relation can only originate at this desktop-host request
+	// boundary. The token is in-process only (`json:"-"`) and is removed after
+	// this one handler invocation; neither the WebView nor the model can replay
+	// it or choose any identity fields.
+	if a.isDesktopCodingWorkbenchSession(userID, projectPath) {
+		workspaceDir := ""
+		if a.projectPathIsLocalCodingWorkbench(projectPath) {
+			// The App resolves this directory before minting the ingress token.
+			// It is a host workspace fact, not a project-path-derived capability.
+			workspaceDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
 		}
-		a.emitEvent(name, string(payload))
+		msg.CodingTaskIngressToken = a.beginDesktopCodingTaskIngressForRequestWithWorkspace(userID, workspaceDir, req.StartNewTask)
+		defer a.endDesktopCodingTaskIngress(msg.CodingTaskIngressToken)
+	}
+	streamEvents := newAIAssistantStreamEventEmitter(a, requestID, userID)
+	emitEvent := func(name, value string) {
+		streamEvents.emit(name, value)
 	}
 	onProgress := func(progressText string) {
 		if progressText == imHeartbeatMsg {
@@ -2228,6 +2291,8 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		}
 		emitEvent("ai-assistant-progress", progressText)
 	}
+	codingWorkbench := a.isDesktopCodingWorkbenchSession(userID, projectPath)
+	onProgress = suppressCodingWorkbenchStatusProgress(onProgress, codingWorkbench)
 	status := func(english, chinese string) {
 		if strings.HasPrefix(strings.ToLower(msgLang), "en") {
 			onProgress("[Status] " + english)
@@ -2235,8 +2300,10 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		}
 		onProgress("[Status] " + chinese)
 	}
-	status("Task received", "已接收任务")
-	status("Preparing the execution path", "正在准备执行路径")
+	if !codingWorkbench {
+		status("Task received", "已接收任务")
+		status("Preparing the execution path", "正在准备执行路径")
+	}
 	streamDeltaNormalizer := &aiAssistantStreamDeltaNormalizer{}
 	onToken := func(delta string) {
 		delta = streamDeltaNormalizer.Normalize(delta)
@@ -2580,13 +2647,10 @@ func (a *App) ClearAIAssistantHistory() error {
 // per-user session state for the given session key (project tab aware).
 // An empty sessionKey defaults to the base desktopUserID for backward compat.
 func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
-	a.ensureInteractionInfra()
-	hubClient := a.ensureHubClient()
-	if hubClient == nil {
-		// Not initialized yet — nothing to clear. Return success (no-op).
-		return nil
-	}
-	handler := hubClient.ensureIMHandler()
+	// Resolve and fence the owner before touching the optional IM runtime. A
+	// desktop task relation may outlive an IM-handler restart; returning early
+	// just because the handler has not been rebuilt must not leave its verified
+	// coding handle usable.
 	targetUserID := desktopUserID
 	if trimmed := strings.TrimSpace(sessionKey); trimmed != "" && trimmed != desktopUserID {
 		// An unresolvable key must fail loudly: falling back to desktopUserID
@@ -2599,6 +2663,18 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 			targetUserID = normalized
 		}
 	}
+	// Clearing a desktop Coding workbench is a semantic task boundary, not just
+	// a conversation-memory operation. Fence its verified task relation before
+	// cancelling the loop so a late runtime callback cannot bind an old handle
+	// after the user has explicitly discarded the session.
+	a.revokeDesktopCodingTaskRelation(targetUserID)
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		// Not initialized yet — nothing to clear. Return success (no-op).
+		return nil
+	}
+	handler := hubClient.ensureIMHandler()
 	// Cancel any active agent loop first, so it does not write back into
 	// memory after we clear it. This mirrors IM-channel behavior where /clear
 	// is serialized behind the per-session mutex and only runs after the loop exits.
@@ -2660,24 +2736,53 @@ func (a *App) CancelAIAssistantSession() (string, error) {
 	if hubClient == nil {
 		return "", fmt.Errorf("AI assistant not initialized")
 	}
-	return cancelAIAssistantSessionForHandler(hubClient.ensureIMHandler(), "")
+	return a.cancelAIAssistantSessionForOwner(hubClient.ensureIMHandler(), "")
 }
 
 // CancelAIAssistantSessionForSession cancels the selected desktop/project AI
 // assistant session instead of whichever loop most recently updated global
 // legacy state.
 func (a *App) CancelAIAssistantSessionForSession(userID string) (string, error) {
+	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
+	if err != nil {
+		return "", err
+	}
+	// An explicit project/session cancellation is a durable semantic fence even
+	// while the IM host is restarting. Empty legacy targets still need the live
+	// handler to resolve the current desktop owner and are handled below.
+	if targetUserID != "" {
+		a.revokeDesktopCodingTaskRelation(targetUserID)
+	}
 	a.ensureInteractionInfra()
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {
 		return "", fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
+	return a.cancelAIAssistantSessionForOwner(handler, targetUserID)
+}
+
+// cancelAIAssistantSessionForOwner resolves the same owner that the legacy
+// helper would cancel, but fences an active desktop Coding relation first. The
+// resolution must happen before revocation because an empty legacy target means
+// "the active desktop owner", not an empty owner key.
+func (a *App) cancelAIAssistantSessionForOwner(handler *IMMessageHandler, userID string) (string, error) {
+	if handler == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
 	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
 	if err != nil {
 		return "", err
 	}
-	return cancelAIAssistantSessionForHandler(handler, targetUserID)
+	if targetUserID == "" {
+		targetUserID = activeAIAssistantLoopUserID(handler)
+	}
+	// Cancellation is a hard semantic fence for a desktop Coding task. It is
+	// safe for ordinary desktop/IM owners (there is simply no relation record),
+	// while a Coding owner loses all active descendant handles before the loop
+	// observes cancellation.
+	a.revokeDesktopCodingTaskRelation(targetUserID)
+	return handler.CancelSessionForUser(targetUserID)
 }
 
 func cancelAIAssistantSessionForHandler(handler *IMMessageHandler, userID string) (string, error) {

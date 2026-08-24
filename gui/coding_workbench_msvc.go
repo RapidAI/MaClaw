@@ -8,15 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 )
 
 // windowsMSVCToolchain is a host-side discovery result for MSVC / Visual Studio.
-// cl.exe is intentionally not expected on the default PATH; callers should use
-// VCVars64 via cmd /c "call ... && cl ...".
+// coding bash injects vcvars into the process environment so the model can run
+// `cl` without quoting vcvars64.bat through PowerShell.
 type windowsMSVCToolchain struct {
 	DisplayName string
 	InstallPath string
@@ -27,6 +29,10 @@ type windowsMSVCToolchain struct {
 var (
 	windowsMSVCDetectOnce sync.Once
 	windowsMSVCDetected   *windowsMSVCToolchain
+	windowsMSVCEnvOnce    sync.Once
+	windowsMSVCEnv        []string
+	windowsMinGWBinOnce   sync.Once
+	windowsMinGWBin       string
 )
 
 // detectWindowsMSVCToolchain finds a local Visual Studio install that includes
@@ -44,6 +50,9 @@ func detectWindowsMSVCToolchain() *windowsMSVCToolchain {
 				windowsMSVCDetected.InstallPath,
 				windowsMSVCDetected.VCVars64,
 			)
+			// Prompt construction already detected VS; capture vcvars now so
+			// the first bash compile does not wait on cmd.exe + set.
+			go func() { _ = windowsMSVCInjectedEnviron() }()
 		}
 	})
 	return windowsMSVCDetected
@@ -201,10 +210,22 @@ func toolchainFromInstallPath(installPath, displayName, version string) *windows
 	}
 }
 
-// formatWindowsMSVCToolchainHint returns system-prompt guidance so the coding
-// agent stops blind-searching Program Files for cl.exe / old VS years.
+// formatWindowsMSVCToolchainHint tells the model which compilers the host
+// already injected into coding bash. Do not teach vcvars quoting — that is
+// what made hello-world look like a failed compile.
 func formatWindowsMSVCToolchainHint(tc *windowsMSVCToolchain) string {
+	mingw := strings.TrimSpace(detectWindowsMinGWBin())
 	if tc == nil || strings.TrimSpace(tc.VCVars64) == "" {
+		if mingw != "" {
+			return strings.TrimSpace(`
+## Host C/C++ toolchain
+No Visual Studio C++ tools were auto-detected.
+g++ is already on PATH for coding bash.
+Compile/run:
+  g++ -std=c++17 -o hello.exe hello.cpp && .\hello.exe
+Do NOT scan Program Files or WinGet packages. Do NOT wrap vcvars.
+`)
+		}
 		return strings.TrimSpace(`
 ## Host C/C++ toolchain
 No Visual Studio C++ tools were auto-detected on this host.
@@ -212,14 +233,14 @@ cl.exe is usually NOT on PATH even when Visual Studio is installed.
 If you need MSVC: locate vcvars64.bat via
   & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 then compile with:
-  cmd /c "call \"<install>\VC\Auxiliary\Build\vcvars64.bat\" && cl /utf-8 /EHsc ..."
-Do NOT recursively scan Program Files. Do NOT assume VS 2019/2022 paths. Prefer project build scripts when present.
+  cmd /c 'call "<install>\VC\Auxiliary\Build\vcvars64.bat" && cl /utf-8 /EHsc ...'
+Keep cmd /c '...'. Do NOT scan Program Files. Prefer project build scripts.
 `)
 	}
 
 	var b strings.Builder
 	b.WriteString("\n## Host C/C++ toolchain (auto-detected)\n")
-	b.WriteString("Visual Studio C++ tools ARE installed on this machine.\n")
+	b.WriteString("Visual Studio C++ tools ARE installed. Host bash already has cl.exe, INCLUDE, and LIB (vcvars injected).\n")
 	if tc.DisplayName != "" {
 		b.WriteString("- Product: ")
 		b.WriteString(tc.DisplayName)
@@ -233,18 +254,341 @@ Do NOT recursively scan Program Files. Do NOT assume VS 2019/2022 paths. Prefer 
 	b.WriteString("- Install path: ")
 	b.WriteString(tc.InstallPath)
 	b.WriteByte('\n')
-	b.WriteString("- vcvars64.bat: ")
-	b.WriteString(tc.VCVars64)
-	b.WriteByte('\n')
-	b.WriteString("cl.exe is NOT on the default PATH (this is normal for MSVC).\n")
-	b.WriteString("Compile/run with ONE bash command using cmd.exe (so vcvars + cl share the env):\n")
-	b.WriteString("  cmd /c \"call \\\"")
-	b.WriteString(tc.VCVars64)
-	b.WriteString("\\\" && cl /utf-8 /EHsc /Fe:app.exe file1.cpp file2.cpp && app.exe\"\n")
+	if mingw != "" {
+		b.WriteString("- g++ is also on PATH\n")
+	}
+	b.WriteString("Compile/run with ONE bash command:\n")
+	b.WriteString("  cl /utf-8 /EHsc /Fe:hello.exe hello.cpp && .\\hello.exe\n")
+	if mingw != "" {
+		b.WriteString("Or: g++ -std=c++17 -o hello.exe hello.cpp && .\\hello.exe\n")
+	}
 	b.WriteString("Rules:\n")
-	b.WriteString("- Do NOT run bare `where cl.exe` / `cl` / `Get-Command cl` without vcvars first — they will fail and waste turns.\n")
-	b.WriteString("- Do NOT recursively search Program Files for cl.exe or vcvars.\n")
-	b.WriteString("- Do NOT hardcode Visual Studio 2019/2022 paths; use the install path above (VS 2026 is product line 18).\n")
+	b.WriteString("- Do NOT wrap vcvars64.bat or cmd /c call. cl is already on PATH.\n")
+	b.WriteString("- Do NOT run where.exe / Get-ChildItem / Get-Command looking for cl or g++.\n")
+	b.WriteString("- Do NOT recursively search Program Files or WinGet packages.\n")
 	b.WriteString("- Avoid Launch-VsDevShell.ps1 (PowerShell execution policy often blocks it).\n")
 	return b.String()
+}
+
+func windowsMSVCInjectedEnviron() []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	windowsMSVCEnvOnce.Do(func() {
+		tc := detectWindowsMSVCToolchain()
+		if tc == nil || strings.TrimSpace(tc.VCVars64) == "" {
+			return
+		}
+		windowsMSVCEnv = captureWindowsVCVarsEnviron(tc.VCVars64)
+		if len(windowsMSVCEnv) == 0 {
+			windowsMSVCEnv = captureWindowsVCVarsEnviron(tc.VCVars64)
+		}
+		if len(windowsMSVCEnv) > 0 {
+			log.Printf("[msvc-detect] injected %d env vars from vcvars", len(windowsMSVCEnv))
+		}
+	})
+	return windowsMSVCEnv
+}
+
+func captureWindowsVCVarsEnviron(vcvars string) []string {
+	vcvars = strings.TrimSpace(vcvars)
+	if vcvars == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, passthroughRuntimeProgram("cmd.exe"), "/d", "/s", "/c",
+		`call "`+vcvars+`" >nul && set`)
+	hideCommandWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil || len(bytes.TrimSpace(out)) == 0 {
+		log.Printf("[msvc-detect] vcvars env capture failed path=%q err=%v", vcvars, err)
+		return nil
+	}
+	return parseWindowsSETOutput(out)
+}
+
+func parseWindowsSETOutput(raw []byte) []string {
+	text := windowsSETOutputString(raw)
+	var env []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, "\r")
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		if key == "" {
+			continue
+		}
+		env = append(env, key+"="+line[eq+1:])
+	}
+	return env
+}
+
+func windowsSETOutputString(raw []byte) string {
+	if len(raw) >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
+		return decodeUTF16LE(raw[2:])
+	}
+	if looksLikeUTF16LE(raw) {
+		return decodeUTF16LE(raw)
+	}
+	return string(raw)
+}
+
+func decodeUTF16LE(raw []byte) string {
+	u16 := make([]uint16, 0, len(raw)/2)
+	for i := 0; i+1 < len(raw); i += 2 {
+		u16 = append(u16, uint16(raw[i])|uint16(raw[i+1])<<8)
+	}
+	return string(utf16.Decode(u16))
+}
+
+func looksLikeUTF16LE(raw []byte) bool {
+	if len(raw) < 8 || len(raw)%2 != 0 {
+		return false
+	}
+	limit := len(raw)
+	if limit > 64 {
+		limit = 64
+	}
+	nuls := 0
+	pairs := 0
+	for i := 1; i < limit; i += 2 {
+		pairs++
+		if raw[i] == 0 {
+			nuls++
+		}
+	}
+	return pairs > 0 && nuls*4 >= pairs*3
+}
+
+func mergeWindowsToolchainEnviron(base, overlay []string) []string {
+	if len(overlay) == 0 {
+		return base
+	}
+	index := make(map[string]int, len(base))
+	for i, item := range base {
+		eq := strings.IndexByte(item, '=')
+		if eq <= 0 {
+			continue
+		}
+		index[strings.ToUpper(item[:eq])] = i
+	}
+	for _, item := range overlay {
+		eq := strings.IndexByte(item, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.ToUpper(item[:eq])
+		if key == "PATH" {
+			base = prependWindowsPathValue(base, index, item[eq+1:])
+			continue
+		}
+		if i, ok := index[key]; ok {
+			base[i] = item
+			continue
+		}
+		index[key] = len(base)
+		base = append(base, item)
+	}
+	return base
+}
+
+func prependWindowsPathValue(env []string, index map[string]int, extra string) []string {
+	extra = strings.TrimSpace(extra)
+	if extra == "" {
+		return env
+	}
+	i, ok := index["PATH"]
+	if !ok {
+		index["PATH"] = len(env)
+		return append(env, "Path="+extra)
+	}
+	eq := strings.IndexByte(env[i], '=')
+	current := ""
+	if eq >= 0 {
+		current = env[i][eq+1:]
+	}
+	env[i] = "Path=" + joinUniqueWindowsPath(extra, current)
+	return env
+}
+
+func joinUniqueWindowsPath(parts ...string) string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, part := range parts {
+		for _, entry := range strings.Split(part, string(os.PathListSeparator)) {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			key := strings.ToLower(entry)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, entry)
+		}
+	}
+	return strings.Join(out, string(os.PathListSeparator))
+}
+
+func prewarmWindowsCodingToolchain() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	go func() {
+		_ = detectWindowsMSVCToolchain()
+		_ = windowsMSVCInjectedEnviron()
+		_ = detectWindowsMinGWBin()
+	}()
+}
+
+func detectWindowsMinGWBin() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	windowsMinGWBinOnce.Do(func() {
+		windowsMinGWBin = findWindowsMinGWBin()
+		if windowsMinGWBin != "" {
+			log.Printf("[mingw-detect] using %s", windowsMinGWBin)
+		}
+	})
+	return windowsMinGWBin
+}
+
+func findWindowsMinGWBin() string {
+	if p, err := exec.LookPath("g++"); err == nil && strings.TrimSpace(p) != "" {
+		return filepath.Dir(p)
+	}
+	var matches []string
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		for _, pattern := range []string{
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "*", "mingw64", "bin", "g++.exe"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "*", "*", "mingw64", "bin", "g++.exe"),
+		} {
+			found, _ := filepath.Glob(pattern)
+			matches = append(matches, found...)
+		}
+	}
+	for _, dir := range []string{`C:\mingw64\bin`, `C:\msys64\ucrt64\bin`, `C:\msys64\mingw64\bin`} {
+		matches = append(matches, filepath.Join(dir, "g++.exe"))
+	}
+	for _, exe := range matches {
+		if fi, err := os.Stat(exe); err == nil && !fi.IsDir() {
+			return filepath.Dir(exe)
+		}
+	}
+	return ""
+}
+
+var windowsMSVCCallPattern = regexp.MustCompile(`(?i)call\s+\\*"?\\*([A-Za-z]:[^"\n]*?vcvars(?:64|all)\.bat)\\*"?\\*`)
+
+func isWindowsMSVCShellRecipe(command string) bool {
+	lower := strings.ToLower(command)
+	return strings.Contains(lower, "vcvars64.bat") || strings.Contains(lower, "vcvarsall.bat")
+}
+
+// normalizeWindowsMSVCCompileCommand unwraps cmd /c and repairs quote-eaten
+// vcvars paths so the command can run through cmd.exe instead of PowerShell.
+func normalizeWindowsMSVCCompileCommand(command string) (string, bool) {
+	command = strings.TrimSpace(command)
+	if !isWindowsMSVCShellRecipe(command) {
+		return command, false
+	}
+	inner := unwrapWindowsCmdC(command)
+	if vcvars := extractWindowsVCVarsPath(inner); vcvars != "" {
+		if preferred := preferDetectedWindowsVCVars(vcvars); preferred != "" {
+			vcvars = preferred
+		}
+		inner = windowsMSVCCallPattern.ReplaceAllString(inner, `call "`+vcvars+`"`)
+	}
+	return strings.TrimSpace(inner), true
+}
+
+func unwrapWindowsCmdC(command string) string {
+	trimmed := strings.TrimSpace(command)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{"cmd.exe /d /s /c ", "cmd /d /s /c ", "cmd.exe /c ", "cmd /c "} {
+		if strings.HasPrefix(lower, prefix) {
+			return unquoteWindowsShellOnce(strings.TrimSpace(trimmed[len(prefix):]))
+		}
+	}
+	return command
+}
+
+func unquoteWindowsShellOnce(command string) string {
+	if len(command) >= 2 {
+		if (command[0] == '"' && command[len(command)-1] == '"') || (command[0] == '\'' && command[len(command)-1] == '\'') {
+			return command[1 : len(command)-1]
+		}
+	}
+	return command
+}
+
+func extractWindowsVCVarsPath(command string) string {
+	match := windowsMSVCCallPattern.FindStringSubmatch(command)
+	raw := ""
+	if len(match) >= 2 {
+		raw = match[1]
+	} else {
+		raw = windowsVCVarsPathByScan(command)
+	}
+	return cleanWindowsVCVarsPath(raw)
+}
+
+func windowsVCVarsPathByScan(command string) string {
+	lower := strings.ToLower(command)
+	idx := strings.Index(lower, "vcvars64.bat")
+	nameLen := len("vcvars64.bat")
+	if idx < 0 {
+		idx = strings.Index(lower, "vcvarsall.bat")
+		nameLen = len("vcvarsall.bat")
+	}
+	if idx < 0 {
+		return ""
+	}
+	raw := command[:idx+nameLen]
+	drive := -1
+	for i := 0; i < len(raw)-1; i++ {
+		if raw[i+1] == ':' && ((raw[i] >= 'A' && raw[i] <= 'Z') || (raw[i] >= 'a' && raw[i] <= 'z')) {
+			drive = i
+		}
+	}
+	if drive < 0 {
+		return ""
+	}
+	return raw[drive:]
+}
+
+func cleanWindowsVCVarsPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.ReplaceAll(path, `\"`, "")
+	path = strings.ReplaceAll(path, `"`, "")
+	path = strings.ReplaceAll(path, `\\`, `\`)
+	return filepath.Clean(path)
+}
+
+func preferDetectedWindowsVCVars(extracted string) string {
+	tc := detectWindowsMSVCToolchain()
+	if tc == nil || strings.TrimSpace(tc.VCVars64) == "" {
+		return extracted
+	}
+	if extracted == "" || sameWindowsFilePath(tc.VCVars64, extracted) {
+		return tc.VCVars64
+	}
+	return extracted
+}
+
+func sameWindowsFilePath(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 }

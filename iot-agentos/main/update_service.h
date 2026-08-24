@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "cJSON.h"
+#include "device_api.h"
 #include "esp_err.h"
 
 // Metadata-only device update service.  It deliberately has no firmware URL,
@@ -34,11 +35,18 @@ typedef struct {
     char detail[UPDATE_SERVICE_DETAIL_CAPACITY];
 } update_service_status_t;
 
-esp_err_t update_service_init(const update_service_config_t *config);
+device_status_t update_service_init(const update_service_config_t *config);
 /* Synchronous metadata observer shutdown. It closes all public update-tool
  * admission before Persistence may stop; no firmware download/install state
  * or hardware resource is owned here. */
-esp_err_t update_service_deinit(uint32_t timeout_ms);
+device_status_t update_service_deinit(uint32_t timeout_ms);
+/* Future System Sleep participant. PREPARE closes Hub-metadata and update-tool
+ * admission, then drains callers which may persist reminder state or consume a
+ * pending presentation. ABORT reopens the same synchronous service generation;
+ * neither operation downloads firmware, changes display hardware, or enters
+ * MCU sleep. */
+device_status_t update_service_prepare_system_sleep(uint32_t timeout_ms);
+void update_service_abort_system_sleep_prepare(void);
 bool update_service_is_initialized(void);
 
 // Consumes only validated Hub metadata. It returns true only when a user

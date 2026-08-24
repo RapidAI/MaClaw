@@ -3,6 +3,8 @@ package im
 import (
 	"context"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
 type testSystemSettingsRepo struct {
@@ -186,5 +188,41 @@ func TestLLMProviderRegistryDefaultsUserLimitsAndResilience(t *testing.T) {
 	}
 	if provider.FailureBackoffMaxMS != DefaultLLMProviderFailureBackoffMaxMS {
 		t.Fatalf("failure_backoff_max_ms = %d, want %d", provider.FailureBackoffMaxMS, DefaultLLMProviderFailureBackoffMaxMS)
+	}
+}
+
+func TestLLMProviderRegistryNormalizesVendorBillingSchedule(t *testing.T) {
+	repo := &testSystemSettingsRepo{}
+	ctx := context.Background()
+	reg := &LLMProviderRegistry{
+		Providers: []LLMProvider{{
+			ID:     "deepseek",
+			Name:   "DeepSeek",
+			APIURL: "https://api.deepseek.com",
+			Model:  "deepseek-chat",
+			CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+				Days:       []int{1, 2, 3, 4, 5},
+				Start:      "0:30",
+				End:        "8:30",
+				Multiplier: 0.5,
+			}},
+		}},
+	}
+	if err := SaveLLMProviderRegistry(ctx, repo, reg); err != nil {
+		t.Fatalf("SaveLLMProviderRegistry() error = %v", err)
+	}
+	loaded, err := LoadLLMProviderRegistry(ctx, repo)
+	if err != nil {
+		t.Fatalf("LoadLLMProviderRegistry() error = %v", err)
+	}
+	provider := loaded.Providers[0]
+	if provider.Timezone != llmpool.DefaultCreditMultiplierTimezone {
+		t.Fatalf("timezone = %q, want %q", provider.Timezone, llmpool.DefaultCreditMultiplierTimezone)
+	}
+	if provider.CreditMultiplier != 1 {
+		t.Fatalf("credit_multiplier = %v, want 1", provider.CreditMultiplier)
+	}
+	if len(provider.CreditMultiplierSchedule) != 1 || provider.CreditMultiplierSchedule[0].Start != "00:30" {
+		t.Fatalf("schedule = %#v", provider.CreditMultiplierSchedule)
 	}
 }

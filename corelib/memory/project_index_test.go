@@ -229,6 +229,24 @@ func TestProjectIndex_RecentRequiresTangibleOutput(t *testing.T) {
 	}
 }
 
+func TestIsDurableTaskManagementEntry(t *testing.T) {
+	if IsDurableTaskManagementEntry(nil) {
+		t.Fatal("nil entry should not be durable")
+	}
+	if IsDurableTaskManagementEntry(&Entry{Category: CategoryProjectKnowledge, Tags: []string{"task_management", "task_sediment"}}) {
+		t.Fatal("non-artifact entries should not be durable")
+	}
+	if !IsDurableTaskManagementEntry(&Entry{Category: CategoryTaskArtifact, Tags: []string{"task_management", "C:/tasks/one"}}) {
+		t.Fatal("task_management should be durable")
+	}
+	if !IsDurableTaskManagementEntry(&Entry{Category: CategoryTaskArtifact, Tags: []string{"manual_task", "recent_task", "C:/tasks/legacy"}}) {
+		t.Fatal("legacy manual+recent tags should be durable")
+	}
+	if IsDurableTaskManagementEntry(&Entry{Category: CategoryTaskArtifact, Tags: []string{"manual_task"}}) {
+		t.Fatal("manual_task alone should not be durable")
+	}
+}
+
 func TestProjectIndex_ListRecentMatchingFiltersBeforeSorting(t *testing.T) {
 	pi := NewProjectIndex()
 	now := time.Now()

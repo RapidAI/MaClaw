@@ -124,18 +124,17 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	// When a merge injection changes the task direction (e.g. user says "use
 	// SSH to connect" while the loop was doing Nginx analysis), the tool list
 	// computed at loop start may not include the newly needed tools. Re-route
-	// with the injection text and augment the current tool set.
+	// with the injection text and augment the current tool set. A capability-
+	// managed turn already has a closed grant surface; name-router augment
+	// and discover_tool pins must not union soup tools onto it.
 	tools := opts.Tools
 	toolsTokenBudget := opts.ToolsTokenBudget
-	if injectedText != "" {
-		tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, false)
+	if !loopContextBlocksLegacyToolRouter(ctx) {
+		if injectedText != "" {
+			tools, toolsTokenBudget = h.augmentToolsFromInjection(ctx, opts.UserID, injectedText, tools, opts.BaseTools, false)
+		}
+		tools, toolsTokenBudget = h.augmentToolsFromSessionPins(ctx, opts.UserID, tools, toolsTokenBudget)
 	}
-
-	// When discover_tool session-pins a conditional tool mid-loop, the tool
-	// definition may be missing from the current tool list (which was computed
-	// at loop start based on the original user message). Augment with any
-	// session-pinned tools that aren't already in the list.
-	tools, toolsTokenBudget = h.augmentToolsFromSessionPins(ctx, opts.UserID, tools, toolsTokenBudget)
 	forceLightFinalizeWithoutTools := shouldForceLightFinalizeWithoutTools(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace)
 	// An authorised group must retain knowledge_search until it has either
 	// produced evidence or established a no-result fallback. Otherwise the

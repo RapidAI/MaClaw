@@ -381,19 +381,19 @@ func TestDeleteMemoriesReportsOnlyCommittedDeletions(t *testing.T) {
 	}
 }
 
-func TestDeleteMemoriesInvalidatesInFlightProactiveRecall(t *testing.T) {
+func TestDeleteMemoriesInvalidatesFrozenMemorySnapshot(t *testing.T) {
 	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Stop()
-	if err := store.Save(memory.Entry{Content: "delete during proactive recall", Category: memory.CategoryTaskArtifact}); err != nil {
+	if err := store.Save(memory.Entry{Content: "delete during frozen snapshot", Category: memory.CategoryTaskArtifact}); err != nil {
 		t.Fatal(err)
 	}
 	entry := store.List("", "")[0]
 	ownerID := desktopUserID + ":D:/work/project"
 	handler := &IMMessageHandler{memoryStore: store}
-	handler.proactiveRecallInFlight.Store("recall-key", proactiveRecallState{snapshotUserID: ownerID})
+	handler.frozenMemorySnapshots.Store(ownerID, "stale user-fact catalog")
 	before := handler.snapshotGeneration(ownerID)
 	app := &App{memoryStore: store, imHandler: handler}
 
@@ -401,9 +401,12 @@ func TestDeleteMemoriesInvalidatesInFlightProactiveRecall(t *testing.T) {
 		t.Fatalf("DeleteMemories() error = %v", err)
 	}
 	if after := handler.snapshotGeneration(ownerID); after <= before {
-		t.Fatalf("in-flight proactive recall generation = %d, want > %d after delete", after, before)
+		t.Fatalf("frozen snapshot generation = %d, want > %d after delete", after, before)
 	}
 	if handler.isCurrentMemoryPromptGeneration(ownerID, before) {
-		t.Fatal("a proactive recall begun before deletion is still considered current")
+		t.Fatal("a snapshot begun before deletion is still considered current")
+	}
+	if _, ok := handler.frozenMemorySnapshots.Load(ownerID); ok {
+		t.Fatal("expected frozen snapshot deleted after DeleteMemories")
 	}
 }

@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 
 #include "device_api.h"
+#include "provisioning_failure_injection.h"
 
 #define WAVESHARE_PERIPHERAL_PMIC_ADDRESS      0x34
 #define WAVESHARE_PERIPHERAL_TOUCH_RESET_GPIO  GPIO_NUM_2
@@ -98,6 +99,14 @@ static esp_err_t waveshare_qmi8658_read(uint8_t reg, uint8_t *data, size_t lengt
 }
 
 static esp_err_t waveshare_qmi8658_init(i2c_master_bus_handle_t bus) {
+    /* This is a compile-time-only profile test seam.  It models an absent or
+     * non-responsive optional IMU before a private I2C handle is acquired;
+     * production images compile it to false and provide no runtime control. */
+    if (provisioning_failure_injection_waveshare_qmi8658_init_fails()) {
+        ESP_LOGW("waveshare_peripheral",
+                 "test injection: forcing optional QMI8658 initialization failure");
+        return ESP_ERR_NOT_FOUND;
+    }
     const i2c_device_config_t cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = WAVESHARE_PERIPHERAL_QMI8658_ADDRESS,
@@ -125,27 +134,47 @@ static esp_err_t waveshare_peripheral_init(i2c_master_bus_handle_t bus) {
     if (!bus) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(waveshare_axp2101_init(bus), "waveshare_peripheral", "PMIC init");
     ESP_RETURN_ON_ERROR(waveshare_cst9217_init(bus), "waveshare_peripheral", "touch init");
-    ESP_RETURN_ON_ERROR(waveshare_qmi8658_init(bus), "waveshare_peripheral", "IMU init");
+    /* The QMI8658 contributes only the optional Motion HAL.  A missing,
+     * mismatched or transiently unavailable IMU must not turn a usable
+     * touch/display/audio device into a startup failure: higher layers already
+     * project no sample as Motion unavailable and Fall Detection remains an
+     * optional consumer.  PMIC and touch stay fail-closed because they are
+     * required by this physical profile's common-device baseline. */
+    esp_err_t imu_err = waveshare_qmi8658_init(bus);
+    if (imu_err != ESP_OK) {
+        ESP_LOGW("waveshare_peripheral", "optional QMI8658 unavailable: %s; Motion HAL disabled",
+                 esp_err_to_name(imu_err));
+        if (s_waveshare_qmi8658) {
+            (void)i2c_master_bus_rm_device(s_waveshare_qmi8658);
+            s_waveshare_qmi8658 = NULL;
+        }
+    }
     return ESP_OK;
 }
 
-static void waveshare_peripheral_deinit(void) {
+static esp_err_t waveshare_peripheral_deinit(void) {
+    esp_err_t result = ESP_OK;
     if (s_waveshare_cst9217_touch) {
-        (void)esp_lcd_touch_del(s_waveshare_cst9217_touch);
+        const esp_err_t err = esp_lcd_touch_del(s_waveshare_cst9217_touch);
+        if (result == ESP_OK && err != ESP_OK) result = err;
         s_waveshare_cst9217_touch = NULL;
     }
     if (s_waveshare_cst9217_io) {
-        (void)esp_lcd_panel_io_del(s_waveshare_cst9217_io);
+        const esp_err_t err = esp_lcd_panel_io_del(s_waveshare_cst9217_io);
+        if (result == ESP_OK && err != ESP_OK) result = err;
         s_waveshare_cst9217_io = NULL;
     }
     if (s_waveshare_axp2101) {
-        (void)i2c_master_bus_rm_device(s_waveshare_axp2101);
+        const esp_err_t err = i2c_master_bus_rm_device(s_waveshare_axp2101);
+        if (result == ESP_OK && err != ESP_OK) result = err;
         s_waveshare_axp2101 = NULL;
     }
     if (s_waveshare_qmi8658) {
-        (void)i2c_master_bus_rm_device(s_waveshare_qmi8658);
+        const esp_err_t err = i2c_master_bus_rm_device(s_waveshare_qmi8658);
+        if (result == ESP_OK && err != ESP_OK) result = err;
         s_waveshare_qmi8658 = NULL;
     }
+    return result;
 }
 
 static bool waveshare_peripheral_touch_read(bool *pressed) {
@@ -169,8 +198,8 @@ static esp_err_t round_peripheral_adapter_initialize(i2c_master_bus_handle_t bus
     return waveshare_peripheral_init(bus);
 }
 
-static void round_peripheral_adapter_release(void) {
-    waveshare_peripheral_deinit();
+static esp_err_t round_peripheral_adapter_release(void) {
+    return waveshare_peripheral_deinit();
 }
 
 static bool round_peripheral_adapter_touch_read(bool *pressed, uint8_t *gesture) {
@@ -208,6 +237,15 @@ static int16_t waveshare_qmi8658_decode_i16(const uint8_t *data) {
 static esp_err_t waveshare_peripheral_motion_get(device_motion_sample_t *out_sample) {
     if (!out_sample) return ESP_ERR_INVALID_ARG;
     if (!s_waveshare_qmi8658) return ESP_ERR_NOT_FOUND;
+    /* Keep runtime fault semantics at the private adapter seam. The first
+     * normalised Motion read is the startup availability probe, so the test
+     * artifact lets it pass and then injects exactly one retryable I/O failure
+     * for the retained shared consumer. */
+    if (provisioning_failure_injection_waveshare_qmi8658_motion_read_fails_once()) {
+        ESP_LOGW("waveshare_peripheral",
+                 "test injection: forcing one optional QMI8658 motion read failure");
+        return ESP_ERR_TIMEOUT;
+    }
     uint8_t data[12] = {0};
     ESP_RETURN_ON_ERROR(waveshare_qmi8658_read(WAVESHARE_QMI8658_REG_DATA, data, sizeof(data)),
                         "waveshare_peripheral", "read QMI8658 motion sample");

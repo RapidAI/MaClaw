@@ -1833,6 +1833,17 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		}
 		if messageKind == thirdPartyGatewayMessageImage && !isDocument {
 			attachments = append(attachments, buildLocalImageAttachment(mediaData, mediaName, mediaMime))
+		} else if att, ok := buildTrustedHostMediaAttachment(trustedHostMediaInput{
+			MediaType:     messageKind.String(),
+			FileName:      mediaName,
+			MimeType:      mediaMime,
+			SourceMediaID: thirdPartyTrustedSourceMediaID(req.Message),
+			Data:          mediaData,
+		}); ok {
+			if strings.TrimSpace(text) == "" {
+				text = "[收到" + mediaLabel(messageKind.String()) + "]"
+			}
+			attachments = append(attachments, att)
 		} else {
 			if int64(len(mediaData)) > coreim.ThirdPartyMediaMaxBytesFor(mediaName, mediaMime) {
 				m.enqueueError(req, maclawID, "bad_request", fmt.Sprintf("media exceeds %d bytes", coreim.ThirdPartyMediaMaxBytesFor(mediaName, mediaMime)))
@@ -2524,6 +2535,18 @@ func parseThirdPartyReplyTarget(reply GatewayReplyPayload) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func thirdPartyTrustedSourceMediaID(msg thirdPartyMessagePayload) string {
+	if len(msg.Attachments) > 0 {
+		if id := strings.TrimSpace(msg.Attachments[0].ID); id != "" {
+			return "thirdparty-media:" + id
+		}
+	}
+	if id := strings.TrimSpace(msg.ID); id != "" {
+		return "thirdparty-media:" + id
+	}
+	return ""
 }
 
 func decodeThirdPartyMedia(msg thirdPartyMessagePayload) ([]byte, string, string, error) {

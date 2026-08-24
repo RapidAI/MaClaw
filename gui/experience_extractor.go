@@ -39,7 +39,15 @@ func NewExperienceExtractor(app *App, skillExecutor *SkillExecutor, cfg corelib.
 	if app != nil {
 		e.memoryStore = app.memoryStore
 	}
-	e.core = experience.NewExtractor(experienceLLMClient{cfg: cfg, client: e.client}, experienceSkillStore{executor: skillExecutor})
+	// This extractor only ever analyses remote coding sessions, so everything it
+	// distils belongs to the coding pool. Consolidation compares the pool before
+	// deciding a match, so it has to be declared here rather than stamped on the
+	// way to disk.
+	e.core = experience.NewExtractorWithOptions(
+		experienceLLMClient{cfg: cfg, client: e.client},
+		experienceSkillStore{executor: skillExecutor},
+		experience.Options{ExperienceDomain: corelib.SkillDomainCoding},
+	)
 	return e
 }
 
@@ -275,7 +283,7 @@ func (c experienceLLMClient) Generate(ctx context.Context, systemPrompt, userPro
 		map[string]string{"role": "system", "content": systemPrompt},
 		map[string]string{"role": "user", "content": userPrompt},
 	}
-	result, err := doSimpleLLMRequest(ctx, c.cfg, messages, c.client, 30*time.Second)
+	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(c.cfg, llm.TaskSummary), messages, c.client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -293,10 +301,25 @@ func (s experienceSkillStore) List() []corelib.NLSkillEntry {
 	return s.executor.loadSkills()
 }
 
+// stampCodingExperienceDomain is a fallback for brand-new skills: the extractor
+// is configured with the coding pool, so an entry reaching Register should
+// already carry it. It is deliberately not applied when refining an existing
+// skill, because there an empty pool can mean "the user installed this and it
+// belongs everywhere", a distinction only consolidation can make.
+func stampCodingExperienceDomain(entry *corelib.NLSkillEntry) {
+	if entry == nil {
+		return
+	}
+	if corelib.NormalizeSkillExperienceDomain(entry.ExperienceDomain) == corelib.SkillDomainUniversal {
+		entry.ExperienceDomain = corelib.SkillDomainCoding
+	}
+}
+
 func (s experienceSkillStore) Register(entry corelib.NLSkillEntry) error {
 	if s.executor == nil {
 		return errors.New("experience skill store is not configured")
 	}
+	stampCodingExperienceDomain(&entry)
 	if _, err := s.scanBeforePersist(&entry, "register"); err != nil {
 		return err
 	}

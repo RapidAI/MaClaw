@@ -11,7 +11,7 @@
 
 #include "device_api.h"
 
-#define APP_INTENT_ABI_VERSION 2u
+#define APP_INTENT_ABI_VERSION 3u
 
 typedef enum {
     APP_INTENT_PRIMARY_ACTIVATE = 0,
@@ -36,6 +36,10 @@ typedef struct {
     /* Binding-owned classification of the standard local interaction. This
      * prevents application policy from querying a profile to infer it. */
     bool primary_interaction_source;
+    /* Binding-owned DISPLAY_OFF wake eligibility. A profile can expose both
+     * touch and a physical activation control without leaking either board
+     * detail into application policy. */
+    bool display_wake_source;
     /* Preserved only for policies such as consuming a single physical
      * contact after an alarm/capture stop. It is not a board identifier. */
     device_input_source_t source;
@@ -61,4 +65,10 @@ typedef struct {
  * Repeated start/stop behavior follows device_input_start/stop. */
 device_status_t app_intent_service_start(app_intent_cb_t on_intent, void *context);
 device_status_t app_intent_service_stop(uint32_t timeout_ms);
+/* Reversible System Sleep boundary for the profile-neutral input-to-business
+ * dispatcher. PREPARE rejects new semantic dispatch and drains a handler that
+ * already crossed admission; it deliberately does not stop board scanners or
+ * configure wake pins. ABORT restores the same live service generation. */
+device_status_t app_intent_service_prepare_system_sleep(uint32_t timeout_ms);
+void app_intent_service_abort_system_sleep_prepare(void);
 bool app_intent_service_get_snapshot(app_intent_service_snapshot_t *out_snapshot);

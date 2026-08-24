@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestDoSimpleOpenAIRequest_ContentResponse(t *testing.T) {
@@ -206,6 +207,81 @@ func TestDoSimpleLLMRequestUsesResponsesWireAPI(t *testing.T) {
 	}
 }
 
+func TestDoSimpleLLMRequestWithOptionsCarriesStructuredOutputContract(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"top\":[{\"skill\":\"live_data\",\"score\":0.95,\"workflow_type\":\"\"}]}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := doSimpleLLMRequestWithOptions(context.Background(), corelib.MaclawLLMConfig{
+		URL: server.URL, Model: "test-model",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "classify"}}, server.Client(), 5*time.Second, simpleLLMRequestOptions{
+		ResponseFormat: intentTreeResponseFormat(),
+	})
+	if err != nil {
+		t.Fatalf("doSimpleLLMRequestWithOptions: %v", err)
+	}
+	format, _ := gotBody["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("response_format=%#v, want json_schema", gotBody["response_format"])
+	}
+	schema, _ := format["json_schema"].(map[string]interface{})
+	if schema["name"] != "intent_tree_candidates" {
+		t.Fatalf("json_schema=%#v", schema)
+	}
+}
+
+func TestDoSimpleLLMRequestWithOptionsPreservesStructuredOutputForConservativeCompat(t *testing.T) {
+	_, body, err := llm.BuildOpenAIChatRequestData(corelib.MaclawLLMConfig{
+		URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "classify"}}, llm.OpenAIChatRequestOptions{
+		ResponseFormat:         intentTreeResponseFormat(),
+		PreserveResponseFormat: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var gotBody map[string]interface{}
+	if err := json.Unmarshal(body, &gotBody); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	format, _ := gotBody["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("response_format=%#v, want json_schema retained for control plane", gotBody["response_format"])
+	}
+}
+
+func TestDoSimpleLLMRequestWithOptionsMapsStructuredOutputForResponsesAPI(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"top\":[{\"skill\":\"live_data\",\"score\":0.95,\"workflow_type\":\"\"}]}"}]}]}`))
+	}))
+	defer server.Close()
+
+	_, err := doSimpleLLMRequestWithOptions(context.Background(), corelib.MaclawLLMConfig{
+		URL: server.URL, Model: "test-model", Protocol: "openai", WireAPI: "responses",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "classify"}}, server.Client(), 5*time.Second, simpleLLMRequestOptions{
+		ResponseFormat: intentTreeResponseFormat(),
+	})
+	if err != nil {
+		t.Fatalf("doSimpleLLMRequestWithOptions: %v", err)
+	}
+	text, _ := gotBody["text"].(map[string]interface{})
+	format, _ := text["format"].(map[string]interface{})
+	if format["type"] != "json_schema" || format["name"] != "intent_tree_candidates" {
+		t.Fatalf("responses text format=%#v", text)
+	}
+}
+
 func TestDumpLLMContextDoesNotPersistRequestBody(t *testing.T) {
 	tempDir := t.TempDir()
 	requestBody := []byte(`{"messages":[{"content":"Browser: SECRET_REQUEST_BODY"}]}`)
@@ -223,5 +299,32 @@ func TestDumpLLMContextDoesNotPersistRequestBody(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no dump files, got %d", len(entries))
+	}
+}
+
+func TestAttachLightweightHubHint_OnlyHubManaged(t *testing.T) {
+	third := attachLightweightHubHint(corelib.MaclawLLMConfig{
+		URL:   "https://api.openai.com/v1",
+		Model: "gpt-4o-mini",
+	}, llm.TaskIntent)
+	if third.HubManaged || third.TaskTypeHint != "" {
+		t.Fatalf("third-party should stay unhinted: %#v", third)
+	}
+
+	hub := attachLightweightHubHint(corelib.MaclawLLMConfig{
+		URL:   "https://hub.example.com/api/llm/v1",
+		Model: "auto",
+	}, llm.TaskSummary)
+	if !hub.HubManaged || hub.TaskTypeHint != string(llm.TaskSummary) {
+		t.Fatalf("hub auto should attach P2 hint: %#v", hub)
+	}
+
+	marked := attachLightweightHubHint(corelib.MaclawLLMConfig{
+		URL:        "https://api.openai.com/v1",
+		Model:      "gpt-4o-mini",
+		HubManaged: true,
+	}, llm.TaskIntent)
+	if marked.TaskTypeHint != string(llm.TaskIntent) {
+		t.Fatalf("explicit HubManaged should still attach hint: %#v", marked)
 	}
 }

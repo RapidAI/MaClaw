@@ -16,6 +16,10 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_initialized;
 static bool s_stopping;
 static uint32_t s_active_queries;
+/* This service does not own a worker, but its synchronous provider read can
+ * call a profile-private ADC/charger adapter.  A future electrical PREPARE
+ * must therefore close this observer before profile Power changes rails. */
+static bool s_system_sleep_preparing;
 /* Owns init/deinit serialization as well as the transient construction
  * publication. The spinlock protects state, but cannot safely cover a wait
  * for an in-flight telemetry read. */
@@ -51,6 +55,7 @@ device_status_t battery_policy_service_init(void) {
     }
     s_initialized = true;
     s_active_queries = 0;
+    s_system_sleep_preparing = false;
     s_level = DEVICE_BATTERY_POLICY_NORMAL;
     taskEXIT_CRITICAL(&s_lock);
     __atomic_store_n(&s_lifecycle_transition, false, __ATOMIC_RELEASE);
@@ -79,6 +84,7 @@ device_status_t battery_policy_service_deinit(uint32_t timeout_ms) {
     const bool already_stopped = !s_initialized && !s_stopping;
     s_initialized = false;
     s_stopping = true;
+    s_system_sleep_preparing = false;
     s_level = DEVICE_BATTERY_POLICY_NORMAL;
     taskEXIT_CRITICAL(&s_lock);
 
@@ -112,10 +118,48 @@ device_status_t battery_policy_service_deinit(uint32_t timeout_ms) {
     return DEVICE_STATUS_OK;
 }
 
+device_status_t battery_policy_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    taskENTER_CRITICAL(&s_lock);
+    if (!s_initialized || s_stopping) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    if (s_system_sleep_preparing) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    /* Admission and the active-reader increment share this lock, so observing
+     * zero after the marker is set is a true provider safe point. */
+    s_system_sleep_preparing = true;
+    taskEXIT_CRITICAL(&s_lock);
+
+    for (;;) {
+        taskENTER_CRITICAL(&s_lock);
+        const uint32_t active_queries = s_active_queries;
+        taskEXIT_CRITICAL(&s_lock);
+        if (active_queries == 0) return DEVICE_STATUS_OK;
+        if (esp_timer_get_time() >= deadline_us) {
+            /* Keep the marker closed until the caller's mandatory ABORT.
+             * A late reader must not cross the electrical COMMIT boundary. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+void battery_policy_service_abort_system_sleep_prepare(void) {
+    taskENTER_CRITICAL(&s_lock);
+    s_system_sleep_preparing = false;
+    taskEXIT_CRITICAL(&s_lock);
+}
+
 bool battery_policy_service_get_snapshot(device_battery_policy_snapshot_t *out_snapshot) {
     if (!out_snapshot) return false;
     taskENTER_CRITICAL(&s_lock);
-    const bool initialized = s_initialized && !s_stopping;
+    const bool initialized = s_initialized && !s_stopping &&
+                             !s_system_sleep_preparing;
     const device_battery_policy_level_t previous = s_level;
     if (initialized) ++s_active_queries;
     taskEXIT_CRITICAL(&s_lock);
@@ -127,7 +171,11 @@ bool battery_policy_service_get_snapshot(device_battery_policy_snapshot_t *out_s
     taskENTER_CRITICAL(&s_lock);
     /* Deinit can run while the synchronous provider read above is in flight.
      * Do not publish that stale observation after its admission has closed. */
-    const bool publish = s_initialized && !s_stopping;
+    /* PREPARE can close admission while the profile telemetry provider is
+     * executing. That pre-fence reader is allowed to finish so PREPARE can
+     * drain, but its result must not update policy after the electrical
+     * transaction has become fail-closed. */
+    const bool publish = s_initialized && !s_stopping && !s_system_sleep_preparing;
     --s_active_queries;
     if (!publish) {
         taskEXIT_CRITICAL(&s_lock);

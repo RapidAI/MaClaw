@@ -5,6 +5,7 @@ package pyenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +28,13 @@ import (
 // UseChinaMirror 控制是否使用国内镜像下载 Python/uv。
 // 由宿主程序在启动时根据用户语言设置调用 SetUseChinaMirror。
 var useChinaMirror atomic.Bool
+
+var errDownloadIncomplete = errors.New("download incomplete")
+
+// EnsureEnvironment mutates one shared private runtime tree. Serialize callers
+// from GUI startup, CLI checks, and tool setup so their archive/rename steps
+// cannot race each other.
+var ensureEnvironmentMu sync.Mutex
 
 // SetUseChinaMirror 设置是否使用国内镜像。可在任意时机调用，立即生效。
 func SetUseChinaMirror(use bool) {
@@ -75,10 +84,14 @@ func privatePythonPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return pythonPathInInstallDir(filepath.Join(base, "install")), nil
+}
+
+func pythonPathInInstallDir(installDir string) string {
 	if runtime.GOOS == "windows" {
-		return filepath.Join(base, "install", "python.exe"), nil
+		return filepath.Join(installDir, "python.exe")
 	}
-	return filepath.Join(base, "install", "bin", "python3"), nil
+	return filepath.Join(installDir, "bin", "python3")
 }
 
 // privateUVPath 返回私有 uv 可执行文件的预期路径。
@@ -238,24 +251,20 @@ func standalonePythonURLs() ([]string, error) {
 	}
 
 	const githubBase = "https://github.com/astral-sh/python-build-standalone/releases/download/20250106"
-	// npmmirror 官方镜像（中国大陆 CDN 加速）
-	const npmmirrorBase = "https://cdn.npmmirror.com/binaries/python-build-standalone/20250106"
-	// cnb.cool（码云 GitBoat）GitHub Release 镜像（中国大陆可达）
-	const cnbBase = "https://cnb.cool/astral-sh/python-build-standalone/-/releases/download/20250106"
-	// ghfast.top GitHub 加速代理（中国大陆可达）
-	const ghfastBase = "https://ghfast.top/https://github.com/astral-sh/python-build-standalone/releases/download/20250106"
+	// ghproxy.net 是可透传 GitHub Release 的镜像。python-build-standalone
+	// 并不在 npmmirror/cnb 的对应路径上，不能把它们作为下载源，否则会
+	// 无谓地得到 404 后才回退到 GitHub。
+	const ghproxyBase = "https://ghproxy.net/https://github.com/astral-sh/python-build-standalone/releases/download/20250106"
 
 	if useChinaMirror.Load() {
 		return []string{
-			npmmirrorBase + "/" + filename,
-			ghfastBase + "/" + filename,
-			cnbBase + "/" + filename,
+			ghproxyBase + "/" + filename,
 			githubBase + "/" + filename,
 		}, nil
 	}
 	return []string{
 		githubBase + "/" + filename,
-		npmmirrorBase + "/" + filename,
+		ghproxyBase + "/" + filename,
 	}, nil
 }
 
@@ -381,7 +390,11 @@ func downloadWithFallback(urls []string, destPath string, emit ProgressFunc) err
 			}
 			madeProgress := sizeAfter > sizeBefore
 
-			if !madeProgress && shouldFallbackToNextSource(err) && i < len(urls)-1 {
+			// 对普通连接中断保留断点续传；但服务端在声明 Content-Length 后
+			// 提前结束响应时，临时文件已确定不完整，应立即改用下一个源。
+			// 不完整下载使用哨兵错误标识，避免依赖面向用户的错误文案。
+			fallback := shouldFallbackToNextSource(err) && !madeProgress
+			if (fallback || isIncompleteDownloadError(err)) && i < len(urls)-1 {
 				if emit != nil {
 					emit("fallback", 0, fmt.Sprintf("源 %d 不可用，切换到备用源...", i+1))
 				}
@@ -444,6 +457,10 @@ func shouldFallbackToNextSource(err error) bool {
 	}
 
 	return false
+}
+
+func isIncompleteDownloadError(err error) bool {
+	return errors.Is(err, errDownloadIncomplete)
 }
 
 // downloadSingleURL 执行单次 HTTP 下载，支持断点续传。
@@ -509,35 +526,18 @@ func downloadSingleURLInner(url, destPath string, emit ProgressFunc, retried boo
 		// 服务器支持断点续传，返回了部分内容
 		startOffset = existingSize
 		// 从 Content-Range 头解析总大小和起始位置: "bytes 12345-99999/100000"
-		if cr := resp.Header.Get("Content-Range"); cr != "" {
-			if idx := strings.LastIndex(cr, "/"); idx >= 0 {
-				if sz, parseErr := strconv.ParseInt(cr[idx+1:], 10, 64); parseErr == nil {
-					totalSize = sz
-				}
+		serverStart, parsedTotal, ok := parseContentRange(resp.Header.Get("Content-Range"))
+		if !ok || serverStart != existingSize {
+			// 206 必须带有能确认偏移和总长度的 Content-Range。否则追加
+			// 到已有临时文件会静默损坏归档，改为删除断点并从头重新请求。
+			io.Copy(io.Discard, resp.Body)
+			os.Remove(tmpPath)
+			if retried {
+				return fmt.Errorf("断点续传响应无效: 请求偏移 %d，Content-Range=%q (%s)", existingSize, resp.Header.Get("Content-Range"), url)
 			}
-			// 验证服务器返回的起始 offset 与我们请求的一致
-			// Content-Range: bytes START-END/TOTAL
-			if spaceIdx := strings.Index(cr, " "); spaceIdx >= 0 {
-				rangePart := cr[spaceIdx+1:] // "12345-99999/100000"
-				if dashIdx := strings.Index(rangePart, "-"); dashIdx > 0 {
-					if serverStart, parseErr := strconv.ParseInt(rangePart[:dashIdx], 10, 64); parseErr == nil {
-						if serverStart != existingSize {
-							// 服务器返回的起始位置与我们请求的不一致——数据会损坏
-							// 放弃续传，从头下载
-							io.Copy(io.Discard, resp.Body)
-							os.Remove(tmpPath)
-							if retried {
-								return fmt.Errorf("断点续传偏移不匹配: 请求 %d, 服务器返回 %d (%s)", existingSize, serverStart, url)
-							}
-							return downloadSingleURLInner(url, destPath, emit, true)
-						}
-					}
-				}
-			}
+			return downloadSingleURLInner(url, destPath, emit, true)
 		}
-		if totalSize == 0 && resp.ContentLength > 0 {
-			totalSize = startOffset + resp.ContentLength
-		}
+		totalSize = parsedTotal
 		if emit != nil {
 			mb := float64(startOffset) / (1024 * 1024)
 			emit("resuming", int(startOffset*100/max64(totalSize, startOffset+1)), fmt.Sprintf("断点续传，已有 %.1f MB", mb))
@@ -596,6 +596,9 @@ func downloadSingleURLInner(url, destPath string, emit ProgressFunc, retried boo
 			}
 			outFile.Close()
 			// 不删除临时文件——保留已下载部分，下次断点续传
+			if errors.Is(readErr, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("%w: 已下载 %d bytes，预期 %d bytes: %v", errDownloadIncomplete, written, totalSize, readErr)
+			}
 			return fmt.Errorf("下载中断 (已下载 %d bytes): %w", written, readErr)
 		}
 	}
@@ -606,6 +609,11 @@ func downloadSingleURLInner(url, destPath string, emit ProgressFunc, retried boo
 	if err := outFile.Close(); err != nil {
 		return fmt.Errorf("close 失败: %w", err)
 	}
+	if err := verifyDownloadSize(written, totalSize); err != nil {
+		// 保留临时文件以便诊断；下载器在遇到该错误时会切换到下一源，
+		// 并在切换前清理这份不完整的数据。
+		return err
+	}
 
 	// 原子替换
 	os.Remove(destPath)
@@ -614,6 +622,38 @@ func downloadSingleURLInner(url, destPath string, emit ProgressFunc, retried boo
 		return fmt.Errorf("rename 失败: %w", err)
 	}
 	return nil
+}
+
+// parseContentRange validates a 206 Content-Range value such as
+// "bytes 12345-99999/100000" and returns its start offset and total size.
+func parseContentRange(value string) (start, total int64, ok bool) {
+	const prefix = "bytes "
+	if !strings.HasPrefix(value, prefix) {
+		return 0, 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(value, prefix), "/")
+	if len(parts) != 2 || parts[1] == "*" {
+		return 0, 0, false
+	}
+	rangeParts := strings.Split(parts[0], "-")
+	if len(rangeParts) != 2 {
+		return 0, 0, false
+	}
+	start, startErr := strconv.ParseInt(rangeParts[0], 10, 64)
+	end, endErr := strconv.ParseInt(rangeParts[1], 10, 64)
+	total, totalErr := strconv.ParseInt(parts[1], 10, 64)
+	if startErr != nil || endErr != nil || totalErr != nil || start < 0 || end < start || total <= end {
+		return 0, 0, false
+	}
+	return start, total, true
+}
+
+func verifyDownloadSize(written, totalSize int64) error {
+	// Content-Length 未知时不能据此断言；归档解压仍会校验文件完整性。
+	if totalSize <= 0 || written == totalSize {
+		return nil
+	}
+	return fmt.Errorf("%w: 已下载 %d bytes，预期 %d bytes", errDownloadIncomplete, written, totalSize)
 }
 
 // max64 returns the larger of a and b.
@@ -640,6 +680,13 @@ func extractRuntimeArchive(archivePath, destDir string) error {
 		return nil
 	}
 	return fmt.Errorf("解压运行时归档失败 (%s): %s", result.Code, result.Message)
+}
+
+func resetRuntimeExtractDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return nil
 }
 
 // errFound 是 findAndMoveBinary 内部用于提前终止 Walk 的哨兵错误。
@@ -682,6 +729,8 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 	if emit == nil {
 		emit = func(string, int, string) {}
 	}
+	ensureEnvironmentMu.Lock()
+	defer ensureEnvironmentMu.Unlock()
 
 	st := Detect()
 
@@ -719,21 +768,42 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 
 		emit("python-extract", 50, "正在解压 Python ...")
 		installDir := filepath.Join(base, "install")
-		os.RemoveAll(installDir)
-		if err := extractTarGz(archivePath, base); err != nil {
+		extractDir := filepath.Join(base, "python-extract")
+		// 归档文件位于 base 中，不能直接解压到 base：安全解压器要求其
+		// 目标目录为空。使用独立临时目录也能清除上次失败的残留输出。
+		if err := resetRuntimeExtractDir(extractDir); err != nil {
+			st.Error = fmt.Sprintf("清理 Python 临时目录失败: %v", err)
+			return st
+		}
+		if err := extractTarGz(archivePath, extractDir); err != nil {
+			os.RemoveAll(extractDir)
 			os.Remove(archivePath)
 			st.Error = fmt.Sprintf("解压 Python 失败: %v", err)
 			return st
 		}
 		// python-build-standalone 解压后目录名为 "python"，重命名为 "install"
-		extractedDir := filepath.Join(base, "python")
-		if _, serr := os.Stat(extractedDir); serr == nil {
-			if err := os.Rename(extractedDir, installDir); err != nil {
-				os.Remove(archivePath)
-				st.Error = fmt.Sprintf("重命名 Python 目录失败: %v", err)
-				return st
-			}
+		extractedDir := filepath.Join(extractDir, "python")
+		if _, serr := os.Stat(extractedDir); serr != nil {
+			os.RemoveAll(extractDir)
+			os.Remove(archivePath)
+			st.Error = fmt.Sprintf("Python 解压后目录不存在: %v", serr)
+			return st
 		}
+		// 在替换当前安装前验证新运行时，避免损坏或不兼容归档清空已存在的
+		// Python 环境。后续的最终验证仍覆盖移动后的实际安装路径。
+		if _, ok := checkPython(pythonPathInInstallDir(extractedDir)); !ok {
+			os.RemoveAll(extractDir)
+			os.Remove(archivePath)
+			st.Error = "Python 解压后验证失败，请检查下载来源或重试"
+			return st
+		}
+		if err := replacePrivatePythonInstall(installDir, extractedDir); err != nil {
+			os.RemoveAll(extractDir)
+			os.Remove(archivePath)
+			st.Error = fmt.Sprintf("替换 Python 安装失败: %v", err)
+			return st
+		}
+		os.RemoveAll(extractDir)
 		os.Remove(archivePath)
 
 		// 验证安装
@@ -746,9 +816,18 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 			installedPrivatePython = true
 			st.VenvReady = false
 			st.VenvPath = ""
-			emit("python", 100, fmt.Sprintf("Python %s 安装完成", ver))
+			message := fmt.Sprintf("Python %s 安装完成", ver)
+			if err := commitPrivatePythonInstall(installDir); err != nil {
+				// 新运行时已通过最终验证；备份清理失败不应把成功安装
+				// 误报为失败。保留 install.previous，供下一次安装时再清理。
+				message += fmt.Sprintf("（旧安装备份待清理: %v）", err)
+			}
+			emit("python", 100, message)
 		} else {
 			st.Error = "Python 安装后验证失败，请检查网络或手动安装"
+			if err := rollbackPrivatePythonInstall(installDir); err != nil {
+				st.Error += fmt.Sprintf("；恢复旧安装失败: %v", err)
+			}
 			return st
 		}
 	}
@@ -777,7 +856,11 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 
 		emit("uv-extract", 50, "正在解压 uv ...")
 		uvExtractDir := filepath.Join(base, "uv-extract")
-		os.RemoveAll(uvExtractDir)
+		if err := resetRuntimeExtractDir(uvExtractDir); err != nil {
+			os.Remove(archivePath)
+			st.Error = fmt.Sprintf("清理 uv 临时目录失败: %v", err)
+			return st
+		}
 		if isZip {
 			if err := extractZip(archivePath, uvExtractDir); err != nil {
 				os.Remove(archivePath)
@@ -859,4 +942,74 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 
 	emit("done", 100, fmt.Sprintf("Python 环境就绪: v%s, venv: %s", st.Version, st.VenvPath))
 	return st
+}
+
+// replacePrivatePythonInstall replaces installDir with a verified extractedDir.
+// On success it deliberately retains install.previous until the caller has
+// completed its final post-move verification via commitPrivatePythonInstall.
+func replacePrivatePythonInstall(installDir, extractedDir string) error {
+	backupDir := installDir + ".previous"
+
+	hadInstall := false
+	hadBackup := false
+	if _, statErr := os.Stat(installDir); statErr == nil {
+		hadInstall = true
+		// install 存在时，.previous 只能是旧操作遗留的过期备份；新的
+		// 替换会以当前 install 作为可回滚副本。
+		if err := os.RemoveAll(backupDir); err != nil {
+			return fmt.Errorf("清理旧备份目录: %w", err)
+		}
+		if err := os.Rename(installDir, backupDir); err != nil {
+			return fmt.Errorf("备份旧安装: %w", err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("检查旧安装: %w", statErr)
+	} else if _, backupErr := os.Stat(backupDir); backupErr == nil {
+		// 上一次可能在“旧安装已备份、新安装尚未就位”之间被中断。
+		// 保留这个唯一的已知可用副本，直到新安装成功落位。
+		hadBackup = true
+	} else if !os.IsNotExist(backupErr) {
+		return fmt.Errorf("检查旧安装备份: %w", backupErr)
+	}
+
+	moveErr := os.Rename(extractedDir, installDir)
+	if moveErr == nil {
+		return nil
+	}
+	err := fmt.Errorf("移动新安装: %w", moveErr)
+
+	if hadInstall || hadBackup {
+		if restoreErr := os.Rename(backupDir, installDir); restoreErr != nil {
+			return fmt.Errorf("%w；恢复旧安装失败: %v", err, restoreErr)
+		}
+	}
+	return err
+}
+
+func commitPrivatePythonInstall(installDir string) error {
+	if err := os.RemoveAll(installDir + ".previous"); err != nil {
+		return fmt.Errorf("清理旧安装备份: %w", err)
+	}
+	return nil
+}
+
+func rollbackPrivatePythonInstall(installDir string) error {
+	backupDir := installDir + ".previous"
+	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
+		// Fresh installation: the current directory is the unverified replacement,
+		// so remove it instead of leaving a broken private runtime behind.
+		if err := os.RemoveAll(installDir); err != nil {
+			return fmt.Errorf("移除失败的新安装: %w", err)
+		}
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("检查旧安装备份: %w", err)
+	}
+	if err := os.RemoveAll(installDir); err != nil {
+		return fmt.Errorf("移除失败的新安装: %w", err)
+	}
+	if err := os.Rename(backupDir, installDir); err != nil {
+		return fmt.Errorf("恢复旧安装: %w", err)
+	}
+	return nil
 }

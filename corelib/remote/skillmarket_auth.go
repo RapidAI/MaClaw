@@ -129,14 +129,20 @@ func (c *SkillMarketAuthClient) ValidateToken(ctx context.Context, baseURL, toke
 	return resp.StatusCode == http.StatusOK, nil
 }
 
-// MachineLogin exchanges Hub enrollment credentials (account + machine_id + viewer_token)
-// for a SkillMarket session token. This enables zero-friction SkillMarket access
-// after Hub registration — no separate login step required.
-func (c *SkillMarketAuthClient) MachineLogin(ctx context.Context, baseURL, account, machineID, viewerToken string) (*SkillMarketAuthResult, error) {
+// MachineLogin exchanges Hub enrollment credentials for a SkillMarket session
+// token. hubID identifies the Hub that must verify the viewer token. userID is
+// checked against the authenticated Hub principal; account is only a display/contact
+// value (email or phone) and must never select market ownership.
+func (c *SkillMarketAuthClient) MachineLogin(ctx context.Context, baseURL, hubID, userID, account, machineID, viewerToken string) (*SkillMarketAuthResult, error) {
+	trimmedUserID := strings.TrimSpace(userID)
 	trimmedAccount := strings.TrimSpace(account)
+	if trimmedAccount == "" {
+		trimmedAccount = trimmedUserID
+	}
 	payload, _ := json.Marshal(map[string]string{
 		"account":      trimmedAccount,
-		"user_id":      trimmedAccount,
+		"hub_id":       strings.TrimSpace(hubID),
+		"user_id":      trimmedUserID,
 		"email":        trimmedAccount,
 		"machine_id":   strings.TrimSpace(machineID),
 		"viewer_token": strings.TrimSpace(viewerToken),

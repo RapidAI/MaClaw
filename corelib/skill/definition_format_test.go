@@ -14,6 +14,37 @@ func TestSkillDefinitionFileRejectsJSONFormat(t *testing.T) {
 	}
 }
 
+// The experience domain is what keeps a chat-learned skill out of a coding
+// turn. It only works if it survives the write/read cycle on disk.
+func TestSkillYAMLFileRoundTripsExperienceDomain(t *testing.T) {
+	data, err := FormatSkillYAMLFile(&SkillYAMLFile{
+		Name:             "craft-rebuild-and-test",
+		ExperienceDomain: "coding",
+	})
+	if err != nil {
+		t.Fatalf("FormatSkillYAMLFile() error = %v", err)
+	}
+	parsed, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile() error = %v", err)
+	}
+	if parsed.ExperienceDomain != "coding" {
+		t.Fatalf("ExperienceDomain = %q, want %q (yaml: %s)", parsed.ExperienceDomain, "coding", data)
+	}
+
+	// An installed skill carries no domain and must not gain one on disk.
+	data, err = FormatSkillYAMLFile(&SkillYAMLFile{Name: "pdf-translator"})
+	if err != nil {
+		t.Fatalf("FormatSkillYAMLFile() error = %v", err)
+	}
+	if parsed, err = ParseSkillYAMLFile(data); err != nil {
+		t.Fatalf("ParseSkillYAMLFile() error = %v", err)
+	}
+	if parsed.ExperienceDomain != "" {
+		t.Fatalf("installed skill gained domain %q", parsed.ExperienceDomain)
+	}
+}
+
 func TestSkillYAMLFileRoundTripsCapabilities(t *testing.T) {
 	want := []string{"current_data", "weather"}
 	data, err := FormatSkillYAMLFile(&SkillYAMLFile{

@@ -423,7 +423,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             setAccount(current => current ? {
                 ...current,
                 uploads: Array.isArray(current.uploads)
-                    ? current.uploads.map(entry => String(entry.id || '') === id ? { ...entry, visibility: 'private', status: 'private' } : entry)
+                    ? current.uploads.map(entry => String(entry.id || '') === id ? { ...entry, visibility: 'private', status: 'private', platform_distribution: false } : entry)
                     : current.uploads,
             } : current);
             void loadCatalogue();

@@ -34,6 +34,15 @@ typedef struct {
 
 static SemaphoreHandle_t s_animation_lock;
 static compact_display_animation_slot_t s_animations[COMPACT_DISPLAY_ANIMATION_COUNT];
+/* A scan-out idle check covers only the transfer that is already in flight.
+ * Decorative workers can issue the next transfer after that check returns,
+ * so a future electrical sleep transaction parks them at their semantic wait
+ * boundary.  This stays entirely in the private Display service: renderer
+ * callbacks keep their scene policy and Platform Display sees only an
+ * esp_err_t safe-point result. */
+static bool s_animation_system_sleep_preparing;
+static SemaphoreHandle_t s_animation_system_sleep_quiesced[
+    COMPACT_DISPLAY_ANIMATION_COUNT];
 
 static void compact_display_service_test_delay(uint32_t delay_ms) {
     if (delay_ms == 0) return;
@@ -71,6 +80,30 @@ static BaseType_t compact_display_service_start_animation_task(
     }
 }
 
+/* Called only by the profile-owned animation task, either before the scene
+ * callback starts or after one completed-frame wait. PREPARE holds the same
+ * lifecycle mutex while setting the marker and snapshots the published task
+ * handles, so acknowledgement means this generation will not call renderer
+ * code again until ABORT wakes it. */
+static bool compact_display_service_park_for_system_sleep(
+    compact_display_service_animation_kind_t kind) {
+    if (!compact_display_animation_kind_valid(kind) || !s_animation_lock) return true;
+    for (;;) {
+        bool preparing = false;
+        SemaphoreHandle_t quiesced = NULL;
+        (void)xSemaphoreTake(s_animation_lock, portMAX_DELAY);
+        preparing = s_animation_system_sleep_preparing;
+        quiesced = s_animation_system_sleep_quiesced[kind];
+        (void)xSemaphoreGive(s_animation_lock);
+        if (!preparing) return !s_animations[kind].stop_requested;
+        if (quiesced) xSemaphoreGive(quiesced);
+        /* The task notification is already its normal wait primitive.  A
+         * clear marker is observed before returning to the callback, so no
+         * untracked secondary task or board-specific resume operation exists. */
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    }
+}
+
 static void compact_display_service_animation_task(void *arg) {
     const compact_display_service_animation_kind_t kind =
         (compact_display_service_animation_kind_t)(uintptr_t)arg;
@@ -86,7 +119,9 @@ static void compact_display_service_animation_task(void *arg) {
     }
     slot->owner = xTaskGetCurrentTaskHandle();
     compact_display_service_animation_fn_t entry = slot->entry;
-    if (entry) entry(slot->context);
+    if (compact_display_service_park_for_system_sleep(kind) && entry) {
+        entry(slot->context);
+    }
 
     /* `started` is given only after the creator has taken this lifecycle
      * mutex. The gate therefore publishes both the task generation and the
@@ -108,6 +143,15 @@ static void compact_display_service_animation_task(void *arg) {
                  "test: delaying animation cleanup for %lu ms while lifecycle lock held",
                  (unsigned long)post_completion_delay_ms);
         compact_display_service_test_delay(post_completion_delay_ms);
+    }
+    /* PREPARE may have observed this generation as active just before its
+     * callback returned. Completion is also a safe point: acknowledge it so
+     * the bounded PREPARE does not wait for an animation_wait_ms() that this
+     * worker will never execute. The lifecycle mutex makes this mutually
+     * exclusive with the active-generation snapshot. */
+    if (s_animation_system_sleep_preparing &&
+        s_animation_system_sleep_quiesced[kind]) {
+        (void)xSemaphoreGive(s_animation_system_sleep_quiesced[kind]);
     }
     slot->owner = NULL;
     slot->completed = true;
@@ -152,6 +196,74 @@ esp_err_t compact_display_service_enter_display_off(void) {
 }
 esp_err_t compact_display_service_wake_from_display_off(unsigned brightness) {
     return compact_display_wake_from_display_off(brightness);
+}
+esp_err_t compact_display_service_wait_for_scanout_idle(uint32_t timeout_ms) {
+    return compact_display_adapter_wait_for_transfer_idle(timeout_ms);
+}
+
+esp_err_t compact_display_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const TickType_t started = xTaskGetTickCount();
+    TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    if (budget == 0) budget = 1;
+    ESP_RETURN_ON_ERROR(compact_display_animation_lock_take(timeout_ms), "compact_display",
+                        "system-sleep animation lifecycle lock timeout");
+    if (s_animation_system_sleep_preparing) {
+        (void)xSemaphoreGive(s_animation_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool active[COMPACT_DISPLAY_ANIMATION_COUNT] = {false};
+    for (size_t i = 0; i < COMPACT_DISPLAY_ANIMATION_COUNT; ++i) {
+        compact_display_animation_slot_t *slot = &s_animations[i];
+        if (!s_animation_system_sleep_quiesced[i]) {
+            s_animation_system_sleep_quiesced[i] = xSemaphoreCreateBinary();
+            if (!s_animation_system_sleep_quiesced[i]) {
+                (void)xSemaphoreGive(s_animation_lock);
+                return ESP_ERR_NO_MEM;
+            }
+        }
+        while (xSemaphoreTake(s_animation_system_sleep_quiesced[i], 0) == pdTRUE) {
+        }
+        /* A completed test-only worker has no future renderer call. It is
+         * intentionally left for the normal idempotent cleanup path, rather
+         * than fabricating an acknowledgement from a dead task. */
+        active[i] = slot->task != NULL && !slot->completed;
+    }
+    s_animation_system_sleep_preparing = true;
+    for (size_t i = 0; i < COMPACT_DISPLAY_ANIMATION_COUNT; ++i) {
+        if (active[i]) xTaskNotifyGive(s_animations[i].task);
+    }
+    (void)xSemaphoreGive(s_animation_lock);
+
+    for (size_t i = 0; i < COMPACT_DISPLAY_ANIMATION_COUNT; ++i) {
+        if (!active[i]) continue;
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+        const TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
+        if (remaining == 0 ||
+            xSemaphoreTake(s_animation_system_sleep_quiesced[i], remaining) != pdTRUE) {
+            /* The semantic Display participant and its profile-private
+             * scan-out fence belong to the same parent Power transaction.
+             * Keep animation admission closed on an ACK timeout: only the
+             * common reverse-order ABORT may restart a worker, otherwise a
+             * late animation frame could race sibling rollback. */
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    return ESP_OK;
+}
+
+void compact_display_service_abort_system_sleep_prepare(void) {
+    if (!s_animation_lock ||
+        xSemaphoreTake(s_animation_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return;
+    if (s_animation_system_sleep_preparing) {
+        s_animation_system_sleep_preparing = false;
+        for (size_t i = 0; i < COMPACT_DISPLAY_ANIMATION_COUNT; ++i) {
+            if (s_animations[i].task && !s_animations[i].completed) {
+                xTaskNotifyGive(s_animations[i].task);
+            }
+        }
+    }
+    (void)xSemaphoreGive(s_animation_lock);
 }
 esp_err_t compact_display_service_draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                                     const void *pixels) {
@@ -213,6 +325,10 @@ esp_err_t compact_display_service_start_animation(
     if (!compact_display_animation_kind_valid(kind) || !entry) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(compact_display_animation_lock_take(1000), "compact_display",
                         "animation lifecycle lock timeout");
+    if (s_animation_system_sleep_preparing) {
+        (void)xSemaphoreGive(s_animation_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     compact_display_animation_slot_t *slot = &s_animations[kind];
     if (slot->task) {
         (void)xSemaphoreGive(s_animation_lock);
@@ -254,7 +370,7 @@ bool compact_display_service_animation_wait_ms(
     compact_display_animation_slot_t *slot = &s_animations[kind];
     if (!slot->task) return false;
     (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms));
-    return !slot->stop_requested;
+    return !slot->stop_requested && compact_display_service_park_for_system_sleep(kind);
 }
 
 bool compact_display_service_animation_running(

@@ -41,15 +41,15 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 // for normal conversations while allowing a restricted group turn to keep
 // attachments in memory. The caller must opt in explicitly to local staging.
 func buildUserContentWithLocalStaging(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool) interface{} {
-	return buildUserContentWithPreparedLocalAttachments(userText, attachments, protocol, supportsVision, app, onProgress, allowLocalStaging, false)
+	return buildUserContentWithPreparedLocalAttachments(userText, attachments, protocol, supportsVision, app, onProgress, allowLocalStaging, false, 0)
 }
 
 // buildUserContentWithPreparedLocalAttachments lets the agent-loop materialize
 // desktop image paths before model routing, while retaining the old standalone
 // helper behavior for callers that have not prepared those attachments.
-func buildUserContentWithPreparedLocalAttachments(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool, localImagesAlreadyPrepared bool) interface{} {
+func buildUserContentWithPreparedLocalAttachments(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string), allowLocalStaging bool, localImagesAlreadyPrepared bool, contextTokens int) interface{} {
 	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
-	userText = agent.ExpandUserSelectedFilePaths(userText)
+	userText = agent.ExpandUserSelectedFilePathsWithContext(userText, contextTokens)
 	// The desktop composer currently sends selected files as paths in text, not
 	// as MessageAttachment values. Materialize selected images here so a vision
 	// provider receives actual image blocks instead of a path that would tempt
@@ -152,7 +152,7 @@ func buildUserContentWithPreparedLocalAttachments(userText string, attachments [
 	}
 
 	// 治本: shared per-turn budget across path-marker extracts + attachments.
-	fileDescriptions = agent.AppendDocumentExtractsToDescriptions(fileDescriptions, userText)
+	fileDescriptions = agent.AppendDocumentExtractsToDescriptionsWithContext(fileDescriptions, userText, contextTokens)
 
 	// userText was already expanded at function entry (idempotent).
 	fullText := userText

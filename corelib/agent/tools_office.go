@@ -100,15 +100,27 @@ func ToolReadExcel(args map[string]interface{}) string {
 
 // ToolWriteExcel writes data to an XLSX file.
 func ToolWriteExcel(args map[string]interface{}) string {
+	text, _ := WriteExcelDetailed(args)
+	return text
+}
+
+// WriteExcelDetailed is ToolWriteExcel with the verdict kept in the error
+// instead of only in the prose. The legacy registry surface has room for a
+// string and nothing else, but a caller that must know whether the file was
+// actually written cannot recover that by searching the prose: excel.WriteFile
+// reports an empty sheet set as "data.sheets 不能为空", which shares no word
+// with the other failures, and the success line echoes a path that may itself
+// contain one.
+func WriteExcelDetailed(args map[string]interface{}) (string, error) {
 	filePath := officeFilePathArg(args)
 	if filePath == "" {
-		return "缺少 file_path 参数（也可用 path）"
+		return "缺少 file_path 参数（也可用 path）", fmt.Errorf("office_write_path_required")
 	}
 	filePath = resolveOfficeToolPath(filePath)
 
 	rawData, ok := args["data"]
 	if !ok || rawData == nil {
-		return "缺少 data 参数"
+		return "缺少 data 参数", fmt.Errorf("office_write_data_required")
 	}
 
 	var jsonBytes []byte
@@ -120,20 +132,20 @@ func ToolWriteExcel(args map[string]interface{}) string {
 		var err error
 		jsonBytes, err = json.Marshal(v)
 		if err != nil {
-			return fmt.Sprintf("data 参数格式错误: %v", err)
+			return fmt.Sprintf("data 参数格式错误: %v", err), fmt.Errorf("office_write_data_malformed: %v", err)
 		}
 	}
 
 	var writeData excel.WriteData
 	if err := json.Unmarshal(jsonBytes, &writeData); err != nil {
-		return fmt.Sprintf("data 参数格式错误: %v", err)
+		return fmt.Sprintf("data 参数格式错误: %v", err), fmt.Errorf("office_write_data_malformed: %v", err)
 	}
 
 	if err := excel.WriteFile(filePath, writeData); err != nil {
-		return err.Error()
+		return err.Error(), fmt.Errorf("office_write_failed: %v", err)
 	}
 
-	return fmt.Sprintf("已成功写入 XLSX 文件: %s", filePath)
+	return fmt.Sprintf("已成功写入 XLSX 文件: %s", filePath), nil
 }
 
 // ToolReadPPTX reads a PPTX file and returns structured data as JSON.

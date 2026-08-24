@@ -443,6 +443,119 @@ func TestLRUCapacityEvictionSynchronizesSQLiteArchiveTombstone(t *testing.T) {
 	t.Fatalf("evicted entry should appear in SQLite sync tombstones: %v", deleted)
 }
 
+func TestLRUCapacityEvictionKeepsDurableTaskManagementEntries(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	store.mu.Lock()
+	store.maxItems = 2
+	store.mu.Unlock()
+
+	task := Entry{
+		ID:          "task-row",
+		Content:     "# Keep me",
+		Category:    CategoryTaskArtifact,
+		SourceType:  "manual",
+		Tags:        []string{"task_management", "task_user_created", "C:/tasks/keep"},
+		AccessCount: 1,
+	}
+	noiseA := Entry{ID: "noise-a", Content: "noise a", Category: CategoryProjectKnowledge, AccessCount: 10}
+	noiseB := Entry{ID: "noise-b", Content: "noise b", Category: CategoryProjectKnowledge, AccessCount: 10}
+	for _, entry := range []Entry{task, noiseA, noiseB} {
+		if err := store.Save(entry); err != nil {
+			t.Fatalf("Save %s: %v", entry.ID, err)
+		}
+	}
+	if store.ActiveCount() != 2 {
+		t.Fatalf("ActiveCount=%d, want 2", store.ActiveCount())
+	}
+	found := false
+	for _, entry := range store.List(CategoryTaskArtifact, "") {
+		if entry.ID == "task-row" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("durable task-management entry was evicted")
+	}
+}
+
+func TestRunGCKeepsDurableTaskManagementEntries(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	task := Entry{
+		ID:          "task-gc",
+		Content:     "# Keep sidebar row",
+		Category:    CategoryTaskArtifact,
+		SourceType:  "manual",
+		Tags:        []string{"task_management", "C:/tasks/keep"},
+		AccessCount: 1,
+		UpdatedAt:   time.Now().Add(-48 * time.Hour),
+	}
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := store.Save(Entry{
+			ID:          "noise-" + string(rune('a'+i)),
+			Content:     "gc noise " + string(rune('a'+i)),
+			Category:    CategoryProjectKnowledge,
+			AccessCount: 1,
+			UpdatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	comp := NewCompressor(store, nil, nil)
+	comp.SetGCThreshold(2)
+	if _, err := comp.RunGC(t.Context()); err != nil {
+		t.Fatalf("RunGC: %v", err)
+	}
+	found := false
+	for _, entry := range store.List(CategoryTaskArtifact, "") {
+		if entry.ID == "task-gc" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("durable task-management entry was archived by GC")
+	}
+}
+
+func TestDormantDecaySkipsDurableTaskManagementEntries(t *testing.T) {
+	now := time.Now()
+	task := Entry{
+		Content:   "# Keep me active",
+		Category:  CategoryTaskArtifact,
+		Tags:      []string{"task_management", "C:/tasks/keep"},
+		Strength:  1,
+		UpdatedAt: now.Add(-60 * 24 * time.Hour),
+	}
+	noise := Entry{
+		Content:   "old knowledge",
+		Category:  CategoryProjectKnowledge,
+		Strength:  1,
+		UpdatedAt: now.Add(-60 * 24 * time.Hour),
+	}
+	if n := batchDecayAndMark([]Entry{task, noise}, now); n != 1 {
+		t.Fatalf("batchDecayAndMark count=%d, want 1", n)
+	}
+	updates := dormantDecayUpdates([]Entry{task, noise}, now)
+	if len(updates) != 1 || updates[0].Category != CategoryProjectKnowledge {
+		t.Fatalf("dormant updates = %#v, want only project knowledge", updates)
+	}
+}
+
 func TestArchiveStoreAddIsIDIdempotentAndRemoveIDsIsOrdered(t *testing.T) {
 	archivePath := filepath.Join(t.TempDir(), "archive.json")
 	archive, err := NewArchiveStore(archivePath)

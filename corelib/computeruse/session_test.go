@@ -20,6 +20,9 @@ func TestSession_ObserveClickRefLifecycle(t *testing.T) {
 	if !s.RefsValid() {
 		t.Fatal("refs should be valid after observe")
 	}
+	if s.LastValidObserve() == nil {
+		t.Fatal("LastValidObserve should return a snapshot after observe")
+	}
 	x, y, el, err := s.ResolveClickRef("e0")
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +36,9 @@ func TestSession_ObserveClickRefLifecycle(t *testing.T) {
 	s.RecordAction("click", "e0", true, "", true)
 	if s.RefsValid() {
 		t.Fatal("refs should be stale after click")
+	}
+	if s.LastValidObserve() != nil {
+		t.Fatal("LastValidObserve must be nil after refs are invalidated")
 	}
 	if _, _, _, err := s.ResolveClickRef("e0"); err == nil {
 		t.Fatal("expected stale after invalidate")
@@ -79,6 +85,44 @@ func TestPolicy_TargetApps(t *testing.T) {
 func TestPlaybookMentionsTextOnly(t *testing.T) {
 	if !strings.Contains(Playbook(), "text-only") {
 		t.Fatal(Playbook())
+	}
+}
+
+func TestPlaybookVisionUsesScreenshotClicks(t *testing.T) {
+	p := PlaybookVision()
+	if !strings.Contains(p, "vision") || !strings.Contains(p, "screenshot") {
+		t.Fatal(p)
+	}
+	if strings.Contains(p, "text-only") {
+		t.Fatal("vision playbook should not claim text-only")
+	}
+}
+
+func TestSession_ApplyPerceptionModeEnablesPixelClick(t *testing.T) {
+	s := NewSession(DefaultConfig())
+	if s.AllowPixelClick() {
+		t.Fatal("text-primary default forbids pixel click")
+	}
+	s.ApplyPerceptionMode(true)
+	if s.Config().Mode != ObserveVisionAssist || !s.AllowPixelClick() {
+		t.Fatalf("vision mode=%s pixel=%v", s.Config().Mode, s.AllowPixelClick())
+	}
+	s.ApplyPerceptionMode(false)
+	if s.Config().Mode != ObserveTextPrimary || s.AllowPixelClick() {
+		t.Fatalf("text mode=%s pixel=%v", s.Config().Mode, s.AllowPixelClick())
+	}
+}
+
+func TestMapVisionClick(t *testing.T) {
+	meta := ScreenMeta{Width: 1920, Height: 1080, VisionWidth: 960, VisionHeight: 540}
+	x, y := MapVisionClick(meta, 100, 50)
+	if x != 200 || y != 100 {
+		t.Fatalf("got %d,%d", x, y)
+	}
+	same := ScreenMeta{Width: 800, Height: 600, VisionWidth: 800, VisionHeight: 600}
+	x, y = MapVisionClick(same, 10, 20)
+	if x != 10 || y != 20 {
+		t.Fatalf("1:1 got %d,%d", x, y)
 	}
 }
 

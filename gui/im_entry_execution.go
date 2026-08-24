@@ -30,6 +30,7 @@ type preparedIMEntryExecutionOptions struct {
 	PhasePrompt               string // Synchronously passed from runWorkflowV2Phase
 	SkipNeedsConfirmGate      bool
 	AskUserContext            string
+	ResumeWorkingState        *agent.WorkingState
 	PendingUserReplyContext   string
 	CapabilityGapContext      string
 	ClearUIAfterContextSwitch bool
@@ -48,21 +49,32 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if resp, handled := h.handleBackgroundIMRoute(msg, opts.ProvidedLoopContext, opts.HTTPClient, opts.OnProgress); handled {
 		return resp
 	}
+	// Dedicated local/remote coding is already an armed workbench. Do not
+	// open the legacy confirmation card, unfinished-slot recover prompt, or
+	// chat [Status] milestone — those belong to the shared IM loop.
+	// Re-arm before this check: /clear drops pending + sticky Kind, and the
+	// project-index lookaside can miss on a cold start.
+	if !opts.WorkflowDocPhase {
+		h.ensurePureCodingArmedForIncomingMessage(msg.UserID)
+	}
+	codingWorkbench := h.isPureCodingWorkbenchSession(msg.UserID)
 	// V2 workflow: skip execution confirmation gate — V2 has its own three-phase
 	// document review mechanism. The confirmation panel is a legacy artifact.
-	if !opts.WorkflowAgentLoop {
+	if !opts.WorkflowAgentLoop && !codingWorkbench {
 		if resp, handled := h.handleExecutionConfirmationGate(opts.FreshTask, msg, opts.Trimmed, opts.HTTPClient); handled {
 			return resp
 		}
 	}
-	if resp, handled := h.maybeReturnUnfinishedSlotHint(msg, opts.Trimmed, opts.FreshTask, opts.Decision, opts.UnfinishedSlot); handled {
-		return resp
+	if !codingWorkbench {
+		if resp, handled := h.maybeReturnUnfinishedSlotHint(msg, opts.Trimmed, opts.FreshTask, opts.Decision, opts.UnfinishedSlot); handled {
+			return resp
+		}
 	}
 	gatesDone := time.Since(execStart)
 
 	// Immediate UI feedback before history/prompt preparation. These are safe
 	// execution milestones, not model chain-of-thought.
-	if opts.OnProgress != nil {
+	if opts.OnProgress != nil && !codingWorkbench {
 		opts.OnProgress("[Status] " + imEarlyProgressText)
 	}
 
@@ -104,76 +116,127 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.SkipNeedsConfirmGate,
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
+	turnGeneration := loopCtx.SemanticTurnGeneration()
+	turnCtx, cleanupTurnCtx, turnCurrent := loopCtx.SemanticTurnContext(turnGeneration)
+	defer cleanupTurnCtx()
+	if !turnCurrent {
+		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
+	}
+	bindLoopResumeWorkingState(loopCtx, opts.ResumeWorkingState, opts.AskUserContext)
 	loopCtx.WorkflowAgentLoop = opts.WorkflowAgentLoop
 	loopCtx.WorkflowDocPhase = opts.WorkflowDocPhase
 	loopCtx.WorkflowPhaseID = opts.WorkflowPhaseID
 	// When WorkflowAgentLoop is set via the confirmation gate path
-	// (ConfirmedWorkflowAgentLoop), the DocPhase/PhaseID fields may not
+	// (ConfirmedWorkflowAgentLoop), the DocPhase/PhaseID/type fields may not
 	// be propagated through the routing result. Derive from V2 state.
-	if loopCtx.WorkflowAgentLoop && loopCtx.WorkflowPhaseID == "" {
+	if loopCtx.WorkflowAgentLoop {
 		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
 			if state := wf.machine.GetActive(msg.UserID); state != nil {
-				loopCtx.WorkflowID = state.ID
+				if loopCtx.WorkflowID == "" {
+					loopCtx.WorkflowID = state.ID
+				}
+				if loopCtx.WorkflowType == "" {
+					loopCtx.WorkflowType = strings.TrimSpace(state.Type)
+				}
 				if phase := state.ActivePhase(); phase != nil {
-					loopCtx.WorkflowPhaseID = phase.ID
-					loopCtx.WorkflowDocPhase = phase.NeedsConfirm
+					if loopCtx.WorkflowPhaseID == "" {
+						loopCtx.WorkflowPhaseID = phase.ID
+						loopCtx.WorkflowDocPhase = phase.NeedsConfirm
+					}
+					if loopCtx.WorkflowPhaseKind == "" && phase.Kind != "" {
+						loopCtx.WorkflowPhaseKind = string(phase.Kind)
+					}
 				}
 			}
 		}
 	}
-	if loopCtx.WorkflowAgentLoop && loopCtx.WorkflowID == "" {
-		if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
-			if state := wf.machine.GetActive(msg.UserID); state != nil {
-				loopCtx.WorkflowID = state.ID
+	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
+
+	// Dedicated local/remote coding workbench is CodingSubAgent /
+	// RemoteCodingSubAgent. Consume it before UIC and
+	// semanticCallSurfaceForSharedTurn — that catalog is only for the
+	// shared IM loop. Drain history on this return so the loader cannot leak.
+	var history []agent.ConversationEntry
+	var historyElapsed time.Duration
+	historyDrained := false
+	// Dedicated local/remote coding does not wait for WorkflowAgentLoop.
+	// SkipWorkflowRouting or a missing marker used to skip this consume,
+	// then UIC HostRejected a real coding-tab follow-up. Re-arm once more
+	// here so a race after entry-context cannot fall into the shared loop.
+	if !opts.WorkflowDocPhase && codingWorkbench && !h.hasPendingTemplateSubAgentExecution(msg.UserID) {
+		h.ensurePureCodingArmedForIncomingMessage(msg.UserID)
+	}
+	if !opts.WorkflowDocPhase && h.hasPendingTemplateSubAgentExecution(msg.UserID) {
+		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
+			history, historyElapsed = drainHistory()
+			historyDrained = true
+			// Already consumed (and re-armed). Do not fall through to UIC /
+			// semanticCallSurfaceForSharedTurn — that can HostReject or run
+			// the SubAgent a second time.
+			if execResp == nil {
+				log.Printf("[coding-env] dedicated coding consume returned nil; skipping semantic routing user=%s request_id=%s", msg.UserID, requestID)
+				execResp = &IMAgentResponse{}
+			} else {
+				log.Printf("[coding-env] dedicated coding workbench skipped semantic routing user=%s request_id=%s", msg.UserID, requestID)
 			}
+			loopCtx.SkipWorkflowDocCapture = true
+			imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", time.Since(loopCtxStart), "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", "coding_subagent", "exec_task", "coding")
+			return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, true, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 		}
 	}
-	executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemantic(msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "")
-	loopCtx.Runtime.Execution = executionProfile
-	loopCtx.Runtime.SemanticIntent = semanticIntent
+	if !historyDrained {
+		history, historyElapsed = drainHistory()
+	}
+	// A workbench session that missed consume (retry, workflow, unarmed race)
+	// must not pay UIC / semanticCallSurfaceForSharedTurn. That catalog
+	// HostRejects coding follow-ups. Workflow execution still runs below.
+	if !codingWorkbench {
+		executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemanticContext(turnCtx, msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "", recentHistoryTexts(history, 6))
+		if err := semanticRoutingRequestErr(turnCtx); err != nil || !loopCtx.SemanticTurnCurrent(turnGeneration) {
+			return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
+		}
+		if semanticIntent != nil {
+			if replayed, ok := h.applySessionGovernedContinuation(msg.UserID, msg.Platform, sessionGovernedDestination(loopCtx), opts.WorkflowAgentLoop, *semanticIntent, msg.Text, msg.Attachments); ok {
+				copied := replayed
+				semanticIntent = &copied
+				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			}
+		}
+		loopCtx.Runtime.Execution = executionProfile
+		bindLoopSemanticIntent(loopCtx, semanticIntent)
+	}
+	applyStagedImageUnderstandRuntime(loopCtx, msg.Text, msg.Attachments)
 	loopCtxElapsed := time.Since(loopCtxStart)
-	if opts.OnProgress != nil {
-		if executionProfile.IsDirect() {
+	if opts.OnProgress != nil && !codingWorkbench {
+		if loopCtx.Runtime.Execution.IsDirect() {
 			opts.OnProgress("[Status] 已匹配直接执行能力，正在处理")
-		} else if executionProfile.IsLight() {
+		} else if loopCtx.Runtime.Execution.IsLight() {
 			opts.OnProgress("[Status] 已选择快速执行路径，正在构建请求")
 		} else {
 			opts.OnProgress("[Status] 已选择完整执行路径，正在构建请求")
 		}
 	}
 
-	history, historyElapsed := drainHistory()
-	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
-
-	// Coding templates wait for the user's next message after their form is
-	// submitted. Consume them before generic direct-execution or SubAgent
-	// routing can reinterpret that message.
-	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase && h.hasPendingTemplateSubAgentExecution(msg.UserID) {
-		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
-			if execResp != nil {
-				loopCtx.SkipWorkflowDocCapture = true
-				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
-			}
-			log.Printf("[workflow-v2] template SubAgent execution returned nil, falling back to agent loop")
+	if !codingWorkbench {
+		if resp, handled := h.tryDirectExecutionProfile(msg, loopCtx, history); handled {
+			imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
+			return resp
 		}
 	}
 
-	if resp, handled := h.tryDirectExecutionProfile(msg, loopCtx, history); handled {
-		imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
-		return resp
-	}
-
 	promptStart := time.Now()
-	if opts.OnProgress != nil {
+	if opts.OnProgress != nil && !codingWorkbench {
 		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
 	}
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
 	promptElapsed := time.Since(promptStart)
 
-	if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
-		return resp
-	} else {
-		history = updatedHistory
+	if !codingWorkbench || opts.WorkflowAgentLoop {
+		if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
+			return resp
+		} else {
+			history = updatedHistory
+		}
 	}
 
 	totalPreLoop := time.Since(execStart)
@@ -194,16 +257,18 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			log.Printf("[workflow-v2] template SubAgent execution returned nil, falling back to workflow execution")
 		}
 		if _, pending := h.pendingV2SubAgentExecution.LoadAndDelete(msg.UserID); pending {
-			// Workflow SubAgent (implementation phase with parsed tasks)
+			// Workflow SubAgent (implementation phase with parsed tasks).
+			// Always invoke the handler: a queued 重试失败 / 继续 with no
+			// active phase must return its own message, not fall into the
+			// shared agent loop (nil panic / HostReject).
 			log.Printf("[workflow-v2] SubAgent execution triggered in agent loop context, user=%s request_id=%s", msg.UserID, requestID)
-			wf := h.getWorkflowV2()
-			if wf != nil {
-				if state := wf.machine.GetActive(msg.UserID); state != nil {
-					execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken, loopCtx)
-					if execResp != nil {
-						return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
-					}
-				}
+			var state *v2.WorkflowState
+			if wf := h.getWorkflowV2(); wf != nil && wf.machine != nil {
+				state = wf.machine.GetActive(msg.UserID)
+			}
+			execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken, loopCtx)
+			if execResp != nil {
+				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 			}
 			log.Printf("[workflow-v2] SubAgent execution returned nil, falling back to agent loop")
 		}
@@ -296,7 +361,17 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 	}
 	if projectPathRaw, isCodingTemplate := h.pendingTemplateCodingProjectPath.LoadAndDelete(msg.UserID); isCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
-		projectPath, _ := projectPathRaw.(string)
+		if h.codingSessionIsRemote(msg.UserID, h.getStickyCodingWorkbenchMemory(msg.UserID)) {
+			// A remote-tagged task must never execute against the local cwd,
+			// even if a leftover local pending path leaked into this owner.
+			return nil, false
+		}
+		stored, _ := projectPathRaw.(string)
+		projectPath := h.liveLocalCodingExecDir(msg.UserID, stored)
+		if projectPath == "" {
+			log.Printf("[workflow-v2] pure coding skipped: empty work root user=%s", msg.UserID)
+			return nil, false
+		}
 		if loopCtx != nil && len(msg.Attachments) > 0 {
 			loopCtx.CodingAttachments = append([]MessageAttachment(nil), msg.Attachments...)
 		}
@@ -312,6 +387,49 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 	return nil, false
 }
 
+// liveLocalCodingExecDir is the work root for this turn. The pending map and
+// sticky ProjectPath are caches; they must not override the current working
+// directory (otherwise a stale taskDir/workspace survives a directory change).
+func (h *IMMessageHandler) liveLocalCodingExecDir(userID, stored string) string {
+	if h != nil && h.app != nil {
+		if dir := strings.TrimSpace(h.app.liveWorkingDirForCodingOwner(userID)); dir != "" {
+			return dir
+		}
+	}
+	stored = normalizeProjectSessionPath(stored)
+	if isLocalCodingIdentityOrSandbox(projectPathFromSessionOwnerID(userID), stored) {
+		return ""
+	}
+	return stored
+}
+
+func (h *IMMessageHandler) codingSessionIsRemote(userID string, mem stickyCodingWorkbenchMemory) bool {
+	if strings.EqualFold(strings.TrimSpace(mem.Kind), "remote") {
+		return true
+	}
+	if h == nil || h.app == nil {
+		return false
+	}
+	identity := projectPathFromSessionOwnerID(userID)
+	return identity != "" && h.app.projectPathIsCodingWorkbench(identity) && !h.app.projectPathIsLocalCodingWorkbench(identity)
+}
+
+// codingSessionWorkRoot is the directory slash commands and checkpoints use.
+// Local sessions follow the live current working directory; remote sessions
+// keep the stored remote path and never inherit the desktop cwd.
+func (h *IMMessageHandler) codingSessionWorkRoot(userID string, mem stickyCodingWorkbenchMemory) string {
+	if h.codingSessionIsRemote(userID, mem) {
+		if p := strings.TrimSpace(mem.ProjectPath); p != "" {
+			return p
+		}
+		if p := strings.TrimSpace(mem.RemoteProjectDir); p != "" {
+			return p
+		}
+		return strings.TrimSpace(mem.RemoteWorkDir)
+	}
+	return h.liveLocalCodingExecDir(userID, mem.ProjectPath)
+}
+
 // rearmStickyLocalCodingEnvironment keeps pure local coding sessions multi-turn
 // (Claude Code–style continuous coding chat) after each SubAgent completion.
 func (h *IMMessageHandler) rearmStickyLocalCodingEnvironment(userID, projectPath string) {
@@ -320,7 +438,15 @@ func (h *IMMessageHandler) rearmStickyLocalCodingEnvironment(userID, projectPath
 	}
 	userID = strings.TrimSpace(userID)
 	projectPath = normalizeProjectSessionPath(projectPath)
-	if userID == "" || projectPath == "" {
+	if userID == "" {
+		return
+	}
+	if identity := projectPathFromSessionOwnerID(userID); h.app != nil &&
+		h.app.projectPathIsLocalCodingWorkbench(identity) &&
+		isLocalCodingIdentityOrSandbox(identity, projectPath) {
+		projectPath = h.liveLocalCodingExecDir(userID, "")
+	}
+	if projectPath == "" {
 		return
 	}
 	h.pendingTemplateRemoteCoding.Delete(userID)
@@ -416,4 +542,30 @@ func sanitizeWorkflowDocPhaseResponseText(resp *IMAgentResponse, loopCtx *LoopCo
 	cleaned := v2.SanitizePhaseOutput(phaseID, resp.Text)
 	resp.Text = cleaned
 	return strings.TrimSpace(cleaned) != ""
+}
+
+func recentHistoryTexts(entries []agent.ConversationEntry, limit int) []string {
+	if limit <= 0 {
+		limit = 6
+	}
+	var texts []string
+	for i := len(entries) - 1; i >= 0 && len(texts) < limit; i-- {
+		role := strings.ToLower(strings.TrimSpace(entries[i].Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		text, ok := entries[i].Content.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		texts = append(texts, text)
+	}
+	for i, j := 0, len(texts)-1; i < j; i, j = i+1, j-1 {
+		texts[i], texts[j] = texts[j], texts[i]
+	}
+	return texts
 }

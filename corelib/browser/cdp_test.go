@@ -126,3 +126,24 @@ func TestCriticalEventSurvivesEventFlood(t *testing.T) {
 	}
 	t.Fatal("critical Target.targetDestroyed event was dropped under event flood")
 }
+
+func TestCDPClientClosedSnapshot(t *testing.T) {
+	if !(*CDPClient)(nil).isClosed() {
+		t.Fatal("nil client should be closed")
+	}
+	if (*CDPClient)(nil).IsAlive() {
+		t.Fatal("nil client should not be alive")
+	}
+	open := &CDPClient{closed: make(chan struct{})}
+	if open.isClosed() {
+		t.Fatal("open channel should not look closed")
+	}
+	closed := &CDPClient{closed: make(chan struct{})}
+	close(closed.closed)
+	if !closed.isClosed() {
+		t.Fatal("closed channel should look closed")
+	}
+	if closed.IsAlive() {
+		t.Fatal("closed client should not be alive")
+	}
+}

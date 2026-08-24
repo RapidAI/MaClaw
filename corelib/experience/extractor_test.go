@@ -237,6 +237,135 @@ func TestExtractorConsolidatesSimilarPatternNames(t *testing.T) {
 	}
 }
 
+// Refining an existing recipe must not move it between experience pools, so the
+// domain is preserved like the other identity fields.
+func TestPreserveExistingSkillIdentityKeepsExperienceDomain(t *testing.T) {
+	existing := corelib.NLSkillEntry{Name: "deploy-service", ExperienceDomain: "coding"}
+
+	merged := preserveExistingSkillIdentity(corelib.NLSkillEntry{Name: "candidate"}, existing)
+	if merged.ExperienceDomain != "coding" {
+		t.Fatalf("domain = %q, want the existing skill's pool", merged.ExperienceDomain)
+	}
+
+	// A candidate carries the pool of the session that produced it, which must
+	// not drag an established skill out of the pool it was learned in.
+	merged = preserveExistingSkillIdentity(corelib.NLSkillEntry{ExperienceDomain: "general"}, existing)
+	if merged.ExperienceDomain != "coding" {
+		t.Fatalf("domain = %q, want the skill to stay in its original pool", merged.ExperienceDomain)
+	}
+
+	// A skill learned before pools existed adopts the candidate's pool, which
+	// is how legacy skills get stamped when they are re-learned.
+	merged = preserveExistingSkillIdentity(
+		corelib.NLSkillEntry{ExperienceDomain: "coding"},
+		corelib.NLSkillEntry{Name: "legacy-skill", Source: "learned"},
+	)
+	if merged.ExperienceDomain != "coding" {
+		t.Fatalf("legacy domain = %q, want the candidate's pool", merged.ExperienceDomain)
+	}
+}
+
+// An empty pool means "installed on purpose, visible everywhere" for anything
+// the user chose to install, so refining it must not scope it to one pool.
+func TestPreserveExistingSkillIdentityKeepsInstalledSkillUniversal(t *testing.T) {
+	for _, source := range []string{"hub", "manual", "github", "zip_import", ""} {
+		installed := corelib.NLSkillEntry{Name: "deploy-service", Source: source}
+		candidate := corelib.NLSkillEntry{ExperienceDomain: corelib.SkillDomainCoding}
+
+		merged := preserveExistingSkillIdentity(candidate, installed)
+		if merged.ExperienceDomain != corelib.SkillDomainUniversal {
+			t.Fatalf("source %q: domain = %q, want an installed skill to stay universal",
+				source, merged.ExperienceDomain)
+		}
+	}
+
+	// A crafted skill is self-generated, so it is stamped like a learned one.
+	merged := preserveExistingSkillIdentity(
+		corelib.NLSkillEntry{ExperienceDomain: corelib.SkillDomainCoding},
+		corelib.NLSkillEntry{Name: "craft_tool_thing", Source: "crafted"},
+	)
+	if merged.ExperienceDomain != corelib.SkillDomainCoding {
+		t.Fatalf("crafted domain = %q, want the candidate's pool", merged.ExperienceDomain)
+	}
+}
+
+// The pool has to be on the candidate before consolidation compares it, so the
+// extractor stamps it at creation rather than on the way to the store.
+func TestExtractorStampsConfiguredExperienceDomain(t *testing.T) {
+	const patterns = `[{"name":"deploy-service-env","description":"Deploy a named service to a target environment with a smoke-test verification step.","triggers":["deploy","service","environment"],"steps":[{"action":"bash","params":{"command":"deploy {{service}} --env {{env}}"},"on_error":"stop"},{"action":"bash","params":{"command":"smoke-test {{service}} --env {{env}}"},"on_error":"continue"}]}]`
+	snapshot := SessionSnapshot{
+		Events: []ImportantEvent{{Type: "deploy", Title: "service", Summary: "deployed a service with deploy service-name --env staging and smoke-test service-name --env staging"}},
+	}
+
+	store := &fakeStore{}
+	extractor := NewExtractorWithOptions(&fakeLLM{content: patterns}, store, Options{ExperienceDomain: corelib.SkillDomainCoding})
+	if _, err := extractor.Extract(context.Background(), snapshot); err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(store.registered) != 1 {
+		t.Fatalf("registered %d skills, want 1", len(store.registered))
+	}
+	if got := store.registered[0].ExperienceDomain; got != corelib.SkillDomainCoding {
+		t.Fatalf("registered domain = %q, want coding", got)
+	}
+
+	// An unset pool stays universal, so a caller analysing mixed sessions
+	// cannot accidentally scope its skills to one kind of work.
+	plain := &fakeStore{}
+	if _, err := NewExtractor(&fakeLLM{content: patterns}, plain).Extract(context.Background(), snapshot); err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(plain.registered) != 1 {
+		t.Fatalf("registered %d skills, want 1", len(plain.registered))
+	}
+	if got := plain.registered[0].ExperienceDomain; got != corelib.SkillDomainUniversal {
+		t.Fatalf("unconfigured extractor stamped %q", got)
+	}
+}
+
+// Consolidation renames the candidate onto the matched skill, so a look-alike
+// match across pools would overwrite one pool's recipe and starve the other.
+func TestMatchExistingSkillDoesNotMergeAcrossExperiencePools(t *testing.T) {
+	steps := []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "go test ./... -race"}}}
+	candidate := corelib.NLSkillEntry{
+		Name:             "validate-go-race",
+		Triggers:         []string{"go", "test", "coverage"},
+		Steps:            steps,
+		ExperienceDomain: corelib.SkillDomainCoding,
+	}
+	general := corelib.NLSkillEntry{
+		Name:             "validate-go-tests",
+		Triggers:         []string{"go", "test", "coverage"},
+		Steps:            steps,
+		ExperienceDomain: corelib.SkillDomainGeneral,
+	}
+
+	if _, found := matchExistingSkill(candidate, []corelib.NLSkillEntry{general}, similarTriggerThreshold); found {
+		t.Fatal("a coding candidate must not be consolidated into a general-pool skill")
+	}
+
+	// Same pool still consolidates, so the guard has not disabled the feature.
+	samePool := general
+	samePool.ExperienceDomain = corelib.SkillDomainCoding
+	if _, found := matchExistingSkill(candidate, []corelib.NLSkillEntry{samePool}, similarTriggerThreshold); !found {
+		t.Fatal("look-alike skills in the same pool should still consolidate")
+	}
+
+	// A legacy skill carries no pool and stays consolidatable.
+	legacy := general
+	legacy.ExperienceDomain = ""
+	if _, found := matchExistingSkill(candidate, []corelib.NLSkillEntry{legacy}, similarTriggerThreshold); !found {
+		t.Fatal("an unscoped legacy skill should still consolidate")
+	}
+
+	// A name collision is the same skill on disk regardless of pool.
+	renamed := general
+	renamed.Name = candidate.Name
+	if _, found := matchExistingSkill(candidate, []corelib.NLSkillEntry{renamed}, similarTriggerThreshold); !found {
+		t.Fatal("a name collision must match across pools")
+	}
+}
+
 func TestSimilarSkillRequiresStepShapeMatch(t *testing.T) {
 	a := corelib.NLSkillEntry{
 		Name:     "deploy-service-env",

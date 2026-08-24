@@ -32,7 +32,14 @@ func (sshBiasedEmbedder) Close()   {}
 
 func sshBiasedVector(text string) []float32 {
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "ssh") || strings.Contains(lower, "remote") ||
+	// "remote" alone is not a remote-host signal. Other families own it in
+	// their own right — a git push goes to a remote too — and treating the bare
+	// word as SSH gives those labels a vector identical to this one, which this
+	// two-bucket stand-in reports as an ambiguous tie rather than as the
+	// confident classification the test is about.
+	if strings.Contains(lower, "ssh") ||
+		strings.Contains(lower, "remote server") || strings.Contains(lower, "remote host") ||
+		strings.Contains(lower, "remote machine") ||
 		strings.Contains(lower, "production server") || strings.Contains(lower, "server logs") ||
 		strings.Contains(lower, "gpu server") {
 		return []float32{1, 0}
@@ -57,7 +64,7 @@ func loadTestEmbedder(t *testing.T) embedding.Embedder {
 	if modelPath == "" {
 		return nil
 	}
-	emb, err := embedding.NewGemmaEmbedder(modelPath, 256)
+	emb, err := embedding.NewGemmaEmbedder(modelPath, embedding.DefaultEmbeddingDim)
 	if err != nil {
 		t.Logf("failed to load embedding model: %v", err)
 		return nil
@@ -200,11 +207,19 @@ func TestRouter_BM25_ConditionalKeep_PDFWorkflow(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	// Without UIC or a semantic IntentClassifier, local wording must not keep
-	// conditional tools for PDF/search delivery intent.
-	for _, name := range []string{"web_search", "send_file", "open"} {
+	// Without UIC or a semantic IntentClassifier, sensitive conditional tools
+	// must stay fail-closed for PDF/search delivery wording.
+	for _, name := range []string{"send_file", "open"} {
 		if resultNames[name] {
-			t.Errorf("PDF workflow tool %q should not be routed without semantic classification", name)
+			t.Errorf("sensitive conditional tool %q should not be routed without semantic classification", name)
+		}
+	}
+
+	// Benign conditional tools are score-eligible: their descriptions match the
+	// query, so they must be routed even without a classifier.
+	for _, name := range []string{"web_search", "generate_pdf"} {
+		if !resultNames[name] {
+			t.Errorf("score-eligible tool %q should be routed on retrieval score, got %#v", name, resultNames)
 		}
 	}
 
@@ -236,9 +251,10 @@ func TestRouter_BM25_ConditionalKeep_SearchWorkflow(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	// web_search should not be kept from local search wording alone.
-	if resultNames["web_search"] {
-		t.Error("web_search should not be routed without semantic classification")
+	// web_search is score-eligible: the query matches its description, so it is
+	// routed on retrieval score alone. ssh stays fail-closed.
+	if !resultNames["web_search"] {
+		t.Error("web_search should be routed on retrieval score for a search query")
 	}
 
 	// ssh should NOT be in result.
@@ -483,13 +499,16 @@ func TestRouter_ScreenshotIsNotAlwaysOnCoreTool(t *testing.T) {
 	}
 }
 
-func TestRouter_RecordAudioIsAlwaysOnCoreTool(t *testing.T) {
-	if !CoreToolNames["record_audio"] {
-		t.Fatal("record_audio must be a core always-on tool so meeting-recording intents cannot lose it to budget contention")
+func TestRouter_RecordAudioIsConditionalTool(t *testing.T) {
+	if CoreToolNames["record_audio"] {
+		t.Fatal("record_audio must not be an always-visible core tool")
+	}
+	if !IsConditionalTool("record_audio") {
+		t.Fatal("record_audio must be selected only from semantic capability evidence")
 	}
 }
 
-func TestRouter_RecordAudioAlwaysRoutedEvenUnderBudgetPressure(t *testing.T) {
+func TestRouter_RecordAudioDoesNotRouteWithoutSemanticEvidence(t *testing.T) {
 	router := NewRouter(nil)
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
@@ -501,71 +520,35 @@ func TestRouter_RecordAudioAlwaysRoutedEvenUnderBudgetPressure(t *testing.T) {
 	}
 
 	result := router.Route("hello", tools)
-	if !routedToolNames(result)["record_audio"] {
-		t.Fatalf("record_audio must remain routed under budget pressure, got: %v", result)
+	if routedToolNames(result)["record_audio"] {
+		t.Fatalf("record_audio must remain hidden without semantic evidence, got: %v", result)
 	}
 }
 
-func TestRouter_ExplicitMeetingRecordRequestKeepsRecordAudio(t *testing.T) {
+func TestRouter_RecordAudioRoutesFromSemanticIntent(t *testing.T) {
 	router := NewRouter(nil)
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"audio_record","score":0.95}]}`, nil
+		},
+	}))
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
+	tools = append(tools, makeToolDef("record_audio", "capture microphone audio"))
 	for i := 0; i < 40; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	for _, msg := range []string{"会议录音", "开始录音", "record meeting", "帮我录音"} {
-		result := router.Route(msg, tools)
-		if !routedToolNames(result)["record_audio"] {
-			t.Fatalf("explicit recording request %q must route record_audio, got: %v", msg, result)
-		}
+	result := router.Route("arbitrary request", tools)
+	if !routedToolNames(result)["record_audio"] {
+		t.Fatalf("semantic audio-record intent must route record_audio, got: %v", result)
 	}
 }
 
-func TestIsExplicitRecordAudioRequest(t *testing.T) {
-	positives := []string{
-		"会议录音",
-		"开始录音",
-		"打开录音",
-		"帮我录音",
-		"录音",
-		"不要转写，开始录音",
-		"开始会议录音并整理纪要",
-		"record meeting",
-		"start recording",
-		"访谈录制",
-	}
-	for _, msg := range positives {
-		if !isExplicitRecordAudioRequest(msg) {
-			t.Fatalf("expected explicit record intent for %q", msg)
-		}
-	}
-	negatives := []string{
-		"把这段录音文件转写一下",
-		"asr path=C:\\a.wav",
-		"音频文件.mp3 转录",
-		"不是已经好了吗？",
-		"整理会议纪要文档",
-		"把会议录音整理成纪要",
-		"根据会议录音写摘要",
-		"停止录音",
-		"不要录音",
-		"不要帮我录音",
-		"取消录音",
-		"昨天录音效果不好，我们讨论一下怎么优化产品文档",
-		"stop recording",
-		"don't record this",
-	}
-	for _, msg := range negatives {
-		if isExplicitRecordAudioRequest(msg) {
-			t.Fatalf("did not expect explicit record intent for %q", msg)
-		}
-	}
-}
-
-func TestRouter_ExplicitScreenshotRequestStillRoutesScreenshot(t *testing.T) {
+func TestRouter_ScreenshotDoesNotRouteFromWording(t *testing.T) {
 	router := NewRouter(nil)
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
@@ -577,8 +560,8 @@ func TestRouter_ExplicitScreenshotRequestStillRoutesScreenshot(t *testing.T) {
 	}
 
 	result := router.Route("take a desktop screenshot and show me", tools)
-	if !routedToolNames(result)["screenshot"] {
-		t.Fatalf("explicit screenshot request should still route screenshot, got: %v", result)
+	if routedToolNames(result)["screenshot"] {
+		t.Fatalf("screenshot wording must not route screenshot, got: %v", result)
 	}
 }
 
@@ -599,7 +582,7 @@ func TestRouter_GenericFollowupDoesNotRouteScreenshot(t *testing.T) {
 	}
 }
 
-func TestRouter_CompositeResearchPublishToZhihuRoutesBrowser(t *testing.T) {
+func TestRouter_CompositeResearchPublishToZhihuDoesNotRouteBrowserFromKeywords(t *testing.T) {
 	router := NewRouter(nil)
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
@@ -616,17 +599,12 @@ func TestRouter_CompositeResearchPublishToZhihuRoutesBrowser(t *testing.T) {
 
 	result := router.Route("找篇最新的agentic RL相关论文，做完综述，发表到知乎，作为正式文章，不是想法。", tools)
 	names := routedToolNames(result)
-	if !names["browser"] {
-		t.Fatalf("composite publish-to-Zhihu task should route browser, got: %v", result)
-	}
-	for _, suppressed := range []string{"bash", "screenshot", "manage_skill", "discover_tool", "call_mcp_tool", "search_and_install_skill", "git_commit", "git_push", "passthrough_task", "list_mcp_tools"} {
-		if names[suppressed] {
-			t.Fatalf("browser publish task should suppress %s, got: %v", suppressed, result)
-		}
+	if names["browser"] {
+		t.Fatalf("publication wording must not route browser without semantic evidence, got: %v", result)
 	}
 }
 
-func TestRouter_BrowserSessionFollowupSuppressesUnstableFallbacks(t *testing.T) {
+func TestRouter_BrowserSessionPinDoesNotRouteUnrelatedFollowup(t *testing.T) {
 	router := NewRouter(nil)
 	router.ActivateSessionTool("browser")
 	var tools []map[string]interface{}
@@ -646,13 +624,8 @@ func TestRouter_BrowserSessionFollowupSuppressesUnstableFallbacks(t *testing.T) 
 
 	result := router.Route("\u597d\u50cf\u63d0\u4ea4\u65f6\u6ca1\u6210\u529f\uff0c\u6d88\u5931\u4e86\u3002", tools)
 	names := routedToolNames(result)
-	if !names["browser"] {
-		t.Fatalf("active browser session should keep browser tool for short follow-up, got: %v", result)
-	}
-	for _, suppressed := range []string{"bash", "screenshot", "git_commit", "git_push", "manage_skill"} {
-		if names[suppressed] {
-			t.Fatalf("browser follow-up should suppress %s, got: %v", suppressed, result)
-		}
+	if names["browser"] {
+		t.Fatalf("session pin must not route browser for an unrelated follow-up, got: %v", result)
 	}
 }
 
@@ -680,18 +653,14 @@ func TestRouter_GenericSubmitFollowupDoesNotRouteScreenshotOrGit(t *testing.T) {
 	}
 }
 
-// TestRouter_ExplicitScreenshotOverridesBrowserCondKeep verifies that when the
-// user explicitly asks for a desktop screenshot but UIC misclassifies the message
-// as browser intent (setting condKeep["browser"]=true), the explicit screenshot
-// signal takes precedence: screenshot is routed, browser is demoted.
-func TestRouter_ExplicitScreenshotOverridesBrowserCondKeep(t *testing.T) {
+func TestRouter_UICScreenshotDoesNotNeedLexicalDemotion(t *testing.T) {
 	router := NewRouter(nil)
-	// Simulate UIC setting condKeep["browser"] by pre-pinning via condKeep path.
-	// We cannot directly set condKeep, but we can set sessionTools to trigger
-	// browserSessionActive. However, the fix specifically checks condKeep vs
-	// sessionTools, so we use a different approach: manually verify via the
-	// route result that screenshot is routed and browser suppression does not
-	// block it when using Chinese "截屏" keyword.
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"screenshot","score":0.95}]}`, nil
+		},
+	}))
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
 		tools = append(tools, makeToolDef(name, "core "+name))
@@ -704,23 +673,22 @@ func TestRouter_ExplicitScreenshotOverridesBrowserCondKeep(t *testing.T) {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	// "截屏" is a Chinese explicit screenshot request. Even if browser ends up
-	// in condKeep (via UIC misclassification), screenshot must be routed.
-	result := router.Route("截屏", tools)
+	result := router.Route("unrelated text", tools)
 	names := routedToolNames(result)
 	if !names["screenshot"] {
-		t.Fatalf("explicit '截屏' request should route screenshot even if browser is active, got: %v", names)
+		t.Fatalf("UIC screenshot intent must route screenshot, got: %v", names)
 	}
 }
 
-// TestRouter_ExplicitScreenshotWithBrowserSessionPin verifies that when browser
-// is session-pinned (user previously used browser) AND the user explicitly asks
-// for a screenshot, the screenshot tool is still available. The browser session
-// pin is legitimate (user did use browser before), so browser should remain, but
-// screenshot should NOT be suppressed.
-func TestRouter_ExplicitScreenshotWithBrowserSessionPin(t *testing.T) {
+func TestRouter_SessionPinDoesNotReplaceSemanticScreenshotIntent(t *testing.T) {
 	router := NewRouter(nil)
 	router.ActivateSessionTool("browser")
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"screenshot","score":0.95}]}`, nil
+		},
+	}))
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
 		tools = append(tools, makeToolDef(name, "core "+name))
@@ -734,41 +702,17 @@ func TestRouter_ExplicitScreenshotWithBrowserSessionPin(t *testing.T) {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	result := router.Route("截屏桌面", tools)
+	result := router.Route("unrelated text", tools)
 	names := routedToolNames(result)
 	if !names["screenshot"] {
-		t.Fatalf("explicit screenshot with browser session pin should still route screenshot, got: %v", names)
+		t.Fatalf("semantic screenshot must route despite stale browser pin, got: %v", names)
 	}
-	if !names["browser"] {
-		t.Fatalf("browser session pin should keep browser available, got: %v", names)
+	if names["browser"] {
+		t.Fatalf("browser session pin must not contaminate screenshot task, got: %v", names)
 	}
 }
 
-// TestRouter_BrowserScreenshotRequestKeepsBrowser verifies that when a user asks
-// for a browser/webpage screenshot (e.g., "在浏览器中截图这个页面"), the browser
-// tool is NOT demoted because the message contains browser context words.
-// We use session pin to simulate browser being legitimately active, then verify
-// messageHasBrowserContext prevents demotion for the condKeep path too.
-func TestRouter_BrowserScreenshotRequestKeepsBrowser(t *testing.T) {
-	// Test messageHasBrowserContext directly for the key scenario:
-	// "在浏览器中截图这个网页" has browser context words, so demotion should NOT fire.
-	if !messageHasBrowserContext("在浏览器中截图这个网页") {
-		t.Fatal("expected messageHasBrowserContext to return true for browser screenshot request")
-	}
-	if !messageHasBrowserContext("take a screenshot of this web page in Chrome") {
-		t.Fatal("expected messageHasBrowserContext to return true for English browser screenshot")
-	}
-	// Plain desktop screenshot should NOT have browser context
-	if messageHasBrowserContext("截屏") {
-		t.Fatal("expected messageHasBrowserContext to return false for plain desktop screenshot")
-	}
-	if messageHasBrowserContext("截屏桌面") {
-		t.Fatal("expected messageHasBrowserContext to return false for desktop screenshot")
-	}
-
-	// Integration: with session-pinned browser, explicit screenshot + browser
-	// context words = both tools remain. Session pin path takes precedence anyway,
-	// but this validates the full signal chain.
+func TestRouter_BrowserSessionPinDoesNotRouteBrowserFromWording(t *testing.T) {
 	router := NewRouter(nil)
 	router.ActivateSessionTool("browser")
 	var tools []map[string]interface{}
@@ -783,17 +727,17 @@ func TestRouter_BrowserScreenshotRequestKeepsBrowser(t *testing.T) {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	result := router.Route("在浏览器中截图这个网页", tools)
+	result := router.Route("take a screenshot of this web page in Chrome", tools)
 	names := routedToolNames(result)
-	if !names["screenshot"] {
-		t.Fatalf("browser webpage screenshot request should include screenshot tool, got: %v", names)
+	if names["screenshot"] {
+		t.Fatalf("screenshot wording must not expose screenshot, got: %v", names)
 	}
-	if !names["browser"] {
-		t.Fatalf("browser webpage screenshot with session pin should keep browser, got: %v", names)
+	if names["browser"] {
+		t.Fatalf("browser session pin must not expose browser, got: %v", names)
 	}
 }
 
-func TestRouter_ExplicitGitRequestStillRoutesGitCommit(t *testing.T) {
+func TestRouter_GitWordingDoesNotRouteGitCommit(t *testing.T) {
 	router := NewRouter(nil)
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
@@ -805,8 +749,8 @@ func TestRouter_ExplicitGitRequestStillRoutesGitCommit(t *testing.T) {
 	}
 
 	result := router.Route("\u5e2e\u6211\u628a\u4ee3\u7801 git commit \u4e00\u4e0b", tools)
-	if !routedToolNames(result)["git_commit"] {
-		t.Fatalf("explicit git request should still route git_commit, got: %v", result)
+	if routedToolNames(result)["git_commit"] {
+		t.Fatalf("git wording must not route git_commit, got: %v", result)
 	}
 }
 
@@ -930,7 +874,35 @@ func TestRouter_UICHighConfidenceActivatesConditionalTools(t *testing.T) {
 	t.Fatalf("browser should be included for high-confidence UIC browser intent, got: %v", names)
 }
 
-func TestRouter_UICDegradedConcreteIntentStillActivatesTools(t *testing.T) {
+func TestRouter_UICSemanticScreenshotIntentRoutesScreenshot(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			if userText != "截主屏" {
+				t.Fatalf("semantic classifier received %q, want 截主屏", userText)
+			}
+			return `{"top":[{"skill":"screenshot","score":0.95},{"skill":"computer_use","score":0.20},{"skill":"non_coding","score":0.10}]}`, nil
+		},
+	}))
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("screenshot", "capture the current desktop display"))
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	names := routedToolNames(router.Route("截主屏", tools))
+	if !names["screenshot"] {
+		t.Fatalf("semantic screenshot intent should route screenshot, got: %v", names)
+	}
+}
+
+func TestRouter_UICDegradedConcreteIntentDoesNotActivateTools(t *testing.T) {
 	result := uicintent.ClassificationResult{
 		Primary:    uicintent.LabelSSH,
 		Confidence: 0.95,
@@ -938,8 +910,8 @@ func TestRouter_UICDegradedConcreteIntentStillActivatesTools(t *testing.T) {
 		ToolNames:  []string{"ssh"},
 	}
 
-	if !uicResultUsableForToolActivation(result) {
-		t.Fatalf("degraded but concrete UIC result should remain usable for tool activation")
+	if uicResultUsableForToolActivation(result) {
+		t.Fatalf("degraded UIC result must stay a hint and not activate tools")
 	}
 }
 
@@ -985,6 +957,7 @@ func TestRouter_UICActivatableToolNamesAreAllowlisted(t *testing.T) {
 	}{
 		{name: "ssh", want: true},
 		{name: "browser", want: true},
+		{name: "screenshot", want: true},
 		{name: "knowledge_save_text", want: true},
 		{name: "manage_skill", want: false},
 		{name: "discover_tool", want: false},
@@ -1069,7 +1042,6 @@ func TestRouter_PreferEmbeddingOnlySkipsTreeLLM(t *testing.T) {
 func TestRouter_SSHIntentSuppressesFallbackTooling(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
-	router.sessionTools = make(map[string]bool)
 	ic := NewIntentClassifier(embedding.NoopEmbedder{})
 	defer ic.Close()
 	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
@@ -1093,7 +1065,7 @@ func TestRouter_SSHIntentSuppressesFallbackTooling(t *testing.T) {
 	}
 }
 
-func TestRouter_SSHSessionPinOnlySuppressesMCPGateway(t *testing.T) {
+func TestRouter_SSHSessionPinDoesNotReintroduceRemovedMCPGateway(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
 	router.ActivateSessionTool("ssh")
@@ -1104,16 +1076,17 @@ func TestRouter_SSHSessionPinOnlySuppressesMCPGateway(t *testing.T) {
 	names := routedToolNames(result)
 
 	if names["call_mcp_tool"] {
-		t.Fatalf("call_mcp_tool should remain suppressed while ssh is session-pinned")
+		t.Fatalf("removed legacy MCP gateway must not reappear through a session pin, got %#v", names)
 	}
-	for _, fallback := range []string{"manage_skill", "discover_tool"} {
-		if !names[fallback] {
-			t.Fatalf("%s should remain available for topic changes when ssh is only session-pinned; got %#v", fallback, names)
-		}
+	if names["manage_skill"] {
+		t.Fatalf("removed legacy Skill gateway must not reappear through a session pin, got %#v", names)
+	}
+	if !names["discover_tool"] {
+		t.Fatalf("discover_tool should remain available for topic changes when ssh is only session-pinned; got %#v", names)
 	}
 }
 
-func TestRouter_ActivateSessionToolOnlyPinsAllowedConditionalTools(t *testing.T) {
+func TestRouter_ActivateSessionToolCannotPersistToolAuthority(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
 
@@ -1122,12 +1095,9 @@ func TestRouter_ActivateSessionToolOnlyPinsAllowedConditionalTools(t *testing.T)
 	router.ActivateSessionTool("generate_pdf")
 	router.ActivateSessionTool("office")
 
-	if !router.IsSessionPinned("ssh") {
-		t.Fatalf("ssh should be pinned after successful use")
-	}
-	for _, name := range []string{"bash", "generate_pdf", "office"} {
+	for _, name := range []string{"ssh", "bash", "generate_pdf", "office"} {
 		if router.IsSessionPinned(name) {
-			t.Fatalf("%s should not be session-pinned by ActivateSessionTool", name)
+			t.Fatalf("%s must not be session-pinned by ActivateSessionTool", name)
 		}
 	}
 }
@@ -1135,19 +1105,12 @@ func TestRouter_ActivateSessionToolOnlyPinsAllowedConditionalTools(t *testing.T)
 func TestRouter_CoreOverflowIsTrimmedButKeepsIntentTool(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
-	router.sessionTools = make(map[string]bool)
 	ic := NewIntentClassifier(embedding.NoopEmbedder{})
 	defer ic.Close()
 	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
 	router.SetIntentClassifier(ic)
 
 	tools := makeCoreSSHRouteTools(20)
-	for i := 0; i < MaxToolBudget; i++ {
-		name := fmt.Sprintf("pinned_tool_%d", i)
-		router.sessionTools[name] = true
-		tools = append(tools, makeToolDef(name, "session pinned test tool"))
-	}
-
 	result := router.Route("Check the remote server resource usage.", tools)
 	names := routedToolNames(result)
 	if len(result) > MaxToolBudget {
@@ -1161,14 +1124,8 @@ func TestRouter_CoreOverflowIsTrimmedButKeepsIntentTool(t *testing.T) {
 func TestRouter_CoreOverflowKeepsEssentialCoreBeforeStalePins(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
-	router.sessionTools = make(map[string]bool)
 
 	tools := makeCoreSSHRouteTools(20)
-	for i := 0; i < MaxToolBudget; i++ {
-		name := fmt.Sprintf("stale_pinned_tool_%d", i)
-		router.sessionTools[name] = true
-		tools = append(tools, makeToolDef(name, "stale session pinned test tool"))
-	}
 
 	result := router.Route("Read files and inspect the project.", tools)
 	names := routedToolNames(result)
@@ -1179,6 +1136,45 @@ func TestRouter_CoreOverflowKeepsEssentialCoreBeforeStalePins(t *testing.T) {
 		if !names[essential] {
 			t.Fatalf("essential core tool %q should survive stale session pin overflow; got %#v", essential, names)
 		}
+	}
+}
+
+func TestRouter_BootstrapSurfaceDoesNotExposeLegacyBusinessToolsWithoutCurrentNeed(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	tools := makeCoreSSHRouteTools(20)
+
+	result := router.Route("hello", tools)
+	names := routedToolNames(result)
+	for _, forbidden := range []string{"ssh", "web_fetch", "write_file", "list_directory", "tts", "asr", "goal"} {
+		if names[forbidden] {
+			t.Fatalf("unrelated legacy business tool %q leaked into bootstrap surface: %#v", forbidden, names)
+		}
+	}
+	for _, required := range []string{"task", "async_wait", "compress_context"} {
+		if !names[required] {
+			t.Fatalf("bootstrap tool %q missing: %#v", required, names)
+		}
+	}
+}
+
+func TestRouter_DocumentPathDoesNotGrantOfficeUnderCandidateBudget(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	all := make([]map[string]interface{}, 0, MaxToolBudget+30)
+	for name := range CoreToolNames {
+		all = append(all, makeToolDef(name, "legacy "+name))
+	}
+	all = append(all, makeToolDef("office", "read and write office documents"))
+	for i := 0; i < MaxToolBudget+20; i++ {
+		all = append(all, makeToolDef(fmt.Sprintf("optional_%d", i), "optional document helper"))
+	}
+
+	result := router.RouteWithOptions("[用户选择的本地文件路径]\nC:\\work\\report.docx", all, RouteOptions{SkipUnifiedClassifier: true})
+	names := routedToolNames(result)
+	if names["office"] {
+		t.Fatalf("document path text must not grant office under candidate pressure: %#v", names)
+	}
+	if len(result) > MaxToolBudget {
+		t.Fatalf("route exceeded budget: %d > %d", len(result), MaxToolBudget)
 	}
 }
 

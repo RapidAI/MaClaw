@@ -697,7 +697,7 @@ func (s *lansengerGroupSummaryService) callSummaryLLM(
 		OwnerID:   "lansenger-group:" + strings.TrimSpace(owner),
 		RequestID: fmt.Sprintf("gs-%d", time.Now().UnixNano()),
 	})
-	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, lansengerGroupSummaryLLMTimeout)
+	resp, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), messages, client, lansengerGroupSummaryLLMTimeout)
 	if err != nil {
 		return "", err
 	}

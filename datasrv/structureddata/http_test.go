@@ -78,6 +78,7 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 		`openCommandPalette`,
 		`refreshSetupStatus`,
 		`bindMobileNav`,
+		`listItems`,
 	} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("console app.js missing %q", want)
@@ -5082,8 +5083,8 @@ func TestHTTPServerBootstrapsTemplates(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&domainPreview); err != nil {
 		t.Fatalf("decode domain dry-run bootstrap: %v", err)
 	}
-	if len(domainPreview.WouldCreate) != 10 || len(domainPreview.Created) != 0 || len(domainPreview.Errors) != 0 {
-		t.Fatalf("unexpected domain dry-run bootstrap result: %#v", domainPreview)
+	if len(domainPreview.WouldCreate) != countShippedTemplatesInDomains("sales", "finance") || len(domainPreview.Created) != 0 || len(domainPreview.Errors) != 0 {
+		t.Fatalf("unexpected domain dry-run bootstrap result: want %d templates got %#v", countShippedTemplatesInDomains("sales", "finance"), domainPreview)
 	}
 	for _, tmpl := range domainPreview.WouldCreate {
 		if tmpl.Domain != "sales" && tmpl.Domain != "finance" {
@@ -5444,13 +5445,14 @@ func TestHTTPServerListsBusinessDomainCatalogs(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&sales); err != nil {
 		t.Fatalf("decode sales domain: %v", err)
 	}
-	if sales.Domain != "sales" || sales.Initialized || len(sales.UseCases) == 0 || len(sales.Templates) != 4 || len(sales.BusinessActions) == 0 || len(sales.BusinessViews) == 0 || len(sales.Reports) == 0 || len(sales.Dashboards) == 0 {
+	salesTemplateCount := countShippedTemplatesInDomains("sales")
+	if sales.Domain != "sales" || sales.Initialized || len(sales.UseCases) == 0 || len(sales.Templates) != salesTemplateCount || len(sales.BusinessActions) == 0 || len(sales.BusinessViews) == 0 || len(sales.Reports) == 0 || len(sales.Dashboards) == 0 {
 		t.Fatalf("unexpected sales domain before bootstrap: %#v", sales)
 	}
 	if !containsDomainUseCase(sales.UseCases, "sales.record_order") {
 		t.Fatalf("expected sales record order use case: %#v", sales.UseCases)
 	}
-	if !containsString(sales.MissingTemplates, "sales.orders") || !containsString(sales.MissingTemplates, "sales.customers") || !containsString(sales.MissingTemplates, "sales.contacts") || !containsString(sales.MissingTemplates, "sales.opportunities") {
+	if !containsString(sales.MissingTemplates, "sales.orders") || !containsString(sales.MissingTemplates, "sales.customers") || !containsString(sales.MissingTemplates, "sales.contacts") || !containsString(sales.MissingTemplates, "sales.opportunities") || !containsString(sales.MissingTemplates, "sales.order_lines") {
 		t.Fatalf("expected sales missing templates: %#v", sales.MissingTemplates)
 	}
 
@@ -5473,7 +5475,7 @@ func TestHTTPServerListsBusinessDomainCatalogs(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&bootstrappedSales); err != nil {
 		t.Fatalf("decode bootstrapped sales domain: %v", err)
 	}
-	if !bootstrappedSales.Initialized || len(bootstrappedSales.Datasets) != 4 || len(bootstrappedSales.MissingTemplates) != 0 {
+	if !bootstrappedSales.Initialized || len(bootstrappedSales.Datasets) != salesTemplateCount || len(bootstrappedSales.MissingTemplates) != 0 {
 		t.Fatalf("unexpected sales domain after bootstrap: %#v", bootstrappedSales)
 	}
 }
@@ -8847,22 +8849,57 @@ func TestWebConsoleIncludesCursorLoadMoreTargets(t *testing.T) {
 		`data-testid="tab-connectors"`,
 		`data-testid="tab-records"`,
 		`data-testid="tab-quality"`,
+		`data-testid="tab-inbox"`,
+		`data-testid="tab-overview"`,
+		`data-testid="auth-screen"`,
+		`data-testid="app-shell"`,
+		`>用户视图<`,
+		`>待办<`,
+		`>记录<`,
+		`>业务动作<`,
+		`>业务应用<`,
+		`<div class="nav-group">工作</div>`,
+		`<div class="nav-group">应用</div>`,
+		`<div class="nav-group">建模</div>`,
+		`<div class="nav-group">治理</div>`,
 	} {
 		if !strings.Contains(index, want) {
 			t.Fatalf("web console index missing %q", want)
 		}
 	}
+	workPos := strings.Index(index, `<div class="nav-group">工作</div>`)
+	appPos := strings.Index(index, `<div class="nav-group">应用</div>`)
+	modelPos := strings.Index(index, `<div class="nav-group">建模</div>`)
+	govPos := strings.Index(index, `<div class="nav-group">治理</div>`)
+	inboxPos := strings.Index(index, `data-testid="tab-inbox"`)
+	recordsPos := strings.Index(index, `data-testid="tab-records"`)
+	datasetsPos := strings.Index(index, `data-testid="tab-datasets"`)
+	apikeysPos := strings.Index(index, `data-testid="tab-apikeys"`)
+	if workPos < 0 || appPos < 0 || modelPos < 0 || govPos < 0 || inboxPos < 0 || recordsPos < 0 || datasetsPos < 0 || apikeysPos < 0 {
+		t.Fatal("web console missing work-first nav anchors")
+	}
+	if !(workPos < appPos && appPos < modelPos && modelPos < govPos) {
+		t.Fatalf("work/app nav must precede modeling/governance: work=%d app=%d model=%d gov=%d", workPos, appPos, modelPos, govPos)
+	}
+	if !(inboxPos < datasetsPos && recordsPos < datasetsPos && inboxPos < apikeysPos && recordsPos < apikeysPos) {
+		t.Fatalf("daily-work tabs must precede datasets/apikeys: inbox=%d records=%d datasets=%d apikeys=%d", inboxPos, recordsPos, datasetsPos, apikeysPos)
+	}
 
 	// Module assets must be embed-served and reference primary data APIs.
 	moduleChecks := map[string][]string{
-		"/console/modules/datasets.js":   {"/api/v1/data/datasets", "PageModules.datasets"},
-		"/console/modules/records.js":    {"PageModules.records", "Data Records"},
-		"/console/modules/connectors.js": {"/api/v1/data/connectors", "PageModules.connectors"},
-		"/console/modules/apikeys.js":    {"PageModules.apikeys", "API Key Management"},
-		"/console/modules/domains.js":    {"/api/v1/data/domains", "PageModules.domains"},
-		"/console/modules/views.js":      {"PageModules.views", "PageModules.dashboards", "PageModules.reports"},
-		"/console/modules/security.js":   {"PageModules.quality", "PageModules.backups", "PageModules.audit", "PageModules.ops"},
-		"/console/modules/relationships.js": {"/api/v1/data/relationships", "PageModules.relationships"},
+		"/console/app.js":                {"listItems", "/api/v1/setup/status", "X-MaClaw-Tenant-ID", "this.navigate(state.page, state.params)"},
+		"/console/modules/datasets.js":   {"/api/v1/data/datasets", "PageModules.datasets", "listItems"},
+		"/console/modules/records.js":    {"PageModules.records", "Data Records", "/records/query", "fieldControls", "listItems", "App.api(", "this.dataset() !== ds", "this.dataset() === openDs", `App.writeHash("records"`},
+		"/console/modules/connectors.js": {"/api/v1/data/connectors", "PageModules.connectors", "listItems", "订阅动作需要 JSON 数组"},
+		"/console/modules/apikeys.js":    {"PageModules.apikeys", "API Key Management", "listItems", "/api/v1/data/access/presets", "allowed_views", "密钥只显示一次"},
+		"/console/modules/overview.js":   {`"data-testid": "user-guide"`, "快捷流程", "整个系统怎么工作", "PageModules.overview", "d.initialized", "PageModules.inbox.openItem"},
+		"/console/modules/quickstart.js": {`"data-testid": "quickstart-panel"`, "/api/v1/data/templates/bootstrap", "PageModules.quickstart", "if (this._plan) this.renderPlan", "jumpStep(3)", "planFailedOnly", "_previewGen"},
+		"/console/modules/domains.js":    {"/api/v1/data/domains", "PageModules.domains", "listItems", "await this.open(domain)"},
+		"/console/modules/views.js":      {"PageModules.views", "PageModules.dashboards", "PageModules.reports", "listItems", "/api/v1/data/views", "App.navGuard()"},
+		"/console/modules/security.js":   {"PageModules.quality", "PageModules.backups", "PageModules.audit", "PageModules.ops", "/api/v1/data/quality-checks", "/quality/runs", "showLatest"},
+		"/console/modules/relationships.js": {"/api/v1/data/relationships", "PageModules.relationships", "dataset_id"},
+		"/console/modules/inbox.js":      {"PageModules.inbox", "/api/v1/data/inbox", "openItem", "全部状态", "export_job", "event_dead_letter"},
+		"/console/modules/fields.js":     {"/fields?limit=", "PageModules.fields", "this.refresh()"},
 	}
 	for path, wants := range moduleChecks {
 		req = httptest.NewRequest(http.MethodGet, path, nil)
@@ -8876,6 +8913,15 @@ func TestWebConsoleIncludesCursorLoadMoreTargets(t *testing.T) {
 			if !strings.Contains(body, want) {
 				t.Fatalf("%s missing %q", path, want)
 			}
+		}
+		if path == "/console/modules/records.js" && (strings.Contains(body, `query() { App.toast("正在查询`) || strings.Contains(body, `save() { App.toast("保存中`)) {
+			t.Fatal("records module still has toast-only query/save stubs")
+		}
+		if path == "/console/modules/views.js" && strings.Contains(body, "/api/v1/data/business-views") {
+			t.Fatal("views module must list GET /api/v1/data/views, not /api/v1/data/business-views")
+		}
+		if path == "/console/app.js" && strings.Contains(body, `if (!state.page || state.page === this.currentPage)`) {
+			t.Fatal("hashchange must remount when dataset/record/domain/action params change on the same page")
 		}
 	}
 
@@ -8895,6 +8941,64 @@ func TestWebConsoleIncludesCursorLoadMoreTargets(t *testing.T) {
 	} {
 		if !strings.Contains(legacy, want) {
 			t.Fatalf("legacy console missing load-more contract %q", want)
+		}
+	}
+}
+
+func TestDefaultWebConsoleLaunchAgreesTwice(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	handler := NewHTTPServer(NewService(store, "sqlite"), "test-token-0123456789012345", "launch").Handler()
+
+	get := func(path string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code, w.Body.String()
+	}
+
+	code1, html1 := get("/")
+	code2, html2 := get("/")
+	t.Logf("GET / first=%d bytes=%d second=%d bytes=%d", code1, len(html1), code2, len(html2))
+	if code1 != http.StatusOK || code2 != http.StatusOK {
+		t.Fatalf("GET / status first=%d second=%d", code1, code2)
+	}
+	if html1 == "" || html1 != html2 {
+		t.Fatalf("GET / bodies empty or disagree: len1=%d len2=%d", len(html1), len(html2))
+	}
+	for _, want := range []string{
+		`data-testid="auth-screen"`,
+		`data-testid="app-shell"`,
+		`<div class="nav-group">工作</div>`,
+		`>待办<`,
+		`>记录<`,
+		`>业务应用<`,
+	} {
+		if !strings.Contains(html1, want) {
+			t.Fatalf("GET / missing %q", want)
+		}
+	}
+
+	jsCode1, js1 := get("/console/app.js")
+	jsCode2, js2 := get("/console/app.js")
+	t.Logf("GET /console/app.js first=%d bytes=%d second=%d bytes=%d", jsCode1, len(js1), jsCode2, len(js2))
+	if jsCode1 != http.StatusOK || jsCode2 != http.StatusOK {
+		t.Fatalf("GET /console/app.js status first=%d second=%d", jsCode1, jsCode2)
+	}
+	if js1 == "" || js1 != js2 {
+		t.Fatalf("GET /console/app.js bodies empty or disagree: len1=%d len2=%d", len(js1), len(js2))
+	}
+	for _, want := range []string{
+		`listItems`,
+		`/api/v1/setup/status`,
+		`/api/v1/setup/admin`,
+		`/api/v1/login`,
+	} {
+		if !strings.Contains(js1, want) {
+			t.Fatalf("GET /console/app.js missing %q", want)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -70,6 +71,9 @@ func TestRegistryResponseHidesRemoteCodingToolUsagePollution(t *testing.T) {
 	if !ok {
 		t.Fatalf("provider payload = %#v", resp.Providers[0])
 	}
+	if remoteProvider["lb_group"] != "x1" || remoteProvider["lb_group_size"] != 2 {
+		t.Fatalf("lb annotation = %#v, want shared x1 group", remoteProvider)
+	}
 	remoteUsage, ok := remoteProvider["usage"].(corelib.TokenUsageStat)
 	if !ok {
 		t.Fatalf("remote usage payload = %#v", remoteProvider["usage"])
@@ -84,6 +88,102 @@ func TestRegistryResponseHidesRemoteCodingToolUsagePollution(t *testing.T) {
 	normalUsage, ok := normalProvider["usage"].(corelib.TokenUsageStat)
 	if !ok || normalUsage.TotalTokens != 15 || normalUsage.Requests != 1 {
 		t.Fatalf("normal provider usage missing from registry response: %#v", normalProvider["usage"])
+	}
+}
+
+func TestLLMProviderTokenPricingRoundTripThroughAdminRegistry(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{
+		ID: "provider-priced", Name: "Priced provider", APIURL: "https://example.com/v1", Model: "test-model",
+	}}}); err != nil {
+		t.Fatalf("seed provider registry: %v", err)
+	}
+	inputWindowPrice := 1.25
+	outputWindowPrice := 4.5
+	request := im.LLMProviderRegistry{Providers: []im.LLMProvider{{
+		ID:     "provider-priced",
+		Name:   "Priced provider",
+		APIURL: "https://example.com/v1",
+		Model:  "test-model",
+		TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K:  1,
+			OutputCreditsPer10K: 3,
+			InputRMBPer10K:      0.02,
+			OutputRMBPer10K:     0.06,
+			Timezone:            "Asia/Shanghai",
+			PriceSchedule: []llmpool.TokenPriceWindow{{
+				ID:                  "night",
+				Days:                []int{1, 2, 3, 4, 5},
+				Start:               "00:00",
+				End:                 "08:00",
+				InputCreditsPer10K:  &inputWindowPrice,
+				OutputCreditsPer10K: &outputWindowPrice,
+			}},
+		},
+	}}}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/providers", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	reg, err := im.LoadLLMProviderRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	provider := reg.FindProvider("provider-priced")
+	if provider == nil || len(provider.TokenPricing.PriceSchedule) != 1 {
+		t.Fatalf("stored token pricing = %#v", provider)
+	}
+	if provider.TokenPricing.PriceSchedule[0].ID != "night" || provider.TokenPricing.PriceSchedule[0].InputCreditsPer10K == nil || *provider.TokenPricing.PriceSchedule[0].InputCreditsPer10K != inputWindowPrice {
+		t.Fatalf("stored time-of-use token price = %#v", provider.TokenPricing.PriceSchedule[0])
+	}
+
+	accessCtrl := llmservice.NewTenantLLMAccessControl(nil)
+	accessCtrl.UpdateFromHeartbeat(store.DefaultTenantID, &llmservice.TenantAuthorizationStatus{
+		TenantID: store.DefaultTenantID, AllowExternalProviders: true,
+	})
+	getReq := httptest.NewRequest(http.MethodGet, "/api/admin/llm/providers", nil)
+	getRR := httptest.NewRecorder()
+	GetLLMProvidersHandler(system, accessCtrl).ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRR.Code, getRR.Body.String())
+	}
+	var response struct {
+		Providers []struct {
+			ID           string               `json:"id"`
+			TokenPricing llmpool.TokenPricing `json:"token_pricing"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Providers) != 1 || response.Providers[0].ID != "provider-priced" || len(response.Providers[0].TokenPricing.PriceSchedule) != 1 {
+		t.Fatalf("response token pricing = %#v", response)
+	}
+}
+
+func TestUpdateLLMProvidersHandlerRejectsInvalidTokenPricing(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	request := im.LLMProviderRegistry{Providers: []im.LLMProvider{{
+		ID: "provider-invalid", Name: "Invalid provider", APIURL: "https://example.com/v1", Model: "test-model",
+		TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2, PriceSchedule: []llmpool.TokenPriceWindow{{ID: "missing-timezone", Start: "00:00", End: "08:00"}}},
+	}}}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/providers", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	UpdateLLMProvidersHandler(system, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "INVALID_LLM_TOKEN_PRICING") {
+		t.Fatalf("status = %d body=%s, want invalid pricing error", rr.Code, rr.Body.String())
 	}
 }
 
@@ -544,6 +644,37 @@ func TestFlushCreditChargesRecordsReferralRewardUsageOnce(t *testing.T) {
 		}
 	}
 	t.Fatalf("missing reward usage metric: %#v", items)
+}
+
+func TestUsageChargeRetryKeepsDistinctServiceGroupRoutes(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{Grants: []llmservice.Grant{
+		{ID: "grant-a", Email: "user@example.com", ServiceGroupID: "group-a", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10},
+		{ID: "grant-b", Email: "user@example.com", ServiceGroupID: "group-b", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10},
+	}}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	chargeA := &pendingCreditCharge{email: "user@example.com", serviceGroupIDs: []string{"group-a"}, credits: 2}
+	chargeB := &pendingCreditCharge{email: "user@example.com", serviceGroupIDs: []string{"group-b"}, credits: 3}
+	if creditChargeKey(chargeA) == creditChargeKey(chargeB) {
+		t.Fatal("distinct service-group routes must use distinct retry keys")
+	}
+	if err := flushCreditCharges(ctx, system, map[string]*pendingCreditCharge{
+		creditChargeKey(chargeA): chargeA,
+		creditChargeKey(chargeB): chargeB,
+	}); err != nil {
+		t.Fatalf("flush charges: %v", err)
+	}
+	saved, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	if saved.Grants[0].CreditsUsed != 2 || saved.Grants[1].CreditsUsed != 3 {
+		t.Fatalf("route charges were cross-applied: %#v", saved.Grants)
+	}
 }
 
 func TestFlushProviderUsageSkipsPersistedRemoteCodingToolKeys(t *testing.T) {

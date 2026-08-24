@@ -16,9 +16,11 @@ const CreateMobileLLMDesktopQRSessionMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const EventsOnMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
+const StartOpenCodeZenLoginMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const FetchCodeGenModelsMock = vi.fn();
+const ImportExternalAgentsMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
     const SaveMoAConfigMock = vi.fn();
 const GetMaclawLLMProfilePanelStateMock = vi.fn();
@@ -38,10 +40,12 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetMaclawLLMThinkingMode: (...args: unknown[]) => SetMaclawLLMThinkingModeMock(...args),
     SetSubAgentConcurrency: vi.fn(),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
+    StartOpenCodeZenLogin: (...args: unknown[]) => StartOpenCodeZenLoginMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
     CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
+    ImportExternalAgents: (...args: unknown[]) => ImportExternalAgentsMock(...args),
     FetchCodeGenModels: (...args: unknown[]) => FetchCodeGenModelsMock(...args),
     FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
     CreateMobileLLMDesktopQRSession: (...args: unknown[]) => CreateMobileLLMDesktopQRSessionMock(...args),
@@ -65,7 +69,9 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
 vi.mock('../UsageDisplay', () => ({ UsageDisplay: () => null }));
 vi.mock('../TokenUsagePanel', () => ({ TokenUsagePanel: () => null }));
-vi.mock('../LLMProfileAssignments', () => ({ LLMProfileAssignments: () => null }));
+vi.mock('../LLMProfileAssignments', () => ({
+    LLMProfileAssignments: ({ descriptionAction }: { descriptionAction?: unknown }) => descriptionAction ?? null,
+}));
 vi.mock('../../CustomDialog', () => ({
     useDialog: () => ({
         showAlert: vi.fn(),
@@ -75,7 +81,7 @@ vi.mock('../../CustomDialog', () => ({
 }));
 
 import { LLMConfigPanel } from '../LLMConfigPanel';
-import { hubOfficialStatus } from '../LLMConfigPanelShared';
+import { formatProviderTestError, formatProviderTestErrorOrFallback, hubOfficialStatus, isProviderTestCancelMessage } from '../LLMConfigPanelShared';
 
 describe('LLMConfigPanel test-and-save flow', () => {
     beforeEach(() => {
@@ -105,6 +111,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         SaveMaclawLLMProfilesMock.mockResolvedValue(undefined);
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         FetchCodeGenModelsMock.mockResolvedValue([]);
+        ImportExternalAgentsMock.mockResolvedValue({ imported: [], skipped: [], current: 'Custom1' });
         CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
             status: 'created',
             session_id: 'mlqr_test',
@@ -685,6 +692,23 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(onProviderChanged).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps a Hub activate failure visible in the dialog', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{ service_group_id: 'coding-basic', active: false, status: 'period_limited', retry_after_seconds: 3600 }],
+        });
+        SaveMaclawLLMProvidersMock.mockRejectedValue(new Error('Error invoking \'SaveMaclawLLMProviders\': hub offline'));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByRole('button', { name: /MaClaw Official/i }));
+        fireEvent.click(screen.getByRole('button', { name: 'Use This Service' }));
+
+        expect((await screen.findByTestId('llm-config-save-error')).textContent).toMatch(/Connection failed, not saved/);
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/hub offline/);
+    });
+
     it('allows repairing MaClaw Official when current is official but provider is missing', async () => {
         GetMaclawLLMProvidersMock
             .mockResolvedValueOnce({
@@ -826,7 +850,67 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
 
         expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
-        expect(await screen.findByText(/Connection failed, not saved/)).toBeTruthy();
+        expect((await screen.findByTestId('llm-config-save-error')).textContent).toMatch(/Connection failed, not saved/);
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/boom/);
+    });
+
+    it('keeps an OpenCode ended-promotion error visible in the dialog', async () => {
+        TestAndSaveMaclawLLMProvidersMock.mockRejectedValue(new Error(
+            'POST "https://opencode.ai/zen/v1/chat/completions": 401 Unauthorized {"type":"ModelError","message":"Free promotion has ended for DeepSeek V4 Flash Free. You can continue using the model by subscribing to OpenCode Go - https://opencode.ai/go"}',
+        ));
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'OpenCode',
+                    url: 'https://opencode.ai/zen/v1',
+                    key: 'sk-test',
+                    model: 'deepseek-v4-flash-free',
+                    protocol: 'openai',
+                    agent_type: 'OpenCode',
+                    supports_vision: false,
+                },
+            ],
+            current: 'OpenCode',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'sk-test-2' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        expect(await screen.findByText(/This model is no longer free/i)).toBeTruthy();
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/Connection failed, not saved/);
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/no longer free/i);
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
+    });
+
+    it('treats a Wails-wrapped cancel as unsaved, not a connection failure', async () => {
+        TestAndSaveMaclawLLMProvidersMock.mockRejectedValue(new Error("Error invoking 'TestAndSaveMaclawLLMProviders': Cancelled"));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        expect((await screen.findByTestId('llm-config-save-error')).textContent).toMatch(/unsaved/i);
+        expect(screen.getByTestId('llm-config-save-error').textContent).not.toMatch(/Connection failed, not saved/);
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/Cancelled/i);
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps a generic reason when the probe error is empty after unwrap', async () => {
+        TestAndSaveMaclawLLMProvidersMock.mockRejectedValue(new Error('Error:   '));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        expect((await screen.findByTestId('llm-config-save-error')).textContent).toMatch(/Connection failed, not saved/);
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/Check the API URL, key, and model/);
+        expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
     });
 
     it('hides the toast without clearing OAuth repair actions', async () => {
@@ -844,15 +928,14 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with OpenAI' }));
 
-        expect((await screen.findByRole('alert')).textContent).toMatch(/Connection failed, not saved/);
+        expect((await screen.findByTestId('llm-config-save-error')).textContent).toMatch(/Connection failed, not saved/);
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/oauth failed/);
         expect(await screen.findByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
 
         await act(async () => {
             vi.advanceTimersByTime(10000);
         });
-        await waitFor(() => {
-            expect(screen.queryByRole('alert')).toBeNull();
-        });
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/oauth failed/);
         expect(screen.getByRole('button', { name: /Import from Codex CLI/i })).toBeTruthy();
     });
 
@@ -890,7 +973,8 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Sign in with xAI' }));
 
-        expect((await screen.findByRole('alert')).textContent).toMatch(/Connection failed, not saved/);
+        expect(await screen.findByText(/Connection failed, not saved/)).toBeTruthy();
+        expect(screen.getByTestId('llm-config-save-error').textContent).toMatch(/xAI OAuth failed/);
         expect(screen.queryByRole('button', { name: /Import from Codex CLI/i })).toBeNull();
     });
 
@@ -928,7 +1012,7 @@ describe('LLMConfigPanel test-and-save flow', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
         fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
 
-        expect(await screen.findByText('Please complete OAuth login before saving')).toBeTruthy();
+        expect((await screen.findByTestId('llm-config-save-error')).textContent).toMatch(/Please complete OAuth login before saving/);
         expect(SaveMaclawLLMProvidersMock).not.toHaveBeenCalled();
     });
 
@@ -986,4 +1070,176 @@ describe('LLMConfigPanel test-and-save flow', () => {
         await waitFor(() => expect(GetMaclawLLMProvidersMock.mock.calls.length).toBeGreaterThanOrEqual(2));
     });
 
+    it('offers an import-other-agents action', async () => {
+        ImportExternalAgentsMock.mockResolvedValue({
+            imported: ['Codex'],
+            skipped: [{ source: 'opencode', name: 'OpenCode', reason: '认证未通过' }],
+            current: 'Custom1',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Import other agents' }));
+        await waitFor(() => expect(ImportExternalAgentsMock).toHaveBeenCalledTimes(1));
+    });
+
+    it('restricts imported agent providers to model selection', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'Codex',
+                    url: 'https://open.bigmodel.cn/api/coding/paas/v4',
+                    key: 'hidden',
+                    model: 'glm-5.3',
+                    import_source: 'codex',
+                    models: ['glm-5.3', 'glm-4.7'],
+                    supports_vision: false,
+                },
+            ],
+            current: 'Codex',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Codex' }));
+        expect(await screen.findByTestId('imported-agent-model-select')).toBeTruthy();
+        expect(screen.queryByPlaceholderText('sk-...')).toBeNull();
+        expect(screen.queryByPlaceholderText('https://api.openai.com/v1')).toBeNull();
+        expect(screen.queryByText('API 地址 (URL)')).toBeNull();
+        expect(screen.queryByLabelText('User-Agent')).toBeNull();
+    });
+
+    it('treats OpenCode as a regular API-key provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'OpenCode',
+                    url: 'https://opencode.ai/zen/v1',
+                    key: '',
+                    model: 'big-pickle',
+                    protocol: 'openai',
+                    agent_type: 'OpenCode',
+                    import_source: '',
+                    is_custom: false,
+                    supports_vision: false,
+                },
+            ],
+            current: 'OpenCode',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        expect(await screen.findByPlaceholderText('sk-...')).toBeTruthy();
+        expect(screen.queryByTestId('imported-agent-model-select')).toBeNull();
+        expect(screen.getByText(/API Keys/i)).toBeTruthy();
+        expect(screen.getByDisplayValue('https://opencode.ai/zen/v1')).toBeTruthy();
+        expect(screen.getByTestId('opencode-zen-login')).toBeTruthy();
+        expect(screen.getByText(/including paid models/i)).toBeTruthy();
+        expect(screen.queryByText(/only free models are listed/i)).toBeNull();
+    });
+
+    it('opens OpenCode Zen login and fills a local key', async () => {
+        StartOpenCodeZenLoginMock.mockResolvedValue({
+            message: 'opened login',
+            key: 'zen-from-cli',
+        });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'OpenCode',
+                    url: 'https://opencode.ai/zen/v1',
+                    key: '',
+                    model: 'big-pickle',
+                    protocol: 'openai',
+                    agent_type: 'OpenCode',
+                    import_source: '',
+                    is_custom: false,
+                    supports_vision: false,
+                },
+            ],
+            current: 'OpenCode',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByTestId('opencode-zen-login'));
+        await waitFor(() => expect(StartOpenCodeZenLoginMock).toHaveBeenCalledTimes(1));
+        expect(await screen.findByDisplayValue('zen-from-cli')).toBeTruthy();
+        expect(screen.getByText(/filled the local key/i)).toBeTruthy();
+    });
+
+    it('does not overwrite an existing OpenCode key on re-login', async () => {
+        StartOpenCodeZenLoginMock.mockResolvedValue({
+            message: 'opened login',
+            key: 'zen-from-cli',
+        });
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                {
+                    name: 'OpenCode',
+                    url: 'https://opencode.ai/zen/v1',
+                    key: 'already-there',
+                    model: 'big-pickle',
+                    protocol: 'openai',
+                    agent_type: 'OpenCode',
+                    import_source: '',
+                    is_custom: false,
+                    supports_vision: false,
+                },
+            ],
+            current: 'OpenCode',
+        });
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByTestId('opencode-zen-login'));
+        await waitFor(() => expect(StartOpenCodeZenLoginMock).toHaveBeenCalledTimes(1));
+        expect(screen.getByDisplayValue('already-there')).toBeTruthy();
+        expect(screen.queryByDisplayValue('zen-from-cli')).toBeNull();
+        expect(screen.getByText(/Opened OpenCode. Copy the key from API Keys/i)).toBeTruthy();
+    });
+
+});
+
+describe('formatProviderTestError', () => {
+    const t = (en: string) => en;
+
+    it('unwraps Wails invoke errors so the real reason stays visible', () => {
+        expect(formatProviderTestError("Error invoking 'TestAndSaveMaclawLLMProviders': boom", t)).toBe('boom');
+        expect(formatProviderTestError("Error: Error invoking 'TestAndSaveMaclawLLMProviders': boom", t)).toBe('boom');
+    });
+
+    it('extracts a JSON object even when trailing text follows it', () => {
+        const raw = 'HTTP 401 {"type":"ModelError","message":"model gone"} leftover';
+        expect(formatProviderTestError(raw, t)).toContain('model gone');
+    });
+
+    it('redacts secret-like fields from raw probe text', () => {
+        expect(formatProviderTestError('bad key api_key=sk-secret-123456', t)).not.toContain('sk-secret');
+    });
+
+    it('keeps braces inside a JSON message from truncating the payload', () => {
+        const raw = 'HTTP 401 {"type":"ModelError","message":"model {gone} is unavailable"} leftover';
+        expect(formatProviderTestError(raw, t)).toContain('model {gone} is unavailable');
+    });
+
+    it('returns empty after unwrapping a blank Wails error', () => {
+        expect(formatProviderTestError("Error invoking 'TestAndSaveMaclawLLMProviders': Error:   ", t)).toBe('');
+    });
+});
+
+describe('formatProviderTestErrorOrFallback', () => {
+    const t = (en: string) => en;
+
+    it('fills in a generic reason when unwrap leaves nothing', () => {
+        expect(formatProviderTestErrorOrFallback('Error:   ', t)).toMatch(/Check the API URL, key, and model/);
+    });
+});
+
+describe('isProviderTestCancelMessage', () => {
+    it('recognizes local cancel copy', () => {
+        expect(isProviderTestCancelMessage('Cancelled')).toBe(true);
+        expect(isProviderTestCancelMessage('已取消')).toBe(true);
+        expect(isProviderTestCancelMessage('boom')).toBe(false);
+    });
+
+    it('unwraps Wails invoke errors before classifying cancel', () => {
+        expect(isProviderTestCancelMessage("Error invoking 'TestAndSaveMaclawLLMProviders': Cancelled")).toBe(true);
+        expect(isProviderTestCancelMessage("Error: Error invoking 'TestAndSaveMaclawLLMProviders': Cancelled")).toBe(true);
+        expect(isProviderTestCancelMessage("Error invoking 'TestAndSaveMaclawLLMProviders': boom")).toBe(false);
+    });
 });

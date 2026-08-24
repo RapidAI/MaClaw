@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -343,12 +344,9 @@ func TestForwardAuthorizedModelRequestRetriesMaClawOfficialWithSanitizedBody(t *
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if _, hasResponseFormat := got["response_format"]; hasResponseFormat {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "response_format unsupported"}})
+		if _, hasStreamOptions := got["stream_options"]; hasStreamOptions {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "stream_options unsupported"}})
 			return
-		}
-		if _, hasTools := got["tools"]; !hasTools {
-			t.Fatalf("sanitized retry should preserve tools before toolless fallback: %#v", got)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":    "maclaw-official-sanitized",
@@ -377,16 +375,9 @@ func TestForwardAuthorizedModelRequestRetriesMaClawOfficialWithSanitizedBody(t *
 		ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
 	}
 	body := map[string]any{
-		"model":           "auto",
-		"messages":        []any{map[string]any{"role": "user", "content": "hello"}},
-		"response_format": map[string]any{"type": "json_schema"},
-		"tools": []any{map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":       "lookup",
-				"parameters": map[string]any{"type": "object", "additionalProperties": false},
-			},
-		}},
+		"model":          "auto",
+		"messages":       []any{map[string]any{"role": "user", "content": "hello"}},
+		"stream_options": map[string]any{"include_usage": true},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
 	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
@@ -406,6 +397,113 @@ func TestForwardAuthorizedModelRequestRetriesMaClawOfficialWithSanitizedBody(t *
 	}
 	if !bytes.Contains(respBody, []byte("maclaw-official-sanitized")) {
 		t.Fatalf("respBody = %s", string(respBody))
+	}
+}
+
+func TestForwardAuthorizedModelRequestDoesNotDowngradeStructuredContract(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, hasResponseFormat := got["response_format"]; !hasResponseFormat {
+			t.Fatalf("structured response contract was removed: %#v", got)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "response_format unsupported"}})
+	}))
+	defer server.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{
+		Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+			HubCenterURL: server.URL,
+			HubID:        "hub-1",
+			MachineToken: "machine-token",
+		}),
+	})
+
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}
+	body := map[string]any{
+		"model":    "auto",
+		"messages": []any{map[string]any{"role": "user", "content": "classify this request"}},
+		"response_format": map[string]any{
+			"type":        "json_schema",
+			"json_schema": map[string]any{"name": "intent_tree", "schema": map[string]any{"type": "object"}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	_, statusCode, providerID, _, _, _, err := forwardAuthorizedModelRequestWithCache(req, reg, model, body, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedModelRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusBadRequest || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 400/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1; structured contract must not be retried without response_format", attempts.Load())
+	}
+}
+
+func TestForwardAuthorizedResponsesRequestDoesNotDowngradeStructuredContract(t *testing.T) {
+	previous := GetMaClawModule()
+	defer SetMaClawModule(previous)
+
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, hasResponseFormat := got["response_format"]; !hasResponseFormat {
+			t.Fatalf("Responses structured contract was removed during chat conversion: %#v", got)
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "response_format unsupported"}})
+	}))
+	defer server.Close()
+
+	SetMaClawModule(&llmservice.MaClawModule{Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: server.URL,
+		HubID:        "hub-1",
+		MachineToken: "machine-token",
+	})})
+
+	responsesBody := map[string]any{
+		"model": "auto",
+		"input": "classify this request",
+		"text": map[string]any{"format": map[string]any{
+			"type": "json_schema", "name": "intent_tree", "strict": true,
+			"schema": map[string]any{"type": "object", "properties": map[string]any{"top": map[string]any{"type": "array"}}},
+		}},
+	}
+	chatBody, _, err := corelib.OpenAICompatResponsesRequestToChat(responsesBody)
+	if err != nil {
+		t.Fatalf("convert responses request: %v", err)
+	}
+	reg := &im.LLMProviderRegistry{}
+	model := &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/responses", nil)
+	req = req.WithContext(store.WithTenant(req.Context(), "tenant_acme"))
+
+	_, statusCode, providerID, _, _, _, rawResponses, err := forwardAuthorizedResponsesRequestWithCache(req, reg, model, responsesBody, chatBody, "auto", nil, defaultHubLLMPromptCacheConfig())
+	if err != nil {
+		t.Fatalf("forwardAuthorizedResponsesRequestWithCache() error = %v", err)
+	}
+	if statusCode != http.StatusBadRequest || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 400/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
+	}
+	if rawResponses {
+		t.Fatal("rawResponses = true, want official chat-compatible path")
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1; structured contract must not be retried without response_format", attempts.Load())
 	}
 }
 
@@ -511,7 +609,7 @@ func TestStreamAuthorizedModelRequestRoutesVirtualMaClawProviderWithTenant(t *te
 	}
 }
 
-func TestStreamAuthorizedModelRequestRetriesMaClawOfficialWithoutTools(t *testing.T) {
+func TestStreamAuthorizedModelRequestDoesNotDowngradeTools(t *testing.T) {
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)
 
@@ -522,14 +620,10 @@ func TestStreamAuthorizedModelRequestRetriesMaClawOfficialWithoutTools(t *testin
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if _, hasTools := got["tools"]; hasTools {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "tools unsupported"}})
-			return
+		if _, hasTools := got["tools"]; !hasTools {
+			t.Fatalf("tool contract was removed: %#v", got)
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-official-toolless\",\"object\":\"chat.completion.chunk\",\"model\":\"auto\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "tools unsupported"}})
 	}))
 	defer server.Close()
 
@@ -563,27 +657,25 @@ func TestStreamAuthorizedModelRequestRetriesMaClawOfficialWithoutTools(t *testin
 	rec := httptest.NewRecorder()
 
 	statusCode, providerID, _, usage, wroteStream, err := streamAuthorizedModelRequest(rec, req, reg, model, body, "auto", nil)
-	if err != nil {
-		t.Fatalf("streamAuthorizedModelRequest() error = %v", err)
+	if statusCode != http.StatusBadRequest || providerID != llmservice.MaClawOfficialProviderID {
+		t.Fatalf("status/provider = %d/%q, want 400/%q", statusCode, providerID, llmservice.MaClawOfficialProviderID)
 	}
-	if statusCode != http.StatusOK || providerID != llmservice.MaClawOfficialProviderID {
-		t.Fatalf("status/provider = %d/%q", statusCode, providerID)
-	}
-	if attempts.Load() != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts.Load())
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1; tool contract must not be retried without tools", attempts.Load())
 	}
 	if !wroteStream {
-		t.Fatal("wroteStream = false")
+		t.Fatal("wroteStream = false; the explicit upstream capability error should be relayed")
 	}
-	if usage.TotalTokens != 7 {
+	if usage.TotalTokens != 0 {
 		t.Fatalf("usage = %#v", usage)
 	}
-	if !strings.Contains(rec.Body.String(), "chatcmpl-official-toolless") {
-		t.Fatalf("stream body = %s", rec.Body.String())
+	if err != nil {
+		t.Fatalf("streamAuthorizedModelRequest() error = %v", err)
 	}
 }
 
 func TestForwardAuthorizedModelRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	llmservice.ResetRequestProviderWRR()
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)
 
@@ -647,6 +739,7 @@ func TestForwardAuthorizedModelRequestDoesNotFallbackAfterMaClawAuthorizationDen
 }
 
 func TestStreamAuthorizedModelRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	llmservice.ResetRequestProviderWRR()
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)
 
@@ -709,6 +802,7 @@ func TestStreamAuthorizedModelRequestDoesNotFallbackAfterMaClawAuthorizationDeni
 }
 
 func TestForwardAuthorizedResponsesRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	llmservice.ResetRequestProviderWRR()
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)
 
@@ -779,6 +873,7 @@ func TestForwardAuthorizedResponsesRequestDoesNotFallbackAfterMaClawAuthorizatio
 }
 
 func TestStreamAuthorizedResponsesRequestDoesNotFallbackAfterMaClawAuthorizationDenied(t *testing.T) {
+	llmservice.ResetRequestProviderWRR()
 	previous := GetMaClawModule()
 	defer SetMaClawModule(previous)
 
@@ -3851,7 +3946,7 @@ func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *test
 	if err != nil {
 		t.Fatalf("load service registry: %v", err)
 	}
-	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 2 {
+	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 2 || len(serviceReg.BillingReservations) != 0 || len(serviceReg.BillingLedger) != 0 {
 		t.Fatalf("expected credits to remain unchanged, got %#v", serviceReg.Grants)
 	}
 }
@@ -3958,8 +4053,9 @@ func TestLLMV1ChatCompletionsHandlerMissEnqueuesUsageAndCredits(t *testing.T) {
 	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
 		TokensPerCredit: 10000,
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:   "coding-basic",
-			Name: "Coding Basic",
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
 			Models: []llmservice.ModelServiceModel{{
 				Name:        "auto",
 				ProviderIDs: []string{"provider-a"},
@@ -4165,6 +4261,7 @@ func TestLLMV1HandlersChargeMaClawOfficialCredits(t *testing.T) {
 
 			var seenTenant string
 			var seenAuth string
+			var seenRequestID string
 			var hubCenterHits atomic.Int32
 			hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				hubCenterHits.Add(1)
@@ -4174,6 +4271,22 @@ func TestLLMV1HandlersChargeMaClawOfficialCredits(t *testing.T) {
 				}
 				seenTenant = r.Header.Get("X-Tenant-ID")
 				seenAuth = r.Header.Get("Authorization")
+				seenRequestID = r.Header.Get("X-MaClaw-Request-ID")
+				header := make(http.Header)
+				header.Set(llmpool.ProviderIDHeader, "official-provider-a")
+				header.Set(llmpool.TokenPricingSnapshotHeader, mustEncodeTokenPricingSnapshot(t, llmpool.TokenPricingSnapshot{
+					ProviderID:    "official-provider-a",
+					UpstreamModel: "opencode-1",
+					InputTokens:   1,
+					OutputTokens:  1,
+					Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+						InputCreditsPer10K:  1000,
+						OutputCreditsPer10K: 1000,
+					}},
+				}))
+				for key, values := range header {
+					w.Header()[key] = values
+				}
 				writeJSON(w, http.StatusOK, map[string]any{
 					"id":    "hubcenter-official",
 					"model": "auto",
@@ -4244,12 +4357,15 @@ func TestLLMV1HandlersChargeMaClawOfficialCredits(t *testing.T) {
 			if seenAuth != "Bearer machine-token" {
 				t.Fatalf("Authorization = %q", seenAuth)
 			}
+			if !strings.HasPrefix(seenRequestID, "llm_") {
+				t.Fatalf("X-MaClaw-Request-ID = %q, want Hub request id", seenRequestID)
+			}
 
 			serviceReg, err := llmservice.LoadRegistry(ctx, system)
 			if err != nil {
 				t.Fatalf("load service registry: %v", err)
 			}
-			if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 1.1 {
+			if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 1.2 {
 				t.Fatalf("expected official credits to be charged immediately, got %#v", serviceReg.Grants)
 			}
 

@@ -19,6 +19,12 @@ bool ml307_transport_cancel_requests_for_owner(const void *owner);
  * might still hold it; a timeout leaves the transport intact and returns an
  * error rather than pretending the cellular service is fully stopped. */
 esp_err_t ml307_transport_quiesce(uint32_t timeout_ms);
+/* Future System Sleep needs the same bounded probe/HTTP safe point as a
+ * shutdown, but must be able to return to the exact pre-PREPARE generation
+ * when a later participant rejects the transaction.  These functions never
+ * deinitialize the modem or UART and remain private to the Fangtang adapter. */
+esp_err_t ml307_transport_prepare_system_sleep(uint32_t timeout_ms);
+void ml307_transport_abort_system_sleep_prepare(void);
 
 typedef esp_err_t (*ml307_transport_body_reader_t)(
     void *context, void *buffer, size_t requested, size_t *read_bytes);

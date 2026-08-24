@@ -44,6 +44,10 @@ typedef enum {
 typedef struct {
     app_intent_event_t intent;
     app_intent_queue_event_kind_t kind;
+    /* Captured while input publication passes ordinary admission.  PREPARE
+     * advances the epoch permanently, so a physical gesture dequeued before
+     * the marker can never be dispatched after a later ABORT reopens input. */
+    uint32_t system_sleep_epoch;
 } app_intent_queue_event_t;
 
 typedef struct {
@@ -70,6 +74,11 @@ typedef struct {
     bool stop_in_progress;
     bool stop_enqueued;
     uint32_t publishers_in_flight;
+    /* Future physical System Sleep retains the selected scanner/wake route,
+     * but no touch/key event may reach business policy across COMMIT. */
+    bool system_sleep_preparing;
+    uint32_t system_sleep_epoch;
+    uint32_t dispatches_in_flight;
 } app_intent_service_state_t;
 
 static app_intent_service_state_t s_service;
@@ -89,7 +98,8 @@ static bool is_control_intent(app_intent_type_t intent) {
 static bool is_critical_intent(app_intent_type_t intent) {
     return intent == APP_INTENT_SECONDARY_ACTIVATE ||
            intent == APP_INTENT_OPEN_CONFIGURATION ||
-           intent == APP_INTENT_PRIMARY_CONTACT_DOWN;
+           intent == APP_INTENT_PRIMARY_CONTACT_DOWN ||
+           intent == APP_INTENT_AUXILIARY_CONTACT_DOWN;
 }
 
 static bool binding_for(device_input_action_t action, app_intent_type_t *out_intent) {
@@ -110,7 +120,7 @@ typedef enum {
 } app_intent_queue_lane_t;
 
 static bool take_next(app_intent_queue_event_t *out_event,
-                      app_intent_queue_lane_t *out_lane) {
+                       app_intent_queue_lane_t *out_lane) {
     if (xQueueReceive(s_service.critical_queue, out_event, 0) == pdPASS) {
         *out_lane = APP_INTENT_QUEUE_LANE_CRITICAL;
         return true;
@@ -135,6 +145,31 @@ static bool take_next(app_intent_queue_event_t *out_event,
     return false;
 }
 
+/* A callback can create foreground work, persist configuration, or change a
+ * scene.  Count only handlers which observed ordinary admission while holding
+ * the same lock as PREPARE, so the transaction never mistakes a dequeued
+ * event for a quiescent business boundary. */
+static bool begin_intent_dispatch(uint32_t event_epoch) {
+    bool admitted = false;
+    taskENTER_CRITICAL(&s_service_lock);
+    if (s_service.started && !s_service.stopping &&
+        !s_service.system_sleep_preparing &&
+        event_epoch != 0 && event_epoch == s_service.system_sleep_epoch) {
+        ++s_service.dispatches_in_flight;
+        admitted = true;
+    }
+    taskEXIT_CRITICAL(&s_service_lock);
+    return admitted;
+}
+
+static void end_intent_dispatch(void) {
+    taskENTER_CRITICAL(&s_service_lock);
+    if (s_service.dispatches_in_flight > 0) {
+        --s_service.dispatches_in_flight;
+    }
+    taskEXIT_CRITICAL(&s_service_lock);
+}
+
 static void app_interaction_task(void *arg) {
     (void)arg;
     app_intent_queue_event_t event;
@@ -152,7 +187,7 @@ static void app_interaction_task(void *arg) {
             taskEXIT_CRITICAL(&s_service_lock);
         }
         if (event.kind == APP_INTENT_QUEUE_EVENT_STOP) break;
-        if (s_service.stopping) continue;
+        if (!begin_intent_dispatch(event.system_sleep_epoch)) continue;
         if (event.intent.struct_size != sizeof(app_intent_event_t) ||
             event.intent.abi_version != APP_INTENT_ABI_VERSION ||
             event.intent.input_generation == 0) {
@@ -160,11 +195,13 @@ static void app_interaction_task(void *arg) {
                      (unsigned long)event.intent.struct_size,
                      (unsigned long)event.intent.abi_version,
                      (unsigned long)event.intent.input_generation);
+            end_intent_dispatch();
             continue;
         }
         if (s_service.consumer) {
             s_service.consumer(&event.intent, s_service.consumer_context);
         }
+        end_intent_dispatch();
     }
     if (s_service.stopped) xSemaphoreGive(s_service.stopped);
     vTaskDelete(NULL);
@@ -179,6 +216,7 @@ static void on_device_input(const device_input_event_t *input, void *context) {
         return;
     }
     bool primary_source = device_input_is_primary_interaction_source(input->source);
+    bool display_wake_source = device_input_is_display_wake_source(input->source);
     app_intent_type_t intent;
     if (input->action == DEVICE_INPUT_CONTACT_DOWN) {
         /* Contact ownership is decided at the binding seam, not in app
@@ -199,24 +237,28 @@ static void on_device_input(const device_input_event_t *input, void *context) {
         .timestamp_us = input->timestamp_us,
         .type = intent,
         .primary_interaction_source = primary_source,
+        .display_wake_source = display_wake_source,
         .source = input->source,
     };
     bool critical = is_critical_intent(intent);
     bool control = !critical && is_control_intent(intent);
     QueueHandle_t queue;
+    uint32_t system_sleep_epoch = 0;
     taskENTER_CRITICAL(&s_service_lock);
-    if (!s_service.accepting) {
+    if (!s_service.accepting || s_service.system_sleep_preparing) {
         taskEXIT_CRITICAL(&s_service_lock);
         return;
     }
     ++s_service.publishers_in_flight;
     queue = critical ? s_service.critical_queue
                      : control ? s_service.control_queue : s_service.auxiliary_queue;
+    system_sleep_epoch = s_service.system_sleep_epoch;
     taskEXIT_CRITICAL(&s_service_lock);
 
     app_intent_queue_event_t queued = {
         .intent = event,
         .kind = APP_INTENT_QUEUE_EVENT_INTENT,
+        .system_sleep_epoch = system_sleep_epoch,
     };
     if (xQueueSend(queue, &queued, 0) != pdPASS) {
         taskENTER_CRITICAL(&s_service_lock);
@@ -303,6 +345,7 @@ device_status_t app_intent_service_start(app_intent_cb_t on_intent, void *contex
     taskENTER_CRITICAL(&s_service_lock);
     s_service.accepting = true;
     s_service.started = true;
+    s_service.system_sleep_epoch = 1;
     taskEXIT_CRITICAL(&s_service_lock);
     ESP_LOGI(TAG, "app interaction task started: critical=%u control=%u auxiliary=%u",
              APP_INTENT_CRITICAL_QUEUE_DEPTH, APP_INTENT_CONTROL_QUEUE_DEPTH,
@@ -395,6 +438,56 @@ device_status_t app_intent_service_stop(uint32_t timeout_ms) {
     taskEXIT_CRITICAL(&s_service_lock);
     ESP_LOGI(TAG, "app interaction task stopped");
     return DEVICE_STATUS_OK;
+}
+
+device_status_t app_intent_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started_at = xTaskGetTickCount();
+    TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
+    if (deadline == 0) deadline = 1;
+
+    taskENTER_CRITICAL(&s_service_lock);
+    if (s_service.system_sleep_preparing || s_service.stopping) {
+        taskEXIT_CRITICAL(&s_service_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    /* A not-yet-started application dispatcher has no input policy side
+     * effect to fence. This keeps Power profile-neutral during early boot. */
+    if (!s_service.started) {
+        taskEXIT_CRITICAL(&s_service_lock);
+        return DEVICE_STATUS_OK;
+    }
+    s_service.system_sleep_preparing = true;
+    ++s_service.system_sleep_epoch;
+    if (s_service.system_sleep_epoch == 0) s_service.system_sleep_epoch = 1;
+    taskEXIT_CRITICAL(&s_service_lock);
+
+    for (;;) {
+        taskENTER_CRITICAL(&s_service_lock);
+        const uint32_t publishers = s_service.publishers_in_flight;
+        const uint32_t dispatches = s_service.dispatches_in_flight;
+        taskEXIT_CRITICAL(&s_service_lock);
+        /* A publisher which passed admission before the marker may still be
+         * between the lock and xQueueSend. Its captured epoch makes the event
+         * permanently stale; wait for it to leave before declaring the input
+         * plane quiescent. Avoid xQueueReset(): resetting a queue set while
+         * its consumer waits is unnecessary and obscures the epoch proof. */
+        if (publishers == 0 && dispatches == 0) return DEVICE_STATUS_OK;
+        if ((xTaskGetTickCount() - started_at) >= deadline) {
+            /* Keep input publication closed until Power performs the common
+             * reverse-order ABORT.  A pre-fence dispatcher may still be
+             * returning from queue/intent handling; reopening here would
+             * admit a later physical gesture across the parent transaction. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(1);
+    }
+}
+
+void app_intent_service_abort_system_sleep_prepare(void) {
+    taskENTER_CRITICAL(&s_service_lock);
+    s_service.system_sleep_preparing = false;
+    taskEXIT_CRITICAL(&s_service_lock);
 }
 
 bool app_intent_service_get_snapshot(app_intent_service_snapshot_t *out_snapshot) {

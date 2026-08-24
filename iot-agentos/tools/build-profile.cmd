@@ -17,6 +17,11 @@ set "MACLAW_EXTRA_COMPONENT_DIRS="
 set "MACLAW_BUILD_DIR="
 set "MACLAW_SDKCONFIG="
 set "MACLAW_DEFAULTS="
+rem CMake's preliminary dependency pass is a separate process.  Preserve the
+rem requested profile in its environment before that pass starts; otherwise a
+rem reused echoear build can configure the final source selection correctly
+rem while pruning the ST77916 public include dependency from main.
+set "MACLAW_PROFILE=%MACLAW_PROFILE%"
 
 if /I "%MACLAW_PROFILE%"=="echoear-2st" (
   set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\echoear_deps"
@@ -53,6 +58,14 @@ if /I "%MACLAW_PROFILE%"=="echoear-2st-animation-deadline-fi" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.echoear-2st-animation-deadline-fi"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="echoear-2st-safe-mode-fi" (
+  set "MACLAW_PROFILE=echoear-2st"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\echoear_deps"
+  set "MACLAW_BUILD_DIR=build-test-echoear-2st-safe-mode-fi"
+  set "MACLAW_SDKCONFIG=build-test-echoear-2st-safe-mode-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.echoear-2st-safe-mode-fi"
+  goto :build
+)
 if /I "%MACLAW_PROFILE%"=="bread-compact" (
   set "MACLAW_BUILD_DIR=build-unified-bread"
   set "MACLAW_SDKCONFIG=sdkconfig.bread-compact"
@@ -78,6 +91,13 @@ if /I "%MACLAW_PROFILE%"=="bread-compact-renderer-stage3-fi" (
   set "MACLAW_BUILD_DIR=build-test-bread-compact-renderer-stage3-fi"
   set "MACLAW_SDKCONFIG=build-test-bread-compact-renderer-stage3-fi\sdkconfig"
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.bread-compact;sdkconfig.defaults.bread-compact-renderer-stage3-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="bread-compact-safe-mode-fi" (
+  set "MACLAW_PROFILE=bread-compact"
+  set "MACLAW_BUILD_DIR=build-test-bread-compact-safe-mode-fi"
+  set "MACLAW_SDKCONFIG=build-test-bread-compact-safe-mode-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.bread-compact;sdkconfig.defaults.bread-compact-safe-mode-fi"
   goto :build
 )
 if /I "%MACLAW_PROFILE%"=="fangtang-4g" (
@@ -199,11 +219,75 @@ if /I "%MACLAW_PROFILE%"=="fangtang-4g-fence-fi" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-fence-fi"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-power-lease-commit-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-power-lease-commit-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-power-lease-commit-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-power-lease-commit-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-power-display-off-retry-hil-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-power-display-off-retry-hil-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-power-display-off-retry-hil-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-power-display-off-retry-hil-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-schedule-end-handoff-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-schedule-end-handoff-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-schedule-end-handoff-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-schedule-end-handoff-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-schedule-end-handoff-hil-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-schedule-end-handoff-hil-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-schedule-end-handoff-hil-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-schedule-end-handoff-hil-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="fangtang-4g-safe-mode-fi" (
+  set "MACLAW_PROFILE=fangtang-4g"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\fangtang_deps"
+  set "MACLAW_BUILD_DIR=build-test-fangtang-4g-safe-mode-fi"
+  set "MACLAW_SDKCONFIG=build-test-fangtang-4g-safe-mode-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.fangtang-4g;sdkconfig.defaults.fangtang-4g-safe-mode-fi"
+  goto :build
+)
 if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c" (
   set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
   set "MACLAW_BUILD_DIR=build-unified-waveshare"
   set "MACLAW_SDKCONFIG=sdkconfig.waveshare-amoled-1.75c"
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="reference-fake" (
+  rem CI-only fourth-profile exercise. It has a separate lock file because
+  rem Component Manager dependencies are profile-qualified during configure.
+  set "MACLAW_BUILD_DIR=build-reference-fake"
+  set "MACLAW_SDKCONFIG=build-reference-fake\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.reference-fake"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-qmi8658-init-fi" (
+  set "MACLAW_PROFILE=waveshare-amoled-1.75c"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
+  set "MACLAW_BUILD_DIR=build-test-waveshare-amoled-1.75c-qmi8658-init-fi"
+  set "MACLAW_SDKCONFIG=build-test-waveshare-amoled-1.75c-qmi8658-init-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c;sdkconfig.defaults.waveshare-amoled-1.75c-qmi8658-init-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-qmi8658-read-fi" (
+  set "MACLAW_PROFILE=waveshare-amoled-1.75c"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
+  set "MACLAW_BUILD_DIR=build-test-waveshare-amoled-1.75c-qmi8658-read-fi"
+  set "MACLAW_SDKCONFIG=build-test-waveshare-amoled-1.75c-qmi8658-read-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c;sdkconfig.defaults.waveshare-amoled-1.75c-qmi8658-read-fi"
   goto :build
 )
 if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-fence-fi" (
@@ -230,20 +314,62 @@ if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-animation-deadline-fi" (
   set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c;sdkconfig.defaults.waveshare-amoled-1.75c-animation-deadline-fi"
   goto :build
 )
+if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-safe-mode-fi" (
+  set "MACLAW_PROFILE=waveshare-amoled-1.75c"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
+  set "MACLAW_BUILD_DIR=build-test-waveshare-amoled-1.75c-safe-mode-fi"
+  set "MACLAW_SDKCONFIG=build-test-waveshare-amoled-1.75c-safe-mode-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c;sdkconfig.defaults.waveshare-amoled-1.75c-safe-mode-fi"
+  goto :build
+)
+if /I "%MACLAW_PROFILE%"=="waveshare-amoled-1.75c-safe-mode-force-setup-fi" (
+  set "MACLAW_PROFILE=waveshare-amoled-1.75c"
+  set "MACLAW_EXTRA_COMPONENT_DIRS=%~dp0..\profile_components\waveshare_deps"
+  set "MACLAW_BUILD_DIR=build-test-waveshare-amoled-1.75c-safe-mode-force-setup-fi"
+  set "MACLAW_SDKCONFIG=build-test-waveshare-amoled-1.75c-safe-mode-force-setup-fi\sdkconfig"
+  set "MACLAW_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.waveshare-amoled-1.75c;sdkconfig.defaults.waveshare-amoled-1.75c-safe-mode-force-setup-fi"
+  goto :build
+)
 goto :usage
 
 :build
 pushd "%~dp0.." || exit /b 2
+if /I "%MACLAW_PROFILE%"=="reference-fake" (
+  rem Reference fake profile is CI-only and cannot flash or monitor.  It has
+  rem no physical board identity, so allow only non-invasive CMake/IDF actions.
+  for %%A in ("%~2" "%~3" "%~4" "%~5" "%~6" "%~7" "%~8" "%~9") do (
+    if /I "%%~A"=="flash" (
+      echo Reference fake profile is CI-only and cannot flash or monitor.
+      set "MACLAW_RESULT=64"
+      goto :done
+    )
+    if /I "%%~A"=="monitor" (
+      echo Reference fake profile is CI-only and cannot flash or monitor.
+      set "MACLAW_RESULT=64"
+      goto :done
+    )
+    if /I "%%~A"=="erase_flash" (
+      echo Reference fake profile is CI-only and cannot flash or monitor.
+      set "MACLAW_RESULT=64"
+      goto :done
+    )
+  )
+)
 if not "%IDF_PATH%"=="" goto :idf_ready
 call C:\esp\v6.0.2\esp-idf\export.bat || (popd & exit /b 2)
 :idf_ready
 rem Each board has a distinct managed-dependency closure.  The root CMake
 rem file maps MACLAW_PROFILE to a profile-qualified Component Manager lock;
-rem pass only the identity here so the property remains authoritative in both
-rem ESP-IDF configure passes.
+rem pass the identity and profile dependency carrier here.  The carrier is
+rem still required during ESP-IDF's preliminary requirements pass: otherwise
+rem the existing cache can retain a Waveshare build graph while main loses the
+rem public CO5300/CST9217 include requirements on a subsequent configure.
 rem Component Manager reads IDF_TARGET from the environment during its
 rem preliminary manifest-resolution pass, before SDKCONFIG_DEFAULTS is applied.
 set "IDF_TARGET=esp32s3"
+rem The requirements pass cannot see board Kconfig yet, so export the profile
+rem identity as well as forwarding it on the later CMake command line.
+set "MACLAW_PROFILE=%MACLAW_PROFILE%"
 set "MACLAW_IDF_ARGS=-B %MACLAW_BUILD_DIR% -D MACLAW_PROFILE=%MACLAW_PROFILE% -D SDKCONFIG=%MACLAW_SDKCONFIG% -D EXTRA_COMPONENT_DIRS=%MACLAW_EXTRA_COMPONENT_DIRS%"
 if not "%MACLAW_DEFAULTS%"=="" set "MACLAW_IDF_ARGS=%MACLAW_IDF_ARGS% -D SDKCONFIG_DEFAULTS=%MACLAW_DEFAULTS%"
 
@@ -251,6 +377,226 @@ rem Keep the shared business/HAL headers independent of ESP-IDF, FreeRTOS and
 rem board-driver objects on every supported profile build.  Profile-private
 rem adapters remain the deliberate translation boundary below this check.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-hal-boundaries.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-input-hal-routing.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-input-scanner-restart.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wake-capability.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wake-profile-matrix.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-platform-power-fail-closed.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-platform-power-wake-authorization.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-motion-hal-contract.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-fall-detection-classifier.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-storage-service-lifecycle.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-fault-domain.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-display-service-fault-domain.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-audio-wake-fault-domain.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-resource-pressure-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-battery-policy-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-firmware-identity-system-sleep.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wake-deadline-system-sleep.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-system-sleep-failure-closure.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-device-profile-validation.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-official-device-profiles.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-reference-fake-profile.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-foreground-coordinator.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-platform-storage-contract.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-connectivity-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-connectivity-restart-coordinator.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-safe-mode-coordinator.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-safe-mode-input-policy.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-lifecycle-restart-commit.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-cellular-recovery-policy.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-capability-projection.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-ambient-extraction.ps1" -SkipHostTest
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-pet-asset-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-meeting-recording-storage.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-transaction.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-revision.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-reconcile.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-policy.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-effective-policy.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-source-priority.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-display-policy.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-provisioning-extraction.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-audio-arbitration-extraction.ps1" -SkipHostTest
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-shared-bus-lifecycle.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-shared-bus-recovery-transaction.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-round-shared-bus-wiring.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
@@ -264,6 +610,6 @@ popd
 exit /b %MACLAW_RESULT%
 
 :usage
-echo Usage: %~nx0 ^<echoear-2st^|echoear-2st-display-stage5-fi^|echoear-2st-fence-fi^|bread-compact^|bread-compact-display-stage5-fi^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|fangtang-4g^|fangtang-4g-display-stage5-fi^|fangtang-4g-display-chunk8-fi^|fangtang-4g-renderer-fi^|fangtang-4g-renderer-stage2-fi^|fangtang-4g-renderer-stage3-fi^|fangtang-4g-renderer-stage4-fi^|fangtang-4g-renderer-stage5-fi^|fangtang-4g-renderer-stage6-fi^|fangtang-4g-display-service-fi^|fangtang-4g-task-registry-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-animation-deadline-fi^|fangtang-4g-display-busy-request-stop-fi^|fangtang-4g-fence-fi^|waveshare-amoled-1.75c^|waveshare-amoled-1.75c-fence-fi^|waveshare-amoled-1.75c-display-stage5-fi^> [idf.py action...]
+echo Usage: %~nx0 ^<echoear-2st^|echoear-2st-display-stage5-fi^|echoear-2st-fence-fi^|echoear-2st-safe-mode-fi^|bread-compact^|reference-fake^|bread-compact-display-stage5-fi^|bread-compact-renderer-fi^|bread-compact-renderer-stage3-fi^|bread-compact-safe-mode-fi^|fangtang-4g^|fangtang-4g-display-stage5-fi^|fangtang-4g-display-chunk8-fi^|fangtang-4g-renderer-fi^|fangtang-4g-renderer-stage2-fi^|fangtang-4g-renderer-stage3-fi^|fangtang-4g-renderer-stage4-fi^|fangtang-4g-renderer-stage5-fi^|fangtang-4g-renderer-stage6-fi^|fangtang-4g-display-service-fi^|fangtang-4g-task-registry-fi^|fangtang-4g-display-stop-timeout-fi^|fangtang-4g-fence-fi^|fangtang-4g-power-lease-commit-fi^|fangtang-4g-power-display-off-retry-hil-fi^|fangtang-4g-schedule-end-handoff-fi^|fangtang-4g-safe-mode-fi^|waveshare-amoled-1.75c^|waveshare-amoled-1.75c-qmi8658-init-fi^|waveshare-amoled-1.75c-fence-fi^|waveshare-amoled-1.75c-display-stage5-fi^|waveshare-amoled-1.75c-safe-mode-fi^|waveshare-amoled-1.75c-safe-mode-force-setup-fi^> [idf.py action...]
 echo Example: %~nx0 bread-compact build
 exit /b 64

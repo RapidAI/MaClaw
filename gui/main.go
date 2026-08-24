@@ -14,6 +14,7 @@ import (
 	goruntime "runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -449,35 +450,168 @@ func isTUISubcommand(args []string) bool {
 // Registration/onboarding lines are always written (even when log_detail_enabled
 // is false) and also teed to registration.log for support diagnosis.
 func initLogFile() {
-	dir := corelib.MaclawLogsDir()
+	openLogSinks(corelib.MaclawLogsDir(), true)
+}
+
+// logSinkMu serializes close/open/rebind. Recording start and a successful
+// upload both clear diagnostics; without this they can swap each other's
+// handles and leave the process writing to a closed or leaked file.
+var logSinkMu sync.Mutex
+
+// openLogSinkHandles holds the process-lifetime files so a later reopen can
+// retire the previous ones instead of leaking them.
+var openLogSinkHandles struct {
+	file    *os.File
+	regFile *os.File
+}
+
+// closeLogSinks releases every diagnostic handle and sends log output back to
+// stderr. Used before emptying the log directory and by tests that redirected
+// sinks into a temporary base dir so Windows can remove that directory.
+func closeLogSinks() {
+	logSinkMu.Lock()
+	defer logSinkMu.Unlock()
+	closeLogSinksLocked()
+}
+
+func closeLogSinksLocked() {
+	programLogger.Close()
+	closeSDKDiagLog()
+	file, regFile := openLogSinkHandles.file, openLogSinkHandles.regFile
+	openLogSinkHandles.file, openLogSinkHandles.regFile = nil, nil
+	log.SetOutput(os.Stderr)
+	if file != nil {
+		_ = file.Close()
+	}
+	if regFile != nil {
+		_ = regFile.Close()
+	}
+}
+
+func isSymlinkPath(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
+func usableLogDir(dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("empty log directory")
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("log directory is a symbolic link")
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("log path is not a directory")
+	}
+	return nil
+}
+
+func prepareLogDir(dir string) error {
+	if err := usableLogDir(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
+		return err
+	}
+	return usableLogDir(dir)
+}
+
+func rejectSymlinkFile(path string) error {
+	if isSymlinkPath(path) {
+		return fmt.Errorf("log file is a symbolic link")
+	}
+	return nil
+}
+
+func openLogSinks(dir string, announce bool) bool {
+	logSinkMu.Lock()
+	defer logSinkMu.Unlock()
+	return openLogSinksLocked(dir, announce)
+}
+
+func openLogSinksLocked(dir string, announce bool) bool {
+	if err := prepareLogDir(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "[maclaw] refusing log dir %s: %v\n", dir, err)
+		return false
 	}
 	logPath := filepath.Join(dir, "maclaw.log")
 	regPath := filepath.Join(dir, "registration.log")
+	if err := rejectSymlinkFile(logPath); err != nil {
+		fmt.Fprintf(os.Stderr, "[maclaw] refusing %s: %v\n", logPath, err)
+		return false
+	}
 
 	// Rotate if existing log exceeds 10 MB.
 	rotateLogIfLarge(logPath)
-	rotateLogIfLarge(regPath)
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		fmt.Fprintf(os.Stderr, "[maclaw] cannot open %s: %v\n", logPath, err)
+		return false
 	}
-	regF, regErr := os.OpenFile(regPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if regErr != nil {
-		regF = nil
+	var regF *os.File
+	adopted := false
+	defer func() {
+		if adopted {
+			return
+		}
+		_ = f.Close()
+		if regF != nil {
+			_ = regF.Close()
+		}
+	}()
+	// A leftover registration.log symlink must not take down maclaw.log.
+	// That file is the HostReject reason sink.
+	if err := rejectSymlinkFile(regPath); err != nil {
+		fmt.Fprintf(os.Stderr, "[maclaw] refusing %s: %v\n", regPath, err)
+	} else {
+		rotateLogIfLarge(regPath)
+		regF, err = os.OpenFile(regPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[maclaw] cannot open %s: %v\n", regPath, err)
+			if regF != nil {
+				_ = regF.Close()
+			}
+			regF = nil
+		}
 	}
 	// Write to both file and stderr so console still works during development.
 	mw := &detailAwareLogWriter{file: f, regFile: regF, stderr: os.Stderr}
 	log.SetOutput(mw)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Printf("[maclaw] === started at %s ===", time.Now().Format(time.RFC3339))
-	log.Printf("[maclaw] registration logging path=%s", regPath)
-	fmt.Fprintf(os.Stderr, "[maclaw] logging to %s (registration: %s)\n", logPath, regPath)
+
+	previousFile, previousReg := openLogSinkHandles.file, openLogSinkHandles.regFile
+	openLogSinkHandles.file, openLogSinkHandles.regFile = f, regF
+	if previousFile != nil {
+		_ = previousFile.Close()
+	}
+	if previousReg != nil {
+		_ = previousReg.Close()
+	}
+	adopted = true
+
+	if announce {
+		log.Printf("[maclaw] === started at %s ===", time.Now().Format(time.RFC3339))
+		fmt.Fprintf(os.Stderr, "[maclaw] logging to %s (registration: %s)\n", logPath, regPath)
+	}
+	if regF != nil {
+		log.Printf("[maclaw] registration logging path=%s", regPath)
+	}
+	return true
 }
 
 func rotateLogIfLarge(logPath string) {
+	if isSymlinkPath(logPath) {
+		return
+	}
 	if info, err := os.Stat(logPath); err == nil && info.Size() > 10*1024*1024 {
 		prev := logPath + ".1"
 		_ = os.Remove(prev)
@@ -556,7 +690,12 @@ func isImportantLogLine(line string) bool {
 	lower := strings.ToLower(line)
 	// Keep download/workdir diagnostics visible even when log_detail_enabled is off:
 	// agents land files under working_directory only when these paths are wired correctly.
+	// A semantic HostReject is user-visible (semantic_capability_unmet) but its
+	// only cause record is this log line. Dropping it leaves a rejected turn
+	// with no on-disk explanation.
 	keywords := []string{"error", "err=", "failed", "fatal", "panic", "warn", "warning",
+		"[semantic-routing] plan rejected",
+		"[bug-report]",
 		"[skill-runner]", "[skill-scanner]", "[lansenger]",
 		"[thirdparty-mgr]", "[tts-auto]",
 		"-lifecycle]",

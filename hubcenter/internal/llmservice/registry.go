@@ -6,6 +6,7 @@ package llmservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,13 +16,18 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
-const registryKey = "llm_service_registry"
+// RegistrySettingKey is the system-settings key for the LLM provider registry.
+// HA replicas must invalidate the in-memory registry cache when this key is applied.
+const RegistrySettingKey = "llm_service_registry"
 
 const DefaultComputeAgentID = "maclaw_official"
 const DefaultComputeAgentName = "MaClaw官方"
 
 const AccessPolicyFree = "free"
 const AccessPolicyGrantRequired = "grant_required"
+
+// ErrProviderNotFound is returned when a provider id is missing from the registry.
+var ErrProviderNotFound = errors.New("provider not found")
 
 // ComputeAgent represents an upstream compute reseller/agent used for settlement.
 type ComputeAgent struct {
@@ -37,21 +43,33 @@ type ComputeAgent struct {
 
 // Registry holds all LLM providers and service groups configured on HubCenter.
 type Registry struct {
-	Providers     []llmpool.ProviderConfig `json:"providers"`
-	ServiceGroups []llmpool.ServiceGroup   `json:"service_groups"`
-	Agents        []ComputeAgent           `json:"agents,omitempty"`
-	UpdatedAt     time.Time                `json:"updated_at,omitempty"`
+	Providers             []llmpool.ProviderConfig `json:"providers"`
+	ServiceGroups         []llmpool.ServiceGroup   `json:"service_groups"`
+	Agents                []ComputeAgent           `json:"agents,omitempty"`
+	DefaultServiceGroupID string                   `json:"default_service_group_id,omitempty"`
+	UpdatedAt             time.Time                `json:"updated_at,omitempty"`
 }
 
 // Service manages the HubCenter LLM configuration and dispatching.
 type Service struct {
-	system   store.SystemSettingsRepository
-	mu       sync.RWMutex
-	cached   *Registry
-	cachedAt time.Time
+	system    store.SystemSettingsRepository
+	mu        sync.RWMutex
+	writeMu   sync.Mutex
+	cached    *Registry
+	cachedAt  time.Time
+	headLocal string
+	headPeers []string
 }
 
 const registryCacheTTL = 30 * time.Second
+
+func (s *Service) lockRegistryWrite() func() {
+	if s == nil {
+		return func() {}
+	}
+	s.writeMu.Lock()
+	return s.writeMu.Unlock
+}
 
 // NewService creates a new LLM service manager.
 func NewService(system store.SystemSettingsRepository) *Service {
@@ -74,7 +92,7 @@ func (s *Service) LoadRegistry(ctx context.Context) (*Registry, error) {
 		return s.cached, nil
 	}
 
-	raw, err := s.system.Get(ctx, registryKey)
+	raw, err := s.system.Get(ctx, RegistrySettingKey)
 	if err != nil {
 		return nil, fmt.Errorf("load llm registry: %w", err)
 	}
@@ -92,26 +110,154 @@ func (s *Service) LoadRegistry(ctx context.Context) (*Registry, error) {
 
 // SaveRegistry persists the registry to the system settings store.
 func (s *Service) SaveRegistry(ctx context.Context, reg *Registry) error {
-	normalizeRegistry(reg)
-	reg.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(reg)
+	defer s.lockRegistryWrite()()
+	return s.persistRegistry(ctx, reg)
+}
+
+func (s *Service) persistRegistry(ctx context.Context, reg *Registry) error {
+	if s == nil {
+		return fmt.Errorf("llm service is required")
+	}
+	if reg == nil {
+		return fmt.Errorf("registry is required")
+	}
+	toSave := cloneRegistry(reg)
+	normalizeRegistry(toSave)
+	toSave.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(toSave)
 	if err != nil {
 		return fmt.Errorf("marshal llm registry: %w", err)
 	}
-	if err := s.system.Set(ctx, registryKey, string(data)); err != nil {
+	if err := s.system.Set(ctx, RegistrySettingKey, string(data)); err != nil {
 		return fmt.Errorf("save llm registry: %w", err)
 	}
 	s.mu.Lock()
-	s.cached = reg
+	s.cached = toSave
 	s.cachedAt = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+// MutateRegistry clones the current registry, applies fn, and persists only when
+// fn reports a change. The write lock is held for the whole load-modify-save so
+// callers cannot clobber a concurrent pause.
+func (s *Service) MutateRegistry(ctx context.Context, fn func(*Registry) (bool, error)) error {
+	if s == nil {
+		return fmt.Errorf("llm service is required")
+	}
+	if fn == nil {
+		return fmt.Errorf("registry mutator is required")
+	}
+	defer s.lockRegistryWrite()()
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	next := cloneRegistry(reg)
+	changed, err := fn(next)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return s.persistRegistry(ctx, next)
 }
 
 // Default queue wait timeout when a provider has MaxConcurrency > 0 but no
 // explicit QueueTimeoutMS. MaxQueueWaiters is intentionally left alone:
 // 0 means unlimited waiters in llmpool.ConcurrencyController (do not coerce).
 const defaultProviderQueueTimeoutMS = 120000
+
+func cloneRegistry(reg *Registry) *Registry {
+	if reg == nil {
+		return &Registry{}
+	}
+	next := *reg
+	next.Providers = cloneProviderConfigs(reg.Providers)
+	next.ServiceGroups = cloneServiceGroups(reg.ServiceGroups)
+	next.Agents = append([]ComputeAgent(nil), reg.Agents...)
+	return &next
+}
+
+func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.ProviderConfig, len(in))
+	for i, p := range in {
+		out[i] = p
+		out[i].Models = append([]string(nil), p.Models...)
+		out[i].CapabilityTags = append([]string(nil), p.CapabilityTags...)
+		out[i].CreditMultiplierSchedule = cloneCreditWindows(p.CreditMultiplierSchedule)
+	}
+	return out
+}
+
+func cloneCreditWindows(in []llmpool.CreditMultiplierWindow) []llmpool.CreditMultiplierWindow {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.CreditMultiplierWindow, len(in))
+	for i, w := range in {
+		out[i] = w
+		out[i].Days = append([]int(nil), w.Days...)
+	}
+	return out
+}
+
+func cloneServiceGroups(in []llmpool.ServiceGroup) []llmpool.ServiceGroup {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.ServiceGroup, len(in))
+	for i, g := range in {
+		out[i] = g
+		out[i].Routes = append([]llmpool.WorkloadRoute(nil), g.Routes...)
+		out[i].ExposedModels = append([]string(nil), g.ExposedModels...)
+		out[i].Models = cloneModelConfigs(g.Models)
+	}
+	return out
+}
+
+func cloneModelConfigs(in []llmpool.ModelConfig) []llmpool.ModelConfig {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.ModelConfig, len(in))
+	for i, m := range in {
+		out[i] = m
+		out[i].ProviderIDs = append([]string(nil), m.ProviderIDs...)
+		out[i].CapabilityTags = append([]string(nil), m.CapabilityTags...)
+		out[i].ProviderConfigs = cloneModelProviderConfigs(m.ProviderConfigs)
+	}
+	return out
+}
+
+func cloneModelProviderConfigs(in []llmpool.ModelProviderConfig) []llmpool.ModelProviderConfig {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.ModelProviderConfig, len(in))
+	for i, pc := range in {
+		out[i] = pc
+		out[i].CapabilityTags = append([]string(nil), pc.CapabilityTags...)
+	}
+	return out
+}
+
+func providerIndex(reg *Registry, id string) int {
+	id = strings.TrimSpace(id)
+	if reg == nil || id == "" {
+		return -1
+	}
+	for i, p := range reg.Providers {
+		if strings.TrimSpace(p.ID) == id {
+			return i
+		}
+	}
+	return -1
+}
 
 func normalizeRegistry(reg *Registry) {
 	if reg == nil {
@@ -120,16 +266,70 @@ func normalizeRegistry(reg *Registry) {
 	ensureDefaultComputeAgent(reg)
 	for i := range reg.Providers {
 		normalizeProviderGatewayLimits(&reg.Providers[i])
+		reg.Providers[i].NormalizeBilling()
 	}
+	normalizeProviderSequences(reg)
 	for i := range reg.ServiceGroups {
+		llmpool.EnsureOfficialDynamicTemplate(&reg.ServiceGroups[i])
 		normalizeServiceGroupModels(&reg.ServiceGroups[i])
 		normalizeServiceGroupAgent(reg, &reg.ServiceGroups[i])
+		if !llmpool.IsDynamicKind(reg.ServiceGroups[i].Kind) {
+			reg.ServiceGroups[i].Kind = ""
+		}
 	}
+	sanitizeDefaultServiceGroupID(reg)
+}
+
+func catalogServiceGroupID(reg *Registry, id string) string {
+	id = strings.TrimSpace(id)
+	if reg == nil || id == "" || llmpool.IsHubOfficialServiceGroup(id) || sameServiceGroupID(id, ExternalComputePermissionServiceGroupID) {
+		return ""
+	}
+	for i := range reg.ServiceGroups {
+		got := strings.TrimSpace(reg.ServiceGroups[i].ID)
+		if got == "" || !strings.EqualFold(got, id) || llmpool.IsHubOfficialServiceGroup(got) {
+			continue
+		}
+		return got
+	}
+	return ""
+}
+
+func sanitizeDefaultServiceGroupID(reg *Registry) {
+	if reg == nil {
+		return
+	}
+	reg.DefaultServiceGroupID = catalogServiceGroupID(reg, reg.DefaultServiceGroupID)
+}
+
+func (s *Service) SetDefaultServiceGroup(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	return s.MutateRegistry(ctx, func(reg *Registry) (bool, error) {
+		if id == "" {
+			if strings.TrimSpace(reg.DefaultServiceGroupID) == "" {
+				return false, nil
+			}
+			reg.DefaultServiceGroupID = ""
+			return true, nil
+		}
+		got := catalogServiceGroupID(reg, id)
+		if got == "" {
+			return false, fmt.Errorf("service group %s not found", id)
+		}
+		if strings.EqualFold(strings.TrimSpace(reg.DefaultServiceGroupID), got) {
+			return false, nil
+		}
+		reg.DefaultServiceGroupID = got
+		return true, nil
+	})
 }
 
 func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
 	if provider == nil {
 		return
+	}
+	if provider.MaxConcurrency < 0 {
+		provider.MaxConcurrency = 0
 	}
 	// MaxConcurrency <= 0 remains unlimited (no queue needed).
 	if provider.MaxConcurrency <= 0 {
@@ -140,6 +340,32 @@ func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
 	if provider.QueueTimeoutMS <= 0 {
 		provider.QueueTimeoutMS = defaultProviderQueueTimeoutMS
 	}
+}
+
+func normalizeProviderSequences(reg *Registry) {
+	if reg == nil || len(reg.Providers) == 0 {
+		return
+	}
+	for _, provider := range reg.Providers {
+		if provider.Sequence > 0 {
+			return
+		}
+	}
+	for i := range reg.Providers {
+		reg.Providers[i].Sequence = i + 1
+	}
+}
+
+func nextProviderSequence(reg *Registry) int {
+	max := 0
+	if reg != nil {
+		for _, provider := range reg.Providers {
+			if provider.Sequence > max {
+				max = provider.Sequence
+			}
+		}
+	}
+	return max + 1
 }
 
 func ensureDefaultComputeAgent(reg *Registry) {
@@ -189,6 +415,11 @@ func normalizeServiceGroupAccessPolicy(policy string) string {
 	}
 }
 
+// RequiresGrantAccessPolicy reports whether a group bills card or grant credits.
+func RequiresGrantAccessPolicy(policy string) bool {
+	return normalizeServiceGroupAccessPolicy(policy) == AccessPolicyGrantRequired
+}
+
 func normalizeServiceGroupModels(group *llmpool.ServiceGroup) {
 	if group == nil {
 		return
@@ -221,6 +452,13 @@ func validateServiceGroupProviderRoutes(reg *Registry, group llmpool.ServiceGrou
 	for _, model := range group.Models {
 		seen := map[string]struct{}{}
 		for _, pc := range modelProviderConfigs(model) {
+			effective := pc.TokenPricing
+			if idx := providerIndex(reg, pc.ProviderID); idx >= 0 {
+				effective = llmpool.EffectiveRouteTokenPricing(pc, reg.Providers[idx])
+			}
+			if err := llmpool.ValidateRouteBilling(pc.BillingMode, effective); err != nil {
+				return fmt.Errorf("model %q provider %q: %w", model.Name, pc.ProviderID, err)
+			}
 			providerID := strings.TrimSpace(pc.ProviderID)
 			if providerID == "" {
 				continue
@@ -319,6 +557,7 @@ func (s *Service) ListAgents(ctx context.Context) ([]ComputeAgent, error) {
 
 // AddAgent adds a compute agent.
 func (s *Service) AddAgent(ctx context.Context, agent ComputeAgent) error {
+	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
@@ -335,12 +574,14 @@ func (s *Service) AddAgent(ctx context.Context, agent ComputeAgent) error {
 	agent.Enabled = true
 	agent.CreatedAt = now
 	agent.UpdatedAt = now
-	reg.Agents = append(reg.Agents, agent)
-	return s.SaveRegistry(ctx, reg)
+	next := cloneRegistry(reg)
+	next.Agents = append(next.Agents, agent)
+	return s.persistRegistry(ctx, next)
 }
 
 // UpdateAgent updates a compute agent.
 func (s *Service) UpdateAgent(ctx context.Context, agent ComputeAgent) error {
+	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
@@ -355,8 +596,9 @@ func (s *Service) UpdateAgent(ctx context.Context, agent ComputeAgent) error {
 			if agent.ID == DefaultComputeAgentID {
 				agent.Enabled = true
 			}
-			reg.Agents[i] = agent
-			return s.SaveRegistry(ctx, reg)
+			next := cloneRegistry(reg)
+			next.Agents[i] = agent
+			return s.persistRegistry(ctx, next)
 		}
 	}
 	return fmt.Errorf("agent %s not found", agent.ID)
@@ -364,6 +606,7 @@ func (s *Service) UpdateAgent(ctx context.Context, agent ComputeAgent) error {
 
 // DeleteAgent removes a compute agent if no service group depends on it.
 func (s *Service) DeleteAgent(ctx context.Context, id string) error {
+	defer s.lockRegistryWrite()()
 	id = strings.TrimSpace(id)
 	if id == DefaultComputeAgentID {
 		return fmt.Errorf("default agent cannot be deleted")
@@ -377,7 +620,7 @@ func (s *Service) DeleteAgent(ctx context.Context, id string) error {
 			return fmt.Errorf("agent %s is used by service group %s", id, group.ID)
 		}
 	}
-	filtered := reg.Agents[:0]
+	filtered := make([]ComputeAgent, 0, len(reg.Agents))
 	for _, agent := range reg.Agents {
 		if agent.ID != id {
 			filtered = append(filtered, agent)
@@ -386,8 +629,9 @@ func (s *Service) DeleteAgent(ctx context.Context, id string) error {
 	if len(filtered) == len(reg.Agents) {
 		return fmt.Errorf("agent %s not found", id)
 	}
-	reg.Agents = filtered
-	return s.SaveRegistry(ctx, reg)
+	next := cloneRegistry(reg)
+	next.Agents = filtered
+	return s.persistRegistry(ctx, next)
 }
 
 // InvalidateCache forces the next LoadRegistry to re-read from storage.
@@ -411,58 +655,185 @@ func (s *Service) SetSystemSetting(ctx context.Context, key, value string) error
 // Provider CRUD
 // ---------------------------------------------------------------------------
 
+// validateProviderDefaultBilling checks the provider-wide default token price.
+// A provider without pricing is legal (routes then price themselves); a priced
+// default must still be a valid paid shape (finite, non-negative, non-zero).
+func validateProviderDefaultBilling(provider llmpool.ProviderConfig) error {
+	if provider.TokenPricing.HasCreditPricing() {
+		return llmpool.ValidateRouteBilling(llmpool.BillingModePaid, provider.TokenPricing)
+	}
+	return llmpool.ValidateRouteBilling(llmpool.BillingModeFree, provider.TokenPricing)
+}
+
 // AddProvider adds a new LLM provider to the registry.
 func (s *Service) AddProvider(ctx context.Context, provider llmpool.ProviderConfig) error {
+	defer s.lockRegistryWrite()()
+	provider.ID = strings.TrimSpace(provider.ID)
+	if provider.ID == "" {
+		return fmt.Errorf("provider id required")
+	}
+	if err := validateProviderDefaultBilling(provider); err != nil {
+		return err
+	}
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
 	}
-	for _, p := range reg.Providers {
-		if p.ID == provider.ID {
-			return fmt.Errorf("provider %s already exists", provider.ID)
-		}
+	if providerIndex(reg, provider.ID) >= 0 {
+		return fmt.Errorf("provider %s already exists", provider.ID)
 	}
-	reg.Providers = append(reg.Providers, provider)
-	return s.SaveRegistry(ctx, reg)
+	provider.NormalizeBilling()
+	if provider.Sequence <= 0 {
+		provider.Sequence = nextProviderSequence(reg)
+	}
+	next := cloneRegistry(reg)
+	next.Providers = append(next.Providers, provider)
+	return s.persistRegistry(ctx, next)
+}
+
+func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) llmpool.ProviderConfig {
+	incoming.ID = existing.ID
+	incoming.Paused = existing.Paused
+	if incoming.Sequence <= 0 {
+		incoming.Sequence = existing.Sequence
+	}
+	if strings.TrimSpace(incoming.WireAPI) == "" {
+		incoming.WireAPI = existing.WireAPI
+	}
+	if incoming.ResolutionTier == 0 {
+		incoming.ResolutionTier = existing.ResolutionTier
+	}
+	if incoming.MaxQueueWaiters == 0 {
+		incoming.MaxQueueWaiters = existing.MaxQueueWaiters
+	}
+	if incoming.QueueTimeoutMS == 0 {
+		incoming.QueueTimeoutMS = existing.QueueTimeoutMS
+	}
+	if incoming.CircuitBreakerThreshold == 0 {
+		incoming.CircuitBreakerThreshold = existing.CircuitBreakerThreshold
+	}
+	if incoming.CircuitBreakerCooldownMS == 0 {
+		incoming.CircuitBreakerCooldownMS = existing.CircuitBreakerCooldownMS
+	}
+	if incoming.FailureBackoffBaseMS == 0 {
+		incoming.FailureBackoffBaseMS = existing.FailureBackoffBaseMS
+	}
+	if incoming.FailureBackoffMaxMS == 0 {
+		incoming.FailureBackoffMaxMS = existing.FailureBackoffMaxMS
+	}
+	return incoming
 }
 
 // UpdateProvider updates an existing provider in the registry.
 func (s *Service) UpdateProvider(ctx context.Context, provider llmpool.ProviderConfig) error {
+	defer s.lockRegistryWrite()()
+	if err := validateProviderDefaultBilling(provider); err != nil {
+		return err
+	}
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
 	}
-	found := false
-	for i, p := range reg.Providers {
-		if p.ID == provider.ID {
-			reg.Providers[i] = provider
-			found = true
-			break
+	idx := providerIndex(reg, provider.ID)
+	if idx < 0 {
+		return fmt.Errorf("%w: %s", ErrProviderNotFound, provider.ID)
+	}
+	provider = mergeUnspecifiedProviderFields(reg.Providers[idx], provider)
+	provider.NormalizeBilling()
+	next := cloneRegistry(reg)
+	next.Providers[idx] = provider
+	return s.persistRegistry(ctx, next)
+}
+
+// SetProviderPaused pauses or resumes dispatch to a provider without changing
+// its credentials or routing configuration.
+func (s *Service) SetProviderPaused(ctx context.Context, id string, paused bool) error {
+	id = strings.TrimSpace(id)
+	if s == nil || id == "" {
+		return fmt.Errorf("provider id required")
+	}
+	defer s.lockRegistryWrite()()
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return err
+	}
+	idx := providerIndex(reg, id)
+	if idx < 0 {
+		return fmt.Errorf("%w: %s", ErrProviderNotFound, id)
+	}
+	if reg.Providers[idx].Paused == paused {
+		return nil
+	}
+	next := cloneRegistry(reg)
+	next.Providers[idx].Paused = paused
+	return s.persistRegistry(ctx, next)
+}
+
+// SetProviderSequence sets the dispatch order for a provider. Smaller numbers
+// are tried first; paused or failed providers are skipped.
+func (s *Service) SetProviderSequence(ctx context.Context, id string, sequence int) error {
+	return s.SetProviderSequences(ctx, map[string]int{strings.TrimSpace(id): sequence})
+}
+
+// SetProviderSequences applies many dispatch-order updates in one persist so a
+// swap or reindex cannot land halfway.
+func (s *Service) SetProviderSequences(ctx context.Context, sequences map[string]int) error {
+	if len(sequences) == 0 {
+		return fmt.Errorf("sequences required")
+	}
+	return s.MutateRegistry(ctx, func(reg *Registry) (bool, error) {
+		changed := false
+		for id, sequence := range sequences {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				return false, fmt.Errorf("provider id required")
+			}
+			if sequence < 1 {
+				return false, fmt.Errorf("sequence must be >= 1")
+			}
+			idx := providerIndex(reg, id)
+			if idx < 0 {
+				return false, fmt.Errorf("%w: %s", ErrProviderNotFound, id)
+			}
+			if reg.Providers[idx].Sequence == sequence {
+				continue
+			}
+			reg.Providers[idx].Sequence = sequence
+			changed = true
 		}
+		return changed, nil
+	})
+}
+
+// ListProviderBilling returns vendor time-of-use policies for configured providers.
+func (s *Service) ListProviderBilling(ctx context.Context) []llmpool.ProviderBillingPolicy {
+	if s == nil {
+		return nil
 	}
-	if !found {
-		return fmt.Errorf("provider %s not found", provider.ID)
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil || reg == nil {
+		return nil
 	}
-	return s.SaveRegistry(ctx, reg)
+	return llmpool.ProviderBillingPolicies(reg.Providers)
 }
 
 // DeleteProvider removes a provider from the registry.
 func (s *Service) DeleteProvider(ctx context.Context, id string) error {
+	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
 	}
-	filtered := reg.Providers[:0]
-	for _, p := range reg.Providers {
-		if p.ID != id {
-			filtered = append(filtered, p)
-		}
+	idx := providerIndex(reg, id)
+	if idx < 0 {
+		return fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
 	}
-	if len(filtered) == len(reg.Providers) {
-		return fmt.Errorf("provider %s not found", id)
-	}
-	reg.Providers = filtered
-	return s.SaveRegistry(ctx, reg)
+	filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers)-1)
+	filtered = append(filtered, reg.Providers[:idx]...)
+	filtered = append(filtered, reg.Providers[idx+1:]...)
+	next := cloneRegistry(reg)
+	next.Providers = filtered
+	return s.persistRegistry(ctx, next)
 }
 
 // GetProvider returns a provider by ID.
@@ -471,12 +842,12 @@ func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.Provider
 	if err != nil {
 		return nil, err
 	}
-	for i, p := range reg.Providers {
-		if p.ID == id {
-			return &reg.Providers[i], nil
-		}
+	idx := providerIndex(reg, id)
+	if idx < 0 {
+		return nil, nil
 	}
-	return nil, nil
+	got := reg.Providers[idx]
+	return &got, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +856,7 @@ func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.Provider
 
 // AddServiceGroup adds a new service group.
 func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGroup) error {
+	defer s.lockRegistryWrite()()
 	if group.ID == ExternalComputePermissionServiceGroupID {
 		return fmt.Errorf("service group id %s is reserved", group.ID)
 	}
@@ -495,8 +867,12 @@ func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGrou
 	if group.AgentID == "" {
 		group.AgentID = DefaultComputeAgentID
 	}
+	llmpool.EnsureOfficialDynamicTemplate(&group)
 	normalizeServiceGroupModels(&group)
 	if err := validateServiceGroupProviderRoutes(reg, group); err != nil {
+		return err
+	}
+	if err := llmpool.ValidateDynamicServiceGroup(&group); err != nil {
 		return err
 	}
 	if findComputeAgent(reg, group.AgentID) == nil {
@@ -508,12 +884,14 @@ func (s *Service) AddServiceGroup(ctx context.Context, group llmpool.ServiceGrou
 			return fmt.Errorf("service group %s already exists", group.ID)
 		}
 	}
-	reg.ServiceGroups = append(reg.ServiceGroups, group)
-	return s.SaveRegistry(ctx, reg)
+	next := cloneRegistry(reg)
+	next.ServiceGroups = append(next.ServiceGroups, group)
+	return s.persistRegistry(ctx, next)
 }
 
 // UpdateServiceGroup updates an existing service group.
 func (s *Service) UpdateServiceGroup(ctx context.Context, group llmpool.ServiceGroup) error {
+	defer s.lockRegistryWrite()()
 	if group.ID == ExternalComputePermissionServiceGroupID {
 		return fmt.Errorf("service group id %s is reserved", group.ID)
 	}
@@ -524,35 +902,44 @@ func (s *Service) UpdateServiceGroup(ctx context.Context, group llmpool.ServiceG
 	if group.AgentID == "" {
 		group.AgentID = DefaultComputeAgentID
 	}
+	llmpool.EnsureOfficialDynamicTemplate(&group)
 	normalizeServiceGroupModels(&group)
 	if err := validateServiceGroupProviderRoutes(reg, group); err != nil {
+		return err
+	}
+	if err := llmpool.ValidateDynamicServiceGroup(&group); err != nil {
 		return err
 	}
 	if findComputeAgent(reg, group.AgentID) == nil {
 		return fmt.Errorf("agent %s not found", group.AgentID)
 	}
 	normalizeServiceGroupAgent(reg, &group)
-	found := false
+	idx := -1
 	for i, g := range reg.ServiceGroups {
 		if g.ID == group.ID {
-			reg.ServiceGroups[i] = group
-			found = true
+			idx = i
 			break
 		}
 	}
-	if !found {
+	if idx < 0 {
 		return fmt.Errorf("service group %s not found", group.ID)
 	}
-	return s.SaveRegistry(ctx, reg)
+	next := cloneRegistry(reg)
+	next.ServiceGroups[idx] = group
+	return s.persistRegistry(ctx, next)
 }
 
 // DeleteServiceGroup removes a service group.
 func (s *Service) DeleteServiceGroup(ctx context.Context, id string) error {
+	if llmpool.IsOfficialConventionGroupID(id) {
+		return fmt.Errorf("MaClaw official group %s is system-generated and cannot be deleted", llmpool.OfficialGroupID)
+	}
+	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
 		return err
 	}
-	filtered := reg.ServiceGroups[:0]
+	filtered := make([]llmpool.ServiceGroup, 0, len(reg.ServiceGroups))
 	for _, g := range reg.ServiceGroups {
 		if g.ID != id {
 			filtered = append(filtered, g)
@@ -561,8 +948,12 @@ func (s *Service) DeleteServiceGroup(ctx context.Context, id string) error {
 	if len(filtered) == len(reg.ServiceGroups) {
 		return fmt.Errorf("service group %s not found", id)
 	}
-	reg.ServiceGroups = filtered
-	return s.SaveRegistry(ctx, reg)
+	if def := catalogServiceGroupID(reg, reg.DefaultServiceGroupID); def != "" && strings.EqualFold(def, strings.TrimSpace(id)) {
+		return fmt.Errorf("set another default service group before deleting %s", id)
+	}
+	next := cloneRegistry(reg)
+	next.ServiceGroups = filtered
+	return s.persistRegistry(ctx, next)
 }
 
 // FindServiceGroupForModel searches all service groups for a model and returns

@@ -1,14 +1,15 @@
 package tool
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
-// TestCoreToolNames_ContainsManageSkill verifies that CoreToolNames includes
-// "manage_skill" as a recognized core tool (always available in LLM context).
-//
-// **Validates: Requirements 5.5**
-func TestCoreToolNames_ContainsManageSkill(t *testing.T) {
-	if !CoreToolNames["manage_skill"] {
-		t.Fatal("CoreToolNames should contain manage_skill")
+// TestCoreToolNames_ExcludesDynamicManageSkillGateway verifies that a merged
+// Skill transport cannot be reintroduced as a legacy routing candidate.
+func TestCoreToolNames_ExcludesDynamicManageSkillGateway(t *testing.T) {
+	if CoreToolNames["manage_skill"] {
+		t.Fatal("CoreToolNames must not contain dynamic manage_skill gateway")
 	}
 }
 
@@ -25,13 +26,21 @@ func TestCoreToolNames_DoesNotContainLegacySkillNames(t *testing.T) {
 	}
 }
 
-// TestBuiltinToolNames_ContainsManageSkill verifies that BuiltinToolNames
-// includes "manage_skill".
-//
-// **Validates: Requirements 4.6, 5.4**
+// TestBuiltinToolNames_ContainsManageSkill preserves host registry
+// classification. Model visibility is controlled separately by
+// IsLegacyModelDynamicGateway.
 func TestBuiltinToolNames_ContainsManageSkill(t *testing.T) {
 	if !BuiltinToolNames["manage_skill"] {
 		t.Fatal("BuiltinToolNames should contain manage_skill")
+	}
+}
+
+func TestManageSkillIsNotLegacyModelCapability(t *testing.T) {
+	if !IsLegacyModelDynamicGateway("manage_skill") {
+		t.Fatal("manage_skill must require a managed dynamic binding")
+	}
+	if _, ok := LegacyAdapterProvisionForTool("manage_skill", time.Now()); ok {
+		t.Fatal("manage_skill must not have a static legacy adapter provision")
 	}
 }
 

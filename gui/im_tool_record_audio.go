@@ -152,7 +152,7 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 	shouldPersistHistory := len(persistHistory) == 0 || persistHistory[0]
 	if shouldPersistHistory {
 		h.saveConversationHistoryTimed(userID, out.History, nil)
-		h.commitPendingRecordAudio(userID, req, out.History)
+		h.commitPendingRecordAudio(userID, req, out.History, nil)
 	}
 	if recordDetailEnabled() {
 		log.Printf("[record-audio] session opened user=%s platform=%s title=%q purpose=%q history_len=%d tc=%s",
@@ -178,7 +178,7 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 // caller invokes this after SaveAndCompleteInFlightCheckpointForRun succeeds;
 // publishing it sooner would discard a prior post-recording choice even when
 // the new recording card must be failed closed.
-func (h *IMMessageHandler) commitPendingRecordAudio(userID string, req *agent.RecordAudioRequest, history []agent.ConversationEntry) {
+func (h *IMMessageHandler) commitPendingRecordAudio(userID string, req *agent.RecordAudioRequest, history []agent.ConversationEntry, workingState *agent.WorkingState) {
 	if h == nil || req == nil {
 		return
 	}
@@ -186,10 +186,11 @@ func (h *IMMessageHandler) commitPendingRecordAudio(userID string, req *agent.Re
 	// post-recording choice (minutes/transcribe/keep) from a previous save.
 	h.clearPendingPostRecording(userID)
 	h.pendingRecordAudio.Store(userID, &pendingRecordAudioState{
-		Title:     req.Title,
-		Purpose:   req.Purpose,
-		History:   cloneConversationEntries(history),
-		Timestamp: time.Now(),
+		Title:        req.Title,
+		Purpose:      req.Purpose,
+		History:      cloneConversationEntries(history),
+		Timestamp:    time.Now(),
+		WorkingState: agent.CloneWorkingState(workingState),
 	})
 }
 

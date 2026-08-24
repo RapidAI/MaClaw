@@ -1,9 +1,11 @@
 import { Dispatch, MutableRefObject, SetStateAction, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeCreateRevisionCandidate, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeLifecycle, CodingKnowledgeList, CodingKnowledgeMarkConflict, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
+import { CodingKnowledgeCapacity, CodingKnowledgeConfirm, CodingKnowledgeContributeToOrg, CodingKnowledgeCreateRevisionCandidate, CodingKnowledgeDelete, CodingKnowledgeEvict, CodingKnowledgeExportToFile, CodingKnowledgeGet, CodingKnowledgeGraduateToSteering, CodingKnowledgeImportFromFile, CodingKnowledgeLifecycle, CodingKnowledgeList, CodingKnowledgeMarkConflict, CodingKnowledgeResetFile, CodingKnowledgeSearch, CodingKnowledgeStats, CodingKnowledgeUpdate, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, SelectCodingKnowledgeExportPath, SelectCodingKnowledgeImportFile } from '../../../wailsjs/go/main/App';
 import { corelib, knowledge } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
 import { cfgVal, saveConfigPatch } from './programmingToolsConfig';
+import { CodingKnowledgeAuditDialog, CodingKnowledgeEditorDialog } from './CodingKnowledgeDialogs';
+import { SCOPE_TABS, TAB_LABELS, toDraft, useDebouncedValue, type ExperienceDraft, type ScopeTab } from './codingKnowledgeHelpers';
 
 type Props = {
     config: corelib.AppConfig | null;
@@ -13,62 +15,6 @@ type Props = {
 };
 
 const textForLang = localizeText;
-const SCOPE_TABS = ['all', 'universal', 'go', 'python', 'typescript', 'cpp', 'rust', 'java', 'project'] as const;
-type ScopeTab = typeof SCOPE_TABS[number];
-const TAB_LABELS: Record<ScopeTab, [string, string, string]> = {
-    all: ['All', '全部', '全部'],
-    universal: ['General', '通用', '通用'],
-    go: ['Go', 'Go', 'Go'],
-    python: ['Python', 'Python', 'Python'],
-    typescript: ['TypeScript', 'TS', 'TS'],
-    cpp: ['C++', 'C++', 'C++'],
-    rust: ['Rust', 'Rust', 'Rust'],
-    java: ['Java', 'Java', 'Java'],
-    project: ['Project', '项目', '專案'],
-};
-
-function useDebouncedValue(value: string, delayMs: number): string {
-    const [debounced, setDebounced] = useState(value);
-    useEffect(() => {
-        const timer = setTimeout(() => setDebounced(value), delayMs);
-        return () => clearTimeout(timer);
-    }, [value, delayMs]);
-    return debounced;
-}
-
-type ExperienceDraft = {
-    id: string;
-    title: string;
-    category: string;
-    scope: string;
-    language: string;
-    trigger_condition: string;
-    content: string;
-    code_snippet: string;
-    status: string;
-    confidence: number;
-    recall_count: number;
-    success_count: number;
-    failure_count: number;
-};
-
-function toDraft(raw: any): ExperienceDraft {
-    return {
-        id: String(raw?.id || ''),
-        title: String(raw?.title || ''),
-        category: String(raw?.category || 'pattern'),
-        scope: String(raw?.scope || 'universal'),
-        language: String(raw?.language || ''),
-        trigger_condition: String(raw?.trigger_condition || ''),
-        content: String(raw?.content || ''),
-        code_snippet: String(raw?.code_snippet || ''),
-        status: String(raw?.status || 'candidate'),
-        confidence: Number(raw?.confidence || 0),
-        recall_count: Number(raw?.recall_count || 0),
-        success_count: Number(raw?.success_count || 0),
-        failure_count: Number(raw?.failure_count || 0),
-    };
-}
 
 export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: Props) {
     const { showConfirm, showPrompt } = useDialog();
@@ -84,6 +30,11 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     const [auditExperience, setAuditExperience] = useState<any | null>(null);
     const [auditEvents, setAuditEvents] = useState<knowledge.CodingExperienceLifecycleEvent[]>([]);
     const [actionMessage, setActionMessage] = useState('');
+    const [selectedIDs, setSelectedIDs] = useState<string[]>([]);
+    const [techLibs, setTechLibs] = useState<Array<{ id?: string; name?: string }>>([]);
+    const [contributeLibraryID, setContributeLibraryID] = useState('');
+    const [contributeSummary, setContributeSummary] = useState('');
+    const [mySubmissions, setMySubmissions] = useState<any[]>([]);
     const mountedRef = useRef(true);
     const uid = useId();
     const autoSaveMode = cfgVal(config, 'coding_knowledge_auto_save_mode', 'observe');
@@ -133,6 +84,16 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
 
     useEffect(() => () => { mountedRef.current = false; }, []);
     useEffect(() => { void loadStats(); void loadExperiences(); }, [loadStats, loadExperiences]);
+    useEffect(() => {
+        void DigitalAssetListContributableLibraries('technical').then(items => {
+            if (!mountedRef.current) return;
+            setTechLibs(items || []);
+            if (!contributeLibraryID && items?.length) setContributeLibraryID(String(items[0].id || ''));
+        }).catch(() => undefined);
+        void DigitalAssetListMySubmissions().then(items => {
+            if (mountedRef.current) setMySubmissions(items || []);
+        }).catch(() => undefined);
+    }, []);
 
     const handleDelete = async (id: string) => {
         const confirmed = await showConfirm(
@@ -230,6 +191,44 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
         } finally {
             setEditorSaving(false);
         }
+    };
+
+    const handleContribute = async () => {
+        if (!selectedIDs.length) {
+            setActionMessage(textForLang(lang, 'Select active or verified experiences first.', '请先勾选已确认或已审核的编码经验。', '請先勾選已確認或已審核的編碼經驗。'));
+            return;
+        }
+        const summary = contributeSummary.trim();
+        if (!summary) {
+            setActionMessage(textForLang(lang, 'Write why this helps the organization.', '请写明这条经验对组织的价值。', '請寫明這條經驗對組織的價值。'));
+            return;
+        }
+        try {
+            const libs = await DigitalAssetListContributableLibraries('technical');
+            setTechLibs(libs || []);
+            const libraryID = contributeLibraryID || String(libs?.[0]?.id || '');
+            if (!libraryID) {
+                setActionMessage(textForLang(lang, 'No technical digital-asset library accepts submissions.', '没有可投稿的技术数字资产库。', '沒有可投稿的技術數字資產庫。'));
+                return;
+            }
+            if (!contributeLibraryID) setContributeLibraryID(libraryID);
+            const result = await CodingKnowledgeContributeToOrg({
+                library_id: libraryID,
+                title: '',
+                summary,
+                experience_ids: selectedIDs,
+            } as any);
+            setActionMessage(textForLang(lang, `Submitted ${result.item_count || selectedIDs.length} experience(s) for review.`, `已投稿 ${result.item_count || selectedIDs.length} 条经验，等待审批。`, `已投稿 ${result.item_count || selectedIDs.length} 條經驗，等待審批。`));
+            const items = await DigitalAssetListMySubmissions();
+            if (mountedRef.current) setMySubmissions(items || []);
+        } catch (err: any) {
+            setActionMessage(String(err?.message || err || textForLang(lang, 'Contribute failed.', '投稿失败。', '投稿失敗。')));
+        }
+    };
+
+    const toggleSelected = (id: string, status: string) => {
+        if (status !== 'active' && status !== 'verified') return;
+        setSelectedIDs(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
     };
 
     const handleExport = async () => {
@@ -367,6 +366,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
 				</div>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleExport()}>{textForLang(lang, 'Export', '导出', '匯出')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleImport()}>{textForLang(lang, 'Import', '导入', '匯入')}</button>
+                <button type="button" className="prog-tools__kb-btn" onClick={() => void handleContribute()}>{textForLang(lang, 'Submit to organization', '投稿到组织', '投稿到組織')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleEvict()}>{textForLang(lang, 'Run eviction', '执行淘汰', '執行淘汰')}</button>
                 <button
                     className="prog-tools__btn-reset prog-tools__btn-reset--danger"
@@ -378,7 +378,19 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                 </button>
             </div>
 
+            <div className="prog-tools__kb-config" style={{ marginTop: 8 }}>
+                <select className="prog-tools__select" value={contributeLibraryID} onChange={(e) => setContributeLibraryID(e.target.value)} aria-label={textForLang(lang, 'Target technical library', '目标技术库', '目標技術庫')}>
+                    <option value="">{textForLang(lang, 'Target technical library', '目标技术库', '目標技術庫')}</option>
+                    {techLibs.map(lib => <option key={lib.id} value={lib.id}>{lib.name || lib.id}</option>)}
+                </select>
+                <input className="prog-tools__select" value={contributeSummary} onChange={(e) => setContributeSummary(e.target.value)} placeholder={textForLang(lang, 'Why this helps the organization', '为什么这对组织有用', '為什麼這對組織有用')} />
+            </div>
             {actionMessage && <div className="prog-tools__kb-action-msg" role="status">{actionMessage}</div>}
+            {mySubmissions.length ? (
+                <div className="prog-tools__kb-action-msg" role="status">
+                    {textForLang(lang, 'My contributions', '我的投稿', '我的投稿')}: {mySubmissions.slice(0, 5).map(item => `${item.title || item.id} (${item.status})`).join(' · ')}
+                </div>
+            ) : null}
 
             <div className="prog-tools__kb-toolbar">
                 <div className="prog-tools__kb-tabs" role="tablist" aria-label={textForLang(lang, 'Filter by scope', '按范围筛选', '按範圍篩選')}>
@@ -412,6 +424,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                     experiences.map((exp) => (
                         <div key={exp.id} className="prog-tools__kb-item" data-status={exp.status} role="listitem">
                             <div className="prog-tools__kb-item-main">
+                                {(exp.status === 'active' || exp.status === 'verified') ? (
+                                    <input type="checkbox" checked={selectedIDs.includes(exp.id)} onChange={() => toggleSelected(exp.id, exp.status)} aria-label={textForLang(lang, 'Select for organization', '选择投稿', '選擇投稿')} />
+                                ) : null}
                                 <span className="prog-tools__kb-item-title">{exp.title}</span>
                             </div>
                             <div className="prog-tools__kb-item-meta">
@@ -452,53 +467,23 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             </div>
 
             {editorOpen && draft && (
-                <div className="prog-tools__kb-editor" role="dialog" aria-label={textForLang(lang, 'Edit Experience', '编辑经验', '編輯經驗')}>
-                    <h4>{textForLang(lang, 'Edit Experience', '编辑经验', '編輯經驗')}</h4>
-                    <label>
-                        {textForLang(lang, 'Title', '标题', '標題')}
-                        <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
-                    </label>
-                    <label>
-                        {textForLang(lang, 'Content', '内容', '內容')}
-                        <textarea value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} />
-                    </label>
-                    <div className="prog-tools__kb-editor-actions">
-                        <button type="button" className="prog-tools__kb-btn" onClick={() => { setEditorOpen(false); setDraft(null); }} disabled={editorSaving}>
-                            {textForLang(lang, 'Cancel', '取消', '取消')}
-                        </button>
-                        <button type="button" className="prog-tools__kb-btn prog-tools__kb-btn--confirm" onClick={() => void handleSaveDraft()} disabled={editorSaving}>
-                            {textForLang(lang, 'Save', '保存', '保存')}
-                        </button>
-                    </div>
-                </div>
+                <CodingKnowledgeEditorDialog
+                    lang={lang}
+                    draft={draft}
+                    editorSaving={editorSaving}
+                    onChange={setDraft}
+                    onCancel={() => { setEditorOpen(false); setDraft(null); }}
+                    onSave={() => { void handleSaveDraft(); }}
+                />
             )}
 
             {auditExperience && (
-                <div className="prog-tools__kb-editor" role="dialog" aria-label={textForLang(lang, 'Experience audit', '经验审计', '經驗稽核')}>
-                    <h4>{textForLang(lang, 'Experience audit', '经验审计', '經驗稽核')}</h4>
-                    <p>{auditExperience.title}</p>
-                    <p>{textForLang(lang, 'Origin', '来源', '來源')}: {auditExperience.created_by || textForLang(lang, 'legacy', '旧记录', '舊記錄')}</p>
-                    <p>{textForLang(lang, 'Last reviewed', '最近审核', '最近審核')}: {auditExperience.last_reviewed_at ? new Date(auditExperience.last_reviewed_at).toLocaleString() : textForLang(lang, 'Not reviewed', '未审核', '未審核')}</p>
-                    {auditEvents.length === 0 ? (
-                        <p>{textForLang(lang, 'No lifecycle events recorded.', '尚无生命周期记录。', '尚無生命週期記錄。')}</p>
-                    ) : (
-                        <ul>
-                            {auditEvents.map((event, index) => (
-                                <li key={`${event.occurred_at || 'event'}-${index}`}>
-                                    <strong>{event.action}</strong>
-                                    {event.reason ? ` — ${event.reason}` : ''}
-                                    {event.related_id ? ` (${event.related_id})` : ''}
-                                    {event.occurred_at ? ` · ${new Date(event.occurred_at).toLocaleString()}` : ''}
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                    <div className="prog-tools__kb-editor-actions">
-                        <button type="button" className="prog-tools__kb-btn" onClick={() => { setAuditExperience(null); setAuditEvents([]); }}>
-                            {textForLang(lang, 'Close', '关闭', '關閉')}
-                        </button>
-                    </div>
-                </div>
+                <CodingKnowledgeAuditDialog
+                    lang={lang}
+                    experience={auditExperience}
+                    events={auditEvents}
+                    onClose={() => { setAuditExperience(null); setAuditEvents([]); }}
+                />
             )}
         </div>
     );

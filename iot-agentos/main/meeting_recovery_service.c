@@ -26,21 +26,8 @@ static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_initialized;
 static bool s_stopping;
 static volatile bool s_initializing;
+static bool s_system_sleep_preparing;
 static uint32_t s_active_calls;
-/* Legacy field-by-field import is private migration code. The public service
- * reports only stable Device API statuses to meeting/business callers. */
-static device_status_t device_status_from_legacy_error(esp_err_t status) {
-    switch (status) {
-        case ESP_OK: return DEVICE_STATUS_OK;
-        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
-        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
-        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
-        case ESP_ERR_NOT_FOUND: return DEVICE_STATUS_NOT_FOUND;
-        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-        default: return DEVICE_STATUS_INTERNAL_ERROR;
-    }
-}
-
 static TickType_t meeting_recovery_stop_timeout_ticks(uint32_t timeout_ms) {
     TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
     return ticks == 0 ? 1 : ticks;
@@ -55,7 +42,7 @@ static TickType_t meeting_recovery_stop_remaining_ticks(TickType_t started,
 static bool admission_enter(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (s_initialized && !s_stopping) {
+    if (s_initialized && !s_stopping && !s_system_sleep_preparing) {
         ++s_active_calls;
         admitted = true;
     }
@@ -73,51 +60,79 @@ static void clear_snapshot(meeting_recovery_snapshot_t *snapshot) {
     memset(snapshot, 0, sizeof(*snapshot));
 }
 
+/* A pending recording may initially have no server-side ID: its durable
+ * placeholder is written before recording begins.  Once either upload
+ * progress or a terminal phase is persisted, however, the server-side ID is
+ * required to resume safely.  A non-pending snapshot is always the canonical
+ * empty tombstone written after local audio has been removed. */
+static bool valid_recovery_state(bool pending, int32_t next_chunk, int32_t phase,
+                                 const char *recording_id, size_t recording_id_size) {
+    if (next_chunk < 0 || phase < 0 || phase > 2 || !recording_id ||
+        memchr(recording_id, '\0', recording_id_size) == NULL) {
+        return false;
+    }
+    if (!pending) {
+        return recording_id[0] == '\0' && next_chunk == 0 && phase == 0;
+    }
+    return (next_chunk == 0 && phase == 0) || recording_id[0] != '\0';
+}
+
 static bool valid_store(const meeting_recovery_store_t *store) {
     return store && store->magic == MEETING_RECOVERY_STORE_MAGIC &&
            store->version == MEETING_RECOVERY_STORE_VERSION && store->pending <= 1 &&
-           store->next_chunk >= 0 && store->phase >= 0 && store->phase <= 2 &&
-           memchr(store->recording_id, '\0', sizeof(store->recording_id)) != NULL;
+           valid_recovery_state(store->pending != 0, store->next_chunk, store->phase,
+                                store->recording_id, sizeof(store->recording_id));
 }
 
 static bool valid_snapshot(const meeting_recovery_snapshot_t *snapshot) {
-    return snapshot && snapshot->next_chunk >= 0 && snapshot->phase >= 0 &&
-           snapshot->phase <= 2 &&
-           memchr(snapshot->recording_id, '\0', sizeof(snapshot->recording_id)) != NULL;
+    return snapshot && valid_recovery_state(snapshot->pending, snapshot->next_chunk,
+                                            snapshot->phase, snapshot->recording_id,
+                                            sizeof(snapshot->recording_id));
 }
 
-static esp_err_t load_legacy(meeting_recovery_snapshot_t *snapshot, bool *out_found) {
-    if (!snapshot || !out_found) return ESP_ERR_INVALID_ARG;
+/* Legacy field-by-field import is private migration code. The public service
+ * reports only stable Device API statuses to meeting/business callers. */
+static device_status_t load_legacy(meeting_recovery_snapshot_t *snapshot, bool *out_found) {
+    if (!snapshot || !out_found) return DEVICE_STATUS_INVALID_ARGUMENT;
     clear_snapshot(snapshot);
     *out_found = false;
     int32_t value = 0;
-    esp_err_t err = device_status_to_platform_error(persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_next", &value));
-    if (err == ESP_OK) {
+    device_status_t status = persistence_service_read_i32(
+        MEETING_RECOVERY_NAMESPACE, "meet_next", &value);
+    if (status == DEVICE_STATUS_OK) {
         snapshot->next_chunk = value;
         *out_found = true;
-    } else if (err != ESP_ERR_NOT_FOUND) return err;
-    err = device_status_to_platform_error(persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_phase", &value));
-    if (err == ESP_OK) {
+    } else if (status != DEVICE_STATUS_NOT_FOUND) {
+        return status;
+    }
+    status = persistence_service_read_i32(MEETING_RECOVERY_NAMESPACE, "meet_phase", &value);
+    if (status == DEVICE_STATUS_OK) {
         snapshot->phase = value;
         *out_found = true;
-    } else if (err != ESP_ERR_NOT_FOUND) return err;
+    } else if (status != DEVICE_STATUS_NOT_FOUND) {
+        return status;
+    }
     size_t size = sizeof(snapshot->recording_id);
-    err = device_status_to_platform_error(persistence_service_read_string(MEETING_RECOVERY_NAMESPACE, "meet_id",
-                                          snapshot->recording_id, &size));
-    if (err == ESP_OK) {
+    status = persistence_service_read_string(MEETING_RECOVERY_NAMESPACE, "meet_id",
+                                             snapshot->recording_id, &size);
+    if (status == DEVICE_STATUS_OK) {
         *out_found = true;
-    } else if (err != ESP_ERR_NOT_FOUND) return err;
+    } else if (status != DEVICE_STATUS_NOT_FOUND) {
+        return status;
+    }
     uint8_t pending = 0;
-    err = device_status_to_platform_error(persistence_service_read_u8(MEETING_RECOVERY_NAMESPACE, "meet_pending", &pending));
-    if (err == ESP_OK) {
-        if (pending > 1) return ESP_ERR_INVALID_STATE;
+    status = persistence_service_read_u8(MEETING_RECOVERY_NAMESPACE, "meet_pending", &pending);
+    if (status == DEVICE_STATUS_OK) {
+        if (pending > 1) return DEVICE_STATUS_INVALID_ARGUMENT;
         snapshot->pending = pending != 0;
         *out_found = true;
-    } else if (err != ESP_ERR_NOT_FOUND) return err;
-    if (*out_found && (snapshot->next_chunk < 0 || snapshot->phase < 0 || snapshot->phase > 2)) {
-        return ESP_ERR_INVALID_STATE;
+    } else if (status != DEVICE_STATUS_NOT_FOUND) {
+        return status;
     }
-    return ESP_OK;
+    if (*out_found && !valid_snapshot(snapshot)) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    return DEVICE_STATUS_OK;
 }
 
 device_status_t meeting_recovery_service_init(void) {
@@ -139,6 +154,7 @@ device_status_t meeting_recovery_service_init(void) {
         return DEVICE_STATUS_BUSY;
     }
     s_initialized = true;
+    s_system_sleep_preparing = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
     return DEVICE_STATUS_OK;
@@ -158,6 +174,7 @@ device_status_t meeting_recovery_service_deinit(uint32_t timeout_ms) {
     const bool already_stopped = !s_initialized && !s_stopping;
     s_initialized = false;
     s_stopping = true;
+    s_system_sleep_preparing = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     if (already_stopped) return DEVICE_STATUS_OK;
     for (;;) {
@@ -184,6 +201,39 @@ bool meeting_recovery_service_is_initialized(void) {
     return initialized;
 }
 
+device_status_t meeting_recovery_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = meeting_recovery_stop_timeout_ticks(timeout_ms);
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool ready = s_initialized && !s_stopping &&
+                       !s_system_sleep_preparing &&
+                       !__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE);
+    if (ready) s_system_sleep_preparing = true;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (!ready) return DEVICE_STATUS_BUSY;
+
+    for (;;) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const uint32_t active_calls = s_active_calls;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (active_calls == 0) return DEVICE_STATUS_OK;
+        if (meeting_recovery_stop_remaining_ticks(started, budget) == 0) {
+            /* A caller admitted before PREPARE may still be unwinding a
+             * durable checkpoint. Keep new checkpoints closed until Power's
+             * mandatory reverse-order ABORT restores this participant. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+void meeting_recovery_service_abort_system_sleep_prepare(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_initialized && !s_stopping) s_system_sleep_preparing = false;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
 device_status_t meeting_recovery_service_load(meeting_recovery_snapshot_t *out_snapshot) {
     if (!out_snapshot) return DEVICE_STATUS_INVALID_ARGUMENT;
     if (!admission_enter()) return DEVICE_STATUS_BUSY;
@@ -196,10 +246,10 @@ device_status_t meeting_recovery_service_load(meeting_recovery_snapshot_t *out_s
         MEETING_RECOVERY_NAMESPACE, MEETING_RECOVERY_STORE_KEY, &store, &size);
     if (persistence_status == DEVICE_STATUS_NOT_FOUND) {
         bool legacy_found = false;
-        esp_err_t legacy_status = load_legacy(out_snapshot, &legacy_found);
-        if (legacy_status != ESP_OK || !legacy_found) {
-            result = legacy_status == ESP_OK ? DEVICE_STATUS_NOT_FOUND
-                                             : device_status_from_legacy_error(legacy_status);
+        device_status_t legacy_status = load_legacy(out_snapshot, &legacy_found);
+        if (legacy_status != DEVICE_STATUS_OK || !legacy_found) {
+            result = legacy_status == DEVICE_STATUS_OK ? DEVICE_STATUS_NOT_FOUND
+                                                        : legacy_status;
             goto done;
         }
         meeting_recovery_store_t legacy_store = {

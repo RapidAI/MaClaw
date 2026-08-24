@@ -367,7 +367,7 @@ func allCodingTasksPassed(tasks []*v2.TaskItem, results []v2.TaskRunResult) bool
 }
 
 func codingExecResumeGuidance(cp codingExecCheckpoint, isRemote bool) string {
-	passed, failed, skipped := countTaskRunStatuses(cp.Results)
+	_ = isRemote
 	var b strings.Builder
 	if cp.Cancelled {
 		b.WriteString(codingExecText(
@@ -382,24 +382,6 @@ func codingExecResumeGuidance(cp codingExecCheckpoint, isRemote bool) string {
 			"編碼執行未全部通過。\n",
 		))
 	}
-	if isRemote {
-		b.WriteString(codingExecText(
-			"Environment: remote SSH\n",
-			"执行环境：远程 SSH\n",
-			"執行環境：遠端 SSH\n",
-		))
-	} else {
-		b.WriteString(codingExecText(
-			"Environment: local machine\n",
-			"执行环境：本机\n",
-			"執行環境：本機\n",
-		))
-	}
-	fmt.Fprintf(&b, codingExecText(
-		"Current results: passed %d · failed %d · skipped %d\n\n",
-		"当前结果：通过 %d · 失败 %d · 跳过 %d\n\n",
-		"目前結果：通過 %d · 失敗 %d · 跳過 %d\n\n",
-	), passed, failed, skipped)
 	b.WriteString(codingExecText("You can:\n", "你可以：\n", "你可以：\n"))
 	fmt.Fprintf(&b, codingExecText(
 		"- Send **%s** — re-run only failed tasks\n",
@@ -423,12 +405,37 @@ func codingExecResumeGuidance(cp codingExecCheckpoint, isRemote bool) string {
 		"- 发送 **%s** — 结束当前编程工作流\n",
 		"- 傳送 **%s** — 結束目前程式設計工作流\n",
 	), codingExecCmdCancelWorkflow())
-	b.WriteString(codingExecText(
-		"\nThe workflow stays on the coding execution phase and will not auto-advance to acceptance until everything passes or you end it.",
-		"\n工作流仍停在「编码执行」阶段，不会自动进入验收，直到全部通过或你主动结束。",
-		"\n工作流仍停在「編碼執行」階段，不會自動進入驗收，直到全部通過或你主動結束。",
-	))
 	return b.String()
+}
+
+func formatCodingExecCompletedUserText(report string) string {
+	return strings.TrimSpace(report)
+}
+
+func formatCodingExecIncompleteUserText(cp codingExecCheckpoint, isRemote bool, report string) string {
+	guidance := strings.TrimSpace(codingExecResumeGuidance(cp, isRemote))
+	report = strings.TrimSpace(report)
+	switch {
+	case guidance == "":
+		return report
+	case report == "":
+		return guidance
+	default:
+		return guidance + "\n\n" + report
+	}
+}
+
+func formatCodingExecProjectionPendingUserText(report string) string {
+	note := strings.TrimSpace(codingExecText(
+		"Coding execution completed and was saved safely. The workflow phase update is pending and will be retried as metadata only; no coding task will be run again.",
+		"编码执行已安全完成并持久化。工作流阶段更新待补齐，将仅重试元数据写入，不会再次执行编码任务。",
+		"編碼執行已安全完成並持久化。工作流程階段更新待補齊，將僅重試中繼資料寫入，不會再次執行編碼任務。",
+	))
+	report = strings.TrimSpace(report)
+	if report == "" {
+		return note
+	}
+	return note + "\n\n" + report
 }
 
 // codingExecResumeActions builds clickable chat actions for partial/cancelled runs.

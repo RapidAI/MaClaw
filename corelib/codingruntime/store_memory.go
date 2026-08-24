@@ -21,10 +21,11 @@ type MemoryStore struct {
 	// consumedContinuations maps the waiting_child parent Attempt to the fresh
 	// review Attempt that consumed its delivered results.
 	consumedContinuations map[string]string
+	semanticAnchors       map[string]SemanticTaskAnchor
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{tasks: map[string]*Task{}, attempts: map[string]*Attempt{}, events: map[string][]Event{}, childResults: map[string]ChildTaskResult{}, consumedContinuations: map[string]string{}}
+	return &MemoryStore{tasks: map[string]*Task{}, attempts: map[string]*Attempt{}, events: map[string][]Event{}, childResults: map[string]ChildTaskResult{}, consumedContinuations: map[string]string{}, semanticAnchors: map[string]SemanticTaskAnchor{}}
 }
 
 func (s *MemoryStore) CreateTask(task Task) (*Task, error) {
@@ -555,6 +556,48 @@ func (s *MemoryStore) ListRecoveryCandidates() ([]*Attempt, error) {
 		}
 	}
 	return candidates, nil
+}
+
+func (s *MemoryStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*SemanticTaskAnchor, error) {
+	normalized, err := normalizeSemanticTaskAnchor(anchor)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attempt := s.attempts[normalized.RuntimeAttemptID]
+	if attempt == nil || attempt.TaskID != normalized.RuntimeTaskID {
+		return nil, ErrSemanticAnchorNotFound
+	}
+	if prior, exists := s.semanticAnchors[normalized.RuntimeAttemptID]; exists {
+		if prior == normalized {
+			copy := prior
+			return &copy, nil
+		}
+		return nil, ErrSemanticAnchorConflict
+	}
+	for _, prior := range s.semanticAnchors {
+		if prior.RuntimeTaskID == normalized.RuntimeTaskID && !semanticAnchorLineageEqual(prior, normalized) {
+			return nil, ErrSemanticAnchorConflict
+		}
+	}
+	s.semanticAnchors[normalized.RuntimeAttemptID] = normalized
+	return &normalized, nil
+}
+
+func (s *MemoryStore) ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID string) (*SemanticTaskAnchor, error) {
+	runtimeTaskID, runtimeAttemptID = strings.TrimSpace(runtimeTaskID), strings.TrimSpace(runtimeAttemptID)
+	if runtimeTaskID == "" || runtimeAttemptID == "" {
+		return nil, ErrSemanticAnchorNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	anchor, ok := s.semanticAnchors[runtimeAttemptID]
+	if !ok || anchor.RuntimeTaskID != runtimeTaskID {
+		return nil, ErrSemanticAnchorNotFound
+	}
+	copy := anchor
+	return &copy, nil
 }
 
 func cloneTask(in *Task) *Task {

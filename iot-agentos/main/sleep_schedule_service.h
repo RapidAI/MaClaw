@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "cJSON.h"
+#include "device_api.h"
 #include "esp_err.h"
 
 /*
@@ -34,7 +35,10 @@ typedef struct {
     char timezone[SLEEP_SCHEDULE_TIMEZONE_CAPACITY];
 
     /* Once schedules use absolute Unix milliseconds and half-open [start,end).
-     * Periodic schedules use local minute-of-day values in [0,1439]. */
+     * When trusted wall time reaches `end`, the schedule worker durably retires
+     * the one-shot record instead of treating it as a permanently enabled
+     * historical policy. Periodic schedules use local minute-of-day values in
+     * [0,1439]. */
     int64_t once_start_epoch_ms;
     int64_t once_end_epoch_ms;
     uint16_t start_minute_of_day;
@@ -58,10 +62,25 @@ typedef struct {
     int64_t manual_override_until_epoch;
 } sleep_schedule_status_t;
 
-esp_err_t sleep_schedule_service_init(void);
+/* Emitted after the shared schedule worker has attempted to restore a
+ * DISPLAY_OFF panel at the end of a rest window. It is a domain-to-
+ * composition seam: Sleep Schedule does not know renderers, board profiles,
+ * or App UI surfaces. The observer runs in the schedule worker and must
+ * return promptly. */
+typedef void (*sleep_schedule_display_wake_observer_t)(device_status_t status,
+                                                        void *context);
+
+/* Lifecycle stays in the common Device contract. The JSON tool below keeps
+ * esp_err_t because Device Tool Registry owns that protocol boundary. */
+device_status_t sleep_schedule_service_init(void);
 /* Quiesces the schedule worker and cancels its shared deadline.  Intended for
  * startup rollback before the alarm domain has been started. */
-esp_err_t sleep_schedule_service_deinit(uint32_t timeout_ms);
+device_status_t sleep_schedule_service_deinit(uint32_t timeout_ms);
+/* Installs the composition-owned observer for a schedule-end DISPLAY_OFF
+ * wake. It is not a physical-input callback and must not create a
+ * manual-wake override. */
+device_status_t sleep_schedule_service_set_display_wake_observer(
+    sleep_schedule_display_wake_observer_t observer, void *context);
 esp_err_t sleep_schedule_service_execute_tool(const char *name, cJSON *arguments,
                                               const char *idempotency_key,
                                               cJSON **out_result, char *error,
@@ -83,3 +102,10 @@ void sleep_schedule_service_note_manual_wake(void);
  * windows must be recalculated from civil time rather than waiting for a
  * transition computed before the correction. */
 void sleep_schedule_service_on_wall_clock_updated(void);
+
+/* Future System Sleep participant. PREPARE closes policy/tool/clock/manual
+ * admission and waits for an already-admitted evaluation to finish; ABORT
+ * reopens the same running worker and asks it to re-evaluate durable policy.
+ * It does not enter MCU sleep, alter a profile, or manufacture an RTC wake. */
+device_status_t sleep_schedule_service_prepare_system_sleep(uint32_t timeout_ms);
+void sleep_schedule_service_abort_system_sleep_prepare(void);

@@ -15,6 +15,9 @@ static void *s_publish_context;
 static TaskHandle_t s_scanner_task;
 static SemaphoreHandle_t s_scanner_stopped;
 static bool s_scanner_stop_requested;
+static SemaphoreHandle_t s_scanner_system_sleep_quiesced;
+static bool s_scanner_system_sleep_preparing;
+static portMUX_TYPE s_scanner_system_sleep_lock = portMUX_INITIALIZER_UNLOCKED;
 
 esp_err_t compact_input_service_initialize(void) { return compact_input_adapter_init(); }
 void compact_input_service_read_raw(compact_input_raw_state_t *out_state) {
@@ -22,6 +25,12 @@ void compact_input_service_read_raw(compact_input_raw_state_t *out_state) {
 }
 bool compact_input_service_has_volume_keys(void) {
     return compact_input_adapter_has_volume_keys();
+}
+int64_t compact_input_service_local_volume_increase_hold_us(void) {
+    return compact_input_adapter_local_volume_increase_hold_us();
+}
+int64_t compact_input_service_local_volume_decrease_hold_us(void) {
+    return compact_input_adapter_local_volume_decrease_hold_us();
 }
 int64_t compact_input_service_activate_debounce_us(void) {
     return compact_input_adapter_activate_debounce_us();
@@ -50,6 +59,10 @@ static void compact_input_service_scanner_task(void *arg) {
     bool activate_raw = previous;
     int64_t activate_changed_at = 0;
     const bool has_volume_keys = compact_input_service_has_volume_keys();
+    const int64_t local_volume_increase_hold_us =
+        compact_input_service_local_volume_increase_hold_us();
+    const int64_t local_volume_decrease_hold_us =
+        compact_input_service_local_volume_decrease_hold_us();
     bool volume_up_raw = raw_state.volume_up_released;
     bool volume_down_raw = raw_state.volume_down_released;
     bool volume_up_stable = volume_up_raw;
@@ -60,6 +73,25 @@ static void compact_input_service_scanner_task(void *arg) {
     int64_t short_pending_at = 0;
     bool long_sent = false;
     while (true) {
+        taskENTER_CRITICAL(&s_scanner_system_sleep_lock);
+        const bool system_sleep_preparing = s_scanner_system_sleep_preparing;
+        taskEXIT_CRITICAL(&s_scanner_system_sleep_lock);
+        if (system_sleep_preparing) {
+            /* The ACK is issued only between scan iterations, after the last
+             * GPIO read and before any next admission to the adapter. */
+            if (s_scanner_system_sleep_quiesced) {
+                xSemaphoreGive(s_scanner_system_sleep_quiesced);
+            }
+            for (;;) {
+                (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                taskENTER_CRITICAL(&s_scanner_system_sleep_lock);
+                const bool still_preparing = s_scanner_system_sleep_preparing;
+                taskEXIT_CRITICAL(&s_scanner_system_sleep_lock);
+                if (s_scanner_stop_requested) goto stopped;
+                if (!still_preparing) break;
+            }
+            continue;
+        }
         int64_t now = esp_timer_get_time();
         compact_input_service_read_raw(&raw_state);
         bool activate_level = raw_state.activate_released;
@@ -94,6 +126,24 @@ static void compact_input_service_scanner_task(void *arg) {
             int64_t duration = now - pressed_at;
             if (long_sent || duration >= compact_input_service_long_press_us()) {
                 short_pending_at = 0;
+            } else if (!has_volume_keys && local_volume_decrease_hold_us > 0 &&
+                       duration >= local_volume_decrease_hold_us) {
+                /* A one-control product still needs a local, Hub-independent
+                 * volume route. The selected electrical profile chooses the
+                 * two bounded hold intervals; the shared scanner publishes
+                 * the same volume intents used by Bread's physical side keys.
+                 * Keep the existing longer configuration hold and
+                 * short/double semantics. */
+                short_pending_at = 0;
+                ESP_LOGI("compact_input", "local volume decrease hold detected");
+                compact_input_service_publish(DEVICE_INPUT_VOLUME_DOWN,
+                                              DEVICE_INPUT_SOURCE_PRIMARY_CONTROL);
+            } else if (!has_volume_keys && local_volume_increase_hold_us > 0 &&
+                       duration >= local_volume_increase_hold_us) {
+                short_pending_at = 0;
+                ESP_LOGI("compact_input", "local volume increase hold detected");
+                compact_input_service_publish(DEVICE_INPUT_VOLUME_UP,
+                                              DEVICE_INPUT_SOURCE_PRIMARY_CONTROL);
             } else if (short_pending_at &&
                        now - short_pending_at <= compact_input_service_double_click_us()) {
                 short_pending_at = 0;
@@ -149,6 +199,8 @@ static void compact_input_service_scanner_task(void *arg) {
          * timing even though task ownership moved below the Input HAL. */
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20)) != 0) break;
     }
+
+stopped:
     s_publish = NULL;
     s_publish_context = NULL;
     if (s_scanner_stopped) xSemaphoreGive(s_scanner_stopped);
@@ -158,7 +210,18 @@ static void compact_input_service_scanner_task(void *arg) {
 esp_err_t compact_input_service_prepare_scanner(void) {
     if (s_scanner_task || s_scanner_stopped) return ESP_ERR_INVALID_STATE;
     s_scanner_stopped = xSemaphoreCreateBinary();
-    return s_scanner_stopped ? ESP_OK : ESP_ERR_NO_MEM;
+    s_scanner_system_sleep_quiesced = xSemaphoreCreateBinary();
+    if (!s_scanner_stopped || !s_scanner_system_sleep_quiesced) {
+        if (s_scanner_stopped) vSemaphoreDelete(s_scanner_stopped);
+        if (s_scanner_system_sleep_quiesced) {
+            vSemaphoreDelete(s_scanner_system_sleep_quiesced);
+        }
+        s_scanner_stopped = NULL;
+        s_scanner_system_sleep_quiesced = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    s_scanner_system_sleep_preparing = false;
+    return ESP_OK;
 }
 
 esp_err_t compact_input_service_start_scanner(compact_input_publish_cb_t publish,
@@ -190,20 +253,68 @@ esp_err_t compact_input_service_stop_scanner(uint32_t timeout_ms) {
         return ESP_ERR_TIMEOUT;
     }
     vSemaphoreDelete(s_scanner_stopped);
+    vSemaphoreDelete(s_scanner_system_sleep_quiesced);
     s_scanner_stopped = NULL;
+    s_scanner_system_sleep_quiesced = NULL;
     s_scanner_task = NULL;
     s_scanner_stop_requested = false;
+    s_scanner_system_sleep_preparing = false;
     ESP_LOGI("compact_input", "board input scanner stopped");
     return ESP_OK;
+}
+
+esp_err_t compact_input_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_scanner_system_sleep_lock);
+    if (!s_scanner_task || s_scanner_stop_requested ||
+        s_scanner_system_sleep_preparing) {
+        taskEXIT_CRITICAL(&s_scanner_system_sleep_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_scanner_system_sleep_preparing = true;
+    task = s_scanner_task;
+    taskEXIT_CRITICAL(&s_scanner_system_sleep_lock);
+
+    while (xSemaphoreTake(s_scanner_system_sleep_quiesced, 0) == pdTRUE) {}
+    xTaskNotifyGive(task);
+    if (xSemaphoreTake(s_scanner_system_sleep_quiesced,
+                       pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return ESP_OK;
+    }
+    /* Keep the physical-read admission closed after a timed-out ACK.  The
+     * owning Power transaction is the only rollback owner and will invoke
+     * ABORT after it has unwound every participant.  Reopening here could let
+     * this scanner issue a GPIO read while a later profile participant is
+     * still parked or diagnosing the failed PREPARE. */
+    return ESP_ERR_TIMEOUT;
+}
+
+void compact_input_service_abort_system_sleep_prepare(void) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_scanner_system_sleep_lock);
+    s_scanner_system_sleep_preparing = false;
+    task = s_scanner_task;
+    taskEXIT_CRITICAL(&s_scanner_system_sleep_lock);
+    if (task) xTaskNotifyGive(task);
 }
 
 void compact_input_service_discard_unpublished_scanner_state(void) {
     if (s_scanner_task) return;
     if (s_scanner_stopped) vSemaphoreDelete(s_scanner_stopped);
+    if (s_scanner_system_sleep_quiesced) {
+        vSemaphoreDelete(s_scanner_system_sleep_quiesced);
+    }
     s_scanner_stopped = NULL;
+    s_scanner_system_sleep_quiesced = NULL;
     s_scanner_stop_requested = false;
+    s_scanner_system_sleep_preparing = false;
     s_publish = NULL;
     s_publish_context = NULL;
+}
+
+void compact_input_service_set_command_cancel_enabled(bool enabled) {
+    (void)enabled;
 }
 
 /* A profile can reserve its activate key during a bounded pre-scanner

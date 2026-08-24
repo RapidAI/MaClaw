@@ -41,7 +41,7 @@ func classifyImmediateIMCommand(trimmed string) imCommandKind {
 		return imCommandMemory
 	case "/help":
 		return imCommandHelp
-	case "/cancel", "/取消", "/鍙栨秷":
+	case "/cancel", "/stop", "/取消", "/鍙栨秷":
 		return imCommandCancel
 	default:
 		if strings.HasPrefix(trimmed, "/btw ") || trimmed == "/btw" {

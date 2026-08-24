@@ -15,6 +15,13 @@ bool board_profile_get(device_profile_t *out_profile) {
                         DEVICE_CAPABILITY_ROUND_DISPLAY,
         .primary_interaction_source = DEVICE_INPUT_SOURCE_TOUCH,
         .primary_interaction_label = "屏幕",
+        .volume_interaction_hint = "屏幕长按调节音量",
+        /* Both the screen and the physical activation key may restore an
+         * off panel. Their completed gestures still remain distinct input
+         * sources below the common business boundary. */
+        .display_wake_sources =
+            DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_TOUCH) |
+            DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_AUXILIARY_CONTROL),
     };
     return true;
 }

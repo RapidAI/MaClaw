@@ -182,7 +182,7 @@ func TestSystemFreeLLMHandler(system store.SystemSettingsRepository) http.Handle
 				{"role": "user", "content": "Reply with exactly: pong"},
 			},
 		}
-		model, externalModel, err := resolveAuthorizedModel(body, models)
+		model, externalModel, _, err := resolveAuthorizedModel(r, body, models, reg)
 		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok": false, "success": false, "error": err.Error(),

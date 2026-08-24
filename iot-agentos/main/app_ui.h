@@ -49,11 +49,34 @@ typedef struct {
     bool alarm_scheduled;
 } app_ui_model_t;
 
+/* UI-level acknowledgement for the DISPLAY_OFF idle policy.  This proves
+ * only that the common UI accepted and retained the policy; scheduling a
+ * future panel transition remains owned below the Power/Display HAL. */
+#define APP_UI_DISPLAY_OFF_IDLE_POLICY_STATE_ABI_VERSION 2u
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    /* Policy acceptance and physical deadline admission are intentionally
+     * separate facts. A foreground scene can retain a valid policy while it
+     * correctly defers arming the panel-off deadline. */
+    bool known;
+    uint32_t idle_after_ms;
+    device_status_t last_status;
+    bool schedule_required;
+    bool schedule_known;
+    bool schedule_armed;
+    device_status_t schedule_last_status;
+} app_ui_display_off_idle_policy_state_t;
+
 void app_ui_init(void);
 app_ui_model_t app_ui_snapshot(void);
-// Sets the idle duration before the ambient display enters DISPLAY_OFF.
-// Zero disables automatic display-off; it never requests MCU sleep.
-void app_ui_set_display_off_idle_ms(uint32_t idle_after_ms);
+// Atomically accepts the idle policy used before the ambient display enters
+// DISPLAY_OFF. Zero disables automatic display-off; this never requests MCU
+// sleep. OK confirms the common UI accepted the policy, not that a panel has
+// already transitioned to DISPLAY_OFF (that is asynchronous and profile-owned).
+device_status_t app_ui_apply_display_off_idle_policy(uint32_t idle_after_ms);
+bool app_ui_get_display_off_idle_policy_state(
+    app_ui_display_off_idle_policy_state_t *out_state);
 
 // Holds the board's boot artwork as an exclusive foreground surface. Ambient,
 // pet-profile, and Wi-Fi updates may update their models while this is active,
@@ -102,6 +125,10 @@ bool app_ui_show_qrcode_modules(const uint8_t *modules, size_t module_count,
 void app_ui_show_ready_prompt(const char *title, const char *text);
 void app_ui_cancel_ready_prompt(void);
 bool app_ui_wake_from_idle(void);
+/* Reconciles App UI's ambient-idle bookkeeping after a successful scheduled
+ * DISPLAY_OFF wake. This is not an input event and never writes a schedule
+ * manual-wake override. It re-arms only an already-ambient pet surface. */
+void app_ui_note_schedule_display_wake(void);
 /* Applies a MaClaw GUI brightness update.  A non-zero level restores an
  * already DISPLAY_OFF ambient panel only; it never synthesizes input or
  * starts voice capture.  Zero remains a backlight-only update. */

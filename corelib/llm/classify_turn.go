@@ -97,6 +97,7 @@ func containsAny(haystack string, needles ...string) bool {
 
 var visionCues = []string{
 	"screenshot", "image", "photo", "picture", "ocr", "截图", "图片", "照片", "看图", "识别图",
+	"这张图", "这幅图", "图中有", "图里有", "图里写", "图上有",
 }
 
 var summaryCues = []string{

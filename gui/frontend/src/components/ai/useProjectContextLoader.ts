@@ -1,9 +1,9 @@
 /**
  * useProjectContextLoader - loads project context when a project tab is first opened.
  *
- * Calls the LoadProjectContext Wails binding and formats the result as a system
- * message to inject into the tab's initial conversation. Handles timeout (>2s)
- * with a placeholder message and automatic retry.
+ * Calls the LoadProjectContext Wails binding and formats a UI-only resume note.
+ * That note is a system bubble in the tab transcript; it is not sent to the model.
+ * Handles timeout (>2s) with a placeholder message and automatic retry.
  *
  * Requirements: 4.1, 4.2, 4.3
  */
@@ -91,7 +91,7 @@ function formatProjectContextMessage(summary: main.ProjectContextSummary): strin
 
     if (hasHiddenEvidence) {
         parts.push("");
-        parts.push("相关产物和来源已载入，AI 会参考。可以直接继续问。");
+        parts.push("相关产物仍在记忆/知识库中。需要时让 AI 检索，不要把这条恢复说明当成已读正文。可以直接继续问。");
     }
 
     return parts.join("\n");

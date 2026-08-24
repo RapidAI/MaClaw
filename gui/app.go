@@ -12,7 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"image"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"log"
@@ -38,6 +38,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
@@ -125,7 +126,42 @@ type App struct {
 	virtualRepositorySyncTimerBlocksUI      bool
 
 	// Managers to reduce struct complexity
-	managers                           *AppManagers
+	managers                     *AppManagers
+	semanticInvocationMu         sync.Mutex
+	semanticExecutionCoordinator *tool.SQLiteSemanticExecutionCoordinator
+	semanticInvocationStore      *tool.SQLiteInvocationGrantStore
+	semanticPlanExecutionStore   *tool.SQLitePlanExecutionStore
+	semanticRouteStateStore      *tool.SQLiteRouteStateStore
+	semanticHostCallJournal      *tool.SQLiteHostCallJournal
+	semanticArtifactStore        *tool.SQLiteArtifactStore
+	semanticDynamicContracts     agentservice.DynamicCapabilityContractRegistry
+	// codingTaskRelations is the R1a authenticated semantic-task relation
+	// authority. It intentionally precedes, and is separate from, the runtime
+	// ledger anchor binding that R1b will add.
+	codingTaskRelationsMu sync.Mutex
+	codingTaskRelations   *codingTaskRelationService
+	// desktopCodingTaskSessions binds a desktop-host-authenticated UI session
+	// to its latest opaque task handle. Keys are host-resolved session owners;
+	// neither model input nor project paths become identity fields themselves.
+	desktopCodingTaskSessionsMu sync.Mutex
+	desktopCodingTaskSessions   map[string]desktopCodingTaskSession
+	desktopCodingIngressMu      sync.Mutex
+	desktopCodingIngress        map[string]desktopCodingIngress
+	// desktopCodingStaticWorkspaces holds host-issued local workspace handles
+	// used by the Coding static shadow catalog. The directory is deliberately
+	// kept behind an opaque handle: neither a Coding task nor a model callback
+	// may turn a project-path string into a provider binding.
+	desktopCodingStaticWorkspaces map[string]desktopCodingStaticWorkspace
+	// desktopCodingIngressGenerations is a host-only fence per UI owner. It
+	// distinguishes a token issued before an explicit new-task/cancel fence
+	// from one issued afterwards, including when the old token had already been
+	// consumed and is waiting to bind a runtime attempt.
+	desktopCodingIngressGenerations map[string]uint64
+	// semanticEffectReceiptWorker is the generic reconciliation loop for
+	// receipt-bound dynamic effects. It owns no sources yet; channel/provider
+	// integrations register their binding-specific receipt source here.
+	semanticEffectReceiptWorker        *agentservice.DynamicEffectReceiptWorker
+	semanticInvocationKey              []byte
 	testHomeDir                        string // For testing purposes
 	downloadCancelers                  map[string]context.CancelFunc
 	downloadMutex                      sync.Mutex
@@ -255,6 +291,8 @@ type App struct {
 	scheduleTargetCatalogsOnce        sync.Once
 	deliveryStateStoreCached          *scheduler.DeliveryStateStore
 	deliveryStateStoreOnce            sync.Once
+	scheduleDispatchBindings          *scheduleDispatchBindingStore
+	scheduleDispatchBindingsOnce      sync.Once
 	remoteInfraOnce                   sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady                  atomic.Bool // fast-path check for ensureRemoteInfra
 	backgroundUpdateOnce              sync.Once   // guards startBackgroundUpdateChecks single loop
@@ -978,10 +1016,21 @@ func (a *App) ensureMemoryStore() {
 			a.logMemorySnapshot("ensureMemoryStore:ready")
 		}
 	}
+	justOpened := ms != nil
 	// Unlock before configure: LoadConfig may re-enter path-bound state resets.
 	a.memoryStoreMu.Unlock()
 	if compressorToConfigure != nil {
 		a.configureMemoryCompressor(compressorToConfigure)
+	}
+	if justOpened {
+		// Recover before the evolution-LLM refresh so the first ListTasks
+		// does not wait on a config/LLM round-trip. Task list is derived
+		// from the memory index, not from scanning data/tasks.
+		if n := a.recoverManagedTaskRecordsFromDisk(); n > 0 {
+			log.Printf("[ensureMemoryStore] recovered %d managed task records from disk", n)
+		}
+	}
+	if compressorToConfigure != nil {
 		// Newly opened store: refresh the memory-evolution LLM outside the
 		// store mutex (it loads config, see above).
 		a.refreshMemoryEvolutionLLM()
@@ -2348,6 +2397,10 @@ func (a *App) startup(ctx context.Context) {
 	// Platform specific initialization
 	a.platformStartup()
 	a.startConfigWatcher()
+	// Reconciliation loop for receipt-bound dynamic Skill/MCP effects. It runs
+	// with an empty source set until a trusted channel/provider integration
+	// registers a binding-specific receipt source.
+	a.startSemanticEffectReceiptWorker(ctx)
 	log.Printf("[startup] platform+config_watcher done in %v", time.Since(startupBegin))
 	// Pre-warm gse Chinese segmenter dictionary in background so BM25
 	// tool routing doesn't block on first use.
@@ -2367,6 +2420,8 @@ func (a *App) startup(ctx context.Context) {
 			strings.TrimSpace(effectiveWD) != "", strings.TrimSpace(skillTemp) != "", time.Since(startupBegin))
 		writeWorkdirReadySidecar(config.WorkingDirectory, effectiveWD, skillTemp)
 		a.logStoragePaths("startup.config_loaded", &config)
+		a.applyConfiguredProxies(config)
+		go a.maybeImportExternalAgentsOnce()
 		// a.syncToCodeBuddySettings(config, ")
 		if config.Language != "" {
 			a.SetLanguage(config.Language)
@@ -2709,6 +2764,7 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	// Close coding knowledge store.
 	a.closeCodingRuntimeStore()
+	a.closeCodingTaskRelationService()
 	if a.codingKnowledgeStore != nil {
 		_ = a.codingKnowledgeStore.Close()
 		a.codingKnowledgeStore = nil
@@ -2751,6 +2807,8 @@ func (a *App) shutdown(ctx context.Context) {
 		_ = a.sessionSearchStore.Close()
 		a.sessionSearchStore = nil
 	}
+	a.stopSemanticEffectReceiptWorker()
+	a.closeSemanticInvocationStore()
 	if a.qqBotGateway != nil {
 		a.qqBotGateway.Stop()
 	}
@@ -6233,6 +6291,7 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.MaclawLLMTimeoutSec = ondisk.MaclawLLMTimeoutSec
 	incoming.MaclawLLMContextLength = ondisk.MaclawLLMContextLength
 	incoming.MaclawLLMProviders = ondisk.MaclawLLMProviders
+	incoming.ExternalAgentImportAttempted = ondisk.ExternalAgentImportAttempted
 	// Model assignments are backend-owned and revision-protected. Once the
 	// dual-profile contract exists on disk, a stale whole-config form must not
 	// erase it or revive its old assistant-only selection. Initial setup is
@@ -6287,6 +6346,8 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	// so take ownership before acquiring the writer lock. Otherwise concurrent
 	// full saves can mutate a snapshot while another save is serializing it.
 	config = cloneAppConfigForMutation(config)
+	corelib.ApplyZhipuCodingConfigMigration(&config)
+	remapLegacyZhipuCodingProfileModels(config.MaclawLLMProfiles, config.MaclawLLMProviders)
 	lockStart := time.Now()
 	a.configMu.Lock()
 	lockWait := time.Since(lockStart)
@@ -6961,6 +7022,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			v.Key = strings.TrimSpace(v.Key)
 			v.Protocol = strings.TrimSpace(v.Protocol)
 			v.Provider = strings.TrimSpace(v.Provider)
+			if v.ContextLength < 0 {
+				return nil, fmt.Errorf("config field %q route %q context_length must be non-negative", key, k)
+			}
 			out[k] = v
 		}
 		return out, nil
@@ -7790,6 +7854,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetSkillEvolutionEnabled(v)
+		case "embed_hw_accel":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetEmbedHWAccel(v)
+			embedding.SetHWAccelPreferred(v)
 		case "skill_auto_upload_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -8530,7 +8601,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		}()
 	}
 	if proxyChanged {
-		a.applyAgentProxy()
+		a.applyConfiguredProxies(cfg)
 	}
 	// Live-update evolution pipeline cooldown when patched.
 	if _, ok := patch["skill_evolution_repair_cooldown_hours"]; ok && a.evolutionPipeline != nil {
@@ -10088,24 +10159,45 @@ func (a *App) SetBugReportEnabled(enabled bool) (corelib.AppConfig, error) {
 
 // clearBugReportDiagnostics empties, but does not remove, the diagnostic
 // directories. Keeping their roots prevents logger reinitialization races;
-// open files on Windows are truncated when removal is unavailable.
+// files still held open by another process are truncated when removal fails.
 func (a *App) clearBugReportDiagnostics() {
+	// Drop our own handles first. On Windows an open handle makes RemoveAll
+	// fail, and truncating that same path leaves the original handle's offset
+	// past EOF, so later writes never show up in the file the operator reads.
+	base := a.getMaclawBaseDir()
+	logSinkMu.Lock()
+	defer logSinkMu.Unlock()
+	closeLogSinksLocked()
+	var notes []string
+	defer func() {
+		rebindDiagnosticLogSinksLocked(filepath.Join(base, "logs"))
+		for _, note := range notes {
+			log.Printf("%s", note)
+		}
+	}()
+
 	for _, name := range []string{"logs", "trajectories"} {
-		dir := filepath.Join(a.getMaclawBaseDir(), name)
-		if info, err := os.Lstat(dir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		dir := filepath.Join(base, name)
+		if isSymlinkPath(dir) {
 			// Diagnostic roots must remain inside ~/.maclaw. Never follow a
 			// user-created link here: successful report cleanup must not erase an
 			// arbitrary external directory.
-			log.Printf("[bug-report] skipping symbolic-link diagnostic root %s", dir)
+			notes = append(notes, fmt.Sprintf("[bug-report] skipping symbolic-link diagnostic root %s", dir))
 			continue
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Printf("[bug-report] cannot create %s directory %s: %v", name, dir, err)
+			notes = append(notes, fmt.Sprintf("[bug-report] cannot create %s directory %s: %v", name, dir, err))
+			continue
+		}
+		// MkdirAll follows an existing link. Re-check before walking so a
+		// swap after the first Lstat cannot delete an external tree.
+		if isSymlinkPath(dir) {
+			notes = append(notes, fmt.Sprintf("[bug-report] skipping symbolic-link diagnostic root %s", dir))
 			continue
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			log.Printf("[bug-report] cannot read %s directory %s: %v", name, dir, err)
+			notes = append(notes, fmt.Sprintf("[bug-report] cannot read %s directory %s: %v", name, dir, err))
 			continue
 		}
 		for _, entry := range entries {
@@ -10118,15 +10210,30 @@ func (a *App) clearBugReportDiagnostics() {
 						continue
 					}
 				}
-				log.Printf("[bug-report] keeping inaccessible %s entry %s: %v", name, path, err)
+				notes = append(notes, fmt.Sprintf("[bug-report] keeping inaccessible %s entry %s: %v", name, path, err))
 			}
 		}
 	}
 }
 
+func rebindDiagnosticLogSinksLocked(logDir string) {
+	opened := openLogSinksLocked(logDir, false)
+	programLogger.initAt(logDir)
+	reopenSDKDiagLogAt(logDir)
+	if opened {
+		log.Printf("[bug-report] diagnostics cleared; log sinks reopened")
+		return
+	}
+	log.Printf("[bug-report] diagnostics cleared; file log sinks unavailable")
+}
+
 // truncateBugReportDiagnosticFile clears a file without replacing its path.
-// Keeping the path is important for loggers that already hold the file open.
+// Used only for files this process does not own; our log sinks are closed
+// before the directory walk so they can be removed and reopened cleanly.
 func truncateBugReportDiagnosticFile(path string) error {
+	if err := rejectSymlinkFile(path); err != nil {
+		return err
+	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return err
@@ -10235,37 +10342,51 @@ func (a *App) BugReportScreenshotPreviewDataURL(path string) (string, error) {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
+// openAIAssistantAttachmentImage validates that path names a modest local image
+// and returns it rewound to the start, along with the format name reported by
+// the decoder. Callers own the returned file.
+func openAIAssistantAttachmentImage(path string) (*os.File, string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, "", fmt.Errorf("attachment path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if info.IsDir() || info.Size() > 12*1024*1024 {
+		return nil, "", fmt.Errorf("attachment must be an image file no larger than 12 MB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	config, format, err := image.DecodeConfig(file)
+	if err != nil {
+		file.Close()
+		return nil, "", fmt.Errorf("inspect attachment image: %w", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 32_000_000 {
+		file.Close()
+		return nil, "", fmt.Errorf("attachment image dimensions are not supported")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		file.Close()
+		return nil, "", err
+	}
+	return file, format, nil
+}
+
 // AIAssistantAttachmentPreviewDataURL returns a bounded thumbnail for a local
 // image the user has explicitly attached to the assistant.  It deliberately
 // returns image data rather than a file URL, so the WebView never needs direct
 // filesystem access to render a compact attachment preview.
 func (a *App) AIAssistantAttachmentPreviewDataURL(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", fmt.Errorf("attachment path is required")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.IsDir() || info.Size() > 12*1024*1024 {
-		return "", fmt.Errorf("attachment must be an image file no larger than 12 MB")
-	}
-	file, err := os.Open(path)
+	file, _, err := openAIAssistantAttachmentImage(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	config, _, err := image.DecodeConfig(file)
-	if err != nil {
-		return "", fmt.Errorf("inspect attachment image: %w", err)
-	}
-	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 32_000_000 {
-		return "", fmt.Errorf("attachment image dimensions are not supported")
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return "", err
-	}
 	source, _, err := image.Decode(file)
 	if err != nil {
 		return "", fmt.Errorf("decode attachment image: %w", err)
@@ -10289,6 +10410,77 @@ func (a *App) AIAssistantAttachmentPreviewDataURL(path string) (string, error) {
 		return "", err
 	}
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
+}
+
+// Formats the WebView can render straight from a data URL, so the full-size
+// preview keeps the original bytes instead of re-encoding them.
+var aiAssistantInlineImageMIMEByFormat = map[string]string{
+	"png":  "image/png",
+	"jpeg": "image/jpeg",
+	"gif":  "image/gif",
+	"webp": "image/webp",
+}
+
+const (
+	// Beyond this the original bytes are downscaled rather than pushed through
+	// the bridge, which would cost roughly 4/3 of the file size as base64.
+	aiAssistantFullPreviewInlineLimit = 6 * 1024 * 1024
+	aiAssistantFullPreviewMaxEdge     = 1920
+)
+
+// AIAssistantAttachmentFullDataURL returns an attached image at full fidelity
+// for the in-chat preview overlay. Like the thumbnail variant it hands back
+// image data rather than a file URL, so the WebView never needs direct
+// filesystem access.
+func (a *App) AIAssistantAttachmentFullDataURL(path string) (string, error) {
+	file, format, err := openAIAssistantAttachmentImage(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if mime, inlineable := aiAssistantInlineImageMIMEByFormat[format]; inlineable && info.Size() <= aiAssistantFullPreviewInlineLimit {
+		raw, err := io.ReadAll(file)
+		if err != nil {
+			return "", err
+		}
+		return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
+	}
+	source, _, err := image.Decode(file)
+	if err != nil {
+		return "", fmt.Errorf("decode attachment image: %w", err)
+	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width > aiAssistantFullPreviewMaxEdge || height > aiAssistantFullPreviewMaxEdge {
+		if width >= height {
+			height = max(1, height*aiAssistantFullPreviewMaxEdge/width)
+			width = aiAssistantFullPreviewMaxEdge
+		} else {
+			width = max(1, width*aiAssistantFullPreviewMaxEdge/height)
+			height = aiAssistantFullPreviewMaxEdge
+		}
+	}
+	bounded := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.CatmullRom.Scale(bounded, bounded.Bounds(), source, bounds, draw.Over, nil)
+	var out bytes.Buffer
+	// Photographic sources stay JPEG so a downscaled 12 MB capture does not
+	// come back as an even larger lossless payload; anything that may carry
+	// alpha keeps PNG.
+	mime := "image/png"
+	if format == "jpeg" {
+		mime = "image/jpeg"
+		err = jpeg.Encode(&out, bounded, &jpeg.Options{Quality: 85})
+	} else {
+		err = png.Encode(&out, bounded)
+	}
+	if err != nil {
+		return "", err
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(out.Bytes()), nil
 }
 
 // SubmitBugReport makes a diagnostics archive and posts it to HubCenter using

@@ -71,11 +71,11 @@ func (app *TUIApp) materializeProvider(name string) (corelib.MaclawLLMConfig, er
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("provider required")
 	}
 	for _, p := range app.appConfig.MaclawLLMProviders {
-		if strings.EqualFold(strings.TrimSpace(p.Name), name) {
+		if corelib.MaclawLLMProviderNameEqual(p.Name, name) {
 			return corelib.MaclawLLMConfig{
 				URL:             p.URL,
 				Key:             p.Key,
-				Model:           p.Model,
+				Model:           corelib.MigrateZhipuCodingModel(p.Name, p.Model),
 				Protocol:        p.Protocol,
 				ContextLength:   p.ContextLength,
 				TimeoutSec:      p.TimeoutSec,
@@ -119,7 +119,7 @@ func (app *TUIApp) resolveMoAPresetNamed(presetName string) (moa.ResolvedPreset,
 	if len(app.appConfig.ModelRoutes) > 0 {
 		routes := make(map[string]llm.ModelRoute, len(app.appConfig.ModelRoutes))
 		for k, v := range app.appConfig.ModelRoutes {
-			routes[k] = llm.ModelRoute{Model: v.Model, URL: v.URL, Key: v.Key, Protocol: v.Protocol, Provider: v.Provider}
+			routes[k] = llm.ModelRoute{Model: v.Model, URL: v.URL, Key: v.Key, Protocol: v.Protocol, Provider: v.Provider, ContextLength: v.ContextLength}
 		}
 		router = llm.NewModelRouter(routes)
 	}

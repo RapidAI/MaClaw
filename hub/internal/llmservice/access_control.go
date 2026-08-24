@@ -2,18 +2,22 @@ package llmservice
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
 // TenantLLMAccessControl manages the "algorithm access" authorization status
 // for each tenant, determining whether they can add third-party LLM providers
 // or are restricted to the built-in MaClaw Official only.
 type TenantLLMAccessControl struct {
-	mu     sync.RWMutex
-	cache  map[string]*cachedAuthStatus // key: tenantID
-	client *MaClawProviderClient
+	mu              sync.RWMutex
+	cache           map[string]*cachedAuthStatus // key: tenantID
+	client          *MaClawProviderClient
+	officialBilling []llmpool.ProviderBillingPolicy
 }
 
 type cachedAuthStatus struct {
@@ -90,9 +94,20 @@ func (ac *TenantLLMAccessControl) CleanupStale() {
 	}
 }
 
-// UpdateFromHeartbeat updates cached authorization from heartbeat response data.
+// UpdateFromHeartbeat caches tenant authorization from a live HubCenter query.
+// Provider billing in status overwrites the official catalog because the query
+// is fresher than a stored heartbeat snapshot.
 func (ac *TenantLLMAccessControl) UpdateFromHeartbeat(tenantID string, status *TenantAuthorizationStatus) {
-	if status == nil {
+	ac.CacheTenantAuthorization(tenantID, status)
+	if status != nil && len(status.ProviderBilling) > 0 {
+		ac.UpdateOfficialProviderBilling(status.ProviderBilling)
+	}
+}
+
+// CacheTenantAuthorization stores tenant allow/credits status without touching
+// the official billing catalog. Use this for stored heartbeat snapshots.
+func (ac *TenantLLMAccessControl) CacheTenantAuthorization(tenantID string, status *TenantAuthorizationStatus) {
+	if ac == nil || status == nil {
 		return
 	}
 	ac.mu.Lock()
@@ -104,6 +119,82 @@ func (ac *TenantLLMAccessControl) UpdateFromHeartbeat(tenantID string, status *T
 		ac.cache[key] = entry
 	}
 	ac.mu.Unlock()
+}
+
+// UpdateOfficialProviderBilling stores HubCenter vendor billing rules.
+func (ac *TenantLLMAccessControl) UpdateOfficialProviderBilling(policies []llmpool.ProviderBillingPolicy) {
+	if ac == nil {
+		return
+	}
+	copied := copyOfficialBilling(policies)
+	if len(copied) == 0 {
+		return
+	}
+	ac.mu.Lock()
+	ac.officialBilling = copied
+	ac.mu.Unlock()
+}
+
+// OfficialProviderBilling returns HubCenter vendor time-of-use rules.
+func (ac *TenantLLMAccessControl) OfficialProviderBilling() []llmpool.ProviderBillingPolicy {
+	if ac == nil {
+		return nil
+	}
+	ac.mu.RLock()
+	defer ac.mu.RUnlock()
+	return copyOfficialBilling(ac.officialBilling)
+}
+
+// ApplyLLMComputePayload copies provider_billing from a HubCenter llm_compute
+// heartbeat or authorization payload. An empty list does not clear the cache.
+func (ac *TenantLLMAccessControl) ApplyLLMComputePayload(raw json.RawMessage) {
+	ac.applyOfficialBillingFromPayload(raw, false)
+}
+
+// SeedOfficialBillingIfEmpty loads a stored heartbeat catalog only when Hub
+// has not already received a live HubCenter billing table.
+func (ac *TenantLLMAccessControl) SeedOfficialBillingIfEmpty(raw json.RawMessage) {
+	ac.applyOfficialBillingFromPayload(raw, true)
+}
+
+func (ac *TenantLLMAccessControl) applyOfficialBillingFromPayload(raw json.RawMessage, onlyIfEmpty bool) {
+	if ac == nil || len(raw) == 0 {
+		return
+	}
+	var payload struct {
+		ProviderBilling []llmpool.ProviderBillingPolicy `json:"provider_billing"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return
+	}
+	copied := copyOfficialBilling(payload.ProviderBilling)
+	if len(copied) == 0 {
+		return
+	}
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if onlyIfEmpty && len(ac.officialBilling) > 0 {
+		return
+	}
+	ac.officialBilling = copied
+}
+
+func copyOfficialBilling(policies []llmpool.ProviderBillingPolicy) []llmpool.ProviderBillingPolicy {
+	if len(policies) == 0 {
+		return nil
+	}
+	out := make([]llmpool.ProviderBillingPolicy, 0, len(policies))
+	for _, policy := range policies {
+		policy = llmpool.NormalizeProviderBillingPolicy(policy)
+		if policy.ProviderID == "" {
+			continue
+		}
+		out = append(out, policy)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func authorizationCacheTenantKeys(ids ...string) []string {

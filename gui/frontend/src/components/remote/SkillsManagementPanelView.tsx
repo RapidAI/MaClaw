@@ -612,10 +612,28 @@ function learnedSourceIcon(source: string): string {
 }
 
 const LEARNED_DESCRIPTION_PREVIEW_CHARS = 20;
-export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS, emptyText = "-"): string {
+const LOCAL_SKILLS_COL_PX = { name: 190, description: 160, type: 110, usage: 100, status: 72, actionsMin: 148 } as const;
+export const LOCAL_SKILLS_DESCRIPTION_COL_PX = LOCAL_SKILLS_COL_PX.description;
+export const LOCAL_SKILLS_TABLE_MIN_WIDTH_PX = LOCAL_SKILLS_COL_PX.name + LOCAL_SKILLS_COL_PX.description + LOCAL_SKILLS_COL_PX.type + LOCAL_SKILLS_COL_PX.usage + LOCAL_SKILLS_COL_PX.status + LOCAL_SKILLS_COL_PX.actionsMin;
+
+function previewSkillDescription(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS, emptyText = "-"): { preview: string; tooltip?: string } {
     const normalized = description.trim().replace(/\s+/g, " ");
-    if (!normalized) return emptyText; const chars = Array.from(normalized);
-    return chars.length <= maxChars ? normalized : chars.slice(0, maxChars).join("") + "...";
+    if (!normalized) return { preview: emptyText };
+    const chars = Array.from(normalized);
+    return chars.length <= maxChars ? { preview: normalized } : { preview: chars.slice(0, maxChars).join("") + "...", tooltip: normalized };
+}
+
+export function getLearnedSkillDescriptionPreview(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS, emptyText = "-"): string {
+    return previewSkillDescription(description, maxChars, emptyText).preview;
+}
+
+export function skillDescriptionTooltip(description: string, maxChars = LEARNED_DESCRIPTION_PREVIEW_CHARS): string | undefined {
+    return previewSkillDescription(description, maxChars, "").tooltip;
+}
+
+function renderSkillDescriptionPreview(description: string, extraStyle?: CSSProperties) {
+    const { preview, tooltip } = previewSkillDescription(description, LEARNED_DESCRIPTION_PREVIEW_CHARS, "—");
+    return <div style={{ ...localSkillsDescriptionPreviewStyle, ...(tooltip ? { cursor: "help" as const } : {}), ...extraStyle }} title={tooltip}>{preview}</div>;
 }
 
 function skillReviewReason(skill: NLSkillDefinition, localizeText: Props["localizeText"]): string {
@@ -2863,7 +2881,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
                     {/* Skills list — responsive: cards when narrow, table when wide */}
                     {!loading && filteredSkillsForMyTab.length > 0 && (
-                        panelWidth < 700 ? (
+                        panelWidth < LOCAL_SKILLS_TABLE_MIN_WIDTH_PX ? (
                             /* Card layout for narrow panels */
                             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                                 {filteredSkillsForMyTab.map((s) => (
@@ -2876,7 +2894,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     {isLearnedSource(s.source ?? "") && <span style={learnedBadgeStyle}>{localizeText("Learned", "自学习", "自學習")}</span>}
                                                     <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
                                                 </div>
-                                                <div style={{ ...localSkillsDescriptionPreviewStyle, marginTop: "4px" }} title={s.description || undefined}>{getLearnedSkillDescriptionPreview(s.description || "", LEARNED_DESCRIPTION_PREVIEW_CHARS, "—")}</div>
+                                                {renderSkillDescriptionPreview(s.description || "", { marginTop: "4px" })}
                                                 {(s.status === "needs_setup" || s.status === "needs_review") && (
                                                     <div style={{ fontSize: "0.7rem", color: colors.warning, marginTop: "3px" }}>
                                                         {s.status === "needs_setup"
@@ -2948,45 +2966,48 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         ) : (
                             /* Table layout for wide panels */
                             <div style={localSkillsTableContainerStyle}>
-                                <table style={{ ...localSkillsTableStyle, minWidth: "880px" }}>
+                                <table style={localSkillsTableStyle}>
+                                    <colgroup>
+                                        <col style={{ width: LOCAL_SKILLS_COL_PX.name }} /><col style={{ width: LOCAL_SKILLS_COL_PX.description }} /><col style={{ width: LOCAL_SKILLS_COL_PX.type }} /><col style={{ width: LOCAL_SKILLS_COL_PX.usage }} /><col style={{ width: LOCAL_SKILLS_COL_PX.status }} /><col style={{ width: "auto" }} />
+                                    </colgroup>
                                     <thead>
                                         <tr style={{ background: colors.surfaceMuted }}>
-                                            <th style={{ ...thStyle, width: "190px", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
-                                            <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
-                                            <th style={{ ...thStyle, width: "72px", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
-                                            <th style={{ ...thStyle, width: "92px", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                            <th style={{ ...thStyle, width: "72px", whiteSpace: "nowrap", textAlign: "center", paddingRight: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
-                                            <th style={{ ...thStyle, width: "110px", textAlign: "center", paddingLeft: 4 }}>{localizeText("Actions", "操作", "操作")}</th>
+                                            <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
+                                            <th style={{ ...thStyle, ...localSkillsDescriptionColStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
+                                            <th style={{ ...thStyle, textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
+                                            <th style={{ ...thStyle, textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
+                                            <th style={{ ...thStyle, whiteSpace: "nowrap", textAlign: "center", paddingRight: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
+                                            <th style={{ ...thStyle, textAlign: "center", paddingLeft: 4 }}>{localizeText("Actions", "操作", "操作")}</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {filteredSkillsForMyTab.map((s) => (
                                             <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
-                                                <td style={{ ...tdStyle, textAlign: "left" }}>
+                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "left" }}>
                                                     <div style={localSkillsNameCellStyle}>
                                                         {s.is_maclaw_app && <span title={miniAppShort} style={appBadgeStyle}>{miniAppShort}</span>}
                                                         {isLearnedSource(s.source ?? "") && <span title={localizeText("Learned", "自学习", "自學習")} style={learnedBadgeStyle}>{localizeText("Learned", "自学习", "自學習")}</span>}
                                                         <span style={localSkillsNameLinkStyle} onClick={() => setDetailSkill(s)} title={s.name}>{s.name}</span>
                                                     </div>
                                                 </td>
-                                                <td style={tdStyle}>
-                                                    <div style={localSkillsDescriptionPreviewStyle} title={s.description || undefined}>{getLearnedSkillDescriptionPreview(s.description || "", LEARNED_DESCRIPTION_PREVIEW_CHARS, "—")}</div>
+                                                <td style={{ ...tdStyle, ...localSkillsDescriptionColStyle }}>
+                                                    {renderSkillDescriptionPreview(s.description || "")}
                                                     {s.status === "needs_review" && skillReviewReason(s, localizeText) && (
                                                         <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginTop: "3px", lineHeight: 1.35, overflowWrap: "anywhere" }} title={skillReviewReason(s, localizeText)}>
                                                             {localizeText("Review reason", "\u5ba1\u6838\u539f\u56e0", "\u5be9\u6838\u539f\u56e0")}: {skillReviewReasonPreview(s, localizeText)}
                                                         </div>
                                                     )}
                                                 </td>
-                                                <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
-                                                    {s.execution_class ? (<span style={executionClassBadgeStyle} title={getExecutionClassTitle(s)}>{getExecutionClassLabel(s.execution_class)}</span>) : (<span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>)}
+                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "left", paddingRight: 4 }}>
+                                                    {s.execution_class ? (<span style={localSkillsTypeBadgeStyle} title={getExecutionClassTitle(s)}>{getExecutionClassLabel(s.execution_class)}</span>) : (<span style={{ fontSize: "0.72rem", color: colors.textMuted }}>—</span>)}
                                                 </td>
-                                                <td style={{ ...tdStyle, textAlign: "left", paddingRight: 4 }}>
+                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "left", paddingRight: 4 }}>
                                                     {(s.usage_count ?? 0) > 0 ? (<span style={localSkillsMetaTextStyle}>{s.usage_count}{localizeText("x", "次", "次")} / {Math.round((s.success_rate ?? 0) * 100)}%</span>) : (<span style={{ ...localSkillsMetaTextStyle, color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>)}
                                                 </td>
-                                                <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 4 }}>
-                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
+                                                <td style={{ ...tdStyle, ...localSkillsClipCellStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 4 }}>
+                                                    <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" && skillReviewReason(s, localizeText) ? skillReviewReason(s, localizeText) : localizeSkillStatus(s.status)}>{localizeSkillStatus(s.status)}</span>
                                                 </td>
-                                                <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4 }}>
+                                                <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, minWidth: 0 }}>
                                                     <div style={localSkillsRowActionsStyle}>
                                                         {s.status === "needs_setup" && (
                                                             <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
@@ -5391,6 +5412,10 @@ const localSkillsDescriptionPreviewStyle: CSSProperties = {
     color: colors.textSecondary,
 };
 
+const localSkillsDescriptionColStyle: CSSProperties = { width: LOCAL_SKILLS_DESCRIPTION_COL_PX, maxWidth: LOCAL_SKILLS_DESCRIPTION_COL_PX, overflow: "hidden" };
+const localSkillsClipCellStyle: CSSProperties = { overflow: "hidden" };
+const localSkillsTypeBadgeStyle: CSSProperties = { ...executionClassBadgeStyle, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" };
+
 const localSkillsNameCellStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -5471,10 +5496,6 @@ const detailPreStyle: CSSProperties = {
     ...remoteCodeBlockStyle,
 };
 
-const learnedSkillsTableStyle: CSSProperties = { width: "100%", minWidth: 674, tableLayout: "fixed", borderCollapse: "collapse", fontSize: "0.76rem" };
-
-const learnedDescriptionPreviewStyle: CSSProperties = { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", cursor: "help", textAlign: "left", lineHeight: 1.45, overflowWrap: "anywhere" };
-
 const auditWrapLineStyle: CSSProperties = { fontSize: "0.72rem", marginTop: "3px", lineHeight: 1.45, textAlign: "left", overflowWrap: "anywhere" };
 
 const hubSkillDescriptionStyle: CSSProperties = {
@@ -5552,25 +5573,28 @@ const skillsEmptyStateStyle: CSSProperties = {
 };
 const localSkillsTableContainerStyle: CSSProperties = {
     ...remoteTableContainerStyle,
+    boxSizing: "border-box",
     flex: "1 1 auto",
     minHeight: 0,
     width: "100%",
-    overflow: "auto",
+    overflowX: "hidden",
+    overflowY: "auto",
 };
 const localSkillsTableStyle: CSSProperties = {
     width: "100%",
-    minWidth: "960px",
     tableLayout: "fixed",
     borderCollapse: "collapse",
     fontSize: "0.76rem",
 };
 
 const localSkillsRowActionsStyle: CSSProperties = {
-    display: "inline-flex",
+    display: "flex",
     justifyContent: "center",
     alignItems: "center",
     gap: "6px",
-    flexWrap: "nowrap",
+    flexWrap: "wrap",
+    width: "100%",
+    minWidth: 0,
 };
 
 const tabBtnStyle: CSSProperties = {

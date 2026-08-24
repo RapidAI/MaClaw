@@ -1,0 +1,4 @@
+# CI-only fourth-profile exercise.  This profile reuses the compact physical
+# adapter contract but has its own immutable Device Profile identity.  It is
+# never a release or flash target.
+CONFIG_MACLAW_BOARD_REFERENCE_FAKE=y

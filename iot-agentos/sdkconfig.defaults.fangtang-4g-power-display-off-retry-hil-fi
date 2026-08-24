@@ -1,0 +1,4 @@
+# Dedicated non-release HIL for the profile-neutral Power Service stale-safe
+# DISPLAY_OFF retry contract. Fangtang is the physical carrier only.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_POWER_DISPLAY_OFF_RETRY_HIL_TEST=y

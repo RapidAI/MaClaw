@@ -316,6 +316,87 @@ func TestApplyCreditUsageToRegistryForUserIDIgnoresStaleEmail(t *testing.T) {
 	}
 }
 
+func TestBillingReservationReducesAdmissionAvailabilityAndReleases(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{
+		ID: "g", UserID: "user", Email: "user@example.com", ServiceGroupID: "coding",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10,
+	}}}
+	reserved, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "request-1", 7, now.Add(time.Minute), now)
+	if !ok || reserved != 7 {
+		t.Fatalf("reservation = %v, %v", reserved, ok)
+	}
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, now); got != 3 {
+		t.Fatalf("available after reservation = %v, want 3", got)
+	}
+	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "request-2", 4, now.Add(time.Minute), now); ok {
+		t.Fatal("second reservation exceeded remaining balance")
+	}
+	if !ReleaseBillingReservation(reg, "request-1", now) {
+		t.Fatal("reservation not released")
+	}
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, now); got != 10 {
+		t.Fatalf("available after release = %v, want 10", got)
+	}
+}
+
+func TestExpiredSentBillingReservationRemainsUntilSettlement(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{
+		ID: "g", UserID: "user", Email: "user@example.com", ServiceGroupID: "coding",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10,
+	}}}
+	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "request-sent", 7, now.Add(time.Minute), now); !ok {
+		t.Fatal("reserve")
+	}
+	if !MarkBillingReservationSent(reg, "request-sent", now) {
+		t.Fatal("mark sent")
+	}
+	later := now.Add(2 * time.Minute)
+	pruneExpiredBillingReservations(reg, later)
+	if len(reg.BillingReservations) != 1 || reg.BillingReservations[0].SentAt.IsZero() {
+		t.Fatalf("sent reservation was expired: %#v", reg.BillingReservations)
+	}
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, later); got != 3 {
+		t.Fatalf("available after sent quote expiry = %v, want 3", got)
+	}
+	if !ReleaseBillingReservation(reg, "request-sent", later) {
+		t.Fatal("settlement release")
+	}
+}
+
+func TestSentBillingReservationKeepsFrozenOfficialDetails(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{ID: "g", UserID: "user", Email: "user@example.com", ServiceGroupID: "coding", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 10}}}
+	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "official-request", 2, now.Add(time.Minute), now); !ok {
+		t.Fatal("reserve")
+	}
+	if !MarkBillingReservationSent(reg, "official-request", now) || !SetBillingReservationBillingDetails(reg, "official-request", MaClawOfficialProviderID, 2) {
+		t.Fatal("freeze official reservation details")
+	}
+	items := SentBillingReservationsForUserID(reg, "user", "user@example.com")
+	if len(items) != 1 || items[0].ProviderID != MaClawOfficialProviderID || items[0].BillingGroupMultiplier != 2 {
+		t.Fatalf("sent reservations=%#v", items)
+	}
+}
+
+func TestSentBillingReservationsIncludesEveryOwner(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{BillingReservations: []BillingReservation{
+		{RequestID: "sent-a", UserID: "user-a", ServiceGroupIDs: []string{"group-a"}, SentAt: now},
+		{RequestID: "sent-b", UserID: "user-b", ServiceGroupIDs: []string{"group-b"}, SentAt: now},
+		{RequestID: "unsent", UserID: "user-c", ServiceGroupIDs: []string{"group-c"}},
+	}}
+	items := SentBillingReservations(reg)
+	if len(items) != 2 {
+		t.Fatalf("sent reservations = %#v, want both sent entries", items)
+	}
+	items[0].ServiceGroupIDs[0] = "mutated"
+	if reg.BillingReservations[0].ServiceGroupIDs[0] == "mutated" {
+		t.Fatal("returned reservations must not alias registry service groups")
+	}
+}
+
 func TestApplyCreditUsageSkipsFrozenReferralGrant(t *testing.T) {
 	now := time.Now().UTC()
 	reg := &Registry{Grants: []Grant{
@@ -476,6 +557,367 @@ func TestGrantDefaultServiceForNewUser(t *testing.T) {
 	}
 }
 
+func TestGrantDefaultServiceForNewUserIssuesBindingLimitCard(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree},
+			{ID: "recharge", Name: "Recharge", AccessPolicy: AccessPolicyGrantRequired},
+		},
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"welcome", "recharge"},
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 10, Daily: 25},
+		},
+		DefaultNewUserBenefitMode: NewUserBenefitModeLimitCard,
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantDefaultServiceForNewUserID(ctx, system, "user-1", "user@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card *Grant
+	for i := range saved.Grants {
+		if saved.Grants[i].Source == "new_user_limit_card" {
+			card = &saved.Grants[i]
+		}
+	}
+	if card == nil || card.ServiceGroupID != "welcome" || !card.Permanent || card.PeriodLimits.FiveHour != 10 || card.PeriodLimits.Daily != 25 || !card.RollingFiveHour {
+		t.Fatalf("unexpected new-user limit card: %#v", card)
+	}
+	now := time.Now().UTC()
+	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroupsForUserID(saved, "user-1", "user@example.com", []string{"welcome"}, now); !allowed || code != "" {
+		t.Fatalf("limit-card welcome group should be allowed, code=%q", code)
+	}
+	if got := ApplyCreditUsageToRegistryForUserID(saved, "user-1", "user@example.com", []string{"welcome"}, 11, now); got != 10 {
+		t.Fatalf("limit-card usage = %v, want 10", got)
+	}
+	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroupsForUserID(saved, "user-1", "user@example.com", []string{"welcome"}, now); allowed || code != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("limit-card exhaustion should block use, allowed=%v code=%q", allowed, code)
+	}
+}
+
+func TestNewUserBenefitModeIssuesExactlyOneBenefit(t *testing.T) {
+	ctx := context.Background()
+	t.Run("credits", func(t *testing.T) {
+		system := newTestSystemSettings()
+		if err := SaveRegistry(ctx, system, &Registry{
+			ModelServiceGroups: []ModelServiceGroup{
+				{ID: "credits", Name: "Credits", AccessPolicy: AccessPolicyGrantRequired},
+				{ID: "welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree},
+			},
+			DefaultNewUserServiceGroups: []string{"credits"},
+			DefaultNewUserLimitCard:     NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
+			DefaultNewUserBenefitMode:   NewUserBenefitModeCredits,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := GrantDefaultServiceForNewUser(ctx, system, "credits@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := LoadRegistry(ctx, system)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(saved.Grants) != 1 || saved.Grants[0].Source != "new_user_default" {
+			t.Fatalf("credits mode must issue only the Credits benefit: %#v", saved.Grants)
+		}
+	})
+
+	t.Run("limit card", func(t *testing.T) {
+		system := newTestSystemSettings()
+		if err := SaveRegistry(ctx, system, &Registry{
+			ModelServiceGroups: []ModelServiceGroup{
+				{ID: "credits", Name: "Credits", AccessPolicy: AccessPolicyGrantRequired},
+				{ID: "welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree},
+			},
+			DefaultNewUserServiceGroups: []string{"credits"},
+			DefaultNewUserLimitCard:     NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
+			DefaultNewUserBenefitMode:   NewUserBenefitModeLimitCard,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := GrantDefaultServiceForNewUser(ctx, system, "card@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if err := GrantEmailConfirmedBenefitForUser(ctx, system, "card@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if err := GrantPhoneVerifiedBenefitForUser(ctx, system, "card@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := LoadRegistry(ctx, system)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(saved.Grants) != 1 || saved.Grants[0].Source != "new_user_limit_card" || saved.Grants[0].CreditsTotal != 0 {
+			t.Fatalf("limit-card mode must issue no Credits grants: %#v", saved.Grants)
+		}
+	})
+}
+
+func TestNewUserBenefitModeDefaultsToCredits(t *testing.T) {
+	reg := &Registry{DefaultNewUserBenefitMode: "unexpected"}
+	reg.Normalize()
+	if reg.NewUserBenefitMode() != NewUserBenefitModeCredits {
+		t.Fatalf("invalid mode = %q, want %q", reg.NewUserBenefitMode(), NewUserBenefitModeCredits)
+	}
+}
+
+func TestNewUserBenefitModeIsPersistedForNewRegistry(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	if err := SaveRegistry(ctx, system, &Registry{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := system.Get(ctx, RegistryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"default_new_user_benefit_mode":"credits"`) {
+		t.Fatalf("default benefit mode was not persisted: %s", raw)
+	}
+}
+
+func TestNewUserLimitCardUsesRollingFiveHourWindow(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{{
+		ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+		PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+	}}}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 10, now); got != 10 {
+		t.Fatalf("first usage = %v, want 10", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 1, now.Add(4*time.Hour+59*time.Minute)); got != 0 {
+		t.Fatalf("usage before rolling expiry = %v, want 0", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 1, now.Add(5*time.Hour)); got != 1 {
+		t.Fatalf("usage after rolling expiry = %v, want 1", got)
+	}
+}
+
+func TestPermanentNewUserLimitCardDoesNotExpireWithLegacyStoredDate(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		Grants: []Grant{{
+			ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-48 * time.Hour),
+			// Older data can retain a finite date even when the permanent flag is
+			// authoritative. Every entitlement path must honor the flag.
+			ExpiresAt: now.Add(-24 * time.Hour), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+		}},
+	}
+	if allowed, _, code, _, available, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); !allowed || code != "" || available != 10 {
+		t.Fatalf("permanent limit card should remain billable, allowed=%v code=%q available=%v", allowed, code, available)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 3, now); got != 3 {
+		t.Fatalf("permanent limit-card usage = %v, want 3", got)
+	}
+}
+
+func TestNewUserLimitCardCannotBeBypassedByAnotherGrantOnSameFreeGroup(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{
+		{
+			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25},
+		},
+		{
+			ID: "legacy-gift", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_default",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(0, 0, 30), CreditsTotal: 100,
+		},
+	}}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 11, now); got != 10 {
+		t.Fatalf("usage must be constrained by limit card, got %v want 10", got)
+	}
+	if reg.Grants[0].CreditsUsed != 10 || reg.Grants[1].CreditsUsed != 0 {
+		t.Fatalf("usage must be charged only to the limit card: %#v", reg.Grants)
+	}
+	if available := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); available != 0 {
+		t.Fatalf("legacy credits must not expand the active limit-card allowance, got %v", available)
+	}
+	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); allowed || code != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("exhausted limit card must still deny despite legacy credits, allowed=%v code=%q", allowed, code)
+	}
+}
+
+func TestNewUserLimitCardIsNotBypassedWhenAnUnconstrainedCardComesFirst(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{
+		{
+			ID: "validity-only", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true,
+		},
+		{
+			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+		},
+		{
+			ID: "legacy-gift", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_default",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(0, 0, 30), CreditsTotal: 100,
+		},
+	}}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 11, now); got != 10 {
+		t.Fatalf("usage must stay constrained by the later limit card, got %v want 10", got)
+	}
+	if reg.Grants[1].CreditsUsed != 10 || reg.Grants[2].CreditsUsed != 0 {
+		t.Fatalf("usage must be charged only to the constrained card: %#v", reg.Grants)
+	}
+}
+
+func TestNewUserLimitCardLeavesOtherSelectedFreeGroupsIndependent(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{Grants: []Grant{
+		{
+			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+		},
+		{
+			ID: "other-grant", Email: "user@example.com", ServiceGroupID: "other", Source: "admin_grant",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(0, 0, 30), CreditsTotal: 100,
+		},
+	}}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome", "other"}, 20, now); got != 20 {
+		t.Fatalf("combined usage = %v, want 20", got)
+	}
+	if reg.Grants[0].CreditsUsed != 0 || reg.Grants[1].CreditsUsed != 20 {
+		t.Fatalf("only the limit-card group must be constrained: %#v", reg.Grants)
+	}
+}
+
+func TestNewUserLimitCardDoesNotBlockOtherFreeProviderRoute(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "welcome", AccessPolicy: AccessPolicyFree},
+			{ID: "fallback", AccessPolicy: AccessPolicyFree},
+		},
+		Grants: []Grant{{
+			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+			UsageEvents:  []CreditUsageEvent{{OccurredAt: now.Add(-time.Minute), CreditsUsed: 10}},
+		}},
+	}
+	allowed, policy, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome", "fallback"}, now)
+	if !allowed || policy != AccessPolicyFree || code != "" {
+		t.Fatalf("independent free fallback must remain usable, allowed=%v policy=%q code=%q", allowed, policy, code)
+	}
+}
+
+func TestNewUserLimitCardDoesNotConsumeCreditsThroughOtherFreeProviderRoute(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "welcome", AccessPolicy: AccessPolicyFree},
+			{ID: "fallback", AccessPolicy: AccessPolicyFree},
+		},
+		Grants: []Grant{{
+			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+		}},
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome", "fallback"}, 4, now); got != 0 {
+		t.Fatalf("free fallback route must not consume the welcome limit card, got %v", got)
+	}
+	if used := reg.Grants[0].CreditsUsed; used != 0 {
+		t.Fatalf("free fallback route changed welcome card usage to %v", used)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 4, now); got != 4 {
+		t.Fatalf("direct welcome route usage = %v, want 4", got)
+	}
+}
+
+func TestNewUserLimitCardKeepsItsUsageOutOfLifetimeCreditTotals(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "welcome",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []ModelServiceModel{{Name: "gpt-welcome", ProviderIDs: []string{"provider-a"}}},
+		}},
+		Grants: []Grant{{
+			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25},
+		}},
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 4, now); got != 4 {
+		t.Fatalf("limit-card usage = %v, want 4", got)
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry: %v", err)
+	}
+	if !status.Active || status.CreditsTotal != 0 || status.CreditsUsed != 0 || status.CreditsRemaining != 0 || status.CreditsAvailable != 0 {
+		t.Fatalf("limit card must retain unlimited lifetime totals and its own period availability: %#v", status)
+	}
+	if status.NearestExpiresAt != "" || status.EffectiveExpiresAt != "" {
+		t.Fatalf("permanent limit card must not expose its storage sentinel as an expiry: %#v", status)
+	}
+	if len(status.CreditGrants) != 1 || status.CreditGrants[0].PeriodUsage == nil || status.CreditGrants[0].PeriodUsage.FiveHour.CreditsUsed != 4 {
+		t.Fatalf("limit-card period usage is missing from status: %#v", status.CreditGrants)
+	}
+}
+
+func TestNewUserLimitCardOnlyKeepsSupportedPeriodLimits(t *testing.T) {
+	reg := &Registry{DefaultNewUserLimitCard: NewUserLimitCard{PeriodLimits: CreditPeriodLimits{
+		FiveHour: 10,
+		Daily:    25,
+		Weekly:   50,
+		Monthly:  100,
+	}}}
+	reg.Normalize()
+	if got := reg.DefaultNewUserLimitCard.PeriodLimits; got.FiveHour != 10 || got.Daily != 25 || got.Weekly != 0 || got.Monthly != 0 {
+		t.Fatalf("new-user limit-card period limits = %#v, want only five-hour and daily", got)
+	}
+}
+
+func TestNewUserLimitCardWithOnlyValidityDoesNotConsumeCredits(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree}},
+		Grants: []Grant{{
+			ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 0,
+		}},
+	}
+	allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now)
+	if !allowed || code != "" {
+		t.Fatalf("validity-only welcome card should allow access, allowed=%v code=%q", allowed, code)
+	}
+	if used := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 100, now); used != 0 {
+		t.Fatalf("validity-only welcome card usage = %v, want 0", used)
+	}
+}
+
+func TestNewUserLimitCardExpiryDoesNotChangeFreeGroupBehavior(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree}},
+		Grants: []Grant{{
+			ID: "expired-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.AddDate(0, 0, -2), ExpiresAt: now.AddDate(0, 0, -1), PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 20},
+		}},
+	}
+	allowed, policy, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now)
+	if !allowed || policy != AccessPolicyFree || code != "" {
+		t.Fatalf("expired card must restore the free group behavior, allowed=%v policy=%q code=%q", allowed, policy, code)
+	}
+}
+
 func TestGrantInvitationCodeBenefitForUser(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -560,6 +1002,196 @@ func TestGrantInvitationCodeBenefitForUserRequiresCompleteGrant(t *testing.T) {
 	}
 	if len(saved.Grants) != 0 {
 		t.Fatalf("len(Grants) = %d, want 0", len(saved.Grants))
+	}
+}
+
+func TestGrantUserReferralBenefitRejectsSystemFree(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			SystemFreeTemplate(),
+			{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{"redeem"},
+		DefaultNewUserCredits:       1000,
+	}
+	EnsureSystemFreeServiceGroup(reg)
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	if _, err := GrantUserReferralBenefitForUserID(ctx, system, "invitee-1", "phone:17090134628", "referral-1", SystemFreeServiceGroupID, 30, 100, now); err == nil {
+		t.Fatal("expected system-free referral grant to fail")
+	}
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			SystemFreeTemplate(),
+			{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired},
+			{ID: "free-welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree},
+		},
+		DefaultNewUserServiceGroups: []string{"redeem"},
+		DefaultNewUserCredits:       1000,
+	}); err != nil {
+		t.Fatalf("SaveRegistry free group: %v", err)
+	}
+	if _, err := GrantUserReferralBenefitForUserID(ctx, system, "invitee-1", "phone:17090134628", "referral-free", "free-welcome", 30, 100, now); err == nil {
+		t.Fatal("expected free-policy referral grant to fail")
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	for _, grant := range saved.Grants {
+		if grant.ServiceGroupID == SystemFreeServiceGroupID || grant.ServiceGroupID == "free-welcome" {
+			t.Fatalf("referral must not create a free-policy grant: %#v", grant)
+		}
+	}
+	grantID, err := GrantUserReferralBenefitForUserID(ctx, system, "invitee-1", "phone:17090134628", "referral-1", "redeem", 30, 100, now)
+	if err != nil || grantID == "" {
+		t.Fatalf("redeem referral grant: id=%q err=%v", grantID, err)
+	}
+	saved, err = LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry after redeem grant: %v", err)
+	}
+	if len(saved.UserBindings) != 0 {
+		t.Fatalf("referral grant must not bind the user: %#v", saved.UserBindings)
+	}
+	found := false
+	for _, grant := range saved.Grants {
+		if grant.ID == grantID {
+			found = true
+			if grant.ServiceGroupID != "redeem" || grant.CreditsTotal != 100 || grant.Source != "user_referral" {
+				t.Fatalf("unexpected referral grant: %#v", grant)
+			}
+		}
+		if grant.ServiceGroupID == SystemFreeServiceGroupID {
+			t.Fatalf("redeem referral grant leaked a system-free grant: %#v", grant)
+		}
+	}
+	if !found {
+		t.Fatal("expected redeem referral grant")
+	}
+}
+
+func TestGrantDefaultServiceForNewUserSkipsSystemFree(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			SystemFreeTemplate(),
+			{ID: "redeem", Name: "Redeem", AccessPolicy: AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{SystemFreeServiceGroupID, "redeem"},
+		DefaultNewUserCredits:       1000,
+		DefaultNewUserDurationDays:  30,
+	}
+	EnsureSystemFreeServiceGroup(reg)
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	if err := GrantDefaultServiceForNewUserID(ctx, system, "user-new", "newuser@example.com"); err != nil {
+		t.Fatalf("GrantDefaultServiceForNewUserID: %v", err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	if len(saved.Grants) != 1 || saved.Grants[0].ServiceGroupID != "redeem" {
+		t.Fatalf("new-user grants=%#v, want one redeem grant", saved.Grants)
+	}
+	for _, grant := range saved.Grants {
+		if IsSystemFreeServiceGroup(grant.ServiceGroupID) {
+			t.Fatalf("new-user default must skip system-free: %#v", grant)
+		}
+	}
+}
+
+func TestDetachSystemFreeFromReferralOwners(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			SystemFreeTemplate(),
+			{ID: "redeem", Name: "Redeem", AccessPolicy: AccessPolicyGrantRequired},
+		},
+		UserBindings: []UserBinding{
+			{UserID: "invitee-1", Email: "invitee@example.com", ServiceGroupIDs: []string{SystemFreeServiceGroupID, "redeem"}},
+			{UserID: "inviter-1", Email: "inviter@example.com", ServiceGroupIDs: []string{SystemFreeServiceGroupID}},
+			{UserID: "employee-1", Email: "employee@example.com", ServiceGroupIDs: []string{SystemFreeServiceGroupID}},
+		},
+		Grants: []Grant{
+			{ID: "g-referral", UserID: "invitee-1", Email: "invitee@example.com", ServiceGroupID: "redeem", Source: "user_referral", CardID: "ref-1", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 100},
+			{ID: "g-inviter", UserID: "inviter-1", Email: "inviter@example.com", ServiceGroupID: "redeem", Source: "user_referral", CardID: "ref-1", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 200},
+			{ID: "g-old-free", UserID: "invitee-2", Email: "invitee2@example.com", ServiceGroupID: SystemFreeServiceGroupID, Source: "user_referral", CardID: "ref-2", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 100},
+			{ID: "g-expired-free", UserID: "invitee-3", Email: "invitee3@example.com", ServiceGroupID: SystemFreeServiceGroupID, Source: "user_referral", CardID: "ref-3", StartsAt: now.Add(-48 * time.Hour), ExpiresAt: now.Add(-time.Hour), CreditsTotal: 100},
+			{ID: "g-invite", UserID: "invitee-1", Email: "invitee@example.com", ServiceGroupID: SystemFreeServiceGroupID, Source: "invitation_code", CardID: "ic-1", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 999},
+			{ID: "g-employee", UserID: "employee-1", Email: "employee@example.com", ServiceGroupID: SystemFreeServiceGroupID, Source: "invitation_code", CardID: "ic-2", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 1},
+		},
+	}
+	EnsureSystemFreeServiceGroup(reg)
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	changed, err := DetachSystemFreeFromReferralOwners(ctx, system, "redeem")
+	if err != nil || changed == 0 {
+		t.Fatalf("detach changed=%d err=%v", changed, err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	foundInviteLeak := false
+	reissued := false
+	for _, grant := range saved.Grants {
+		if grant.ID == "g-invite" {
+			foundInviteLeak = true
+			if !grant.Frozen {
+				t.Fatalf("leaked invitee system-free grant must be frozen: %#v", grant)
+			}
+		}
+		if grant.ID == "g-old-free" && !grant.Frozen {
+			t.Fatalf("legacy system-free referral grant must be frozen: %#v", grant)
+		}
+		if grant.UserID == "invitee-2" && grant.ServiceGroupID == "redeem" && grant.Source == "user_referral" && grant.CreditsTotal == 100 && !grant.Frozen {
+			reissued = true
+		}
+		if grant.UserID == "invitee-3" && grant.ServiceGroupID == "redeem" {
+			t.Fatalf("expired system-free referral must not be reissued: %#v", grant)
+		}
+		if grant.ID == "g-referral" && grant.Frozen {
+			t.Fatalf("metered redeem referral grant must stay active: %#v", grant)
+		}
+		if grant.ID == "g-employee" && (grant.Frozen || !IsSystemFreeServiceGroup(grant.ServiceGroupID)) {
+			t.Fatalf("unrelated employee grant was rewritten: %#v", grant)
+		}
+	}
+	if !foundInviteLeak {
+		t.Fatal("leaked invitation-code grant should be retained for audit")
+	}
+	if !reissued {
+		t.Fatal("frozen system-free referral credits should be reissued onto redeem")
+	}
+	hasGroup := func(ids []string, want string) bool {
+		for _, id := range ids {
+			if strings.EqualFold(id, want) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, binding := range saved.UserBindings {
+		if binding.UserID == "invitee-1" && hasGroup(binding.ServiceGroupIDs, SystemFreeServiceGroupID) {
+			t.Fatalf("invitee still bound to system-free: %#v", binding)
+		}
+		if binding.UserID == "inviter-1" && !hasGroup(binding.ServiceGroupIDs, SystemFreeServiceGroupID) {
+			t.Fatalf("inviter system-free binding must be kept: %#v", binding)
+		}
+		if binding.UserID == "employee-1" && !hasGroup(binding.ServiceGroupIDs, SystemFreeServiceGroupID) {
+			t.Fatalf("unrelated employee binding lost system-free: %#v", binding)
+		}
 	}
 }
 
@@ -921,6 +1553,7 @@ func TestPurgeOrphanedServiceGroupReferences(t *testing.T) {
 		},
 		GlobalServiceGroupIDs:       []string{"coding-basic", "deleted-global"},
 		DefaultNewUserServiceGroups: []string{"deleted-default", "coding-basic"},
+		DefaultNewUserLimitCard:     NewUserLimitCard{ServiceGroupIDs: []string{"deleted-limit-card", "coding-basic"}},
 		GroupBindings: []GroupBinding{
 			{GroupID: "ops", ServiceGroupIDs: []string{"coding-basic", "deleted-binding"}},
 			{GroupID: "empty", ServiceGroupIDs: []string{"deleted-only"}},
@@ -950,6 +1583,9 @@ func TestPurgeOrphanedServiceGroupReferences(t *testing.T) {
 	// DefaultNewUserServiceGroups: only coding-basic remains.
 	if len(reg.DefaultNewUserServiceGroups) != 1 || reg.DefaultNewUserServiceGroups[0] != "coding-basic" {
 		t.Fatalf("DefaultNewUserServiceGroups = %#v, want [coding-basic]", reg.DefaultNewUserServiceGroups)
+	}
+	if len(reg.DefaultNewUserLimitCard.ServiceGroupIDs) != 1 || reg.DefaultNewUserLimitCard.ServiceGroupIDs[0] != "coding-basic" {
+		t.Fatalf("DefaultNewUserLimitCard.ServiceGroupIDs = %#v, want [coding-basic]", reg.DefaultNewUserLimitCard.ServiceGroupIDs)
 	}
 	// GroupBindings: "ops" keeps coding-basic; "empty" removed entirely.
 	if len(reg.GroupBindings) != 1 || reg.GroupBindings[0].GroupID != "ops" {

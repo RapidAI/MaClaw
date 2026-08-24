@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,10 @@ import (
 
 const userFacingDetailMaxRunes = 300
 
+// ErrOfficialOwnerUnreachable is returned when official LLM traffic must stay
+// on a tenant-bound HubCenter node that Hub cannot reach.
+var ErrOfficialOwnerUnreachable = errors.New("official hubcenter owner unreachable")
+
 // Redact common secret-like key=value pairs from user-visible error detail.
 var secretLikeFieldRe = regexp.MustCompile(`(?i)(api[_-]?key|authorization|bearer|token|secret|password)\s*[:=]\s*\S+`)
 
@@ -21,17 +26,60 @@ var secretLikeFieldRe = regexp.MustCompile(`(?i)(api[_-]?key|authorization|beare
 // this helper re-reads structured Hub/provider fields from Body and prefers
 // actionable detail over opaque "HTTP N: body_len=M".
 func UserFacingError(err error) string {
+	return UserFacingErrorWithProvider(err, "")
+}
+
+// UserFacingErrorWithProvider is UserFacingError with a named provider in
+// generic (non-Hub-code) messages.
+func UserFacingErrorWithProvider(err error, providerName string) string {
 	if err == nil {
 		return ""
 	}
+	if errors.Is(err, ErrOfficialOwnerUnreachable) {
+		return officialOwnerUnreachableMessage
+	}
 	var httpErr *HTTPStatusError
-	if errors.As(err, &httpErr) && httpErr != nil {
-		if msg := UserFacingHTTPStatus(httpErr.StatusCode, httpErr.Body); msg != "" {
+	_ = errors.As(err, &httpErr)
+	if httpErr != nil && len(bytes.TrimSpace(httpErr.Body)) > 0 {
+		if msg := UserFacingHTTPStatusWithProvider(httpErr.StatusCode, httpErr.Body, providerName); msg != "" {
+			return msg
+		}
+	}
+	if body := extractJSONObjectFromText(err.Error()); len(body) > 0 {
+		status := 0
+		if httpErr != nil {
+			status = httpErr.StatusCode
+		}
+		if msg := UserFacingHTTPStatusWithProvider(status, body, providerName); msg != "" {
+			return msg
+		}
+	}
+	if httpErr != nil {
+		if msg := UserFacingHTTPStatusWithProvider(httpErr.StatusCode, httpErr.Body, providerName); msg != "" {
+			return msg
+		}
+		if msg := classifyOfficialOwnerUnreachable(httpErr.Error()); msg != "" {
 			return msg
 		}
 		return httpErr.Error()
 	}
+	if msg := classifyOfficialOwnerUnreachable(err.Error()); msg != "" {
+		return msg
+	}
 	return err.Error()
+}
+
+const officialOwnerUnreachableMessage = "官方模型当前绑定的节点不可达，请稍后重试"
+
+func classifyOfficialOwnerUnreachable(msg string) string {
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "tenant bound to node") && strings.Contains(lower, "unreachable") {
+		return officialOwnerUnreachableMessage
+	}
+	if strings.Contains(lower, "tenant bound to another node") && strings.Contains(lower, "unreachable") {
+		return officialOwnerUnreachableMessage
+	}
+	return ""
 }
 
 // UserFacingHTTPStatus maps an LLM HTTP status + response body to a user message.
@@ -66,6 +114,14 @@ func UserFacingHTTPStatusWithProvider(statusCode int, body []byte, providerName 
 	case typ == "overloaded_error" || strings.Contains(strings.ToLower(typ), "overloaded") ||
 		strings.Contains(bodyLower, "overloaded_error") || strings.Contains(bodyLower, `"overloaded`):
 		return fmt.Sprintf("%s 服务器超载，请稍后再试 (overloaded)", provider)
+	case typ == "ModelError" || strings.EqualFold(typ, "model_error") ||
+		strings.Contains(msgLower, "free promotion has ended"):
+		// OpenCode Zen returns HTTP 401 ModelError when a listed model is no
+		// longer usable on the current plan. That is not an invalid API key.
+		if strings.Contains(msgLower, "free promotion has ended") {
+			return fmt.Sprintf("%s 当前模型免费活动已结束，请更换其他模型后再检测保存", provider)
+		}
+		return withDetail(fmt.Sprintf("%s 当前模型不可用，请更换模型后再试", provider), msg, body)
 	}
 
 	switch {
@@ -187,6 +243,8 @@ func classifyStructuredCode(f llmErrorFields, statusCode int, provider string) s
 			return detail
 		}
 		return "MaClaw 官方拒绝了当前租户授权，请检查 Hub 授权状态"
+	case "TENANT_BOUND_TO_NODE":
+		return "官方模型正在切换服务节点，请稍后重试"
 	}
 
 	// Other LLM_* machine codes: prefer server message, else code+status.
@@ -233,6 +291,23 @@ func statusOr(status, fallback int) int {
 		return status
 	}
 	return fallback
+}
+
+func extractJSONObjectFromText(text string) []byte {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	i := strings.IndexByte(text, '{')
+	if i < 0 {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(text[i:]))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil || len(raw) == 0 || raw[0] != '{' {
+		return nil
+	}
+	return append([]byte(nil), raw...)
 }
 
 func extractLLMErrorFields(body []byte) llmErrorFields {

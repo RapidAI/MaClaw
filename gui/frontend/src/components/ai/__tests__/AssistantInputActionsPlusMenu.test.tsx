@@ -123,11 +123,15 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(plus.compareDocumentPosition(attach) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
         fireEvent.click(plus);
-        expect(screen.getByTestId("ai-plus-menu")).toBeTruthy();
+        const menu = screen.getByTestId("ai-plus-menu");
+        expect(menu).toBeTruthy();
+        expect(plus.getAttribute("aria-controls")).toBe(menu.id);
+        expect(menu.parentElement).toBe(document.body);
         expect(screen.getByTestId("ai-plus-menu-new-conversation")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-goal")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-btw")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-moa")).toBeTruthy();
+        expect(screen.getByTestId("ai-plus-menu-computer")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-loop")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-memory")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-compress")).toBeTruthy();
@@ -153,7 +157,7 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(onPlusMenuAction).not.toHaveBeenCalled();
     });
 
-    it("selects goal, btw, and moa compose modes", () => {
+    it("selects goal, btw, moa, and Computer Use compose modes", () => {
         const onComposeActionChange = vi.fn();
         renderLeft({ onComposeActionChange });
 
@@ -168,6 +172,18 @@ describe("AssistantInputActionsLeft plus menu", () => {
         fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
         fireEvent.click(screen.getByTestId("ai-plus-menu-moa"));
         expect(onComposeActionChange).toHaveBeenCalledWith("moa");
+
+        fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
+        fireEvent.click(screen.getByTestId("ai-plus-menu-computer"));
+        expect(onComposeActionChange).toHaveBeenCalledWith("computer");
+    });
+
+    it("exposes compose modes as checked menu radios", () => {
+        renderLeft({ composeAction: "computer" });
+        fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
+
+        expect(screen.getByRole("menuitemradio", { name: /桌面操控/ }).getAttribute("aria-checked")).toBe("true");
+        expect(screen.getByRole("menuitemradio", { name: "目标" }).getAttribute("aria-checked")).toBe("false");
     });
 
     it("inserts the loop template", () => {
@@ -239,6 +255,15 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(screen.queryByTestId("ai-plus-menu")).toBeNull();
     });
 
+    it("closes the portaled menu on an outside touch or pointer interaction", () => {
+        renderLeft();
+        fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
+        expect(screen.getByTestId("ai-plus-menu")).toBeTruthy();
+
+        fireEvent.pointerDown(document.body, { pointerType: "touch" });
+        expect(screen.queryByTestId("ai-plus-menu")).toBeNull();
+    });
+
     it("closes floating input menus when the retained panel becomes inactive", () => {
         const { rerender } = renderLeft({ active: true });
         fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
@@ -285,6 +310,7 @@ describe("clampMenuPosition", () => {
         expect(pos.openUp).toBe(true);
         expect(pos.top).toBe(394);
         expect(pos.left).toBe(40);
+        expect(pos.maxHeight).toBe(360);
     });
 
     it("flips downward near the top edge and clamps horizontally", () => {
@@ -294,6 +320,7 @@ describe("clampMenuPosition", () => {
         );
         expect(pos.openUp).toBe(false);
         expect(pos.top).toBe(50);
+        expect(pos.maxHeight).toBe(360);
         // 1000 - 176 - 8 = 816
         expect(pos.left).toBe(816);
     });
@@ -304,5 +331,24 @@ describe("clampMenuPosition", () => {
             { width: 120, height: 800 },
         );
         expect(pos.left).toBe(8);
+    });
+
+    it("uses the larger side and constrains the menu when neither side fits", () => {
+        const pos = clampMenuPosition(
+            { left: 40, top: 190, bottom: 214, width: 24 },
+            { width: 1000, height: 400 },
+        );
+
+        expect(pos.openUp).toBe(true);
+        expect(pos.maxHeight).toBe(176);
+    });
+
+    it("reports no usable menu height when the trigger is flush with a viewport edge", () => {
+        const pos = clampMenuPosition(
+            { left: 40, top: 0, bottom: 24, width: 24 },
+            { width: 1000, height: 32 },
+        );
+
+        expect(pos.maxHeight).toBe(0);
     });
 });

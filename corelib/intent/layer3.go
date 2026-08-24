@@ -133,7 +133,7 @@ When a message is ambiguous (could belong to multiple categories depending on co
 
 1. **Action + Object analysis**: Focus on what the user wants to DO (action verb) and what they want to do it TO (object). The object determines the domain more than the action.
 2. **Context-dependent messages**: If the same message could mean different things in different contexts (e.g., "关掉chrome" could be a desktop operation or a server operation), classify based on the strongest signal in the message itself. If no strong signal exists, use "ambiguous" with appropriate secondary labels — do NOT hardcode a single answer.
-3. **Creation vs operation**: "制作/设计/生成 X" (creating new X) is different from "打开/查看/转换 X" (operating on existing X). Creation maps to the domain of X; operation maps to the action type (file operation → non_coding or document_delivery).
+3. **Creation vs operation**: "制作/设计/生成 X" (creating new X) is different from operating on existing X. Opening a local document → document_open; sending to a chosen target → document_delivery; reading attached content → document_read.
 4. **Contextual terms**: The same term can mean different things in different contexts — game UI description → coding; browser automation → browser; file viewing → non_coding. Use the requested action, object, and surrounding context to disambiguate.
 5. **Short messages**: Messages ≤5 characters like "继续", "开工", "好的" → "continuation" unless there is strong evidence of another intent.
 6. **Mixed signals**: When creation intent signals co-occur with repair intent signals, creation dominates → "coding" not "bug_fix".

@@ -77,6 +77,9 @@ func TestIsWorkflowCandidate_ViaClassifier(t *testing.T) {
 	if uic.IsWorkflowCandidate(LabelDocumentDelivery) {
 		t.Error("IsWorkflowCandidate(LabelDocumentDelivery) = true, want false")
 	}
+	if uic.IsWorkflowCandidate(LabelDocumentOpen) {
+		t.Error("IsWorkflowCandidate(LabelDocumentOpen) = true, want false")
+	}
 
 	// Ambiguous should always be a candidate.
 	if !uic.IsWorkflowCandidate(LabelAmbiguous) {

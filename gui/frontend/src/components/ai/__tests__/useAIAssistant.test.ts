@@ -162,7 +162,16 @@ function resetAppMocks() {
     (DismissAgentView as any).mockImplementation(async () => ({ text: 'dismissed', error: '' }));
 }
 
-function assistantMessages(messages: Array<{ role: string; content: string; reasoning?: string; fields?: unknown; actions?: unknown; confirmation?: { status?: string } }>) {
+function assistantMessages(messages: Array<{
+    role: string;
+    content: string;
+    reasoning?: string;
+    codingTimeline?: Array<{ kind: 'thinking' | 'progress'; content: string; sequence: number; eventSequences?: number[] }>;
+    pendingCodingThoughts?: unknown;
+    fields?: unknown;
+    actions?: unknown;
+    confirmation?: { status?: string };
+}>) {
     return messages.filter(message => message.role === 'assistant');
 }
 
@@ -2035,6 +2044,8 @@ describe('useAIAssistant property tests', () => {
     it('filters control characters from streamed ACP content', async () => {
         expect(sanitizeAIAssistantStreamText('visible\u0000 text\u0085')).toBe('visible text');
         expect(sanitizeAIAssistantStreamText('\x01private\u0000 reasoning')).toBe('\x01private reasoning');
+        expect(sanitizeAIAssistantStreamText('I am \uEB90Kate')).toBe('I am Kate');
+        expect(sanitizeAIAssistantStreamText('\x01think\uEB90ing')).toBe('\x01thinking');
     });
 
     it('parses Wails JSON-string heartbeats before applying timeout activity', async () => {
@@ -2875,7 +2886,7 @@ describe('useAIAssistant property tests', () => {
     });
 
     it('replaces streamed partial content with response.error instead of appending a second message', async () => {
-        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        const pending = deferred<{ text: string; reasoning?: string; error: string; fields: null; actions: null; request_id: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
 
         const { result } = renderAssistantHook();
@@ -4379,6 +4390,12 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toEqual([]);
 
         await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] 收到，正在处理' });
+        });
+        expect(result.current.progressMessages).toEqual([]);
+        expect(result.current.messages.find(message => message.role === 'assistant')?.reasoning || '').not.toContain('收到，正在处理');
+
+        await act(async () => {
             emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '正在生成报告' });
         });
 
@@ -5420,6 +5437,46 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMsg?.localFilePaths).toEqual(['/tmp/review.pdf']);
     });
 
+    it('keeps a delivered PDF when the loop also returned a stale LLM error', async () => {
+        mockSendResponse = {
+            text: '今天多云，26℃。',
+            error: 'LLM call failed: timeout',
+            fields: null,
+            actions: null,
+            local_file_path: '/tmp/hangzhou-weather.pdf',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('杭州天气，生成pdf报告');
+        });
+
+        expect(result.current.messages.find(m => m.role === 'error')).toBeUndefined();
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.localFilePath).toBe('/tmp/hangzhou-weather.pdf');
+        expect(assistantMsg?.content).toContain('今天多云');
+    });
+
+    it('shows host-reject copy instead of the capability error code', async () => {
+        mockSendResponse = {
+            text: '当前能力目录未覆盖这项请求。',
+            error: 'semantic_capability_unmet',
+            response_source: 'semantic_host_reject',
+            fields: null,
+            actions: null,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('北京天所');
+        });
+
+        expect(result.current.messages.find(m => m.role === 'error')?.content).toBe('当前能力目录未覆盖这项请求。');
+        expect(messageContents(result.current.messages)).not.toContain('semantic_capability_unmet');
+    });
+
     it('keeps Go-style artifact responses visible', async () => {
         mockSendResponse = {
             Text: '',
@@ -5461,6 +5518,48 @@ describe('useAIAssistant property tests', () => {
         const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
         expect(assistantMsg?.content).toBe('');
         expect(assistantMsg?.imageKey).toBe('screenshot-base64');
+    });
+
+    it('persists an image-only user turn so the attachment chip survives reload', async () => {
+        const { result, unmount } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('Selected file:\nD:\\tmp\\paste.png', {
+                displayText: '',
+                displayAttachments: [{
+                    filePath: 'D:\\tmp\\paste.png',
+                    fileName: 'paste.png',
+                    extension: '.png',
+                    isImage: true,
+                    thumbnailDataUrl: 'blob:maclaw/paste',
+                }],
+            });
+        });
+
+        await waitFor(() => {
+            expect(SaveAIAssistantUIState).toHaveBeenCalled();
+        });
+        const saved = (SaveAIAssistantUIState as any).mock.calls.at(-1)?.[0];
+        const user = saved.messages.find((message: { role: string }) => message.role === 'user');
+        expect(user.content).toBe('');
+        expect(user.attachments).toEqual([{
+            filePath: 'D:\\tmp\\paste.png',
+            fileName: 'paste.png',
+            extension: '.png',
+            isImage: true,
+        }]);
+
+        unmount();
+        const { result: remounted } = renderAssistantHook();
+        await waitFor(() => {
+            const restored = remounted.current.messages.find(message => message.role === 'user');
+            expect(restored?.attachments).toEqual([{
+                filePath: 'D:\\tmp\\paste.png',
+                fileName: 'paste.png',
+                extension: '.png',
+                isImage: true,
+            }]);
+        });
     });
 
     it('deduplicates consecutive identical progress events', async () => {
@@ -5513,6 +5612,294 @@ describe('useAIAssistant property tests', () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
             await pending.promise;
         });
+    });
+
+    it.each([
+        ['local CodingSubAgent', undefined, 'desktop-user'],
+        ['remote RemoteCodingSubAgent', 'D:/remote/project', 'desktop-user:D:/remote/project'],
+    ])('keeps thinking and tool activity interleaved for %s', async (_agent, projectPath, sessionKey) => {
+        const pending = deferred<{ text: string; reasoning?: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            if (projectPath) setActiveSessionKey(sessionKey);
+            void result.current.sendMessage('make the change', projectPath ? { project_path: projectPath } : undefined);
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const firstTool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        const secondTool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"completed","task_id":"T1","title":"Update source","turn_id":"turn-1","detail":"Edit"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, session_key: sessionKey, sequence: 10, text: '\x01First inspect the implementation.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, session_key: sessionKey, sequence: 20, text: firstTool });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, session_key: sessionKey, sequence: 30, text: '\x01Now apply the focused change.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, session_key: sessionKey, sequence: 40, text: secondTool });
+        });
+
+        const assistant = assistantMessages(result.current.messages)[0];
+        expect(assistant.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress', 'thinking', 'progress']);
+        expect(assistant.codingTimeline?.map(item => item.content)).toEqual([
+            'First inspect the implementation.',
+            firstTool,
+            'Now apply the focused change.',
+            secondTool,
+        ]);
+        expect(assistant.codingTimeline?.map(item => item.sequence)).toEqual([10, 20, 30, 40]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', reasoning: 'Finally verify the completed edit.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+        expect(assistantMessages(result.current.messages)[0].codingTimeline?.map(item => item.kind)).toEqual([
+            'thinking', 'progress', 'thinking', 'progress', 'thinking',
+        ]);
+        expect(assistantMessages(result.current.messages)[0].codingTimeline?.at(-1)?.content).toBe('Finally verify the completed edit.');
+    });
+
+    it('replaces a completed tool result at its original action position', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('keep completed tool actions compact');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const started = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"read_file"}';
+        const finished = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"completed","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"read_file","outcome":"success","files":["src/main.ts"]}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect the implementation.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: started });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Apply the focused change.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 40, text: finished });
+            // The runtime may retransmit the completion after the UI has merged it.
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 40, text: finished });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.kind)).toEqual(['thinking', 'progress', 'thinking']);
+        expect(timeline?.map(item => item.sequence)).toEqual([10, 20, 30]);
+        expect(timeline?.[1].content).toBe(finished);
+        expect(timeline?.[1].eventSequences).toEqual([20, 40]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('pairs repeated tools with their matching command instead of the latest same-name start', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('preserve repeated tool lifecycles');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const firstStart = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"bash","command":"rg first src"}';
+        const secondStart = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"bash","command":"rg second src"}';
+        const firstFinished = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"completed","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"bash","command":"rg first src","outcome":"success"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 10, text: firstStart });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: secondStart });
+            // The first command completes after the second starts.
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 30, text: firstFinished });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.sequence)).toEqual([10, 20]);
+        expect(timeline?.[0].content).toBe(firstFinished);
+        expect(timeline?.[0].eventSequences).toEqual([10, 30]);
+        expect(timeline?.[1].content).toBe(secondStart);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('backfills a late tool start into its already delivered completion', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('preserve reverse-delivered tool lifecycle');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const started = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"read_file","files":["src/main.ts"]}';
+        const finished = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"completed","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"read_file","outcome":"success","files":["src/main.ts"]}';
+        await act(async () => {
+            // The transport can batch events out of order across its channels.
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: finished });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Summarize the inspected file.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 10, text: started });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.sequence)).toEqual([10, 30]);
+        expect(timeline?.map(item => item.kind)).toEqual(['progress', 'thinking']);
+        expect(timeline?.[0].content).toBe(finished);
+        expect(timeline?.[0].eventSequences).toEqual([10, 20]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('places a late-delivered coding tool between its surrounding thoughts by backend sequence', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('keep exact coding event order');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01First inspect the implementation.' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Now apply the focused change.' });
+            // A transport can batch the progress callback after the next token.
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+        });
+
+        const assistant = assistantMessages(result.current.messages)[0];
+        expect(assistant.codingTimeline?.map(item => item.sequence)).toEqual([10, 20, 30]);
+        expect(assistant.codingTimeline?.map(item => item.kind)).toEqual(['thinking', 'progress', 'thinking']);
+        expect(assistant.codingTimeline?.map(item => item.content)).toEqual([
+            'First inspect the implementation.',
+            tool,
+            'Now apply the focused change.',
+        ]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('does not render a duplicate tool inside a thought token sequence range', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('dedupe overlapping stream delivery');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01First ' });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 11, text: '\x01inspect.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 11, text: tool });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 12, text: tool });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.kind)).toEqual(['thinking', 'progress']);
+        expect(timeline?.map(item => item.content)).toEqual(['First inspect.', tool]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('keeps separate same-text tool calls when their backend sequences differ', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('dedupe retransmitted tool event');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect first.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Apply the edit.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 40, text: tool });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.sequence)).toEqual([10, 20, 30, 40]);
+        expect(timeline?.map(item => item.kind)).toEqual(['thinking', 'progress', 'thinking', 'progress']);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('drops a retransmitted tool event when its backend sequence is unchanged', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('dedupe same sequence tool event');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect first.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Apply the edit.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+        });
+
+        expect(assistantMessages(result.current.messages)[0].codingTimeline?.map(item => item.sequence)).toEqual([10, 20, 30]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
+    it('clears transient coding timeline state when the round ends with an error', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('clear transient coding trail on failure');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const tool = 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Inspect source","turn_id":"turn-1","detail":"Read"}';
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect first.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: tool });
+            pending.resolve({ text: '', error: 'Tool execution failed.', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+
+        const message = result.current.messages.find(message => message.role === 'error');
+        expect(message).toBeDefined();
+        if (!message) return;
+        expect(message.role).toBe('error');
+        expect(message.codingTimeline).toBeUndefined();
     });
 
     it('caps live progress messages to the latest three entries', async () => {
@@ -5582,6 +5969,29 @@ describe('useAIAssistant property tests', () => {
         expect(assistant?.reasoning).toContain('• Task received');
         expect(assistant?.reasoning).toContain('• Preparing the execution path');
         expect(result.current.progressMessages).toEqual([]);
+    });
+
+    it('drops system status milestones from reasoning once a coding trail starts', async () => {
+        mockSendResponse = { deferred: true, text: '', error: '', fields: null, actions: null };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('write hello.cpp');
+        });
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Task received' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '[Status] Preparing the execution path' });
+            emitRuntimeEvent('ai-assistant-progress', {
+                request_id: req.request_id,
+                text: 'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","detail":"write_file","files":["hello.cpp"]}',
+            });
+        });
+
+        const assistant = result.current.messages.find(message => message.role === 'assistant');
+        expect(assistant?.reasoning || '').not.toContain('Task received');
+        expect(assistant?.reasoning || '').not.toContain('Preparing the execution path');
+        expect(result.current.progressMessages.some(message => (message.content || '').includes('tool_started'))).toBe(true);
     });
 
     it('separates a system status milestone from the first streamed reasoning token', async () => {

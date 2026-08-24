@@ -134,9 +134,9 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 
 	// Update orchestrator based on result.
 	resultSummary := compactSubAgentReportSummary(result.Summary)
-	resultSummary = appendSubAgentQualityReportSummary(resultSummary, result)
 	resultStatus, resultError := normalizeSubAgentResultStatus(result)
 	r.orchestrator.RecordTaskResultSummaryForRun(task, runID, resultSummary)
+	r.orchestrator.RecordTaskQualityForRun(task, runID, result.QualityStatus, result.QualitySummary)
 	artifactsRecorded := r.orchestrator.RecordTaskActualArtifactsForRun(task, runID, result.FilesModified, result.FilesCreated)
 	if artifactsRecorded && r.handler != nil {
 		routePath := r.orchestrator.ProjectPath
@@ -514,16 +514,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 		}
 	}
 
-	// Generate final report.
-	var b strings.Builder
-	b.WriteString("## Coding Execution Report\n\n")
-	appendSubAgentRunReports(&b, reports)
-	b.WriteString("---\n")
-	b.WriteString(r.orchestrator.ProgressSummary())
-	b.WriteString("\n\n---\n")
-	appendSubAgentExecutionStats(&b, r.orchestrator.SnapshotTasks())
-
-	return b.String()
+	return formatCodingAgentRunnerFinish(r.orchestrator, reports)
 }
 
 func serializedProgressCallback(onProgress func(string)) func(string) {
@@ -818,7 +809,7 @@ func previousTaskFileOutputs(t *TaskItem) []string {
 		}
 		outputs = append(outputs, fmt.Sprintf("%s (%s by T%d: %s passed)", compactSubAgentPathText(f), kind, taskDisplayNumber(t), title))
 	}
-	if summary := compactSubAgentPreviousResultSummary(t.ResultSummary); summary != "" {
+	if summary := compactSubAgentPreviousPassedSummary(t); summary != "" {
 		outputs = append(outputs, fmt.Sprintf("Previous passed task summary for T%d (%s): %s", taskDisplayNumber(t), title, summary))
 	}
 	return outputs
@@ -839,7 +830,7 @@ func currentTaskRetryOutputs(t *TaskItem) []string {
 		message += " Recovery hint: " + hint
 	}
 	outputs := []string{message}
-	if summary := compactSubAgentPreviousResultSummary(t.ResultSummary); summary != "" {
+	if summary := compactSubAgentPreviousFailedSummary(t); summary != "" {
 		outputs = append(outputs, fmt.Sprintf("Previous failed attempt summary for T%d (%s): %s", taskDisplayNumber(t), title, summary))
 	}
 	outputs = append(outputs, retryTaskArtifactOutputs(t)...)
@@ -968,6 +959,11 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		strings.Contains(normalized, "timeout") ||
 		strings.Contains(normalized, "context deadline exceeded"):
 		return "The previous command timed out. Check whether the command hung or was too broad, narrow it to a focused package/test when possible, or set a reasonable timeout before rerunning verification after the final edit."
+	case (strings.Contains(normalized, "vcvars") || strings.Contains(normalized, "vcvars64") || strings.Contains(normalized, " cl") || strings.Contains(normalized, "cl.exe")) &&
+		(strings.Contains(normalized, "not recognized as an internal or external command") ||
+			strings.Contains(normalized, "command not found") ||
+			strings.Contains(normalized, "cannot find the path specified")):
+		return "cl.exe is already on PATH for coding bash. Run `cl /utf-8 /EHsc /Fe:app.exe file.cpp && .\\app.exe` without wrapping vcvars. Do not retry cmd /c quoting."
 	case strings.Contains(normalized, "command not found") ||
 		strings.Contains(normalized, "executable file not found") ||
 		strings.Contains(normalized, "not recognized as an internal or external command") ||
@@ -1141,15 +1137,30 @@ func subAgentQualityAuditRecoveryHint(normalized string) string {
 	return strings.Join(hints, " ")
 }
 
+func compactSubAgentPreviousPassedSummary(t *TaskItem) string {
+	if t == nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(compactSubAgentReportSummary(t.ResultSummary)), " ")
+}
+
+func compactSubAgentPreviousFailedSummary(t *TaskItem) string {
+	if t == nil {
+		return ""
+	}
+	if errSummary := compactSubAgentErrorSummary(t.ErrorSummary); errSummary != "" {
+		return errSummary
+	}
+	if quality := compactSubAgentErrorSummary(t.QualitySummary); quality != "" {
+		return quality
+	}
+	return compactSubAgentPreviousPassedSummary(t)
+}
+
 func compactSubAgentPreviousResultSummary(summary string) string {
 	summary = compactSubAgentReportSummary(summary)
 	if summary == "" {
 		return ""
-	}
-	for _, header := range []string{"## 质量审计", "## 验证状态", "## Diff 自检", "## 探索状态"} {
-		if section := compactSubAgentReportSection(summary, header); section != "" {
-			return section
-		}
 	}
 	return strings.Join(strings.Fields(summary), " ")
 }

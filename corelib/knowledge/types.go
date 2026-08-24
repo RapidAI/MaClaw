@@ -721,27 +721,30 @@ type ImportBatchDeleteResult struct {
 }
 
 type ListSourcesOptions struct {
-	OwnerID         string   `json:"owner_id,omitempty"`
-	TenantID        string   `json:"tenant_id,omitempty"`
-	BatchID         string   `json:"batch_id,omitempty"`
-	SearchScope     string   `json:"search_scope,omitempty"`
-	ProjectPath     string   `json:"project_path,omitempty"`
-	SourceIDs       []string `json:"source_ids,omitempty"`
-	SourceID        string   `json:"source_id,omitempty"`
-	Status          string   `json:"status,omitempty"`
-	IncludeDisabled bool     `json:"include_disabled,omitempty"`
-	Kind            string   `json:"kind,omitempty"`
-	SourceKinds     []string `json:"source_kinds,omitempty"`
-	Domain          string   `json:"domain,omitempty"`
-	Label           string   `json:"label,omitempty"`
-	Labels          []string `json:"labels,omitempty"`
-	Query           string   `json:"query,omitempty"`
-	CoverageFilter  string   `json:"coverage_filter,omitempty"`
-	QualityGrade    string   `json:"quality_grade,omitempty"`
-	QualityGrades   []string `json:"quality_grades,omitempty"`
-	MinQualityScore int      `json:"min_quality_score,omitempty"`
-	MaxQualityScore int      `json:"max_quality_score,omitempty"`
-	Limit           int      `json:"limit,omitempty"`
+	OwnerID string `json:"owner_id,omitempty"`
+	// IncludeEmptyOwner also matches sources whose owner_id is empty. Zero
+	// value keeps the existing exact-owner filter.
+	IncludeEmptyOwner bool     `json:"-"`
+	TenantID          string   `json:"tenant_id,omitempty"`
+	BatchID           string   `json:"batch_id,omitempty"`
+	SearchScope       string   `json:"search_scope,omitempty"`
+	ProjectPath       string   `json:"project_path,omitempty"`
+	SourceIDs         []string `json:"source_ids,omitempty"`
+	SourceID          string   `json:"source_id,omitempty"`
+	Status            string   `json:"status,omitempty"`
+	IncludeDisabled   bool     `json:"include_disabled,omitempty"`
+	Kind              string   `json:"kind,omitempty"`
+	SourceKinds       []string `json:"source_kinds,omitempty"`
+	Domain            string   `json:"domain,omitempty"`
+	Label             string   `json:"label,omitempty"`
+	Labels            []string `json:"labels,omitempty"`
+	Query             string   `json:"query,omitempty"`
+	CoverageFilter    string   `json:"coverage_filter,omitempty"`
+	QualityGrade      string   `json:"quality_grade,omitempty"`
+	QualityGrades     []string `json:"quality_grades,omitempty"`
+	MinQualityScore   int      `json:"min_quality_score,omitempty"`
+	MaxQualityScore   int      `json:"max_quality_score,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
 	// Offset skips the first N matching rows (ORDER BY updated_at DESC). Used for admin pagination.
 	Offset int `json:"offset,omitempty"`
 }

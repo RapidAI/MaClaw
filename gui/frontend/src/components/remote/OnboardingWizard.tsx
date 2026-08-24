@@ -34,6 +34,7 @@ import {
     type LLMProvider,
     type Props,
 } from "./OnboardingWizardShared";
+import { formatProviderTestErrorOrFallback } from "./LLMConfigPanelShared";
 import { KNOWN_USER_AGENTS, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, nextCustomAgentValue } from "./userAgent";
 import { canSubmitEmailVerification, emailVerificationCooldownSeconds, normalizeEmailVerificationTarget, sanitizeEmailVerificationCode } from "./emailVerification";
 import { resetRegistrationVerification, resetVerificationForInvitationChange, type RegistrationTarget } from "./onboardingRegistration";
@@ -134,6 +135,10 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [registrationBaseTarget, setRegistrationBaseTarget] = useState<RegistrationTarget>({ hubURL: hubUrl || "", hubID: "", tenantID: "" });
     const [referralSession, setReferralSession] = useState("");
     const [referralActive, setReferralActive] = useState(false);
+	// A claimed handoff may represent an account that was registered in the
+	// browser already. The identity is retained only for this wizard session,
+	// where it authorizes device binding without another OTP/registration pass.
+	const [referralRegistrationCompleted, setReferralRegistrationCompleted] = useState(false);
     const [registrationTargetResolving, setRegistrationTargetResolving] = useState(false);
     const [regPhone, setRegPhone] = useState("");
     const [smsCode, setSmsCode] = useState("");
@@ -186,9 +191,19 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             const tenantID = String(tenant?.id || tenant?.ID || "").trim();
             const methodRaw = String(claimed?.registration_method || claimed?.RegistrationMethod || "email").toLowerCase();
             const method = methodRaw === "phone" || methodRaw === "mixed" ? methodRaw : "email";
+			const registeredIdentity = String(claimed?.registered_identity || claimed?.RegisteredIdentity || "").trim();
+			const registeredIdentityType = String(claimed?.registered_identity_type || claimed?.RegisteredIdentityType || "").toLowerCase();
+			const claimedStatus = String(claimed?.registration_status || claimed?.RegistrationStatus || "").trim();
             if (!session || !tenantID) throw new Error("Referral handoff is invalid or expired");
-            const recovered = await GetReferralRegistrationStatus(endpoint.replace(/\/$/, ""), tenantID, session) as any;
-            const recoveredStatus = String(recovered?.registration_status || recovered?.RegistrationStatus || "continue").trim();
+            const completedRegistration = !!registeredIdentity && claimedStatus !== "" && claimedStatus !== "continue";
+            // Claim carries all the state needed to resume a completed browser
+            // registration. Do not turn a successful, one-time claim into a
+            // dead end because the optional status-recovery request is down.
+            let recoveredStatus = "continue";
+            if (!completedRegistration) {
+                const recovered = await GetReferralRegistrationStatus(endpoint.replace(/\/$/, ""), tenantID, session) as any;
+                recoveredStatus = String(recovered?.registration_status || recovered?.RegistrationStatus || "continue").trim();
+            }
             setReferralSession(session);
             setReferralActive(true);
             setRegistrationHubUrl(endpoint.replace(/\/$/, ""));
@@ -200,24 +215,36 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             // identity channel. In a mixed tenant, keep the normal choice UI
             // instead of accidentally treating the initial empty identity as
             // email-only.
-            setRegistrationIdentityKind(method === "phone" ? "phone" : null);
+			const resumedPhone = registeredIdentityType === "phone";
+			if (registeredIdentity) {
+				if (resumedPhone) setRegPhone(registeredIdentity);
+				else setRegEmail(registeredIdentity);
+			}
+			setReferralRegistrationCompleted(completedRegistration);
+			// Once Hub has resumed a completed account, its authoritative identity
+			// type wins over a later registration-method configuration change.
+			// Otherwise a browser-completed email account could be rendered as a
+			// blank phone form if an admin switches the tenant to phone-only before
+			// the user opens MaClaw.
+			setRegistrationIdentityKind(registeredIdentity ? (resumedPhone ? "phone" : "email") : (method === "phone" ? "phone" : null));
             setRegistrationStage("details");
-            if (recoveredStatus !== "continue") {
-                const recoveryMessage = recoveredStatus === "registered_rewarded"
-                    ? "Your invitation registration is complete and the reward has been issued."
-                    : recoveredStatus === "approval_pending"
-                        ? "Your registration is complete and the invitation reward is awaiting review."
-                        : recoveredStatus === "registered_expired"
-                            ? "Your registration is complete, but the invitation review window expired before a reward could be issued."
-                            : recoveredStatus === "registered_rejected"
-                                ? "Your registration is complete, but this invitation is not eligible for a reward."
-                                : recoveredStatus === "registered_revoked"
-                                    ? "Your registration is complete, but this invitation reward has been revoked."
-                                    : "Your registration is complete and the invitation reward is being processed.";
-                setRegResult({ ok: true, msg: recoveryMessage });
-                return;
-            }
-            setRegResult({ ok: true, msg: t("邀请注册链接已确认。完成验证即可获得新人 Credits。", "Your invitation registration link is confirmed. Complete verification to receive invitation Credits.") });
+			const effectiveStatus = claimedStatus || recoveredStatus;
+			if (effectiveStatus !== "continue") {
+				const recoveryMessage = effectiveStatus === "registered_rewarded"
+					? "Your invitation registration is complete and the reward has been issued. Continue to bind this device."
+					: effectiveStatus === "approval_pending"
+						? "Your registration is complete and the invitation reward is awaiting review. Continue to bind this device."
+						: effectiveStatus === "registered_expired"
+							? "Your registration is complete, but the invitation review window expired before a reward could be issued. Continue to bind this device."
+							: effectiveStatus === "registered_rejected"
+								? "Your registration is complete, but this invitation is not eligible for a reward. Continue to bind this device."
+								: effectiveStatus === "registered_revoked"
+									? "Your registration is complete, but this invitation reward has been revoked. Continue to bind this device."
+									: "Your registration is complete and the invitation reward is being processed. Continue to bind this device.";
+				setRegResult({ ok: true, msg: recoveryMessage });
+				return;
+			}
+			setRegResult({ ok: true, msg: t("邀请注册链接已确认。完成验证即可获得新人 Credits。", "Your invitation registration link is confirmed. Complete verification to receive invitation Credits.") });
         }).catch(() => {
             if (!cancelled) setRegResult({ ok: false, msg: t("邀请注册链接已失效，请回到邀请网页重新打开 MaClaw。", "This invitation handoff has expired. Return to the invitation page and open MaClaw again.") });
         }).finally(() => {
@@ -594,10 +621,12 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const registrationIdentityDigits = normalizeSMSPhone(trimmedRegistrationIdentity);
     const registrationIdentityLooksPhone = registrationIdentityDigits.length >= 6 && /^[+\d\s().-]+$/.test(trimmedRegistrationIdentity);
     const isValidSMSPhone = normalizedRegPhone.length >= 6;
-    const smsActionDisabled = smsSending || smsCountdown > 0 || regBusy || regDone || !isValidSMSPhone;
-    const registrationUsesPhone = registrationAuthMethod === "phone" || (registrationAuthMethod === "mixed" && registrationIdentityKind === "phone");
+    const smsActionDisabled = smsSending || smsCountdown > 0 || regBusy || regDone || referralRegistrationCompleted || !isValidSMSPhone;
+	const registrationUsesPhone = referralRegistrationCompleted
+		? registrationIdentityKind === "phone"
+		: registrationAuthMethod === "phone" || (registrationAuthMethod === "mixed" && registrationIdentityKind === "phone");
     const smsCodeReady = !registrationUsesPhone || (smsTargetPhone === normalizedRegPhone && smsCode.trim().length >= smsCodeLength);
-    const registerActionDisabled = regBusy || regDone || registrationAuthMethod === null || (registrationUsesPhone && !smsCodeReady);
+    const registerActionDisabled = regBusy || regDone || registrationAuthMethod === null || (!referralRegistrationCompleted && registrationUsesPhone && !smsCodeReady);
 
     const handleOfflineModeToggle = useCallback((checked: boolean) => {
         setOfflineMode(checked);
@@ -775,7 +804,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                 setLlmDone(true);
                 onLLMConfigured();
         } catch (e) {
-            setLlmResult({ ok: false, msg: String(e) });
+            setLlmResult({ ok: false, msg: formatProviderTestErrorOrFallback(String(e), hubT) });
         } finally {
             setLlmSaving(false);
         }
@@ -800,7 +829,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             onLLMConfigured();
         } catch (e) {
             if (oauthAttempt !== oauthAttemptRef.current) return;
-            setLlmResult({ ok: false, msg: String(e) });
+            setLlmResult({ ok: false, msg: formatProviderTestErrorOrFallback(String(e), hubT) });
         } finally {
             setOauthBusy(false);
         }
@@ -982,7 +1011,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     };
 
     const handleRegisterClick = async () => {
-        if (registrationUsesPhone) {
+        if (registrationUsesPhone && !referralRegistrationCompleted) {
             const normalizedPhone = normalizeSMSPhone(regPhone);
             if (normalizedPhone.length < 6) {
                 setRegResult({ ok: false, msg: t("请输入有效手机号", "Please enter a valid phone number") });
@@ -999,8 +1028,12 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             doRegister();
             return;
         }
-        if (!regEmail.trim()) {
+        if ((!registrationUsesPhone && !regEmail.trim()) || (registrationUsesPhone && !regPhone.trim())) {
             setRegResult({ ok: false, msg: t("请输入邮箱", "Please enter email") });
+            return;
+        }
+        if (referralRegistrationCompleted) {
+            void doRegister({ skipEmailVerification: true });
             return;
         }
         const invitationCode = invCode.trim().toUpperCase();
@@ -1371,7 +1404,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         const effectiveHubURL = options?.hubURL || registrationHubUrl || hubUrl;
         const effectiveTenantID = options?.tenantID ?? registrationTenantID;
         const effectiveHubID = options?.hubID ?? registrationHubID;
-        if (!registrationUsesPhone && !skipEmailVerification) {
+        if (!registrationUsesPhone && !skipEmailVerification && !referralRegistrationCompleted) {
             const currentTarget = normalizeEmailVerificationTarget(regEmail);
             if (emailCodeTarget !== currentTarget || !canSubmitEmailVerification({ target: emailCodeTarget, code: emailCode, codeLength: emailCodeLength, sending: emailCodeSending, busy: regBusy })) {
                 setEmailCodeError(t("请输入邮件中的完整验证码", "Enter the complete verification code from the email."));
@@ -1391,11 +1424,21 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             if (referralActive) {
                 const referralHubURL = registrationHubUrl || hubUrl;
                 const referralIdentity = registrationUsesPhone ? normalizeSMSPhone(regPhone) : regEmail.trim();
-                if (registrationUsesPhone) {
-                    await RegisterReferralPhone(referralHubURL, referralIdentity, smsCode.trim(), registrationTenantID, referralSession);
-                } else {
-                    await RegisterReferralEmail(referralHubURL, referralIdentity, emailCode.trim(), registrationTenantID, referralSession);
-                }
+				// A completed handoff is already bound to its user/referral pair by
+				// Hub. Avoid a second status round trip here: it is not needed for
+				// authorization and a transient status failure must not block device
+				// binding after the one-time handoff was successfully claimed.
+				const referralStatus = referralRegistrationCompleted
+					? null
+					: await GetReferralRegistrationStatus(referralHubURL, registrationTenantID, referralSession) as any;
+				const alreadyRegistered = referralRegistrationCompleted || String(referralStatus?.registration_status || referralStatus?.RegistrationStatus || "continue").trim() !== "continue";
+				if (!alreadyRegistered) {
+					if (registrationUsesPhone) {
+						await RegisterReferralPhone(referralHubURL, referralIdentity, smsCode.trim(), registrationTenantID, referralSession);
+					} else {
+						await RegisterReferralEmail(referralHubURL, referralIdentity, emailCode.trim(), registrationTenantID, referralSession);
+					}
+				}
                 const result = registrationUsesPhone
                     ? await ActivateReferralRemotePhone(referralHubURL, referralIdentity, registrationTenantID, referralSession)
                     : await ActivateReferralRemoteEmail(referralHubURL, referralIdentity, registrationTenantID, referralSession);
@@ -1951,10 +1994,10 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                         {offlineMode
                                             ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
                                             : registrationUsesPhone
-                                                ? t("使用手机号短信验证并注册到 Hub 后即可使用所有功能。", "Verify your phone number and register it to the Hub to unlock all features.", "完成手機號簡訊驗證並註冊到 Hub 後即可使用所有功能。")
-                                                : t("使用真实用户ID注册到 Hub 后即可使用所有功能。", "Register your real user ID to the Hub to unlock all features.", "使用真實使用者ID註冊到 Hub 後即可使用所有功能。")}
+                                                ? (referralRegistrationCompleted ? t("账号已完成推荐注册，正在绑定此设备。", "Your account is registered. Bind this device to continue.") : t("使用手机号短信验证并注册到 Hub 后即可使用所有功能。", "Verify your phone number and register it to the Hub to unlock all features.", "完成手機號簡訊驗證並註冊到 Hub 後即可使用所有功能。"))
+                                                : (referralRegistrationCompleted ? t("账号已完成推荐注册，正在绑定此设备。", "Your account is registered. Bind this device to continue.") : t("使用真实用户ID注册到 Hub 后即可使用所有功能。", "Register your real user ID to the Hub to unlock all features.", "使用真實使用者ID註冊到 Hub 後即可使用所有功能。"))}
                                     </p>
-                                    {registrationStage === "details" && !regDone && (
+                                    {registrationStage === "details" && !regDone && !referralRegistrationCompleted && (
                                         <button type="button" onClick={returnToRegistrationIdentity} style={{ ...wizardGhostButtonStyle, padding: "6px 10px", marginBottom: 10, fontSize: "0.74rem" }}>
                                             {t("编辑", "Edit")}
                                         </button>
@@ -1968,16 +2011,16 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                     />
                                     {!offlineMode && !regDone && (
                                         <>
-                                            {registrationUsesPhone ? (
-                                                <>
-                                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                                        <label htmlFor={registrationPhoneInputId} style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("手机号", "Phone")} <span aria-hidden="true" style={{ color: colors.danger }}>*</span></label>
-                                                        <div style={{ display: "flex", flex: 1, minWidth: 0, gap: 8 }}>
-                                                            <input id={registrationPhoneInputId} style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regPhone}
-                                                                readOnly={registrationStage === "details"}
-                                                                onChange={e => { if (registrationStage !== "details") { setRegPhone(e.target.value); setSmsCode(""); setRegResult(null); } }}
-                                                                placeholder="13800138000" inputMode="tel" spellCheck={false} />
-                                                            <button onClick={handleSendSMSCode} disabled={smsActionDisabled} style={{
+											{registrationUsesPhone ? (
+												<>
+													<div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+														<label htmlFor={registrationPhoneInputId} style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("手机号", "Phone")} <span aria-hidden="true" style={{ color: colors.danger }}>*</span></label>
+														<div style={{ display: "flex", flex: 1, minWidth: 0, gap: 8 }}>
+															<input id={registrationPhoneInputId} style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={regPhone}
+																readOnly={registrationStage === "details" || referralRegistrationCompleted}
+																onChange={e => { if (registrationStage !== "details") { setRegPhone(e.target.value); setSmsCode(""); setRegResult(null); } }}
+																placeholder="13800138000" inputMode="tel" spellCheck={false} />
+															{!referralRegistrationCompleted && <button onClick={handleSendSMSCode} disabled={smsActionDisabled} style={{
                                                                 ...wizardPrimaryButtonStyle,
                                                                 flex: "0 0 108px",
                                                                 padding: "0 10px",
@@ -1985,17 +2028,17 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                                 opacity: smsActionDisabled ? 0.72 : 1,
                                                                 cursor: smsActionDisabled ? "default" : "pointer",
                                                             }}>
-                                                                {smsCountdown > 0 ? String(smsCountdown) + "s" : smsSending ? t("发送中", "Sending") : t("验证码", "Code")}
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                                        <label htmlFor={registrationSMSCodeInputId} style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("短信验证码", "SMS Code")} <span aria-hidden="true" style={{ color: colors.danger }}>*</span></label>
+																{smsCountdown > 0 ? String(smsCountdown) + "s" : smsSending ? t("发送中", "Sending") : t("验证码", "Code")}
+															</button>}
+														</div>
+													</div>
+													{!referralRegistrationCompleted && <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+														<label htmlFor={registrationSMSCodeInputId} style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>{t("短信验证码", "SMS Code")} <span aria-hidden="true" style={{ color: colors.danger }}>*</span></label>
                                                         <input id={registrationSMSCodeInputId} style={{ ...inputStyle, flex: 1, minWidth: 0 }} value={smsCode}
                                                             onChange={e => setSmsCode(e.target.value.replace(/\D/g, "").slice(0, smsCodeLength))}
-                                                            placeholder={t("请输入 " + smsCodeLength + " 位验证码", "Enter " + smsCodeLength + "-digit code")}
-                                                            inputMode="numeric" spellCheck={false} />
-                                                    </div>
+															placeholder={t("请输入 " + smsCodeLength + " 位验证码", "Enter " + smsCodeLength + "-digit code")}
+															inputMode="numeric" spellCheck={false} />
+													</div>}
                                                 </>
                                             ) : (
                                                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -2005,7 +2048,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                         placeholder={t("邮箱或手机号", "Email or phone")} spellCheck={false} />
                                                 </div>
                                             )}
-                                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                                            {!referralRegistrationCompleted && <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                                                 <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
                                                     {t("邀请码", "Invitation Code")} {" "}
                                                     <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>({t("可选", "optional")})</span>
@@ -2030,7 +2073,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                         maxLength={20} spellCheck={false} />
                                                     {invError && <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: 4 }}>{invError}</div>}
                                                 </div>
-                                            </div>
+                                            </div>}
                                             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                                                 <label style={{ ...labelStyle, marginBottom: 0, flex: "0 0 112px", whiteSpace: "nowrap" }}>
                                                     {t("服务兑换码", "Service redeem code", "服務兌換碼")} {" "}

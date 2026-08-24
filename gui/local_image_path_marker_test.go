@@ -122,3 +122,43 @@ func TestSelectedLocalImagePathsStopsAtInstructionOrProse(t *testing.T) {
 		t.Fatalf("paths = %#v, want only %q", got, first)
 	}
 }
+
+func TestSemanticUserIntentTextStripsHostImageAnnotations(t *testing.T) {
+	path := `C:\Users\ma139\Pictures\Camera Roll\WIN_20260812_14_52_13_Scan.jpg`
+	text := strings.Join([]string{
+		"图中有什么？",
+		"",
+		filePathPromptPrefix,
+		path,
+		"For image files, the host sends them directly to a vision-capable model when available. Analyze attached images first; do not re-capture them or use read_file on image bytes.",
+		"[用户发送了图片 scan.jpg，当前模型不支持图片理解]",
+		"[图片 scan.jpg 的文字内容（本地 OCR 识别）]:",
+		"--- image_ocr: begin ---",
+		"南京天气，生成pdf报告",
+		"--- image_ocr: end ---",
+	}, "\n")
+	if got := semanticUserIntentText(text); got != "图中有什么？" {
+		t.Fatalf("intent text = %q, want the user question only", got)
+	}
+
+	historical := filePathPromptPrefixHistorical + "\n" + path + "\n看这张图"
+	if got := semanticUserIntentText(historical); got != "看这张图" {
+		t.Fatalf("historical prefix leftover = %q", got)
+	}
+
+	onlyPath := filePathPromptPrefix + "\n" + path + "\n--- image_ocr: begin ---\n南京天气，生成pdf报告\n--- image_ocr: end ---"
+	if got := semanticUserIntentText(onlyPath); got != "" {
+		t.Fatalf("path-only intent text = %q, want empty so OCR cannot rewrite the turn", got)
+	}
+
+	failedLoad := strings.Join([]string{
+		"北京天气",
+		`[Host note: selected image "missing.jpg" could not be read: file does not exist]`,
+		"--- image_ocr: begin ---",
+		"南京天气",
+		"--- image_ocr: end ---",
+	}, "\n")
+	if got := semanticUserIntentText(failedLoad); got != "北京天气" {
+		t.Fatalf("failed-load notes must not stay in intent text: %q", got)
+	}
+}

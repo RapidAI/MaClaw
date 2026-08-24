@@ -551,7 +551,7 @@ func snapshotDocumentVersion(filePath string) (officeReadVersionToken, error) {
 func documentSnapshotExtension(value string) string {
 	ext := "." + strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), ".")
 	switch strings.TrimPrefix(ext, ".") {
-	case "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "text", "md", "markdown":
+	case "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log":
 		// Preserve only parser-relevant suffixes.
 	default:
 		ext = ""

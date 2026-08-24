@@ -89,6 +89,9 @@ func (r *SubAgentTaskRunner) extractAndSaveExperience(
 	}
 
 	taskPassed := result != nil && result.Status == TaskExecPassed
+	if result != nil && result.HorizonOwned {
+		return
+	}
 	switch strategy {
 	case ExperienceStrategyOnRetry:
 		if !wasRetry || !taskPassed {
@@ -500,7 +503,7 @@ func doExperienceLLMRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, me
 	for _, m := range messages {
 		ifaces = append(ifaces, m)
 	}
-	resp, err := doSimpleLLMRequest(ctx, cfg, ifaces, httpClient, experienceExtractionTimeout)
+	resp, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), ifaces, httpClient, experienceExtractionTimeout)
 	if err != nil {
 		return "", err
 	}

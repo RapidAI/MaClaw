@@ -1534,11 +1534,6 @@ export function AssistantWelcomeView({
             <div style={{
                 width: "100%",
                 maxWidth: CONTENT_MAX_WIDTH,
-                borderRadius: "8px",
-                border: `1px solid ${t.inputBarBorder}`,
-                background: t.inputBarBg,
-                // Visible so history autocomplete can paint above the composer.
-                overflow: "visible",
             }}>
                 <AssistantInputComposer
                     active={active}

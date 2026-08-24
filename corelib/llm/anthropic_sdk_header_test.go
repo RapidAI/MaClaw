@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -51,6 +52,67 @@ func TestAnthropicSDKSendsCodeGenHeaderForCodeGen(t *testing.T) {
 	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
 	if err == nil {
 		t.Fatal("DoAnthropicRequest() error = nil, want upstream error")
+	}
+}
+
+func TestAnthropicSDKSendsHubWorkloadHints(t *testing.T) {
+	client := &http.Client{Transport: anthropicSDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("X-MaClaw-Task-Type"); got != "fast" {
+			t.Fatalf("task type = %q", got)
+		}
+		if got := req.Header.Get("X-MaClaw-Workflow-Type"); got != "coding" {
+			t.Fatalf("workflow type = %q", got)
+		}
+		if got := req.Header.Get("X-MaClaw-Phase-Kind"); got != "execution" {
+			t.Fatalf("phase kind = %q", got)
+		}
+		if got := req.Header.Get("X-MaClaw-Workload-Class"); got != "" {
+			t.Fatalf("desktop must not invent P0 class, got %q", got)
+		}
+		return anthropicSDKHeaderErrorResponse(req), nil
+	})}
+
+	cfg := corelib.MaclawLLMConfig{
+		URL:      "https://hub.example.com/api/llm/v1",
+		Model:    "auto",
+		Protocol: "anthropic",
+	}.WithHubWorkloadHints("fast", "coding", "execution")
+	_, err := DoAnthropicRequest(context.Background(), cfg,
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
+	if err == nil {
+		t.Fatal("DoAnthropicRequest() error = nil, want upstream error")
+	}
+}
+
+func TestAnthropicSDKDoesNotSendHintsToThirdParty(t *testing.T) {
+	client := &http.Client{Transport: anthropicSDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("X-MaClaw-Task-Type"); got != "" {
+			t.Fatalf("third-party sent task hint %q", got)
+		}
+		return anthropicSDKHeaderErrorResponse(req), nil
+	})}
+
+	cfg := corelib.MaclawLLMConfig{
+		URL:          "https://api.anthropic.com",
+		Model:        "claude-sonnet-4",
+		Protocol:     "anthropic",
+		TaskTypeHint: "fast",
+	}
+	_, err := DoAnthropicRequest(context.Background(), cfg,
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
+	if err == nil {
+		t.Fatal("DoAnthropicRequest() error = nil, want upstream error")
+	}
+}
+
+func TestAnthropicSDKOptionsOmitsRequestTimeoutWhenContextHasDeadline(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", TimeoutSec: 600}
+	withDeadline, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	open := anthropicSDKOptions(context.Background(), cfg, http.DefaultClient)
+	bound := anthropicSDKOptions(withDeadline, cfg, http.DefaultClient)
+	if len(bound) >= len(open) {
+		t.Fatalf("deadline context should omit SDK request timeout, open=%d bound=%d", len(open), len(bound))
 	}
 }
 

@@ -77,6 +77,16 @@ static TaskHandle_t s_network_probe_task;
 static SemaphoreHandle_t s_network_probe_stopped;
 static std::atomic<bool> s_network_probe_stop_requested{false};
 static std::mutex s_network_probe_mutex;
+/* A successful System Sleep PREPARE stops the retained probe task.  If ABORT
+ * races the task's final exit, remember the old generation's intent so that
+ * the exiting task recreates it after releasing its own task handle. */
+static std::atomic<bool> s_network_probe_restart_after_stop{false};
+static std::mutex s_system_sleep_mutex;
+static bool s_system_sleep_preparing;
+static bool s_system_sleep_was_admitted;
+static bool s_system_sleep_probe_was_running;
+
+static void ensure_network_probe_task();
 
 static void network_probe_task(void *) {
     while (!s_network_probe_stop_requested.load()) {
@@ -103,6 +113,15 @@ static void network_probe_task(void *) {
         }
     }
     if (s_network_probe_stopped) xSemaphoreGive(s_network_probe_stopped);
+    /* Do not create the replacement until this instance has stopped touching
+     * the UART and published its completion. `ensure_network_probe_task()`
+     * drains that completion token before publishing its new generation, so a
+     * subsequent PREPARE can never mistake this old task's exit for the new
+     * task's acknowledgement. Permanent quiesce never sets this marker. */
+    if (s_network_probe_restart_after_stop.exchange(false) &&
+        s_admission_open.load()) {
+        ensure_network_probe_task();
+    }
     vTaskDelete(nullptr);
 }
 
@@ -141,6 +160,65 @@ static esp_err_t stop_network_probe_task(uint32_t timeout_ms) {
         return ESP_ERR_TIMEOUT;
     }
     ESP_LOGI(TAG, "ML307 network probe stopped");
+    return ESP_OK;
+}
+
+static bool network_probe_task_is_running(void) {
+    std::lock_guard<std::mutex> lock(s_network_probe_mutex);
+    return s_network_probe_task != nullptr;
+}
+
+/* Caller holds s_system_sleep_mutex.  This is deliberately the common close
+ * path for permanent quiesce and reversible PREPARE: admission closes before
+ * start/probe/HTTP work is observed, so no new borrower can slip past the
+ * subsequent drain. */
+static esp_err_t close_transport_and_drain(uint32_t timeout_ms) {
+    {
+        std::lock_guard<std::mutex> lock(s_http_borrower_mutex);
+        s_admission_open.store(false);
+    }
+    s_slot_cv.notify_all();
+    s_start_stop_requested.store(true);
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    while (s_start_in_progress.load()) {
+        if (xTaskGetTickCount() - started >= budget) {
+            ESP_LOGW(TAG, "ML307 transport start did not stop before quiesce deadline");
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(25));
+    }
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    uint32_t remaining_ms = 1u;
+    if (elapsed < budget) {
+        const TickType_t remaining_ticks = budget - elapsed;
+        remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
+        if (remaining_ms == 0) remaining_ms = 1u;
+    }
+    esp_err_t probe_err = stop_network_probe_task(remaining_ms);
+    if (probe_err != ESP_OK) {
+        ESP_LOGW(TAG, "ML307 network probe did not stop during quiesce: %s",
+                 esp_err_to_name(probe_err));
+        return probe_err;
+    }
+
+    const TickType_t after_probe = xTaskGetTickCount() - started;
+    if (after_probe >= budget) {
+        ESP_LOGW(TAG, "ML307 HTTP borrowers did not drain before quiesce deadline");
+        return ESP_ERR_TIMEOUT;
+    }
+    const uint32_t drain_ms = std::max<uint32_t>(
+        1u, (uint32_t)((budget - after_probe) * portTICK_PERIOD_MS));
+    {
+        std::unique_lock<std::mutex> lock(s_http_borrower_mutex);
+        if (!s_http_borrower_cv.wait_for(
+                lock, std::chrono::milliseconds(drain_ms),
+                [] { return s_active_http_borrowers == 0; })) {
+            ESP_LOGW(TAG, "ML307 quiesce timed out with %u active HTTP borrower(s)",
+                     s_active_http_borrowers);
+            return ESP_ERR_TIMEOUT;
+        }
+    }
     return ESP_OK;
 }
 
@@ -696,63 +774,63 @@ extern "C" esp_err_t ml307_transport_start(int tx_gpio, int rx_gpio,
 
 extern "C" esp_err_t ml307_transport_quiesce(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    {
-        /* Serialize the admission transition with HttpBorrower::Acquire(). A
-         * request can therefore be either rejected or included in the drain
-         * count; it cannot slip between the readiness check and registration. */
-        std::lock_guard<std::mutex> lock(s_http_borrower_mutex);
-        s_admission_open.store(false);
-    }
-    // Wake requests waiting for a scarce modem HTTP ID so they reject promptly
-    // instead of holding the quiesce drain behind their full caller timeout.
-    s_slot_cv.notify_all();
-    s_start_stop_requested.store(true);
-    const TickType_t started = xTaskGetTickCount();
-    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
-    while (s_start_in_progress.load()) {
-        if (xTaskGetTickCount() - started >= budget) {
-            ESP_LOGW(TAG, "ML307 transport start did not stop before quiesce deadline");
-            return ESP_ERR_TIMEOUT;
-        }
-        vTaskDelay(pdMS_TO_TICKS(25));
-    }
-    const TickType_t elapsed = xTaskGetTickCount() - started;
-    uint32_t remaining_ms = 1u;
-    if (elapsed < budget) {
-        const TickType_t remaining_ticks = budget - elapsed;
-        remaining_ms = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
-        if (remaining_ms == 0) remaining_ms = 1u;
-    }
-    esp_err_t probe_err = stop_network_probe_task(remaining_ms);
-    if (probe_err != ESP_OK) {
-        ESP_LOGW(TAG, "ML307 network probe did not stop during quiesce: %s",
-                 esp_err_to_name(probe_err));
-        return probe_err;
-    }
-
-    const TickType_t after_probe = xTaskGetTickCount() - started;
-    if (after_probe >= budget) {
-        ESP_LOGW(TAG, "ML307 HTTP borrowers did not drain before quiesce deadline");
-        return ESP_ERR_TIMEOUT;
-    }
-    const uint32_t drain_ms = std::max<uint32_t>(
-        1u, (uint32_t)((budget - after_probe) * portTICK_PERIOD_MS));
-    {
-        std::unique_lock<std::mutex> lock(s_http_borrower_mutex);
-        if (!s_http_borrower_cv.wait_for(
-                lock, std::chrono::milliseconds(drain_ms),
-                [] { return s_active_http_borrowers == 0; })) {
-            ESP_LOGW(TAG, "ML307 quiesce timed out with %u active HTTP borrower(s)",
-                     s_active_http_borrowers);
-            return ESP_ERR_TIMEOUT;
-        }
-    }
+    std::lock_guard<std::mutex> lock(s_system_sleep_mutex);
+    if (s_system_sleep_preparing) return ESP_ERR_INVALID_STATE;
+    s_network_probe_restart_after_stop.store(false);
+    esp_err_t err = close_transport_and_drain(timeout_ms);
+    if (err != ESP_OK) return err;
     /* Do not destroy s_modem or its UART here. A successful drain proves all
      * admitted requests completed MHTTPDEL and unregistered their callbacks;
      * the adapter may safely regard the transport as quiescent, but this slice
      * deliberately does not claim a full modem deinit/restart contract. */
     ESP_LOGI(TAG, "ML307 transport admission closed; probe and HTTP borrowers quiesced");
     return ESP_OK;
+}
+
+extern "C" esp_err_t ml307_transport_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(s_system_sleep_mutex);
+    if (s_system_sleep_preparing) return ESP_ERR_INVALID_STATE;
+    s_system_sleep_preparing = true;
+    s_system_sleep_was_admitted = s_admission_open.load();
+    s_system_sleep_probe_was_running = network_probe_task_is_running();
+    s_network_probe_restart_after_stop.store(false);
+    esp_err_t err = close_transport_and_drain(timeout_ms);
+    if (err != ESP_OK) {
+        /* Keep the closed boundary until the parent transaction invokes ABORT;
+         * a timeout must never reopen transport while a late borrower/probe
+         * can still be leaving its critical section. */
+        ESP_LOGW(TAG, "ML307 System Sleep PREPARE did not reach a safe point: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "ML307 System Sleep PREPARE parked probe and HTTP borrowers");
+    return ESP_OK;
+}
+
+extern "C" void ml307_transport_abort_system_sleep_prepare(void) {
+    std::lock_guard<std::mutex> lock(s_system_sleep_mutex);
+    if (!s_system_sleep_preparing) return;
+    const bool reopen = s_system_sleep_was_admitted;
+    const bool restart_probe = s_system_sleep_probe_was_running;
+    s_system_sleep_was_admitted = false;
+    s_system_sleep_probe_was_running = false;
+    s_system_sleep_preparing = false;
+    if (!reopen) return;
+
+    s_start_stop_requested.store(false);
+    s_admission_open.store(true);
+    if (restart_probe) {
+        /* If the old task is still releasing its completion token, defer
+         * recreation to its exit path.  Otherwise create the original probe
+         * generation now. */
+        if (network_probe_task_is_running()) {
+            s_network_probe_restart_after_stop.store(true);
+        } else {
+            ensure_network_probe_task();
+        }
+    }
+    ESP_LOGI(TAG, "ML307 System Sleep ABORT restored transport admission");
 }
 
 extern "C" bool ml307_transport_cancel_foreground(void) {

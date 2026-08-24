@@ -24,6 +24,12 @@
 #ifndef CONFIG_MACLAW_PROVISIONING_TEST_FORCE_PORTAL
 #define CONFIG_MACLAW_PROVISIONING_TEST_FORCE_PORTAL 0
 #endif
+#ifndef CONFIG_MACLAW_SAFE_MODE_TEST_LOCAL_READY_FAILURE
+#define CONFIG_MACLAW_SAFE_MODE_TEST_LOCAL_READY_FAILURE 0
+#endif
+#ifndef CONFIG_MACLAW_SAFE_MODE_TEST_FORCE_SETUP_TAKE_FAILURE
+#define CONFIG_MACLAW_SAFE_MODE_TEST_FORCE_SETUP_TAKE_FAILURE 0
+#endif
 #ifndef CONFIG_MACLAW_DISPLAY_FAILURE_INITIALIZATION
 #define CONFIG_MACLAW_DISPLAY_FAILURE_INITIALIZATION 0
 #endif
@@ -57,6 +63,24 @@
 #ifndef CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
 #define CONFIG_MACLAW_TASK_REGISTRY_LIFECYCLE_TEST 0
 #endif
+#ifndef CONFIG_MACLAW_POWER_LEASE_DISPLAY_OFF_COMMIT_TEST
+#define CONFIG_MACLAW_POWER_LEASE_DISPLAY_OFF_COMMIT_TEST 0
+#endif
+#ifndef CONFIG_MACLAW_POWER_DISPLAY_OFF_RETRY_HIL_TEST
+#define CONFIG_MACLAW_POWER_DISPLAY_OFF_RETRY_HIL_TEST 0
+#endif
+#ifndef CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_TEST
+#define CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_TEST 0
+#endif
+#ifndef CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_HIL_TEST
+#define CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_HIL_TEST 0
+#endif
+#ifndef CONFIG_MACLAW_WAVESHARE_QMI8658_INIT_FAILURE
+#define CONFIG_MACLAW_WAVESHARE_QMI8658_INIT_FAILURE 0
+#endif
+#ifndef CONFIG_MACLAW_WAVESHARE_QMI8658_MOTION_READ_FAILURE
+#define CONFIG_MACLAW_WAVESHARE_QMI8658_MOTION_READ_FAILURE 0
+#endif
 #ifndef CONFIG_MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST
 #define CONFIG_MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST 0
 #endif
@@ -66,6 +90,10 @@
 
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_TRANSFER_FENCE_TIMEOUT_ONCE
 static bool s_display_transfer_fence_timeout_consumed;
+#endif
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_WAVESHARE_QMI8658_MOTION_READ_FAILURE
+static bool s_waveshare_qmi8658_motion_read_probe_seen;
+static bool s_waveshare_qmi8658_motion_read_failure_consumed;
 #endif
 #if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_DISPLAY_SERVICE_REQUEST_DELAY_ONCE_MS > 0
 static bool s_display_service_request_delay_consumed;
@@ -229,4 +257,77 @@ bool provisioning_failure_injection_task_registry_lifecycle_test_enabled(void) {
 #else
     return false;
 #endif
+}
+
+bool provisioning_failure_injection_power_lease_display_off_commit_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_POWER_LEASE_DISPLAY_OFF_COMMIT_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_power_display_off_retry_hil_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_POWER_DISPLAY_OFF_RETRY_HIL_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_sleep_schedule_end_handoff_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_sleep_schedule_end_handoff_hil_test_enabled(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_HIL_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_safe_mode_at_local_ready(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_SAFE_MODE_TEST_LOCAL_READY_FAILURE
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_safe_mode_force_setup_take_fails(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_SAFE_MODE_TEST_FORCE_SETUP_TAKE_FAILURE
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_waveshare_qmi8658_init_fails(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_WAVESHARE_QMI8658_INIT_FAILURE
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool provisioning_failure_injection_waveshare_qmi8658_motion_read_fails_once(void) {
+#if CONFIG_MACLAW_TEST_BUILD && CONFIG_MACLAW_WAVESHARE_QMI8658_MOTION_READ_FAILURE
+    /* The first call is Fall Detection's shared boot availability probe. Let
+     * it exercise the real adapter, then fail exactly one retained-worker
+     * sample so the test cannot accidentally turn into the init-failure case. */
+    if (!s_waveshare_qmi8658_motion_read_probe_seen) {
+        s_waveshare_qmi8658_motion_read_probe_seen = true;
+        return false;
+    }
+    if (!s_waveshare_qmi8658_motion_read_failure_consumed) {
+        s_waveshare_qmi8658_motion_read_failure_consumed = true;
+        return true;
+    }
+#endif
+    return false;
 }

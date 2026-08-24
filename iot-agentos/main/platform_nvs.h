@@ -25,6 +25,8 @@ device_status_t platform_nvs_read_blob(const char *name_space, const char *key,
                                        void *out_value, size_t *inout_size);
 device_status_t platform_nvs_write_blob(const char *name_space, const char *key,
                                         const void *value, size_t size);
+/* Removes one schema record without exposing an NVS handle to callers. */
+device_status_t platform_nvs_erase_key(const char *name_space, const char *key);
 device_status_t platform_nvs_read_i64(const char *name_space, const char *key,
                                       int64_t *out_value);
 device_status_t platform_nvs_read_i32(const char *name_space, const char *key,

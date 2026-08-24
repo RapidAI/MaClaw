@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -174,6 +175,128 @@ func TestHandleProxyRequestRequiresRequestAndBody(t *testing.T) {
 	}
 }
 
+func TestHandleProxyRequestReturnsTenantBoundError(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers:     []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://127.0.0.1:1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		CheckBinding: func(context.Context, string, string) (bool, string) {
+			return false, "hc-3"
+		},
+		LookupNodeURL: func(nodeID string) string {
+			if nodeID == "hc-3" {
+				return "https://hubs2.maclaw.top"
+			}
+			return ""
+		},
+	}
+	_, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{HubID: "hub1", TenantID: "t1", Body: map[string]any{"model": "gpt-4"}})
+	bound := asTenantBoundError(err)
+	if bound == nil {
+		t.Fatalf("error = %v, want TenantBoundError", err)
+	}
+	if bound.NodeID != "hc-3" || bound.RedirectURL != "https://hubs2.maclaw.top" {
+		t.Fatalf("bound = %+v", bound)
+	}
+}
+
+func TestProxyHandlerWritesStructuredTenantRedirect(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers:     []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://127.0.0.1:1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		CheckBinding: func(context.Context, string, string) (bool, string) {
+			return false, "hc-3"
+		},
+		LookupNodeURL: func(nodeID string) string {
+			if nodeID == "hc-3" {
+				return "https://hubs2.maclaw.top"
+			}
+			return ""
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4"}`))
+	req.Header.Set("X-Hub-ID", "hub1")
+	req.Header.Set("X-Tenant-ID", "t1")
+	rr := httptest.NewRecorder()
+	ProxyHandler(cfg).ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get(RedirectNodeHeader); got != "hc-3" {
+		t.Fatalf("redirect node = %q", got)
+	}
+	if got := rr.Header().Get(RedirectURLHeader); got != "https://hubs2.maclaw.top" {
+		t.Fatalf("redirect url = %q", got)
+	}
+	if got := rr.Header().Get("Location"); got != "https://hubs2.maclaw.top" {
+		t.Fatalf("Location = %q", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["code"] != TenantBoundErrorCode || payload["node_id"] != "hc-3" || payload["redirect_url"] != "https://hubs2.maclaw.top" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestClientFacingRedirectURLRejectsUnsafeAddresses(t *testing.T) {
+	if got := clientFacingRedirectURL("https://hubs2.maclaw.top"); got != "https://hubs2.maclaw.top" {
+		t.Fatalf("got %q", got)
+	}
+	if got := clientFacingRedirectURL("https://evil:pass@hubs2.maclaw.top"); got != "" {
+		t.Fatalf("userinfo should be rejected, got %q", got)
+	}
+	if got := clientFacingRedirectURL("javascript:alert(1)"); got != "" {
+		t.Fatalf("javascript should be rejected, got %q", got)
+	}
+}
+
+func TestProxyHandlerStreamPreflightReturnsBindingRedirectBeforeSSE(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers:     []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://127.0.0.1:1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		CheckBinding: func(context.Context, string, string) (bool, string) {
+			return false, "hc-3"
+		},
+		LookupNodeURL: func(string) string { return "https://hubs2.maclaw.top" },
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4","stream":true}`))
+	req.Header.Set("X-Hub-ID", "hub1")
+	req.Header.Set("X-Tenant-ID", "t1")
+	rr := httptest.NewRecorder()
+	ProxyHandler(cfg).ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want JSON error before SSE starts", rr.Header().Get("Content-Type"))
+	}
+	if rr.Header().Get(RedirectURLHeader) != "https://hubs2.maclaw.top" {
+		t.Fatalf("redirect url = %q", rr.Header().Get(RedirectURLHeader))
+	}
+}
+
 func TestHandleProxyRequestTrimsModel(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -194,6 +317,1307 @@ func TestHandleProxyRequestTrimsModel(t *testing.T) {
 	}
 	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Model: "   ", Body: map[string]any{}}); err == nil || err.Error() != "model not specified in request" {
 		t.Fatalf("blank explicit model error = %v, want model not specified in request", err)
+	}
+}
+
+func TestHandleProxyRequestSkipsPausedProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "paused", Name: "Paused", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "live", Name: "Live", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "paused"},
+				{ProviderID: "live"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "gpt-4"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "live" {
+		t.Fatalf("provider = %#v, want live after skipping paused", resp)
+	}
+}
+
+func TestHandleProxyRequestFailsOverToLiveProviderInSameGroup(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, Models: []string{"qwen-plus"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official",
+			Models: []llmpool.ModelConfig{
+				{Name: "deepseek-chat", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}},
+				{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "deepseek-chat"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu after pause failover", resp)
+	}
+	if seen["model"] != "qwen-plus" {
+		t.Fatalf("upstream model = %#v, want live provider route qwen-plus", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestFailsOverAutoToLiveProviderInOtherGroup(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, Models: []string{"qwen-plus"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID: "official-pool", Name: "Official", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}}},
+			},
+			{
+				ID: "qwen-pool", Name: "Qwen", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		ServiceGroupID: "official-pool",
+		Body:           map[string]any{"model": "auto"},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu after pausing auto's only provider", resp)
+	}
+	if seen["model"] != "qwen-plus" {
+		t.Fatalf("upstream model = %#v, want live provider route qwen-plus", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestFailsOverPausedProviderUsingRegistryOnlyBackend(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, Models: []string{"qwen-plus"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official-pool", Name: "Official",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want registry live provider yinyu", resp)
+	}
+	if seen["model"] != "qwen-plus" {
+		t.Fatalf("upstream model = %#v, want provider default qwen-plus", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestKeepsHealthyPrimaryAheadOfLowerSequenceFailover(t *testing.T) {
+	var hits []string
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "deepseek")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"primary"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer primary.Close()
+	failover := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "yinyu")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"failover"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer failover.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "yinyu", Name: "Yinyu", APIURL: failover.URL, Sequence: 1, Models: []string{"qwen-plus"}},
+			{ID: "deepseek", Name: "DeepSeek", APIURL: primary.URL, Sequence: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID: "official-pool", Name: "Official", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}}},
+			},
+			{
+				ID: "qwen-pool", Name: "Qwen", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	resp, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  &http.Client{},
+	}, &ProxyRequest{ServiceGroupID: "official-pool", Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "deepseek" {
+		t.Fatalf("provider = %#v, want configured primary deepseek", resp)
+	}
+	if len(hits) != 1 || hits[0] != "deepseek" {
+		t.Fatalf("hits = %#v, want only the healthy primary", hits)
+	}
+}
+
+func TestHandleProxyRequestFailsOverLivePrimaryErrorToOtherProvider(t *testing.T) {
+	var hits []string
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "deepseek")
+		http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+	}))
+	defer primary.Close()
+	failover := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "yinyu")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer failover.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: primary.URL, Sequence: 1},
+			{ID: "yinyu", Name: "Yinyu", APIURL: failover.URL, Sequence: 2, Models: []string{"qwen-plus"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID: "official-pool", Name: "Official", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}}},
+			},
+			{
+				ID: "qwen-pool", Name: "Qwen", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	resp, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  &http.Client{},
+		Resilience:  llmpool.NewResilienceController(),
+	}, &ProxyRequest{ServiceGroupID: "official-pool", Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu after live primary error", resp)
+	}
+	if len(hits) < 2 || hits[0] != "deepseek" || hits[len(hits)-1] != "yinyu" {
+		t.Fatalf("hits = %#v, want deepseek then yinyu", hits)
+	}
+}
+
+func TestHandleProxyRequestSkipsCoolingPrimaryAndUsesFailoverProvider(t *testing.T) {
+	var hits []string
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "deepseek")
+		http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+	}))
+	defer primary.Close()
+	failover := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "yinyu")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer failover.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: primary.URL, Sequence: 1, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 60_000},
+			{ID: "yinyu", Name: "Yinyu", APIURL: failover.URL, Sequence: 2, Models: []string{"qwen-plus"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID: "official-pool", Name: "Official", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}}},
+			},
+			{
+				ID: "qwen-pool", Name: "Qwen", AgentID: "maclaw_official",
+				Models: []llmpool.ModelConfig{{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  &http.Client{},
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		ServiceGroupID: "official-pool", Body: map[string]any{"model": "auto"},
+	}); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	hits = hits[:0]
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		ServiceGroupID: "official-pool", Body: map[string]any{"model": "auto"},
+	})
+	if err != nil {
+		t.Fatalf("cooldown request: %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu while primary is cooling down", resp)
+	}
+	for _, hit := range hits {
+		if hit == "deepseek" {
+			t.Fatalf("hits = %#v, cooling primary should be skipped", hits)
+		}
+	}
+}
+
+func TestHandleProxyRequestProbeNotStuckWhenProviderIsBusy(t *testing.T) {
+	var recovered atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !recovered.Load() {
+			http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, MaxConcurrency: 1, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 20},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	ctrl := llmpool.NewConcurrencyController()
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+		Concurrency: ctrl,
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}}); err == nil {
+		t.Fatal("first request: want upstream failure to open the circuit")
+	}
+	recovered.Store(true)
+	time.Sleep(40 * time.Millisecond)
+	hold, err := ctrl.TryAcquire("yinyu", 1)
+	if err != nil {
+		t.Fatalf("hold concurrency: %v", err)
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}}); err == nil {
+		t.Fatal("busy probe: want skip while provider is at concurrency limit")
+	}
+	hold()
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("after releasing probe slot: %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want recovered yinyu", resp)
+	}
+}
+
+func TestHandleProxyRequestCancelDoesNotOpenCircuit(t *testing.T) {
+	started := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(func() {
+		upstream.CloseClientConnections()
+		upstream.Close()
+	})
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "only", Name: "Only", APIURL: upstream.URL, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 60_000}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "only"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	resilience := llmpool.NewResilienceController()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := HandleProxyRequest(ctx, &ProxyConfig{
+			Service:     svc,
+			AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+			HTTPClient:  upstream.Client(),
+			Resilience:  resilience,
+		}, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case err := <-errCh:
+		t.Fatalf("request returned before upstream started: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not start")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("canceled request: want error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled request did not return")
+	}
+	if snap := resilience.Snapshot("only", 1); snap.State != "closed" || snap.ConsecFailures != 0 {
+		t.Fatalf("snapshot = %#v, cancel must not open the circuit", snap)
+	}
+}
+
+func TestShouldAbortResilienceProbe(t *testing.T) {
+	if !shouldAbortResilienceProbe(true, true) {
+		t.Fatal("fresh probe that never reached upstream must release the slot")
+	}
+	if shouldAbortResilienceProbe(false, true) {
+		t.Fatal("busy later route must keep an in-flight probe for remaining models")
+	}
+	if !shouldAbortResilienceProbe(false, false) {
+		t.Fatal("last route skip must not leave the exclusive probe stuck")
+	}
+}
+
+func TestHandleProxyRequestRetriesAggregatorModelAfter404(t *testing.T) {
+	var models []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		model, _ := body["model"].(string)
+		models = append(models, model)
+		if model != "qwen-plus" {
+			http.Error(w, `{"error":{"message":"unknown model"}}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 60_000},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official",
+			Models: []llmpool.ModelConfig{
+				{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}},
+				{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu after aggregator 404 retry", resp)
+	}
+	if len(models) != 2 || models[0] != "auto" || models[1] != "qwen-plus" {
+		t.Fatalf("upstream models = %#v, want auto then qwen-plus", models)
+	}
+}
+
+func TestHandleProxyRequestUsesProviderSequenceOrder(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	var hits []string
+	seq1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "seq1")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"one"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer seq1.Close()
+	seq2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "seq2")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"two"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer seq2.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "second", Name: "Second", APIURL: seq2.URL, Sequence: 2},
+			{ID: "first", Name: "First", APIURL: seq1.URL, Sequence: 1},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "second"},
+				{ProviderID: "first"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: &http.Client{}}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "first" {
+		t.Fatalf("provider = %#v, want sequence 1 provider", resp)
+	}
+	if len(hits) != 1 || hits[0] != "seq1" {
+		t.Fatalf("hits = %#v, want sequence 1 first", hits)
+	}
+}
+
+func TestOrderProxyDispatchRoutesStreamDoesNotGiveWRRSlotsToNonStream(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "chat-a", Name: "Chat A", Sequence: 1, MaxConcurrency: 10, Protocol: "openai", WireAPI: "chat"},
+			{ID: "resp", Name: "Responses", Sequence: 2, MaxConcurrency: 10, Protocol: "openai", WireAPI: "responses"},
+			{ID: "chat-b", Name: "Chat B", Sequence: 3, MaxConcurrency: 10, Protocol: "openai", WireAPI: "chat"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "chat-a"},
+				{ProviderID: "resp"},
+				{ProviderID: "chat-b"},
+			}}},
+		}},
+	}
+	group := &reg.ServiceGroups[0]
+	scored := []llmpool.ScoredProviderRoute{
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "chat-a"}, ResolutionTier: 1},
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "resp"}, ResolutionTier: 1},
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "chat-b"}, ResolutionTier: 1},
+	}
+	first := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true)
+	second := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true)
+	if len(first) < 1 || first[0].ProviderID != "chat-a" {
+		t.Fatalf("first pick = %#v, want chat-a", first)
+	}
+	if len(second) < 1 || second[0].ProviderID != "chat-b" {
+		t.Fatalf("second pick = %s, want chat-b (responses must not take a stream WRR slot)", second[0].ProviderID)
+	}
+}
+
+func TestOrderProxyDispatchRoutesStreamPoolDoesNotResetNonStreamWRR(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "chat-a", Name: "Chat A", Sequence: 1, MaxConcurrency: 10, Protocol: "openai", WireAPI: "chat"},
+			{ID: "resp", Name: "Responses", Sequence: 2, MaxConcurrency: 10, Protocol: "openai", WireAPI: "responses"},
+			{ID: "chat-b", Name: "Chat B", Sequence: 3, MaxConcurrency: 10, Protocol: "openai", WireAPI: "chat"},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "chat-a"},
+				{ProviderID: "resp"},
+				{ProviderID: "chat-b"},
+			}}},
+		}},
+	}
+	group := &reg.ServiceGroups[0]
+	scored := []llmpool.ScoredProviderRoute{
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "chat-a"}, ResolutionTier: 1},
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "resp"}, ResolutionTier: 1},
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "chat-b"}, ResolutionTier: 1},
+	}
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false); len(got) < 1 || got[0].ProviderID != "chat-a" {
+		t.Fatalf("non-stream first = %#v, want chat-a", got)
+	}
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true); len(got) < 1 || got[0].ProviderID != "chat-a" {
+		t.Fatalf("stream first = %#v, want chat-a in its own pool", got)
+	}
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false); len(got) < 1 || got[0].ProviderID != "resp" {
+		t.Fatalf("non-stream second = %s, want resp (stream traffic must not reset this pool)", got[0].ProviderID)
+	}
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true); len(got) < 1 || got[0].ProviderID != "chat-b" {
+		t.Fatalf("stream second = %s, want chat-b", got[0].ProviderID)
+	}
+}
+
+func TestHandleProxyRequestLoadBalancesSameMultiplier(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	var hits []string
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "aisi")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"one"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "oc1")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"two"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer second.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "aisi", Name: "Aisi", APIURL: first.URL, Sequence: 1, MaxConcurrency: 10},
+			{ID: "oc1", Name: "OC1", APIURL: second.URL, Sequence: 2, MaxConcurrency: 10},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "aisi"},
+				{ProviderID: "oc1"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: &http.Client{}}
+	firstResp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("first request error = %v", err)
+	}
+	secondResp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("second request error = %v", err)
+	}
+	if firstResp == nil || firstResp.ProviderID != "aisi" {
+		t.Fatalf("first provider = %#v, want aisi", firstResp)
+	}
+	if secondResp == nil || secondResp.ProviderID != "oc1" {
+		t.Fatalf("second provider = %#v, want oc1", secondResp)
+	}
+	if len(hits) != 2 || hits[0] != "aisi" || hits[1] != "oc1" {
+		t.Fatalf("hits = %#v, want aisi then oc1", hits)
+	}
+}
+
+func TestOrderProxyDispatchRoutesBalancesSameMultiplierExtras(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", Sequence: 4, MaxConcurrency: 64, CreditMultiplier: 2, Paused: true},
+			{ID: "opencode-1", Name: "OpenCode-1", Sequence: 2, MaxConcurrency: 10, CreditMultiplier: 2},
+			{ID: "opencode-2", Name: "OpenCode-2", Sequence: 3, MaxConcurrency: 10, CreditMultiplier: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "redeem", Name: "redeem",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "deepseek"},
+			}}},
+		}},
+	}
+	group := &reg.ServiceGroups[0]
+	scored := []llmpool.ScoredProviderRoute{
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "deepseek"}, ResolutionTier: 1},
+	}
+	first := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
+	second := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
+	if got := joinedProviderIDs(first); got != "deepseek,opencode-1,opencode-2" {
+		t.Fatalf("first order = %s, want paused primary then extra WRR winner opencode-1", got)
+	}
+	if got := joinedProviderIDs(second); got != "deepseek,opencode-2,opencode-1" {
+		t.Fatalf("second order = %s, want extras to rotate to opencode-2", got)
+	}
+}
+
+func TestOrderProxyDispatchRoutesExtraWRRIgnoresBorrowedRoutePolicy(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	reg := &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", Sequence: 4, MaxConcurrency: 64, CreditMultiplier: 2, Paused: true},
+			{ID: "opencode-1", Name: "OpenCode-1", Sequence: 2, MaxConcurrency: 64, CreditMultiplier: 2},
+			{ID: "opencode-2", Name: "OpenCode-2", Sequence: 3, MaxConcurrency: 10, CreditMultiplier: 2, Models: []string{"other"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID: "redeem", Name: "redeem",
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+					{ProviderID: "deepseek"},
+				}}},
+			},
+			{
+				ID: "other", Name: "other",
+				Models: []llmpool.ModelConfig{{Name: "other", ProviderConfigs: []llmpool.ModelProviderConfig{
+					{ProviderID: "opencode-2", ResolutionTier: 9, CreditMultiplier: 4},
+				}}},
+			},
+		},
+	}
+	group := &reg.ServiceGroups[0]
+	scored := []llmpool.ScoredProviderRoute{
+		{Route: llmpool.DispatchProviderRoute{ProviderID: "deepseek"}, ResolutionTier: 1},
+	}
+	first := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
+	second := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
+	if got := joinedProviderIDsAfter(first, "deepseek"); got != "opencode-1,opencode-2" {
+		t.Fatalf("first extras = %s, want equal-weight vendor group (borrowed tier/markup must not split)", got)
+	}
+	if got := joinedProviderIDsAfter(second, "deepseek"); got != "opencode-2,opencode-1" {
+		t.Fatalf("second extras = %s, want opencode-2 after equal-weight rotate", got)
+	}
+}
+
+func TestHandleProxyRequestLoadBalancesSameMultiplierExtras(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	var hits []string
+	oc1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "opencode-1")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"one"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer oc1.Close()
+	oc2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "opencode-2")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"two"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer oc2.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", Sequence: 4, MaxConcurrency: 64, CreditMultiplier: 2, Paused: true},
+			{ID: "opencode-1", Name: "OpenCode-1", APIURL: oc1.URL, Sequence: 2, MaxConcurrency: 10, CreditMultiplier: 2},
+			{ID: "opencode-2", Name: "OpenCode-2", APIURL: oc2.URL, Sequence: 3, MaxConcurrency: 10, CreditMultiplier: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "redeem", Name: "redeem",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "deepseek"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: &http.Client{}}
+	firstResp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("first request error = %v", err)
+	}
+	secondResp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("second request error = %v", err)
+	}
+	if firstResp == nil || firstResp.ProviderID != "opencode-1" {
+		t.Fatalf("first provider = %#v, want opencode-1", firstResp)
+	}
+	if secondResp == nil || secondResp.ProviderID != "opencode-2" {
+		t.Fatalf("second provider = %#v, want opencode-2", secondResp)
+	}
+	if len(hits) != 2 || hits[0] != "opencode-1" || hits[1] != "opencode-2" {
+		t.Fatalf("hits = %#v, want opencode-1 then opencode-2", hits)
+	}
+}
+
+func TestHandleProxyRequestSequenceSkipsPausedAndErrors(t *testing.T) {
+	var hits []string
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "bad")
+		http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "good")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer good.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "paused", Name: "Paused", APIURL: "http://paused.invalid", Sequence: 1, Paused: true},
+			{ID: "bad", Name: "Bad", APIURL: bad.URL, Sequence: 2},
+			{ID: "good", Name: "Good", APIURL: good.URL, Sequence: 3},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "paused"},
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: &http.Client{}}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "good" {
+		t.Fatalf("provider = %#v, want sequence 3 after skipping paused and failed", resp)
+	}
+	if len(hits) == 0 || hits[0] != "bad" || hits[len(hits)-1] != "good" {
+		t.Fatalf("hits = %#v, want bad then good", hits)
+	}
+}
+
+func TestHandleProxyRequestSkipsProviderAtConcurrencyLimit(t *testing.T) {
+	var hits []string
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "busy")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"busy"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer busy.Close()
+	free := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "free")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer free.Close()
+
+	ctrl := llmpool.NewConcurrencyController()
+	hold, err := ctrl.TryAcquire("busy", 1)
+	if err != nil {
+		t.Fatalf("hold busy slot: %v", err)
+	}
+	defer hold()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "busy", Name: "Busy", APIURL: busy.URL, Sequence: 1, MaxConcurrency: 1},
+			{ID: "free", Name: "Free", APIURL: free.URL, Sequence: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "busy"},
+				{ProviderID: "free"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  &http.Client{},
+		Concurrency: ctrl,
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "free" {
+		t.Fatalf("provider = %#v, want free after busy concurrency skip", resp)
+	}
+	if len(hits) != 1 || hits[0] != "free" {
+		t.Fatalf("hits = %#v, want only free", hits)
+	}
+}
+
+func TestHandleProxyRequestReportsConcurrencyLimitWhenAllBusy(t *testing.T) {
+	ctrl := llmpool.NewConcurrencyController()
+	hold, err := ctrl.TryAcquire("only", 1)
+	if err != nil {
+		t.Fatalf("hold slot: %v", err)
+	}
+	defer hold()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "only", Name: "Only", APIURL: "http://busy.invalid", Sequence: 1, MaxConcurrency: 1}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "only"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	_, err = HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		Concurrency: ctrl,
+	}, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err == nil || !strings.Contains(err.Error(), "concurrency limit") {
+		t.Fatalf("error = %v, want concurrency limit", err)
+	}
+}
+
+func TestHandleProxyRequestSkipsFailedProviderDuringCooldown(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	var hits []string
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "bad")
+		http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "good")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer good.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: bad.URL, Sequence: 1, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 60_000},
+			{ID: "good", Name: "Good", APIURL: good.URL, Sequence: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  &http.Client{},
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}}); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	hits = hits[:0]
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	if resp == nil || resp.ProviderID != "good" {
+		t.Fatalf("provider = %#v, want good while bad is cooling down", resp)
+	}
+	for _, hit := range hits {
+		if hit == "bad" {
+			t.Fatalf("hits = %#v, cooling provider should not be retried on every request", hits)
+		}
+	}
+}
+
+func TestHandleProxyRequestProbesFailedProviderAfterCooldown(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	var hits []string
+	var allowBad atomic.Bool
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "bad")
+		if !allowBad.Load() {
+			http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"recovered"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "good")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer good.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "bad", Name: "Bad", APIURL: bad.URL, Sequence: 1, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 20},
+			{ID: "good", Name: "Good", APIURL: good.URL, Sequence: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "bad"},
+				{ProviderID: "good"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  &http.Client{},
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}}); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	hits = hits[:0]
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}}); err != nil {
+		t.Fatalf("cooldown request: %v", err)
+	}
+	for _, hit := range hits {
+		if hit == "bad" {
+			t.Fatalf("hits = %#v, cooling provider should stay out of the WRR pool", hits)
+		}
+	}
+	allowBad.Store(true)
+	time.Sleep(40 * time.Millisecond)
+	hits = hits[:0]
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("probe request: %v", err)
+	}
+	if resp == nil || resp.ProviderID != "bad" {
+		t.Fatalf("provider = %#v, want recovered sequence-1 provider", resp)
+	}
+	if len(hits) == 0 || hits[0] != "bad" {
+		t.Fatalf("hits = %#v, want probe of sequence-1 provider", hits)
+	}
+}
+
+func TestHandleProxyRequestProbeRetriesLaterModelAfter404(t *testing.T) {
+	var models []string
+	var recovered atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		model, _ := body["model"].(string)
+		models = append(models, model)
+		if !recovered.Load() {
+			http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+			return
+		}
+		if model != "qwen-plus" {
+			http.Error(w, `{"error":{"message":"unknown model"}}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 20},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official",
+			Models: []llmpool.ModelConfig{
+				{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}},
+				{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	if _, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}}); err == nil {
+		t.Fatal("first request: want upstream failure to open the circuit")
+	}
+	recovered.Store(true)
+	time.Sleep(40 * time.Millisecond)
+	models = models[:0]
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "auto"}})
+	if err != nil {
+		t.Fatalf("probe request: %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu after half-open 404 retry", resp)
+	}
+	if len(models) < 2 || models[0] != "auto" || models[len(models)-1] != "qwen-plus" {
+		t.Fatalf("upstream models = %#v, want auto then qwen-plus on the recovery probe", models)
+	}
+}
+
+func TestHandleProxyStreamRequestProbeRetriesLaterModelAfter404(t *testing.T) {
+	var models []string
+	var recovered atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		model, _ := body["model"].(string)
+		models = append(models, model)
+		if !recovered.Load() {
+			http.Error(w, `{"error":{"message":"upstream down"}}`, http.StatusBadGateway)
+			return
+		}
+		if model != "qwen-plus" {
+			http.Error(w, `{"error":{"message":"unknown model"}}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 20},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official", AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{
+				{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}},
+				{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  upstream.Client(),
+		Resilience:  llmpool.NewResilienceController(),
+	}
+	if err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		Body: map[string]any{"model": "auto", "stream": true},
+	}, newLockedResponseRecorder()); err == nil {
+		t.Fatal("first stream: want upstream failure to open the circuit")
+	}
+	recovered.Store(true)
+	time.Sleep(40 * time.Millisecond)
+	models = models[:0]
+	writer := newLockedResponseRecorder()
+	if err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		Body: map[string]any{"model": "auto", "stream": true},
+	}, writer); err != nil {
+		t.Fatalf("probe stream: %v", err)
+	}
+	if got := writer.BodyString(); !strings.Contains(got, `"content":"ok"`) {
+		t.Fatalf("stream output = %q, want qwen-plus recovery SSE", got)
+	}
+	if len(models) < 2 || models[0] != "auto" || models[len(models)-1] != "qwen-plus" {
+		t.Fatalf("upstream models = %#v, want auto then qwen-plus on the recovery probe", models)
+	}
+}
+
+func TestHandleProxyRequestPrefersLiveProviderAdvertisedModel(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: upstream.URL, Models: []string{"deepseek-chat", "qwen-plus"}},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official",
+			Models: []llmpool.ModelConfig{
+				{Name: "deepseek-chat", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-chat"}}},
+				{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu", Model: "qwen-plus"}}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: upstream.Client()}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "deepseek-chat"}})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp == nil || resp.ProviderID != "yinyu" {
+		t.Fatalf("provider = %#v, want yinyu", resp)
+	}
+	if seen["model"] != "deepseek-chat" {
+		t.Fatalf("upstream model = %#v, want advertised deepseek-chat", seen["model"])
+	}
+}
+
+func TestHandleProxyStreamRequestFailsOverPausedModelToLiveGroupProvider(t *testing.T) {
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer good.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "deepseek", Name: "DeepSeek", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "yinyu", Name: "Yinyu", APIURL: good.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "official", Name: "Official", AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{
+				{Name: "deepseek-chat", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek"}}},
+				{Name: "qwen-plus", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "yinyu"}}},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{})}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		Body: map[string]any{"model": "deepseek-chat", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if got := writer.BodyString(); !strings.Contains(got, `"content":"ok"`) {
+		t.Fatalf("stream output = %q, want live group failover SSE", got)
+	}
+}
+
+func TestHandleProxyRequestFailsWhenAllProvidersPaused(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://paused.invalid", Paused: true}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{})}
+	_, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: map[string]any{"model": "gpt-4"}})
+	if err == nil || !strings.Contains(err.Error(), "paused") {
+		t.Fatalf("error = %v, want paused provider", err)
+	}
+}
+
+func TestHandleProxyRequestSkipsCacheHitForPausedProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"live"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "paused", Name: "Paused", APIURL: "http://paused.invalid", Paused: true},
+			{ID: "live", Name: "Live", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1",
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "paused"},
+				{ProviderID: "live"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	body := map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	cache := llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 10})
+	if err := cache.Put(context.Background(), &llmpool.CacheEntry{
+		CacheKey:   buildServiceGroupCacheKey("g1", "gpt-4", body),
+		ProviderID: "paused",
+		Model:      "gpt-4",
+		Payload:    []byte(`{"choices":[{"message":{"content":"cached"}}]}`),
+	}); err != nil {
+		t.Fatalf("cache put: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), Cache: cache, HTTPClient: upstream.Client()}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: body})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.CacheHit || resp.ProviderID != "live" {
+		t.Fatalf("resp = %#v, want live dispatch after skipping paused cache", resp)
 	}
 }
 func TestHandleProxyRequest_NoModel(t *testing.T) {
@@ -719,6 +2143,27 @@ func TestHandleProxyRequest_GrantRequiredRecordsOnlyDeductedCreditsWhenBalanceRu
 	}
 }
 
+func TestAuthorizationCheckerCheckAccessMatchesServiceGroupCaseInsensitively(t *testing.T) {
+	now := time.Now().UTC()
+	checker := NewAuthorizationChecker(&mockAuthRepo{auths: []*TenantAuthorization{{
+		ID:             "auth1",
+		HubID:          "hub1",
+		TenantID:       "t1",
+		ServiceGroupID: "Redeem",
+		CreditsTotal:   100,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+	}}})
+	auth, err := checker.CheckAccess(context.Background(), "hub1", "t1", "redeem")
+	if err != nil {
+		t.Fatalf("CheckAccess() error = %v", err)
+	}
+	if auth == nil || auth.ID != "auth1" {
+		t.Fatalf("CheckAccess() auth = %#v, want auth1", auth)
+	}
+}
+
 func TestBuildTenantAuthorizationStatusPreservesFractionalCredits(t *testing.T) {
 	now := time.Now().UTC()
 	checker := NewAuthorizationChecker(&mockAuthRepo{auths: []*TenantAuthorization{{
@@ -744,6 +2189,34 @@ func TestBuildTenantAuthorizationStatusPreservesFractionalCredits(t *testing.T) 
 	got := status.Authorizations[0]
 	if got.CreditsUsed != 1.1 || got.CreditsRemaining != 8.9 {
 		t.Fatalf("authorization credits = used %.17g remaining %.17g, want 1.1/8.9", got.CreditsUsed, got.CreditsRemaining)
+	}
+}
+
+func TestBuildTenantAuthorizationStatusIncludesProviderBilling(t *testing.T) {
+	SetProviderBillingCatalog(func(context.Context) []llmpool.ProviderBillingPolicy {
+		return []llmpool.ProviderBillingPolicy{{
+			ProviderID:       "deepseek",
+			Timezone:         "Asia/Shanghai",
+			CreditMultiplier: 1,
+			CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+				Days:       []int{1, 2, 3, 4, 5},
+				Start:      "00:30",
+				End:        "08:30",
+				Multiplier: 0.5,
+			}},
+		}}
+	})
+	t.Cleanup(func() { SetProviderBillingCatalog(nil) })
+
+	status, err := BuildTenantAuthorizationStatus(context.Background(), NewAuthorizationChecker(&mockAuthRepo{}), "hub1", "t1")
+	if err != nil {
+		t.Fatalf("BuildTenantAuthorizationStatus() error = %v", err)
+	}
+	if len(status.ProviderBilling) != 1 || status.ProviderBilling[0].ProviderID != "deepseek" {
+		t.Fatalf("provider_billing = %#v", status.ProviderBilling)
+	}
+	if status.ProviderBilling[0].CreditMultiplierSchedule[0].Multiplier != 0.5 {
+		t.Fatalf("window multiplier = %#v", status.ProviderBilling[0].CreditMultiplierSchedule)
 	}
 }
 
@@ -1018,6 +2491,7 @@ func TestProxyHandlerStreamPreflightReturnsAuthorizationErrorBeforeSSE(t *testin
 }
 
 func TestHandleProxyStreamRequestFailsOverBeforeStreaming(t *testing.T) {
+	proxyDispatchWRR.Reset()
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 	}))
@@ -1065,6 +2539,7 @@ func TestHandleProxyStreamRequestFailsOverBeforeStreaming(t *testing.T) {
 }
 
 func TestHandleProxyStreamRequestDoesNotFailOverAfterStreamingStarts(t *testing.T) {
+	proxyDispatchWRR.Reset()
 	var goodHits int
 	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Host {
@@ -1142,6 +2617,7 @@ func TestHandleProxyStreamRequestDoesNotFailOverAfterStreamingStarts(t *testing.
 }
 
 func TestHandleProxyStreamRequestCanFailOverAfterHeartbeatOnly(t *testing.T) {
+	proxyDispatchWRR.Reset()
 	var goodHits int
 	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Host {
@@ -1868,6 +3344,386 @@ func TestHandleProxyRequestSystemFreePrefersRedeemOverOtherGrantBackedAutoGroups
 	}
 }
 
+func TestMatchProxyServiceGroupModelOfficialAndAliasRules(t *testing.T) {
+	autoGroup := func(id, policy string) llmpool.ServiceGroup {
+		return llmpool.ServiceGroup{
+			ID:           id,
+			Name:         id,
+			AccessPolicy: policy,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "p1",
+				Model:      id + "-up",
+			}}}},
+		}
+	}
+	reg := func(groups ...llmpool.ServiceGroup) *Registry {
+		return &Registry{
+			Providers:     []llmpool.ProviderConfig{{ID: "p1", Name: "P1", APIURL: "http://127.0.0.1"}},
+			ServiceGroups: groups,
+		}
+	}
+
+	tests := []struct {
+		name      string
+		requestID string
+		reg       *Registry
+		wantID    string
+	}{
+		{
+			name:      "official uses grant redeem",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg:       reg(autoGroup("redeem", AccessPolicyGrantRequired)),
+			wantID:    "redeem",
+		},
+		{
+			name:      "official prefers redeem over later grant group",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg:       reg(autoGroup("premium-auto", AccessPolicyGrantRequired), autoGroup("redeem", AccessPolicyGrantRequired)),
+			wantID:    "redeem",
+		},
+		{
+			name:      "official ignores local same-id group",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg:       reg(autoGroup(llmpool.HubOfficialServiceGroupID, AccessPolicyGrantRequired), autoGroup("redeem", AccessPolicyGrantRequired)),
+			wantID:    "redeem",
+		},
+		{
+			name:      "official does not use local same-id grant as compute",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg:       reg(autoGroup(llmpool.HubOfficialServiceGroupID, AccessPolicyGrantRequired)),
+			wantID:    "",
+		},
+		{
+			name:      "official skips free redeem",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg:       reg(autoGroup("redeem", AccessPolicyFree), autoGroup("premium-auto", AccessPolicyGrantRequired)),
+			wantID:    "premium-auto",
+		},
+		{
+			name:      "official skips free-only catalog",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg:       reg(autoGroup("free-auto", AccessPolicyFree)),
+			wantID:    "",
+		},
+		{
+			name:      "system-free prefers free over redeem",
+			requestID: "system-free",
+			reg:       reg(autoGroup("redeem", AccessPolicyGrantRequired), autoGroup("free-auto", AccessPolicyFree)),
+			wantID:    "free-auto",
+		},
+		{
+			name:      "unknown paid group does not fallback",
+			requestID: "missing-paid-group",
+			reg:       reg(autoGroup("redeem", AccessPolicyGrantRequired)),
+			wantID:    "",
+		},
+		{
+			name:      "missing card group uses configured default",
+			requestID: "deleted-card-group",
+			reg: func() *Registry {
+				r := reg(autoGroup("redeem", AccessPolicyGrantRequired), autoGroup("coding-auto", AccessPolicyGrantRequired))
+				r.DefaultServiceGroupID = "redeem"
+				return r
+			}(),
+			wantID: "redeem",
+		},
+		{
+			name:      "official prefers configured default grant group",
+			requestID: llmpool.HubOfficialServiceGroupID,
+			reg: func() *Registry {
+				r := reg(autoGroup("premium-auto", AccessPolicyGrantRequired), autoGroup("redeem", AccessPolicyGrantRequired))
+				r.DefaultServiceGroupID = "premium-auto"
+				return r
+			}(),
+			wantID: "premium-auto",
+		},
+		{
+			name:      "empty id skips local official entry",
+			requestID: "",
+			reg:       reg(autoGroup(llmpool.HubOfficialServiceGroupID, AccessPolicyFree), autoGroup("redeem", AccessPolicyGrantRequired)),
+			wantID:    "redeem",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, dispatch := matchProxyServiceGroupModel(tt.reg, tt.requestID, "auto")
+			if tt.wantID == "" {
+				if got != nil {
+					t.Fatalf("matched %q, want none", got.ID)
+				}
+				return
+			}
+			if got == nil || dispatch == nil {
+				t.Fatalf("matched nil, want %q", tt.wantID)
+			}
+			if got.ID != tt.wantID {
+				t.Fatalf("matched %q, want %q", got.ID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestHandleProxyRequestOfficialHubEntryUsesTenantComputeGroup(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"deepseek-v4-flash","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: upstream.URL}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+				ProviderID: "deepseek",
+				Model:      "deepseek-v4-flash",
+			}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID:             "auth1",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "redeem",
+		CreditsTotal:   100,
+		CreditsUsed:    0,
+		StartsAt:       time.Now().UTC().Add(-time.Hour),
+		ExpiresAt:      time.Now().UTC().Add(time.Hour),
+		Status:         "active",
+	}}}
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: llmpool.HubOfficialServiceGroupID,
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.ProviderID != "deepseek" {
+		t.Fatalf("provider = %q, want deepseek", resp.ProviderID)
+	}
+	if seen["model"] != "deepseek-v4-flash" {
+		t.Fatalf("upstream model = %#v, want deepseek-v4-flash", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestOfficialHubEntryIgnoresLocalGroupWithSameID(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"redeem-upstream","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "local", Name: "Local", APIURL: upstream.URL},
+			{ID: "redeem-provider", Name: "Redeem", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID:           llmpool.HubOfficialServiceGroupID,
+				Name:         "Misplaced Hub Entry",
+				AccessPolicy: AccessPolicyFree,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "local",
+					Model:      "local-upstream",
+				}}}},
+			},
+			{
+				ID:           "redeem",
+				Name:         "Redeem",
+				AccessPolicy: AccessPolicyGrantRequired,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "redeem-provider",
+					Model:      "redeem-upstream",
+				}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	now := time.Now().UTC()
+	cfg := &ProxyConfig{
+		Service: svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{auths: []*TenantAuthorization{{
+			ID: "auth1", HubID: "hub1", TenantID: "tenant1", ServiceGroupID: "redeem",
+			CreditsTotal: 100, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Status: "active",
+		}}}),
+		HTTPClient: upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: llmpool.HubOfficialServiceGroupID,
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.ProviderID != "redeem-provider" {
+		t.Fatalf("provider = %q, want redeem-provider", resp.ProviderID)
+	}
+	if seen["model"] != "redeem-upstream" {
+		t.Fatalf("upstream model = %#v, want redeem-upstream", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestOfficialHubEntryPrefersRedeemOverFree(t *testing.T) {
+	var seen map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","model":"redeem-upstream","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "free", Name: "Free", APIURL: upstream.URL},
+			{ID: "redeem-provider", Name: "Redeem", APIURL: upstream.URL},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{
+			{
+				ID:           "free-auto",
+				Name:         "Free Auto",
+				AccessPolicy: AccessPolicyFree,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "free",
+					Model:      "free-upstream",
+				}}}},
+			},
+			{
+				ID:           "redeem",
+				Name:         "Redeem",
+				AccessPolicy: AccessPolicyGrantRequired,
+				Models: []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{
+					ProviderID: "redeem-provider",
+					Model:      "redeem-upstream",
+				}}}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	now := time.Now().UTC()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID:             "auth1",
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: "redeem",
+		CreditsTotal:   100,
+		CreditsUsed:    0,
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(time.Hour),
+		Status:         "active",
+	}}}
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		HTTPClient:  upstream.Client(),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: llmpool.HubOfficialServiceGroupID,
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err != nil {
+		t.Fatalf("HandleProxyRequest() error = %v", err)
+	}
+	if resp.ProviderID != "redeem-provider" {
+		t.Fatalf("provider = %q, want redeem-provider", resp.ProviderID)
+	}
+	if seen["model"] != "redeem-upstream" {
+		t.Fatalf("upstream model = %#v, want redeem-upstream", seen["model"])
+	}
+}
+
+func TestHandleProxyRequestOfficialHubEntrySkipsFreePolicyRedeem(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "deepseek", Name: "DeepSeek", APIURL: "http://127.0.0.1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "redeem",
+			Name:         "Redeem Free",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek", Model: "deepseek-v4-flash"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	_, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  http.DefaultClient,
+	}, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: llmpool.HubOfficialServiceGroupID,
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `model "auto" not available on this HubCenter`) {
+		t.Fatalf("HandleProxyRequest() error = %v, want official entry to skip free redeem", err)
+	}
+}
+
+func TestHandleProxyRequestOfficialHubEntryDoesNotUseFreeOnlyCatalog(t *testing.T) {
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{ID: "free", Name: "Free", APIURL: "http://127.0.0.1"}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "free-auto",
+			Name:         "Free Auto",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []llmpool.ModelConfig{{Name: "auto", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "free", Model: "free-upstream"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	_, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}),
+		HTTPClient:  http.DefaultClient,
+	}, &ProxyRequest{
+		HubID:          "hub1",
+		TenantID:       "tenant1",
+		ServiceGroupID: llmpool.HubOfficialServiceGroupID,
+		Body:           map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `model "auto" not available on this HubCenter`) {
+		t.Fatalf("HandleProxyRequest() error = %v, want official entry to require compute", err)
+	}
+}
+
 func TestHandleProxyRequestUnknownExplicitServiceGroupDoesNotFallback(t *testing.T) {
 	system := &mockSystemSettings{}
 	svc := NewService(system)
@@ -2075,6 +3931,22 @@ func TestProxyResponseUsageWithFallbackPatchesMissingUsageShapes(t *testing.T) {
 		t.Fatalf("complete usage fallback = %d/%d %s, want original body", input, output, patched)
 	}
 }
+
+func TestProxyResponseUsageWithFallbackPreservesExplicitZeroUsage(t *testing.T) {
+	reqBody := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "this must not be estimated"}}}
+	body := []byte(`{"choices":[{"message":{"content":"cached"}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
+	input, output, patched := proxyResponseUsageWithFallback(reqBody, body)
+	if input != 0 || output != 0 || string(patched) != string(body) {
+		t.Fatalf("explicit zero usage = %d/%d %s, want original zero usage", input, output, patched)
+	}
+
+	body = []byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":0,"completion_tokens":3,"total_tokens":3}}`)
+	input, output, patched = proxyResponseUsageWithFallback(reqBody, body)
+	if input != 0 || output != 3 || string(patched) != string(body) {
+		t.Fatalf("directional zero usage = %d/%d %s, want original 0/3 usage", input, output, patched)
+	}
+}
+
 func TestExtractTokenUsageAcceptsStringNumbers(t *testing.T) {
 	input, output := extractTokenUsage([]byte(`{"usage":{"prompt_tokens":"12.0","completion_tokens":"8","total_tokens":"20"}}`))
 	if input != 12 || output != 8 {
@@ -2264,8 +4136,8 @@ func TestHandleProxyRequestAllowsSameProviderWithDifferentModelRoutes(t *testing
 	}); err != nil {
 		t.Fatalf("HandleProxyRequest() error = %v", err)
 	}
-	if seen["model"] != "deepseek-v4-pro" {
-		t.Fatalf("upstream model = %#v, want priority-selected deepseek-v4-pro", seen["model"])
+	if seen["model"] != "deepseek-v4-flash" {
+		t.Fatalf("upstream model = %#v, want cheaper x1 flash before x2 pro failover", seen["model"])
 	}
 }
 
@@ -2289,6 +4161,204 @@ func TestProxyCreditMultiplierForRouteDoesNotFallBackToProviderMapInRouteMode(t 
 	got := proxyCreditMultiplierForRoute(model, model.ProviderRoutes[0])
 	if got != 1.5 {
 		t.Fatalf("multiplier = %v, want model fallback 1.5 without provider-map cross-talk", got)
+	}
+}
+
+func TestProxyEffectiveCreditMultiplierUsesRequestStartVendorRate(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &llmpool.ProviderConfig{
+		ID:               "deepseek",
+		Timezone:         "Asia/Shanghai",
+		CreditMultiplier: 1,
+		CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+			Days:       []int{1, 2, 3, 4, 5},
+			Start:      "00:30",
+			End:        "08:30",
+			Multiplier: 0.5,
+		}},
+	}
+	offPeak := time.Date(2026, 8, 17, 2, 0, 0, 0, loc)
+	if got := proxyEffectiveCreditMultiplier(provider, nil, llmpool.DispatchProviderRoute{}, offPeak); got != 0.5 {
+		t.Fatalf("off-peak vendor rate = %v, want 0.5", got)
+	}
+	if got := proxyEffectiveCreditMultiplier(provider, nil, llmpool.DispatchProviderRoute{CreditMultiplier: 2}, offPeak); got != 1 {
+		t.Fatalf("off-peak vendor 0.5 * route 2 = %v, want 1", got)
+	}
+	peak := time.Date(2026, 8, 17, 12, 0, 0, 0, loc)
+	if got := proxyEffectiveCreditMultiplier(provider, nil, llmpool.DispatchProviderRoute{}, peak); got != 1 {
+		t.Fatalf("peak vendor rate = %v, want 1", got)
+	}
+}
+
+func TestProxySharedCreditMultiplierOmitsHeaderWhenRatesDiffer(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	offPeak := time.Date(2026, 8, 17, 2, 0, 0, 0, loc)
+	cheap := &llmpool.ProviderConfig{
+		ID: "deepseek", Timezone: "Asia/Shanghai", CreditMultiplier: 1,
+		CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+			Days: []int{1, 2, 3, 4, 5}, Start: "00:30", End: "08:30", Multiplier: 0.5,
+		}},
+	}
+	full := &llmpool.ProviderConfig{ID: "openai", Timezone: "Asia/Shanghai", CreditMultiplier: 1}
+	if _, ok := proxySharedCreditMultiplier([]*proxyDispatch{
+		{provider: cheap},
+		{provider: full},
+	}, offPeak); ok {
+		t.Fatal("expected mixed vendor rates to omit a shared multiplier header")
+	}
+	got, ok := proxySharedCreditMultiplier([]*proxyDispatch{{provider: cheap}, {provider: cheap}}, offPeak)
+	if !ok || got != 0.5 {
+		t.Fatalf("shared off-peak = %v ok=%v, want 0.5 true", got, ok)
+	}
+}
+
+func TestProxyHandlerStreamTrailersReportWinningProviderRate(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer good.Close()
+
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "cheap", Name: "Cheap", APIURL: bad.URL, CreditMultiplier: 0.5},
+			{ID: "full", Name: "Full", APIURL: good.URL, CreditMultiplier: 2},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "cheap"},
+				{ProviderID: "full"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: http.DefaultClient}
+	center := httptest.NewServer(ProxyHandler(cfg))
+	defer center.Close()
+
+	req, err := http.NewRequest(http.MethodPost, center.URL+"/api/llm/v1/chat/completions", bytes.NewBufferString(`{"model":"gpt-4","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Hub-ID", "hub1")
+	req.Header.Set("X-Tenant-ID", "t1")
+	resp, err := center.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"content":"ok"`) {
+		t.Fatalf("stream body = %s", body)
+	}
+	if got := resp.Header.Get(llmpool.CreditMultiplierHeader); got != "" {
+		t.Fatalf("mixed-rate stream should omit initial multiplier header, got %q", got)
+	}
+	if got := resp.Trailer.Get(llmpool.CreditMultiplierHeader); got != "2" {
+		t.Fatalf("trailer multiplier = %q, want 2", got)
+	}
+	if got := resp.Trailer.Get(llmpool.ProviderIDHeader); got != "full" {
+		t.Fatalf("trailer provider = %q, want full", got)
+	}
+}
+
+func TestHandleProxyRequest_GrantRequiredBillsVendorRateAtRequestStart(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":4000,"completion_tokens":6000,"total_tokens":10000}}`))
+	}))
+	defer upstream.Close()
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID:               "deepseek",
+			Name:             "DeepSeek",
+			APIURL:           upstream.URL,
+			Timezone:         "Asia/Shanghai",
+			CreditMultiplier: 1,
+			CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+				Days:       []int{1, 2, 3, 4, 5},
+				Start:      "00:30",
+				End:        "08:30",
+				Multiplier: 0.5,
+			}},
+		}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID:           "g1",
+			Name:         "G1",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []llmpool.ModelConfig{{Name: "deepseek-chat", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "deepseek"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	run := func(startedAt time.Time) float64 {
+		authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+			ID: "auth-tou", HubID: "hub1", TenantID: "t1", ServiceGroupID: "g1",
+			CreditsTotal: 1000, StartsAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Hour),
+			Status: "active",
+		}}}
+		cfg := &ProxyConfig{
+			Service:     svc,
+			AuthChecker: NewAuthorizationChecker(authRepo),
+			HTTPClient:  upstream.Client(),
+			Usage:       &recordingUsageRecorder{},
+		}
+		resp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{
+			HubID:     "hub1",
+			TenantID:  "t1",
+			StartedAt: startedAt,
+			Body:      map[string]any{"model": "deepseek-chat", "messages": []any{map[string]any{"role": "user", "content": "hi"}}},
+		})
+		if err != nil {
+			t.Fatalf("HandleProxyRequest() error = %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		return authRepo.auths[0].CreditsUsed
+	}
+
+	offPeak := run(time.Date(2026, 8, 17, 2, 0, 0, 0, loc))
+	if offPeak != 0.5 {
+		t.Fatalf("off-peak credits = %.3f, want 0.5", offPeak)
+	}
+	peak := run(time.Date(2026, 8, 17, 12, 0, 0, 0, loc))
+	if peak != 1 {
+		t.Fatalf("peak credits = %.3f, want 1", peak)
 	}
 }
 
@@ -2500,6 +4570,72 @@ func TestHandleProxyRequest_CacheHit(t *testing.T) {
 	if bytes.Contains(resp.Body, []byte(`"usage"`)) {
 		t.Fatalf("cache hit response should not include billable usage: %s", resp.Body)
 	}
+	if resp.CreditMultiplier != 1 {
+		t.Fatalf("cache hit default multiplier = %v, want 1", resp.CreditMultiplier)
+	}
+}
+
+func TestHandleProxyRequest_CacheHitReportsCurrentVendorRate(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	system := &mockSystemSettings{}
+	svc := NewService(system)
+	_ = svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID:               "p1",
+			Name:             "P1",
+			APIURL:           "http://localhost",
+			Timezone:         "Asia/Shanghai",
+			CreditMultiplier: 1,
+			CreditMultiplierSchedule: []llmpool.CreditMultiplierWindow{{
+				Days:       []int{1, 2, 3, 4, 5},
+				Start:      "00:30",
+				End:        "08:30",
+				Multiplier: 0.5,
+			}},
+		}},
+		ServiceGroups: []llmpool.ServiceGroup{{ID: "g1", Name: "G1", Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "p1"}}}}}},
+	})
+
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth1", HubID: "hub1", TenantID: "t1", ServiceGroupID: "g1",
+		CreditsTotal: 1000, StartsAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Hour),
+		Status: "active",
+	}}}
+
+	cache := llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 10})
+	body := map[string]any{"model": "gpt-4", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	cacheKey := buildServiceGroupCacheKey("g1", "gpt-4", body)
+	_ = cache.Put(context.Background(), &llmpool.CacheEntry{
+		CacheKey:   cacheKey,
+		ProviderID: "p1",
+		Model:      "gpt-4",
+		Payload:    []byte(`{"choices":[{"message":{"content":"cached"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`),
+	})
+
+	cfg := &ProxyConfig{
+		Service:     svc,
+		AuthChecker: NewAuthorizationChecker(authRepo),
+		Cache:       cache,
+	}
+	req := &ProxyRequest{
+		HubID:     "hub1",
+		TenantID:  "t1",
+		Body:      body,
+		StartedAt: time.Date(2026, 8, 17, 2, 0, 0, 0, loc),
+	}
+	resp, err := HandleProxyRequest(context.Background(), cfg, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.CacheHit {
+		t.Fatal("expected cache hit")
+	}
+	if resp.CreditMultiplier != 0.5 {
+		t.Fatalf("cache hit off-peak multiplier = %v, want 0.5", resp.CreditMultiplier)
+	}
 }
 
 func TestHandleProxyRequestCacheIsScopedByServiceGroup(t *testing.T) {
@@ -2580,6 +4716,25 @@ func TestHandleProxyRequestCacheIsScopedByServiceGroup(t *testing.T) {
 	}
 }
 
+func joinedProviderIDs(routes []llmpool.DispatchProviderRoute) string {
+	ids := make([]string, 0, len(routes))
+	for _, route := range routes {
+		ids = append(ids, route.ProviderID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func joinedProviderIDsAfter(routes []llmpool.DispatchProviderRoute, skip string) string {
+	ids := make([]string, 0, len(routes))
+	for _, route := range routes {
+		if route.ProviderID == skip {
+			continue
+		}
+		ids = append(ids, route.ProviderID)
+	}
+	return strings.Join(ids, ",")
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstring(s, sub))
 }
@@ -2591,4 +4746,512 @@ func containsSubstring(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestProxyQuotePinsProviderAndDirectionalPrice(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"first"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"second"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer second.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "first", APIURL: first.URL}, {ID: "second", APIURL: second.URL},
+	}, ServiceGroups: []llmpool.ServiceGroup{{ID: "g", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "m", ProviderConfigs: []llmpool.ModelProviderConfig{
+		{ProviderID: "first", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
+		{ProviderID: "second", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 9, OutputCreditsPer10K: 10}},
+	}}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: http.DefaultClient, Quotes: NewProxyQuoteStore()}
+	quoteSrv := httptest.NewServer(ProxyQuoteHandler(cfg))
+	defer quoteSrv.Close()
+	body := []byte(`{"model":"m"}`)
+	quoteReq, _ := http.NewRequest(http.MethodPost, quoteSrv.URL, bytes.NewReader(body))
+	quoteReq.Header.Set("X-Hub-ID", "hub")
+	quoteReq.Header.Set("X-Tenant-ID", "tenant")
+	quoteReq.Header.Set("X-MaClaw-Request-ID", "request")
+	quoteResp, err := quoteSrv.Client().Do(quoteReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer quoteResp.Body.Close()
+	var payload struct {
+		Quote ProxyQuote `json:"quote"`
+		Token string     `json:"token"`
+	}
+	if err := json.NewDecoder(quoteResp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Quote.ProviderID != "first" || payload.Quote.Pricing.InputCreditsPer10K != 1 {
+		t.Fatalf("quote = %#v", payload.Quote)
+	}
+
+	proxySrv := httptest.NewServer(ProxyHandler(cfg))
+	defer proxySrv.Close()
+	proxyReq, _ := http.NewRequest(http.MethodPost, proxySrv.URL, bytes.NewReader(body))
+	proxyReq.Header.Set("X-Hub-ID", "hub")
+	proxyReq.Header.Set("X-Tenant-ID", "tenant")
+	proxyReq.Header.Set("X-MaClaw-Request-ID", "request")
+	proxyReq.Header.Set(llmpool.PricingQuoteHeader, payload.Token)
+	proxyResp, err := proxySrv.Client().Do(proxyReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyResp.Body.Close()
+	if proxyResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", proxyResp.StatusCode)
+	}
+	snapshot, ok := llmpool.DecodeTokenPricingSnapshot(proxyResp.Header.Get(llmpool.TokenPricingSnapshotHeader))
+	if !ok || snapshot.ProviderID != "first" || snapshot.Pricing.InputCreditsPer10K != 1 {
+		t.Fatalf("pricing snapshot = %#v", snapshot)
+	}
+}
+
+func TestProxyQuoteForStreamPinsStreamCapableRouteAndRecordsAttempt(t *testing.T) {
+	nonStream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("non-stream route must not receive a quoted stream request")
+	}))
+	defer nonStream.Close()
+	stream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer stream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{
+		{ID: "responses-only", APIURL: nonStream.URL, WireAPI: "responses"},
+		{ID: "streaming", APIURL: stream.URL, WireAPI: "chat"},
+	}, ServiceGroups: []llmpool.ServiceGroup{{ID: "g", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "m", ProviderConfigs: []llmpool.ModelProviderConfig{
+		{ProviderID: "responses-only", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 9, OutputCreditsPer10K: 10}},
+		{ProviderID: "streaming", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
+	}}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	attempts := NewProxyBillingAttemptStore()
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: http.DefaultClient, Quotes: NewProxyQuoteStore(), Attempts: attempts}
+	quoteSrv := httptest.NewServer(ProxyQuoteHandler(cfg))
+	defer quoteSrv.Close()
+	body := []byte(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	quoteReq, _ := http.NewRequest(http.MethodPost, quoteSrv.URL, bytes.NewReader(body))
+	quoteReq.Header.Set("X-Hub-ID", "hub")
+	quoteReq.Header.Set("X-Tenant-ID", "tenant")
+	quoteReq.Header.Set("X-MaClaw-Request-ID", "request")
+	quoteResp, err := quoteSrv.Client().Do(quoteReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer quoteResp.Body.Close()
+	var quotePayload struct {
+		Quote ProxyQuote `json:"quote"`
+		Token string     `json:"token"`
+	}
+	if err := json.NewDecoder(quoteResp.Body).Decode(&quotePayload); err != nil {
+		t.Fatal(err)
+	}
+	if quoteResp.StatusCode != http.StatusOK || quotePayload.Quote.ProviderID != "streaming" {
+		t.Fatalf("quoted stream route = %#v, status=%d; want streaming route", quotePayload.Quote, quoteResp.StatusCode)
+	}
+
+	proxySrv := httptest.NewServer(ProxyHandler(cfg))
+	defer proxySrv.Close()
+	proxyReq, _ := http.NewRequest(http.MethodPost, proxySrv.URL, bytes.NewReader(body))
+	proxyReq.Header.Set("X-Hub-ID", "hub")
+	proxyReq.Header.Set("X-Tenant-ID", "tenant")
+	proxyReq.Header.Set("X-MaClaw-Request-ID", "request")
+	proxyReq.Header.Set(llmpool.PricingQuoteHeader, quotePayload.Token)
+	proxyResp, err := proxySrv.Client().Do(proxyReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(proxyResp.Body)
+	_ = proxyResp.Body.Close()
+	if proxyResp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", proxyResp.StatusCode)
+	}
+	attempt, ok := attempts.Get("hub", "tenant", "request")
+	if !ok {
+		t.Fatal("quoted stream did not record a billing attempt")
+	}
+	if attempt.ProviderID != "streaming" || attempt.PricingSnapshot.InputTokens != 2 || attempt.PricingSnapshot.OutputTokens != 3 || attempt.PricingSnapshot.Pricing.OutputCreditsPer10K != 2 {
+		t.Fatalf("billing attempt = %#v", attempt)
+	}
+}
+
+func TestHandleProxyRequestChargesDirectionalPriceWithGroupMultiplierOnce(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10000,"completion_tokens":1000}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{
+		ID: "p", APIURL: upstream.URL, CreditMultiplier: 2,
+	}}, ServiceGroups: []llmpool.ServiceGroup{{
+		ID: "g", AccessPolicy: AccessPolicyGrantRequired,
+		Models: []llmpool.ModelConfig{{Name: "m", CreditMultiplier: 2, ProviderConfigs: []llmpool.ModelProviderConfig{{
+			ProviderID: "p", Model: "m", BillingMode: llmpool.BillingModePaid,
+			TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4},
+		}}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth", HubID: "hub", TenantID: "tenant", ServiceGroupID: "g", CreditsTotal: 100,
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Status: "active",
+	}}}
+	usage := &recordingUsageRecorder{}
+	resp, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service: svc, AuthChecker: NewAuthorizationChecker(authRepo), HTTPClient: upstream.Client(), Usage: usage,
+	}, &ProxyRequest{HubID: "hub", TenantID: "tenant", StartedAt: now, Body: map[string]any{"model": "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 2.8 {
+		t.Fatalf("credits used = %v, want 2.8 (directional price x group multiplier only)", got)
+	}
+	if resp.CreditMultiplier != 2 {
+		t.Fatalf("response multiplier = %v, want service-group multiplier 2", resp.CreditMultiplier)
+	}
+	if len(usage.records) != 1 || usage.records[0].Credits != 2.8 {
+		t.Fatalf("usage records = %#v, want directional 2.8-credit debit", usage.records)
+	}
+}
+
+func TestHandleProxyRequestDoesNotBillExplicitFreeRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10000,"completion_tokens":10000}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{
+		ID: "p", APIURL: upstream.URL, CreditMultiplier: 9,
+	}}, ServiceGroups: []llmpool.ServiceGroup{{
+		ID: "g", AccessPolicy: AccessPolicyGrantRequired,
+		Models: []llmpool.ModelConfig{{Name: "m", CreditMultiplier: 7, ProviderConfigs: []llmpool.ModelProviderConfig{{
+			ProviderID: "p", Model: "m", BillingMode: llmpool.BillingModeFree,
+		}}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth", HubID: "hub", TenantID: "tenant", ServiceGroupID: "g", CreditsTotal: 100,
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Status: "active",
+	}}}
+	usage := &recordingUsageRecorder{}
+	resp, err := HandleProxyRequest(context.Background(), &ProxyConfig{
+		Service: svc, AuthChecker: NewAuthorizationChecker(authRepo), HTTPClient: upstream.Client(), Usage: usage,
+	}, &ProxyRequest{HubID: "hub", TenantID: "tenant", StartedAt: now, Body: map[string]any{"model": "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 0 {
+		t.Fatalf("credits used = %v, want 0 for explicit free route", got)
+	}
+	if resp.CreditMultiplier != 1 {
+		t.Fatalf("response multiplier = %v, want 1 for explicit free route", resp.CreditMultiplier)
+	}
+	if len(usage.records) != 1 || usage.records[0].Credits != 0 {
+		t.Fatalf("usage records = %#v, want zero-credit free record", usage.records)
+	}
+}
+
+func TestHandleProxyStreamRequestDoesNotBillExplicitFreeRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":10000,\"completion_tokens\":10000}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{
+		ID: "p", APIURL: upstream.URL, CreditMultiplier: 9,
+	}}, ServiceGroups: []llmpool.ServiceGroup{{
+		ID: "g", AccessPolicy: AccessPolicyGrantRequired,
+		Models: []llmpool.ModelConfig{{Name: "m", CreditMultiplier: 7, ProviderConfigs: []llmpool.ModelProviderConfig{{
+			ProviderID: "p", Model: "m", BillingMode: llmpool.BillingModeFree,
+		}}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth", HubID: "hub", TenantID: "tenant", ServiceGroupID: "g", CreditsTotal: 100,
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Status: "active",
+	}}}
+	usage := &recordingUsageRecorder{}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), &ProxyConfig{
+		Service: svc, AuthChecker: NewAuthorizationChecker(authRepo), HTTPClient: upstream.Client(), Usage: usage,
+	}, &ProxyRequest{HubID: "hub", TenantID: "tenant", StartedAt: now, Body: map[string]any{"model": "m", "stream": true}}, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 0 {
+		t.Fatalf("credits used = %v, want 0 for explicit free stream route", got)
+	}
+	if len(usage.records) != 1 || usage.records[0].Credits != 0 {
+		t.Fatalf("usage records = %#v, want zero-credit free stream record", usage.records)
+	}
+}
+
+func TestHandleProxyStreamRequestFreezesDirectionalPriceAtStart(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}],\"usage\":{\"prompt_tokens\":10000,\"completion_tokens\":1000}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	peakInput := 3.0
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{
+		ID: "p", APIURL: upstream.URL, CreditMultiplier: 2,
+	}}, ServiceGroups: []llmpool.ServiceGroup{{
+		ID: "g", AccessPolicy: AccessPolicyGrantRequired,
+		Models: []llmpool.ModelConfig{{Name: "m", CreditMultiplier: 2, ProviderConfigs: []llmpool.ModelProviderConfig{{
+			ProviderID: "p", Model: "m", BillingMode: llmpool.BillingModePaid,
+			TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4, Timezone: "Asia/Shanghai", PriceSchedule: []llmpool.TokenPriceWindow{{
+				ID: "peak", Days: []int{1}, Start: "12:00", End: "13:00", InputCreditsPer10K: &peakInput,
+			}}},
+		}}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Date(2026, 8, 24, 12, 30, 0, 0, loc)
+	now := time.Now()
+	authRepo := &mockAuthRepo{auths: []*TenantAuthorization{{
+		ID: "auth", HubID: "hub", TenantID: "tenant", ServiceGroupID: "g", CreditsTotal: 100,
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Status: "active",
+	}}}
+	usage := &recordingUsageRecorder{}
+	writer := newLockedResponseRecorder()
+	err = HandleProxyStreamRequest(context.Background(), &ProxyConfig{
+		Service: svc, AuthChecker: NewAuthorizationChecker(authRepo), HTTPClient: upstream.Client(), Usage: usage,
+	}, &ProxyRequest{HubID: "hub", TenantID: "tenant", StartedAt: startedAt, Body: map[string]any{"model": "m", "stream": true}}, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authRepo.auths[0].CreditsUsed; got != 6.8 {
+		t.Fatalf("credits used = %v, want 6.8 from frozen peak input price and group multiplier", got)
+	}
+	if len(usage.records) != 1 || usage.records[0].Credits != 6.8 {
+		t.Fatalf("usage records = %#v, want frozen directional 6.8-credit debit", usage.records)
+	}
+}
+
+func TestProxyStreamBillingPreservesExplicitZeroUsage(t *testing.T) {
+	result := &providerStreamResult{}
+	if _, err := proxyStreamPatchAndMeasureData([]byte(`{"choices":[{"delta":{"content":"cached"}}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`), "m", result); err != nil {
+		t.Fatalf("measure stream usage: %v", err)
+	}
+	if !result.inputTokensObserved || !result.outputTokensObserved || result.inputTokens != 0 || result.outputTokens != 0 {
+		t.Fatalf("stream usage = %#v, want observed explicit zeroes", result)
+	}
+
+	attempts := NewProxyBillingAttemptStore()
+	dispatch := &proxyDispatch{
+		model:        "m",
+		matchedGroup: &llmpool.ServiceGroup{ID: "g"},
+		provider:     &llmpool.ProviderConfig{ID: "p"},
+		pricing:      &llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
+	}
+	recordProxyStreamUsage(context.Background(), &ProxyConfig{Attempts: attempts}, &ProxyRequest{
+		HubID: "hub", TenantID: "tenant", RequestID: "request",
+		Body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "this must not be estimated"}}},
+	}, dispatch, "p", result)
+	attempt, ok := attempts.Get("hub", "tenant", "request")
+	if !ok || attempt.PricingSnapshot.InputTokens != 0 || attempt.PricingSnapshot.OutputTokens != 0 {
+		t.Fatalf("billing attempt = %#v ok=%v, want explicit zero usage", attempt, ok)
+	}
+}
+
+func TestExtractProxyTokenUsagePreservesExplicitDirectionalZero(t *testing.T) {
+	input, output, inputObserved, outputObserved := extractTokenUsageFromMapWithPresence(map[string]any{
+		"prompt_tokens":     float64(0),
+		"completion_tokens": float64(3),
+		"total_tokens":      float64(3),
+	})
+	if !inputObserved || !outputObserved || input != 0 || output != 3 {
+		t.Fatalf("usage = input=%d output=%d observed=%v/%v, want explicit 0/3", input, output, inputObserved, outputObserved)
+	}
+}
+
+func TestExtractProxyTokenUsageTotalZeroCompletesMissingDirection(t *testing.T) {
+	input, output, inputObserved, outputObserved := extractTokenUsageFromMapWithPresence(map[string]any{
+		"prompt_tokens": float64(0),
+		"total_tokens":  float64(0),
+	})
+	if !inputObserved || !outputObserved || input != 0 || output != 0 {
+		t.Fatalf("usage = input=%d output=%d observed=%v/%v, want explicit total zero", input, output, inputObserved, outputObserved)
+	}
+}
+
+func TestProxyQuoteRejectsMismatchedRequest(t *testing.T) {
+	store := NewProxyQuoteStore()
+	quote, err := store.Put(ProxyQuote{RequestDigest: proxyRequestDigest([]byte(`{"model":"m"}`)), HubID: "hub", TenantID: "tenant", RequestID: "request", ServiceGroupID: "g", LogicalModel: "m", ProviderID: "p", ExpiresAt: time.Now().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ProxyConfig{Quotes: store}
+	if _, ok := proxyQuoteFromRequest(cfg, quote.Token, &ProxyRequest{HubID: "hub", TenantID: "tenant", RequestID: "other", RawBody: []byte(`{"model":"m"}`)}); ok {
+		t.Fatal("mismatched request accepted quote")
+	}
+	if _, ok := proxyQuoteFromRequest(cfg, quote.Token, &ProxyRequest{HubID: "hub", TenantID: "tenant", RequestID: "request", RawBody: []byte(`{"model":"m"}`)}); !ok {
+		t.Fatal("mismatched request consumed quote")
+	}
+}
+
+func TestProxyQuoteRejectsDifferentPayloadWithoutConsumingIt(t *testing.T) {
+	store := NewProxyQuoteStore()
+	payload := []byte(`{"model":"m","messages":[{"role":"user","content":"priced"}]}`)
+	quote, err := store.Put(ProxyQuote{RequestDigest: proxyRequestDigest(payload), HubID: "hub", TenantID: "tenant", RequestID: "request", ServiceGroupID: "g", LogicalModel: "m", ProviderID: "p", ExpiresAt: time.Now().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ProxyConfig{Quotes: store}
+	if _, ok := proxyQuoteFromRequest(cfg, quote.Token, &ProxyRequest{HubID: "hub", TenantID: "tenant", RequestID: "request", RawBody: []byte(`{"model":"m","messages":[{"role":"user","content":"substituted"}]}`)}); ok {
+		t.Fatal("different payload accepted quote")
+	}
+	if _, ok := proxyQuoteFromRequest(cfg, quote.Token, &ProxyRequest{HubID: "hub", TenantID: "tenant", RequestID: "request", RawBody: payload}); !ok {
+		t.Fatal("different payload consumed quote")
+	}
+}
+
+func TestClaimedProxyQuoteRemainsUsableAfterAdmissionTTL(t *testing.T) {
+	store := NewProxyQuoteStore()
+	body := []byte(`{"model":"m"}`)
+	quote, err := store.Put(ProxyQuote{
+		RequestDigest:  proxyRequestDigest(body),
+		HubID:          "hub",
+		TenantID:       "tenant",
+		RequestID:      "request",
+		ServiceGroupID: "g",
+		LogicalModel:   "m",
+		ProviderID:     "provider",
+		UpstreamModel:  "m",
+		ExpiresAt:      time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok := store.Claim(quote.Token, "hub", "tenant", "request", proxyRequestDigest(body))
+	if !ok || !claimed.Claimed {
+		t.Fatalf("claim = %#v ok=%v", claimed, ok)
+	}
+	claimed.ExpiresAt = time.Now().Add(-time.Second)
+	routes, err := proxyOrderedRoutesForRequest(nil, &Registry{Providers: []llmpool.ProviderConfig{{ID: "provider"}}}, &ProxyRequest{HubID: "hub", TenantID: "tenant", RequestID: "request", Body: map[string]any{"model": "m"}, Quote: &claimed}, &llmpool.ServiceGroup{ID: "g"}, &llmpool.DispatchModel{ProviderRoutes: []llmpool.DispatchProviderRoute{{ProviderID: "provider", Model: "m"}}}, "m", acceptLiveProvider, time.Now(), false)
+	if err != nil || len(routes) != 1 || routes[0].ProviderID != "provider" {
+		t.Fatalf("claimed expired quote routes=%#v err=%v", routes, err)
+	}
+	claimed.Claimed = false
+	if _, err := proxyOrderedRoutesForRequest(nil, &Registry{Providers: []llmpool.ProviderConfig{{ID: "provider"}}}, &ProxyRequest{HubID: "hub", TenantID: "tenant", RequestID: "request", Body: map[string]any{"model": "m"}, Quote: &claimed}, &llmpool.ServiceGroup{ID: "g"}, &llmpool.DispatchModel{ProviderRoutes: []llmpool.DispatchProviderRoute{{ProviderID: "provider", Model: "m"}}}, "m", acceptLiveProvider, time.Now(), false); err == nil {
+		t.Fatal("unclaimed expired quote was accepted")
+	}
+}
+
+func TestProxyQuoteCanOnlyBeUsedOnce(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{ID: "provider", APIURL: upstream.URL}}, ServiceGroups: []llmpool.ServiceGroup{{ID: "g", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "m", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "provider", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}}}}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: http.DefaultClient, Quotes: NewProxyQuoteStore()}
+	quoteSrv := httptest.NewServer(ProxyQuoteHandler(cfg))
+	defer quoteSrv.Close()
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	quoteReq, _ := http.NewRequest(http.MethodPost, quoteSrv.URL, bytes.NewReader(body))
+	quoteReq.Header.Set("X-Hub-ID", "hub")
+	quoteReq.Header.Set("X-Tenant-ID", "tenant")
+	quoteReq.Header.Set("X-MaClaw-Request-ID", "request")
+	quoteResp, err := quoteSrv.Client().Do(quoteReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer quoteResp.Body.Close()
+	var quotePayload struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(quoteResp.Body).Decode(&quotePayload); err != nil {
+		t.Fatal(err)
+	}
+
+	proxySrv := httptest.NewServer(ProxyHandler(cfg))
+	defer proxySrv.Close()
+	for attempt := 0; attempt < 2; attempt++ {
+		proxyReq, _ := http.NewRequest(http.MethodPost, proxySrv.URL, bytes.NewReader(body))
+		proxyReq.Header.Set("X-Hub-ID", "hub")
+		proxyReq.Header.Set("X-Tenant-ID", "tenant")
+		proxyReq.Header.Set("X-MaClaw-Request-ID", "request")
+		proxyReq.Header.Set(llmpool.PricingQuoteHeader, quotePayload.Token)
+		proxyResp, err := proxySrv.Client().Do(proxyReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(proxyResp.Body)
+		_ = proxyResp.Body.Close()
+		wantStatus := http.StatusOK
+		if attempt == 1 {
+			wantStatus = http.StatusConflict
+		}
+		if proxyResp.StatusCode != wantStatus {
+			t.Fatalf("attempt %d status=%d, want %d", attempt, proxyResp.StatusCode, wantStatus)
+		}
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls=%d, want exactly one", got)
+	}
+}
+
+func TestProxyBillingAttemptStoreScopesLookupAndExpires(t *testing.T) {
+	store := NewProxyBillingAttemptStore()
+	now := time.Now().UTC()
+	store.Record(ProxyBillingAttempt{
+		HubID: "hub-a", TenantID: "tenant-a", RequestID: "request-a", StatusCode: http.StatusOK, ProviderID: "provider-a",
+		PricingSnapshot: llmpool.TokenPricingSnapshot{ProviderID: "provider-a", InputTokens: 12, OutputTokens: 3}, CompletedAt: now,
+	})
+	if _, ok := store.Get("hub-b", "tenant-a", "request-a"); ok {
+		t.Fatal("cross-hub billing attempt lookup succeeded")
+	}
+	attempt, ok := store.Get("hub-a", "tenant-a", "request-a")
+	if !ok || attempt.PricingSnapshot.InputTokens != 12 {
+		t.Fatalf("attempt=%#v ok=%v", attempt, ok)
+	}
+	store.Record(ProxyBillingAttempt{
+		HubID: "hub-a", TenantID: "tenant-a", RequestID: "request-a", StatusCode: http.StatusOK, ProviderID: "provider-b",
+		PricingSnapshot: llmpool.TokenPricingSnapshot{ProviderID: "provider-b", InputTokens: 99, OutputTokens: 99}, CompletedAt: now.Add(time.Second),
+	})
+	attempt, ok = store.Get("hub-a", "tenant-a", "request-a")
+	if !ok || attempt.ProviderID != "provider-a" || attempt.PricingSnapshot.InputTokens != 12 {
+		t.Fatalf("billing attempt was overwritten: %#v ok=%v", attempt, ok)
+	}
+	store.Record(ProxyBillingAttempt{HubID: "hub-a", TenantID: "tenant-a", RequestID: "expired", StatusCode: http.StatusOK, ProviderID: "provider-a", CompletedAt: now.Add(-proxyBillingAttemptTTL - time.Second)})
+	if _, ok := store.Get("hub-a", "tenant-a", "expired"); ok {
+		t.Fatal("expired billing attempt lookup succeeded")
+	}
 }

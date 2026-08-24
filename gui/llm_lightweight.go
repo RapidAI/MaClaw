@@ -99,6 +99,7 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 			cfg = lightCfg
 		}
 	}
+	cfg = attachLightweightHubHint(cfg, llm.TaskIntent)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("LLM not configured")
 	}

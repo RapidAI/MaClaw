@@ -1,16 +1,18 @@
 const $ = (id) => document.getElementById(id);
 const I18N = {
   en: {
-    userWorkspace: "User Workspace", assistantNav: "AI Assistant", settingsNav: "System Settings", skipToMain: "Skip to main content", appSections: "User app sections", userViews: "User views", notSignedIn: "Not signed in", logout: "Log Out", ready: "Ready", busy: "Busy",
-    loginRequired: "Login required", loginHint: "Open this page from VE Platform MaClawSrv user entry.", cannotStart: "Cannot start user app", missingToken: "Missing short-lived access token.", rawSecretRejected: "Raw secrets in URLs are not accepted. Open this page again from VE Platform.", sessionExpired: "Session expired. Open this page again from VE Platform.", loadFailed: "Load failed", retry: "Retry",
+    userWorkspace: "User Workspace", assistantNav: "AI Assistant", knowledgeNav: "Knowledge", skillsNav: "Skills / MCP", imNav: "IM", settingsNav: "System Settings", skipToMain: "Skip to main content", appSections: "User app sections", userViews: "User views", notSignedIn: "Not signed in", logout: "Log Out", ready: "Ready", busy: "Busy",
+    loginRequired: "Sign in", loginHint: "Sign in with your MaClawSrv API key and secret, or open this page from VE Platform.", cannotStart: "Cannot start user app", missingToken: "Sign in to start a session.", rawSecretRejected: "Raw secrets in URLs are not accepted. Sign in with the form below, or open this page again from VE Platform.", sessionExpired: "Session expired. Sign in again.", loadFailed: "Load failed", retry: "Retry",
+    signIn: "Sign in", apiKey: "API key", apiSecret: "API secret", signInFailed: "Sign-in failed.", launchTokenHint: "VE Platform launch tokens still work. This page also accepts API key + secret from your user credentials.",
     assistantTitle: "AI Assistant", assistantHint: "Instances share user-level config, tools, knowledge, memory, and security policy.", instancesTitle: "Assistant instances", instancesHint: "Runtime state and sessions stay per instance. Configuration stays shared by user.", new: "New", noInstances: "No instances", unknown: "unknown", readyState: "ready", notReady: "not ready", instanceName: "Instance name", instanceCreated: "Instance created",
     sessions: "Sessions", noSessions: "No sessions", firstMessage: "Send the first message to create a session.", selectedMissing: "Selected assistant instance was not found or is unavailable. Open it again from VE Platform or select another instance.", createFirst: "No instance yet. Create an assistant instance first.", noMessages: "No messages", typeMessage: "Type a message...", message: "Message", send: "Send", webSession: "Web session", run: "Run", waitingUser: "waiting for user", continueWaiting: "Continue waiting", cancel: "Cancel", confirm: "Confirm", runCancelled: "Run cancelled", sent: "Sent", runStatus: "Run status: {status}", llmManagedByHub: "LLM is not fully configured. Ask VE Platform to pass the Hub LLM endpoint and viewer token, or fill in System Settings.",
     settingsTitle: "System Settings", settingsHint: "User-scoped settings shared by all assistant instances.", sharedConfig: "Shared config", sharedConfigHint: "LLM, MCP, tools, skills, knowledge, and security policy are shared at user scope.", configResponse: "Config response", secretHint: "Masked value keeps the existing secret. Enter a new value only when rotating it.", valid: "Valid", needsAttention: "Needs attention", currentConfigOk: "Current shared config can start instances.", save: "Save", validate: "Validate", test: "Test", saved: "Saved", validated: "Validated", testPassed: "Test passed", testFailed: "Test failed", unset: "Unset", trueValue: "True", falseValue: "False",
     groupLLM: "LLM", groupLLMHint: "Primary model providers and legacy fallback fields.", groupTools: "MCP & Tools", groupToolsHint: "MCP capability install, compact add, and search providers shared by every instance.", groupSkills: "Skills", groupSkillsHint: "Search, install, and view skills. Source details stay managed by the service.", installedSkills: "Installed skills", noSkills: "No skills installed", skillMarketSearch: "SkillMarket search", search: "Search", install: "Install", installed: "Installed", searchSkillsPlaceholder: "Search SkillMarket...", skillInstalled: "Skill installed", previous: "Previous", nextPage: "Next", pageStatus: "Page {page} / {pages}", groupMemory: "Knowledge & Memory", groupMemoryHint: "Memory compression and knowledge context budget.", groupSecurity: "Security", groupSecurityHint: "User-level execution boundary and network policy.", groupIM: "IM", groupIMHint: "User-scoped QQ, WeChat, Telegram, third-party integration, monitor, and history.", numberInvalid: "{key} must be a valid {type}", jsonInvalid: "{key} must be valid JSON"
   },
   zh: {
-    userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
-    loginRequired: "需要登录", loginHint: "请从 VE Platform 的 MaClawSrv 用户入口打开本页。", cannotStart: "无法启动用户应用", missingToken: "缺少短期访问令牌。", rawSecretRejected: "URL 中不接受原始密钥。请从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请从 VE Platform 重新打开本页。", loadFailed: "加载失败", retry: "重试",
+    userWorkspace: "用户工作台", assistantNav: "AI 助手", knowledgeNav: "知识库", skillsNav: "技能 / MCP", imNav: "即时通讯", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
+    loginRequired: "登录", loginHint: "使用 MaClawSrv API key 和 secret 登录，或从 VE Platform 打开本页。", cannotStart: "无法启动用户应用", missingToken: "请先登录以开始会话。", rawSecretRejected: "URL 中不接受原始密钥。请用下方表单登录，或从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请重新登录。", loadFailed: "加载失败", retry: "重试",
+    signIn: "登录", apiKey: "API key", apiSecret: "API secret", signInFailed: "登录失败。", launchTokenHint: "仍支持 VE Platform launch_token。也可以使用用户凭证中的 API key + secret。",
     assistantTitle: "AI 助手", assistantHint: "多个实例共享用户级配置、工具、知识、记忆和安全策略。", instancesTitle: "助手实例", instancesHint: "运行状态和会话按实例保留，配置按用户共享。", new: "新建", noInstances: "暂无实例", unknown: "未知", readyState: "就绪", notReady: "未就绪", instanceName: "实例名称", instanceCreated: "实例已创建",
     sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", confirm: "确认", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
     settingsTitle: "系统设置", settingsHint: "这些用户级设置会被所有助手实例共享。", sharedConfig: "共享配置", sharedConfigHint: "LLM、MCP、工具、技能、知识和安全策略按用户范围共享。", configResponse: "配置响应", secretHint: "显示为掩码时会保留现有密钥；只有需要轮换时才输入新值。", valid: "有效", needsAttention: "需要处理", currentConfigOk: "当前共享配置可以启动实例。", save: "保存", validate: "校验", test: "测试", saved: "已保存", validated: "已校验", testPassed: "测试通过", testFailed: "测试失败", unset: "未设置", trueValue: "是", falseValue: "否",
@@ -95,8 +97,9 @@ Object.assign(I18N.zh, {
   migrationMachineName: "\u673a\u5668"
 });
 Object.assign(I18N.zh, {
-  userWorkspace: "用户工作台", assistantNav: "AI 助手", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
-  loginRequired: "需要登录", loginHint: "请从 VE Platform 的 MaClawSrv 用户入口打开本页。", cannotStart: "无法启动用户应用", missingToken: "缺少短期访问令牌。", rawSecretRejected: "URL 中不接受原始密钥。请从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请从 VE Platform 重新打开本页。", loadFailed: "加载失败", retry: "重试",
+  userWorkspace: "用户工作台", assistantNav: "AI 助手", knowledgeNav: "知识库", skillsNav: "技能 / MCP", imNav: "即时通讯", settingsNav: "系统设置", skipToMain: "跳到主要内容", appSections: "用户应用区域", userViews: "用户视图", notSignedIn: "未登录", logout: "退出", ready: "就绪", busy: "忙碌",
+  loginRequired: "登录", loginHint: "使用 MaClawSrv API key 和 secret 登录，或从 VE Platform 打开本页。", cannotStart: "无法启动用户应用", missingToken: "请先登录以开始会话。", rawSecretRejected: "URL 中不接受原始密钥。请用下方表单登录，或从 VE Platform 重新打开本页。", sessionExpired: "会话已过期，请重新登录。", loadFailed: "加载失败", retry: "重试",
+  signIn: "登录", apiKey: "API key", apiSecret: "API secret", signInFailed: "登录失败。", launchTokenHint: "仍支持 VE Platform launch_token。也可以使用用户凭证中的 API key + secret。",
   assistantTitle: "AI 助手", assistantHint: "多个实例共享用户级配置、工具、知识、记忆和安全策略。", instancesTitle: "助手实例", instancesHint: "运行状态和会话按实例保留，配置按用户共享。", new: "新建", noInstances: "暂无实例", unknown: "未知", readyState: "就绪", notReady: "未就绪", instanceName: "实例名称", instanceCreated: "实例已创建",
   sessions: "会话", noSessions: "暂无会话", firstMessage: "发送第一条消息后会自动创建会话。", selectedMissing: "选中的助手实例不存在或不可用。请从 VE Platform 重新打开，或选择其它实例。", createFirst: "还没有实例，请先创建助手实例。", noMessages: "暂无消息", typeMessage: "输入消息...", message: "消息", send: "发送", webSession: "网页会话", run: "运行", waitingUser: "等待用户", continueWaiting: "继续等待", cancel: "取消", runCancelled: "运行已取消", sent: "已发送", runStatus: "运行状态：{status}", llmManagedByHub: "LLM 未完成配置。请让 VE Platform 传入 Hub LLM 地址和 viewer token，或在系统设置里填写可用配置。",
   settingsTitle: "系统设置", settingsHint: "这些用户级设置会被所有助手实例共享。", sharedConfig: "共享配置", sharedConfigHint: "LLM、MCP、工具、技能、知识和安全策略按用户范围共享。", configResponse: "配置响应", secretHint: "显示为掩码时会保留现有密钥；只有需要轮换时才输入新值。", valid: "有效", needsAttention: "需要处理", currentConfigOk: "当前共享配置可以启动实例。", save: "保存", validate: "校验", test: "测试", saved: "已保存", validated: "已校验", testPassed: "测试通过", testFailed: "测试失败", unset: "未设置", trueValue: "是", falseValue: "否",
@@ -138,6 +141,16 @@ Object.assign(I18N.en, {
   weixinQRConfirmed: "WeChat bound.",
   weixinQRExpired: "QR code expired. Generate a new one.",
   weixinQRError: "WeChat QR login failed.",
+  qqbotQRBind: "Scan to bind QQ Bot",
+  qqbotQRHint: "Use QQ to scan this QR code. AppID and AppSecret are saved to this MaClawSrv user after confirmation.",
+  qqbotQRScanned: "Scanned. Confirm on phone.",
+  qqbotQRConfirmed: "QQ Bot bound.",
+  qqbotQRExpired: "QR code expired. Generate a new one.",
+  qqbotQRError: "QQ Bot QR bind failed.",
+  qqbotQRRescan: "Scan again to rebind",
+  qqbotBoundAppID: "Bound AppID",
+  qqbotNotBound: "No QQ Bot bound",
+  qqbotManualCreds: "Enter AppID manually",
   weixinBoundAccount: "Bound account",
   weixinRuntimeStatus: "Runtime status",
   weixinRuntimeStarting: "Starting",
@@ -165,7 +178,7 @@ Object.assign(I18N.en, {
   imChannelTabLansenger: "Lansenger",
   imChannelTabThirdParty: "Third-party Access",
   imWatchHistory: "Watch history",
-  imQQDescription: "Configure this user's own QQ Bot credentials and start the QQ channel.",
+  imQQDescription: "Scan with QQ to bind this user's bot. AppID and AppSecret are saved after confirmation.",
   imTelegramDescription: "Configure this user's Telegram Bot token and start the Telegram channel.",
   imWeixinDescription: "Scan to bind personal WeChat. After confirmation, MaClawSrv saves credentials and enables the channel.",
   imLansengerDescription: "Configure this user's Lansenger app credentials and start the Lansenger channel.",
@@ -257,6 +270,16 @@ Object.assign(I18N.zh, {
   weixinQRConfirmed: "\u5fae\u4fe1\u5df2\u7ed1\u5b9a\u3002",
   weixinQRExpired: "\u4e8c\u7ef4\u7801\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u751f\u6210\u3002",
   weixinQRError: "\u5fae\u4fe1\u626b\u7801\u767b\u5f55\u5931\u8d25\u3002",
+  qqbotQRBind: "\u626b\u7801\u7ed1\u5b9a QQ Bot",
+  qqbotQRHint: "\u4f7f\u7528\u624b\u673a QQ \u626b\u63cf\u4e8c\u7ef4\u7801\uff0c\u786e\u8ba4\u540e AppID / AppSecret \u4fdd\u5b58\u5230\u5f53\u524d MaClawSrv \u7528\u6237\u3002",
+  qqbotQRScanned: "\u5df2\u626b\u7801\uff0c\u8bf7\u5728\u624b\u673a\u4e0a\u786e\u8ba4\u3002",
+  qqbotQRConfirmed: "QQ Bot \u5df2\u7ed1\u5b9a\u3002",
+  qqbotQRExpired: "\u4e8c\u7ef4\u7801\u5df2\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u751f\u6210\u3002",
+  qqbotQRError: "QQ Bot \u626b\u7801\u7ed1\u5b9a\u5931\u8d25\u3002",
+  qqbotQRRescan: "\u91cd\u65b0\u626b\u7801\u7ed1\u5b9a",
+  qqbotBoundAppID: "\u5df2\u7ed1\u5b9a AppID",
+  qqbotNotBound: "\u5c1a\u672a\u7ed1\u5b9a QQ Bot",
+  qqbotManualCreds: "\u624b\u52a8\u586b\u5199 AppID",
   weixinBoundAccount: "\u5df2\u7ed1\u5b9a\u8d26\u53f7",
   weixinRuntimeStatus: "\u8fd0\u884c\u72b6\u6001",
   weixinRuntimeStarting: "\u542f\u52a8\u4e2d",
@@ -284,7 +307,7 @@ Object.assign(I18N.zh, {
   imChannelTabLansenger: "\u84dd\u4fe1",
   imChannelTabThirdParty: "\u7b2c\u4e09\u65b9\u63a5\u5165",
   imWatchHistory: "\u76d1\u770b\u5386\u53f2",
-  imQQDescription: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u81ea\u5df1\u7684 QQ Bot \u51ed\u636e\uff0c\u5e76\u542f\u52a8 QQ \u901a\u9053\u3002",
+  imQQDescription: "\u7528\u624b\u673a QQ \u626b\u7801\u7ed1\u5b9a\u5f53\u524d\u7528\u6237\u7684\u673a\u5668\u4eba\uff0c\u786e\u8ba4\u540e\u81ea\u52a8\u4fdd\u5b58 AppID / AppSecret\u3002",
   imTelegramDescription: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684 Telegram Bot Token\uff0c\u5e76\u542f\u52a8 Telegram \u901a\u9053\u3002",
   imWeixinDescription: "\u626b\u7801\u7ed1\u5b9a\u4e2a\u4eba\u5fae\u4fe1\uff0c\u786e\u8ba4\u540e MaClawSrv \u4fdd\u5b58\u51ed\u636e\u5e76\u542f\u7528\u901a\u9053\u3002",
   imLansengerDescription: "\u914d\u7f6e\u5f53\u524d\u7528\u6237\u7684\u84dd\u4fe1\u5e94\u7528\u51ed\u636e\uff0c\u5e76\u542f\u52a8\u84dd\u4fe1\u901a\u9053\u3002",
@@ -325,8 +348,8 @@ Object.assign(I18N.zh, { knowledgeNav: "\u77e5\u8bc6\u5e93", knowledgeTitle: "\u
   enterpriseLibraries: "\u4f01\u4e1a\u77e5\u8bc6\u5e93", enterpriseLibrariesHint: "\u672c\u670d\u52a1\u4ece Hub \u5355\u5411\u540c\u6b65\u7684\u6570\u5b57\u8d44\u4ea7\u3002\u7981\u6b62\u540c\u6b65\u540e\u4e0d\u518d\u62c9\u53d6\u66f4\u65b0\uff1b\u53ef\u7528\u300c\u6e05\u9664\u7f13\u5b58\u300d\u5220\u9664\u672c\u5730\u5e93\uff08\u542b\u5df2\u64a4\u9500 keep_local\uff09\u3002", enterpriseNoLibraries: "\u6682\u65e0\u4f01\u4e1a\u77e5\u8bc6\u5e93\u3002\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u914d\u7f6e Hub \u51ed\u636e\u5e76\u70b9\u51fb\u300c\u7acb\u5373\u540c\u6b65\u300d\u3002", enterpriseHubConfigured: "Hub \u5df2\u914d\u7f6e", enterpriseHubMissing: "\u7f3a\u5c11 Hub \u51ed\u636e\uff08RemoteHubURL + Viewer Token\uff09", enterpriseSyncNow: "\u7acb\u5373\u540c\u6b65", enterpriseSyncOn: "\u540c\u6b65\u5df2\u5f00\u542f", enterpriseSyncOff: "\u540c\u6b65\u5df2\u7981\u6b62", enterpriseEnableSync: "\u5f00\u542f\u540c\u6b65", enterpriseDisableSync: "\u7981\u6b62\u540c\u6b65", enterpriseAccessActive: "\u53ef\u7528", enterpriseAccessHubOff: "Hub \u5df2\u505c\u540c\u6b65", enterpriseAccessRevoked: "\u5df2\u64a4\u9500\uff08\u672c\u5730\u4ecd\u4fdd\u7559\uff09", enterpriseLastSync: "\u4e0a\u6b21\u540c\u6b65", enterpriseRev: "rev", enterpriseSyncDone: "\u4f01\u4e1a\u77e5\u8bc6\u5e93\u540c\u6b65\u5b8c\u6210\u3002", enterpriseSyncFailed: "\u4f01\u4e1a\u77e5\u8bc6\u5e93\u540c\u6b65\u5931\u8d25", enterpriseToggleFailed: "\u66f4\u65b0\u540c\u6b65\u5f00\u5173\u5931\u8d25", enterprisePurge: "\u6e05\u9664\u7f13\u5b58", enterprisePurgeConfirm: "\u5220\u9664\u8be5\u4f01\u4e1a\u5e93\u7684\u672c\u5730\u7f13\u5b58\uff1f\u4ec5\u5728\u4e0b\u6b21 Hub \u540c\u6b65\u540e\u91cd\u65b0\u62c9\u53d6\u3002", enterprisePurged: "\u672c\u5730\u7f13\u5b58\u5df2\u6e05\u9664", enterprisePurgeFailed: "\u6e05\u9664\u5931\u8d25" });
 Object.assign(I18N.en, { memoryManager: "Memory management", memoryManagerHint: "View, search, add, edit, and delete this user's long-term memory.", memorySearch: "Search memory", memoryCategory: "Category", memoryContent: "Memory content", memoryContentRequired: "Enter memory content.", memoryContentTooLong: "Memory content must be {max} characters or fewer.", memoryTags: "Tags", memoryTagsHint: "Comma or newline separated", memoryTagsTooMany: "Use {max} tags or fewer.", memoryTagTooLong: "Each tag must be {max} characters or fewer.", memoryRefresh: "Refresh", memoryClear: "Clear", memoryAdd: "Add memory", memoryUpdate: "Update memory", memoryCancelEdit: "Cancel edit", memoryEmpty: "No memory entries", memorySaved: "Memory saved", memoryDeleted: "Memory deleted", memoryUpdated: "Memory updated", memoryEdit: "Edit", memoryDelete: "Delete", memoryAllCategories: "All categories", memoryTotal: "Total", memoryAccessCount: "Access", memoryUpdatedAt: "Updated", memoryLoadMore: "Load more" });
 Object.assign(I18N.zh, { memoryManager: "\u8bb0\u5fc6\u7ba1\u7406", memoryManagerHint: "\u67e5\u770b\u3001\u641c\u7d22\u3001\u65b0\u589e\u3001\u7f16\u8f91\u548c\u5220\u9664\u5f53\u524d\u7528\u6237\u7684\u957f\u671f\u8bb0\u5fc6\u3002", memorySearch: "\u641c\u7d22\u8bb0\u5fc6", memoryCategory: "\u5206\u7c7b", memoryContent: "\u8bb0\u5fc6\u5185\u5bb9", memoryContentRequired: "\u8bf7\u8f93\u5165\u8bb0\u5fc6\u5185\u5bb9\u3002", memoryContentTooLong: "\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryTags: "\u6807\u7b7e", memoryTagsHint: "\u9017\u53f7\u6216\u6362\u884c\u5206\u9694", memoryTagsTooMany: "\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u3002", memoryTagTooLong: "\u5355\u4e2a\u6807\u7b7e\u4e0d\u80fd\u8d85\u8fc7 {max} \u4e2a\u5b57\u7b26\u3002", memoryRefresh: "\u5237\u65b0", memoryClear: "\u6e05\u9664", memoryAdd: "\u6dfb\u52a0\u8bb0\u5fc6", memoryUpdate: "\u66f4\u65b0\u8bb0\u5fc6", memoryCancelEdit: "\u53d6\u6d88\u7f16\u8f91", memoryEmpty: "\u6682\u65e0\u8bb0\u5fc6\u6761\u76ee", memorySaved: "\u8bb0\u5fc6\u5df2\u4fdd\u5b58", memoryDeleted: "\u8bb0\u5fc6\u5df2\u5220\u9664", memoryUpdated: "\u8bb0\u5fc6\u5df2\u66f4\u65b0", memoryEdit: "\u7f16\u8f91", memoryDelete: "\u5220\u9664", memoryAllCategories: "\u5168\u90e8\u5206\u7c7b", memoryTotal: "\u603b\u6570", memoryAccessCount: "\u8bbf\u95ee", memoryUpdatedAt: "\u66f4\u65b0", memoryLoadMore: "\u52a0\u8f7d\u66f4\u591a" });
-Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
-Object.assign(I18N.zh, { mcpManager: "MCP", mcpManagerHint: "\u4f18\u5148\u4ece\u80fd\u529b\u5e02\u573a\u9009\uff1b\u53ea\u6709\u5fc5\u8981\u65f6\u518d\u7528 JSON \u6216\u7cbe\u7b80\u7f16\u8f91\u754c\u9762\u6dfb\u52a0 MCP \u914d\u7f6e\u3002", mcpMarketplace: "\u80fd\u529b\u5e02\u573a", mcpMarketplaceHint: "\u641c\u7d22\u5e76\u5b89\u88c5 Hub/HubCenter MCP \u80fd\u529b\uff1b\u624b\u52a8\u914d\u7f6e\u4fdd\u6301\u7cbe\u7b80\u3002", mcpInstalled: "\u5df2\u5b89\u88c5 MCP", mcpNoServers: "\u6682\u65e0 MCP \u670d\u52a1", mcpManualAdd: "\u6dfb\u52a0 MCP", mcpModeMarket: "\u80fd\u529b\u5e02\u573a", mcpModeRemote: "\u8fdc\u7a0b HTTP", mcpModeLocal: "\u672c\u5730 stdio", mcpModeJson: "JSON \u5bfc\u5165", mcpName: "\u540d\u79f0", mcpEndpoint: "\u63a5\u5165\u5730\u5740", mcpCommand: "\u547d\u4ee4", mcpArgs: "\u53c2\u6570", mcpEnv: "\u73af\u5883\u53d8\u91cf", mcpHeaders: "Headers", mcpAuthType: "\u8ba4\u8bc1", mcpSecret: "\u5bc6\u94a5", mcpAutoStart: "\u81ea\u52a8\u542f\u52a8", mcpDisabled: "\u7981\u7528", mcpAdd: "\u6dfb\u52a0", mcpEdit: "\u7f16\u8f91", mcpSave: "\u4fdd\u5b58 MCP", mcpClose: "\u6536\u8d77", mcpAddParam: "\u6dfb\u52a0\u53c2\u6570", mcpParamName: "\u53c2\u6570", mcpParamValue: "\u503c", mcpStart: "\u542f\u52a8", mcpStop: "\u505c\u6b62", mcpCheck: "\u68c0\u67e5", mcpDelete: "\u5220\u9664", mcpAdded: "MCP \u5df2\u6dfb\u52a0", mcpUpdated: "MCP \u5df2\u66f4\u65b0", mcpDeleted: "MCP \u5df2\u5220\u9664", mcpJson: "MCP JSON", mcpJsonHint: "\u7c98\u8d34 Claude \u98ce\u683c mcpServers JSON\uff0c\u6216 MaClaw MCP \u6761\u76ee\u6570\u7ec4/\u5bf9\u8c61\u3002", mcpOpenGui: "\u8bf7\u5728 MaClaw GUI > MCP > \u80fd\u529b\u5e02\u573a\u5b8c\u6210\u5e02\u573a\u5b89\u88c5\u3002" });
+Object.assign(I18N.en, { mcpManager: "MCP", mcpManagerHint: "Use capability marketplace first. Add manually by JSON or compact editor only when needed.", mcpMarketplace: "Capability Marketplace", mcpMarketplaceHint: "Search and install MCP capabilities from Hub/HubCenter. Manual config stays compact.", mcpInstalled: "Installed MCP", mcpNoServers: "No MCP servers", mcpManualAdd: "Add MCP", mcpModeMarket: "Marketplace", mcpModeRemote: "Remote HTTP", mcpModeLocal: "Local stdio", mcpModeJson: "JSON import", mcpName: "Name", mcpEndpoint: "Endpoint", mcpCommand: "Command", mcpArgs: "Args", mcpEnv: "Env", mcpHeaders: "Headers", mcpAuthType: "Auth", mcpSecret: "Secret", mcpAutoStart: "Auto start", mcpDisabled: "Disabled", mcpAdd: "Add", mcpEdit: "Edit", mcpSave: "Save MCP", mcpClose: "Close", mcpAddParam: "Add param", mcpParamName: "Param", mcpParamValue: "Value", mcpStart: "Start", mcpStop: "Stop", mcpCheck: "Check", mcpDelete: "Delete", mcpAdded: "MCP added", mcpUpdated: "MCP updated", mcpDeleted: "MCP deleted", mcpJson: "MCP JSON", mcpJsonHint: "Paste Claude-style mcpServers JSON or an array/object of MaClaw MCP entries.", mcpJsonEmpty: "No valid MCP servers in the JSON.", mcpAlreadyExists: "MCP server \"{name}\" already exists.", mcpOpenGui: "Open MaClaw GUI > MCP > Marketplace for market install." });
+Object.assign(I18N.zh, { mcpManager: "MCP", mcpManagerHint: "\u4f18\u5148\u4ece\u80fd\u529b\u5e02\u573a\u9009\uff1b\u53ea\u6709\u5fc5\u8981\u65f6\u518d\u7528 JSON \u6216\u7cbe\u7b80\u7f16\u8f91\u754c\u9762\u6dfb\u52a0 MCP \u914d\u7f6e\u3002", mcpMarketplace: "\u80fd\u529b\u5e02\u573a", mcpMarketplaceHint: "\u641c\u7d22\u5e76\u5b89\u88c5 Hub/HubCenter MCP \u80fd\u529b\uff1b\u624b\u52a8\u914d\u7f6e\u4fdd\u6301\u7cbe\u7b80\u3002", mcpInstalled: "\u5df2\u5b89\u88c5 MCP", mcpNoServers: "\u6682\u65e0 MCP \u670d\u52a1", mcpManualAdd: "\u6dfb\u52a0 MCP", mcpModeMarket: "\u80fd\u529b\u5e02\u573a", mcpModeRemote: "\u8fdc\u7a0b HTTP", mcpModeLocal: "\u672c\u5730 stdio", mcpModeJson: "JSON \u5bfc\u5165", mcpName: "\u540d\u79f0", mcpEndpoint: "\u63a5\u5165\u5730\u5740", mcpCommand: "\u547d\u4ee4", mcpArgs: "\u53c2\u6570", mcpEnv: "\u73af\u5883\u53d8\u91cf", mcpHeaders: "Headers", mcpAuthType: "\u8ba4\u8bc1", mcpSecret: "\u5bc6\u94a5", mcpAutoStart: "\u81ea\u52a8\u542f\u52a8", mcpDisabled: "\u7981\u7528", mcpAdd: "\u6dfb\u52a0", mcpEdit: "\u7f16\u8f91", mcpSave: "\u4fdd\u5b58 MCP", mcpClose: "\u6536\u8d77", mcpAddParam: "\u6dfb\u52a0\u53c2\u6570", mcpParamName: "\u53c2\u6570", mcpParamValue: "\u503c", mcpStart: "\u542f\u52a8", mcpStop: "\u505c\u6b62", mcpCheck: "\u68c0\u67e5", mcpDelete: "\u5220\u9664", mcpAdded: "MCP \u5df2\u6dfb\u52a0", mcpUpdated: "MCP \u5df2\u66f4\u65b0", mcpDeleted: "MCP \u5df2\u5220\u9664", mcpJson: "MCP JSON", mcpJsonHint: "\u7c98\u8d34 Claude \u98ce\u683c mcpServers JSON\uff0c\u6216 MaClaw MCP \u6761\u76ee\u6570\u7ec4/\u5bf9\u8c61\u3002", mcpJsonEmpty: "JSON \u4e2d\u6ca1\u6709\u6709\u6548\u7684 MCP \u670d\u52a1\u3002", mcpAlreadyExists: "MCP \u670d\u52a1\u300c{name}\u300d\u5df2\u5b58\u5728\u3002", mcpOpenGui: "\u8bf7\u5728 MaClaw GUI > MCP > \u80fd\u529b\u5e02\u573a\u5b8c\u6210\u5e02\u573a\u5b89\u88c5\u3002" });
 Object.assign(I18N.en, { webSearchManager: "Web search", webSearchHint: "Search service is managed by the administrator in Admin Web Client Config. This page only shows the effective provider.", webSearchNoProviders: "No search provider", webSearchCurrent: "Current search service", webSearchManagedByAdmin: "Managed by administrator", webSearchProviderCount: "{count} configured", webSearchProviderType: "Type" });
 Object.assign(I18N.zh, { webSearchManager: "\u8054\u7f51\u641c\u7d22\u670d\u52a1", webSearchHint: "\u641c\u7d22\u670d\u52a1\u7531\u7ba1\u7406\u5458\u5728\u540e\u53f0\u300c\u5ba2\u6237\u7aef\u914d\u7f6e\u300d\u7edf\u4e00\u8bbe\u7f6e\uff0c\u6b64\u5904\u4ec5\u663e\u793a\u5f53\u524d\u751f\u6548 provider\u3002", webSearchNoProviders: "\u6682\u65e0\u641c\u7d22\u670d\u52a1", webSearchCurrent: "\u5f53\u524d\u641c\u7d22\u670d\u52a1", webSearchManagedByAdmin: "\u7531\u7ba1\u7406\u5458\u7edf\u4e00\u914d\u7f6e", webSearchProviderCount: "\u5df2\u914d\u7f6e {count} \u4e2a", webSearchProviderType: "\u7c7b\u578b" });
 const FIELD_I18N = {
@@ -453,7 +476,7 @@ function configIssueMessage(issue = {}) { const msg = String(issue.message || ""
 const TOKEN_REFRESH_GRACE_MS = 2 * 60 * 1000;
 const TOKEN_REFRESH_ACTIVITY_WINDOW_MS = 10 * 60 * 1000;
 const TOKEN_REFRESH_RECHECK_MS = 60 * 1000;
-const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, migrationStatus: null, migrationInstances: [], migrationLoading: false, migrationJob: null, migrationJobTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, imStartingKey: "", settingsTab: "", hardwareDevices: [], hardwareVoices: [], hardwareExperts: [], busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
+const state = { token: "", tokenExpiresAt: 0, tokenRefreshTimer: 0, tokenRefreshPromise: null, lastActivityAt: 0, me: null, instances: [], sessions: [], messages: [], view: "assistant", instanceId: "", sessionId: "", config: null, schema: [], skills: [], skillResults: [], skillQuery: "", skillPage: 1, mcpServers: [], mcpMarketResults: [], mcpMarketQuery: "", mcpAddMode: "market", mcpEditingID: "", memoryItems: [], memoryNextOffset: 0, memoryHasMore: false, memoryLoading: false, memorySaving: false, memoryReloadPending: false, memorySearchTimer: 0, migrationStatus: null, migrationInstances: [], migrationLoading: false, migrationJob: null, migrationJobTimer: 0, knowledgeBatchPage: 1, knowledgeBatchTotal: 0, imAuditItems: [], imAuditContacts: [], imAuditStats: null, imAuditCleanupBefore: "", imAuditContactsPlatform: null, imAuditHasMore: false, imAuditNextBefore: "", imAuditLoading: false, imAuditLoaded: false, imAuditPlatform: "", imAuditQuery: "", imAuditContact: "", imAuditOpen: false, imSubTab: "qq", imRuntimes: {}, weixinRuntime: null, weixinQRCodeURL: "", weixinQRToken: "", weixinQRStatus: "", weixinQRMessage: "", weixinQRPollTimer: 0, qqbotQRCodeURL: "", qqbotQRToken: "", qqbotQRStatus: "", qqbotQRMessage: "", qqbotQRPollTimer: 0, imStartingKey: "", settingsTab: "", hardwareDevices: [], hardwareVoices: [], hardwareExperts: [], busy: false, currentRun: null, runStream: null, copySnippets: [], hiddenMessages: {} };
 const saved = sessionStorage.getItem("maclaw.user.token") || "";
 const savedExpiry = sessionStorage.getItem("maclaw.user.token_expires_at") || "";
 const launchToken = params.get("launch_token") || "";
@@ -461,7 +484,7 @@ const hasLaunchToken = params.has("launch_token");
 const secretURLKeys = ["token", "access_token", "api_key", "api_secret"];
 const rawURLSecret = secretURLKeys.some((key) => params.has(key) || location.hash.toLowerCase().includes(`${key}=`));
 state.token = hasLaunchToken || rawURLSecret ? "" : saved;
-state.view = ["assistant", "knowledge", "settings"].includes(params.get("view")) ? params.get("view") : "assistant";
+state.view = ["assistant", "knowledge", "skills", "im", "settings"].includes(params.get("view")) ? params.get("view") : "assistant";
 state.instanceId = params.get("instance_id") || "";
 function normalizeSettingsTab(tab) {
   tab = String(tab || "").trim().toLowerCase();
@@ -525,7 +548,7 @@ function applyAccessToken(token, expiresAt) {
   scheduleTokenRefresh();
 }
 function clearAccessToken() {
-  resetRunState(); resetWeixinQRLogin(); sessionStorage.removeItem("maclaw.user.token"); sessionStorage.removeItem("maclaw.user.token_expires_at");
+  resetRunState(); resetWeixinQRLogin(); resetQQBotQRLogin(); sessionStorage.removeItem("maclaw.user.token"); sessionStorage.removeItem("maclaw.user.token_expires_at");
   stopTokenRefreshTimer();
   state.tokenRefreshPromise = null;
   state.token = "";
@@ -614,7 +637,7 @@ function messageIdentity(m) { return String(m?.id || "").trim(); }
 function hiddenMessageSet(key = panelMessageKey()) { return state.hiddenMessages[key] || (state.hiddenMessages[key] = new Set()); }
 function visibleMessages(messages) { const hidden = hiddenMessageSet(); return items(messages).filter((m) => !hidden.has(messageIdentity(m))); }
 function setTitle(title, hint) { $("pageTitle").textContent = title; $("pageHint").textContent = hint; document.title = `${title} - MaClawSrv`; }
-function initChrome() { document.documentElement.lang = locale === "zh" ? "zh-CN" : "en"; document.querySelector(".skip-link").textContent = t("skipToMain"); document.querySelector(".sidebar").setAttribute("aria-label", t("appSections")); document.querySelector(".nav").setAttribute("aria-label", t("userViews")); $("brandSubtitle").textContent = t("userWorkspace"); document.querySelector('[data-view="assistant"]').textContent = t("assistantNav"); document.querySelector('[data-view="knowledge"]').textContent = t("knowledgeNav"); document.querySelector('[data-view="settings"]').textContent = t("settingsNav"); $("logoutBtn").textContent = t("logout"); if (!state.me) $("identity").textContent = t("notSignedIn"); setBusy(state.busy); }
+function initChrome() { document.documentElement.lang = locale === "zh" ? "zh-CN" : "en"; document.querySelector(".skip-link").textContent = t("skipToMain"); document.querySelector(".sidebar").setAttribute("aria-label", t("appSections")); document.querySelector(".nav").setAttribute("aria-label", t("userViews")); $("brandSubtitle").textContent = t("userWorkspace"); document.querySelector('[data-view="assistant"]').textContent = t("assistantNav"); document.querySelector('[data-view="knowledge"]').textContent = t("knowledgeNav"); const skillsNav = document.querySelector('[data-view="skills"]'); if (skillsNav) skillsNav.textContent = t("skillsNav"); const imNav = document.querySelector('[data-view="im"]'); if (imNav) imNav.textContent = t("imNav"); document.querySelector('[data-view="settings"]').textContent = t("settingsNav"); $("logoutBtn").textContent = t("logout"); if (!state.me) $("identity").textContent = t("notSignedIn"); setBusy(state.busy); }
 function updateNav() { document.querySelectorAll("[data-view]").forEach((b) => { const on = b.dataset.view === state.view; b.classList.toggle("active", on); b.setAttribute("aria-current", on ? "page" : "false"); }); }
 
 async function bootstrap() {
@@ -638,8 +661,33 @@ async function bootstrap() {
   } catch (e) { if (e.status === 401) renderMissingToken(t("sessionExpired")); else renderError(e); }
   finally { setBusy(false); }
 }
-async function render() { updateNav(); if (state.view === "settings") return renderSettings(); if (state.view === "knowledge") return renderKnowledge(); return renderAssistant(); }
-function renderMissingToken(message = t("missingToken")) { setTitle(t("loginRequired"), t("loginHint")); $("content").innerHTML = `<section class="panel stack"><h2>${t("cannotStart")}</h2><p class="error">${esc(message)}</p></section>`; }
+async function render() { updateNav(); if (state.view === "settings") return renderSettings(); if (state.view === "knowledge") return renderKnowledge(); if (state.view === "skills") return renderSkillsWorkbench(); if (state.view === "im") return renderIMWorkbench(); return renderAssistant(); }
+function renderMissingToken(message = t("missingToken")) {
+  setTitle(t("loginRequired"), t("loginHint"));
+  const extra = message && message !== t("missingToken") ? `<p class="error">${esc(message)}</p>` : "";
+  $("content").innerHTML = `<section class="panel stack sign-in-panel"><h2>${t("cannotStart")}</h2><p class="helper">${esc(t("loginHint"))}</p>${extra}<form id="signInForm" class="fields"><label>${esc(t("apiKey"))}<input id="signInKey" name="api_key" autocomplete="username" required></label><label>${esc(t("apiSecret"))}<input id="signInSecret" name="api_secret" type="password" autocomplete="current-password" required></label><button type="submit" class="primary">${esc(t("signIn"))}</button></form><p class="helper">${esc(t("launchTokenHint"))}</p></section>`;
+  const form = $("signInForm");
+  if (form) form.onsubmit = submitSignIn;
+}
+async function submitSignIn(e) {
+  e.preventDefault();
+  const apiKey = $("signInKey")?.value?.trim() || "";
+  const apiSecret = $("signInSecret")?.value || "";
+  if (!apiKey || !apiSecret) { toast(t("missingToken")); return; }
+  try {
+    setBusy(true);
+    const resp = await fetch("/api/v1/auth/token", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: apiKey, api_secret: apiSecret }) });
+    const text = await resp.text();
+    let data = {};
+    if (text) { try { data = JSON.parse(text); } catch { data = { raw: text }; } }
+    if (!resp.ok) throw new Error(data.error || data.message || `${resp.status} ${resp.statusText}`);
+    if (!data.access_token) throw new Error(t("signInFailed"));
+    applyAccessToken(data.access_token, data.expires_at);
+    await bootstrap();
+  } catch (err) {
+    renderMissingToken(err.message || t("signInFailed"));
+  } finally { setBusy(false); }
+}
 function renderError(e) { $("content").innerHTML = `<section class="panel stack"><h2>${t("loadFailed")}</h2><p class="error">${esc(e.message)}</p><button id="retryBtn" type="button" class="primary">${t("retry")}</button></section>`; $("retryBtn").onclick = bootstrap; }
 function handleAPIError(e) { if (e && e.status === 401) { renderMissingToken(t("sessionExpired")); return true; } return false; }
 async function refreshInstances() {
@@ -1272,11 +1320,33 @@ function messageSpeakButtonHTML(m, idx) {
   if ((m.role || "assistant") !== "assistant" || !text || m.local_thinking || meta.tts_available !== "true") return "";
   return `<button type="button" class="copy-btn" data-speak-message="${idx}" aria-label="${esc(speakLabel())}">${esc(speakLabel())}</button>`;
 }
+function messageContinuationButtonHTML(m) {
+  const handle = String(m?.metadata?.task_continuation_handle || "").trim();
+  if ((m.role || "assistant") !== "assistant" || m.local_thinking || !handle) return "";
+  const label = locale === "en" ? "Continue task" : "续接此任务";
+  return `<button type="button" class="copy-btn" data-continue-task="${esc(handle)}" aria-label="${esc(label)}">${esc(label)}</button>`;
+}
+function messageRefineButtonHTML(m) {
+  const handle = String(m?.metadata?.task_continuation_handle || "").trim();
+  if ((m.role || "assistant") !== "assistant" || m.local_thinking || !handle) return "";
+  const label = locale === "en" ? "Refine task" : "调整此任务";
+  return `<button type="button" class="copy-btn" data-refine-task="${esc(handle)}" aria-label="${esc(label)}">${esc(label)}</button>`;
+}
 function messageActionsHTML(m, idx) {
-  const actions = [messageSpeakButtonHTML(m, idx), messageCopyButtonHTML(m, idx)].filter(Boolean).join("");
+  const actions = [messageContinuationButtonHTML(m), messageRefineButtonHTML(m), messageSpeakButtonHTML(m, idx), messageCopyButtonHTML(m, idx)].filter(Boolean).join("");
   return actions ? `<div class="message-actions">${actions}</div>` : "";
 }
-function renderMessages(forceStick = false) { const box = $("messages"); const stick = forceStick || shouldStickMessagesToBottom(box); const msgs = orderedMessages(); state.copySnippets = []; box.innerHTML = msgs.map((m, idx) => `<article class="message ${messageRoleClass(m.role || "assistant")} ${m.local_pending || m.local_thinking ? "pending" : ""}"><div class="message-head"><div class="message-meta"><strong>${esc(m.role || "assistant")}</strong>${messageMetaHTML(m)}${m.local_pending ? `<span class="message-time">${sendingLabel()}</span>` : ""}</div>${messageActionsHTML(m, idx)}</div><div class="md-content ${m.local_thinking ? "thinking" : ""}">${renderMarkdown(m.content || m.text || "", state.copySnippets)}</div>${messageDetails(m)}</article>`).join("") || `<div class="message assistant">${t("noMessages")}</div>`; bindMessageCopyButtons(msgs); bindMessageSpeakButtons(msgs); bindJumpLatestButton(); if (stick) { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); } else { updateJumpLatestButton(true); } }
+function bindMessageContinuationButtons() {
+  document.querySelectorAll("[data-continue-task]").forEach((button) => { button.onclick = () => { void sendMessage(null, button.dataset.continueTask || ""); }; });
+  document.querySelectorAll("[data-refine-task]").forEach((button) => {
+    button.onclick = () => {
+      const prompt = window.prompt(locale === "en" ? "Describe the task change:" : "请描述要如何调整此任务：", "");
+      if (prompt === null || !String(prompt).trim()) return;
+      void sendMessage(null, button.dataset.refineTask || "", true, String(prompt).trim());
+    };
+  });
+}
+function renderMessages(forceStick = false) { const box = $("messages"); const stick = forceStick || shouldStickMessagesToBottom(box); const msgs = orderedMessages(); state.copySnippets = []; box.innerHTML = msgs.map((m, idx) => `<article class="message ${messageRoleClass(m.role || "assistant")} ${m.local_pending || m.local_thinking ? "pending" : ""}"><div class="message-head"><div class="message-meta"><strong>${esc(m.role || "assistant")}</strong>${messageMetaHTML(m)}${m.local_pending ? `<span class="message-time">${sendingLabel()}</span>` : ""}</div>${messageActionsHTML(m, idx)}</div><div class="md-content ${m.local_thinking ? "thinking" : ""}">${renderMarkdown(m.content || m.text || "", state.copySnippets)}</div>${messageDetails(m)}</article>`).join("") || `<div class="message assistant">${t("noMessages")}</div>`; bindMessageCopyButtons(msgs); bindMessageSpeakButtons(msgs); bindMessageContinuationButtons(); bindJumpLatestButton(); if (stick) { box.scrollTop = box.scrollHeight; updateJumpLatestButton(false); } else { updateJumpLatestButton(true); } }
 function renderRunPanel(run) {
   const panel = $("runPanel"); if (!panel) return;
   if (run === null) state.currentRun = null; else state.currentRun = run || state.currentRun;
@@ -1361,17 +1431,18 @@ async function cancelCurrentRun() {
     renderRunPanel(out); closeRunStream(); await loadSessionsAndMessages(); toast(t("runCancelled"));
   } catch (e) { if (!handleAPIError(e)) toast(e.message); }
 }
-async function sendMessage(e) {
-  e.preventDefault();
+async function sendMessage(e, continuationHandle = "", refineTask = false, refineContent = "") {
+  if (e?.preventDefault) e.preventDefault();
   const promptEl = $("prompt"); const sendBtn = $("sendBtn");
   if (!promptEl || !sendBtn || sendBtn.disabled) return;
-  const inst = activeInstance(); const content = promptEl.value.trim();
+  const handle = String(continuationHandle || "").trim();
+  const inst = activeInstance(); const content = refineTask ? String(refineContent || "").trim() : (handle ? (locale === "en" ? "Continue this task." : "续接此任务。") : promptEl.value.trim());
   if (!inst || !content) return;
   const optimisticId = `local-user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   closeRunStream();
   state.currentRun = null;
   sendBtn.disabled = true;
-  promptEl.value = "";
+  if (!handle) promptEl.value = "";
   autoResizePrompt();
   state.messages.push({ id: optimisticId, role: "user", content, created_at: new Date().toISOString(), local_pending: true });
   addThinkingPlaceholder();
@@ -1379,6 +1450,8 @@ async function sendMessage(e) {
     setBusy(true);
     const body = { content, input_type: "text", title: t("webSession") };
     if (state.sessionId) body.session_id = state.sessionId;
+    if (handle) body.continuation_handle = handle;
+    if (refineTask) body.refine_task = true;
     const out = await api(`/api/v1/instances/${encodeURIComponent(inst.id)}/messages`, { method: "POST", body: JSON.stringify(body) });
     state.sessionId = out.session?.id || state.sessionId;
     upsertSession(out.session);
@@ -1392,6 +1465,75 @@ async function sendMessage(e) {
   finally { updateSendButtonState(); setBusy(false); }
 }
 
+async function ensureSharedConfigLoaded() {
+  const [schema, cfgResp, skillsResp, mcpResp, wxStatus, imStatus] = await Promise.all([
+    api("/api/v1/config/schema"),
+    api("/api/v1/config"),
+    api("/api/v1/skills"),
+    api("/api/v1/mcp/servers"),
+    api("/api/v1/im/weixin/status").catch(() => null),
+    api("/api/v1/im/status").catch(() => null)
+  ]);
+  state.schema = items(schema);
+  state.config = userConfigDraft(cfgResp.app_config);
+  state.skills = items(skillsResp);
+  state.mcpServers = items(mcpResp);
+  state.weixinRuntime = wxStatus;
+  state.imRuntimes = imStatus?.items || {};
+}
+async function renderSkillsWorkbench() {
+  resetRunState();
+  setTitle(t("skillsNav"), t("groupSkillsHint"));
+  try {
+    setBusy(true);
+    await ensureSharedConfigLoaded();
+    $("content").innerHTML = `<section id="skillsWorkbench" class="panel stack workbench-panel"><div><h2>${esc(t("skillsNav"))}</h2><p class="helper">${esc(t("groupSkillsHint"))}</p></div>${renderSkillManager()}${renderMCPManager()}${typeof renderWebSearchManager === "function" ? renderWebSearchManager() : ""}</section>`;
+    bindSkillManager();
+    bindMCPManager();
+    if (typeof bindWebSearchManager === "function") bindWebSearchManager();
+  } catch (e) { if (!handleAPIError(e)) renderError(e); }
+  finally { setBusy(false); }
+}
+async function renderIMWorkbench() {
+  resetRunState();
+  setTitle(t("imNav"), t("channelOverviewHint"));
+  try {
+    setBusy(true);
+    await ensureSharedConfigLoaded();
+    $("content").innerHTML = `<section id="imWorkbench" class="panel stack workbench-panel">${renderIMConfigEditor(state.schema)}</section>`;
+    bindIMAuditPanel();
+    if (typeof bindWeixinQRTools === "function") bindWeixinQRTools();
+    if (typeof bindQQBotQRTools === "function") bindQQBotQRTools();
+    if (typeof bindChannelTools === "function") bindChannelTools();
+    if (typeof bindSecretGenerators === "function") bindSecretGenerators();
+  } catch (e) { if (!handleAPIError(e)) renderError(e); }
+  finally { setBusy(false); }
+}
+function refreshSkillMCPPanels() {
+  if (state.view === "settings") { renderConfigFields(); return; }
+  if (state.view === "skills") {
+    const host = $("skillsWorkbench");
+    if (!host) return renderSkillsWorkbench();
+    host.innerHTML = `<div><h2>${esc(t("skillsNav"))}</h2><p class="helper">${esc(t("groupSkillsHint"))}</p></div>${renderSkillManager()}${renderMCPManager()}${typeof renderWebSearchManager === "function" ? renderWebSearchManager() : ""}`;
+    bindSkillManager();
+    bindMCPManager();
+    if (typeof bindWebSearchManager === "function") bindWebSearchManager();
+  }
+}
+function refreshConfigOrIM() {
+  if (state.view === "settings" && $("cfgTabs")) renderConfigFields();
+  else if (state.view === "im") {
+    const host = $("imWorkbench");
+    if (host) {
+      host.innerHTML = renderIMConfigEditor(state.schema);
+      bindIMAuditPanel();
+      if (typeof bindWeixinQRTools === "function") bindWeixinQRTools();
+      if (typeof bindQQBotQRTools === "function") bindQQBotQRTools();
+      if (typeof bindChannelTools === "function") bindChannelTools();
+    }
+    else renderIMWorkbench();
+  }
+}
 async function renderSettings() {
   resetRunState();
   setTitle(t("settingsTitle"), t("settingsHint"));
@@ -1528,7 +1670,7 @@ function bindSkillManager() {
   document.querySelectorAll("[data-skill-page]").forEach((b) => {
     b.onclick = () => {
       state.skillPage += b.dataset.skillPage === "next" ? 1 : -1;
-      renderConfigFields();
+      refreshSkillMCPPanels();
     };
   });
   document.querySelectorAll("[data-install-skill]").forEach((b) => { b.onclick = () => installSkill(b.dataset.installSkill, b.dataset.installSource); });
@@ -1542,7 +1684,7 @@ async function searchSkills(e) {
     setBusy(true);
     const out = await api("/api/v1/skills/search", { method: "POST", body: JSON.stringify({ query: state.skillQuery, sources: ["skillmarket"], include_installed: true }) });
     state.skillResults = items(out);
-    renderConfigFields();
+    refreshSkillMCPPanels();
   } catch (e2) { if (!handleAPIError(e2)) toast(e2.message); }
   finally { setBusy(false); }
 }
@@ -1553,7 +1695,7 @@ async function installSkill(skillID, source) {
     await api("/api/v1/skills/install", { method: "POST", body: JSON.stringify({ source: source || "skillmarket", skill_id: skillID, overwrite: true }) });
     state.skills = items(await api("/api/v1/skills"));
     state.skillResults = state.skillResults.map((x) => x.id === skillID ? { ...x, installed: true } : x);
-    renderConfigFields();
+    refreshSkillMCPPanels();
     toast(t("skillInstalled"));
   } catch (e2) { if (!handleAPIError(e2)) toast(e2.message); }
   finally { setBusy(false); }
@@ -1612,8 +1754,8 @@ function bindMCPManager() {
   const mode = $("mcpAddMode");
   if (!mode) return;
   mode.onchange = () => { state.mcpAddMode = mode.value; $("mcpAddBody").innerHTML = renderMCPAddBody(); bindMCPManager(); };
-  document.querySelectorAll("[data-mcp-edit]").forEach((button) => { button.onclick = () => { state.mcpEditingID = button.dataset.mcpEdit || ""; renderConfigFields(); }; });
-  document.querySelectorAll("[data-mcp-close]").forEach((button) => { button.onclick = () => { state.mcpEditingID = ""; renderConfigFields(); }; });
+  document.querySelectorAll("[data-mcp-edit]").forEach((button) => { button.onclick = () => { state.mcpEditingID = button.dataset.mcpEdit || ""; refreshSkillMCPPanels(); }; });
+  document.querySelectorAll("[data-mcp-close]").forEach((button) => { button.onclick = () => { state.mcpEditingID = ""; refreshSkillMCPPanels(); }; });
   document.querySelectorAll("[data-mcp-save]").forEach((button) => { button.onclick = () => updateMCPServer(button.dataset.mcpSave || "", button.closest("[data-mcp-editor]")); });
   document.querySelectorAll("[data-mcp-param-add]").forEach((button) => { button.onclick = () => addMCPParamRow(button); });
   document.querySelectorAll("[data-mcp-param-remove]").forEach((button) => { button.onclick = () => button.closest(".mcp-param-row")?.remove(); });
@@ -1711,18 +1853,242 @@ async function installMCPMarket(index) {
   catch (e) { if (!handleAPIError(e)) toast(e.message); }
   finally { setBusy(false); }
 }
+function mcpConfigMap(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  for (const key of ["mcpServers", "mcp_servers", "mcpservers", "servers"]) {
+    if (Array.isArray(parsed[key])) return parsed[key];
+    if (parsed[key] && typeof parsed[key] === "object") return parsed[key];
+  }
+  for (const [key, nested] of Object.entries(parsed)) {
+    const normalized = String(key).toLowerCase().replace(/_/g, "");
+    if ((normalized === "mcpservers" || normalized === "servers") && (Array.isArray(nested) || (nested && typeof nested === "object"))) return nested;
+  }
+  return parsed;
+}
+function mcpCommandAndArgs(cfg) {
+  let extra = mcpArgsList(cfg?.args);
+  if (!extra.length) extra = mcpArgsList(cfg?.arguments);
+  const raw = cfg?.command ?? cfg?.cmd;
+  if (Array.isArray(raw)) {
+    const parts = mcpArgsList(raw);
+    if (!parts.length) return { command: "", args: extra };
+    return { command: parts[0], args: parts.slice(1).concat(extra) };
+  }
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (s.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) return mcpCommandAndArgs({ command: parsed, args: extra });
+      } catch (_) {}
+    }
+    return { command: s, args: extra };
+  }
+  return { command: "", args: extra };
+}
+function mcpArgsList(value) {
+  if (Array.isArray(value)) return value.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof value !== "string") return [];
+  const raw = value.trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return mcpArgsList(parsed);
+  } catch (_) {}
+  return raw.split(/\s+/).filter(Boolean);
+}
+function mcpBool(value) {
+  if (value === true || value === 1) return true;
+  const raw = String(value || "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+function mcpHeadersMap(value) {
+  if (!value) return {};
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return {};
+    try { return mcpHeadersMap(JSON.parse(raw)); } catch (_) {}
+    return {};
+  }
+  if (Array.isArray(value)) {
+    const out = {};
+    value.forEach((item) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        Object.assign(out, mcpHeadersMap(item));
+        return;
+      }
+      const raw = String(item || "");
+      const idx = raw.indexOf(":");
+      if (idx <= 0) return;
+      const key = raw.slice(0, idx).trim();
+      if (key) out[key] = raw.slice(idx + 1).trim();
+    });
+    return out;
+  }
+  if (typeof value !== "object") return {};
+  const out = {};
+  Object.entries(value).forEach(([key, val]) => {
+    const name = String(key || "").trim();
+    if (!name || val == null) return;
+    out[name] = typeof val === "string" ? val : String(val);
+  });
+  return out;
+}
+function mcpEnvMap(value) {
+  if (!value) return {};
+  if (Array.isArray(value)) {
+    const out = {};
+    value.forEach((line) => {
+      const raw = String(line || "");
+      const idx = raw.indexOf("=");
+      if (idx <= 0) return;
+      const key = raw.slice(0, idx).trim();
+      if (key) out[key] = raw.slice(idx + 1);
+    });
+    return out;
+  }
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return mcpEnvMap(parsed);
+    } catch (_) {}
+    return mcpEnvMap(raw.split(/\r?\n/));
+  }
+  if (typeof value !== "object") return {};
+  const out = {};
+  Object.entries(value).forEach(([key, val]) => {
+    const name = String(key || "").trim();
+    if (!name || val == null) return;
+    out[name] = typeof val === "string" ? val : String(val);
+  });
+  return out;
+}
+function mcpAuthorizationHeader(headers) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return "";
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).trim().toLowerCase() === "authorization") return String(value || "").trim();
+  }
+  return "";
+}
+function mcpHeadersWithoutAuthorization(headers) {
+  const out = {};
+  Object.entries(headers || {}).forEach(([key, value]) => {
+    if (String(key).trim().toLowerCase() === "authorization") return;
+    out[key] = value;
+  });
+  return out;
+}
+function applyMCPAuthFromHeaders(entry) {
+  if (!entry) return entry;
+  const auth = mcpAuthorizationHeader(entry.headers);
+  if (entry.auth_secret || !auth) return entry;
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    entry.auth_type = "bearer";
+    entry.auth_secret = auth.slice(7).trim();
+    entry.headers = mcpHeadersWithoutAuthorization(entry.headers);
+  } else if (!entry.auth_type || entry.auth_type === "none") {
+    entry.auth_type = "api_key";
+    entry.auth_secret = auth;
+    entry.headers = mcpHeadersWithoutAuthorization(entry.headers);
+  }
+  return entry;
+}
+function normalizeMCPEntry(cfg, fallbackName = "") {
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return null;
+  const name = String(cfg.name || cfg.Name || fallbackName || "").trim();
+  const endpoint = String(cfg.endpoint_url || cfg.url || cfg.serverUrl || cfg.server_url || "").trim();
+  const { command, args } = mcpCommandAndArgs(cfg);
+  if (!name) return null;
+  const requested = String(cfg.kind || cfg.type || cfg.transport || "").trim().toLowerCase();
+  const remoteType = requested === "remote" || requested === "http" || requested === "https" || requested === "sse" || requested === "streamable-http" || requested === "streamablehttp" || requested === "streamable_http";
+  const localType = requested === "local" || requested === "stdio" || requested === "std-io";
+  const kind = remoteType || (!localType && endpoint && !command) ? "remote" : "local";
+  if (kind === "remote" && !endpoint) return null;
+  if (kind !== "remote" && !command) return null;
+  const entry = applyMCPAuthFromHeaders({
+    kind,
+    name,
+    endpoint_url: endpoint,
+    command: command || "npx",
+    args,
+    env: (() => { const env = mcpEnvMap(cfg.env); return Object.keys(env).length ? env : mcpEnvMap(cfg.environment); })(),
+    auth_type: cfg.auth_type || cfg.authType || "",
+    auth_secret: cfg.auth_secret || cfg.auth_token || cfg.api_key || cfg.apiKey || "",
+    headers: mcpHeadersMap(cfg.headers),
+    disabled: mcpBool(cfg.disabled),
+    auto_start: mcpBool(cfg.auto_start) || mcpBool(cfg.autoStart) || mcpBool(cfg.autostart)
+  });
+  if (entry && entry.auth_secret && (!entry.auth_type || entry.auth_type === "none")) entry.auth_type = "api_key";
+  if (entry && !entry.auth_type) entry.auth_type = "none";
+  return entry;
+}
+function stripMCPImportCodeFence(raw) {
+  raw = String(raw || "").trim();
+  if (!raw.startsWith("```")) return raw;
+  const lines = raw.split(/\r?\n/);
+  if (lines.length < 2) return raw;
+  let end = lines.length;
+  if (String(lines[end - 1] || "").trim().startsWith("```")) end -= 1;
+  const stripped = lines.slice(1, end).join("\n").trim();
+  if (!stripped) return raw;
+  try { JSON.parse(stripped); return stripped; } catch (_) {}
+  try { JSON.parse(`{${stripped}}`); return stripped; } catch (_) {}
+  return raw;
+}
+function normalizeMCPImportJSON(raw) {
+  raw = stripMCPImportCodeFence(raw);
+  if (!raw) return raw;
+  try { JSON.parse(raw); return raw; } catch (_) {}
+  const wrapped = `{${raw}}`;
+  try { JSON.parse(wrapped); return wrapped; } catch (_) {}
+  return raw;
+}
 function mcpEntriesFromJSON(raw) {
-  const parsed = JSON.parse(raw || "{}");
-  if (Array.isArray(parsed)) return parsed;
-  const source = parsed.mcpServers && typeof parsed.mcpServers === "object" ? parsed.mcpServers : parsed;
-  return Object.entries(source).map(([name, cfg]) => ({ kind: cfg.endpoint_url || cfg.url ? "remote" : "local", name, endpoint_url: cfg.endpoint_url || cfg.url || "", command: cfg.command || "npx", args: Array.isArray(cfg.args) ? cfg.args : [], env: cfg.env || {}, disabled: cfg.disabled === true, auto_start: cfg.auto_start === true }));
+  const parsed = JSON.parse(normalizeMCPImportJSON(raw) || "{}");
+  if (Array.isArray(parsed)) return parsed.map((entry) => normalizeMCPEntry(entry)).filter(Boolean);
+  const source = mcpConfigMap(parsed);
+  if (!source) return [];
+  if (Array.isArray(source)) return source.map((entry) => normalizeMCPEntry(entry)).filter(Boolean);
+  if (source.command || source.url || source.endpoint_url || source.serverUrl || source.server_url || source.name) {
+    const single = normalizeMCPEntry(source);
+    return single ? [single] : [];
+  }
+  return Object.entries(source).map(([name, cfg]) => normalizeMCPEntry(cfg, name)).filter(Boolean);
+}
+function mcpImportIdentity(entry) {
+  return `${String(entry?.name || "").trim().toLowerCase()}|${String(entry?.kind || "").trim().toLowerCase()}`;
+}
+function mcpServerAlreadyInstalled(entry) {
+  const key = mcpImportIdentity(entry);
+  return items(state.mcpServers).some((server) => `${String(mcpServerLabel(server)).trim().toLowerCase()}|${String(mcpServerKind(server)).trim().toLowerCase()}` === key);
 }
 async function importMCPJSON() {
+  const created = [];
   try {
     setBusy(true);
-    for (const entry of mcpEntriesFromJSON($("mcpJsonImport")?.value || "")) await api("/api/v1/mcp/servers", { method: "POST", body: JSON.stringify(entry) });
+    const entries = mcpEntriesFromJSON($("mcpJsonImport")?.value || "");
+    if (!entries.length) throw new Error(t("mcpJsonEmpty"));
+    const seen = new Set();
+    for (const entry of entries) {
+      const key = mcpImportIdentity(entry);
+      if (!key.startsWith("|") && (seen.has(key) || mcpServerAlreadyInstalled(entry))) throw new Error(t("mcpAlreadyExists", { name: entry.name }));
+      seen.add(key);
+    }
+    for (const entry of entries) {
+      const out = await api("/api/v1/mcp/servers", { method: "POST", body: JSON.stringify(entry) });
+      const id = out && (out.id || out.ID);
+      if (id) created.push(id);
+    }
     await refreshMCPServers(); toast(t("mcpAdded"));
-  } catch (e) { if (!handleAPIError(e)) toast(e.message); }
+  } catch (e) {
+    for (const id of created) {
+      try { await api(`/api/v1/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" }); } catch (_) {}
+    }
+    if (created.length) await refreshMCPServers();
+    if (!handleAPIError(e)) toast(e.message);
+  }
   finally { setBusy(false); }
 }
 function webSearchProviders() { return items(state.config?.web_search_providers).map((p) => p && typeof p === "object" ? p : {}); }
@@ -2568,7 +2934,7 @@ const LLM_URL_SUGGESTIONS = [
   "http://localhost:11434/v1",
   "http://localhost:1234/v1"
 ];
-const LLM_MODEL_SUGGESTIONS = ["auto", "gpt-4o", "claude-sonnet-4-20250514", "glm-5-turbo", "glm-5.1", "kimi-for-coding", "MiniMax-M2.7", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"];
+const LLM_MODEL_SUGGESTIONS = ["auto", "gpt-4o", "claude-sonnet-4-20250514", "glm-5-turbo", "glm-5.3", "kimi-for-coding", "MiniMax-M2.7", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"];
 const CONFIG_OBJECT_LIST_FIELDS = {};
 const CONFIG_OBJECT_FIELDS = {
   mis_data: {
@@ -2930,7 +3296,10 @@ function renderIMChannelShell(title, description, enabledKey, platform, defs, bo
   return `<section class="im-channel-panel" aria-label="${esc(title)}"><div class="im-channel-toolbar"><div><h3>${esc(title)}</h3><p>${esc(description)}</p></div><div class="im-channel-actions">${renderIMCardStatus(enabledKey)}${extraActions}<button type="button" class="secondary" data-im-watch-history="${esc(platform)}">${esc(t("imWatchHistory"))}</button>${actions}</div></div>${renderIMToggleField(enabledKey, defs)}${body}</section>`;
 }
 function renderQQIMPanel(defs) {
-  return renderIMChannelShell(t("channelQQ"), t("imQQDescription"), "qqbot_enabled", "qq", defs, `<div class="im-field-grid im-field-grid-two">${["qqbot_app_id", "qqbot_app_secret"].map((key) => configFieldMarkup(key, defs)).join("")}</div>`, renderIMLinkAction(IM_DOC_LINKS.qq, t("imGetAppID")));
+  const bound = String(state.config?.qqbot_app_id || "").trim();
+  const accountLine = bound ? `<div class="weixin-account-status"><div><strong>${esc(t("qqbotBoundAppID"))}</strong><code>${esc(maskQQBotAppID(bound))}</code></div></div>` : `<span class="helper">${esc(t("qqbotNotBound"))}</span>`;
+  const manual = `<details class="im-manual-creds"><summary>${esc(t("qqbotManualCreds"))}</summary><div class="im-field-grid im-field-grid-two">${["qqbot_app_id", "qqbot_app_secret"].map((key) => configFieldMarkup(key, defs)).join("")}</div></details>`;
+  return renderIMChannelShell(t("channelQQ"), t("imQQDescription"), "qqbot_enabled", "qq", defs, `${accountLine}${renderQQBotQRTools()}${manual}`);
 }
 function renderTelegramIMPanel(defs) {
   return renderIMChannelShell(t("channelTelegram"), t("imTelegramDescription"), "telegram_bot_enabled", "telegram", defs, `<div class="im-field-grid">${configFieldMarkup("telegram_bot_token", defs)}</div>`, renderIMLinkAction(IM_DOC_LINKS.telegram, t("imTutorial")));
@@ -2955,6 +3324,23 @@ function renderActiveIMPanel(defs) {
   if (tab === "lansenger") return renderLansengerIMPanel(defs);
   if (tab === "thirdparty") return renderThirdPartyIMPanel(defs);
   return renderQQIMPanel(defs);
+}
+function maskQQBotAppID(id) {
+  const s = String(id || "").trim();
+  if (s.length <= 6) return s;
+  return s.slice(0, 3) + "***" + s.slice(-3);
+}
+function renderQQBotQRTools() {
+  const rawStatus = String(state.qqbotQRStatus || "").trim().toLowerCase();
+  const status = rawStatus === "pending" ? "pending" : normalizeWeixinQRStatus(state.qqbotQRStatus);
+  const bound = Boolean(String(state.config?.qqbot_app_id || "").trim()) && !state.qqbotQRToken && !state.qqbotQRCodeURL;
+  const statusText = status === "confirmed" ? t("qqbotQRConfirmed") : status === "expired" ? t("qqbotQRExpired") : status === "error" ? t("qqbotQRError") : status === "pending" ? t("qqbotQRScanned") : state.qqbotQRToken ? t("weixinQRWaiting") : t("qqbotQRHint");
+  const message = normalizeWeixinQRMessage(status === "pending" ? "wait" : status, state.qqbotQRMessage, statusText);
+  const qr = state.qqbotQRCodeURL ? `<div class="weixin-qr-box"><img src="${esc(state.qqbotQRCodeURL)}" alt="${esc(t("qqbotQRBind"))}"><span class="helper">${esc(message)}</span></div>` : `<span class="helper">${esc(message)}</span>`;
+  const busy = status === "loading" ? "disabled" : "";
+  const cancel = state.qqbotQRToken || state.qqbotQRCodeURL || status === "loading" ? `<button type="button" class="secondary danger" id="cancelQQBotQRLogin">${esc(t("imCancelQR"))}</button>` : "";
+  const startLabel = status === "loading" ? t("weixinQRLoading") : bound ? t("qqbotQRRescan") : t("qqbotQRBind");
+  return `<div class="weixin-qr-tools"><div><strong>${esc(t("qqbotQRBind"))}</strong>${qr}</div><div class="weixin-qr-actions"><button type="button" class="secondary" id="startQQBotQRLogin" ${busy}>${esc(startLabel)}</button>${cancel}</div></div>`;
 }
 function renderWeixinQRTools() {
   const status = normalizeWeixinQRStatus(state.weixinQRStatus);
@@ -3038,7 +3424,7 @@ function renderIMAuditRow(item) {
 async function loadIMAuditMessages(append = false) {
   if (state.imAuditLoading || (append && !state.imAuditNextBefore)) return;
   state.imAuditLoading = true;
-  if (state.view === "settings" && $("cfgTabs")) renderConfigFields();
+  refreshConfigOrIM();
   try {
     await loadIMAuditContacts(false);
     const qs = new URLSearchParams({ limit: "100" });
@@ -3061,7 +3447,7 @@ async function loadIMAuditMessages(append = false) {
     if (!handleAPIError(e)) toast(e.message);
   } finally {
     state.imAuditLoading = false;
-    if (state.view === "settings" && $("cfgTabs")) renderConfigFields();
+    refreshConfigOrIM();
   }
 }
 function imAuditQueryString() {
@@ -3147,6 +3533,23 @@ function resetWeixinQRLogin() {
   state.weixinQRStatus = "";
   state.weixinQRMessage = "";
 }
+function clearQQBotQRPoll() {
+  if (state.qqbotQRPollTimer) clearTimeout(state.qqbotQRPollTimer);
+  state.qqbotQRPollTimer = 0;
+}
+function revokeQQBotQRCodeURL() {
+  if (state.qqbotQRCodeURL && state.qqbotQRCodeURL.startsWith("blob:")) URL.revokeObjectURL(state.qqbotQRCodeURL);
+  state.qqbotQRCodeURL = "";
+}
+function resetQQBotQRLogin() {
+  clearQQBotQRPoll();
+  revokeQQBotQRCodeURL();
+  state.qqbotQRStartGen = (state.qqbotQRStartGen || 0) + 1;
+  state.qqbotQRToken = "";
+  state.qqbotQRStatus = "";
+  state.qqbotQRMessage = "";
+  state.qqbotQRRefreshes = 0;
+}
 function scheduleWeixinQRPoll() {
   clearWeixinQRPoll();
   if (!state.weixinQRToken) return;
@@ -3218,6 +3621,154 @@ async function pollWeixinQRLogin() {
     if (!handleAPIError(e)) toast(state.weixinQRMessage);
   }
 }
+function scheduleQQBotQRPoll() {
+  clearQQBotQRPoll();
+  if (!state.qqbotQRToken) return;
+  state.qqbotQRPollTimer = setTimeout(() => pollQQBotQRLogin(), 1600);
+}
+async function startQQBotQRLogin(resetRefreshes = true) {
+  const gen = (state.qqbotQRStartGen || 0) + 1;
+  state.qqbotQRStartGen = gen;
+  try {
+    clearQQBotQRPoll();
+    if (resetRefreshes) state.qqbotQRRefreshes = 0;
+    state.qqbotQRToken = "";
+    revokeQQBotQRCodeURL();
+    state.qqbotQRStatus = "loading";
+    state.qqbotQRMessage = t("weixinQRLoading");
+    renderConfigFields();
+    const out = await api("/api/v1/im/qqbot/qr/start", { method: "POST", body: "{}" });
+    if (state.qqbotQRStartGen !== gen) return;
+    const token = String(out.qrcode_token || "").trim();
+    const payloadURL = String(out.qrcode_url || "").trim();
+    if (!token) {
+      throw new Error(t("qqbotQRError"));
+    }
+    const imageURL = String(out.qrcode_image_url || "");
+    let codeURL = payloadURL;
+    if (imageURL) {
+      try {
+        codeURL = await authorizedObjectURL(imageURL);
+      } catch {
+        codeURL = payloadURL;
+      }
+    }
+    if (state.qqbotQRStartGen !== gen) {
+      if (codeURL && codeURL.startsWith("blob:")) URL.revokeObjectURL(codeURL);
+      return;
+    }
+    if (!codeURL) {
+      throw new Error(t("qqbotQRError"));
+    }
+    revokeQQBotQRCodeURL();
+    state.qqbotQRCodeURL = codeURL;
+    state.qqbotQRToken = token;
+    state.qqbotQRStatus = "wait";
+    state.qqbotQRMessage = t("weixinQRWaiting");
+    renderConfigFields();
+    scheduleQQBotQRPoll();
+  } catch (e) {
+    if (state.qqbotQRStartGen !== gen) return;
+    state.qqbotQRToken = "";
+    revokeQQBotQRCodeURL();
+    state.qqbotQRStatus = "error";
+    state.qqbotQRMessage = e.message || t("qqbotQRError");
+    renderConfigFields();
+    if (!handleAPIError(e)) toast(state.qqbotQRMessage);
+  }
+}
+async function pollQQBotQRLogin() {
+  const token = state.qqbotQRToken;
+  const gen = state.qqbotQRStartGen || 0;
+  if (!token) return;
+  try {
+    const out = await api("/api/v1/im/qqbot/qr/poll", { method: "POST", body: JSON.stringify({ qrcode_token: token }) });
+    const rawStatus = String(out.status || "").trim().toLowerCase();
+    if (state.qqbotQRToken !== token || (state.qqbotQRStartGen || 0) !== gen) {
+      if (rawStatus === "confirmed") {
+        try {
+          const cfgResp = await api("/api/v1/config");
+          state.config = userConfigDraft(cfgResp.app_config);
+          await loadIMRuntimeStatuses();
+          renderConfigFields();
+        } catch (e) {
+          handleAPIError(e);
+        }
+      }
+      return;
+    }
+    if (rawStatus === "pending") {
+      state.qqbotQRStatus = "pending";
+      state.qqbotQRMessage = t("qqbotQRScanned");
+      renderConfigFields();
+      scheduleQQBotQRPoll();
+      return;
+    }
+    state.qqbotQRStatus = normalizeWeixinQRStatus(out.status);
+    state.qqbotQRMessage = normalizeWeixinQRMessage(state.qqbotQRStatus, out.message || out.error, "");
+    if (out.retryable && (state.qqbotQRStatus === "wait" || state.qqbotQRStatus === "error" || !state.qqbotQRStatus)) {
+      state.qqbotQRStatus = "wait";
+      state.qqbotQRMessage = String(out.error || out.message || "").trim() || t("weixinQRWaiting");
+      renderConfigFields();
+      scheduleQQBotQRPoll();
+      return;
+    }
+    if (state.qqbotQRStatus === "confirmed") {
+      state.qqbotQRRefreshes = 0;
+      state.qqbotQRMessage = out.app_id ? `${t("qqbotQRConfirmed")} ${maskQQBotAppID(out.app_id)}` : t("qqbotQRConfirmed");
+      state.qqbotQRToken = "";
+      revokeQQBotQRCodeURL();
+      clearQQBotQRPoll();
+      toast(t("qqbotQRConfirmed"));
+      renderConfigFields();
+      try {
+        const cfgResp = await api("/api/v1/config");
+        if ((state.qqbotQRStartGen || 0) !== gen) return;
+        state.config = userConfigDraft(cfgResp.app_config);
+        await loadIMRuntimeStatuses();
+      } catch (e) {
+        handleAPIError(e);
+      }
+      renderConfigFields();
+      return;
+    }
+    if (state.qqbotQRStatus === "expired") {
+      if ((state.qqbotQRRefreshes || 0) < 3) {
+        state.qqbotQRRefreshes = (state.qqbotQRRefreshes || 0) + 1;
+        await startQQBotQRLogin(false);
+        return;
+      }
+      state.qqbotQRToken = "";
+      revokeQQBotQRCodeURL();
+      clearQQBotQRPoll();
+      renderConfigFields();
+      return;
+    }
+    if (state.qqbotQRStatus === "error") {
+      state.qqbotQRToken = "";
+      revokeQQBotQRCodeURL();
+      clearQQBotQRPoll();
+      renderConfigFields();
+      return;
+    }
+    renderConfigFields();
+    scheduleQQBotQRPoll();
+  } catch (e) {
+    if (state.qqbotQRToken !== token || (state.qqbotQRStartGen || 0) !== gen) return;
+    if (e?.status === 400 && (state.qqbotQRRefreshes || 0) < 3) {
+      state.qqbotQRRefreshes = (state.qqbotQRRefreshes || 0) + 1;
+      await startQQBotQRLogin(false);
+      return;
+    }
+    state.qqbotQRStatus = "error";
+    state.qqbotQRMessage = e.message || t("qqbotQRError");
+    state.qqbotQRToken = "";
+    revokeQQBotQRCodeURL();
+    clearQQBotQRPoll();
+    renderConfigFields();
+    if (!handleAPIError(e)) toast(state.qqbotQRMessage);
+  }
+}
 async function openIMAuditSession(item) {
   const instanceID = item?.instance_id || item?.InstanceID || "";
   const sessionID = item?.session_id || item?.SessionID || "";
@@ -3261,13 +3812,19 @@ function bindIMAuditPanel() {
   document.querySelectorAll("[data-im-audit-open]").forEach((btn) => {
     btn.onclick = () => openIMAuditSession(state.imAuditItems[Number(btn.dataset.imAuditOpen)]);
   });
-  if (!state.imAuditLoaded && state.settingsTab === "im") loadIMAuditMessages();
+  if (!state.imAuditLoaded && !state.imAuditLoading && (state.settingsTab === "im" || state.view === "im")) loadIMAuditMessages();
 }
 function bindWeixinQRTools() {
   const btn = $("startWeixinQRLogin");
   if (btn) btn.onclick = startWeixinQRLogin;
   const cancel = $("cancelWeixinQRLogin");
   if (cancel) cancel.onclick = () => { resetWeixinQRLogin(); renderConfigFields(); };
+}
+function bindQQBotQRTools() {
+  const btn = $("startQQBotQRLogin");
+  if (btn) btn.onclick = () => startQQBotQRLogin();
+  const cancel = $("cancelQQBotQRLogin");
+  if (cancel) cancel.onclick = () => { resetQQBotQRLogin(); renderConfigFields(); };
 }
 async function loadWeixinRuntimeStatus() {
   try {
@@ -3301,6 +3858,11 @@ async function saveAndStartIM(enabledKey) {
   if (enabledKey === "weixin_enabled" && !imRequiredFieldsReady(enabledKey)) {
     toast(t("imWeixinStartScan"));
     await startWeixinQRLogin();
+    return;
+  }
+  if (enabledKey === "qqbot_enabled" && !imRequiredFieldsReady(enabledKey)) {
+    toast(t("qqbotQRHint"));
+    await startQQBotQRLogin();
     return;
   }
   if (enabledKey === "thirdparty_gateway_enabled" && !String($("cfg_thirdparty_gateway_token")?.value || state.config?.thirdparty_gateway_token || "").trim()) {
@@ -3959,6 +4521,9 @@ function objectElementValue(el) {
   return String(el?.value || "").trim();
 }
 function renderConfigFields() {
+  if (state.view === "im") { refreshConfigOrIM(); return; }
+  if (state.view === "skills") { refreshSkillMCPPanels(); return; }
+  if (!$("cfgTabs") || !$("cfgForm")) return;
   const defs = Object.fromEntries(state.schema.map((x) => [x.key, x]));
   const groups = configGroups(state.schema);
   if (!groups.some((g) => g.id === state.settingsTab)) state.settingsTab = groups[0]?.id || "";
@@ -3975,6 +4540,7 @@ function renderConfigFields() {
   bindMigrationManager();
   bindIMAuditPanel();
   bindWeixinQRTools();
+  bindQQBotQRTools();
   bindChoiceCustomControls();
   bindChannelTools();
   bindSecretGenerators();
@@ -4168,10 +4734,10 @@ async function saveConfig(options = {}) {
 async function validateConfig() { try { setBusy(true); setSettingsActionsDisabled(true); const out = await api("/api/v1/config/validate", { method: "POST", body: JSON.stringify({ app_config: collectConfig() }) }); updateConfigStatus(out); renderIssues(out); setConfigOutput(out); toast(t("validated")); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setSettingsActionsDisabled(false); setBusy(false); } }
 async function testConfig() { try { setBusy(true); setSettingsActionsDisabled(true); const out = await api("/api/v1/config/test", { method: "POST", body: JSON.stringify({ app_config: collectConfig() }) }); setConfigOutput(out); toast(out.success ? t("testPassed") : t("testFailed")); } catch (e) { if (!handleAPIError(e)) toast(e.message); } finally { setSettingsActionsDisabled(false); setBusy(false); } }
 
-document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => { if (state.view !== b.dataset.view) { resetRunState(); if (state.view === "settings") resetWeixinQRLogin(); } state.view = b.dataset.view; history.replaceState(null, "", `/app/?view=${state.view}${state.instanceId ? `&instance_id=${encodeURIComponent(state.instanceId)}` : ""}`); render(); });
+document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => { if (state.view !== b.dataset.view) { resetRunState(); if (state.view === "settings" || state.view === "im") { resetWeixinQRLogin(); resetQQBotQRLogin(); } } state.view = b.dataset.view; history.replaceState(null, "", `/app/?view=${state.view}${state.instanceId ? `&instance_id=${encodeURIComponent(state.instanceId)}` : ""}`); render(); });
 $("logoutBtn").onclick = () => { clearAccessToken(); renderMissingToken(); };
 ["pointerdown", "keydown", "input", "focus"].forEach((eventName) => document.addEventListener(eventName, markUserActivity, true));
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") markUserActivity(); });
-window.addEventListener("beforeunload", clearWeixinQRPoll);
+window.addEventListener("beforeunload", () => { clearWeixinQRPoll(); clearQQBotQRPoll(); });
 markUserActivity();
 bootstrap();

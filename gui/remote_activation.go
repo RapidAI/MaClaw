@@ -70,6 +70,13 @@ type ReferralHandoffClaimResult struct {
 	RegistrationMethod string  `json:"registration_method"`
 	InviteeCredits     float64 `json:"invitee_credits"`
 	DurationDays       int     `json:"duration_days"`
+	// RegisteredIdentity is populated only for a completed invitation
+	// registration after the desktop claims its one-time opaque handoff.
+	// It is intentionally kept in memory by the onboarding UI and never part
+	// of the deep link.
+	RegistrationStatus     string `json:"registration_status,omitempty"`
+	RegisteredIdentity     string `json:"registered_identity,omitempty"`
+	RegisteredIdentityType string `json:"registered_identity_type,omitempty"`
 }
 
 // ReferralRegistrationStatus is intentionally limited to resume-safe workflow
@@ -426,7 +433,7 @@ func (a *App) ActivateReferralRemoteEmail(hubURL string, email string, tenantID 
 	}); err != nil {
 		return RemoteActivationResult{}, err
 	}
-	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, email), enrollResult.MachineID, enrollResult.ViewerToken)
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, email), skillMarketContactFromEnroll(&enrollResult, email), enrollResult.MachineID, enrollResult.ViewerToken)
 	a.emitRemoteStateChanged()
 	return RemoteActivationResult{Status: enrollResult.Status, HubID: enrollResult.HubID, TenantID: enrollResult.TenantID, TenantName: enrollResult.TenantName, Message: enrollResult.Message, Code: enrollResult.Code, UserID: enrollResult.UserID, Email: enrollResult.Email, PhoneNumber: normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber), SN: enrollResult.SN, MachineID: enrollResult.MachineID, MachineToken: enrollResult.MachineToken, ViewerToken: enrollResult.ViewerToken, ExpiresAt: enrollResult.ExpiresAt, VIPFlag: enrollResult.VIPFlag}, nil
 }
@@ -509,7 +516,7 @@ func (a *App) ActivateReferralRemotePhone(hubURL string, phoneNumber string, ten
 	}); err != nil {
 		return RemoteActivationResult{}, err
 	}
-	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), skillMarketContactFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
 	a.emitRemoteStateChanged()
 	return RemoteActivationResult{Status: enrollResult.Status, HubID: enrollResult.HubID, TenantID: enrollResult.TenantID, TenantName: enrollResult.TenantName, Message: enrollResult.Message, Code: enrollResult.Code, UserID: enrollResult.UserID, Email: enrollResult.Email, PhoneNumber: phoneNumber, SN: enrollResult.SN, MachineID: enrollResult.MachineID, MachineToken: enrollResult.MachineToken, ViewerToken: enrollResult.ViewerToken, ExpiresAt: enrollResult.ExpiresAt, VIPFlag: enrollResult.VIPFlag}, nil
 }
@@ -1406,7 +1413,7 @@ func (a *App) activateRemoteEmail(email string, verifyCode string, invitationCod
 	// Auto-acquire SkillMarket session token via machine-login.
 	// This allows the user to upload skills immediately after Hub registration
 	// without a separate SkillMarket login step.
-	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(enrollResult, ""), enrollResult.MachineID, enrollResult.ViewerToken)
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(enrollResult, ""), skillMarketContactFromEnroll(enrollResult, ""), enrollResult.MachineID, enrollResult.ViewerToken)
 
 	// Convert to GUI result type.
 	result := RemoteActivationResult{
@@ -1581,7 +1588,7 @@ func (a *App) ActivateRemoteSMS(hubURL string, phoneNumber string, verifyCode st
 		return RemoteActivationResult{}, err
 	}
 
-	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
+	go a.acquireSkillMarketTokenAfterEnroll(skillMarketAccountFromEnroll(&enrollResult, phoneNumber), skillMarketContactFromEnroll(&enrollResult, phoneNumber), enrollResult.MachineID, enrollResult.ViewerToken)
 
 	result := RemoteActivationResult{
 		Status:              enrollResult.Status,
@@ -1652,6 +1659,21 @@ func skillMarketAccountFromEnroll(enrollResult *remote.EnrollResult, fallbackPho
 	}
 	if account := strings.TrimSpace(enrollResult.Email); account != "" {
 		return account
+	}
+	if phone := normalizeRemoteRegistrationPhoneNumber(fallbackPhone); phone != "" {
+		return "phone:" + phone
+	}
+	return ""
+}
+
+func skillMarketContactFromEnroll(enrollResult *remote.EnrollResult, fallbackPhone string) string {
+	if enrollResult != nil {
+		if email := strings.TrimSpace(enrollResult.Email); email != "" {
+			return email
+		}
+		if phone := normalizeRemoteRegistrationPhoneNumber(enrollResult.PhoneNumber); phone != "" {
+			return "phone:" + phone
+		}
 	}
 	if phone := normalizeRemoteRegistrationPhoneNumber(fallbackPhone); phone != "" {
 		return "phone:" + phone
@@ -1852,8 +1874,8 @@ func generateClientID() string {
 // acquireSkillMarketTokenAfterEnroll calls the HubCenter machine-login endpoint
 // to obtain a SkillMarket session token using the Hub enrollment credentials.
 // Runs in background - failure is non-fatal.
-func (a *App) acquireSkillMarketTokenAfterEnroll(account, machineID, viewerToken string) {
-	if account == "" || viewerToken == "" {
+func (a *App) acquireSkillMarketTokenAfterEnroll(userID, contact, machineID, viewerToken string) {
+	if userID == "" || viewerToken == "" {
 		return
 	}
 	if !a.shouldAttemptSkillMarketAutoLogin() {
@@ -1869,6 +1891,11 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(account, machineID, viewerToken
 		log.Printf("[skillmarket-auto-login] load config failed: %v", err)
 		return
 	}
+	if strings.TrimSpace(cfg.RemoteHubID) == "" {
+		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
+		log.Printf("[skillmarket-auto-login] registered Hub ID is unavailable")
+		return
+	}
 	// Skip if user already has a valid SkillMarket token.
 	if strings.TrimSpace(cfg.SkillMarketSessionToken) != "" {
 		return
@@ -1881,7 +1908,7 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(account, machineID, viewerToken
 		return
 	}
 	client := remote.NewSkillMarketAuthClient()
-	result, err := client.MachineLogin(ctx, baseURL, account, machineID, viewerToken)
+	result, err := client.MachineLogin(ctx, baseURL, cfg.RemoteHubID, userID, contact, machineID, viewerToken)
 	if err != nil {
 		a.deferSkillMarketAutoLoginRetry(skillMarketAutoLoginRetryDelay)
 		log.Printf("[skillmarket-auto-login] machine-login failed (non-fatal): %v", err)
@@ -1901,7 +1928,7 @@ func (a *App) acquireSkillMarketTokenAfterEnroll(account, machineID, viewerToken
 		return
 	}
 	a.skillMarketAutoLoginNextAttempt.Store(time.Time{})
-	log.Printf("[skillmarket-auto-login] success account=%s", account)
+	log.Printf("[skillmarket-auto-login] success user_id=%s", userID)
 }
 
 func (a *App) shouldAttemptSkillMarketAutoLogin() bool {

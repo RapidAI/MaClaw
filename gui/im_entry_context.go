@@ -42,6 +42,7 @@ type imEntryContextResult struct {
 	ClearUIAfterContextSwitch bool
 	HasPendingUserReply       bool
 	HasPendingAskUser         bool
+	ResumeWorkingState        *agent.WorkingState
 	Response                  *IMAgentResponse
 	Handled                   bool
 	// DeferredHostResponse runs AFTER the per-session IM serialization lock is
@@ -138,13 +139,13 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	// false-positive workflow triggers (e.g. plan text matching unrelated templates).
 	// Explicit workflow interactions and active sessions must always be processed.
 	// Ordinary messages never auto-start a workflow.
+	h.ensurePureCodingArmedForIncomingMessage(msg.UserID)
 	isExplicitWorkflowCommand := strings.HasPrefix(trimmed, workflowChoiceCommandPrefix)
 	hasActiveWorkflow := h.hasWorkflowRoutingContinuation(msg.UserID)
 	hasPendingTemplateExecution := h.hasPendingTemplateSubAgentExecution(msg.UserID)
 	_, hasPendingWorkflowChoice := h.pendingWorkflowChoice.Load(msg.UserID)
 	result.WorkflowActive = hasActiveWorkflow
 	result.WorkflowChoicePending = hasPendingWorkflowChoice
-	// A pure-coding template can be armed before the workflow router sets its
 	// A pure-coding template can be armed before the workflow router sets its
 	// WorkflowAgentLoop marker. It is still a stateful continuation and must
 	// never replay an independent-answer cache.
@@ -188,10 +189,18 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	workflowRouteElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
 
-	result.AskUserContext, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
+	var resumeWS *agent.WorkingState
+	result.AskUserContext, resumeWS, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
+	result.ResumeWorkingState = resumeWS
 
 	// Engine-injected post-recording choice (minutes / transcribe / keep_only).
 	// Must run before record completion handling so button clicks resolve first.
+	var postWS *agent.WorkingState
+	if raw, ok := h.pendingPostRecording.Load(msg.UserID); ok {
+		if pending, fresh := pendingPostRecordingForCurrentHistory(raw, result.EntriesBeforeClear); fresh && pending != nil {
+			postWS = agent.CloneWorkingState(pending.WorkingState)
+		}
+	}
 	if postCtx, hostResp, deferredHost, hasPost := h.consumePendingPostRecordingChoice(msg.UserID, trimmed, result.EntriesBeforeClear); hasPost {
 		if deferredHost != nil {
 			// Long host work (ASR) must run after the session lock is released.
@@ -210,20 +219,28 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 			result.AskUserContext = postCtx
 		}
 		result.HasPendingAskUser = true
+		if postWS != nil {
+			if !h.hasActivePendingPostRecording(msg.UserID, result.EntriesBeforeClear) {
+				agent.AdvanceWorkingStateAfterUserReply(postWS)
+			}
+			result.ResumeWorkingState = postWS
+		}
 	}
 
-	// Capture title/purpose before consumePendingRecordAudioAnswer clears state.
+	// Capture title/purpose/workspace before consumePendingRecordAudioAnswer clears state.
 	recTitle, recPurpose := "", ""
+	var openRecWS *agent.WorkingState
 	if raw, ok := h.pendingRecordAudio.Load(msg.UserID); ok {
 		if pending, fresh := pendingRecordAudioForCurrentHistory(raw, result.EntriesBeforeClear); fresh && pending != nil {
 			recTitle, recPurpose = pending.Title, pending.Purpose
+			openRecWS = agent.CloneWorkingState(pending.WorkingState)
 		}
 	}
-	if recordCtx, hasRecord := h.consumePendingRecordAudioAnswer(msg.UserID, trimmed, result.EntriesBeforeClear); hasRecord {
+	if recordCtx, recWS, hasRecord := h.consumePendingRecordAudioAnswer(msg.UserID, trimmed, result.EntriesBeforeClear); hasRecord {
 		// Option B: successful save with path → inject choice GUI, skip LLM for this step.
 		if isSuccessfulRecordingForChoice(trimmed) {
 			lang := h.imCommandResponseLang(msg.Lang)
-			if resp := h.offerPostRecordingChoice(msg.UserID, recTitle, recPurpose, trimmed, lang, result.EntriesBeforeClear); resp != nil {
+			if resp := h.offerPostRecordingChoice(msg.UserID, recTitle, recPurpose, trimmed, lang, result.EntriesBeforeClear, recWS); resp != nil {
 				result.Handled = true
 				result.Response = resp
 				return result
@@ -235,6 +252,10 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 			result.AskUserContext = recordCtx
 		}
 		result.HasPendingAskUser = true
+		if recWS != nil {
+			agent.AdvanceWorkingStateAfterUserReply(recWS)
+			result.ResumeWorkingState = recWS
+		}
 	} else if h.hasActivePendingRecordAudio(msg.UserID, result.EntriesBeforeClear) {
 		// Recording UI still open: force TaskContinue so casual chat cannot
 		// archive/clear the session and wipe pendingRecordAudio.
@@ -244,6 +265,9 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 			result.AskUserContext = result.AskUserContext + "\n\n" + soft
 		} else {
 			result.AskUserContext = soft
+		}
+		if openRecWS != nil {
+			result.ResumeWorkingState = openRecWS
 		}
 	}
 	askUserElapsed = time.Since(lastPhaseAt)
@@ -270,6 +294,9 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.FreshTask = false
 		taskContextClearUI = false
 		result.HasPendingAskUser = true
+	}
+	if result.FreshTask && !result.HasPendingAskUser {
+		result.ResumeWorkingState = nil
 	}
 	result.ClearUIAfterContextSwitch = taskContextClearUI
 	taskContextElapsed = time.Since(lastPhaseAt)

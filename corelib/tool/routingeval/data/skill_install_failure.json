@@ -1,0 +1,46 @@
+{
+  "category": "skill_install_failure",
+  "category_id": 8,
+  "title": "Skill install and runner failure",
+  "design_ref": "10.1 item 8",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "skill-not-ready",
+      "title": "Unready skill provider does not expand the plan",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "skill_search",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ],
+            "ready": false,
+            "kind": "skill"
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "Skill install/runner failure is covered by dynamic binding tests."
+    }
+  ]
+}

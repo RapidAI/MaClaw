@@ -53,7 +53,7 @@ function renderTaskManagement(overrides: Partial<ComponentProps<typeof SidebarTa
         ...overrides,
     };
     const view = render(<SidebarTaskManagement {...props} />);
-    return { ...props, container: view.container };
+    return { ...props, container: view.container, rerender: view.rerender };
 }
 
 afterEach(async () => {
@@ -273,6 +273,138 @@ describe('SidebarTaskManagement', () => {
         expect(EventsEmit).toHaveBeenCalledWith('project-task:closed', baseProject.project_path);
         expect(refreshTasks).toHaveBeenCalledTimes(1);
         expect(setTaskContextMenu).toHaveBeenCalledWith(null);
+    });
+
+    it('shows an inline progress bar on the task being removed', async () => {
+        let finishRemove: (() => void) | undefined;
+        const hideTask = vi.fn(() => new Promise<void>(resolve => { finishRemove = resolve; }));
+        renderTaskManagement({
+            hideTask,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+
+        expect((await screen.findByTestId('task-remove-progress')).getAttribute('aria-label')).toBe('Removing task');
+        expect(screen.getByText('Removing task...')).toBeTruthy();
+        expect(hideTask).toHaveBeenCalledWith(baseProject.project_path);
+
+        finishRemove?.();
+        await waitFor(() => expect(screen.queryByTestId('task-remove-progress')).toBeNull());
+    });
+
+    it('keeps the task in place and reports a failed removal', async () => {
+        const hideTask = vi.fn().mockRejectedValue(new Error('backend unavailable'));
+        const refreshTasks = vi.fn();
+        renderTaskManagement({
+            hideTask,
+            refreshTasks,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+
+        expect((await screen.findByTestId('task-remove-error')).textContent).toContain('backend unavailable');
+        expect(screen.getByText('Build dashboard')).toBeTruthy();
+        expect(screen.queryByTestId('task-remove-progress')).toBeNull();
+        expect(EventsEmit).not.toHaveBeenCalledWith('project-task:closed', baseProject.project_path);
+        expect(refreshTasks).not.toHaveBeenCalled();
+    });
+
+    it('keeps each task removal error visible when concurrent removals fail', async () => {
+        const secondProject = { ...baseProject, id: 'task-2', name: 'Review notes', project_path: 'D:/work/tasks/review-notes' };
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const hideTask = vi.fn((projectPath: string) => Promise.reject(new Error(projectPath === baseProject.project_path ? 'first failure' : 'second failure')));
+        const { rerender } = renderTaskManagement({
+            tasks: [baseProject, secondProject],
+            hideTask,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+        await screen.findByText('first failure');
+
+        rerender(<SidebarTaskManagement
+            lang="en"
+            tasks={[baseProject, secondProject]}
+            renamingTaskPath={null}
+            setRenamingTaskPath={vi.fn()}
+            renameValue=""
+            setRenameValue={vi.fn()}
+            resumeTask={vi.fn()}
+            continueWorkflowProject={vi.fn()}
+            createTask={vi.fn()}
+            refreshTasks={vi.fn()}
+            taskContextMenu={{ x: 10, y: 20, projectPath: secondProject.project_path, name: secondProject.name, pinned: false }}
+            setTaskContextMenu={vi.fn()}
+            renameTask={vi.fn()}
+            pinTask={vi.fn()}
+            hideTask={hideTask}
+        />);
+        fireEvent.click(screen.getByText('Remove'));
+
+        await screen.findByText('second failure');
+        expect(screen.getAllByTestId('task-remove-error')).toHaveLength(2);
+        consoleError.mockRestore();
+    });
+
+    it('does not announce or refresh when the guarded removal is skipped', async () => {
+        const hideTask = vi.fn().mockResolvedValue(false);
+        const refreshTasks = vi.fn();
+        renderTaskManagement({
+            hideTask,
+            refreshTasks,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+
+        await waitFor(() => expect(hideTask).toHaveBeenCalledWith(baseProject.project_path));
+        expect(screen.getByText('Build dashboard')).toBeTruthy();
+        expect(screen.queryByTestId('task-remove-progress')).toBeNull();
+        expect(screen.queryByTestId('task-remove-error')).toBeNull();
+        expect(EventsEmit).not.toHaveBeenCalledWith('project-task:closed', baseProject.project_path);
+        expect(refreshTasks).not.toHaveBeenCalled();
+    });
+
+    it('keeps progress on every row while separate removals are in flight', async () => {
+        const secondProject = { ...baseProject, id: 'task-2', name: 'Review notes', project_path: 'D:/work/tasks/review-notes' };
+        const pending = new Map<string, () => void>();
+        const hideTask = vi.fn((projectPath: string) => new Promise<void>(resolve => { pending.set(projectPath, resolve); }));
+        const { rerender } = renderTaskManagement({
+            tasks: [baseProject, secondProject],
+            hideTask,
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        fireEvent.click(screen.getByText('Remove'));
+        await screen.findByTestId('task-remove-progress');
+
+        rerender(<SidebarTaskManagement
+            lang="en"
+            tasks={[baseProject, secondProject]}
+            renamingTaskPath={null}
+            setRenamingTaskPath={vi.fn()}
+            renameValue=""
+            setRenameValue={vi.fn()}
+            resumeTask={vi.fn()}
+            continueWorkflowProject={vi.fn()}
+            createTask={vi.fn()}
+            refreshTasks={vi.fn()}
+            taskContextMenu={{ x: 10, y: 20, projectPath: secondProject.project_path, name: secondProject.name, pinned: false }}
+            setTaskContextMenu={vi.fn()}
+            renameTask={vi.fn()}
+            pinTask={vi.fn()}
+            hideTask={hideTask}
+        />);
+        fireEvent.click(screen.getByText('Remove'));
+
+        await waitFor(() => expect(screen.getAllByTestId('task-remove-progress')).toHaveLength(2));
+        expect(hideTask).toHaveBeenCalledTimes(2);
+
+        pending.get(baseProject.project_path)?.();
+        pending.get(secondProject.project_path)?.();
+        await waitFor(() => expect(screen.queryByTestId('task-remove-progress')).toBeNull());
     });
 
     it('still refreshes after remove when project close event emit fails', async () => {

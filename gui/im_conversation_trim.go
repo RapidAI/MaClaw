@@ -661,7 +661,7 @@ func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 			map[string]string{"role": "user", "content": compactionHandoffPrompt + text},
 		}
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-trim-summary"})
-		result, err := doSimpleLLMRequest(ctx, cfg, msgs, httpClient, 30*time.Second)
+		result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), msgs, httpClient, 30*time.Second)
 		if err != nil || result.Content == "" {
 			return ""
 		}

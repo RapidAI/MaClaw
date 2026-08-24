@@ -791,6 +791,11 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		body = setOpenAIModelInBody(body, resolvedModel)
 		normalizedModel = resolvedModel
 	}
+	// Record the original request contract before compatibility cleanup.  The
+	// cleanup can normalize invalid tool-message links, but that must not make a
+	// completed tool turn indistinguishable from a new tool-enabled turn when a
+	// later recovery retry is considered.
+	retrySemantics := codeGenProxyRetrySemanticsForBody(body)
 	body, compatibilityNotes := applyCodeGenOpenAICompatibility(body)
 	// Inject stream_options for usage reporting (if upstream supports it).
 	body = s.injectStreamOptionsIfSupported(body)
@@ -915,7 +920,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	retried := false // set to true if a retry modified the request body — invalidates cacheKey
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
-		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(normalizedModel, body, upResp.StatusCode); ok {
+		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(normalizedModel, body, upResp.StatusCode, retrySemantics); ok {
 			log.Printf("[codegenproxy] openai chat retry without tools id=%s model=%q original_status=%d original_response=%s retry_summary=%s",
 				reqID, normalizedModel, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(retryBody))
 			retryResp, retryErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, retryBody, r.Header.Get("Accept"), logBoolFromBody(retryBody, "stream"))
@@ -937,7 +942,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				}
 			}
 		}
-		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, normalizedModel, body, upResp.StatusCode); ok {
+		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, normalizedModel, body, upResp.StatusCode, retrySemantics); ok {
 			log.Printf("[codegenproxy] openai chat compact retry id=%s model=%q original_status=%d original_response=%s retry_summary=%s",
 				reqID, normalizedModel, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(compactBody))
 			compactResp, compactErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, compactBody, r.Header.Get("Accept"), logBoolFromBody(compactBody, "stream"))
@@ -1060,6 +1065,10 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		chatBody = setOpenAIModelInBody(chatBody, resolvedModel)
 		normalizedModel = resolvedModel
 	}
+	// Keep the semantic state from the converted Responses request. The
+	// compatibility sanitizer can remove orphaned tool-result messages, which is
+	// transport cleanup rather than evidence that this was an active tool turn.
+	retrySemantics := codeGenProxyRetrySemanticsForBody(chatBody)
 	chatBody, compatibilityNotes := applyCodeGenOpenAICompatibility(chatBody)
 	// Inject stream_options for usage reporting (if upstream supports it).
 	chatBody = s.injectStreamOptionsIfSupported(chatBody)
@@ -1167,7 +1176,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	// compact history before we begin writing an SSE response.
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
-		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, normalizedModel, chatBody, upResp.StatusCode); ok {
+		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, normalizedModel, chatBody, upResp.StatusCode, retrySemantics); ok {
 			log.Printf("[codegenproxy] openai responses compact retry id=%s model=%q original_status=%d original_response=%s retry_summary=%s",
 				reqID, normalizedModel, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(compactBody))
 			retryResp, retryErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, compactBody, accept, stream)
@@ -1698,6 +1707,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Convert Anthropic → OpenAI
 	openaiReq := convertAnthropicToOpenAI(anthReq)
+	originalReqData, _ := json.Marshal(openaiReq)
+	retrySemantics := codeGenProxyRetrySemanticsForBody(originalReqData)
 	// Inject stream_options so upstream returns usage in the final SSE chunk.
 	if openaiReq.Stream && atomic.LoadInt32(&s.streamOptionsDisabled) == 0 {
 		openaiReq.StreamOptions = map[string]interface{}{"include_usage": true}
@@ -1725,7 +1736,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	if upResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 256*1024))
-		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(anthReq.Model, reqData, upResp.StatusCode); ok {
+		if retryBody, ok := prepareQwenFlashChatOnlyRetryBody(anthReq.Model, reqData, upResp.StatusCode, retrySemantics); ok {
 			log.Printf("[codegenproxy] anthropic retry without tools id=%s model=%q stream=%v original_status=%d original_response=%s retry_summary=%s",
 				reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(retryBody))
 			retryResp, retryErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, retryBody, r.Header.Get("Accept"), anthReq.Stream)
@@ -1746,7 +1757,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, anthReq.Model, reqData, upResp.StatusCode); ok {
+		if compactBody, ok := prepareCodeGenCompactChatRetryBody(upURL, anthReq.Model, reqData, upResp.StatusCode, retrySemantics); ok {
 			log.Printf("[codegenproxy] anthropic compact retry id=%s model=%q stream=%v original_status=%d original_response=%s retry_summary=%s",
 				reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, truncateForLog(respBody, 2048), summarizeOpenAIRequest(compactBody))
 			compactResp, compactErr := s.getUpstreamClient().DoChatCompletions(r.Context(), upEndpoint, apiKey, clientName, compactBody, r.Header.Get("Accept"), anthReq.Stream)
@@ -2571,7 +2582,7 @@ func applyCodeGenOpenAIMapCompatibility(payload map[string]interface{}, model st
 			notes = append(notes, fmt.Sprintf("codegen_sanitize_messages:%d", len(sanitized)))
 		}
 	}
-	for _, key := range []string{"parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+	for _, key := range []string{"parallel_tool_calls", "store", "metadata", "logprobs", "top_logprobs"} {
 		if _, ok := payload[key]; ok {
 			delete(payload, key)
 			notes = append(notes, "codegen_drop_"+key)
@@ -3296,7 +3307,7 @@ func isRiskyQwenFlashSchemaKey(key string) bool {
 	}
 }
 
-func prepareQwenFlashChatOnlyRetryBody(_ string, body []byte, status int) ([]byte, bool) {
+func prepareQwenFlashChatOnlyRetryBody(_ string, body []byte, status int, semantics codeGenProxyRetrySemantics) ([]byte, bool) {
 	if status != http.StatusBadRequest {
 		return nil, false
 	}
@@ -3306,6 +3317,12 @@ func prepareQwenFlashChatOnlyRetryBody(_ string, body []byte, status int) ([]byt
 	}
 	hadTools := logArrayLen(payload["tools"]) > 0 || logArrayLen(payload["functions"]) > 0
 	if !hadTools {
+		return nil, false
+	}
+	// A tool surface is part of the request semantics. Retrying after deleting
+	// it can turn an action-producing turn into prose while still returning 200.
+	// Continue to use normal provider/error handling for such requests instead.
+	if semantics.hasNonRecoverableContract() {
 		return nil, false
 	}
 	delete(payload, "tools")
@@ -3320,12 +3337,19 @@ func prepareQwenFlashChatOnlyRetryBody(_ string, body []byte, status int) ([]byt
 	return out, true
 }
 
-func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status int) ([]byte, bool) {
+func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status int, semantics codeGenProxyRetrySemantics) ([]byte, bool) {
 	if status != http.StatusBadRequest && status != http.StatusBadGateway {
 		return nil, false
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	// Compaction deliberately removes tool declarations and response controls.
+	// It is safe only for ordinary chat requests; a structured-output or
+	// tool-bearing request must retain its original contract and surface the
+	// upstream capability failure instead of receiving a different request.
+	if semantics.hasNonRecoverableContract() {
 		return nil, false
 	}
 	messages := codeGenProxySliceFromAny(payload["messages"])
@@ -3364,6 +3388,49 @@ func prepareCodeGenCompactChatRetryBody(upURL, model string, body []byte, status
 		return nil, false
 	}
 	return out, true
+}
+
+// codeGenProxyRetrySemantics is captured before transport compatibility
+// cleanup. Tool availability is part of every current request that declares a
+// tool surface, even when its message history includes completed calls: the
+// model may legitimately need another tool to finish the latest user turn.
+// A retry must therefore never remove that surface.
+type codeGenProxyRetrySemantics struct {
+	hasActiveToolSurface bool
+	hasToolSelection     bool
+	hasStructuredOutput  bool
+}
+
+func codeGenProxyRetrySemanticsForBody(body []byte) codeGenProxyRetrySemantics {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		// If the request cannot be inspected, it is not safe to construct a
+		// semantically different retry.
+		return codeGenProxyRetrySemantics{hasStructuredOutput: true}
+	}
+	return codeGenProxyRetrySemanticsForPayload(payload)
+}
+
+func codeGenProxyRetrySemanticsForPayload(payload map[string]interface{}) codeGenProxyRetrySemantics {
+	semantics := codeGenProxyRetrySemantics{
+		hasToolSelection:    codeGenProxyPayloadHasAny(payload, "tool_choice", "function_call"),
+		hasStructuredOutput: codeGenProxyPayloadHasAny(payload, "response_format"),
+	}
+	semantics.hasActiveToolSurface = logArrayLen(payload["tools"]) > 0 || logArrayLen(payload["functions"]) > 0
+	return semantics
+}
+
+func (s codeGenProxyRetrySemantics) hasNonRecoverableContract() bool {
+	return s.hasActiveToolSurface || s.hasToolSelection || s.hasStructuredOutput
+}
+
+func codeGenProxyPayloadHasAny(payload map[string]interface{}, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := payload[key]; ok && value != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func compactCodeGenProxyHistoryForRetry(messages []interface{}) []interface{} {

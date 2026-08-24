@@ -202,18 +202,22 @@ func (a *App) refreshPetStoreSession(staleToken string) error {
 		// the same error keeps refresh behavior consistent (no retry loop).
 		return errPetStoreHubCenterMissing
 	}
-	account := strings.TrimSpace(cfg.RemoteUserID)
-	if account == "" {
-		account = strings.TrimSpace(cfg.RemoteEmail)
+	userID := strings.TrimSpace(cfg.RemoteUserID)
+	contact := strings.TrimSpace(cfg.RemoteEmail)
+	if contact == "" && strings.TrimSpace(cfg.RemoteMobile) != "" {
+		contact = "phone:" + strings.TrimSpace(cfg.RemoteMobile)
+	}
+	if userID == "" {
+		userID = contact
 	}
 	machineID := strings.TrimSpace(cfg.RemoteMachineID)
 	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
-	if account == "" || machineID == "" || viewerToken == "" {
+	if userID == "" || machineID == "" || viewerToken == "" {
 		return errString("Hub enrollment credentials are incomplete")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	result, err := remote.NewSkillMarketAuthClient().MachineLogin(ctx, baseURL, account, machineID, viewerToken)
+	result, err := remote.NewSkillMarketAuthClient().MachineLogin(ctx, baseURL, cfg.RemoteHubID, userID, contact, machineID, viewerToken)
 	if err != nil {
 		return fmt.Errorf("HubCenter machine login: %w", err)
 	}

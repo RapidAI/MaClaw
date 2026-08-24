@@ -3,11 +3,15 @@ package agentservice
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
@@ -32,27 +36,135 @@ type SkillToolProvider interface {
 	SearchSkills(ctx context.Context, p Principal, query string) ([]SkillSearchResult, error)
 }
 
+// SkillDynamicContractResolver is a control-plane lookup. It is deliberately
+// separate from Skill descriptions/triggers so untrusted Skill package content
+// can never self-register a routable capability at execution time.
+type SkillDynamicContractResolver interface {
+	ResolveSkillDynamicContract(ctx context.Context, p Principal, stableID string) (DynamicCapabilityContract, bool)
+}
+
 type skillMaintenancePlanner interface {
 	BuildSkillMaintenancePlan(ctx context.Context, p Principal, opts skill.SkillMaintenancePlanOptions) (skill.SkillMaintenancePlan, error)
 }
 
 // SkillToolEntry represents a single installed skill available for the agent.
 type SkillToolEntry struct {
-	Name        string
-	Description string
-	Mode        string // sequential/interactive/api_workflow
+	StableID      string
+	Name          string
+	Description   string
+	Mode          string // sequential/interactive/api_workflow
+	Version       string
+	ContentDigest string
+	Params        []corelib.NLSkillParam
+	// Contract is resolved by a trusted control-plane publisher. Active or
+	// installed status alone never makes a Skill executable by the Agent.
+	Contract DynamicCapabilityContract
+}
+
+// SkillBinding is the immutable executable identity selected from an active
+// skill inventory. It deliberately excludes the display description and
+// dynamic name-based lookup from the model-facing call surface.
+type SkillBinding struct {
+	StableID       string
+	Name           string
+	Version        string
+	ContentDigest  string
+	ContractDigest string
+}
+
+func (b SkillBinding) BindingID() string {
+	return strings.Join([]string{strings.TrimSpace(b.StableID), strings.TrimSpace(b.Version), strings.TrimSpace(b.ContentDigest), strings.TrimSpace(b.ContractDigest)}, ":")
+}
+
+type boundSkillCallSurface struct {
+	mu       sync.RWMutex
+	adapters map[string]boundSkillAdapter
+}
+
+type boundSkillAdapter struct {
+	Binding    SkillBinding
+	Parameters map[string]interface{}
+}
+
+func newBoundSkillCallSurface() *boundSkillCallSurface {
+	return &boundSkillCallSurface{adapters: make(map[string]boundSkillAdapter)}
+}
+
+func (s *boundSkillCallSurface) replace(adapters map[string]boundSkillAdapter) {
+	if s == nil {
+		return
+	}
+	clone := make(map[string]boundSkillAdapter, len(adapters))
+	for name, adapter := range adapters {
+		clone[name] = boundSkillAdapter{Binding: adapter.Binding, Parameters: cloneMCPJSONValue(adapter.Parameters).(map[string]interface{})}
+	}
+	s.mu.Lock()
+	s.adapters = clone
+	s.mu.Unlock()
+}
+
+func (s *boundSkillCallSurface) adapter(name string) (boundSkillAdapter, bool) {
+	if s == nil {
+		return boundSkillAdapter{}, false
+	}
+	s.mu.RLock()
+	adapter, ok := s.adapters[strings.TrimSpace(name)]
+	s.mu.RUnlock()
+	return adapter, ok
 }
 
 // SkillToolBridge implements SkillToolProvider by delegating to the Service's
 // existing skill management infrastructure.
 type SkillToolBridge struct {
-	svc *Service
+	svc       *Service
+	contracts SkillDynamicContractResolver
+}
+
+// DynamicCatalogLifecycle records whether the active Skill inventory could be
+// read for this principal. A failed list operation must remain
+// catalog_incomplete rather than being mistaken for an empty, complete Skill
+// family and silently hiding a requested capability.
+func (b *SkillToolBridge) DynamicCatalogLifecycle(ctx context.Context, p Principal) DynamicCatalogLifecycle {
+	_, lifecycle := b.DynamicSkillInventory(ctx, p)
+	return lifecycle
+}
+
+// DynamicSkillInventory observes active skills once and derives both the
+// catalog entries and coverage result from that same observation. This avoids
+// a list succeeding for planning while a second list fails (or changes) when
+// reporting readiness for the exact same user turn.
+func (b *SkillToolBridge) DynamicSkillInventory(ctx context.Context, p Principal) ([]SkillToolEntry, DynamicCatalogLifecycle) {
+	if b == nil || b.svc == nil {
+		return nil, IncompleteDynamicCatalogLifecycle("catalog_incomplete")
+	}
+	contracts, err := b.contractSnapshot(p)
+	if err != nil {
+		return nil, IncompleteDynamicCatalogLifecycle("contract_registry_unavailable")
+	}
+	items, err := b.svc.ListSkills(ctx, p)
+	if err != nil {
+		return nil, IncompleteDynamicCatalogLifecycle("catalog_incomplete")
+	}
+	return b.entriesFromSnapshotWithContracts(ctx, p, items, contracts), CompleteDynamicCatalogLifecycle()
+}
+
+// SetSkillDynamicContractResolver installs the control-plane capability lookup.
+// Without it, installed Skills remain quarantined from Agent execution.
+func (b *SkillToolBridge) SetSkillDynamicContractResolver(resolver SkillDynamicContractResolver) {
+	if b == nil {
+		return
+	}
+	b.contracts = resolver
 }
 
 // NewSkillToolBridge creates a bridge that connects the CoreAgentExecutor to
 // the Service's skill management layer.
 func NewSkillToolBridge(svc *Service) *SkillToolBridge {
-	return &SkillToolBridge{svc: svc}
+	bridge := &SkillToolBridge{svc: svc}
+	if svc != nil {
+		bridge.contracts = svc.DynamicCapabilityContracts()
+	}
+	return bridge
 }
 
 // ListSkills returns all active skills for the principal.
@@ -61,19 +173,126 @@ func (b *SkillToolBridge) ListSkills(ctx context.Context, p Principal) []SkillTo
 	if err != nil {
 		return nil
 	}
+	return b.entriesFromSnapshot(ctx, p, items)
+}
+
+// entriesFromSnapshot applies only deterministic per-entry projection to the
+// already-observed skill list. The control-plane contract lookup is scoped to
+// the same principal and does not use skill descriptions as routing authority.
+func (b *SkillToolBridge) entriesFromSnapshot(ctx context.Context, p Principal, items []corelib.NLSkillEntry) []SkillToolEntry {
+	return b.entriesFromSnapshotWithContracts(ctx, p, items, b.contracts)
+}
+
+func (b *SkillToolBridge) entriesFromSnapshotWithContracts(ctx context.Context, p Principal, items []corelib.NLSkillEntry, contracts SkillDynamicContractResolver) []SkillToolEntry {
 	entries := make([]SkillToolEntry, 0, len(items))
 	for _, item := range items {
 		if item.Status == "disabled" {
 			continue
 		}
-		entries = append(entries, SkillToolEntry{
-			Name:        item.Name,
-			Description: item.Description,
-			Mode:        item.Mode,
-		})
+		entry := SkillToolEntry{
+			StableID:      skillStableID(item),
+			Name:          item.Name,
+			Description:   item.Description,
+			Mode:          item.Mode,
+			Version:       item.Version,
+			ContentDigest: skillContentDigest(item),
+			Params:        append([]corelib.NLSkillParam(nil), item.Params...),
+		}
+		if contracts != nil {
+			entry.Contract, _ = contracts.ResolveSkillDynamicContract(ctx, p, entry.StableID)
+			if !dynamicSkillContractMatchesEntry(entry.Contract, entry) {
+				entry.Contract = DynamicCapabilityContract{}
+			}
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
+
+func dynamicSkillObservedBindingDigest(stableID, version, contentDigest string) string {
+	return coretool.SchemaDigest([]byte(strings.Join([]string{
+		"skill",
+		strings.TrimSpace(stableID),
+		strings.TrimSpace(version),
+		strings.TrimSpace(contentDigest),
+	}, "\x00")))
+}
+
+// DynamicSkillObservedBindingDigest is the reviewed-control-plane identity
+// for an installed Skill package. It is exported for hosts that persist
+// contracts independently from Service, while keeping declaration authority
+// separate from discovery and Agent execution.
+func DynamicSkillObservedBindingDigest(stableID, version, contentDigest string) string {
+	return dynamicSkillObservedBindingDigest(stableID, version, contentDigest)
+}
+
+func dynamicSkillContractMatchesEntry(contract DynamicCapabilityContract, entry SkillToolEntry) bool {
+	want := strings.TrimSpace(contract.ObservedBindingDigest)
+	return want != "" && want == dynamicSkillObservedBindingDigest(entry.StableID, entry.Version, entry.ContentDigest)
+}
+
+func (b *SkillToolBridge) contractSnapshot(p Principal) (SkillDynamicContractResolver, error) {
+	if b == nil || b.contracts == nil {
+		return nil, nil
+	}
+	provider, ok := b.contracts.(dynamicCapabilityContractSnapshotProvider)
+	if !ok {
+		return b.contracts, nil
+	}
+	snapshot, err := provider.SnapshotDynamicCapabilityContracts(p)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func skillStableID(entry corelib.NLSkillEntry) string {
+	if stableID := strings.TrimSpace(entry.SkillID); stableID != "" {
+		return stableID
+	}
+	if stableID := strings.TrimSpace(entry.HubSkillID); stableID != "" {
+		return stableID
+	}
+	return "legacy:" + strings.ToLower(strings.TrimSpace(entry.Name))
+}
+
+// DynamicSkillStableID returns the immutable identity used by the dynamic
+// catalog and binding validator. Display names remain only a compatibility
+// lookup aid and are never a contract key.
+func DynamicSkillStableID(entry corelib.NLSkillEntry) string { return skillStableID(entry) }
+
+func skillContentDigest(entry corelib.NLSkillEntry) string {
+	payload := struct {
+		StableID   string
+		Name       string
+		Version    string
+		Mode       string
+		Steps      []corelib.NLSkillStep
+		Params     []corelib.NLSkillParam
+		Operations []corelib.NLSkillOperation
+		Pipeline   []corelib.SkillPipelineStep
+	}{
+		StableID:   skillStableID(entry),
+		Name:       entry.Name,
+		Version:    entry.Version,
+		Mode:       entry.Mode,
+		Steps:      entry.Steps,
+		Params:     entry.Params,
+		Operations: entry.Operations,
+		Pipeline:   entry.Pipeline,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return coretool.SchemaDigest([]byte("invalid-skill"))
+	}
+	return coretool.SchemaDigest(data)
+}
+
+// DynamicSkillContentDigest returns the canonical package/runtime digest used
+// by dynamic Skill bindings. A GUI or other host must not approximate this
+// value from a display name or description when publishing/revalidating a
+// reviewed contract.
+func DynamicSkillContentDigest(entry corelib.NLSkillEntry) string { return skillContentDigest(entry) }
 
 // BuildSkillMaintenancePlan returns a read-only local curator plan for the
 // principal's installed skills. It does not mutate, execute, archive, or merge
@@ -120,22 +339,34 @@ func (b *SkillToolBridge) InstallSkill(ctx context.Context, p Principal, args ma
 	return b.svc.InstallSkill(ctx, p, in)
 }
 
-// RunSkill executes a skill by name. It finds the skill, validates it,
-// and executes its bash steps synchronously using the shared corelib runner.
+// RunSkill executes a legacy name-addressed skill request. Semantic adapters
+// must use CallBoundSkill instead: the legacy path deliberately retains
+// compatibility alias matching while the bound path executes one exact entry.
 func (b *SkillToolBridge) RunSkill(ctx context.Context, p Principal, name string, args map[string]interface{}) (string, error) {
 	entry, err := b.svc.GetSkill(ctx, p, name)
 	if err != nil {
 		return "", fmt.Errorf("skill %q not found: %w", name, err)
 	}
+	return b.runSkillEntry(ctx, p, entry, args)
+}
+
+// runSkillEntry executes an already selected skill entry.  It intentionally
+// does not perform any identity lookup: callers that have a semantic binding
+// must carry the exact entry from their validation observation through this
+// execution boundary.
+func (b *SkillToolBridge) runSkillEntry(ctx context.Context, p Principal, entry *corelib.NLSkillEntry, args map[string]interface{}) (string, error) {
+	if entry == nil {
+		return "", fmt.Errorf("skill entry is required")
+	}
 	if entry.Status == "disabled" {
-		return "", fmt.Errorf("skill %q is disabled", name)
+		return "", fmt.Errorf("skill %q is disabled", entry.Name)
 	}
 
 	// Normalize the skill for execution.
 	skill.NormalizeSkillForRunner(entry)
 
 	if len(entry.Steps) == 0 {
-		return "", fmt.Errorf("skill %q has no executable steps", name)
+		return "", fmt.Errorf("skill %q has no executable steps", entry.Name)
 	}
 
 	// Build template variables from args.
@@ -176,6 +407,90 @@ func (b *SkillToolBridge) RunSkill(ctx context.Context, p Principal, name string
 		return "", err
 	}
 	return result.Output, nil
+}
+
+// BindSkill resolves one active skill before it is rendered into a model
+// adapter. The caller holds only this immutable binding afterwards; aliases or
+// name collisions cannot cause execution to drift to another skill.
+func BindSkill(entries []SkillToolEntry, stableID, name string) (SkillBinding, error) {
+	stableID = strings.TrimSpace(stableID)
+	name = strings.TrimSpace(name)
+	if stableID == "" || name == "" {
+		return SkillBinding{}, fmt.Errorf("skill binding requires stable identity and name")
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.StableID) != stableID || strings.TrimSpace(entry.Name) != name {
+			continue
+		}
+		if strings.TrimSpace(entry.ContentDigest) == "" {
+			return SkillBinding{}, fmt.Errorf("skill %q has no content digest", name)
+		}
+		if err := entry.Contract.validate(); err != nil {
+			return SkillBinding{}, fmt.Errorf("skill %q is quarantined: %w", name, err)
+		}
+		return SkillBinding{StableID: stableID, Name: name, Version: strings.TrimSpace(entry.Version), ContentDigest: strings.TrimSpace(entry.ContentDigest), ContractDigest: entry.Contract.Digest()}, nil
+	}
+	return SkillBinding{}, fmt.Errorf("skill %q is not active", name)
+}
+
+// CallBoundSkill revalidates the selected content/version before entering the
+// legacy runner. It intentionally turns model business arguments into the
+// runner's server-owned args envelope instead of accepting a model-provided
+// skill name or control action.
+func (b *SkillToolBridge) CallBoundSkill(ctx context.Context, p Principal, binding SkillBinding, arguments map[string]interface{}) (string, error) {
+	entry, err := b.resolveBoundSkill(ctx, p, binding)
+	if err != nil {
+		return "", err
+	}
+	return b.runSkillEntry(ctx, p, entry, map[string]interface{}{"args": arguments})
+}
+
+// resolveBoundSkill obtains one current principal-scoped inventory observation,
+// identifies exactly one StableID, then proves that its immutable content and
+// reviewed contract still match the materialized binding.  In particular, it
+// never calls GetSkill/findSkill or MatchesName: those compatibility helpers
+// can resolve an alias to a different installed package.
+func (b *SkillToolBridge) resolveBoundSkill(ctx context.Context, p Principal, binding SkillBinding) (*corelib.NLSkillEntry, error) {
+	if b == nil || b.svc == nil {
+		return nil, fmt.Errorf("skill_bound_execution_unavailable")
+	}
+	stableID := strings.TrimSpace(binding.StableID)
+	if stableID == "" || strings.TrimSpace(binding.Name) == "" || strings.TrimSpace(binding.ContentDigest) == "" {
+		return nil, fmt.Errorf("skill_binding_stale")
+	}
+	contracts, err := b.contractSnapshot(p)
+	if err != nil {
+		return nil, fmt.Errorf("skill_binding_stale")
+	}
+	items, err := b.svc.ListSkills(ctx, p)
+	if err != nil {
+		return nil, fmt.Errorf("skill_binding_stale")
+	}
+	var target *corelib.NLSkillEntry
+	for _, item := range items {
+		if skillStableID(item) != stableID {
+			continue
+		}
+		// An ambiguous stable identity is a lifecycle failure, not permission
+		// to select whichever same-name entry happens to appear first.
+		if target != nil {
+			return nil, fmt.Errorf("skill_binding_stale")
+		}
+		copy := item
+		target = &copy
+	}
+	if target == nil || target.Status == "disabled" ||
+		strings.TrimSpace(target.Name) != strings.TrimSpace(binding.Name) ||
+		strings.TrimSpace(target.Version) != strings.TrimSpace(binding.Version) ||
+		skillContentDigest(*target) != strings.TrimSpace(binding.ContentDigest) {
+		return nil, fmt.Errorf("skill_binding_stale")
+	}
+	entries := b.entriesFromSnapshotWithContracts(ctx, p, []corelib.NLSkillEntry{*target}, contracts)
+	fresh, err := BindSkill(entries, stableID, target.Name)
+	if err != nil || fresh.BindingID() != binding.BindingID() {
+		return nil, fmt.Errorf("skill_binding_stale")
+	}
+	return target, nil
 }
 
 func (b *SkillToolBridge) runSkillTimeoutSec(p Principal, entry *corelib.NLSkillEntry) int {
@@ -447,8 +762,77 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 	}
 }
 
+func (c *coreAgentCallbacks) skillRun(args map[string]interface{}) agent.ToolExecutionResult {
+	if c.skillProvider == nil {
+		return agent.ToolExecutionResult{Result: "Error: skill system is not configured", Outcome: agent.ToolExecutionOutcomeError}
+	}
+	name := firstNonEmpty(stringArg(args, "name"), stringArg(args, "skill"), stringArg(args, "skill_id"))
+	if strings.TrimSpace(name) == "" {
+		return agent.ToolExecutionResult{Result: "Error: manage_skill(action=\"run\") requires name", Outcome: agent.ToolExecutionOutcomeError}
+	}
+	out, err := c.skillProvider.RunSkill(c.parentContext(), c.principal, name, manageSkillRunArgs(args))
+	if err != nil {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: run skill %q failed: %v", name, err), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	if strings.TrimSpace(out) == "" {
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Skill %q finished with no output.", name), Outcome: agent.ToolExecutionOutcomeOK}
+	}
+	return toolTextResult(out)
+}
+
+func manageSkillRunArgs(args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return map[string]interface{}{}
+	}
+	out := map[string]interface{}{}
+	if input, ok := args["input"]; ok {
+		out["input"] = input
+	}
+	if output, ok := args["output"]; ok {
+		out["output"] = output
+	}
+	if nested := skillRunArgsObject(args["args"]); nested != nil {
+		out["args"] = nested
+		return out
+	}
+	reserved := map[string]bool{
+		"action": true, "name": true, "skill": true, "skill_id": true,
+		"hub_url": true, "query": true, "input": true, "output": true,
+	}
+	nested := map[string]interface{}{}
+	for key, value := range args {
+		if reserved[strings.ToLower(strings.TrimSpace(key))] {
+			continue
+		}
+		nested[key] = value
+	}
+	if len(nested) > 0 {
+		out["args"] = nested
+	}
+	return out
+}
+
+func skillRunArgsObject(value interface{}) map[string]interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return typed
+	case string:
+		raw := strings.TrimSpace(typed)
+		if raw == "" {
+			return nil
+		}
+		var nested map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &nested); err != nil || nested == nil {
+			return nil
+		}
+		return nested
+	default:
+		return nil
+	}
+}
+
 func (c *coreAgentCallbacks) skillInstall(args map[string]interface{}) agent.ToolExecutionResult {
-	entries, err := c.skillProvider.InstallSkill(c.ctx, c.principal, args)
+	entries, err := c.skillProvider.InstallSkill(c.parentContext(), c.principal, args)
 	if err != nil {
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: install failed: %v", err), Outcome: agent.ToolExecutionOutcomeError}
 	}
@@ -469,7 +853,7 @@ func (c *coreAgentCallbacks) skillInstall(args map[string]interface{}) agent.Too
 }
 
 func (c *coreAgentCallbacks) skillList() agent.ToolExecutionResult {
-	entries := c.skillProvider.ListSkills(c.ctx, c.principal)
+	entries := c.skillProvider.ListSkills(c.parentContext(), c.principal)
 	if len(entries) == 0 {
 		return agent.ToolExecutionResult{Result: "No skills installed.", Outcome: agent.ToolExecutionOutcomeOK}
 	}
@@ -490,7 +874,7 @@ func (c *coreAgentCallbacks) skillSearch(args map[string]interface{}) agent.Tool
 	if query == "" {
 		return agent.ToolExecutionResult{Result: "Error: missing query parameter", Outcome: agent.ToolExecutionOutcomeError}
 	}
-	results, err := c.skillProvider.SearchSkills(c.ctx, c.principal, query)
+	results, err := c.skillProvider.SearchSkills(c.parentContext(), c.principal, query)
 	if err != nil {
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: search failed: %v", err), Outcome: agent.ToolExecutionOutcomeError}
 	}
@@ -512,24 +896,12 @@ func (c *coreAgentCallbacks) skillSearch(args map[string]interface{}) agent.Tool
 	return agent.ToolExecutionResult{Result: b.String(), Outcome: agent.ToolExecutionOutcomeOK}
 }
 
-func (c *coreAgentCallbacks) skillRun(args map[string]interface{}) agent.ToolExecutionResult {
-	name := stringArg(args, "name")
-	if name == "" {
-		return agent.ToolExecutionResult{Result: "Error: missing name parameter", Outcome: agent.ToolExecutionOutcomeError}
-	}
-	result, err := c.skillProvider.RunSkill(c.ctx, c.principal, name, args)
-	if err != nil {
-		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: %v", err), Outcome: agent.ToolExecutionOutcomeError}
-	}
-	return agent.ToolExecutionResult{Result: result, Outcome: agent.ToolExecutionOutcomeOK}
-}
-
 func (c *coreAgentCallbacks) skillMaintenancePlan(args map[string]interface{}) agent.ToolExecutionResult {
 	planner, ok := c.skillProvider.(skillMaintenancePlanner)
 	if !ok {
 		return agent.ToolExecutionResult{Result: "Error: skill maintenance planning is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
 	}
-	plan, err := planner.BuildSkillMaintenancePlan(c.ctx, c.principal, skill.SkillMaintenancePlanOptions{
+	plan, err := planner.BuildSkillMaintenancePlan(c.parentContext(), c.principal, skill.SkillMaintenancePlanOptions{
 		Now:                 time.Now(),
 		StaleAfterDays:      intArg(args, "stale_after_days", 0),
 		MinFailureRuns:      intArg(args, "min_failure_runs", 0),
@@ -571,10 +943,12 @@ func skillFloatArg(args map[string]interface{}, key string) float64 {
 	return 0
 }
 
-// manageSkillToolDef returns the manage_skill tool definition for BuildTools.
+// manageSkillToolDef is a control-plane compatibility definition. It is not
+// returned from BuildTools: installations, discovery and lifecycle management
+// must be reached through authenticated service APIs, not model tool calls.
 func (c *coreAgentCallbacks) manageSkillToolDef() map[string]interface{} {
 	return functionToolDefinition("manage_skill",
-		"Manage and execute installed Skills. Actions: "+skill.ManageSkillActionSlash()+". maintenance_plan is read-only and never modifies, archives, merges, installs, or executes skills.",
+		"Control-plane skill management compatibility endpoint. It is not an Agent task-execution tool.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -611,10 +985,141 @@ func (c *coreAgentCallbacks) manageSkillToolDef() map[string]interface{} {
 		})
 }
 
-// skillToolDefs returns the manage_skill tool definition if provider is available.
+// skillToolDefs materializes active skills into opaque, bound task adapters.
+// The generic manage_skill control-plane gateway is intentionally omitted.
 func (c *coreAgentCallbacks) skillToolDefs() []map[string]interface{} {
 	if c.skillProvider == nil {
 		return nil
 	}
-	return []map[string]interface{}{c.manageSkillToolDef()}
+	entries := c.skillProvider.ListSkills(c.parentContext(), c.principal)
+	if len(entries) == 0 {
+		c.boundSkillCalls().replace(nil)
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].StableID != entries[j].StableID {
+			return entries[i].StableID < entries[j].StableID
+		}
+		return entries[i].Name < entries[j].Name
+	})
+	adapters := make(map[string]boundSkillAdapter, len(entries))
+	defs := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		if err := entry.Contract.validate(); err != nil {
+			continue
+		}
+		binding, err := BindSkill(entries, entry.StableID, entry.Name)
+		if err != nil {
+			continue
+		}
+		adapterName, err := newSkillAdapterName(adapters)
+		if err != nil {
+			continue
+		}
+		parameters := skillInvocationSchema(entry.Params)
+		defs = append(defs, functionToolDefinition(adapterName, "Perform the approved skill capability.", parameters))
+		adapters[adapterName] = boundSkillAdapter{Binding: binding, Parameters: parameters}
+	}
+	c.boundSkillCalls().replace(adapters)
+	return defs
+}
+
+func (c *coreAgentCallbacks) boundSkillCalls() *boundSkillCallSurface {
+	c.skillSurfaceMu.Lock()
+	defer c.skillSurfaceMu.Unlock()
+	if c.skillSurface == nil {
+		c.skillSurface = newBoundSkillCallSurface()
+	}
+	return c.skillSurface
+}
+
+func newSkillAdapterName(existing map[string]boundSkillAdapter) (string, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		buf := make([]byte, 12)
+		if _, err := cryptorand.Read(buf); err != nil {
+			return "", fmt.Errorf("generate skill adapter identity: %w", err)
+		}
+		name := "invoke_skill_" + base64.RawURLEncoding.EncodeToString(buf)
+		if _, exists := existing[name]; !exists {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("generate unique skill adapter identity")
+}
+
+func skillInvocationSchema(params []corelib.NLSkillParam) map[string]interface{} {
+	properties := make(map[string]interface{}, len(params))
+	required := make([]string, 0, len(params))
+	for _, param := range params {
+		name := strings.TrimSpace(param.Name)
+		if name == "" || isReservedSkillInvocationField(name) {
+			continue
+		}
+		kind := strings.TrimSpace(param.Type)
+		switch kind {
+		case "string", "number", "integer", "boolean", "array", "object":
+		default:
+			kind = "string"
+		}
+		properties[name] = map[string]interface{}{"type": kind}
+		if param.Required {
+			required = append(required, name)
+		}
+	}
+	return map[string]interface{}{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+}
+
+func isReservedSkillInvocationField(field string) bool {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "name", "skill", "skill_id", "provider", "provider_id", "selection_id", "action", "credential", "credentials", "artifact_id", "artifact_ref":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *coreAgentCallbacks) executeBoundSkillTool(adapterName string, args map[string]interface{}) (string, bool) {
+	adapter, ok := c.boundSkillCalls().adapter(adapterName)
+	if !ok {
+		return "", false
+	}
+	adapterRecord, execute, err := c.admitDynamicAdapterInvocation("skill", adapterName, adapter.Binding.BindingID())
+	if err != nil {
+		return "Error: " + err.Error(), true
+	}
+	if !execute {
+		return dynamicOperationReplayResult(adapterRecord), true
+	}
+	if _, err := c.completeDynamicOperation(adapterRecord, DynamicOperationSucceeded, ""); err != nil {
+		return "Error: " + err.Error(), true
+	}
+	if strings.TrimSpace(adapter.Binding.StableID) == "" || strings.TrimSpace(adapter.Binding.Name) == "" || strings.TrimSpace(adapter.Binding.ContentDigest) == "" {
+		return "Error: skill_binding_stale", true
+	}
+	if err := validateMCPInvocationArguments(adapter.Parameters, args); err != nil {
+		return "Error: " + err.Error(), true
+	}
+	record, execute, err := c.admitDynamicOperation("skill", adapter.Binding.BindingID(), args)
+	if err != nil {
+		return "Error: " + err.Error(), true
+	}
+	if !execute {
+		return dynamicOperationReplayResult(record), true
+	}
+	bound, ok := c.skillProvider.(boundSkillToolCaller)
+	if !ok {
+		_, _ = c.completeDynamicOperation(record, DynamicOperationFailed, "skill_bound_execution_unavailable")
+		return "Error: bound skill execution is unavailable", true
+	}
+	result, err := bound.CallBoundSkill(c.parentContext(), c.principal, adapter.Binding, args)
+	if err != nil {
+		_, _ = c.completeDynamicOperation(record, DynamicOperationUnknown, "skill_execution_unknown")
+		return fmt.Sprintf("Error: %v", err), true
+	}
+	_, _ = c.completeDynamicOperation(record, DynamicOperationSucceeded, "")
+	return result, true
+}
+
+type boundSkillToolCaller interface {
+	CallBoundSkill(ctx context.Context, p Principal, binding SkillBinding, arguments map[string]interface{}) (string, error)
 }

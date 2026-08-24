@@ -110,6 +110,12 @@ func TestToolRouter_ChineseBrowserPublicationKeepsStableBrowserOnly(t *testing.T
 		toolDef("web_search", "Search web", nil, nil),
 	}
 	router := NewToolRouter(nil)
+	// Publication wording alone must never promote browser; activation comes
+	// from the semantic classifier. With a browser-intent UIC the merged
+	// browser surface stays stable and generic fallbacks are suppressed.
+	router.SetUnifiedClassifier(intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"browser","score":0.95}]}`, nil
+	}}))
 	result := router.Route("\u627e\u7bc7\u6700\u65b0\u8bba\u6587\uff0c\u5199\u5b8c\u540e\u53d1\u5e03\u5230\u77e5\u4e4e", allTools)
 
 	resultNames := make(map[string]bool)
@@ -117,7 +123,7 @@ func TestToolRouter_ChineseBrowserPublicationKeepsStableBrowserOnly(t *testing.T
 		resultNames[extractToolName(tool)] = true
 	}
 	if !resultNames["browser"] {
-		t.Fatalf("browser should be kept for Chinese publication task, got %#v", resultNames)
+		t.Fatalf("browser should be kept for browser-intent publication task, got %#v", resultNames)
 	}
 	for _, name := range []string{"bash", "screenshot", "manage_skill", "discover_tool", "call_mcp_tool"} {
 		if resultNames[name] {
@@ -142,7 +148,7 @@ func TestToolRouter_ExactlyAtBudget(t *testing.T) {
 	}
 }
 
-func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
+func TestToolRouter_AboveBudget_KeepsBootstrapSurface(t *testing.T) {
 	// 29 builtins + 20 dynamic = 49 total, above maxToolBudget.
 	allTools := makeAllTools(20)
 	router := NewToolRouter(nil)
@@ -152,28 +158,22 @@ func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
 		t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
 	}
 
-	// Verify core tools keep a protected share of the budget. The core set can
-	// grow larger than the budget, so the router cannot keep every core tool.
+	// Current contract: only the bootstrap/loop-control surface is
+	// unconditional. Legacy business tools (write_file, memory, web_fetch)
+	// compete on retrieval score and must not leak into a generic query's
+	// surface; manage_skill is a host-controlled gateway and is never emitted.
 	resultNames := make(map[string]bool)
 	for _, tool := range result {
 		resultNames[extractToolName(tool)] = true
 	}
-	corePresent := 0
-	for name := range coreToolNames {
-		if resultNames[name] {
-			corePresent++
+	for _, name := range []string{"task", "async_wait"} {
+		if !resultNames[name] {
+			t.Errorf("bootstrap tool %q missing from result: %#v", name, resultNames)
 		}
 	}
-	minCore := maxToolBudget - maxDynamicRouted
-	if minCore < 1 {
-		minCore = 1
-	}
-	if corePresent < minCore {
-		t.Errorf("expected at least %d core tools within budget, got %d", minCore, corePresent)
-	}
-	for _, name := range []string{"bash", "read_file", "write_file", "edit_file", "memory", "manage_skill"} {
-		if !resultNames[name] {
-			t.Errorf("critical core tool %q missing from result", name)
+	for _, name := range []string{"write_file", "memory", "web_fetch", "manage_skill"} {
+		if resultNames[name] {
+			t.Errorf("legacy business tool %q leaked into a generic-query surface: %#v", name, resultNames)
 		}
 	}
 }
@@ -285,18 +285,39 @@ func TestToolRouter_PDFWorkflowKeepsDocumentDeliveryTools(t *testing.T) {
 	for _, tool := range result {
 		resultNames[extractToolName(tool)] = true
 	}
-	for _, name := range []string{"web_search", "send_file", "open", "craft_tool"} {
+	// UIC affinity activates search (web_search/web_fetch/download_file) and
+	// document_delivery (send_file/send_to_im/im_message) tools.
+	for _, name := range []string{"web_search", "send_file"} {
 		if !resultNames[name] {
 			t.Fatalf("expected %s to be routed for PDF workflow, got %#v", name, resultNames)
 		}
 	}
-	if resultNames["generate_pdf"] {
-		t.Fatalf("generate_pdf should not be routed, got %#v", resultNames)
+	// open and craft_tool are sensitive conditional tools: neither the UIC
+	// affinity for these intents nor local wording may activate them.
+	for _, name := range []string{"open", "craft_tool"} {
+		if resultNames[name] {
+			t.Fatalf("sensitive conditional tool %s must not leak for PDF workflow, got %#v", name, resultNames)
+		}
+	}
+	// generate_pdf is score-eligible at the raw router level: its description
+	// matches the query, so it competes and wins a slot here. Managed turns
+	// still strip it downstream (routingMissPrivilegeTools) unless the host
+	// adapter pins it — that governance is not exercised at this layer.
+	if !resultNames["generate_pdf"] {
+		t.Fatalf("score-eligible generate_pdf should be routed on retrieval score, got %#v", resultNames)
 	}
 }
 
 func TestToolRouter_MarkdownWorkflowKeepsFileEditingTools(t *testing.T) {
 	allTools := makeAllTools(20)
+	// Non-bootstrap core tools compete on retrieval score: give write_file a
+	// description that matches the task wording, as the production enrichment
+	// store does, so the BM25 channel can select it.
+	for i, td := range allTools {
+		if extractToolName(td) == "write_file" {
+			allTools[i] = toolDef("write_file", "写入并保存本地文件", nil, nil)
+		}
+	}
 	router := NewToolRouter(nil)
 	result := router.Route("把搜索结果整理成 markdown 文档并保存到本地文件，后续按我的意见继续修改", allTools)
 

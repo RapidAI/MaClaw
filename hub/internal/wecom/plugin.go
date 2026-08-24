@@ -1363,13 +1363,14 @@ func (p *Plugin) extractAttachments(body *callbackBody) []im.MessageAttachment {
 				break
 			}
 			if int64(len(data)) <= im.MaxAttachmentSize {
-				result = append(result, im.MessageAttachment{
-					Type:     "image",
-					FileName: "image.jpg",
-					MimeType: "image/jpeg",
-					Data:     base64.StdEncoding.EncodeToString(data),
-					Size:     int64(len(data)),
-				})
+				result = append(result, im.CanonicalizeTrustedHostAttachment(im.MessageAttachment{
+					Type:          "image",
+					FileName:      "image.jpg",
+					MimeType:      "image/jpeg",
+					Data:          base64.StdEncoding.EncodeToString(data),
+					Size:          int64(len(data)),
+					SourceMediaID: wecomTrustedSourceMediaID(body.MsgID),
+				}))
 			}
 		}
 	case "file":
@@ -1380,13 +1381,14 @@ func (p *Plugin) extractAttachments(body *callbackBody) []im.MessageAttachment {
 				break
 			}
 			if int64(len(data)) <= im.MaxAttachmentSize {
-				result = append(result, im.MessageAttachment{
-					Type:     "file",
-					FileName: "file",
-					MimeType: "application/octet-stream",
-					Data:     base64.StdEncoding.EncodeToString(data),
-					Size:     int64(len(data)),
-				})
+				result = append(result, im.CanonicalizeTrustedHostAttachment(im.MessageAttachment{
+					Type:          "file",
+					FileName:      "file",
+					MimeType:      "application/octet-stream",
+					Data:          base64.StdEncoding.EncodeToString(data),
+					Size:          int64(len(data)),
+					SourceMediaID: wecomTrustedSourceMediaID(body.MsgID),
+				}))
 			}
 		}
 	case "voice":
@@ -1397,13 +1399,14 @@ func (p *Plugin) extractAttachments(body *callbackBody) []im.MessageAttachment {
 				break
 			}
 			if int64(len(data)) <= im.MaxAttachmentSize {
-				result = append(result, im.MessageAttachment{
-					Type:     "voice",
-					FileName: "voice.amr",
-					MimeType: "audio/amr",
-					Data:     base64.StdEncoding.EncodeToString(data),
-					Size:     int64(len(data)),
-				})
+				result = append(result, im.CanonicalizeTrustedHostAttachment(im.MessageAttachment{
+					Type:          "voice",
+					FileName:      "voice.amr",
+					MimeType:      "audio/amr",
+					Data:          base64.StdEncoding.EncodeToString(data),
+					Size:          int64(len(data)),
+					SourceMediaID: wecomTrustedSourceMediaID(body.MsgID),
+				}))
 			}
 		}
 	case "video":
@@ -1446,6 +1449,13 @@ func (p *Plugin) extractAttachments(body *callbackBody) []im.MessageAttachment {
 		}
 	}
 	return result
+}
+
+func wecomTrustedSourceMediaID(msgID string) string {
+	if id := strings.TrimSpace(msgID); id != "" {
+		return "wecom-media:" + id
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

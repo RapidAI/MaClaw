@@ -47,6 +47,14 @@ var (
 	// already been closed. The callback is discarded and recorded as a bounded
 	// audit event; it must never alter a later Attempt for the same Task.
 	ErrStaleAttempt = errors.New("coding runtime stale attempt callback discarded")
+	// ErrSemanticAnchorNotFound means the host has not durably bound a runtime
+	// attempt to a verified semantic invocation. Callers must fail closed rather
+	// than treating a runtime task, lease owner, project path, or transport ID as
+	// a semantic task identity.
+	ErrSemanticAnchorNotFound = errors.New("coding runtime semantic anchor not found")
+	// ErrSemanticAnchorConflict means a second registration tried to alter the
+	// semantic lineage already attached to a runtime task/attempt.
+	ErrSemanticAnchorConflict = errors.New("coding runtime semantic anchor conflict")
 )
 
 // TaskStatus is the durable state of a stable logical task. A task can have
@@ -160,6 +168,26 @@ type Attempt struct {
 	ErrorSummary    string
 	StartedAt       time.Time
 	FinishedAt      time.Time
+}
+
+// SemanticTaskAnchor is the durable host-side mapping from one execution-ledger
+// attempt to a semantic invocation lineage. RuntimeTaskID is deliberately not
+// RootTaskID: the former identifies recoverable execution bookkeeping, while
+// the latter is a task relation issued by the authenticated host. This package
+// stores and checks the mapping but never manufactures any of these values.
+//
+// An anchor is attempt-scoped because each model turn needs a fresh TurnID.
+// All attempts of one runtime task must retain the same tenant/principal/
+// session/root tuple; RegisterSemanticTaskAnchor enforces that invariant.
+type SemanticTaskAnchor struct {
+	RuntimeTaskID    string
+	RuntimeAttemptID string
+	TenantID         string
+	PrincipalID      string
+	SessionID        string
+	RootTaskID       string
+	TurnID           string
+	CreatedAt        time.Time
 }
 
 type Event struct {
@@ -311,6 +339,40 @@ type Store interface {
 	ExpireLeases(now time.Time) ([]*Attempt, error)
 	InterruptUnstartedChildren(now time.Time) ([]*Attempt, error)
 	ListRecoveryCandidates() ([]*Attempt, error)
+}
+
+// SemanticTaskAnchorStore is an optional extension implemented by durable
+// coding-runtime stores. It keeps semantic identity separate from the compact
+// generic Task fields so runtime IDs can never be silently reinterpreted as
+// authorization scope. Hosts without this extension must leave dynamic
+// capabilities unavailable.
+type SemanticTaskAnchorStore interface {
+	RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*SemanticTaskAnchor, error)
+	ResolveSemanticTaskAnchor(runtimeTaskID, runtimeAttemptID string) (*SemanticTaskAnchor, error)
+}
+
+func normalizeSemanticTaskAnchor(anchor SemanticTaskAnchor) (SemanticTaskAnchor, error) {
+	anchor.RuntimeTaskID = strings.TrimSpace(anchor.RuntimeTaskID)
+	anchor.RuntimeAttemptID = strings.TrimSpace(anchor.RuntimeAttemptID)
+	anchor.TenantID = strings.TrimSpace(anchor.TenantID)
+	anchor.PrincipalID = strings.TrimSpace(anchor.PrincipalID)
+	anchor.SessionID = strings.TrimSpace(anchor.SessionID)
+	anchor.RootTaskID = strings.TrimSpace(anchor.RootTaskID)
+	anchor.TurnID = strings.TrimSpace(anchor.TurnID)
+	if anchor.RuntimeTaskID == "" || anchor.RuntimeAttemptID == "" || anchor.TenantID == "" || anchor.PrincipalID == "" || anchor.SessionID == "" || anchor.RootTaskID == "" || anchor.TurnID == "" {
+		return SemanticTaskAnchor{}, ErrSemanticAnchorNotFound
+	}
+	if anchor.CreatedAt.IsZero() {
+		anchor.CreatedAt = time.Now().UTC()
+	} else {
+		anchor.CreatedAt = anchor.CreatedAt.UTC()
+	}
+	return anchor, nil
+}
+
+func semanticAnchorLineageEqual(left, right SemanticTaskAnchor) bool {
+	return left.TenantID == right.TenantID && left.PrincipalID == right.PrincipalID &&
+		left.SessionID == right.SessionID && left.RootTaskID == right.RootTaskID
 }
 
 func validStartStatus(status TaskStatus) bool {

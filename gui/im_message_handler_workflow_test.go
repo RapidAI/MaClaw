@@ -1472,6 +1472,204 @@ func TestConsumePendingTemplateCodingSubAgentExecutionClearsState(t *testing.T) 
 	}
 }
 
+func TestExecutePreparedIMEntryAfterClearRearmsAndRestates(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+	app.disableBackgroundEmbeddingForTest = true
+	manager := NewRemoteSessionManager(app)
+	app.remoteSessions = manager
+	client := NewRemoteHubClient(app, manager)
+	manager.SetHubClient(client)
+	handler := client.ensureIMHandler()
+	if handler == nil {
+		t.Fatal("expected IM handler")
+	}
+
+	coding := app.CreateTaskWithMode("Snake GUI rewrite", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("failed to create coding task")
+	}
+	userID := projectSessionOwnerID(coding.ProjectPath)
+	if _, err := app.EnsureCodingWorkbenchArmed(coding.ProjectPath); err != nil {
+		t.Fatalf("initial arm: %v", err)
+	}
+	handler.clearPerUserSessionState(userID)
+
+	classifyCalls := 0
+	handler.unifiedClassifier = intent.New(intent.Config{LLMFunc: func(_, _ string) (string, error) {
+		classifyCalls++
+		t.Error("coding workbench after /clear must not run UIC")
+		return `{"top":[{"skill":"coding","score":0.72}]}`, nil
+	}})
+	original := runTaskWithSubAgent
+	t.Cleanup(func() { runTaskWithSubAgent = original })
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "gui snake done"}
+	}
+
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:   IMUserMessage{UserID: userID, Text: "改为图形界面版", Platform: "desktop"},
+		Trimmed:   "改为图形界面版",
+		FreshTask: true,
+	})
+	if resp == nil {
+		t.Fatal("coding consume after /clear must return a response")
+	}
+	if classifyCalls != 0 {
+		t.Fatalf("UIC was invoked %d times after /clear; dedicated coding must skip it", classifyCalls)
+	}
+	if got := strings.TrimSpace(handler.getStickyCodingWorkbenchMemory(userID).RequirementRestatement); got == "" {
+		t.Fatal("coding workbench after /clear must store a requirement restatement")
+	}
+}
+
+func TestHandleIMMessageAfterClearOmitsChatStatus(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+	app.disableBackgroundEmbeddingForTest = true
+	manager := NewRemoteSessionManager(app)
+	app.remoteSessions = manager
+	client := NewRemoteHubClient(app, manager)
+	manager.SetHubClient(client)
+	handler := client.ensureIMHandler()
+	if handler == nil {
+		t.Fatal("expected IM handler")
+	}
+
+	coding := app.CreateTaskWithMode("Snake GUI rewrite", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("failed to create coding task")
+	}
+	userID := projectSessionOwnerID(coding.ProjectPath)
+	if _, err := app.EnsureCodingWorkbenchArmed(coding.ProjectPath); err != nil {
+		t.Fatalf("initial arm: %v", err)
+	}
+	handler.clearPerUserSessionState(userID)
+
+	original := runTaskWithSubAgent
+	t.Cleanup(func() { runTaskWithSubAgent = original })
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "gui snake done"}
+	}
+
+	var progress []string
+	resp := handler.HandleIMMessageWithProgress(IMUserMessage{UserID: userID, Text: "改为图形界面版", Platform: "desktop"}, func(s string) {
+		progress = append(progress, s)
+	})
+	if resp == nil {
+		t.Fatal("expected a coding response after /clear")
+	}
+	for _, item := range progress {
+		if strings.Contains(item, "[Status]") {
+			t.Fatalf("coding workbench after /clear leaked chat status: %q", progress)
+		}
+	}
+}
+
+func TestExecutePreparedIMEntryDedicatedCodingSkipsSemanticClassifier(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "dedicated-coding-skips-uic"
+	projectPath := t.TempDir()
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+
+	classifyCalls := 0
+	handler.unifiedClassifier = intent.New(intent.Config{LLMFunc: func(_, _ string) (string, error) {
+		classifyCalls++
+		t.Error("dedicated coding workbench must not run UIC or semantic tool routing")
+		return `{"top":[{"skill":"coding","score":0.72}]}`, nil
+	}})
+
+	original := runTaskWithSubAgent
+	t.Cleanup(func() { runTaskWithSubAgent = original })
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "luxury hello world done"}
+	}
+
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:           IMUserMessage{UserID: userID, Text: "改为豪华版hello world", Platform: "desktop"},
+		Trimmed:           "改为豪华版hello world",
+		WorkflowAgentLoop: true,
+	})
+	if resp == nil {
+		t.Fatal("dedicated coding consume must return a response")
+	}
+	if classifyCalls != 0 {
+		t.Fatalf("UIC was invoked %d times; dedicated coding must skip semantic routing", classifyCalls)
+	}
+}
+
+func TestExecutePreparedIMEntryDedicatedCodingSkipsSemanticWithoutWorkflowMarker(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "dedicated-coding-skips-uic-no-wf"
+	projectPath := t.TempDir()
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+
+	classifyCalls := 0
+	handler.unifiedClassifier = intent.New(intent.Config{LLMFunc: func(_, _ string) (string, error) {
+		classifyCalls++
+		t.Error("dedicated coding workbench must not run UIC when WorkflowAgentLoop is unset")
+		return `{"top":[{"skill":"coding","score":0.72}]}`, nil
+	}})
+
+	original := runTaskWithSubAgent
+	t.Cleanup(func() { runTaskWithSubAgent = original })
+	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
+		return &CodingSubAgentResult{Status: TaskExecPassed, Summary: "luxury hello world done"}
+	}
+
+	handler.confirmationStore = newAIConfirmationStore(t.TempDir())
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:           IMUserMessage{UserID: userID, Text: "改为豪华版hello world", Platform: "desktop"},
+		Trimmed:           "改为豪华版hello world",
+		WorkflowAgentLoop: false,
+		FreshTask:         true,
+	})
+	if resp == nil {
+		t.Fatal("dedicated coding consume must return a response without WorkflowAgentLoop")
+	}
+	if classifyCalls != 0 {
+		t.Fatalf("UIC was invoked %d times; missing WorkflowAgentLoop must not fall into semantic routing", classifyCalls)
+	}
+	if got := handler.confirmationStore.get(userID); got != nil {
+		t.Fatal("dedicated coding workbench must not open the legacy confirmation card")
+	}
+}
+
+func TestExecutePreparedIMEntryCodingWorkbenchSkipsUICWhenRetryOwnsTurn(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{Response: "ok"})
+	userID := "dedicated-coding-retry-skips-uic"
+	projectPath := t.TempDir()
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+	handler.pendingCodingExecRetryAction.Store(userID, codingExecRetryActionFailed)
+
+	classifyCalls := 0
+	handler.unifiedClassifier = intent.New(intent.Config{LLMFunc: func(_, _ string) (string, error) {
+		classifyCalls++
+		t.Error("coding workbench must not run UIC when checkpoint retry owns the turn")
+		return `{"top":[{"skill":"coding","score":0.72}]}`, nil
+	}})
+
+	resp := handler.executePreparedIMEntry(preparedIMEntryExecutionOptions{
+		Message:           IMUserMessage{UserID: userID, Text: "重试失败", Platform: "desktop"},
+		Trimmed:           "重试失败",
+		WorkflowAgentLoop: true,
+	})
+	if resp == nil {
+		t.Fatal("retry-owned coding workbench turn must still return a response")
+	}
+	if classifyCalls != 0 {
+		t.Fatalf("UIC was invoked %d times; retry-owned workbench must skip semantic routing", classifyCalls)
+	}
+	if !strings.Contains(resp.Text, "不在编码执行阶段") && !strings.Contains(strings.ToLower(resp.Text), "not in the coding execution") {
+		t.Fatalf("retry without an active workflow must not fall into the shared loop, got %q", resp.Text)
+	}
+}
+
 func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "template-remote-coding-consume-user"

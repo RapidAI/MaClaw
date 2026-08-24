@@ -5,10 +5,10 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-#include "board_port.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_spiffs.h"
+#include "platform_storage_profile.h"
 
 #define PLATFORM_STORAGE_BASE_PATH "/storage"
 #define PLATFORM_STORAGE_LABEL "storage"
@@ -18,8 +18,19 @@ static const char *TAG = "maclaw_storage";
 static bool s_mounted;
 static bool s_mount_owned;
 
+/* `ESP_ERR_INVALID_STATE` from SPIFFS register only proves that some VFS is
+ * registered. It does not prove this Platform Storage instance owns the
+ * expected label/path, and it cannot be safely unregistered by us. Treat it
+ * as an unavailable physical port rather than publishing a writable volume
+ * that later cannot satisfy the Storage Service cleanup contract. */
+static device_status_t platform_storage_map_error(esp_err_t err) {
+    if (err == ESP_ERR_NO_MEM) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (err == ESP_ERR_INVALID_STATE) return DEVICE_STATUS_BUSY;
+    return DEVICE_STATUS_IO_ERROR;
+}
+
 bool platform_storage_allows_optional_flash_work(void) {
-    return board_port_allows_optional_flash_work();
+    return platform_storage_profile_allows_optional_flash_work();
 }
 
 static bool platform_storage_partition_is_factory_blank(void) {
@@ -80,36 +91,37 @@ device_status_t platform_storage_mount(void) {
         .format_if_mount_failed = false,
     };
     esp_err_t err = esp_vfs_spiffs_register(&config);
-    if (err != ESP_OK && platform_storage_partition_is_factory_blank()) {
+    /* INVALID_STATE means an unknown VFS is already registered.  Even if the
+     * raw partition happens to look erased, this port has no ownership proof
+     * for the label/path and must never retry with format enabled. */
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE &&
+        platform_storage_partition_is_factory_blank()) {
         ESP_LOGW(TAG, "factory-blank storage detected; formatting once");
         config.format_if_mount_failed = true;
         err = esp_vfs_spiffs_register(&config);
     }
-    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+    if (err == ESP_OK) {
         s_mounted = true;
-        s_mount_owned = err == ESP_OK;
+        s_mount_owned = true;
         platform_storage_log_inventory();
         return DEVICE_STATUS_OK;
     }
     ESP_LOGE(TAG, "storage mount failed; preserving existing contents: %s", esp_err_to_name(err));
-    return err == ESP_ERR_NO_MEM ? DEVICE_STATUS_RESOURCE_EXHAUSTED : DEVICE_STATUS_IO_ERROR;
+    return platform_storage_map_error(err);
 }
 
 device_status_t platform_storage_unmount(void) {
     if (!s_mounted) return DEVICE_STATUS_OK;
-    /* An already-mounted volume is usable, but this port cannot unregister a
-     * VFS it did not create. The HAL boundary should make this case unreachable
-     * in production; retaining ownership still prevents a future duplicate
-     * mount path from tearing down somebody else's volume. */
+    /* A successful mount is always owned by this port. Keep this fail-closed
+     * fallback in case a future private change corrupts that invariant. */
     if (!s_mount_owned) {
-        s_mounted = false;
-        return DEVICE_STATUS_OK;
+        ESP_LOGE(TAG, "storage ownership lost; refusing to unmount an unknown VFS");
+        return DEVICE_STATUS_INTERNAL_ERROR;
     }
     const esp_err_t err = esp_vfs_spiffs_unregister(PLATFORM_STORAGE_LABEL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "storage unmount failed: %s", esp_err_to_name(err));
-        return err == ESP_ERR_NO_MEM ? DEVICE_STATUS_RESOURCE_EXHAUSTED :
-                                        DEVICE_STATUS_IO_ERROR;
+        return platform_storage_map_error(err);
     }
     s_mounted = false;
     s_mount_owned = false;

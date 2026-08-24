@@ -28,7 +28,12 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     const [version, setVersion] = useState('1.0.0');
     const [price, setPrice] = useState('0');
     const [visibility, setVisibility] = useState<'public' | 'private'>('public');
-    const [platformDistribution, setPlatformDistribution] = useState(false);
+    // A public share opts into industry distribution by default. Keep an
+    // author's public preference separate from the effective permission: a
+    // private share must submit false, but changing back to public should
+    // restore the author's prior choice (or the default), not lose it.
+    const [publicDistributionPreference, setPublicDistributionPreference] = useState<boolean | null>(null);
+    const platformDistribution = visibility === 'public' && (publicDistributionPreference ?? true);
     const [submitting, setSubmitting] = useState(false);
     const dialogRef = useRef<HTMLElement | null>(null);
     const closeRef = useRef(onClose);
@@ -41,7 +46,10 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                closeRef.current();
+                // Do not allow an in-flight submission to disappear. The
+                // request can still succeed after an impatient close, leaving
+                // the user without the success result or a way to retry.
+                if (!submitting) closeRef.current();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -61,7 +69,7 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
             window.removeEventListener('keydown', onKeyDown, true);
             if (previousFocus?.isConnected) previousFocus.focus();
         };
-    }, []);
+    }, [submitting]);
 
     const submit = async () => {
         const parsedPrice = Number(price);
@@ -89,10 +97,10 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
     };
 
     return <div className="expert-share-overlay" role="presentation">
-        <section ref={dialogRef} className="expert-share-shell" role="dialog" aria-modal="true" aria-label={t(lang, '分享 AI 专家', 'Share AI expert')}>
+        <section ref={dialogRef} className="expert-share-shell" role="dialog" aria-modal="true" aria-label={t(lang, '分享 AI 专家', 'Share AI expert')} aria-describedby="expert-share-description">
             <header className="expert-share-header">
-                <div><h2>{t(lang, '分享 AI 专家', 'Share AI expert')}</h2><p>{visibility === 'public' ? t(lang, '公开分享默认需要 HubCenter 审核，审核通过后会在市场展示。', 'Public sharing is the default and requires HubCenter review before market listing.') : t(lang, '私有分享无需审核，只有上传该专家的用户可以看到。', 'Private sharing skips review and is visible only to the uploader.')}</p></div>
-                <button className="expert-share-close" type="button" aria-label={t(lang, '关闭', 'Close')} onClick={onClose}>×</button>
+                <div><h2>{t(lang, '分享 AI 专家', 'Share AI expert')}</h2><p id="expert-share-description">{visibility === 'public' ? t(lang, '公开分享默认需要 HubCenter 审核，审核通过后会在市场展示。', 'Public sharing is the default and requires HubCenter review before market listing.') : t(lang, '私有分享无需审核，只有上传该专家的用户可以看到。', 'Private sharing skips review and is visible only to the uploader.')}</p></div>
+                <button className="expert-share-close" type="button" disabled={submitting} aria-label={t(lang, '关闭', 'Close')} onClick={onClose}>×</button>
             </header>
             <main className="expert-share-body">
                 <section className="expert-share-preview" aria-label={t(lang, '专家信息预览', 'Expert details preview')}>
@@ -104,17 +112,24 @@ export function ExpertShareDialog({ lang, expert, onClose, onSubmitted }: {
                     </dl>
                 </section>
                 <div className="expert-share-fields">
-                    <fieldset>
+                    <fieldset className="expert-share-visibility">
                         <legend>{t(lang, '展示范围', 'Visibility')}</legend>
-                        <label><input type="radio" name="expert-visibility" checked={visibility === 'public'} onChange={() => setVisibility('public')} />{t(lang, '公开（默认，需审核）', 'Public (default, review required)')}</label>
-                        <label><input type="radio" name="expert-visibility" checked={visibility === 'private'} onChange={() => setVisibility('private')} />{t(lang, '私有（无需审核，仅自己可见）', 'Private (no review, only you can see it)')}</label>
+                        <div className="expert-share-visibility__options">
+                            <label><input type="radio" name="expert-visibility" disabled={submitting} aria-label={t(lang, '公开（默认，需审核）', 'Public (default, review required)')} checked={visibility === 'public'} onChange={() => setVisibility('public')} /><span><b>{t(lang, '公开', 'Public')}</b><small>{t(lang, '需审核后在市场展示', 'Listed after review')}</small></span></label>
+                            <label><input type="radio" name="expert-visibility" disabled={submitting} aria-label={t(lang, '私有（无需审核，仅自己可见）', 'Private (no review, only you can see it)')} checked={visibility === 'private'} onChange={() => setVisibility('private')} /><span><b>{t(lang, '私有', 'Private')}</b><small>{t(lang, '无需审核，仅自己可见', 'No review, visible only to you')}</small></span></label>
+                        </div>
                     </fieldset>
-                    <label title={t(lang, '允许 HubCenter 将审核通过的公开版本获取为行业默认专家资产；不会替用户购买或授予收费专家。', 'Allow HubCenter to acquire an approved public version as an industry-default expert asset. This never purchases or grants a paid expert to users.')}><input type="checkbox" checked={platformDistribution} disabled={visibility !== 'public'} onChange={event => setPlatformDistribution(event.target.checked)} /> {t(lang, '允许平台按行业分发此专家', 'Allow platform distribution by industry')}</label>
-                    <label>{t(lang, '版本', 'Version')}<input aria-label={t(lang, '版本', 'Version')} value={version} onChange={event => setVersion(event.target.value)} /></label>
-                    <label>{t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')}<input aria-label={t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')} inputMode="numeric" value={price} onChange={event => setPrice(event.target.value)} /></label>
+                    <label className="expert-share-distribution" title={t(lang, '允许 HubCenter 将审核通过的公开版本获取为行业默认专家资产；不会替用户购买或授予收费专家。', 'Allow HubCenter to acquire an approved public version as an industry-default expert asset. This never purchases or grants a paid expert to users.')}>
+                        <input type="checkbox" checked={platformDistribution} disabled={submitting || visibility !== 'public'} onChange={event => setPublicDistributionPreference(event.target.checked)} />
+                        <span>{t(lang, '允许平台按行业分发此专家', 'Allow platform distribution by industry')}<small>{t(lang, '仅适用于审核通过的公开版本', 'Available for approved public versions only')}</small></span>
+                    </label>
+                    <div className="expert-share-meta-fields">
+                        <label>{t(lang, '版本', 'Version')}<input aria-label={t(lang, '版本', 'Version')} disabled={submitting} value={version} onChange={event => setVersion(event.target.value)} /></label>
+                        <label>{t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')}<input aria-label={t(lang, '价格（Credits，0 为免费）', 'Price (Credits, 0 is free)')} disabled={submitting} inputMode="numeric" value={price} onChange={event => setPrice(event.target.value)} /></label>
+                    </div>
                 </div>
             </main>
-            <footer className="expert-share-footer"><button type="button" className="btn-secondary" disabled={submitting} onClick={onClose}>{t(lang, '取消', 'Cancel')}</button><button className="btn-primary" type="button" disabled={submitting} onClick={() => void submit()}>{submitting ? t(lang, '提交中…', 'Submitting…') : t(lang, '提交到 AI 专家市场', 'Submit to AI Expert Market')}</button></footer>
+            <footer className="expert-share-footer"><button type="button" className="btn-secondary" disabled={submitting} onClick={onClose}>{t(lang, '取消', 'Cancel')}</button><button className="btn-primary" type="button" disabled={submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? t(lang, '提交中…', 'Submitting…') : t(lang, '提交到 AI 专家市场', 'Submit to AI Expert Market')}</button></footer>
         </section>
     </div>;
 }

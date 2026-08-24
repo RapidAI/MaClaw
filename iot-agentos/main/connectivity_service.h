@@ -8,6 +8,7 @@
 
 #include "esp_err.h"
 #include "device_api.h"
+#include "fault_domain.h"
 
 /* The service owns selected-uplink policy.  The Platform Connectivity port
  * performs the matching profile-local transport hint only after the service
@@ -22,12 +23,28 @@ bool connectivity_service_apply_startup_transport_toggle(uint32_t window_ms);
  * calls, but it must bracket every station connect with this generation-bound
  * service session.  IP/disconnect callbacks publish observations here; no
  * app/domain code may hold an ESP-IDF event group or infer readiness itself. */
-bool connectivity_service_initialize(void);
+device_status_t connectivity_service_initialize(void);
 /* Closes Connectivity admission and releases its Wi-Fi-attempt event group
  * after existing waiters have observed the closed generation.  This is a
  * service-state lifecycle boundary only: the composition root still owns the
  * ESP-NETIF/Wi-Fi/SNTP physical stop transaction. */
-esp_err_t connectivity_service_deinit(uint32_t timeout_ms);
+device_status_t connectivity_service_deinit(uint32_t timeout_ms);
+/* Read-only diagnostic evidence for the logical Connectivity lifecycle. It
+ * does not claim that Wi-Fi, ESP-NETIF or a cellular modem was restarted. */
+bool connectivity_service_get_fault_domain_snapshot(
+    fault_domain_snapshot_t *out_snapshot);
+
+/* ESP-IDF default-loop registration remains a composition-root physical
+ * concern, but the callback's admission, drain and reversible System Sleep
+ * fence belong to Connectivity.  The root calls open only after every event
+ * instance has registered, and calls stop before it unregisters or tears down
+ * the Wi-Fi/default-loop transaction.  No caller receives an SDK event or
+ * synchronization handle. */
+void connectivity_service_open_wifi_event_callback_admission(void);
+bool connectivity_service_wifi_event_callback_enter(void);
+void connectivity_service_wifi_event_callback_leave(void);
+device_status_t connectivity_service_stop_wifi_event_callback_admission(
+    uint32_t timeout_ms);
 uint32_t connectivity_service_begin_wifi_attempt(const char *network_id);
 bool connectivity_service_wait_wifi_attempt(uint32_t attempt_epoch,
                                              uint32_t timeout_ms);
@@ -45,6 +62,33 @@ void connectivity_service_set_wifi_ready(bool ready);
 void connectivity_service_set_cellular_ready(bool ready);
 bool connectivity_service_is_active_uplink_ready(void);
 bool connectivity_service_get_snapshot(device_connectivity_snapshot_t *out_snapshot);
+
+/* System Sleep PREPARE closes new logical network admission and waits for
+ * requests already accepted through this service to return.  It never stops a
+ * Wi-Fi driver, powers down a modem, or makes a sleep-entry claim; those are
+ * separate profile-private commit responsibilities.  Every successful begin
+ * must be paired with end on the same synchronous request path. */
+device_status_t connectivity_service_begin_network_request(void);
+void connectivity_service_end_network_request(void);
+/* The legacy composition root retains concrete Wi-Fi HTTP client and Gateway
+ * worker ownership.  It registers this small cancellation bridge so the
+ * hardware-neutral service can request bounded cancellation without learning
+ * ESP client handles, task objects, or selected transport details.  The
+ * bridge must be idempotent and must not reopen network admission. */
+typedef device_status_t (*connectivity_service_system_sleep_request_canceller_t)(
+    uint32_t timeout_ms, void *context);
+/* If PREPARE's composition-root bridge stopped a bounded Gateway worker, this
+ * paired callback restores only that pre-existing work during rollback. It is
+ * called before normal network admission reopens and must be idempotent. */
+typedef void (*connectivity_service_system_sleep_request_resumer_t)(void *context);
+void connectivity_service_set_system_sleep_request_canceller(
+    connectivity_service_system_sleep_request_canceller_t canceller,
+    void *context);
+void connectivity_service_set_system_sleep_request_resumer(
+    connectivity_service_system_sleep_request_resumer_t resumer,
+    void *context);
+device_status_t connectivity_service_prepare_system_sleep(uint32_t timeout_ms);
+void connectivity_service_abort_system_sleep_prepare(void);
 
 /* Provisioning is a Connectivity-owned logical session.  This narrow state
  * contract deliberately does not own Wi-Fi/AP/DHCP/DNS/HTTP resources: those

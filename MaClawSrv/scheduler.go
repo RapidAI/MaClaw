@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -17,6 +18,28 @@ import (
 //
 // Returns nil if scheduler is disabled or initialization fails.
 func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor) *scheduler.Manager {
+	if executor != nil && svc != nil {
+		executor.ScheduleDispatchSend = func(ctx context.Context, principal agentservice.Principal, channel string, targets []scheduler.DeliveryTarget, text string) error {
+			return sendSrvScheduleDispatch(ctx, svc, principal, channel, targets, text)
+		}
+		executor.ScheduleDispatchFileSend = func(ctx context.Context, principal agentservice.Principal, channel string, targets []scheduler.DeliveryTarget, data []byte, fileName, mimeType string) error {
+			return sendSrvScheduleDispatchFile(ctx, svc, principal, channel, targets, data, fileName, mimeType)
+		}
+		executor.ScheduleDispatchRun = func(ctx context.Context, principal agentservice.Principal, task *scheduler.ScheduledTask) (string, error) {
+			return runSrvScheduledTaskAction(ctx, svc, executor, principal, task)
+		}
+		executor.DelegateSubtask = func(ctx context.Context, principal agentservice.Principal, task string) (string, error) {
+			return runSrvDelegatedSubtask(ctx, svc, principal, task)
+		}
+		root := strings.TrimSpace(svc.DataRoot())
+		if root == "" {
+			root = strings.TrimSpace(dataRoot)
+		}
+		if n := executor.RecoverReviewedHostScheduleDispatchFire(root); n > 0 {
+			log.Printf("[MaClawSrv] recovered %d semantic schedule dispatch fire worker(s)", n)
+		}
+	}
+
 	enabled, _ := getenvBoolStrict("MACLAW_ENABLE_SCHEDULER", false)
 	if !enabled {
 		return nil
@@ -143,4 +166,134 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 		}
 		return result, nil
 	}
+}
+
+func sendSrvScheduleDispatchFile(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, channel string, targets []scheduler.DeliveryTarget, data []byte, fileName, mimeType string) error {
+	if len(data) == 0 {
+		return fmt.Errorf("file payload is empty")
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no delivery targets")
+	}
+	for _, target := range targets {
+		if sendErr := deliverSrvIMFileToTarget(ctx, svc, principal, channel, target, data, fileName, mimeType, ""); sendErr != nil {
+			return sendErr
+		}
+	}
+	return nil
+}
+
+func sendSrvScheduleDispatch(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, channel string, targets []scheduler.DeliveryTarget, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("message text is empty")
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no delivery targets")
+	}
+	send, err := newChannelSender(ctx, svc, principal, channel)
+	if err != nil {
+		return err
+	}
+	for _, target := range targets {
+		if _, sendErr := send(ctx, target, text); sendErr != nil {
+			return sendErr
+		}
+	}
+	return nil
+}
+
+func runSrvScheduledTaskAction(ctx context.Context, svc *agentservice.Service, executor *agentservice.CoreAgentExecutor, principal agentservice.Principal, task *scheduler.ScheduledTask) (string, error) {
+	if task == nil {
+		return "", fmt.Errorf("scheduled task is nil")
+	}
+	if strings.TrimSpace(principal.TenantID) == "" {
+		principal.TenantID = "system"
+	}
+	if strings.TrimSpace(principal.UserID) == "" {
+		principal.UserID = "scheduler"
+	}
+	if executor != nil {
+		if tenantID := strings.TrimSpace(executor.LocalBashTenantID); tenantID != "" {
+			principal.TenantID = tenantID
+		}
+		if userID := strings.TrimSpace(executor.LocalBashUserID); userID != "" {
+			principal.UserID = userID
+		}
+	}
+	actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
+	instances, _ := svc.ListInstances(ctx, principal)
+	instanceID := ""
+	for _, inst := range instances {
+		if inst.Metadata != nil && inst.Metadata["purpose"] == "scheduler" {
+			instanceID = inst.ID
+			break
+		}
+	}
+	if instanceID == "" {
+		inst, err := svc.CreateInstance(ctx, principal, agentservice.CreateInstanceInput{
+			Name:     "Scheduled Tasks",
+			Metadata: map[string]string{"purpose": "scheduler"},
+		})
+		if err != nil {
+			return "", fmt.Errorf("create scheduler instance: %w", err)
+		}
+		instanceID = inst.ID
+	}
+	_, msg, err := svc.PostMessage(ctx, principal, instanceID, "", agentservice.PostMessageInput{Content: actionText})
+	if err != nil {
+		return "", scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", err))
+	}
+	if msg != nil {
+		return msg.Content, scheduler.AnnotateRunErrWithContext(ctx, nil)
+	}
+	return "", scheduler.AnnotateRunErrWithContext(ctx, nil)
+}
+
+func runSrvDelegatedSubtask(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, task string) (string, error) {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return "", fmt.Errorf("host_delegate_task_required")
+	}
+	if svc == nil {
+		return "", fmt.Errorf("host_delegate_runner_unavailable")
+	}
+	if strings.TrimSpace(principal.TenantID) == "" {
+		principal.TenantID = "system"
+	}
+	if strings.TrimSpace(principal.UserID) == "" {
+		principal.UserID = "delegate"
+	}
+	instances, _ := svc.ListInstances(ctx, principal)
+	instanceID := ""
+	for _, inst := range instances {
+		if inst.Metadata != nil && inst.Metadata["purpose"] == "delegate" {
+			instanceID = inst.ID
+			break
+		}
+	}
+	if instanceID == "" {
+		inst, err := svc.CreateInstance(ctx, principal, agentservice.CreateInstanceInput{
+			Name:     "Delegated Subtasks",
+			Metadata: map[string]string{"purpose": "delegate"},
+		})
+		if err != nil {
+			return "", fmt.Errorf("create delegate instance: %w", err)
+		}
+		instanceID = inst.ID
+	}
+	actionText := fmt.Sprintf("[委派子任务] 这是一次必须在本回合完成的子任务，不会再委派。请直接执行并返回结果：\n%s", task)
+	_, msg, err := svc.PostMessage(ctx, principal, instanceID, "", agentservice.PostMessageInput{
+		Content:  actionText,
+		Metadata: map[string]string{"delegate_child": "1"},
+	})
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return "", fmt.Errorf("host_delegate_timeout")
+		}
+		return "", err
+	}
+	if msg == nil {
+		return "", fmt.Errorf("host_delegate_empty")
+	}
+	return msg.Content, nil
 }

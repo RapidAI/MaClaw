@@ -44,7 +44,7 @@ func (a *TenantAuthorization) CreditsRemaining() float64 {
 // IsActive returns true if the authorization is within its validity period
 // and has remaining credits.
 func (a *TenantAuthorization) IsActive(now time.Time) bool {
-	if a.Status == "expired" || a.Status == "exhausted" {
+	if strings.EqualFold(a.Status, "expired") || strings.EqualFold(a.Status, "exhausted") {
 		return false
 	}
 	if now.Before(a.StartsAt) || now.After(a.ExpiresAt) {
@@ -114,6 +114,10 @@ func NewAuthorizationChecker(repo TenantAuthorizationRepository) *AuthorizationC
 	return &AuthorizationChecker{repo: repo}
 }
 
+func sameServiceGroupID(left, right string) bool {
+	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
 // CheckAccess finds an active authorization for the given hub+tenant that
 // covers the requested service group. Returns the authorization to deduct from.
 func (c *AuthorizationChecker) CheckAccess(ctx context.Context, hubID, tenantID, serviceGroupID string) (*TenantAuthorization, error) {
@@ -123,10 +127,10 @@ func (c *AuthorizationChecker) CheckAccess(ctx context.Context, hubID, tenantID,
 	}
 	now := time.Now().UTC()
 	for _, auth := range auths {
-		if !auth.IsActive(now) {
+		if auth == nil || !auth.IsActive(now) {
 			continue
 		}
-		if auth.ServiceGroupID == serviceGroupID {
+		if sameServiceGroupID(auth.ServiceGroupID, serviceGroupID) {
 			return auth, nil
 		}
 	}
@@ -153,7 +157,7 @@ func isExternalProviderGrant(auth *TenantAuthorization) bool {
 	if auth.AllowExternalProviders {
 		return true
 	}
-	return auth.Source == "card" && auth.ServiceGroupID == ExternalComputePermissionServiceGroupID
+	return auth.Source == "card" && sameServiceGroupID(auth.ServiceGroupID, ExternalComputePermissionServiceGroupID)
 }
 
 func latestExternalProviderAuthorizationState(auths []*TenantAuthorization, current time.Time) (bool, bool) {
@@ -232,11 +236,11 @@ func authorizationStateAllowsExternal(auth *TenantAuthorization, current time.Ti
 }
 
 func isExternalProviderAuthorizationState(auth *TenantAuthorization) bool {
-	return auth != nil && (auth.AllowExternalProviders || auth.ServiceGroupID == ExternalComputePermissionServiceGroupID)
+	return auth != nil && (auth.AllowExternalProviders || sameServiceGroupID(auth.ServiceGroupID, ExternalComputePermissionServiceGroupID))
 }
 
 func isExternalProviderRevocationState(auth *TenantAuthorization) bool {
-	if auth == nil || auth.AllowExternalProviders || auth.ServiceGroupID != ExternalComputePermissionServiceGroupID {
+	if auth == nil || auth.AllowExternalProviders || !sameServiceGroupID(auth.ServiceGroupID, ExternalComputePermissionServiceGroupID) {
 		return false
 	}
 	return strings.HasPrefix(strings.TrimSpace(auth.ID), "auth_admin_")
@@ -278,7 +282,7 @@ func (c *AuthorizationChecker) DeductCreditsForServiceGroup(ctx context.Context,
 		if auth == nil || !auth.IsActive(now) {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(auth.ServiceGroupID), strings.TrimSpace(serviceGroupID)) {
+		if !sameServiceGroupID(auth.ServiceGroupID, serviceGroupID) {
 			continue
 		}
 		candidates = append(candidates, auth)

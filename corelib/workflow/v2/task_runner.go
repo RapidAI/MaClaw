@@ -511,43 +511,51 @@ func (r *TaskRunner) dependenciesMet(task *TaskItem, allTasks []*TaskItem) bool 
 	return true
 }
 
-// FinalReport generates a human-readable summary of all task results.
+// FinalReport is the user-visible finish after all task results are known.
 func (r *TaskRunner) FinalReport() string {
-	var sb strings.Builder
-	sb.WriteString("## 执行报告\n\n")
-
-	passed, failed, skipped := 0, 0, 0
+	parts := make([]string, 0, len(r.results))
+	passed, failed := 0, 0
 	for _, result := range r.results {
 		switch result.Status {
 		case TaskPassed:
 			passed++
 		case TaskFailed:
 			failed++
-		case TaskSkipped:
-			skipped++
 		}
-	}
-
-	sb.WriteString(fmt.Sprintf("**总计**: %d 个任务 | %d 通过 | %d 失败 | %d 跳过\n\n", len(r.results), passed, failed, skipped))
-
-	for _, result := range r.results {
-		mark := "[OK]"
+		summary := strings.TrimSpace(result.Summary)
+		err := strings.TrimSpace(result.Error)
+		title := strings.TrimSpace(result.Title)
 		switch result.Status {
 		case TaskFailed:
-			mark = "[ERR]"
+			if summary != "" && err != "" && !strings.Contains(summary, err) {
+				parts = append(parts, summary+"\n\n"+err)
+			} else if summary != "" {
+				parts = append(parts, summary)
+			} else if title != "" && err != "" {
+				parts = append(parts, title+" did not finish.\n\n"+err)
+			} else if err != "" {
+				parts = append(parts, err)
+			} else if title != "" {
+				parts = append(parts, title+" did not finish.")
+			}
 		case TaskSkipped:
-			mark = "[SKIP]"
-		}
-		sb.WriteString(fmt.Sprintf("%s **T%d: %s** (%s, %s)\n", mark, result.TaskIndex, result.Title, result.Status, result.Duration.Round(time.Second)))
-		if result.Error != "" {
-			sb.WriteString(fmt.Sprintf("   错误: %s\n", result.Error))
-		}
-		if result.Summary != "" {
-			sb.WriteString(fmt.Sprintf("   摘要: %s\n", result.Summary))
+			if summary != "" {
+				parts = append(parts, summary)
+			} else if title != "" {
+				parts = append(parts, "Skipped "+title+".")
+			}
+		default:
+			if summary != "" {
+				parts = append(parts, summary)
+			} else if title != "" {
+				parts = append(parts, "Finished "+title+".")
+			}
 		}
 	}
-
-	return sb.String()
+	if len(r.results) > 1 && failed > 0 && passed > 0 {
+		parts = append(parts, fmt.Sprintf("Finished %d of %d steps; %d still failed.", passed, len(r.results), failed))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // --- SubAgent security helpers ---

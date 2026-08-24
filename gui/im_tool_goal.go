@@ -310,6 +310,21 @@ func (h *IMMessageHandler) goalClearForUser(userID string) string {
 	return "当前没有目标。"
 }
 
+func (h *IMMessageHandler) activeContinuationWorkingStateGoal(userID string) string {
+	if h == nil {
+		return ""
+	}
+	store := h.getGoalStore()
+	if store == nil {
+		return ""
+	}
+	g := store.Get(h.resolveGoalUserID(userID))
+	if g == nil || !g.ShouldContinue() {
+		return ""
+	}
+	return strings.TrimSpace(g.Objective)
+}
+
 // getGoalStore returns the goal store, lazily initializing if needed.
 func (h *IMMessageHandler) getGoalStore() *goal.Store {
 	if h.goalStore != nil {

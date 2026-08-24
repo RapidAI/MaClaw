@@ -16,6 +16,16 @@ type AssistantBinding struct {
 	AllowAllDirectories bool     `json:"allow_all_directories,omitempty"`
 }
 
+// DeliveryTarget is trusted transport context for an external artifact
+// delivery. It is assigned by a channel adapter from the inbound conversation,
+// never parsed from user/model content, and is intentionally omitted from
+// wire serialization. The destination should include its address kind (for
+// example "group:<id>" versus "user:<id>") whenever transports share IDs.
+type DeliveryTarget struct {
+	ChannelScope  string
+	DestinationID string
+}
+
 // UserMessage is the input to the agent handler. It represents a message
 // from any platform (desktop, IM, TUI).
 //
@@ -45,6 +55,14 @@ type UserMessage struct {
 	// AssistantBinding is transport-internal policy supplied by a configured
 	// bot profile; it must never be inferred from untrusted message text.
 	AssistantBinding *AssistantBinding `json:"-"`
+	// CodingTaskIngressToken is a one-shot host capability attached only by a
+	// trusted coding-task ingress. It is intentionally excluded from the wire
+	// format: UserID, request text, model calls and transport metadata must not
+	// be able to manufacture a semantic Coding task relation.
+	CodingTaskIngressToken string `json:"-"`
+	// DeliveryTarget is the server-owned current-channel destination available
+	// to a planned delivery selection. It is not an agent tool argument.
+	DeliveryTarget *DeliveryTarget `json:"-"`
 
 	// Attachments holds images/files attached to the message.
 	Attachments []MessageAttachment `json:"attachments,omitempty"`

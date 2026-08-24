@@ -33,6 +33,7 @@ func startSubAgentTrajectory(
 		provider = h.getMaclawLLMProviders().Current
 	}
 	recorder.StartSessionWithMeta(sessionID, provider, cfg.Model, cfg.Protocol, userID, platform, kind, parentSessionID, tools)
+	recorder.SetExperienceDomain(h.resolveTrajectoryExperienceDomain(kind, userID))
 	if strings.TrimSpace(systemPrompt) != "" {
 		recorder.Record("system", systemPrompt, nil, "", "")
 	}

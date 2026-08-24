@@ -143,7 +143,6 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	}
 
 	activatedDeferred := make(map[string]bool)
-	activatedConditional := make(map[string]bool)
 	if h.toolDefGen != nil {
 		for _, item := range ranked {
 			if h.toolDefGen.ActivateDeferredTool(item.name) {
@@ -158,37 +157,10 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		}
 	}
 
-	// Session-pin discovered conditional tools so they appear in subsequent
-	// Route() calls within the same agent loop. Without this, conditional
-	// tools (ssh, web_search, etc.) found by discover_tool remain invisible
-	// to the LLM because Route() only activates them via UIC/keyword
-	// matching on the original user message. Session-pinning makes them
-	// persist for the rest of the session regardless of message content.
-	if h.toolRouter != nil {
-		for _, item := range ranked {
-			if tool.CoreToolNames[item.name] || activatedDeferred[item.name] {
-				continue
-			}
-			if tool.ShouldPinConditionalTool(item.name) {
-				// Live agent loops always have an owner and must only affect their
-				// own pin set. The fallback bucket exists solely for old direct
-				// callers and is never consulted by owner-scoped routing.
-				h.toolRouter.ActivateSessionToolForSession(ownerID, item.name)
-				activatedConditional[item.name] = true
-			}
-		}
-		if len(activatedConditional) > 0 {
-			// Invalidate the tool cache so the next getTools() + routeTools()
-			// call (at the start of the next iteration) will include these
-			// newly session-pinned tools in the LLM tool list.
-			h.toolsMu.Lock()
-			h.cachedTools = nil
-			h.toolsCacheTime = time.Time{}
-			h.toolsMu.Unlock()
-		}
-	}
-
-	anyActivated := len(activatedDeferred) > 0 || len(activatedConditional) > 0
+	// Discovery can activate a deferred catalog entry, but must not turn a
+	// conditional tool name into a session authorization. A later task replan
+	// evaluates the returned capability against current policy and need.
+	anyActivated := len(activatedDeferred) > 0
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
@@ -198,7 +170,7 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 			if runes := []rune(desc); len(runes) > 120 {
 				desc = string(runes[:120]) + "..."
 			}
-			b.WriteString(fmt.Sprintf("%d. **call_mcp_tool** (MCP: %s/%s) - %s\n", i+1, mcp.serverID, mcp.toolName, desc))
+			b.WriteString(fmt.Sprintf("%d. **MCP capability pending managed replan** (%s/%s) - %s\n", i+1, mcp.serverID, mcp.toolName, desc))
 			continue
 		}
 		t := toolMap[item.name]
@@ -206,16 +178,16 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
-		isActivated := activatedDeferred[item.name] || activatedConditional[item.name]
+		isActivated := activatedDeferred[item.name]
 		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, tool.CoreToolNames[item.name], isActivated))
 	}
 	if anyActivated {
-		b.WriteString("\nActivated tools are now available. Call them directly in your next step.")
+		b.WriteString("\nActivated catalog entries are available for a subsequent planned step.")
 	} else {
 		b.WriteString("\nUse the matched tool name when the next step needs that capability.")
 	}
 	if containsMCPDiscoveryMatch(ranked, mcpMatches) {
-		b.WriteString("\nFor MCP matches, call call_mcp_tool with the shown server_id and tool_name.")
+		b.WriteString("\nMCP matches are not executable on this legacy surface. Request a managed semantic replan; the host must bind the provider and tool before it is exposed.")
 	}
 	return b.String()
 }

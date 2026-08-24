@@ -26,7 +26,8 @@ func NewDigitalAssetRepository(writeDB, readDB *sql.DB) store.DigitalAssetReposi
 
 const digitalAssetLibraryCols = `id, tenant_id, name, description, status, sync_enabled,
 	acl_mode, acl_departments_json, acl_users_json, content_rev, content_hash, store_path,
-	source_count, card_count, byte_size, created_by, updated_by, created_at, updated_at, deleted_at`
+	source_count, card_count, byte_size, library_kind, accepts_submissions,
+	created_by, updated_by, created_at, updated_at, deleted_at`
 
 func (r *digitalAssetRepo) CreateLibrary(ctx context.Context, lib *store.DigitalAssetLibrary) error {
 	if lib == nil {
@@ -61,14 +62,23 @@ func (r *digitalAssetRepo) CreateLibrary(ctx context.Context, lib *store.Digital
 	if !lib.SyncEnabled {
 		syncEnabled = 0
 	}
+	kind := strings.TrimSpace(lib.LibraryKind)
+	if kind == "" {
+		kind = store.DigitalAssetLibraryKindBusiness
+	}
+	accepts := 1
+	if !lib.AcceptsSubmissions {
+		accepts = 0
+	}
 	return execWrite(ctx, r.batch, r.db, `INSERT INTO digital_asset_libraries (
 		id, tenant_id, name, description, status, sync_enabled,
 		acl_mode, acl_departments_json, acl_users_json, content_rev, content_hash, store_path,
-		source_count, card_count, byte_size, created_by, updated_by, created_at, updated_at, deleted_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		source_count, card_count, byte_size, library_kind, accepts_submissions,
+		created_by, updated_by, created_at, updated_at, deleted_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, tenantID, name, strings.TrimSpace(lib.Description), status, syncEnabled,
 		aclMode, depts, users, lib.ContentRev, strings.TrimSpace(lib.ContentHash), strings.TrimSpace(lib.StorePath),
-		lib.SourceCount, lib.CardCount, lib.ByteSize,
+		lib.SourceCount, lib.CardCount, lib.ByteSize, kind, accepts,
 		strings.TrimSpace(lib.CreatedBy), strings.TrimSpace(lib.UpdatedBy),
 		lib.CreatedAt.UTC().Format(time.RFC3339), lib.UpdatedAt.UTC().Format(time.RFC3339),
 		nullableTimeString(lib.DeletedAt),
@@ -116,6 +126,10 @@ func (r *digitalAssetRepo) ListLibraries(ctx context.Context, filter store.Digit
 		where = append(where, "(name LIKE ? OR description LIKE ?)")
 		like := "%" + kw + "%"
 		args = append(args, like, like)
+	}
+	if kind := strings.TrimSpace(filter.Kind); kind != "" {
+		where = append(where, "library_kind = ?")
+		args = append(args, kind)
 	}
 	whereSQL := strings.Join(where, " AND ")
 
@@ -171,17 +185,26 @@ func (r *digitalAssetRepo) UpdateLibrary(ctx context.Context, lib *store.Digital
 	if status == "" {
 		status = store.DigitalAssetStatusActive
 	}
+	kind := strings.TrimSpace(lib.LibraryKind)
+	if kind == "" {
+		kind = store.DigitalAssetLibraryKindBusiness
+	}
+	accepts := 1
+	if !lib.AcceptsSubmissions {
+		accepts = 0
+	}
 	return execWrite(ctx, r.batch, r.db, `UPDATE digital_asset_libraries SET
 		name = ?, description = ?, status = ?, sync_enabled = ?,
 		acl_mode = ?, acl_departments_json = ?, acl_users_json = ?,
 		content_rev = ?, content_hash = ?, store_path = ?,
 		source_count = ?, card_count = ?, byte_size = ?,
+		library_kind = ?, accepts_submissions = ?,
 		updated_by = ?, updated_at = ?, deleted_at = ?
 		WHERE tenant_id = ? AND id = ?`,
 		strings.TrimSpace(lib.Name), strings.TrimSpace(lib.Description), status, syncEnabled,
 		aclMode, depts, users,
 		lib.ContentRev, strings.TrimSpace(lib.ContentHash), strings.TrimSpace(lib.StorePath),
-		lib.SourceCount, lib.CardCount, lib.ByteSize,
+		lib.SourceCount, lib.CardCount, lib.ByteSize, kind, accepts,
 		strings.TrimSpace(lib.UpdatedBy), lib.UpdatedAt.UTC().Format(time.RFC3339), nullableTimeString(lib.DeletedAt),
 		normalizeTenantID(lib.TenantID), strings.TrimSpace(lib.ID),
 	)
@@ -483,17 +506,23 @@ type digitalAssetScanner interface {
 func scanDigitalAssetLibrary(row digitalAssetScanner) (*store.DigitalAssetLibrary, error) {
 	var lib store.DigitalAssetLibrary
 	var syncEnabled int
+	var accepts int
 	var createdAt, updatedAt string
 	var deletedAt sql.NullString
 	if err := row.Scan(
 		&lib.ID, &lib.TenantID, &lib.Name, &lib.Description, &lib.Status, &syncEnabled,
 		&lib.ACLMode, &lib.ACLDepartmentsJSON, &lib.ACLUsersJSON, &lib.ContentRev, &lib.ContentHash, &lib.StorePath,
-		&lib.SourceCount, &lib.CardCount, &lib.ByteSize, &lib.CreatedBy, &lib.UpdatedBy,
+		&lib.SourceCount, &lib.CardCount, &lib.ByteSize, &lib.LibraryKind, &accepts,
+		&lib.CreatedBy, &lib.UpdatedBy,
 		&createdAt, &updatedAt, &deletedAt,
 	); err != nil {
 		return nil, err
 	}
 	lib.SyncEnabled = syncEnabled != 0
+	lib.AcceptsSubmissions = accepts != 0
+	if strings.TrimSpace(lib.LibraryKind) == "" {
+		lib.LibraryKind = store.DigitalAssetLibraryKindBusiness
+	}
 	lib.CreatedAt = mustParseTime(createdAt)
 	lib.UpdatedAt = mustParseTime(updatedAt)
 	if deletedAt.Valid && strings.TrimSpace(deletedAt.String) != "" {
@@ -534,6 +563,152 @@ func scanDigitalAssetImportJob(row digitalAssetScanner) (*store.DigitalAssetImpo
 	job.CreatedAt = mustParseTime(createdAt)
 	job.UpdatedAt = mustParseTime(updatedAt)
 	return &job, nil
+}
+
+func (r *digitalAssetRepo) CreateSubmission(ctx context.Context, row *store.DigitalAssetSubmission) error {
+	if row == nil {
+		return errors.New("digital asset submission is nil")
+	}
+	id := strings.TrimSpace(row.ID)
+	if id == "" {
+		return errors.New("submission id is required")
+	}
+	status := strings.TrimSpace(row.Status)
+	if status == "" {
+		status = store.DigitalAssetSubmissionSubmitted
+	}
+	return execWrite(ctx, r.batch, r.db, `INSERT INTO digital_asset_submissions (
+		id, tenant_id, library_id, submitter_user_id, submitter_email, kind, status,
+		title, summary, package_ref, package_sha256, package_bytes, item_count, source_share_id,
+		reviewer_user_id, review_note, reviewed_at, import_job_id, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, normalizeTenantID(row.TenantID), strings.TrimSpace(row.LibraryID),
+		strings.TrimSpace(row.SubmitterUserID), strings.TrimSpace(row.SubmitterEmail),
+		strings.TrimSpace(row.Kind), status,
+		strings.TrimSpace(row.Title), strings.TrimSpace(row.Summary),
+		strings.TrimSpace(row.PackageRef), strings.TrimSpace(row.PackageSHA256),
+		row.PackageBytes, row.ItemCount, strings.TrimSpace(row.SourceShareID),
+		strings.TrimSpace(row.ReviewerUserID), strings.TrimSpace(row.ReviewNote),
+		nullableTimeString(row.ReviewedAt), strings.TrimSpace(row.ImportJobID),
+		row.CreatedAt.UTC().Format(time.RFC3339), row.UpdatedAt.UTC().Format(time.RFC3339),
+	)
+}
+
+func (r *digitalAssetRepo) GetSubmission(ctx context.Context, tenantID, submissionID string) (*store.DigitalAssetSubmission, error) {
+	row := r.readDB.QueryRowContext(ctx,
+		`SELECT id, tenant_id, library_id, submitter_user_id, submitter_email, kind, status,
+			title, summary, package_ref, package_sha256, package_bytes, item_count, source_share_id,
+			reviewer_user_id, review_note, reviewed_at, import_job_id, created_at, updated_at
+		 FROM digital_asset_submissions WHERE tenant_id = ? AND id = ?`,
+		normalizeTenantID(tenantID), strings.TrimSpace(submissionID),
+	)
+	item, err := scanDigitalAssetSubmission(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *digitalAssetRepo) ListSubmissions(ctx context.Context, filter store.DigitalAssetSubmissionFilter) ([]*store.DigitalAssetSubmission, int, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	where := []string{"tenant_id = ?"}
+	args := []any{normalizeTenantID(filter.TenantID)}
+	if id := strings.TrimSpace(filter.LibraryID); id != "" {
+		where = append(where, "library_id = ?")
+		args = append(args, id)
+	}
+	if id := strings.TrimSpace(filter.SubmitterUserID); id != "" {
+		where = append(where, "submitter_user_id = ?")
+		args = append(args, id)
+	}
+	if status := strings.TrimSpace(filter.Status); status != "" {
+		where = append(where, "status = ?")
+		args = append(args, status)
+	}
+	if kind := strings.TrimSpace(filter.Kind); kind != "" {
+		where = append(where, "kind = ?")
+		args = append(args, kind)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := r.readDB.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM digital_asset_submissions WHERE `+whereSQL, args...,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := r.readDB.QueryContext(ctx,
+		`SELECT id, tenant_id, library_id, submitter_user_id, submitter_email, kind, status,
+			title, summary, package_ref, package_sha256, package_bytes, item_count, source_share_id,
+			reviewer_user_id, review_note, reviewed_at, import_job_id, created_at, updated_at
+		 FROM digital_asset_submissions WHERE `+whereSQL+` ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+		queryArgs...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]*store.DigitalAssetSubmission, 0, limit)
+	for rows.Next() {
+		item, err := scanDigitalAssetSubmission(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (r *digitalAssetRepo) UpdateSubmission(ctx context.Context, row *store.DigitalAssetSubmission) error {
+	if row == nil {
+		return errors.New("digital asset submission is nil")
+	}
+	return execWrite(ctx, r.batch, r.db, `UPDATE digital_asset_submissions SET
+		library_id = ?, kind = ?, status = ?, title = ?, summary = ?,
+		package_ref = ?, package_sha256 = ?, package_bytes = ?, item_count = ?,
+		source_share_id = ?, reviewer_user_id = ?, review_note = ?, reviewed_at = ?,
+		import_job_id = ?, updated_at = ?
+		WHERE tenant_id = ? AND id = ?`,
+		strings.TrimSpace(row.LibraryID), strings.TrimSpace(row.Kind), strings.TrimSpace(row.Status),
+		strings.TrimSpace(row.Title), strings.TrimSpace(row.Summary),
+		strings.TrimSpace(row.PackageRef), strings.TrimSpace(row.PackageSHA256),
+		row.PackageBytes, row.ItemCount, strings.TrimSpace(row.SourceShareID),
+		strings.TrimSpace(row.ReviewerUserID), strings.TrimSpace(row.ReviewNote),
+		nullableTimeString(row.ReviewedAt), strings.TrimSpace(row.ImportJobID),
+		row.UpdatedAt.UTC().Format(time.RFC3339),
+		normalizeTenantID(row.TenantID), strings.TrimSpace(row.ID),
+	)
+}
+
+func scanDigitalAssetSubmission(row digitalAssetScanner) (*store.DigitalAssetSubmission, error) {
+	var item store.DigitalAssetSubmission
+	var reviewedAt sql.NullString
+	var createdAt, updatedAt string
+	if err := row.Scan(
+		&item.ID, &item.TenantID, &item.LibraryID, &item.SubmitterUserID, &item.SubmitterEmail,
+		&item.Kind, &item.Status, &item.Title, &item.Summary, &item.PackageRef, &item.PackageSHA256,
+		&item.PackageBytes, &item.ItemCount, &item.SourceShareID, &item.ReviewerUserID, &item.ReviewNote,
+		&reviewedAt, &item.ImportJobID, &createdAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	item.CreatedAt = mustParseTime(createdAt)
+	item.UpdatedAt = mustParseTime(updatedAt)
+	if reviewedAt.Valid && strings.TrimSpace(reviewedAt.String) != "" {
+		t := mustParseTime(reviewedAt.String)
+		item.ReviewedAt = &t
+	}
+	return &item, nil
 }
 
 // Ensure compile-time interface compliance.

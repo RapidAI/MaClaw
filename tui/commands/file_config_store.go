@@ -41,6 +41,7 @@ func (s *FileConfigStore) LoadConfig() (corelib.AppConfig, error) {
 
 // SaveConfig writes config atomically so Windows updates can replace an existing file.
 func (s *FileConfigStore) SaveConfig(cfg corelib.AppConfig) error {
+	corelib.ApplyZhipuCodingConfigMigration(&cfg)
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir config dir: %w", err)

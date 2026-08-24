@@ -11,6 +11,7 @@ import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, isLocalParticipantId, localAINameForLang, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 import { classifyDisplayAttachmentType } from "./attachmentClassification";
+import { visibleHistoryMessageContent } from "./visibleChatText";
 
 type HistoryDiscussionDetail = {
     discussion?: {
@@ -32,6 +33,7 @@ type HistoryDiscussionDetail = {
         from_name?: string;
         kind?: string;
         content?: string;
+        Content?: string;
         created_at?: string;
         attachments?: Array<NonNullable<GroupMessage["attachments"]>[number] & { mimeType?: string; file_url?: string; local_path?: string; mime_type?: string }>;
         text_attachments?: Array<{ filename?: string; mime_type?: string; local_path?: string }>;
@@ -522,7 +524,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
 
             const attachments = buildMessageAttachments(m);
             const fromId = m.from_id || "unknown";
-            const content = String(m.content || "");
+            const content = visibleHistoryMessageContent(kind, m.content, m.Content);
             if (kind === "stream_chunk" && !content && attachments.length === 0) return;
 
             if (kind === "stream_chunk" && lastStreamIndex >= 0 && sameHistoryParticipant(lastStreamFrom, fromId)) {

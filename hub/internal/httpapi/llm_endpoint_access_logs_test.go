@@ -214,6 +214,15 @@ func TestLLMV1ChatCompletionsHandlerWritesAccessLog(t *testing.T) {
 	if entry.RequestBody == "" {
 		t.Fatal("expected request body to be logged")
 	}
+	if !entry.BillingRecorded {
+		t.Fatal("expected billing to be recorded")
+	}
+	if entry.CreditMultiplier != 1 {
+		t.Fatalf("credit_multiplier = %v, want 1", entry.CreditMultiplier)
+	}
+	if entry.Credits != llmservice.MinimumRequestCredits {
+		t.Fatalf("credits = %v, want %v", entry.Credits, llmservice.MinimumRequestCredits)
+	}
 }
 
 func TestLLMV1ResponsesHandlerWritesAccessLog(t *testing.T) {
@@ -297,6 +306,9 @@ func TestLLMV1ResponsesHandlerWritesAccessLog(t *testing.T) {
 	}
 	if entry.Metadata["wire_api"] != "responses" {
 		t.Fatalf("metadata wire_api = %#v, want responses", entry.Metadata["wire_api"])
+	}
+	if !entry.BillingRecorded || entry.CreditMultiplier != 1 || entry.Credits != llmservice.MinimumRequestCredits {
+		t.Fatalf("billing = recorded:%v multiplier:%v credits:%v", entry.BillingRecorded, entry.CreditMultiplier, entry.Credits)
 	}
 }
 

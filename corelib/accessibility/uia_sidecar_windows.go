@@ -50,6 +50,7 @@ const uiaSidecarScript = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
 
 function Get-UITree {
     param($el, $depth)
@@ -63,10 +64,29 @@ function Get-UITree {
         y      = [int]$rect.Y
         width  = [int]$rect.Width
         height = [int]$rect.Height
+        automation_id = ''
+        patterns = @()
     }
+    try { $node.automation_id = [string]$el.Current.AutomationId } catch {}
+    try {
+        $ip = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        if ($ip) { $node.patterns += 'invoke' }
+    } catch {}
     try {
         $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-        if ($vp) { $node.value = $vp.Current.Value }
+        if ($vp) { $node.patterns += 'value'; $node.value = $vp.Current.Value }
+    } catch {}
+    try {
+        $tp = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+        if ($tp) { $node.patterns += 'toggle' }
+    } catch {}
+    try {
+        $sp = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        if ($sp) { $node.patterns += 'select' }
+    } catch {}
+    try {
+        $ep = $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+        if ($ep) { $node.patterns += 'expand' }
     } catch {}
     if ($depth -gt 1) {
         $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children,
@@ -85,7 +105,7 @@ function Get-UITree {
 function Enum-Windows {
     param($window, $depth)
     if ($depth -lt 1) { $depth = 1 }
-    if ($depth -gt 5) { $depth = 5 }
+    if ($depth -gt 8) { $depth = 8 }
     $root = [System.Windows.Automation.AutomationElement]::RootElement
     if ([string]::IsNullOrEmpty($window)) {
         $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children,
@@ -167,6 +187,89 @@ function Find-El {
     }
 }
 
+function Invoke-At {
+    param($x, $y)
+    try {
+        $pt = New-Object System.Windows.Point($x, $y)
+        $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+        if (-not $el) { return @{ invoked = $false; strategy = 'none' } }
+        try {
+            $ip = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+            if ($ip) { $ip.Invoke(); return @{ invoked = $true; strategy = 'invoke' } }
+        } catch {}
+        try {
+            $tp = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+            if ($tp) { $tp.Toggle(); return @{ invoked = $true; strategy = 'toggle' } }
+        } catch {}
+        try {
+            $sp = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+            if ($sp) { $sp.Select(); return @{ invoked = $true; strategy = 'select' } }
+        } catch {}
+        try {
+            $ep = $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if ($ep) {
+                if ($ep.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
+                    $ep.Expand()
+                } else {
+                    $ep.Collapse()
+                }
+                return @{ invoked = $true; strategy = 'expand' }
+            }
+        } catch {}
+        return @{ invoked = $false; strategy = 'none' }
+    } catch {
+        return @{ invoked = $false; strategy = 'none' }
+    }
+}
+
+function Set-ValueAt {
+    param($x, $y, $text)
+    try {
+        $pt = New-Object System.Windows.Point($x, $y)
+        $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+        if (-not $el) { return @{ set = $false; strategy = 'none' } }
+        $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($vp -and -not $vp.Current.IsReadOnly) {
+            $vp.SetValue([string]$text)
+            return @{ set = $true; strategy = 'set_value' }
+        }
+        return @{ set = $false; strategy = 'none' }
+    } catch {
+        return @{ set = $false; strategy = 'none' }
+    }
+}
+
+function Pattern-At {
+    param($x, $y, $kind)
+    try {
+        $pt = New-Object System.Windows.Point($x, $y)
+        $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
+        if (-not $el) { return @{ invoked = $false; strategy = 'none' } }
+        if ($kind -eq 'select') {
+            $sp = $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+            if ($sp) { $sp.Select(); return @{ invoked = $true; strategy = 'select' } }
+        }
+        if ($kind -eq 'expand') {
+            $ep = $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if ($ep) {
+                if ($ep.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) { $ep.Expand() } else { $ep.Collapse() }
+                return @{ invoked = $true; strategy = 'expand' }
+            }
+        }
+        if ($kind -eq 'scroll') {
+            $sip = $el.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern)
+            if ($sip) { $sip.ScrollIntoView(); return @{ invoked = $true; strategy = 'scroll_into_view' } }
+        }
+        if ($kind -eq 'focus') {
+            $el.SetFocus()
+            return @{ invoked = $true; strategy = 'focus' }
+        }
+        return @{ invoked = $false; strategy = 'none' }
+    } catch {
+        return @{ invoked = $false; strategy = 'none' }
+    }
+}
+
 while ($true) {
     $line = [Console]::In.ReadLine()
     if ($null -eq $line) { break }
@@ -192,6 +295,30 @@ while ($true) {
                     @{ ok = $true; element = $null } | ConvertTo-Json -Compress
                 }
             }
+            'invoke_at' {
+                $r = Invoke-At ([int]$req.x) ([int]$req.y)
+                @{ ok = $true; invoked = [bool]$r.invoked; strategy = [string]$r.strategy } | ConvertTo-Json -Compress
+            }
+            'set_value_at' {
+                $r = Set-ValueAt ([int]$req.x) ([int]$req.y) ([string]$req.text)
+                @{ ok = $true; set = [bool]$r.set; strategy = [string]$r.strategy } | ConvertTo-Json -Compress
+            }
+            'select_at' {
+                $r = Pattern-At ([int]$req.x) ([int]$req.y) 'select'
+                @{ ok = $true; invoked = [bool]$r.invoked; strategy = [string]$r.strategy } | ConvertTo-Json -Compress
+            }
+            'expand_at' {
+                $r = Pattern-At ([int]$req.x) ([int]$req.y) 'expand'
+                @{ ok = $true; invoked = [bool]$r.invoked; strategy = [string]$r.strategy } | ConvertTo-Json -Compress
+            }
+            'scroll_into_view_at' {
+                $r = Pattern-At ([int]$req.x) ([int]$req.y) 'scroll'
+                @{ ok = $true; invoked = [bool]$r.invoked; strategy = [string]$r.strategy } | ConvertTo-Json -Compress
+            }
+            'focus_at' {
+                $r = Pattern-At ([int]$req.x) ([int]$req.y) 'focus'
+                @{ ok = $true; invoked = [bool]$r.invoked; strategy = [string]$r.strategy } | ConvertTo-Json -Compress
+            }
             default {
                 @{ ok = $false; error = ("unknown op: " + $op) } | ConvertTo-Json -Compress
             }
@@ -208,6 +335,9 @@ type uiaResponse struct {
 	Elements []psElement `json:"elements"`
 	Element  *psElement  `json:"element"`
 	Pong     bool        `json:"pong"`
+	Invoked  bool        `json:"invoked"`
+	Set      bool        `json:"set"`
+	Strategy string      `json:"strategy"`
 }
 
 func encodePowerShellCommand(script string) string {
@@ -443,6 +573,74 @@ func (s *uiaSidecar) find(window, role, name string) (*Element, error) {
 	}
 	el := resp.Element.toElement()
 	return &el, nil
+}
+
+func (s *uiaSidecar) invokeAt(x, y int) (bool, string, error) {
+	resp, err := s.call(map[string]interface{}{
+		"op": "invoke_at",
+		"x":  x,
+		"y":  y,
+	})
+	if err != nil {
+		s.mu.Lock()
+		s.stop()
+		s.mu.Unlock()
+		resp, err = s.call(map[string]interface{}{
+			"op": "invoke_at",
+			"x":  x,
+			"y":  y,
+		})
+		if err != nil {
+			return false, "", err
+		}
+	}
+	return resp.Invoked, resp.Strategy, nil
+}
+
+func (s *uiaSidecar) setValueAt(x, y int, text string) (bool, error) {
+	resp, err := s.call(map[string]interface{}{
+		"op":   "set_value_at",
+		"x":    x,
+		"y":    y,
+		"text": text,
+	})
+	if err != nil {
+		s.mu.Lock()
+		s.stop()
+		s.mu.Unlock()
+		resp, err = s.call(map[string]interface{}{
+			"op":   "set_value_at",
+			"x":    x,
+			"y":    y,
+			"text": text,
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+	return resp.Set, nil
+}
+
+func (s *uiaSidecar) actAt(op string, x, y int) (bool, string, error) {
+	resp, err := s.call(map[string]interface{}{
+		"op": op,
+		"x":  x,
+		"y":  y,
+	})
+	if err != nil {
+		s.mu.Lock()
+		s.stop()
+		s.mu.Unlock()
+		resp, err = s.call(map[string]interface{}{
+			"op": op,
+			"x":  x,
+			"y":  y,
+		})
+		if err != nil {
+			return false, "", err
+		}
+	}
+	return resp.Invoked || resp.Set, resp.Strategy, nil
 }
 
 // UIASidecarAlive reports whether the long-lived accessibility process is running.

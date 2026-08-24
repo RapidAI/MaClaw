@@ -9,12 +9,13 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func TestDoOpenAIRequestStream_CompactsAfterToollessCompat400(t *testing.T) {
+func TestDoOpenAIRequestStreamDoesNotCompactActiveToolRequestAfterCompat400(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,18 +28,11 @@ func TestDoOpenAIRequestStream_CompactsAfterToollessCompat400(t *testing.T) {
 		}
 		mu.Lock()
 		bodies = append(bodies, body)
-		attempt := len(bodies)
 		mu.Unlock()
 
-		if attempt < 3 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"compat reject"}}`))
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"compact ok\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"compat reject"}}`))
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
@@ -68,38 +62,178 @@ func TestDoOpenAIRequestStream_CompactsAfterToollessCompat400(t *testing.T) {
 	}}
 
 	var streamed strings.Builder
-	resp, err := DoOpenAIRequestStream(context.Background(), cfg, messages, tools, client, func(token string) {
+	_, err = DoOpenAIRequestStream(context.Background(), cfg, messages, tools, client, func(token string) {
 		streamed.WriteString(token)
 	})
-	if err != nil {
-		t.Fatalf("DoOpenAIRequestStream returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected compatibility HTTP 400")
 	}
-	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].Message.Content != "compact ok" {
-		t.Fatalf("response = %#v, streamed=%q", resp, streamed.String())
+	if streamed.Len() != 0 {
+		t.Fatalf("unexpected streamed content after rejected tool request: %q", streamed.String())
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) != 3 {
-		t.Fatalf("request count = %d, want 3", len(bodies))
+	if len(bodies) != 1 {
+		t.Fatalf("request count = %d, want 1", len(bodies))
 	}
 	if _, ok := bodies[0]["tools"]; !ok {
 		t.Fatalf("first request should include tools: %#v", bodies[0])
 	}
-	if _, ok := bodies[1]["tools"]; ok {
-		t.Fatalf("second request should omit tools: %#v", bodies[1])
+}
+
+func TestDoOpenAIRequestStreamDoesNotHideCompatRetryWhenRequestOwnerDisablesIt(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"compat reject"}}`))
+	}))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
 	}
-	if _, ok := bodies[2]["tools"]; ok {
-		t.Fatalf("compact request should omit tools: %#v", bodies[2])
+	client := server.Client()
+	client.Transport = rewriteHostRoundTripper{base: client.Transport, target: serverURL}
+	cfg := corelib.MaclawLLMConfig{
+		URL: "http://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto", ProviderName: "CodeGen", Protocol: "openai",
 	}
-	compactMessages, _ := bodies[2]["messages"].([]interface{})
-	if len(compactMessages) != 2 {
-		t.Fatalf("compact messages len = %d, want 2: %#v", len(compactMessages), compactMessages)
+	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file", "parameters": map[string]interface{}{"type": "object"}}}}
+	_, err = DoOpenAIRequestStream(WithTransparentRequestRetriesDisabled(context.Background()), cfg, []interface{}{map[string]interface{}{"role": "user", "content": "inspect"}}, tools, client, nil)
+	if err == nil {
+		t.Fatal("expected original compat failure")
 	}
-	user, _ := compactMessages[1].(map[string]interface{})
-	userContent, _ := user["content"].(string)
-	if !strings.Contains(userContent, "[Compatibility retry]") || !strings.Contains(userContent, "生成测试策略阶段文档") {
-		t.Fatalf("compact user content = %q", userContent)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts=%d, request owner must suppress hidden compatibility retries", got)
+	}
+}
+
+func TestDoOpenAIRequestDoesNotHideCompatRetryWhenRequestOwnerDisablesIt(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"compat reject"}}`))
+	}))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := server.Client()
+	client.Transport = rewriteHostRoundTripper{base: client.Transport, target: serverURL}
+	cfg := corelib.MaclawLLMConfig{
+		URL: "http://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto", ProviderName: "CodeGen", Protocol: "openai",
+	}
+	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file", "parameters": map[string]interface{}{"type": "object"}}}}
+	_, err = DoOpenAIRequest(WithTransparentRequestRetriesDisabled(context.Background()), cfg, []interface{}{map[string]interface{}{"role": "user", "content": "inspect"}}, tools, client)
+	if err == nil {
+		t.Fatal("expected original compat failure")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts=%d, request owner must suppress hidden compatibility retries", got)
+	}
+}
+
+func TestRequestOwnerDisablesAutomaticPOSTRedirectSuccessorRequests(t *testing.T) {
+	var sourceAttempts atomic.Int32
+	var successorAttempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			sourceAttempts.Add(1)
+			w.Header().Set("Location", "/redirected")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		case "/redirected":
+			successorAttempts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"redirected"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Protocol: "openai"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "inspect"}}
+
+	// Ordinary callers retain the existing HTTP redirect behavior.
+	resp, err := DoOpenAIRequest(context.Background(), cfg, messages, nil, server.Client())
+	if err != nil || resp == nil || len(resp.Choices) == 0 || resp.Choices[0].Message.Content != "redirected" {
+		t.Fatalf("ordinary redirect response=%#v err=%v", resp, err)
+	}
+	if got := successorAttempts.Load(); got != 1 {
+		t.Fatalf("ordinary caller did not follow redirect: successor attempts=%d", got)
+	}
+
+	sourceAttempts.Store(0)
+	successorAttempts.Store(0)
+	_, err = DoOpenAIRequest(WithTransparentRequestRetriesDisabled(context.Background()), cfg, messages, nil, server.Client())
+	if err == nil {
+		t.Fatal("request owner should receive redirect response instead of a hidden successor request")
+	}
+	if got := sourceAttempts.Load(); got != 1 {
+		t.Fatalf("source attempts=%d, want one", got)
+	}
+	if got := successorAttempts.Load(); got != 0 {
+		t.Fatalf("redirect created hidden successor request count=%d", got)
+	}
+}
+
+func TestRequestOwnerDisablesResponsesAPIStreamingRedirectSuccessorRequests(t *testing.T) {
+	var sourceAttempts atomic.Int32
+	var successorAttempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			sourceAttempts.Add(1)
+			w.Header().Set("Location", "/redirected")
+			w.WriteHeader(http.StatusPermanentRedirect)
+		case "/redirected":
+			successorAttempts.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.completed\ndata: {\"response\":{\"id\":\"resp\",\"output\":[]}}\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"}
+	_, err := DoResponsesAPIRequestStream(WithTransparentRequestRetriesDisabled(context.Background()), cfg, []interface{}{map[string]interface{}{"role": "user", "content": "inspect"}}, nil, server.Client(), nil, nil)
+	if err == nil {
+		t.Fatal("request owner should receive redirect response instead of a hidden Responses successor")
+	}
+	if got := sourceAttempts.Load(); got != 1 {
+		t.Fatalf("source attempts=%d, want one", got)
+	}
+	if got := successorAttempts.Load(); got != 0 {
+		t.Fatalf("redirect created hidden Responses successor request count=%d", got)
+	}
+}
+
+func TestOpenAISSERejectsConflictingProviderResponseIDs(t *testing.T) {
+	body := strings.NewReader(strings.Join([]string{
+		`data: {"id":"chatcmpl-a","choices":[{"delta":{"content":"first"}}]}`,
+		`data: {"id":"chatcmpl-b","choices":[{"delta":{"content":"second"}}]}`,
+		"",
+	}, "\n"))
+	if _, err := parseSSEStream(body, nil); err == nil || !strings.Contains(err.Error(), "response ID changed") {
+		t.Fatalf("conflicting OpenAI stream IDs error=%v", err)
+	}
+}
+
+func TestParseSSEToResponseRejectsConflictingProviderResponseIDs(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"id":"chatcmpl-a","choices":[{"delta":{"content":"first"}}]}`,
+		`data: {"id":"chatcmpl-b","choices":[{"delta":{"content":"second"}}]}`,
+		"",
+	}, "\n"))
+	if _, err := ParseSSEToResponse(body); err == nil || !strings.Contains(err.Error(), "response ID changed") {
+		t.Fatalf("conflicting OpenAI compatibility stream IDs error=%v", err)
 	}
 }
 

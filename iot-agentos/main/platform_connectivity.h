@@ -20,6 +20,10 @@ device_status_t platform_connectivity_prepare_cellular_transport(void);
 device_status_t platform_connectivity_start_cellular_transport(uint32_t timeout_ms);
 bool platform_connectivity_is_cellular_transport_ready(void);
 device_status_t platform_connectivity_quiesce_cellular_transport(uint32_t timeout_ms);
+/* Reversible profile-private transport fence for a future physical sleep.
+ * It intentionally does not describe modem/UART/task mechanics. */
+device_status_t platform_connectivity_prepare_system_sleep(uint32_t timeout_ms);
+void platform_connectivity_abort_system_sleep_prepare(void);
 device_status_t platform_connectivity_cellular_http_request(
     const device_connectivity_http_request_t *request);
 device_status_t platform_connectivity_cellular_http_stream_request(

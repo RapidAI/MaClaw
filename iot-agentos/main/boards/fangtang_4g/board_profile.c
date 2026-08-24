@@ -15,6 +15,9 @@ bool board_profile_get(device_profile_t *out_profile) {
                         DEVICE_CAPABILITY_CELLULAR_TRANSPORT,
         .primary_interaction_source = DEVICE_INPUT_SOURCE_PRIMARY_CONTROL,
         .primary_interaction_label = "激活键",
+        .volume_interaction_hint = "激活键长按调节音量",
+        .display_wake_sources =
+            DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_PRIMARY_CONTROL),
     };
     return true;
 }

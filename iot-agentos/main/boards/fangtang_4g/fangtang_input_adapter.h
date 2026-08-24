@@ -26,6 +26,10 @@
 #define FANGTANG_INPUT_DEBOUNCE_US 25000LL
 #define FANGTANG_INPUT_LONG_PRESS_US 2500000LL
 #define FANGTANG_INPUT_DOUBLE_CLICK_US 500000LL
+/* Reserved below the existing 2.5 s configuration hold. It is consumed on
+ * release, so a normal short/double click retains its current meaning. */
+#define FANGTANG_INPUT_LOCAL_VOLUME_INCREASE_HOLD_US 1200000LL
+#define FANGTANG_INPUT_LOCAL_VOLUME_DECREASE_HOLD_US 1800000LL
 
 #define FANGTANG_INPUT_BOOT_SELECTOR_WINDOW_MS 1800u
 #define COMPACT_INPUT_RESPONSE_PAGING_USES_VOLUME_KEYS false
@@ -60,6 +64,16 @@ static inline void compact_input_adapter_read_raw(compact_input_raw_state_t *out
 
 static inline bool compact_input_adapter_has_volume_keys(void) {
     return false;
+}
+
+/* The one-key enclosure supplies a local fallback for the shared volume
+ * operation. The common scanner owns classification and publishing; this
+ * profile only declares its electrical/ergonomic timing. */
+static inline int64_t compact_input_adapter_local_volume_increase_hold_us(void) {
+    return FANGTANG_INPUT_LOCAL_VOLUME_INCREASE_HOLD_US;
+}
+static inline int64_t compact_input_adapter_local_volume_decrease_hold_us(void) {
+    return FANGTANG_INPUT_LOCAL_VOLUME_DECREASE_HOLD_US;
 }
 
 static inline bool compact_input_adapter_activate_is_released_now(void) {

@@ -93,7 +93,7 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 	}
 
 	chatTransport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: llmOrEnvProxy,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,

@@ -1,0 +1,180 @@
+{
+  "category": "snapshot_identity",
+  "category_id": 15,
+  "title": "equivalent snapshots keep plan identity; catalog or budget drift must not",
+  "design_ref": "10.1 item 15",
+  "format_note": "Plan ID is the snapshot digest. Identical needs+catalog+budget must match; an unused provider or a selection budget must change identity. equivalent_to compares need/capability/phase only.",
+  "samples": [
+    {
+      "id": "baseline-search-generate-deliver",
+      "title": "Baseline search then generate then file deliver",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"},
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "ready_without_facts": ["search"]
+      }
+    },
+    {
+      "id": "same-snapshot-same-plan-id",
+      "title": "Repeating the baseline snapshot yields the same plan ID",
+      "notes": "10.1 item 15: snapshot identity is a function of the frozen request, not evaluation order.",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"},
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "ready_without_facts": ["search"],
+        "plan_id_equals": "baseline-search-generate-deliver",
+        "equivalent_to": "baseline-search-generate-deliver"
+      }
+    },
+    {
+      "id": "unused-provider-changes-snapshot",
+      "title": "An unused catalog provider changes plan identity without changing selections",
+      "notes": "The extra adapter is never selected. Plan ID still changes because the snapshot digest includes the published catalog.",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          },
+          {
+            "adapter": "unused_lookup",
+            "schema_salt": "unrelated-catalog-drift",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"},
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "ready_without_facts": ["search"],
+        "plan_id_differs": "baseline-search-generate-deliver",
+        "equivalent_to": "baseline-search-generate-deliver"
+      }
+    },
+    {
+      "id": "budget-changes-snapshot",
+      "title": "A selection budget is part of snapshot identity",
+      "context": {"max_selections": 1},
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"}
+        ],
+        "unmet": [
+          {"need_id": "generate", "reason": "budget_exceeded"},
+          {"need_id": "deliver", "reason": "budget_exceeded"}
+        ],
+        "plan_id_differs": "baseline-search-generate-deliver"
+      }
+    }
+  ]
+}

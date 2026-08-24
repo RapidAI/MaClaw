@@ -1,0 +1,44 @@
+{
+  "category": "provider_trust_contract",
+  "category_id": 19,
+  "title": "ProviderTrustContract",
+  "design_ref": "10.1 item 19",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "wrong-effect",
+      "title": "Read-only provider cannot satisfy an external deliver need",
+      "needs": [
+        {
+          "id": "deliver",
+          "capability": "artifact.deliver.current_channel",
+          "qualifiers": {
+            "format": "file"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "deliver_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "artifact.deliver.current_channel",
+                "qualifiers": {
+                  "format": "file"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "Trust contract tests cover Skill shell delegation."
+    }
+  ]
+}

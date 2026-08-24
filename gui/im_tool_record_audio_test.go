@@ -532,13 +532,17 @@ func TestConsumePendingRecordAudioAnswer(t *testing.T) {
 		{Role: "assistant", Content: "正在打开录音"},
 		{Role: "tool", Content: "Opened recording session: 讨论", ToolCallID: "tc-1"},
 	}
+	paused := agent.NewWorkingState("keep recording goal")
+	paused.LastAction = agent.ActionSeekUser
+	paused.Next = "询问用户后继续"
 	h.pendingRecordAudio.Store("u1", &pendingRecordAudioState{
-		Title:     "讨论",
-		History:   history,
-		Timestamp: time.Now(),
+		Title:        "讨论",
+		History:      history,
+		Timestamp:    time.Now(),
+		WorkingState: paused,
 	})
 	// Casual chat while recording must NOT consume pending.
-	if ctx, ok := h.consumePendingRecordAudioAnswer("u1", "顺便问下天气", history); ok || ctx != "" {
+	if ctx, _, ok := h.consumePendingRecordAudioAnswer("u1", "顺便问下天气", history); ok || ctx != "" {
 		t.Fatalf("casual message should not consume pending, ok=%v ctx=%q", ok, ctx)
 	}
 	if _, still := h.pendingRecordAudio.Load("u1"); !still {
@@ -546,9 +550,12 @@ func TestConsumePendingRecordAudioAnswer(t *testing.T) {
 	}
 
 	report := "[Recording completed]\nstatus: stopped\npath: C:\\tmp\\a.wav\nduration_sec: 12.0\n"
-	ctx, ok := h.consumePendingRecordAudioAnswer("u1", report, history)
+	ctx, ws, ok := h.consumePendingRecordAudioAnswer("u1", report, history)
 	if !ok {
 		t.Fatal("expected consume success")
+	}
+	if ws == nil || ws.LastAction != agent.ActionSeekUser || ws.Next != "询问用户后继续" {
+		t.Fatalf("record consume must keep seek for post-choice: %#v", ws)
 	}
 	if !strings.Contains(ctx, "record_audio") || !strings.Contains(ctx, "C:\\tmp\\a.wav") {
 		t.Fatalf("context = %q", ctx)

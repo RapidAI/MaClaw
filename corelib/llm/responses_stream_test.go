@@ -52,7 +52,7 @@ func TestDoResponsesAPIRequestStreamEmitsReasoningBeforeText(t *testing.T) {
 			"event: response.output_text.delta\n" +
 			"data: {\"delta\":\"Done.\"}\n\n" +
 			"event: response.completed\n" +
-			"data: {\"response\":{\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Inspect inputs. Plan answer.\"}]}]}}\n\n"))
+			"data: {\"response\":{\"id\":\"resp-stream-1\",\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Inspect inputs. Plan answer.\"}]}]}}\n\n"))
 	}))
 	defer srv.Close()
 
@@ -68,6 +68,9 @@ func TestDoResponsesAPIRequestStreamEmitsReasoningBeforeText(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("DoResponsesAPIRequestStream: %v", err)
+	}
+	if response.ResponseID != "resp-stream-1" {
+		t.Fatalf("response ID = %q, want provider response.completed ID", response.ResponseID)
 	}
 	if got, want := strings.Join(events, "|"), "reasoning:Inspect inputs. |reasoning:Plan answer.|text:Done."; got != want {
 		t.Fatalf("events = %q, want %q", got, want)
@@ -106,6 +109,22 @@ func TestDoResponsesAPIRequestStreamReturnsToolsFromCompletedItems(t *testing.T)
 	calls := response.Choices[0].Message.ToolCalls
 	if len(calls) != 1 || calls[0].ID != "call_1" || calls[0].Function.Name != "read_file" || calls[0].Function.Arguments != `{"path":"a.txt"}` {
 		t.Fatalf("tool calls = %#v", calls)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamRejectsConflictingResponseIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n" +
+			"data: {\"response\":{\"id\":\"resp-first\"}}\n\n" +
+			"event: response.completed\n" +
+			"data: {\"response\":{\"id\":\"resp-second\",\"output\":[]}}\n\n"))
+	}))
+	defer srv.Close()
+
+	_, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "response ID changed") {
+		t.Fatalf("error = %v, want conflicting provider response ID failure", err)
 	}
 }
 

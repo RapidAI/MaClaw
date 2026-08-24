@@ -20,14 +20,16 @@ import (
 )
 
 func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client) ([]byte, int, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client = HTTPClientForRequestContext(ctx, client)
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
 	}
 	var responseBody []byte
 	var response *http.Response
+	// The SDK's raw-body adapter is inside this request owner boundary. Keep the
+	// client's redirect policy intact for ordinary callers, while the adapter
+	// itself only prevents transport-level body replay after it replaces the
+	// exact JSON payload.
 	rawClient := openAISDKClientWithRawBody(client, body, nil)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, rawClient)...)
 	var err error
@@ -48,15 +50,18 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 				responseBody = []byte(apiErr.RawJSON())
 			}
 		}
+		if len(responseBody) == 0 {
+			if raw := extractJSONObjectFromText(err.Error()); len(raw) > 0 {
+				responseBody = raw
+			}
+		}
 		return responseBody, status, err
 	}
 	return responseBody, status, nil
 }
 
 func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client = HTTPClientForRequestContext(ctx, client)
 	if !json.Valid(body) {
 		return nil, 0, nil, fmt.Errorf("parse openai stream request body: invalid JSON")
 	}
@@ -64,9 +69,7 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 }
 
 func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client = HTTPClientForRequestContext(ctx, client)
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -80,6 +83,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 	ApplyProviderAuthHeaders(req, cfg)
+	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 
 	resp, err := client.Do(req)
@@ -127,6 +131,11 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 }
 
 func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
+	// This compatibility implementation is currently dormant, but it still
+	// constructs a real SDK client. Preserve the owner-scoped redirect/replay
+	// policy before wrapping that client with the raw-body adapter, so enabling
+	// this path cannot reintroduce a hidden successor request.
+	client = HTTPClientForRequestContext(ctx, client)
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithRawBody(client, body, capture)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, streamClient)...)
@@ -376,13 +385,16 @@ func openAISDKChunkReasoningContent(raw string) string {
 		Choices []struct {
 			Delta struct {
 				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+				Thinking         string `json:"thinking"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
 	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &payload) != nil || len(payload.Choices) == 0 {
 		return ""
 	}
-	return payload.Choices[0].Delta.ReasoningContent
+	delta := payload.Choices[0].Delta
+	return openAIReasoningText(delta.ReasoningContent, delta.Reasoning, delta.Thinking)
 }
 
 func openAISDKChunkUsage(raw string) *Usage {
@@ -534,8 +546,18 @@ func (t openAISDKRawBodyTransport) RoundTrip(req *http.Request) (*http.Response,
 	}
 	body := append([]byte(nil), t.body...)
 	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
+	// The raw-body adapter normally retains the SDK's redirect compatibility.
+	// At a request-owner boundary, however, a GetBody hook would allow net/http
+	// to replay the exact payload without returning to RunLoop for a fresh
+	// surface/manifest/receipt. The final receipt wrapper independently clears
+	// this hook at its wire boundary; doing the same here keeps this adapter safe
+	// when it is the outer wrapper around that receipt transport.
+	if TransparentRequestRetriesDisabled(req.Context()) {
+		req.GetBody = nil
+	} else {
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
 	}
 	req.ContentLength = int64(len(body))
 	req.Header.Set("Content-Type", "application/json")

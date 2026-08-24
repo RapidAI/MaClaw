@@ -116,6 +116,8 @@ func TestLocalFileWorkComputerUseExecutionFence(t *testing.T) {
 }
 
 func TestComputerUsePlaybookSection(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	computerUseVisionFn = func() bool { return false }
 	if computerUsePlaybookSection(false) != "" {
 		t.Fatal("inactive empty")
 	}
@@ -124,6 +126,27 @@ func TestComputerUsePlaybookSection(t *testing.T) {
 		t.Fatalf("playbook section incomplete: %q", s)
 	}
 	_ = computeruse.Playbook()
+}
+
+func TestBrowserPlaybookSection(t *testing.T) {
+	if browserPlaybookSection(false) != "" {
+		t.Fatal("inactive empty")
+	}
+	s := browserPlaybookSection(true)
+	if s == "" || !strings.Contains(s, "Browser Use") || !strings.Contains(s, "observe") {
+		t.Fatalf("browser playbook incomplete: %q", s)
+	}
+}
+
+func TestComputerUsePlaybookSectionVision(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	prev := computerUseVisionFn
+	computerUseVisionFn = func() bool { return true }
+	t.Cleanup(func() { computerUseVisionFn = prev })
+	s := computerUsePlaybookSection(true)
+	if !strings.Contains(s, "视觉模型") || !strings.Contains(s, "screenshot") {
+		t.Fatalf("vision playbook missing: %q", s)
+	}
 }
 
 // cuGateStubEmbedder maps texts containing a marker phrase to one axis and
@@ -158,11 +181,21 @@ func resetComputerUseSessionForTest(t *testing.T) {
 	clearComputerUseSessionActive()
 	globalComputerUse.mu.Lock()
 	globalComputerUse.lastFreshOpenRequestID = ""
+	globalComputerUse.turnVisionKnown = false
+	globalComputerUse.turnVision = false
+	globalComputerUse.pendingModelImage = ""
+	globalComputerUse.taskStates = nil
+	globalComputerUse.horizonClaimOnly = nil
 	globalComputerUse.mu.Unlock()
 	t.Cleanup(func() {
 		clearComputerUseSessionActive()
 		globalComputerUse.mu.Lock()
 		globalComputerUse.lastFreshOpenRequestID = ""
+		globalComputerUse.turnVisionKnown = false
+		globalComputerUse.turnVision = false
+		globalComputerUse.pendingModelImage = ""
+		globalComputerUse.taskStates = nil
+		globalComputerUse.horizonClaimOnly = nil
 		globalComputerUse.mu.Unlock()
 	})
 }

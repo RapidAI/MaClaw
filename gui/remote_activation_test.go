@@ -68,6 +68,15 @@ func TestSkillMarketAccountFromEnrollFallsBackForPhoneRegistration(t *testing.T)
 	}
 }
 
+func TestSkillMarketContactFromEnrollPrefersBoundEmailThenPhone(t *testing.T) {
+	if got := skillMarketContactFromEnroll(&remote.EnrollResult{Email: "user@example.com", PhoneNumber: "19900001111"}, "17000000000"); got != "user@example.com" {
+		t.Fatalf("contact = %q, want bound email", got)
+	}
+	if got := skillMarketContactFromEnroll(&remote.EnrollResult{PhoneNumber: "199-0000 1111"}, "17000000000"); got != "phone:19900001111" {
+		t.Fatalf("contact = %q, want enrollment phone", got)
+	}
+}
+
 func TestGetRemoteRegistrationAuthDefaultsMissingCodeLengthToSix(t *testing.T) {
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/enroll/registration-auth" {
@@ -2297,12 +2306,12 @@ func TestSkillMarketAutoLoginThrottlesFailedMachineLogin(t *testing.T) {
 	withIsolatedRemoteHubCenter(t, server.URL)
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}, RemoteHubID: "hub-test"}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	app.acquireSkillMarketTokenAfterEnroll("user@example.com", "m_123", "viewer-token")
-	app.acquireSkillMarketTokenAfterEnroll("user@example.com", "m_123", "viewer-token")
+	app.acquireSkillMarketTokenAfterEnroll("user-123", "user@example.com", "m_123", "viewer-token")
+	app.acquireSkillMarketTokenAfterEnroll("user-123", "user@example.com", "m_123", "viewer-token")
 
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("machine-login calls = %d, want throttled to 1", got)
@@ -2312,7 +2321,7 @@ func TestSkillMarketAutoLoginThrottlesFailedMachineLogin(t *testing.T) {
 	}
 
 	app.skillMarketAutoLoginNextAttempt.Store(time.Now().Add(-time.Second))
-	app.acquireSkillMarketTokenAfterEnroll("user@example.com", "m_123", "viewer-token")
+	app.acquireSkillMarketTokenAfterEnroll("user-123", "user@example.com", "m_123", "viewer-token")
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("machine-login calls after retry window = %d, want 2", got)
 	}

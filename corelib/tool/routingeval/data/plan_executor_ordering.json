@@ -1,0 +1,49 @@
+{
+  "category": "plan_executor_ordering",
+  "category_id": 23,
+  "title": "PlanExecutor ordering",
+  "design_ref": "10.1 item 23",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "single-search",
+      "title": "Planner emits one selection",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "search",
+            "capability": "information.search.web"
+          }
+        ]
+      },
+      "notes": "Duplicate tool-call tests are in plan executor tests."
+    }
+  ]
+}

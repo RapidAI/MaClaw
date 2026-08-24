@@ -20,11 +20,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/improactive"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // lansengerGatewayManager manages the client-side Lansenger gateway.
@@ -765,6 +767,13 @@ func (m *lansengerGatewayManager) recordGroupFileAudit(msg lansenger.IncomingMes
 // lansengerMayStageNonImageMediaLocally keeps group attachments outside the
 // shared temp directory until a future, explicitly scoped attachment policy is
 // available. Private chats retain their established attachment workflow.
+func lansengerTrustedSourceMediaID(msg lansenger.IncomingMessage) string {
+	if id := strings.TrimSpace(msg.MessageID); id != "" {
+		return "lansenger-media:" + id
+	}
+	return ""
+}
+
 func lansengerMayStageNonImageMediaLocally(msg lansenger.IncomingMessage) bool {
 	return !isLansengerGroupMessage(msg)
 }
@@ -884,7 +893,7 @@ func buildLansengerOutgoingTextEx(msg lansenger.IncomingMessage, text string, op
 	}
 	return lansenger.OutgoingText{
 		ToUserID: lansengerReplyTarget(msg),
-		Text:     text,
+		Text:     textutil.SanitizeVisibleChatText(text),
 		IsGroup:  isGroup,
 		Reminder: reminder,
 		RefMsgID: refMsgID,
@@ -991,6 +1000,19 @@ func lansengerReplyTarget(msg lansenger.IncomingMessage) string {
 		return msg.GroupID
 	}
 	return msg.FromUserID
+}
+
+// lansengerDeliveryDestination returns the authenticated reply endpoint in a
+// typed namespace. It is intentionally derived from the gateway event rather
+// than user text, tool arguments, or a model-selected recipient.
+func lansengerDeliveryDestination(msg lansenger.IncomingMessage) string {
+	if isLansengerGroupMessage(msg) && strings.TrimSpace(msg.GroupID) != "" {
+		return "group:" + strings.TrimSpace(msg.GroupID)
+	}
+	if userID := strings.TrimSpace(msg.FromUserID); userID != "" {
+		return "user:" + userID
+	}
+	return ""
 }
 
 func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool, senderID, senderName, question, messageID, correlationID string) {
@@ -1466,6 +1488,19 @@ func (m *lansengerGatewayManager) handleLocalMessageNow(turnCtx context.Context,
 			// If the LLM doesn't support vision, buildUserContent will
 			// save it to a local file and tell the LLM accordingly.
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, ""))
+		} else if att, ok := buildTrustedHostMediaAttachment(trustedHostMediaInput{
+			MediaType:     msg.MediaType,
+			FileName:      msg.MediaName,
+			MimeType:      msg.MediaType,
+			SourceMediaID: lansengerTrustedSourceMediaID(msg),
+			Data:          msg.MediaData,
+		}); ok {
+			// Trusted audio/document bytes stay in the current-turn attachment
+			// and do not stage into the shared gateway temp directory.
+			if strings.TrimSpace(text) == "" {
+				text = "[收到" + mediaLabel(msg.MediaType) + "]"
+			}
+			attachments = append(attachments, att)
 		} else if !lansengerMayStageNonImageMediaLocally(msg) {
 			// A group turn begins with no filesystem grant. Staging an arbitrary
 			// inbound file in the shared local temp directory before the agent-loop
@@ -1474,8 +1509,7 @@ func (m *lansengerGatewayManager) handleLocalMessageNow(turnCtx context.Context,
 			// prompt, but require a private chat for non-image file processing.
 			text = "[收到" + mediaLabel(msg.MediaType) + "附件；群聊权限不会将非图片附件保存到本机，请在私聊中发送或粘贴需要处理的文本。]\n" + text
 		} else {
-			// Non-image media (file, voice, video) → save to local temp
-			// and prepend the path to the text so the agent can read it.
+			// Unrecognized non-image media still stages locally in private chat.
 			mediaPath, err := saveMediaToTempDirForScope("lansenger", "ls_", msg.FromUserID, msg.MediaType, msg.MediaData, msg.MediaName, m.profileID())
 			if err != nil {
 				log.Printf("[lansenger-mgr] save media error: %v", err)
@@ -1538,7 +1572,11 @@ func (m *lansengerGatewayManager) handleLocalMessageNow(turnCtx context.Context,
 		Attachments:      attachments,
 		SkipUserAudit:    msg.AuditUserRecorded,
 		AssistantBinding: lansengerAssistantBinding(m.configuredProfile(nil)),
-		CancelCtx:        turnCtx,
+		DeliveryTarget: &agent.DeliveryTarget{
+			ChannelScope:  "lansenger",
+			DestinationID: lansengerDeliveryDestination(msg),
+		},
+		CancelCtx: turnCtx,
 	}
 	if !cacheableQuestion {
 		userMessage.CacheQuestion = ""
@@ -1716,34 +1754,35 @@ const lansengerScreenshotDeliveryFailureText = "截图发送失败，请稍后�
 // sendLansengerScreenshot uploads a captured PNG as a native Lansenger image
 // attachment. It is deliberately strict: reporting that a screenshot was sent
 // when the upload failed is worse than returning an error to the caller.
-func sendLansengerScreenshot(ctx context.Context, gw *lansenger.Gateway, msg lansenger.IncomingMessage, imageBase64 string) error {
+func sendLansengerScreenshot(ctx context.Context, gw *lansenger.Gateway, msg lansenger.IncomingMessage, imageBase64 string) (lansenger.MediaReceipt, error) {
 	if gw == nil {
-		return fmt.Errorf("Lansenger gateway is unavailable")
+		return lansenger.MediaReceipt{}, fmt.Errorf("Lansenger gateway is unavailable")
 	}
 	imageData, err := base64.StdEncoding.DecodeString(strings.TrimSpace(imageBase64))
 	if err != nil {
-		return fmt.Errorf("decode screenshot: %w", err)
+		return lansenger.MediaReceipt{}, fmt.Errorf("decode screenshot: %w", err)
 	}
 	if len(imageData) == 0 {
-		return fmt.Errorf("screenshot is empty")
+		return lansenger.MediaReceipt{}, fmt.Errorf("screenshot is empty")
 	}
 	// All screenshot producers currently return PNG. Verify the signature here
 	// so an upstream malformed/tool payload cannot be labelled screenshot.png
 	// and handed to Lansenger as a misleading image attachment.
 	if len(imageData) < 8 || !bytes.Equal(imageData[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
-		return fmt.Errorf("screenshot is not a PNG image")
+		return lansenger.MediaReceipt{}, fmt.Errorf("screenshot is not a PNG image")
 	}
-	if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
+	receipt, err := gw.SendMediaWithReceipt(ctx, lansenger.OutgoingMedia{
 		ToUserID:  lansengerReplyTarget(msg),
 		FileData:  imageData,
 		FileName:  "screenshot.png",
 		MediaType: imMediaImage.String(),
 		IsGroup:   isLansengerGroupMessage(msg),
 		Strict:    true,
-	}); err != nil {
-		return fmt.Errorf("send screenshot: %w", err)
+	})
+	if err != nil {
+		return lansenger.MediaReceipt{}, fmt.Errorf("send screenshot: %w", err)
 	}
-	return nil
+	return receipt, nil
 }
 
 func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg lansenger.IncomingMessage, resp *IMAgentResponse) {
@@ -1800,44 +1839,165 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 	// making image upload failure visible instead of letting "截图已发" stand as
 	// the final user-facing claim.
 	if strings.TrimSpace(resp.ImageKey) != "" {
-		if err := sendLansengerScreenshot(ctx, gw, msg, resp.ImageKey); err != nil {
+		claim, dispatch := m.claimSemanticDeliveryDispatch(resp, lansengerDeliveryDestination(msg))
+		if !dispatch {
+			return
+		}
+		imageBase64 := resp.ImageKey
+		if resp.SemanticDelivery != nil && resp.SemanticDelivery.Coordinator != nil {
+			if !strings.EqualFold(strings.TrimSpace(claim.Ref.Kind), "image") || !strings.EqualFold(strings.TrimSpace(claim.Ref.MIMEType), "image/png") {
+				m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+				log.Printf("[lansenger-mgr] semantic image claim has unsupported artifact kind=%q mime=%q", claim.Ref.Kind, claim.Ref.MIMEType)
+				return
+			}
+			imageBase64 = claim.Base64
+		}
+		if receipt, err := sendLansengerScreenshot(ctx, gw, msg, imageBase64); err != nil {
+			m.recordSemanticDeliveryOutcome(resp, lansengerSemanticDeliveryOutcome(err))
 			log.Printf("[lansenger-mgr] SendMedia response image failed (to=%s): %v", toUserID, err)
 			_ = gw.SendText(ctx, buildLansengerOutgoingTextEx(msg, lansengerScreenshotDeliveryFailureText, opts, true))
 		} else {
+			m.recordSemanticDeliveryOutcome(resp, tool.DeliveryAccepted, tool.SchemaDigest([]byte("lansenger:media:"+receipt.MediaID)))
 			log.Printf("[lansenger-mgr] SendMedia response image OK (to=%s)", toUserID)
 		}
 	}
 
 	if resp.FileData != "" {
-		fileBytes, err := base64.StdEncoding.DecodeString(resp.FileData)
-		if err == nil && len(fileBytes) > 0 {
-			_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
-				ToUserID:  toUserID,
-				FileData:  fileBytes,
-				FileName:  resp.FileName,
-				MediaType: "file",
-				IsGroup:   isGroup,
-			})
+		claim, dispatch := m.claimSemanticDeliveryDispatch(resp, lansengerDeliveryDestination(msg))
+		if !dispatch {
+			return
+		}
+		fileData, fileName := resp.FileData, resp.FileName
+		if resp.SemanticDelivery != nil && resp.SemanticDelivery.Coordinator != nil {
+			if strings.TrimSpace(claim.Ref.ID) == "" || strings.EqualFold(strings.TrimSpace(claim.Ref.Kind), "image") {
+				m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+				log.Printf("[lansenger-mgr] semantic file claim has unsupported artifact kind=%q", claim.Ref.Kind)
+				return
+			}
+			fileData, fileName = claim.Base64, semanticArtifactFileName(claim.Ref)
+		}
+		fileBytes, err := base64.StdEncoding.DecodeString(fileData)
+		if err != nil || len(fileBytes) == 0 {
+			m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+			log.Printf("[lansenger-mgr] decode semantic file delivery failed (to=%s): %v", toUserID, err)
+		} else if receipt, err := gw.SendMediaWithReceipt(ctx, lansenger.OutgoingMedia{
+			ToUserID:  toUserID,
+			FileData:  fileBytes,
+			FileName:  fileName,
+			MediaType: "file",
+			IsGroup:   isGroup,
+			Strict:    true,
+		}); err != nil {
+			m.recordSemanticDeliveryOutcome(resp, lansengerSemanticDeliveryOutcome(err))
+			log.Printf("[lansenger-mgr] SendMedia semantic file failed (to=%s): %v", toUserID, err)
+		} else {
+			m.recordSemanticDeliveryOutcome(resp, tool.DeliveryAccepted, tool.SchemaDigest([]byte("lansenger:media:"+receipt.MediaID)))
+			log.Printf("[lansenger-mgr] SendMedia semantic file OK (to=%s)", toUserID)
 		}
 	}
 
-	// Send voice message as a file because Lansenger does not expose a native voice type.
+	// Legacy auto-summary voice still sends without a delivery record.
+	// Managed audio_deliver must CAS-claim first and record accepted/failed/unknown.
 	if resp.VoiceData != "" {
-		voiceBytes, err := base64.StdEncoding.DecodeString(resp.VoiceData)
+		claim, dispatch := m.claimSemanticDeliveryDispatch(resp, lansengerDeliveryDestination(msg))
+		if resp.SemanticDelivery != nil && !dispatch {
+			return
+		}
+		voiceData, voiceName := resp.VoiceData, resp.VoiceFileName
+		if resp.SemanticDelivery != nil && resp.SemanticDelivery.Coordinator != nil {
+			if !strings.EqualFold(strings.TrimSpace(claim.Ref.Kind), "audio") {
+				m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+				log.Printf("[lansenger-mgr] semantic voice claim has unsupported artifact kind=%q", claim.Ref.Kind)
+				return
+			}
+			voiceData, voiceName = claim.Base64, semanticArtifactFileName(claim.Ref)
+		}
+		voiceBytes, err := base64.StdEncoding.DecodeString(voiceData)
 		if err != nil || len(voiceBytes) == 0 {
+			if resp.SemanticDelivery != nil {
+				m.recordSemanticDeliveryOutcome(resp, tool.DeliveryFailed)
+			}
 			log.Printf("[lansenger-mgr] decode voice data failed (to=%s): %v", toUserID, err)
-		} else if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
+		} else if receipt, err := gw.SendMediaWithReceipt(ctx, lansenger.OutgoingMedia{
 			ToUserID:  toUserID,
 			FileData:  voiceBytes,
-			FileName:  resp.VoiceFileName,
-			MediaType: "file",
+			FileName:  voiceName,
+			MediaType: "voice",
 			IsGroup:   isGroup,
+			Strict:    resp.SemanticDelivery != nil,
 		}); err != nil {
-			log.Printf("[lansenger-mgr] SendMedia voice file failed (to=%s): %v", toUserID, err)
+			if resp.SemanticDelivery != nil {
+				m.recordSemanticDeliveryOutcome(resp, lansengerSemanticDeliveryOutcome(err))
+			}
+			log.Printf("[lansenger-mgr] SendMedia voice failed (to=%s): %v", toUserID, err)
+		} else {
+			if resp.SemanticDelivery != nil {
+				m.recordSemanticDeliveryOutcome(resp, tool.DeliveryAccepted, tool.SchemaDigest([]byte("lansenger:media:"+receipt.MediaID)))
+			}
+			log.Printf("[lansenger-mgr] SendMedia voice OK (to=%s)", toUserID)
 		}
 	}
 
 	m.sendLocalFiles(gw, toUserID, isGroup, resp)
+}
+
+func lansengerSemanticDeliveryOutcome(err error) tool.DeliveryState {
+	if err == nil {
+		return tool.DeliveryAccepted
+	}
+	// Validation happens before any remote request, so a malformed image is a
+	// definite non-delivery. Once SendMedia starts, the error may follow an
+	// upload or send that reached Lansenger; retain unknown and never auto-retry.
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "decode screenshot") || strings.Contains(message, "screenshot is empty") || strings.Contains(message, "not a png") || strings.Contains(message, "gateway is unavailable") {
+		return tool.DeliveryFailed
+	}
+	return tool.DeliveryUnknown
+}
+
+func (m *lansengerGatewayManager) recordSemanticDeliveryOutcome(resp *IMAgentResponse, outcome tool.DeliveryState, receiptDigest ...string) {
+	if resp == nil || resp.SemanticDelivery == nil {
+		return
+	}
+	if err := resp.SemanticDelivery.recordOutcome(outcome, receiptDigest...); err != nil {
+		log.Printf("[lansenger-mgr] record semantic delivery outcome failed (outcome=%s): %v", outcome, err)
+	}
+}
+
+// claimSemanticDeliveryDispatch is the only hand-off from a prepared semantic
+// delivery to Lansenger I/O. For unified-coordinator requests its payload is
+// the opaque outbox claim, never the model-adjacent response projection.
+func (m *lansengerGatewayManager) claimSemanticDeliveryDispatch(resp *IMAgentResponse, destinationID string) (tool.ArtifactPayload, bool) {
+	if resp == nil || resp.SemanticDelivery == nil {
+		return tool.ArtifactPayload{}, true
+	}
+	projection := resp.SemanticDelivery
+	if !strings.EqualFold(strings.TrimSpace(projection.ChannelScope), "lansenger") || strings.TrimSpace(destinationID) == "" || strings.TrimSpace(projection.DestinationID) != strings.TrimSpace(destinationID) {
+		log.Printf("[lansenger-mgr] reject semantic delivery projection channel=%q destination=%q", projection.ChannelScope, projection.DestinationID)
+		return tool.ArtifactPayload{}, false
+	}
+	if projection.Coordinator != nil {
+		claim, dispatch, err := projection.Coordinator.ClaimDelivery(projection.Scope, projection.SelectionID, time.Now().UTC())
+		if err != nil {
+			log.Printf("[lansenger-mgr] claim semantic delivery outbox failed: %v", err)
+			return tool.ArtifactPayload{}, false
+		}
+		if !dispatch {
+			log.Printf("[lansenger-mgr] skip semantic delivery outbox state=%s", claim.Delivery.State)
+			return tool.ArtifactPayload{}, false
+		}
+		return claim.Payload, true
+	}
+	record, dispatch, err := projection.Store.ClaimDeliveryDispatch(projection.Scope, projection.SelectionID, time.Now().UTC())
+	if err != nil {
+		log.Printf("[lansenger-mgr] claim semantic delivery dispatch failed: %v", err)
+		return tool.ArtifactPayload{}, false
+	}
+	if !dispatch {
+		log.Printf("[lansenger-mgr] suppress semantic delivery replay state=%s operation=%s", record.State, record.OperationKey)
+		return tool.ArtifactPayload{}, false
+	}
+	return tool.ArtifactPayload{}, true
 }
 
 func (m *lansengerGatewayManager) sendLocalFiles(gw *lansenger.Gateway, toUserID string, isGroup bool, resp *IMAgentResponse) {
@@ -1887,7 +2047,7 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 	isGroup := lansenger.IsGroupChat(reply.ChatType) || m.isGroupReplyTarget(reply.PlatformUID)
 	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
 	case gatewayReplyTypeText:
-		text := textutil.StripMarkdown(reply.Text)
+		text := textutil.SanitizeVisibleChatText(textutil.StripMarkdown(reply.Text))
 		opts := m.currentGroupOpts()
 		// First hub text chunk only: reuse the same decoration builder as local
 		// mode so @mention / refMsgId / text-quote stay consistent. Later chunks
@@ -1939,7 +2099,7 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 		}
 	case gatewayReplyTypeImage:
 		outbound := lansenger.IncomingMessage{ChatType: reply.ChatType, FromUserID: reply.PlatformUID, GroupID: reply.PlatformUID}
-		if err := sendLansengerScreenshot(ctx, gw, outbound, reply.ImageData); err != nil {
+		if _, err := sendLansengerScreenshot(ctx, gw, outbound, reply.ImageData); err != nil {
 			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia image failed (to=%s): %v", reply.PlatformUID, err)
 			_ = gw.SendText(ctx, lansenger.OutgoingText{ToUserID: reply.PlatformUID, Text: lansengerScreenshotDeliveryFailureText, IsGroup: isGroup})
 		} else {

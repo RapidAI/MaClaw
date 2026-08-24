@@ -1,0 +1,46 @@
+{
+  "category": "mcp_stale_binding",
+  "category_id": 9,
+  "title": "MCP stale or offline binding",
+  "design_ref": "10.1 item 9",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "mcp-offline",
+      "title": "Offline MCP search stays unmet",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "mcp_search",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ],
+            "ready": false,
+            "kind": "mcp"
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "MCP stale/offline execution is in agentservice dynamic binding tests."
+    }
+  ]
+}

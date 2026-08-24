@@ -1,10 +1,12 @@
-import { Dispatch, SetStateAction } from 'react';
+import { Dispatch, SetStateAction, useEffect, useState } from 'react';
+import { GetEmbedAccelInfo, SetEmbedHWAccel } from '../../../wailsjs/go/main/App';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 import { DataDirectorySection } from './DataDirectorySection';
 import { SystemTimeoutField } from './SystemTimeoutField';
 import { ToolCacheMaintenanceSection } from './ToolCacheMaintenanceSection';
+import { buildSystemDiagnostics } from './systemSettingsDiagnostics';
 
 type AudioDeviceOption = {
     deviceId: string;
@@ -29,24 +31,18 @@ type SystemSettingsPanelProps = {
 
 const textForLang = localizeText;
 
-const emptyValue = (lang: string, kind: 'inactive' | 'unset' | 'generated') => {
-    if (kind === 'generated') return textForLang(lang, '(not generated)', '(\u672a\u751f\u6210)', '(\u672a\u751f\u6210)');
-    if (kind === 'unset') return textForLang(lang, '(not set)', '(\u672a\u8bbe\u7f6e)', '(\u672a\u8a2d\u7f6e)');
-    return textForLang(lang, '(not activated)', '(\u672a\u6fc0\u6d3b)', '(\u672a\u555f\u7528)');
-};
-
 export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, saveRemoteConfigField, showToastMessage }: SystemSettingsPanelProps) => {
     const defaultHeartbeatSec = 30;
+    const [accel, setAccel] = useState<{ backend?: string; npu_present?: boolean; device?: string; reason?: string }>({});
+    useEffect(() => {
+        GetEmbedAccelInfo()
+            .then((info) => setAccel(info || {}))
+            .catch(() => setAccel({}));
+    }, []);
+    const npuPresent = !!accel.npu_present;
+    const hwAccelChecked = npuPresent && (config as any)?.embed_hw_accel !== false;
 
-    const diagnostics: Array<[string, string]> = [
-        ['Machine ID', config?.remote_machine_id || emptyValue(lang, 'inactive')],
-        ['User ID', config?.remote_user_id || emptyValue(lang, 'inactive')],
-        ['Client ID', config?.remote_client_id || emptyValue(lang, 'generated')],
-        ['SN', config?.remote_sn || emptyValue(lang, 'inactive')],
-        ['Hub URL', config?.remote_hub_url || emptyValue(lang, 'unset')],
-        [textForLang(lang, 'Account', '\u8d26\u6237', '\u5e33\u6236'), config?.remote_email || emptyValue(lang, 'unset')],
-        ['WeChat Mode', (config as any)?.weixin_local_mode === false ? textForLang(lang, 'Multi-device (Hub)', '\u591a\u673a (Hub)', '\u591a\u6a5f (Hub)') : textForLang(lang, 'Single-device (Local)', '\u5355\u673a (Local)', '\u55ae\u6a5f (Local)')],
-    ];
+    const diagnostics = buildSystemDiagnostics(config, lang);
 
     return (
         <div className="settings-panel system-settings-panel">
@@ -99,6 +95,32 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
                         </span>
                     <small>
                         {textForLang(lang, 'Prevents sleep and screen lock while allowing display off. Useful for screenshot testing and debugging.', '\u9632\u6b62\u7cfb\u7edf\u7761\u7720\u548c\u9501\u5c4f\uff0c\u4f46\u5141\u8bb8\u5c4f\u5e55\u5728\u7a7a\u95f2\u540e\u5173\u95ed\uff0c\u9002\u5408\u622a\u56fe\u6d4b\u8bd5\u548c\u8c03\u8bd5\u3002', '\u9632\u6b62\u7cfb\u7d71\u7761\u7720\u548c\u9396\u5c4f\uff0c\u4f46\u5141\u8a31\u87a2\u5e55\u5728\u7a7a\u9592\u5f8c\u95dc\u9589\uff0c\u9069\u5408\u622a\u5716\u6e2c\u8a66\u548c\u9664\u932f\u3002')}
+                    </small>
+                </label>
+
+                <label className="system-settings-option" title={!npuPresent ? textForLang(lang, 'No NPU detected on this machine.', '\u672c\u673a\u672a\u68c0\u6d4b\u5230 NPU', '\u672c\u6a5f\u672a\u5075\u6e2c\u5230 NPU') : undefined}>
+                    <input
+                        type="checkbox"
+                        aria-label={textForLang(lang, 'Hardware Acceleration', '\u786c\u4ef6\u52a0\u901f', '\u786c\u9ad4\u52a0\u901f')}
+                        disabled={!npuPresent}
+                        checked={hwAccelChecked}
+                        onChange={(e) => {
+                            if (!npuPresent) return;
+                            const on = e.target.checked;
+                            saveRemoteConfigField({ embed_hw_accel: on } as any);
+                            void SetEmbedHWAccel(on)
+                                .then(() => GetEmbedAccelInfo())
+                                .then((info) => setAccel(info || {}))
+                                .catch(() => {});
+                        }}
+                    />
+                    <span>
+                        {textForLang(lang, 'Hardware Acceleration', '\u786c\u4ef6\u52a0\u901f', '\u786c\u9ad4\u52a0\u901f')}
+                    </span>
+                    <small>
+                        {npuPresent
+                            ? textForLang(lang, 'Use AMD NPU for embedding when available. Turn off to force CPU SIMD.', '\u6709 NPU \u65f6\u7528\u5176\u52a0\u901f\u5d4c\u5165\u63a8\u7406\uff1b\u5173\u95ed\u5219\u5f3a\u5236 CPU SIMD\u3002', '\u6709 NPU \u6642\u7528\u5176\u52a0\u901f\u5d4c\u5165\u63a8\u7406\uff1b\u95dc\u9589\u5247\u5f37\u5236 CPU SIMD\u3002')
+                            : textForLang(lang, 'No NPU detected on this machine.', '\u672c\u673a\u672a\u68c0\u6d4b\u5230 NPU', '\u672c\u6a5f\u672a\u5075\u6e2c\u5230 NPU')}
                     </small>
                 </label>
 

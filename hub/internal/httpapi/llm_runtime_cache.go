@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -167,6 +168,8 @@ func cloneLLMServiceRegistry(reg *llmservice.Registry) *llmservice.Registry {
 	clone.ModelServiceGroups = make([]llmservice.ModelServiceGroup, len(reg.ModelServiceGroups))
 	for i, group := range reg.ModelServiceGroups {
 		clone.ModelServiceGroups[i] = group
+		clone.ModelServiceGroups[i].Routes = append([]llmpool.WorkloadRoute(nil), group.Routes...)
+		clone.ModelServiceGroups[i].ExposedModels = append([]string(nil), group.ExposedModels...)
 		clone.ModelServiceGroups[i].Models = make([]llmservice.ModelServiceModel, len(group.Models))
 		for j, model := range group.Models {
 			clone.ModelServiceGroups[i].Models[j] = model

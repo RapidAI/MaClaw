@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/App";
+import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { isImageFilePath } from "./useAIAssistant";
 import { type Theme } from "./aiAssistantPanelTheme";
@@ -94,33 +95,44 @@ function AttachmentTypeBadge({ label, theme }: { label: string; theme: Theme }) 
     );
 }
 
-function AttachmentVisual({ filePath, fileName, isImage, thumbnailDataUrl, theme }: {
+function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
     filePath: string;
     fileName: string;
     isImage: boolean;
-    thumbnailDataUrl?: string;
+    lang: string;
     theme: Theme;
 }) {
-    const [preview, setPreview] = useState(thumbnailDataUrl || "");
+    const [preview, setPreview] = useState("");
+    const [previewFailed, setPreviewFailed] = useState(false);
 
     useEffect(() => {
-        if (thumbnailDataUrl) {
-            setPreview(thumbnailDataUrl);
-            return;
-        }
         if (!isImage) {
             setPreview("");
+            setPreviewFailed(false);
             return;
         }
         let active = true;
+        setPreviewFailed(false);
         void AIAssistantAttachmentPreviewDataURL(filePath)
-            .then(dataUrl => { if (active) setPreview(String(dataUrl || "")); })
-            .catch(() => { if (active) setPreview(""); });
+            .then(dataUrl => {
+                if (!active) return;
+                const resolved = String(dataUrl || "");
+                setPreview(resolved);
+                setPreviewFailed(!resolved);
+            })
+            .catch(() => {
+                if (!active) return;
+                setPreview("");
+                setPreviewFailed(true);
+            });
         return () => { active = false; };
-    }, [filePath, isImage, thumbnailDataUrl]);
+    }, [filePath, isImage]);
 
     if (preview) {
-        return <img src={preview} alt={fileName || "attached image"} style={{ width: "30px", height: "30px", objectFit: "cover", borderRadius: "4px", flexShrink: 0 }} />;
+        return <AttachmentImageThumbnail src={preview} filePath={filePath} fileName={fileName || "attached image"} lang={lang} theme={theme} title={filePath} frameStyle={{ width: "30px", height: "30px", borderRadius: "4px", flexShrink: 0, border: "none", background: "transparent" }} />;
+    }
+    if (isImage && !previewFailed) {
+        return <span aria-label={fileName} style={{ width: "30px", height: "30px", flexShrink: 0 }} />;
     }
     return <AttachmentTypeBadge label={isImage ? "IMG" : attachmentKindLabel(fileName, "")} theme={theme} />;
 }
@@ -206,7 +218,7 @@ export function AssistantAttachmentsStrip({
                     const displayName = abbreviateAttachmentFileName(fileName);
                     return (
                         <div key={att.filePath + "-" + index} className="ai-attachment-row" role="listitem" title={att.filePath} style={attachmentRowStyle(t)}>
-                            <AttachmentVisual filePath={att.filePath} fileName={fileName} isImage={att.isImage} thumbnailDataUrl={att.thumbnailDataUrl} theme={t} />
+                            <AttachmentVisual filePath={att.filePath} fileName={fileName} isImage={att.isImage} lang={lang} theme={t} />
                             <span title={att.filePath} aria-label={fileName} style={visuallyHiddenStyle}>{displayName}</span>
                             <button
                                 type="button"
@@ -229,7 +241,7 @@ export function AssistantAttachmentsStrip({
                     const displayName = abbreviateAttachmentFileName(fileName);
                     return (
                         <div key={filePath + index} className="ai-attachment-row" role="listitem" title={filePath} style={attachmentRowStyle(t)}>
-                            <AttachmentVisual filePath={filePath} fileName={fileName} isImage={isImageFilePath(filePath)} theme={t} />
+                            <AttachmentVisual filePath={filePath} fileName={fileName} isImage={isImageFilePath(filePath)} lang={lang} theme={t} />
                             <span title={filePath} aria-label={fileName} style={visuallyHiddenStyle}>{displayName}</span>
                             <button
                                 type="button"

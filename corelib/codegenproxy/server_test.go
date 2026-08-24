@@ -1882,12 +1882,17 @@ func TestCodeGenOpenAICompatibilitySanitizesToolsForAnyModel(t *testing.T) {
 	if !containsPrefix(notes, "codegen_sanitize_functions:") {
 		t.Fatalf("notes missing functions sanitize entry: %#v", notes)
 	}
-	for _, key := range []string{"parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs"} {
+	for _, key := range []string{"parallel_tool_calls", "store", "metadata", "logprobs", "top_logprobs"} {
 		if !containsPrefix(notes, "codegen_drop_"+key) {
 			t.Fatalf("notes missing %s drop entry: %#v", key, notes)
 		}
 		if _, ok := payload[key]; ok {
 			t.Fatalf("%s leaked into CodeGen request: %#v", key, payload)
+		}
+	}
+	for _, key := range []string{"response_format", "tool_choice", "function_call"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("%s must remain in the upstream request because it defines caller semantics: %#v", key, payload)
 		}
 	}
 	// stream_options is preserved (not dropped) — verify it's still present.
@@ -2089,13 +2094,12 @@ func TestPrepareCodeGenCompactChatRetryBodyHandlesTypedMessages(t *testing.T) {
 			{Role: "system", Content: strings.Repeat("runtime context\n", 900)},
 			{Role: "user", Content: "latest typed request"},
 		},
-		"tools": []map[string]string{{"type": "function"}},
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
 
-	compact, ok := prepareCodeGenCompactChatRetryBody("https://codegen.qianxin-inc.cn/api/v1", "qax-codegen/Auto", body, http.StatusBadRequest)
+	compact, ok := prepareCodeGenCompactChatRetryBody("https://codegen.qianxin-inc.cn/api/v1", "qax-codegen/Auto", body, http.StatusBadRequest, codeGenProxyRetrySemanticsForBody(body))
 	if !ok {
 		t.Fatal("expected typed compact retry body")
 	}
@@ -2113,6 +2117,63 @@ func TestPrepareCodeGenCompactChatRetryBodyHandlesTypedMessages(t *testing.T) {
 	content := messages[1].(map[string]interface{})["content"].(string)
 	if !strings.Contains(content, "latest typed request") || strings.Contains(content, "runtime context\nruntime context") {
 		t.Fatalf("compact typed content = %.200q", content)
+	}
+}
+
+func TestCodeGenRetryBodiesDoNotDowngradeSemanticContracts(t *testing.T) {
+	base := map[string]interface{}{
+		"model":    "qax-codegen/Auto",
+		"messages": []interface{}{map[string]interface{}{"role": "user", "content": "classify"}},
+	}
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value interface{}
+	}{
+		{name: "tools", key: "tools", value: []interface{}{map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "get_weather"}}}},
+		{name: "legacy functions", key: "functions", value: []interface{}{map[string]interface{}{"name": "get_weather"}}},
+		{name: "tool choice", key: "tool_choice", value: "required"},
+		{name: "function call", key: "function_call", value: "auto"},
+		{name: "response format", key: "response_format", value: map[string]interface{}{"type": "json_schema", "json_schema": map[string]interface{}{"name": "intent", "schema": map[string]interface{}{"type": "object"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := make(map[string]interface{}, len(base)+1)
+			for key, value := range base {
+				payload[key] = value
+			}
+			payload[tc.key] = tc.value
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			semantics := codeGenProxyRetrySemanticsForBody(body)
+			if retry, ok := prepareQwenFlashChatOnlyRetryBody("qax-codegen/Qwen-Flash", body, http.StatusBadRequest, semantics); ok || retry != nil {
+				t.Fatalf("tool-less retry must not change %s contract: %s", tc.key, retry)
+			}
+			if retry, ok := prepareCodeGenCompactChatRetryBody("https://codegen.qianxin-inc.cn/api/v1", "qax-codegen/Auto", body, http.StatusBadGateway, semantics); ok || retry != nil {
+				t.Fatalf("compact retry must not change %s contract: %s", tc.key, retry)
+			}
+		})
+	}
+}
+
+func TestCodeGenCompactRetryDoesNotDowngradeCompletedToolHistoryWithCurrentToolSurface(t *testing.T) {
+	body, err := json.Marshal(map[string]interface{}{
+		"model": "qax-codegen/Auto",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "system", "content": "runtime context"},
+			map[string]interface{}{"role": "assistant", "content": "", "tool_calls": []interface{}{map[string]interface{}{"id": "call_1", "type": "function", "function": map[string]interface{}{"name": "read_file", "arguments": "{}"}}}},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call_1", "content": "result"},
+			map[string]interface{}{"role": "user", "content": "summarize"},
+		},
+		"tools": []interface{}{map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "read_file"}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	compact, ok := prepareCodeGenCompactChatRetryBody("https://codegen.qianxin-inc.cn/api/v1", "qax-codegen/Auto", body, http.StatusBadGateway, codeGenProxyRetrySemanticsForBody(body))
+	if ok || compact != nil {
+		t.Fatal("a request that still declares tools must not retry after removing them")
 	}
 }
 
@@ -2554,7 +2615,7 @@ func (r errReader) Read(_ []byte) (int, error) {
 	return 0, r.err
 }
 
-func TestAnthropicProxyRetriesQwenFlashWithoutToolsOnBadRequest(t *testing.T) {
+func TestAnthropicProxyDoesNotRetryQwenFlashWithoutToolsOnBadRequest(t *testing.T) {
 	chatAttempts := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2579,19 +2640,7 @@ func TestAnthropicProxyRetriesQwenFlashWithoutToolsOnBadRequest(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":{"message":"Bad Request","type":"upstream_error"}}`))
 				return
 			}
-			if got := logArrayLen(payload["functions"]); got != 0 {
-				t.Errorf("retry functions = %d, want 0", got)
-			}
-			if got := logArrayLen(payload["tools"]); got != 0 {
-				t.Errorf("retry tools = %d, want 0", got)
-			}
-			json.NewEncoder(w).Encode(openaiChatResponse{
-				ID: "chatcmpl-qwen-retry",
-				Choices: []openaiChoice{{
-					Message:      openaiMessage{Role: "assistant", Content: "ok"},
-					FinishReason: "stop",
-				}},
-			})
+			t.Fatalf("unexpected semantic downgrade retry: %#v", payload)
 		default:
 			http.NotFound(w, r)
 		}
@@ -2621,12 +2670,12 @@ func TestAnthropicProxyRetriesQwenFlashWithoutToolsOnBadRequest(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+		t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusBadRequest, body)
 	}
-	if chatAttempts != 2 {
-		t.Fatalf("chat attempts = %d, want 2", chatAttempts)
+	if chatAttempts != 1 {
+		t.Fatalf("chat attempts = %d, want 1", chatAttempts)
 	}
 }
 
@@ -2759,7 +2808,7 @@ func TestCodeGenProxyOpenAIEndpointBuildersNormalizeFullAndGLMURLs(t *testing.T)
 	}
 }
 
-func TestOpenAIChatCompletionsProxyCompactsAfterToollessHTTP400(t *testing.T) {
+func TestOpenAIChatCompletionsProxyCompactsAfterHTTP400WithoutCurrentToolSurface(t *testing.T) {
 	var requests []map[string]interface{}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]interface{}
@@ -2770,12 +2819,9 @@ func TestOpenAIChatCompletionsProxyCompactsAfterToollessHTTP400(t *testing.T) {
 			return
 		}
 		requests = append(requests, payload)
-		if len(requests) < 3 {
+		if len(requests) < 2 {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
-		}
-		if logArrayLen(payload["tools"]) != 0 {
-			t.Errorf("compact retry leaked tools: %#v", payload)
 		}
 		msgs, _ := payload["messages"].([]interface{})
 		if len(msgs) != 2 {
@@ -2795,11 +2841,9 @@ func TestOpenAIChatCompletionsProxyCompactsAfterToollessHTTP400(t *testing.T) {
 		"stream":true,
 		"messages":[
 			{"role":"system","content":"large system"},
-			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
-			{"role":"tool","tool_call_id":"call_1","content":"large tool result"},
+			{"role":"assistant","content":"an earlier answer"},
 			{"role":"user","content":"please answer latest"}
-		],
-		"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]
+		]
 	}`
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://"+srv.Addr().String()+"/v1/chat/completions",
@@ -2815,14 +2859,86 @@ func TestOpenAIChatCompletionsProxyCompactsAfterToollessHTTP400(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	if len(requests) != 3 {
-		t.Fatalf("upstream requests = %d, want 3", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("upstream requests = %d, want 2", len(requests))
 	}
-	if logArrayLen(requests[0]["tools"]) == 0 {
-		t.Fatalf("first request should include tools: %#v", requests[0])
+	if logArrayLen(requests[0]["tools"]) != 0 || logArrayLen(requests[1]["tools"]) != 0 {
+		t.Fatalf("ordinary compaction must not add or remove a tool surface: %#v", requests)
 	}
-	if logArrayLen(requests[1]["tools"]) != 0 {
-		t.Fatalf("toolless retry leaked tools: %#v", requests[1])
+}
+
+func TestOpenAIChatCompletionsProxyDoesNotRetryActiveToolRequest(t *testing.T) {
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if logArrayLen(payload["tools"]) != 1 {
+			t.Fatalf("active tool request lost its tool surface: %#v", payload)
+		}
+		http.Error(w, "tool contract unsupported", http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	resp, err := http.Post("http://"+srv.Addr().String()+"/v1/chat/completions", "application/json", strings.NewReader(`{
+		"model":"qax-codegen/Auto",
+		"messages":[{"role":"user","content":"use a tool"}],
+		"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]
+	}`))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadRequest, body)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("upstream attempts = %d, want 1: an active tool request must not retry without tools", got)
+	}
+}
+
+func TestOpenAIResponsesProxyDoesNotRetryStructuredRequest(t *testing.T) {
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		responseFormat, ok := payload["response_format"].(map[string]interface{})
+		if !ok || responseFormat["type"] != "json_schema" {
+			t.Fatalf("structured response contract was not forwarded: %#v", payload)
+		}
+		http.Error(w, "structured output unsupported", http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetUpstream(upstream.URL, "fallback-key")
+
+	resp, err := http.Post("http://"+srv.Addr().String()+"/v1/responses", "application/json", strings.NewReader(`{
+		"model":"qax-codegen/Auto",
+		"input":"classify",
+		"text":{"format":{"type":"json_schema","name":"intent","strict":true,"schema":{"type":"object"}}}
+	}`))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, http.StatusBadGateway, body)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("upstream attempts = %d, want 1: a structured request must not retry without response_format", got)
 	}
 }
 
@@ -3444,30 +3560,18 @@ func TestOpenAIResponsesStreamInvalidChunkEmitsError(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponsesStreamRetriesBadGatewayWithCompactHistory(t *testing.T) {
+func TestOpenAIResponsesStreamDoesNotRetryBadGatewayWithCurrentToolSurface(t *testing.T) {
 	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hit := upstreamHits.Add(1)
+		upstreamHits.Add(1)
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode upstream request: %v", err)
 		}
-		if hit == 1 {
-			if logArrayLen(payload["messages"]) < 3 || logArrayLen(payload["tools"]) == 0 {
-				t.Fatalf("initial request was not full tool history: %#v", payload)
-			}
-			http.Error(w, `{"error":{"message":"Invalid assistant message: content or tool_calls must be set"}}`, http.StatusBadGateway)
-			return
+		if logArrayLen(payload["messages"]) < 3 || logArrayLen(payload["tools"]) == 0 {
+			t.Fatalf("initial request was not full tool history: %#v", payload)
 		}
-		if logArrayLen(payload["tools"]) != 0 || logArrayLen(payload["functions"]) != 0 {
-			t.Fatalf("compact retry leaked tools: %#v", payload)
-		}
-		if logArrayLen(payload["messages"]) >= 3 {
-			t.Fatalf("compact retry did not reduce history: %#v", payload["messages"])
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		http.Error(w, `{"error":{"message":"Invalid assistant message: content or tool_calls must be set"}}`, http.StatusBadGateway)
 	}))
 	defer upstream.Close()
 
@@ -3492,11 +3596,11 @@ func TestOpenAIResponsesStreamRetriesBadGatewayWithCompactHistory(t *testing.T) 
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "recovered") {
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "Invalid assistant message") {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
-	if upstreamHits.Load() != 2 {
-		t.Fatalf("upstream hits=%d, want 2", upstreamHits.Load())
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
 	}
 }
 

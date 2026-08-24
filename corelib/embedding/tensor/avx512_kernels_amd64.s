@@ -694,7 +694,7 @@ tri8_512_loop:
 // FFN up fused: 8A×3B K=512 + bias + ReLU into out[m:m+8, n:n+3], N=2048.
 // Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 72
 // Stack $8: out base address.
-TEXT ·multiDot8TripleReLUAVX512K512N2048(SB), NOSPLIT, $8-72
+TEXT ·multiDot8TripleReLUAVX512K512N2048(SB), NOSPLIT, $8-68
 	MOVQ out+0(FP), R11
 	MOVQ m+40(FP), AX
 	MOVQ n+48(FP), BX
@@ -1094,7 +1094,7 @@ tri8_relu_loop:
 // CTC fused: 8A×3B K=512 + bias + argmax update of bestV/bestI (8 rows).
 // Frame: bestV+0 bestI+8 a+16 b0+24 b1+32 b2+40 n+48 bn0+56 bn1+60 bn2+64 → 72
 // Stack $96: 24 hsum+bias; phase2 keeps bestV in X0-X7.
-TEXT ·multiDot8TripleArgmaxAVX512K512(SB), NOSPLIT, $96-72
+TEXT ·multiDot8TripleArgmaxAVX512K512(SB), NOSPLIT, $96-68
 	MOVQ a+16(FP), SI
 	MOVQ b0+24(FP), DI
 	MOVQ b1+32(FP), R15
@@ -1649,7 +1649,7 @@ amx_r7c:
 // Encoder fused: 8A×3B K=512 + bias into out[m:m+8, n:n+3], N=512.
 // Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 72
 // Stack $8: out base address.
-TEXT ·multiDot8TriplePlainAVX512K512N512(SB), NOSPLIT, $8-72
+TEXT ·multiDot8TriplePlainAVX512K512N512(SB), NOSPLIT, $8-68
 	MOVQ out+0(FP), R11
 	MOVQ m+40(FP), AX
 	MOVQ n+48(FP), BX
@@ -2024,7 +2024,7 @@ tri8_pl512_loop:
 // Encoder fused: 8A×3B K=512 + bias into out[m:m+8, n:n+3], N=1536.
 // Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 72
 // Stack $8: out base address.
-TEXT ·multiDot8TriplePlainAVX512K512N1536(SB), NOSPLIT, $8-72
+TEXT ·multiDot8TriplePlainAVX512K512N1536(SB), NOSPLIT, $8-68
 	MOVQ out+0(FP), R11
 	MOVQ m+40(FP), AX
 	MOVQ n+48(FP), BX
@@ -7469,7 +7469,7 @@ dqt512_done:
 // func dotQ8RowScaledAVX512(a *float32, data *byte, scales *float32, rowOff, nBlocks int) float32
 // Single-row Q8 scaled dot, 16-wide (SenseVoice M remainder / M=1).
 // Frame: a+0 data+8 scales+16 rowOff+24 nBlocks+32 ret+40 → 48
-TEXT ·dotQ8RowScaledAVX512(SB), NOSPLIT, $0-48
+TEXT ·dotQ8RowScaledAVX512(SB), NOSPLIT, $0-44
 	MOVQ a+0(FP), SI
 	MOVQ data+8(FP), DI
 	MOVQ scales+16(FP), R8

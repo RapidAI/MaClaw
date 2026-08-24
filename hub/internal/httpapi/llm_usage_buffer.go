@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -25,6 +28,12 @@ type pendingCreditCharge struct {
 	email           string
 	serviceGroupIDs []string
 	credits         float64
+	requestID       string
+	providerID      string
+	usage           corelib.TokenUsageStat
+	multiplier      float64
+	pricing         *llmpool.ResolvedTokenPricing
+	meta            llmservice.OfficialForwardMeta
 }
 
 type llmUsageAccumulator struct {
@@ -46,6 +55,14 @@ func enqueueLLMUsage(system store.SystemSettingsRepository, providerID string, u
 }
 
 func enqueueLLMUsageForUserID(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) {
+	enqueueLLMUsageRecord(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, llmservice.OfficialForwardMeta{})
+}
+
+func enqueueLLMUsageRecord(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta) {
+	enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, "", 0, nil)
+}
+
+func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier float64, pricing *llmpool.ResolvedTokenPricing) {
 	if system == nil {
 		return
 	}
@@ -53,15 +70,52 @@ func enqueueLLMUsageForUserID(system store.SystemSettingsRepository, providerID 
 		log.Printf("[llm-usage] ignoring remote coding tool provider %q; remote tool tokens are session diagnostics, not Hub LLM usage", providerID)
 		return
 	}
+	// A request-scoped record is persisted only after the request's debit and
+	// its idempotency marker are durable in the same registry save. Legacy
+	// callers keep the existing eager usage-record behavior.
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		persistLLMUsageRecords(system, providerID, usage, userID, email, serviceGroupIDs, credits, meta)
+	}
 	globalLLMUsageAccumulator.start()
-	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits)
+	charge := globalLLMUsageAccumulator.enqueue(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, requestID)
 	if charge == nil {
 		return
 	}
-	if err := flushCreditCharges(context.Background(), system, map[string]*pendingCreditCharge{"immediate": charge}); err != nil {
-		log.Printf("[llm-usage] immediate credit charge failed: %v", err)
-		globalLLMUsageAccumulator.requeue(system, &pendingSystemUsage{creditCharges: map[string]*pendingCreditCharge{"immediate": charge}})
+	charge.requestID = strings.TrimSpace(requestID)
+	charge.providerID = strings.TrimSpace(providerID)
+	charge.usage = usage
+	charge.multiplier = multiplier
+	charge.meta = meta
+	if pricing != nil {
+		copyPricing := *pricing
+		charge.pricing = &copyPricing
 	}
+	// Apply the charge immediately so a successful response cannot leave a
+	// short-lived window in which concurrent requests all pass the same limit.
+	// Keep the full route identity as the key: requeueing different routes under
+	// one generic key previously merged their credits and charged them against
+	// whichever group happened to be retained first.
+	chargeKey := creditChargeKey(charge)
+	_, err := flushCreditChargesDetailed(context.Background(), system, map[string]*pendingCreditCharge{chargeKey: charge})
+	if err != nil {
+		log.Printf("[llm-usage] immediate credit charge failed: %v", err)
+		globalLLMUsageAccumulator.requeue(system, &pendingSystemUsage{creditCharges: map[string]*pendingCreditCharge{chargeKey: charge}})
+		return
+	}
+}
+
+func creditChargeKey(charge *pendingCreditCharge) string {
+	if charge == nil {
+		return ""
+	}
+	userID := strings.TrimSpace(charge.userID)
+	email := strings.ToLower(strings.TrimSpace(charge.email))
+	groups := normalizeUsageStringSlice(charge.serviceGroupIDs)
+	if requestID := strings.TrimSpace(charge.requestID); requestID != "" {
+		return "request\n" + requestID
+	}
+	return userID + "\n" + email + "\n" + strings.Join(groups, "\x1f")
 }
 
 func (a *llmUsageAccumulator) start() {
@@ -76,7 +130,7 @@ func (a *llmUsageAccumulator) start() {
 	})
 }
 
-func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64) *pendingCreditCharge {
+func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, requestID string) *pendingCreditCharge {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	buf := a.pending[system]
@@ -103,7 +157,10 @@ func (a *llmUsageAccumulator) enqueue(system store.SystemSettingsRepository, pro
 	userID = strings.TrimSpace(userID)
 	email = strings.ToLower(strings.TrimSpace(email))
 	var charge *pendingCreditCharge
-	if (userID != "" || email != "") && len(serviceGroupIDs) > 0 && credits > 0 {
+	// Request-scoped settlements must flow through the immediate ledger path
+	// even when a legitimate provider response has zero billable usage. Legacy
+	// aggregate usage continues to omit zero-credit no-op entries.
+	if (userID != "" || email != "") && len(serviceGroupIDs) > 0 && (credits > 0 || strings.TrimSpace(requestID) != "") {
 		charge = &pendingCreditCharge{userID: userID, email: email, serviceGroupIDs: append([]string(nil), serviceGroupIDs...), credits: credits}
 	}
 	if buf.reports == nil {
@@ -169,7 +226,19 @@ func (a *llmUsageAccumulator) requeue(system store.SystemSettingsRepository, buf
 		}
 		curr := current.creditCharges[key]
 		if curr == nil {
-			current.creditCharges[key] = &pendingCreditCharge{userID: charge.userID, email: charge.email, serviceGroupIDs: append([]string(nil), charge.serviceGroupIDs...), credits: charge.credits}
+			copyCharge := *charge
+			copyCharge.serviceGroupIDs = append([]string(nil), charge.serviceGroupIDs...)
+			if charge.pricing != nil {
+				copyPricing := *charge.pricing
+				copyCharge.pricing = &copyPricing
+			}
+			copyCharge.meta = charge.meta
+			current.creditCharges[key] = &copyCharge
+			continue
+		}
+		if strings.TrimSpace(curr.requestID) != "" || strings.TrimSpace(charge.requestID) != "" {
+			// Request-scoped charges are idempotent ledger entries and must never
+			// be merged with another request while retrying a failed save.
 			continue
 		}
 		curr.credits += charge.credits
@@ -226,14 +295,20 @@ func flushProviderUsage(ctx context.Context, system store.SystemSettingsReposito
 }
 
 func flushCreditCharges(ctx context.Context, system store.SystemSettingsRepository, chargeMap map[string]*pendingCreditCharge) error {
+	_, err := flushCreditChargesDetailed(ctx, system, chargeMap)
+	return err
+}
+
+func flushCreditChargesDetailed(ctx context.Context, system store.SystemSettingsRepository, chargeMap map[string]*pendingCreditCharge) (map[string]bool, error) {
+	settled := map[string]bool{}
 	if len(chargeMap) == 0 {
-		return nil
+		return settled, nil
 	}
 	llmCreditChargeMu.Lock()
 	defer llmCreditChargeMu.Unlock()
 	reg, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
-		return err
+		return settled, err
 	}
 	referralUsageBefore := userReferralGrantUsageSnapshot(reg)
 	now := time.Now().UTC()
@@ -244,21 +319,125 @@ func flushCreditCharges(ctx context.Context, system store.SystemSettingsReposito
 	sort.Strings(keys)
 	for _, key := range keys {
 		charge := chargeMap[key]
-		if charge == nil || charge.credits <= 0 {
+		// A request-scoped zero charge is still a completed billing fact: release
+		// its admission hold and write an immutable zero-debit ledger entry.
+		// Only non-request aggregate no-ops remain skippable.
+		if charge == nil || charge.credits < 0 || (charge.credits == 0 && strings.TrimSpace(charge.requestID) == "") {
 			continue
 		}
-		llmservice.ApplyCreditUsageToRegistryForUserID(reg, charge.userID, charge.email, charge.serviceGroupIDs, charge.credits, now)
+		if strings.TrimSpace(charge.requestID) != "" && llmservice.HasBillingRequest(reg, charge.requestID) {
+			if entry, ok := llmservice.BillingLedgerEntryForRequest(reg, charge.requestID); ok {
+				if err := persistLLMBillingLedger(ctx, system, entry); err != nil {
+					return map[string]bool{}, err
+				}
+			}
+			continue
+		}
+		// Release the request's conservative admission hold in the same durable
+		// registry write as its final actual-token debit. This prevents a failed
+		// process between completion and settlement from permanently shrinking the
+		// user's available balance, while preserving idempotency on replay.
+		if strings.TrimSpace(charge.requestID) != "" {
+			llmservice.ReleaseBillingReservation(reg, charge.requestID, now)
+		}
+		applied := llmservice.ApplyCreditUsageToRegistryForUserID(reg, charge.userID, charge.email, charge.serviceGroupIDs, charge.credits, now)
+		if strings.TrimSpace(charge.requestID) != "" {
+			entry := llmservice.BillingLedgerEntry{
+				RequestID:              charge.requestID,
+				UserID:                 charge.userID,
+				Email:                  charge.email,
+				ProviderID:             charge.providerID,
+				ServiceGroupIDs:        charge.serviceGroupIDs,
+				InputTokens:            charge.usage.InputTokens,
+				OutputTokens:           charge.usage.OutputTokens,
+				RequestedCredits:       charge.credits,
+				DeductedCredits:        applied,
+				RequestedMicrocredits:  creditsToMicrocredits(charge.credits),
+				DeductedMicrocredits:   creditsToMicrocredits(applied),
+				BillingGroupMultiplier: charge.multiplier,
+				Pricing:                charge.pricing,
+				CreatedAt:              now,
+			}
+			llmservice.AppendBillingLedgerEntry(reg, entry)
+		}
+		settled[key] = true
 	}
 	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
-		return err
+		return map[string]bool{}, err
+	}
+	// The registry remains the balance authority during migration. Write the
+	// SQL audit mirror only after that debit is durable; if this mirror write
+	// fails, retrying the request will find the same immutable registry entry
+	// and safely repair the SQLite row through INSERT OR IGNORE.
+	for _, charge := range chargeMap {
+		if charge == nil || strings.TrimSpace(charge.requestID) == "" {
+			continue
+		}
+		if entry, ok := llmservice.BillingLedgerEntryForRequest(reg, charge.requestID); ok {
+			if err := persistLLMBillingLedger(ctx, system, entry); err != nil {
+				return map[string]bool{}, err
+			}
+		}
 	}
 	// Credit charges are already serialized and batched here. Record referral
 	// consumption after the ledger save so a failed save cannot produce a metric
 	// for usage that was not durable. One event per grant keeps the funnel
 	// aggregate lightweight and retry-safe without writes in request handlers.
 	recordReferralRewardUsageMetrics(ctx, system, reg, referralUsageBefore, now)
+	for key := range settled {
+		charge := chargeMap[key]
+		if charge == nil || strings.TrimSpace(charge.requestID) == "" {
+			continue
+		}
+		persistLLMUsageRecords(system, charge.providerID, charge.usage, charge.userID, charge.email, charge.serviceGroupIDs, charge.credits, charge.meta)
+	}
 	invalidateLLMRuntimeCaches(system)
-	return nil
+	return settled, nil
+}
+
+type llmBillingLedgerRepositoryProvider interface {
+	LLMBillingLedgerRepository() store.LLMBillingLedgerRepository
+}
+
+func persistLLMBillingLedger(ctx context.Context, system store.SystemSettingsRepository, entry llmservice.BillingLedgerEntry) error {
+	provider, ok := system.(llmBillingLedgerRepositoryProvider)
+	if !ok || provider == nil || provider.LLMBillingLedgerRepository() == nil {
+		return nil
+	}
+	groups, err := json.Marshal(entry.ServiceGroupIDs)
+	if err != nil {
+		return err
+	}
+	pricing := []byte(nil)
+	if entry.Pricing != nil {
+		pricing, err = json.Marshal(entry.Pricing)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = provider.LLMBillingLedgerRepository().RecordSettlement(ctx, &store.LLMBillingSettlement{
+		TenantID:               tenantIDForSystemSettings(system),
+		RequestID:              entry.RequestID,
+		UserID:                 entry.UserID,
+		Email:                  entry.Email,
+		ProviderID:             entry.ProviderID,
+		ServiceGroupIDsJSON:    string(groups),
+		InputTokens:            entry.InputTokens,
+		OutputTokens:           entry.OutputTokens,
+		RequestedMicrocredits:  entry.RequestedMicrocredits,
+		DeductedMicrocredits:   entry.DeductedMicrocredits,
+		BillingGroupMultiplier: entry.BillingGroupMultiplier,
+		PricingJSON:            string(pricing),
+		CreatedAt:              entry.CreatedAt,
+	})
+	return err
+}
+
+func creditsToMicrocredits(credits float64) int64 {
+	if credits <= 0 {
+		return 0
+	}
+	return int64(math.Round(credits * float64(llmpool.MicrocreditsPerCredit)))
 }
 
 func userReferralGrantUsageSnapshot(reg *llmservice.Registry) map[string]float64 {
@@ -314,6 +493,59 @@ func tenantIDForSystemSettings(system store.SystemSettingsRepository) string {
 		return scoped.TenantID()
 	}
 	return store.DefaultTenantID
+}
+
+type llmUsageRepositoryProvider interface {
+	LLMUsageRepository() store.LLMUsageRepository
+}
+
+func llmUsageRepository(system store.SystemSettingsRepository) (store.LLMUsageRepository, bool) {
+	provider, ok := system.(llmUsageRepositoryProvider)
+	if !ok || provider == nil {
+		return nil, false
+	}
+	repo := provider.LLMUsageRepository()
+	return repo, repo != nil
+}
+
+func persistLLMUsageRecords(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID, email string, serviceGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta) {
+	repo, ok := llmUsageRepository(system)
+	if !ok {
+		return
+	}
+	ids := normalizeUsageStringSlice(serviceGroupIDs)
+	if len(ids) == 0 {
+		return
+	}
+	class := strings.TrimSpace(meta.WorkloadClass)
+	if class == "" {
+		class = llmpool.WorkloadUnclassified
+	}
+	classSource := strings.TrimSpace(meta.ClassSource)
+	model := strings.TrimSpace(meta.ResolvedModel)
+	preview := strings.TrimSpace(meta.Preview)
+	now := time.Now().UTC()
+	for _, groupID := range ids {
+		rec := &store.LLMUsageRecord{
+			TenantID:       tenantIDForSystemSettings(system),
+			UserID:         strings.TrimSpace(userID),
+			Email:          email,
+			ProviderID:     strings.TrimSpace(providerID),
+			Model:          model,
+			ServiceGroupID: groupID,
+			WorkloadClass:  class,
+			ClassSource:    classSource,
+			Preview:        preview,
+			InputTokens:    usage.InputTokens,
+			OutputTokens:   usage.OutputTokens,
+			TotalTokens:    usage.TotalTokens,
+			Credits:        credits,
+			CreatedAt:      now,
+		}
+		if err := repo.Insert(context.Background(), rec); err != nil {
+			log.Printf("[llm-usage] persist usage record failed: %v", err)
+		}
+	}
 }
 
 func normalizeUsageStringSlice(items []string) []string {

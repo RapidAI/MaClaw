@@ -2,6 +2,7 @@ package llmpool
 
 import (
 	"testing"
+	"time"
 )
 
 func TestOrderProviders_NilModel(t *testing.T) {
@@ -178,5 +179,94 @@ func TestDetectCapabilityNeeds_RecognizesAllOfficeFormats(t *testing.T) {
 				t.Fatalf("%q did not request document capability: %#v", format, needs)
 			}
 		})
+	}
+}
+
+func TestTryAcquireUnlimitedAndBusy(t *testing.T) {
+	c := NewConcurrencyController()
+	release, err := c.TryAcquire("p1", 0)
+	if err != nil {
+		t.Fatalf("unlimited acquire: %v", err)
+	}
+	release()
+
+	first, err := c.TryAcquire("p1", 1)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if _, err := c.TryAcquire("p1", 1); err == nil {
+		t.Fatal("expected busy at concurrency limit")
+	}
+	first()
+	second, err := c.TryAcquire("p1", 1)
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	second()
+}
+
+func TestResilienceCooldownAndExclusiveProbe(t *testing.T) {
+	c := NewResilienceController()
+	c.RecordFailureBackoff("p1", 1, 40, 200)
+	if err := c.BeforeAttempt("p1", 1, 40); err == nil {
+		t.Fatal("expected open circuit during cooldown")
+	}
+	deadline := time.Now().Add(time.Second)
+	for c.BeforeAttempt("p1", 1, 40) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("cooldown did not expire")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := c.BeforeAttempt("p1", 1, 40); err == nil {
+		t.Fatal("expected later callers to skip the in-flight probe")
+	}
+	c.AbortProbe("p1")
+	if err := c.BeforeAttempt("p1", 1, 40); err != nil {
+		t.Fatalf("abort should release probe slot: %v", err)
+	}
+	c.RecordSuccess("p1")
+	if err := c.BeforeAttempt("p1", 1, 40); err != nil {
+		t.Fatalf("success should restore provider: %v", err)
+	}
+}
+
+func TestResilienceSnapshotHalfOpenAfterCooldown(t *testing.T) {
+	if got := (*ResilienceController)(nil).Snapshot("p1", 1); got.State != "closed" {
+		t.Fatalf("nil snapshot = %#v, want closed", got)
+	}
+	c := NewResilienceController()
+	c.RecordFailureBackoff("p1", 1, 40, 200)
+	if got := c.Snapshot("p1", 1); got.State != "open" {
+		t.Fatalf("open snapshot = %#v, want open", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && c.Snapshot("p1", 1).State != "half_open" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := c.Snapshot("p1", 1); got.State != "half_open" {
+		t.Fatalf("after cooldown snapshot = %#v, want half_open", got)
+	}
+	if err := c.BeforeAttempt("p1", 1, 40); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got := c.Snapshot("p1", 1); got.State != "half_open" {
+		t.Fatalf("in-flight probe snapshot = %#v, want half_open", got)
+	}
+	c.AbortProbe("p1")
+	if got := c.Snapshot("p1", 1); got.State != "half_open" {
+		t.Fatalf("after abort snapshot = %#v, want half_open", got)
+	}
+}
+
+func TestResilienceCooldownGrowsWithConsecutiveFailures(t *testing.T) {
+	if got := resilienceCooldown(1, 1000, 10_000); got != time.Second {
+		t.Fatalf("first open cooldown = %v, want 1s", got)
+	}
+	if got := resilienceCooldown(2, 1000, 10_000); got != 2*time.Second {
+		t.Fatalf("second open cooldown = %v, want 2s", got)
+	}
+	if got := resilienceCooldown(8, 1000, 3_000); got != 3*time.Second {
+		t.Fatalf("capped cooldown = %v, want 3s", got)
 	}
 }

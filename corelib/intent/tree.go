@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 )
 
@@ -26,6 +27,16 @@ type TreeCandidate struct {
 	Score        float64
 	Reason       string
 	WorkflowType string // non-empty when the intent maps to a workflow template
+}
+
+// TreeResponseProtocolError reports a successful transport response that did
+// not implement the intent-classification response contract.  It is a control
+// plane failure, not evidence that the user's request has an unknown intent.
+// Keep the error body-free because model output can contain user context.
+type TreeResponseProtocolError struct{}
+
+func (*TreeResponseProtocolError) Error() string {
+	return "intent tree response violated structured-output protocol"
 }
 
 // BuildIntentTreeText constructs a domain-grouped intent tree prompt from
@@ -77,9 +88,12 @@ func BuildIntentTreeText(defs []IntentDefinition) string {
 		e := domainMap[domain]
 		parts = append(parts, fmt.Sprintf("── %s ──", domain))
 		parts = append(parts, e.lines...)
-		// Auto-generate disambiguation note for domains with multiple intents.
+		// Auto-generate a default disambiguation note for domains with multiple
+		// intents.  Some explicitly declared cross-label dependency chains (for
+		// example live_data + document_generate) intentionally span a domain, so
+		// this must be a default rather than a blanket exclusivity constraint.
 		if len(e.labels) >= 2 {
-			parts = append(parts, fmt.Sprintf("  (Note: these are mutually exclusive — pick the single best match among %s)",
+			parts = append(parts, fmt.Sprintf("  (Note: normally choose the single best match among %s; keep multiple labels only for an explicitly allowed composite.)",
 				strings.Join(e.labels, "/")))
 		}
 		parts = append(parts, "")
@@ -97,8 +111,10 @@ func quoteAll(ss []string) []string {
 	return out
 }
 
-// intentTreePromptTemplate is the LLM prompt for tree reasoning.
-// Uses chain-of-thought inside <think> tags, then outputs structured JSON.
+// intentTreePromptTemplate is the LLM prompt for tree reasoning. The transport
+// contract is a JSON schema, so this prompt must not ask the model to emit
+// reasoning tags or prose alongside that JSON. Some OpenAI-compatible relays
+// otherwise treat the request as ordinary chat and return a 200 prose reply.
 const intentTreePromptTemplate = `You are an intent classifier. Given the user message, select the best matching intents from the intent tree below.
 
 ## Intent Tree
@@ -108,17 +124,12 @@ const intentTreePromptTemplate = `You are an intent classifier. Given the user m
 "%s"
 
 ## Instructions
-First reason inside <think> tags:
-1. What does the user want? (action + object)
-2. Which domain is most likely?
-3. Which intent in that domain fits best? What did you rule out?
-4. If the intent has a workflow_type annotation, which workflow type applies?
-
-Then output JSON:
+Determine the intent internally. Return ONLY this JSON object, with no markdown,
+reasoning tags, or text before or after it:
 {"top": [{"skill": "intent_name", "score": 0.0-1.0, "workflow_type": "type_or_empty"}, ...]}
 
 Rules:
-- Output exactly 3 candidates, sorted by score descending
+- Output 1 to 3 candidates, sorted by score descending
 - Intent names must exactly match the tree (no invention)
 - workflow_type: copy from the tree annotation if the intent has one; use "" if none
 - Score guide: very confident 0.85-0.95, fairly confident 0.65-0.84, uncertain 0.40-0.64
@@ -127,12 +138,94 @@ Rules:
 - "基于文档" does NOT mean "content processing" — "基于文档做PPT" still needs audience targeting + content architecture + visual design → office (workflow_type="presentation_design")
 - Short action phrases (≤5 chars) like "继续"/"开工"/"go ahead" → continuation
 - "生成/制作/设计 PPT" or "基于X做PPT" = needs design decisions → office (workflow_type="presentation_design")
-- "打开/查看/转换/截图 PPT" = file operation, no design decisions → document_delivery or non_coding (no workflow)
+- "打开桌面上的 PPT/PDF" = open an existing local document → document_open (no workflow)
+- "把已有文件发到指定邮箱/路径" = document_delivery; viewing attached content → document_read
+- web_fetch requires a concrete URL in the user message. Never use web_fetch for a city, weather, price, or other open-ended request without a URL; those current facts are live_data.
+- A composite request may keep a lookup label (search / live_data) together with document_generate when the user wants current facts rendered as a PDF. Same-domain exclusivity still applies (document_generate vs opening an existing file; document_generate vs workflow_task).
+- Current externally acquired facts rendered as a PDF → live_data + document_generate, workflow_type=""
+- "帮我写一份研究报告" → workflow_task (multi-phase research), not document_generate
 - When a message is genuinely ambiguous without context, give the top candidate a lower score (0.50-0.65) rather than forcing high confidence`
 
 // BuildTreePrompt constructs the full LLM prompt for tree reasoning.
 func BuildTreePrompt(treeText, message string) string {
 	return fmt.Sprintf(intentTreePromptTemplate, treeText, message)
+}
+
+// TreeResponseFormat returns the OpenAI Chat Completions JSON-schema contract
+// for Layer 3 tree classification.  It is derived from the intent taxonomy so
+// every host sends the same machine-readable protocol and provider tool names
+// can never be mistaken for intent labels.
+//
+// The response uses the historical "skill" field for wire compatibility with
+// ParseTreeResponse; its values are taxonomy labels, not executable tool IDs.
+func TreeResponseFormat() map[string]interface{} {
+	labels := make([]string, 0)
+	seenLabels := make(map[string]struct{})
+	workflowTypesByLabel := make(map[string][]string)
+
+	for _, def := range DefaultDefinitions() {
+		if def.Label.IsValid() {
+			label := string(def.Label)
+			if _, exists := seenLabels[label]; !exists {
+				seenLabels[label] = struct{}{}
+				labels = append(labels, label)
+			}
+			workflowTypes := []string{""}
+			seenWorkflowTypes := map[string]struct{}{"": {}}
+			for _, workflowType := range def.WorkflowTypes {
+				workflowType = strings.TrimSpace(workflowType)
+				if _, exists := seenWorkflowTypes[workflowType]; workflowType == "" || exists {
+					continue
+				}
+				seenWorkflowTypes[workflowType] = struct{}{}
+				workflowTypes = append(workflowTypes, workflowType)
+			}
+			sort.Strings(workflowTypes)
+			workflowTypesByLabel[label] = workflowTypes
+		}
+	}
+	sort.Strings(labels)
+
+	// JSON Schema has no simple cross-field enum.  A global workflow_type enum
+	// would accept an invalid pairing such as skill="coding" with
+	// workflow_type="contract_review".  Encode each valid pair as a branch so
+	// structured-output-capable providers enforce the same invariant as the
+	// parser below.
+	itemAlternatives := make([]interface{}, 0, len(labels))
+	for _, label := range labels {
+		workflowTypes := workflowTypesByLabel[label]
+		itemAlternatives = append(itemAlternatives, map[string]interface{}{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"skill", "score", "workflow_type"},
+			"properties": map[string]interface{}{
+				"skill":         map[string]interface{}{"type": "string", "enum": []string{label}},
+				"score":         map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+				"workflow_type": map[string]interface{}{"type": "string", "enum": workflowTypes},
+			},
+		})
+	}
+
+	return map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name":   "intent_tree_candidates",
+			"strict": true,
+			"schema": map[string]interface{}{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"top"},
+				"properties": map[string]interface{}{
+					"top": map[string]interface{}{
+						"type":     "array",
+						"minItems": 1,
+						"maxItems": 3,
+						"items":    map[string]interface{}{"anyOf": itemAlternatives},
+					},
+				},
+			},
+		},
+	}
 }
 
 // ParseTreeResponse parses the LLM response into TreeCandidate list.
@@ -193,6 +286,10 @@ func tryParseTreeJSON(s string) []TreeCandidate {
 		if !label.IsValid() {
 			continue
 		}
+		workflowType := strings.TrimSpace(item.WorkflowType)
+		if !workflowTypeAllowed(label, workflowType) {
+			continue
+		}
 		score := item.Score
 		if score < 0 {
 			score = 0
@@ -204,10 +301,28 @@ func tryParseTreeJSON(s string) []TreeCandidate {
 			Label:        label,
 			Score:        score,
 			Reason:       item.Reason,
-			WorkflowType: item.WorkflowType,
+			WorkflowType: workflowType,
 		})
 	}
 	return candidates
+}
+
+func workflowTypeAllowed(label IntentLabel, workflowType string) bool {
+	if workflowType == "" {
+		return true
+	}
+	for _, def := range DefaultDefinitions() {
+		if def.Label != label {
+			continue
+		}
+		for _, allowed := range def.WorkflowTypes {
+			if workflowType == allowed {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // ClassifyByTree runs intent tree reasoning via a single LLM call.
@@ -245,7 +360,7 @@ func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContex
 
 	candidates := ParseTreeResponse(response)
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("tree reasoning returned no valid candidates")
+		return nil, &TreeResponseProtocolError{}
 	}
 
 	return candidates, nil

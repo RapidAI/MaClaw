@@ -701,9 +701,13 @@ func TestCodingWorkbenchStatusIncludesExecutionPlan(t *testing.T) {
 		{Index: 1, Title: "explore", Status: codingStepPassed},
 		{Index: 2, Title: "implement", Status: codingStepRunning},
 	})
+	h.setStickyCodingRequirementRestatement(userID, "Implement auth without copying the prompt")
 	st := app.codingWorkbenchStatusFromHandler(path, h)
 	if st.SessionPlan != "Ship auth" {
 		t.Fatalf("SessionPlan=%q", st.SessionPlan)
+	}
+	if st.RequirementRestatement != "Implement auth without copying the prompt" {
+		t.Fatalf("RequirementRestatement=%q", st.RequirementRestatement)
 	}
 	if !strings.Contains(st.ExecutionPlan, "T1") {
 		t.Fatalf("ExecutionPlan=%q", st.ExecutionPlan)

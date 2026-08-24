@@ -71,6 +71,8 @@ describe('CodePreviewPanel maximize + dirty', () => {
         );
 
         expect(screen.getByTestId('code-preview-active-path')).toBeTruthy();
-        expect(screen.getByTestId('code-preview-dirty-badge').textContent).toMatch(/changed/i);
+        expect(screen.getByTestId('code-preview-diff-stat').textContent).toContain('+1');
+        expect(screen.getByTestId('code-preview-diff-stat').textContent).toContain('-1');
+        expect(screen.queryByTestId('code-preview-dirty-badge')).toBeNull();
     });
 });

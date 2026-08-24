@@ -39,7 +39,9 @@ type LLMModule struct {
 // LLM persistence is a required dependency when HA is enabled: a node must
 // never begin pulling compute-market operations until its local repositories
 // can durably apply them.
-func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsRepository, nodeID string, entrySvc *entry.Service, haSvc *ha.Service) (*LLMModule, error) {
+func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsRepository, nodeID string, entrySvc *entry.Service, haSvc *ha.Service, dataDir string) (*LLMModule, error) {
+	httpapi.SetLLMEmbeddingDataDir(dataDir)
+	httpapi.EnsureEmbeddingModelDownload()
 	// 1. Ensure database tables
 	if err := sqlite.EnsureLLMTables(provider.Write); err != nil {
 		return nil, fmt.Errorf("ensure LLM tables: %w", err)
@@ -49,6 +51,7 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	baseAuthRepo := sqlite.NewLLMAuthRepo(provider)
 	authRepo := llmservice.TenantAuthorizationRepository(baseAuthRepo)
 	usageRepo := sqlite.NewLLMUsageRepo(provider)
+	attemptRepo := sqlite.NewProxyBillingAttemptRepo(provider)
 	baseCardTypeRepo := sqlite.NewLLMCardTypeRepo(provider)
 	cardTypeRepo := cardstore.CardTypeRepository(baseCardTypeRepo)
 	baseOrderRepo := sqlite.NewLLMOrderRepo(provider)
@@ -65,6 +68,20 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	}
 	// 3. Create services
 	llmSvc := llmservice.NewService(system)
+	if haSvc != nil {
+		haSvc.SetLLMRegistryCacheInvalidator(llmSvc.InvalidateCache)
+		llmSvc.SetOfficialHeadRoster(haSvc.NodeID(), haSvc.PeerNodeIDs())
+		haSvc.SetOfficialClassHeadRemoteAck(func(key string) {
+			llmSvc.SetOfficialHeadRoster(haSvc.NodeID(), haSvc.PeerNodeIDs())
+			llmSvc.AckOfficialClassHeadAfterRemoteApplyKey(key)
+		})
+	} else {
+		local := strings.TrimSpace(nodeID)
+		if local == "" {
+			local = "local"
+		}
+		llmSvc.SetOfficialHeadRoster(local, nil)
+	}
 	authChecker := llmservice.NewAuthorizationChecker(authRepo)
 	usageRecorder := llmservice.NewUsageRecorder(usageRepo)
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
@@ -80,6 +97,8 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		Concurrency: llmpool.NewConcurrencyController(),
 		Resilience:  llmpool.NewResilienceController(),
 		Usage:       usageRecorder,
+		Quotes:      llmservice.NewProxyQuoteStore(),
+		Attempts:    llmservice.NewProxyBillingAttemptStore(attemptRepo),
 		HTTPClient: &http.Client{
 			Timeout: 180 * time.Second,
 			Transport: &http.Transport{
@@ -99,6 +118,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 			return true, ""
 		},
 	}
+	if haSvc != nil {
+		proxyCfg.LookupNodeURL = haSvc.LookupNodeURL
+	}
 
 	// 5. Create card store service
 	cardStoreSvc := cardstore.NewService(cardTypeRepo, orderRepo, authRepo)
@@ -107,30 +129,43 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		if err != nil {
 			return serviceGroupID, "", ""
 		}
+		want := strings.TrimSpace(serviceGroupID)
 		for _, group := range reg.ServiceGroups {
-			if group.ID == serviceGroupID {
+			if strings.EqualFold(strings.TrimSpace(group.ID), want) {
 				return group.Name, group.AgentID, group.AgentName
 			}
 		}
 		return serviceGroupID, "", ""
 	})
+	cardStoreSvc.SetServiceGroupCatalog(func(ctx context.Context) ([]cardstore.ServiceGroupRecord, string) {
+		reg, err := llmSvc.LoadRegistry(ctx)
+		if err != nil || reg == nil {
+			return nil, ""
+		}
+		groups := make([]cardstore.ServiceGroupRecord, 0, len(reg.ServiceGroups))
+		for _, group := range reg.ServiceGroups {
+			id := strings.TrimSpace(group.ID)
+			if id == "" || strings.EqualFold(id, llmservice.ExternalComputePermissionServiceGroupID) {
+				continue
+			}
+			groups = append(groups, cardstore.ServiceGroupRecord{
+				ID:           id,
+				Name:         group.Name,
+				AgentID:      group.AgentID,
+				AgentName:    group.AgentName,
+				AccessPolicy: group.AccessPolicy,
+			})
+		}
+		return groups, strings.TrimSpace(reg.DefaultServiceGroupID)
+	})
 	if entrySvc != nil {
 		cardStoreSvc.SetTenantVerifier(func(ctx context.Context, hubID, tenantID, email string) error {
-			if ok, err := entrySvc.EmailHasHubTenantLink(ctx, email, hubID, tenantID); err != nil {
+			if ok, err := entrySvc.EmailHasHubTenantAdministratorLink(ctx, email, hubID, tenantID); err != nil {
 				return err
 			} else if ok {
 				return nil
 			}
-			resolved, err := entrySvc.ResolveByEmail(ctx, email)
-			if err != nil {
-				return err
-			}
-			for _, hub := range resolved.Hubs {
-				if hub.HubID == hubID && normalizeCardStoreTenantID(hub.TenantID) == normalizeCardStoreTenantID(tenantID) {
-					return nil
-				}
-			}
-			return fmt.Errorf("email %s is not routed to hub=%s tenant=%s", email, hubID, tenantID)
+			return fmt.Errorf("email %s is not a tenant administrator for hub=%s tenant=%s", email, hubID, tenantID)
 		})
 	}
 	if err := ensureCardBackedServiceGroupsRequireGrant(context.Background(), cardStoreSvc, llmSvc); err != nil {
@@ -164,9 +199,13 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	// 6. Register LLM route hook — will be called during NewRouter
 	statsSvc := llmservice.NewStatsService(usageRepo)
 	httpapi.SetLLMAuthorizationSyncChecker(authChecker)
+	llmservice.SetProviderBillingCatalog(func(ctx context.Context) []llmpool.ProviderBillingPolicy {
+		return llmSvc.ListProviderBilling(ctx)
+	})
 	httpapi.SetLLMRouteHook(func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service) {
 		if hubService != nil {
 			cardStoreSvc.SetPublicBaseURLProvider(hubService.PublicBaseURL)
+			cardStoreSvc.SetHubTenantResolver(hubService.ResolveHubTenantDisplayNames)
 		}
 		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
 	})
@@ -337,34 +376,34 @@ func ensureCardBackedServiceGroupsRequireGrant(ctx context.Context, cardStoreSvc
 	if len(cardBackedGroups) == 0 {
 		return nil
 	}
-	reg, err := llmSvc.LoadRegistry(ctx)
-	if err != nil || reg == nil {
-		return err
-	}
-	changed := false
 	var repaired []string
-	for i := range reg.ServiceGroups {
-		groupID := strings.TrimSpace(reg.ServiceGroups[i].ID)
-		if groupID == "" {
-			continue
+	if err := llmSvc.MutateRegistry(ctx, func(reg *llmservice.Registry) (bool, error) {
+		if reg == nil {
+			return false, nil
 		}
-		if _, ok := cardBackedGroups[groupID]; !ok {
-			continue
+		changed := false
+		for i := range reg.ServiceGroups {
+			groupID := strings.TrimSpace(reg.ServiceGroups[i].ID)
+			if groupID == "" {
+				continue
+			}
+			if _, ok := cardBackedGroups[groupID]; !ok {
+				continue
+			}
+			if reg.ServiceGroups[i].AccessPolicy == llmservice.AccessPolicyGrantRequired {
+				continue
+			}
+			reg.ServiceGroups[i].AccessPolicy = llmservice.AccessPolicyGrantRequired
+			changed = true
+			repaired = append(repaired, groupID)
 		}
-		if reg.ServiceGroups[i].AccessPolicy == llmservice.AccessPolicyGrantRequired {
-			continue
-		}
-		reg.ServiceGroups[i].AccessPolicy = llmservice.AccessPolicyGrantRequired
-		changed = true
-		repaired = append(repaired, groupID)
-	}
-	if !changed {
-		return nil
-	}
-	if err := llmSvc.SaveRegistry(ctx, reg); err != nil {
+		return changed, nil
+	}); err != nil {
 		return err
 	}
-	log.Printf("[llm-init] repaired card-backed LLM service groups to grant_required: %s", strings.Join(repaired, ","))
+	if len(repaired) > 0 {
+		log.Printf("[llm-init] repaired card-backed LLM service groups to grant_required: %s", strings.Join(repaired, ","))
+	}
 	return nil
 }
 
@@ -387,6 +426,13 @@ func defaultComputeCardServiceGroupID(ctx context.Context, llmSvc *llmservice.Se
 	reg, err := llmSvc.LoadRegistry(ctx)
 	if err != nil || reg == nil {
 		return "", false
+	}
+	if id := strings.TrimSpace(reg.DefaultServiceGroupID); id != "" {
+		for _, group := range reg.ServiceGroups {
+			if group.ID == id && group.AccessPolicy == llmservice.AccessPolicyGrantRequired {
+				return group.ID, true
+			}
+		}
 	}
 	for _, group := range reg.ServiceGroups {
 		if group.ID != "" && group.AccessPolicy == llmservice.AccessPolicyGrantRequired {

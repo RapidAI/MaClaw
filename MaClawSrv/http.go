@@ -23,6 +23,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	"github.com/RapidAI/CodeClaw/corelib/httpthreat"
+	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	qrcode "github.com/skip2/go-qrcode"
@@ -71,6 +73,8 @@ type HTTPServer struct {
 	authLimiter          *authLimiter
 	launchTokens         *launchTokenStore
 	weixinQRTokens       *weixinQRTokenStore
+	qqbotQRTokens        *weixinQRTokenStore
+	qqbotQR              *qqbot.QRClient
 	weixinRuntime        *srvWeixinGatewayManager
 	imRuntime            *srvIMGatewayManager
 	thirdPartyIM         *srvThirdPartyGatewayManager
@@ -85,6 +89,10 @@ type HTTPServer struct {
 	enterpriseSync       *enterpriseSyncCoordinator
 	skillSourceSvc       *cskill.SourceControlService
 	aiModels             *srvAIModelManager
+	// dynamicCapabilityPublisher is held only by this authenticated admin
+	// control-plane host. It is never exposed to request execution or ordinary
+	// user-facing Skill/MCP lifecycle APIs.
+	dynamicCapabilityPublisher *agentservice.DynamicCapabilityContractPublisher
 	// codingRuntimeStore is transport-neutral task/attempt history. HTTP and
 	// future service executors use adapters; the server never imports GUI code.
 	codingRuntimeStore *codingruntime.SQLiteStore
@@ -92,6 +100,8 @@ type HTTPServer struct {
 	// local, read-only workspace probe. Production leaves it nil and uses the
 	// local Git prober below; it must never supply a mutating probe.
 	codingRuntimeRecoveryProber func(codingruntime.Task) codingruntime.WorkspaceProber
+	threatNode                  *httpthreat.Node
+	threatWrap                  bool
 }
 
 type weixinQRTokenRecord struct {
@@ -110,15 +120,16 @@ func newWeixinQRTokenStore() *weixinQRTokenStore {
 	return &weixinQRTokenStore{tokens: map[string]weixinQRTokenRecord{}}
 }
 
-func (s *weixinQRTokenStore) Put(token string, rec weixinQRTokenRecord, now time.Time) {
+func (s *weixinQRTokenStore) Put(token string, rec weixinQRTokenRecord, now time.Time) []string {
 	if s == nil || strings.TrimSpace(token) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
-	s.deletePrincipalLocked(rec.TenantID, rec.UserID)
+	replaced := s.deletePrincipalLocked(rec.TenantID, rec.UserID)
 	s.tokens[strings.TrimSpace(token)] = rec
+	return replaced
 }
 
 func (s *weixinQRTokenStore) Get(token string, p agentservice.Principal, now time.Time) (weixinQRTokenRecord, bool) {
@@ -152,12 +163,15 @@ func (s *weixinQRTokenStore) pruneLocked(now time.Time) {
 	}
 }
 
-func (s *weixinQRTokenStore) deletePrincipalLocked(tenantID, userID string) {
+func (s *weixinQRTokenStore) deletePrincipalLocked(tenantID, userID string) []string {
+	var replaced []string
 	for token, rec := range s.tokens {
 		if rec.TenantID == tenantID && rec.UserID == userID {
+			replaced = append(replaced, token)
 			delete(s.tokens, token)
 		}
 	}
+	return replaced
 }
 
 func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc ...*cskill.SourceControlService) *HTTPServer {
@@ -169,7 +183,15 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
 	}
 	wireSkillSourceFilter(svc, sourceSvc)
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot())}
+	reviewedRegistry, err := agentservice.NewReviewedDynamicCapabilityRegistry()
+	if err != nil {
+		return nil
+	}
+	publisher, err := agentservice.NewDynamicCapabilityContractPublisher(svc, reviewedRegistry)
+	if err != nil {
+		return nil
+	}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), qqbotQRTokens: newWeixinQRTokenStore(), qqbotQR: qqbot.NewQRClient(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot()), dynamicCapabilityPublisher: publisher}
 	s.initCodingRuntimeStore()
 	if releaseCatalog, err := newSrvGitHubReleaseCatalogFromEnv(s.deviceUpdateCatalog); err != nil {
 		// An invalid trust anchor must disable this optional provider rather than
@@ -197,6 +219,7 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
 	s.routes()
+	s.attachHTTPThreat()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s
 }
@@ -248,8 +271,10 @@ func (s *HTTPServer) initCodingRuntimeStore() {
 		fmt.Printf("[coding-runtime] marked %d waiting parent attempt(s) interrupted; child dispatch is not replayed\n", len(interrupted))
 	}
 	s.codingRuntimeStore = store
-	if !s.svc.SetCodingRuntimeStore(store) {
-		fmt.Printf("[coding-runtime] executor does not support explicit coding workflow runtime adapter\n")
+	if s.svc.CodingRuntimeStoreSupported() {
+		if !s.svc.SetCodingRuntimeStore(store) {
+			fmt.Printf("[coding-runtime] executor does not support explicit coding workflow runtime adapter\n")
+		}
 	}
 }
 
@@ -614,7 +639,15 @@ func (l *authLimiter) blockedRetryLocked(key string, now time.Time) time.Duratio
 
 const maxJSONBodyBytes int64 = 1 << 20
 
-func (s *HTTPServer) Handler() http.Handler { return s.mux }
+func (s *HTTPServer) Handler() http.Handler {
+	if s == nil {
+		return http.NewServeMux()
+	}
+	if s.threatWrap && s.threatNode != nil {
+		return s.threatNode.Wrap(s.mux)
+	}
+	return s.mux
+}
 
 func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
@@ -758,6 +791,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("PUT /api/v1/admin/tenants/{tenantId}/users/{userId}/config", s.withAdmin(s.handleAdminUpdateUserConfig))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate", s.withAdmin(s.handleAdminValidateUserConfig))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test", s.withAdmin(s.handleAdminTestUserConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/dynamic-capabilities/mcp/{serverId}/{toolName}", s.withAdmin(s.handlePublishDynamicMCPContract))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/dynamic-capabilities/skills/{stableId}", s.withAdmin(s.handlePublishDynamicSkillContract))
+	s.mux.HandleFunc("POST /api/v1/admin/dynamic-effects/{operationId}/resolve", s.withAdmin(s.handleResolveUnknownDynamicEffect))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/delete-check", s.withAdmin(s.handleGetUserDeleteCheck))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleUpdateUser))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/pause", s.withAdmin(s.handlePauseUser))
@@ -785,6 +821,9 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/start", s.withPrincipal(s.handleStartWeixinQRLogin))
 	s.mux.HandleFunc("GET /api/v1/im/weixin/qr/image", s.withPrincipal(s.handleProxyWeixinQRCodeImage))
 	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/poll", s.withPrincipal(s.handlePollWeixinQRLogin))
+	s.mux.HandleFunc("POST /api/v1/im/qqbot/qr/start", s.withPrincipal(s.handleStartQQBotQRLogin))
+	s.mux.HandleFunc("GET /api/v1/im/qqbot/qr/image", s.withPrincipal(s.handleProxyQQBotQRCodeImage))
+	s.mux.HandleFunc("POST /api/v1/im/qqbot/qr/poll", s.withPrincipal(s.handlePollQQBotQRLogin))
 	s.mux.HandleFunc("GET /api/v1/im/weixin/status", s.withPrincipal(s.handleGetWeixinRuntimeStatus))
 	s.mux.HandleFunc("POST /api/v1/im/weixin/restart", s.withPrincipal(s.handleRestartWeixinRuntime))
 	s.mux.HandleFunc("GET /api/v1/im/status", s.withPrincipal(s.handleGetIMRuntimeStatuses))

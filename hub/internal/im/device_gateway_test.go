@@ -25,12 +25,13 @@ import (
 )
 
 type memoryDeviceCredentialStore struct {
-	values map[string]string
-	setErr error
+	values    map[string]string
+	setErr    error
+	setErrKey string
 }
 
 func (s *memoryDeviceCredentialStore) Set(_ context.Context, key, value string) error {
-	if s.setErr != nil {
+	if s.setErr != nil && (s.setErrKey == "" || s.setErrKey == key) {
 		return s.setErr
 	}
 	if s.values == nil {
@@ -1883,7 +1884,7 @@ func TestDeviceGatewayHardwareEnabledRollsBackWhenPersistenceFails(t *testing.T)
 	}
 }
 
-func TestDeviceGatewayPairingCannotTakeOverAnotherMachineClientID(t *testing.T) {
+func TestDeviceGatewayPairingTransfersClientIDToNewMachine(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	pair := func(machineID, code string) *httptest.ResponseRecorder {
 		if err := gateway.RegisterPairing(machineID, "tenant-a", "user-a", code); err != nil {
@@ -1896,17 +1897,59 @@ func TestDeviceGatewayPairingCannotTakeOverAnotherMachineClientID(t *testing.T) 
 	_ = json.NewDecoder(first.Body).Decode(&firstBody)
 	firstToken, _ := firstBody["gatewayToken"].(string)
 	second := pair("gui-b", "610005")
-	if second.Code != http.StatusConflict {
-		t.Fatalf("takeover status=%d body=%s", second.Code, second.Body.String())
+	if second.Code != http.StatusCreated {
+		t.Fatalf("transfer status=%d body=%s", second.Code, second.Body.String())
 	}
-	if response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", firstToken, map[string]any{"clientId": "shared-physical-id"}); response.Code != http.StatusOK {
-		t.Fatalf("original token was revoked: status=%d body=%s", response.Code, response.Body.String())
+	if response := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", firstToken, map[string]any{"clientId": "shared-physical-id"}); response.Code != http.StatusUnauthorized {
+		t.Fatalf("old token remained valid: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if got := gateway.ListMachineDevices("gui-b"); len(got) != 0 {
-		t.Fatalf("second machine acquired binding: %#v", got)
+	if got := gateway.ListMachineDevices("gui-a"); len(got) != 0 {
+		t.Fatalf("old machine retained transferred binding: %#v", got)
+	}
+	if got := gateway.ListMachineDevices("gui-b"); len(got) != 1 || got[0].ClientID != "shared-physical-id" {
+		t.Fatalf("new machine did not acquire binding: %#v", got)
 	}
 }
 
+func TestDeviceGatewayPairingReservationSurvivesHubRestart(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	original := NewPersistentDeviceGateway(nil, store)
+	if err := original.RegisterPairing("gui-a", "tenant-a", "user-a", "610007"); err != nil {
+		t.Fatal(err)
+	}
+	if raw := store.values[deviceGatewayPairingsKey]; !strings.Contains(raw, "610007") {
+		t.Fatalf("pairing reservation was not persisted: %q", raw)
+	}
+
+	restarted := NewPersistentDeviceGateway(nil, store)
+	paired := deviceGatewayRequest(t, restarted, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-restart-pair", "pairCode": "610007"})
+	if paired.Code != http.StatusCreated {
+		t.Fatalf("restarted pair status=%d body=%s", paired.Code, paired.Body.String())
+	}
+	if raw := store.values[deviceGatewayPairingsKey]; strings.Contains(raw, "610007") {
+		t.Fatalf("successful pairing reservation remained durable: %q", raw)
+	}
+
+	restartedAgain := NewPersistentDeviceGateway(nil, store)
+	reused := deviceGatewayRequest(t, restartedAgain, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-restart-reuse", "pairCode": "610007"})
+	if reused.Code != http.StatusUnauthorized {
+		t.Fatalf("reused persisted pair status=%d body=%s", reused.Code, reused.Body.String())
+	}
+}
+
+func TestDeviceGatewayPairingReservationDropsExpiredRecordOnRestart(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: map[string]string{
+		deviceGatewayPairingsKey: `{"610009":{"machineId":"gui-a","tenantId":"tenant-a","userId":"user-a","pet":{"skin":"clawmate"},"expiresAt":"2000-01-01T00:00:00Z"}}`,
+	}}
+	restarted := NewPersistentDeviceGateway(nil, store)
+	response := deviceGatewayRequest(t, restarted, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-expired-restart", "pairCode": "610009"})
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expired restart pairing status=%d body=%s", response.Code, response.Body.String())
+	}
+	if raw := store.values[deviceGatewayPairingsKey]; strings.Contains(raw, "610009") {
+		t.Fatalf("expired pairing reservation was not compacted: %q", raw)
+	}
+}
 func TestDeviceGatewayPairingCodeSurvivesTransientPersistenceFailure(t *testing.T) {
 	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
 	gateway := NewPersistentDeviceGateway(nil, store)
@@ -1935,6 +1978,34 @@ func TestDeviceGatewayPairingCodeSurvivesTransientPersistenceFailure(t *testing.
 	}
 }
 
+func TestDeviceGatewayPairingReservationRestoresAfterSuccessfulRollbackPersistence(t *testing.T) {
+	store := &memoryDeviceCredentialStore{values: make(map[string]string)}
+	gateway := NewPersistentDeviceGateway(nil, store)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "610013"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Let deletion of the reservation reach storage, then fail only the token
+	// write. The rollback must restore the code in memory and persist it before
+	// a process restart can lose it.
+	store.setErr = fmt.Errorf("store unavailable")
+	store.setErrKey = deviceGatewayCredentialsKey
+	first := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-rollback-persist", "pairCode": "610013"})
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("first pair status=%d body=%s", first.Code, first.Body.String())
+	}
+	if _, ok := gateway.pairings["610013"]; !ok {
+		t.Fatal("pairing code was not restored in memory")
+	}
+
+	store.setErr = nil
+	store.setErrKey = ""
+	restarted := NewPersistentDeviceGateway(nil, store)
+	second := deviceGatewayRequest(t, restarted, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "pet-rollback-persist", "pairCode": "610013"})
+	if second.Code != http.StatusCreated {
+		t.Fatalf("retry pair status=%d body=%s", second.Code, second.Body.String())
+	}
+}
 func TestDeviceGatewayPairingCodeAllowsOnlyOneConcurrentExchange(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "610012"); err != nil {
@@ -2166,6 +2237,39 @@ func TestNormalizeDevicePetAssetAcceptsEightFramesAndRejectsNine(t *testing.T) {
 	}
 }
 
+func TestNormalizeDevicePetAssetDefaultsOnlyMissingFrameCadence(t *testing.T) {
+	frame := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x12, 0x34, 0xff}, 32*32))
+	missing := &DevicePetAsset{Encoding: "rgb565a8", Width: 32, Height: 32, Data: frame}
+	if got := normalizeDevicePetAsset(missing); got == nil || got.FrameMS != 450 {
+		t.Fatalf("missing frame cadence was not defaulted: %#v", got)
+	}
+	for _, cadence := range []int{1, 49, 10001} {
+		asset := &DevicePetAsset{Encoding: "rgb565a8", Width: 32, Height: 32, Data: frame, FrameMS: cadence}
+		if got := normalizeDevicePetAsset(asset); got != nil {
+			t.Fatalf("invalid frame cadence %d accepted: %#v", cadence, got)
+		}
+	}
+}
+
+func TestDevicePetAssetFromMapRejectsNonIntegralDescriptorNumbers(t *testing.T) {
+	frame := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x12, 0x34, 0xff}, 32*32))
+	valid := map[string]any{"encoding": "rgb565a8", "width": float64(32), "height": float64(32), "frameMs": float64(450), "data": frame}
+	if got := DevicePetAssetFromMap(valid); got == nil || got.Width != 32 || got.Height != 32 || got.FrameMS != 450 {
+		t.Fatalf("valid map descriptor rejected: %#v", got)
+	}
+	for _, invalid := range []map[string]any{
+		{"encoding": "rgb565a8", "width": 32.5, "height": 32, "data": frame},
+		{"encoding": "rgb565a8", "width": 32, "height": 32.5, "data": frame},
+		{"encoding": "rgb565a8", "width": 32, "height": 32, "frameMs": 0, "data": frame},
+		{"encoding": "rgb565a8", "width": 32, "height": 32, "frameMs": 450.5, "data": frame},
+		{"encoding": "rgb565a8", "width": 32, "height": 32, "frameMs": "450", "data": frame},
+	} {
+		if got := DevicePetAssetFromMap(invalid); got != nil {
+			t.Fatalf("non-integral or typed-invalid map descriptor accepted: %#v", got)
+		}
+	}
+}
+
 func TestDeviceGatewayAcceptsHighResolutionPetAsset(t *testing.T) {
 	gateway := NewDeviceGateway(nil)
 	rawFrame := bytes.Repeat([]byte{0x12, 0x34, 0xff}, 256*256)
@@ -2280,7 +2384,7 @@ func TestDeviceGatewayHandshakeAdvertisesAvailableMeetingModes(t *testing.T) {
 	var paired map[string]any
 	_ = json.NewDecoder(pair.Body).Decode(&paired)
 	token, _ := paired["gatewayToken"].(string)
-	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "meeting-pet"})
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "meeting-pet", "capabilities": map[string]any{"features": map[string]any{"meetingRecorder": true}}})
 	var body struct {
 		Meeting struct {
 			Modes map[string]bool `json:"modes"`
@@ -2306,6 +2410,24 @@ func TestDeviceGatewayHandshakeOmitsMeetingWhenHandlerMissing(t *testing.T) {
 	_ = json.NewDecoder(handshake.Body).Decode(&body)
 	if _, ok := body["meetingRecording"]; ok {
 		t.Fatalf("unexpected meeting capability: %#v", body)
+	}
+}
+
+func TestDeviceGatewayHandshakeOmitsMeetingWhenClientDidNotDeclareRecorder(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	gateway.SetMeetingRecordingHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	gateway.SetMeetingRecordingModes(true, true)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "334402"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "no-recorder-pet", "code": "334402"})
+	var paired map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&paired)
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", paired["gatewayToken"].(string), map[string]any{"clientId": "no-recorder-pet"})
+	var body map[string]any
+	_ = json.NewDecoder(handshake.Body).Decode(&body)
+	if _, ok := body["meetingRecording"]; ok {
+		t.Fatalf("meeting endpoint leaked to undeclared client: %#v", body)
 	}
 }
 func TestDeviceGatewayNegotiatesAndForwardsClientCapabilities(t *testing.T) {
@@ -2375,6 +2497,122 @@ func TestDeviceGatewayLegacyHandshakeDefaultsToTextOnly(t *testing.T) {
 	_ = json.NewDecoder(handshake.Body).Decode(&body)
 	if !body.Capabilities.SupportsOutput("text") || body.Capabilities.SupportsOutput("image") {
 		t.Fatalf("legacy capabilities=%#v", body.Capabilities)
+	}
+}
+
+// This is the wire-level compatibility contract consumed by the ESP Gateway
+// Transport parser.  Do not reduce this to a Go-struct assertion: the ESP
+// must receive a concrete JSON capabilitiesAccepted object whose mandatory
+// output.modality list survives the Hub's legacy normalization path, while
+// feature-only and unknown legacy fields never widen the accepted surface.
+func TestDeviceGatewayHandshakeCapabilitiesAcceptedWireContract(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445568"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "wire-contract", "code": "445568"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+
+	// The full ESP surface verifies the canonical field names and that a Hub
+	// normalization cannot advertise unsupported input/output values.
+	declared := map[string]any{
+		"input":  map[string]any{"modalities": []string{"text", "audio", "unsupported"}},
+		"output": map[string]any{"modalities": []string{"text", "audio", "image", "unsupported"}},
+		"features": map[string]any{
+			"petStates": true, "petAnimation": true, "petAsset": true,
+			"petAssetMaxFrames": 99, "ambientDisplay": true, "meetingRecorder": true,
+			"volumeControl": true, "brightnessControl": true, "screenSleepControl": true,
+			"futureUnknownFeature": true,
+		},
+	}
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{
+		"clientId": "wire-contract", "protocolVersion": "1.1", "clientCapabilities": declared,
+	})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("handshake status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	var response map[string]any
+	if err := json.NewDecoder(handshake.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	accepted, ok := response["capabilitiesAccepted"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing capabilitiesAccepted wire object: %#v", response)
+	}
+	output, ok := accepted["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("accepted output missing: %#v", accepted)
+	}
+	modalities, ok := output["modalities"].([]any)
+	if !ok || len(modalities) != 3 {
+		t.Fatalf("accepted output modalities=%#v", output["modalities"])
+	}
+	for _, want := range []string{"text", "audio", "image"} {
+		found := false
+		for _, got := range modalities {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("accepted output missing %q: %#v", want, modalities)
+		}
+	}
+	features, ok := accepted["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("accepted feature object missing: %#v", accepted)
+	}
+	for _, name := range []string{"petStates", "petAnimation", "petAsset", "ambientDisplay", "meetingRecorder", "volumeControl", "brightnessControl", "screenSleepControl"} {
+		if features[name] != true {
+			t.Fatalf("accepted feature %q=%#v, features=%#v", name, features[name], features)
+		}
+	}
+	if _, leaked := features["futureUnknownFeature"]; leaked {
+		t.Fatalf("unknown client feature leaked into accepted contract: %#v", features)
+	}
+	if maxFrames, ok := features["petAssetMaxFrames"].(float64); !ok || maxFrames != 8 {
+		t.Fatalf("petAssetMaxFrames was not bounded: %#v", features["petAssetMaxFrames"])
+	}
+}
+
+func TestDeviceGatewayLegacyHandshakeCapabilitiesAcceptedWireContract(t *testing.T) {
+	gateway := NewDeviceGateway(nil)
+	if err := gateway.RegisterPairing("gui-a", "tenant-a", "user-a", "445569"); err != nil {
+		t.Fatal(err)
+	}
+	pair := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/device-gateway/v1/pair", "", map[string]any{"clientId": "legacy-wire-contract", "code": "445569"})
+	var pairBody map[string]any
+	_ = json.NewDecoder(pair.Body).Decode(&pairBody)
+	token, _ := pairBody["gatewayToken"].(string)
+
+	handshake := deviceGatewayRequest(t, gateway, http.MethodPost, "/api/im-gateway/v1/handshake", token, map[string]any{"clientId": "legacy-wire-contract"})
+	if handshake.Code != http.StatusOK {
+		t.Fatalf("legacy handshake status=%d body=%s", handshake.Code, handshake.Body.String())
+	}
+	var response map[string]any
+	_ = json.NewDecoder(handshake.Body).Decode(&response)
+	accepted, ok := response["capabilitiesAccepted"].(map[string]any)
+	if !ok {
+		t.Fatalf("legacy response omitted capabilitiesAccepted: %#v", response)
+	}
+	output, ok := accepted["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("legacy accepted output missing: %#v", accepted)
+	}
+	modalities, ok := output["modalities"].([]any)
+	if !ok || len(modalities) != 1 || modalities[0] != "text" {
+		t.Fatalf("legacy accepted output must be text-only: %#v", output["modalities"])
+	}
+	// Input and Features are value structs, so encoding/json may retain empty
+	// objects despite omitempty.  They must nevertheless carry no accepted
+	// value that can widen a legacy text-only client.
+	if input, present := accepted["input"].(map[string]any); present && len(input) != 0 {
+		t.Fatalf("legacy input unexpectedly widened accepted contract: %#v", accepted)
+	}
+	if features, present := accepted["features"].(map[string]any); present && len(features) != 0 {
+		t.Fatalf("legacy features unexpectedly widened accepted contract: %#v", accepted)
 	}
 }
 

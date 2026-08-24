@@ -1,6 +1,7 @@
 package toolresult
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -101,5 +102,54 @@ func TestProject_UsesStructuredPreviewAndStats(t *testing.T) {
 	st := GetCompressionStats()
 	if st.Projects < 1 || st.SavedBytes <= 0 {
 		t.Fatalf("stats=%+v", st)
+	}
+}
+
+func TestStructuredPreview_ComputerObserveKeepsRefsWhenOverLimit(t *testing.T) {
+	raw := "mode=text_primary screen=100x100 scale=1.00 screen_index=0\nwindows:\n  - Word\nelements (80):\n"
+	for i := 0; i < 80; i++ {
+		raw += fmt.Sprintf("  e%d [button] \"Btn%d\" conf=1.00 bbox=1,1,20,20 center=10,10 src=a11y\n", i, i)
+	}
+	raw += "ocr_excerpt: Document saved successfully\n"
+	preview := StructuredPreview("computer_observe", raw, 400)
+	if !strings.Contains(preview, "ocr_excerpt: Document saved successfully") && !strings.Contains(preview, "windows:") {
+		t.Fatalf("should keep header/ocr: %q", preview)
+	}
+	if !strings.Contains(preview, "e0 [button]") {
+		t.Fatalf("over-limit observe must keep a head ref: %q", preview)
+	}
+	if !strings.Contains(preview, "e79 [button]") {
+		t.Fatalf("over-limit observe must keep a tail ref: %q", preview)
+	}
+	if strings.Count(preview, "bbox=") >= 80 {
+		t.Fatalf("must not keep the full element list: %q", preview)
+	}
+	if len(preview) > 480 {
+		t.Fatalf("len=%d", len(preview))
+	}
+}
+
+func TestStructuredPreview_ComputerObserveHugeOCRStillKeepsRefs(t *testing.T) {
+	token := "UniqueOCRTailToken"
+	raw := "mode=text_primary screen=100x100 scale=1.00 screen_index=0\nwindows:\n  - Word\nelements (80):\n"
+	for i := 0; i < 80; i++ {
+		raw += fmt.Sprintf("  e%d [button] \"Btn%d\" conf=1.00 bbox=1,1,20,20 center=10,10 src=a11y\n", i, i)
+	}
+	raw += "ocr_excerpt: " + strings.Repeat("o", 2000) + token + "\n"
+	preview := StructuredPreview("computer_observe", raw, 800)
+	if !strings.Contains(preview, "e0 [button]") {
+		t.Fatalf("huge OCR must not drop head ref: %q", preview)
+	}
+	if !strings.Contains(preview, "e79 [button]") {
+		t.Fatalf("huge OCR must not drop tail ref: %q", preview)
+	}
+	if !strings.Contains(preview, token) {
+		t.Fatalf("huge OCR tail token must survive: %q", preview)
+	}
+	if strings.Count(preview, "bbox=") >= 80 {
+		t.Fatalf("must not keep the full element list: bbox=%d", strings.Count(preview, "bbox="))
+	}
+	if len(preview) > 900 {
+		t.Fatalf("len=%d", len(preview))
 	}
 }

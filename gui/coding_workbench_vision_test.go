@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -201,23 +202,41 @@ func TestCodingRouteKeepsCodingProfileSnapshot(t *testing.T) {
 	app := &App{}
 	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
 		string(llm.TaskReasoning): {
-			Model:    "coding-reasoning",
-			URL:      "https://coding-route.example/v1",
-			Provider: "Coding route",
+			Model:         "coding-reasoning",
+			URL:           "https://coding-route.example/v1",
+			Provider:      "Coding route",
+			ContextLength: 400_000,
 		},
 	})
 	h := &IMMessageHandler{app: app}
 	base := corelib.MaclawLLMConfig{
 		URL: "https://coding-base.example/v1", Key: "coding-key", Model: "coding-base",
-		ProviderName: "Coding provider", ProviderID: "coding-provider-id", Profile: "coding", RouteSource: "base",
+		ContextLength: 32_000, ProviderName: "Coding provider", ProviderID: "coding-provider-id", Profile: "coding", RouteSource: "base",
 	}
 
 	routed := h.applyCodingRoutePreference("coding-route-test", base, false)
-	if routed.Model != "coding-reasoning" || routed.URL != "https://coding-route.example/v1" || routed.ProviderName != "Coding route" {
+	if routed.Model != "coding-reasoning" || routed.URL != "https://coding-route.example/v1" || routed.ProviderName != "Coding route" || routed.ContextLength != 400_000 {
 		t.Fatalf("unexpected coding route: %+v", routed)
 	}
 	if routed.Profile != "coding" || routed.ProviderID != "coding-provider-id" || routed.RouteSource != "route" {
 		t.Fatalf("route lost coding attribution: %+v", routed)
+	}
+}
+
+func TestCodingRouteAppliesContextOnlyOverride(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "coding-base", ContextLength: 400_000},
+	})
+	h := &IMMessageHandler{app: app}
+	base := corelib.MaclawLLMConfig{
+		URL: "https://coding.example/v1", Key: "coding-key", Model: "coding-base", ContextLength: 32_000,
+		ProviderName: "Coding", ProviderID: "coding-id", Profile: "coding", RouteSource: "base",
+	}
+
+	routed := h.routeCodingLLMConfig(llm.TaskReasoning, base)
+	if routed.ContextLength != 400_000 || routed.RouteSource != "route" {
+		t.Fatalf("context-only route was discarded: %+v", routed)
 	}
 }
 
@@ -250,6 +269,30 @@ func TestCodingRouteDoesNotInheritVisionFromReplacedModel(t *testing.T) {
 	routed := h.routeCodingLLMConfig(llm.TaskReasoning, base)
 	if routed.SupportsVision {
 		t.Fatalf("routed model inherited unverified vision capability: %+v", routed)
+	}
+}
+
+func TestLocalCodingRouteTurn_HubManagedAttachesWorkflowHints(t *testing.T) {
+	app := &App{}
+	app.ohModules.modelRouter = llm.NewModelRouter(map[string]llm.ModelRoute{
+		string(llm.TaskReasoning): {Model: "routed-model", URL: "https://aux.example/v1"},
+	})
+	base := corelib.MaclawLLMConfig{URL: "https://hub.example.com/api/llm/v1", Model: "auto", ProviderName: "hub", Profile: "coding"}
+	loop := &LoopContext{WorkflowAgentLoop: true, WorkflowType: "coding", WorkflowPhaseKind: "execution", WorkflowPhaseID: "implementation"}
+	cb := &codingSubAgentCallbacks{subagent: NewCodingSubAgent(&IMMessageHandler{app: app}, base, nil, "", loop)}
+	routed, decision, applied := cb.RouteTurn("implement")
+	if !applied || routed.Model != "auto" || routed.URL != base.URL {
+		t.Fatalf("hub-managed coding must keep auto: cfg=%+v decision=%+v applied=%v", routed, decision, applied)
+	}
+	if routed.WorkflowTypeHint != "coding" || routed.PhaseKindHint != "execution" || routed.TaskTypeHint != string(llm.TaskReasoning) {
+		t.Fatalf("hub-managed coding hints: %+v", routed)
+	}
+	if !strings.Contains(decision.Reason, "hub-managed") {
+		t.Fatalf("reason=%q", decision.Reason)
+	}
+	kept := cb.GetLLMConfig()
+	if kept.WorkflowTypeHint != "coding" || kept.PhaseKindHint != "execution" || kept.TaskTypeHint != string(llm.TaskReasoning) {
+		t.Fatalf("GetLLMConfig dropped hints after RouteTurn: %+v", kept)
 	}
 }
 
@@ -335,5 +378,31 @@ func TestCodingSubAgentUserContentWithVisionMultimodal(t *testing.T) {
 	// Multimodal content is typically []map or []interface{}.
 	if _, ok := got.(string); ok {
 		t.Fatalf("expected multimodal structure when vision enabled, got string %q", got)
+	}
+}
+
+func TestCodingSubAgentUserContentScalesDocumentAttachmentToRoutedContext(t *testing.T) {
+	body := strings.Repeat("文", 200_000)
+	attachment := agent.MessageAttachment{
+		Type:     "file",
+		FileName: "notes.txt",
+		MimeType: "text/plain",
+		Data:     base64.StdEncoding.EncodeToString([]byte(body)),
+	}
+	low := NewCodingSubAgent(nil, corelib.MaclawLLMConfig{Protocol: "openai", ContextLength: 10_000}, nil, "", nil)
+	low.SetAttachments([]agent.MessageAttachment{attachment})
+	high := NewCodingSubAgent(nil, corelib.MaclawLLMConfig{Protocol: "openai", ContextLength: 400_000}, nil, "", nil)
+	high.SetAttachments([]agent.MessageAttachment{attachment})
+
+	lowText, ok := codingSubAgentUserContent(low, "inspect").(string)
+	if !ok {
+		t.Fatalf("low-context content type = %T, want string", codingSubAgentUserContent(low, "inspect"))
+	}
+	highText, ok := codingSubAgentUserContent(high, "inspect").(string)
+	if !ok {
+		t.Fatalf("high-context content type = %T, want string", codingSubAgentUserContent(high, "inspect"))
+	}
+	if lowLen, highLen := len(lowText), len(highText); highLen <= lowLen || highLen < 180_000 {
+		t.Fatalf("routed attachment payload lengths = %d and %d; high context was not expanded", lowLen, highLen)
 	}
 }

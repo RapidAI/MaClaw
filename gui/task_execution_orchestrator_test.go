@@ -327,14 +327,14 @@ func TestFinalReport(t *testing.T) {
 	o.Tasks = tasks
 
 	report := o.FinalReport()
-	if !strings.Contains(report, "成功: 2") {
-		t.Error("report should show 2 passed")
-	}
-	if !strings.Contains(report, "失败: 1") {
-		t.Error("report should show 1 failed")
+	if strings.Contains(report, "## ") || strings.Contains(report, "Coding Task Execution Report") {
+		t.Errorf("report should be engineer prose, got %q", report)
 	}
 	if !strings.Contains(report, "test timeout") {
 		t.Error("report should contain error summary")
+	}
+	if !strings.Contains(report, "Finished 2 of 3 steps") {
+		t.Errorf("mixed outcome should be stated in prose, got %q", report)
 	}
 }
 

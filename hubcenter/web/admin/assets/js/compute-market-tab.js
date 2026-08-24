@@ -11,6 +11,8 @@ if (typeof I18N_EN !== 'undefined') {
   Object.assign(I18N_ZH, {computeMarketStatsIdentity:'\u7edf\u8ba1\u5bf9\u8c61',computeMarketStatsHubLabel:'Hub',computeMarketStatsTenantLabel:'\u79df\u6237',computeMarketStatsLegacyIdentity:'\u5386\u53f2\u672a\u8bb0\u5f55\u8eab\u4efd',computeMarketStatsLegacyHint:'\u8be5\u7528\u91cf\u8bb0\u5f55\u672a\u91c7\u96c6 Hub \u548c\u79df\u6237\u4fe1\u606f\u3002',computeMarketStatsRows:'\u884c\u6570'});
   Object.assign(I18N_EN, {computeMarketOrderCredits:'Credits',computeMarketOrderValidity:'Validity',computeMarketOrderUsed:'Used',computeMarketOrderRemaining:'Remaining',computeMarketOrderPendingActivation:'Starts after activation',computeMarketOrderUnknown:'-'});
   Object.assign(I18N_ZH, {computeMarketOrderCredits:'\u70b9\u6570',computeMarketOrderValidity:'\u6709\u6548\u671f',computeMarketOrderUsed:'\u5df2\u6d88\u8017',computeMarketOrderRemaining:'\u5269\u4f59',computeMarketOrderPendingActivation:'\u786e\u8ba4\u540e\u5f00\u59cb\u8ba1\u65f6',computeMarketOrderUnknown:'-'});
+  Object.assign(I18N_EN, {computeMarketActiveCardsFilter:'Active cards',computeMarketActiveCardsOn:'Showing active cards',computeMarketRebindGroup:'Change group',computeMarketRebindGroupTitle:'Change bound group',computeMarketRebindGroupHint:'Remaining credits will follow the new group immediately.',computeMarketDefaultGroup:'Default compute group',computeMarketGroupRebound:'Group updated.',computeMarketOrderHub:'Hub server',computeMarketOrderTenant:'Tenant',computeMarketDefaultTenant:'Default tenant'});
+  Object.assign(I18N_ZH, {computeMarketActiveCardsFilter:'\u6709\u6548\u7b97\u529b\u5361',computeMarketActiveCardsOn:'\u6b63\u5728\u67e5\u770b\u6709\u6548\u7b97\u529b\u5361',computeMarketRebindGroup:'\u6539\u7ed1\u7ec4',computeMarketRebindGroupTitle:'\u4fee\u6539\u6240\u7ed1\u670d\u52a1\u7ec4',computeMarketRebindGroupHint:'\u5269\u4f59\u989d\u5ea6\u4f1a\u7acb\u5373\u6309\u65b0\u7ec4\u9274\u6743\u548c\u6263\u8d39\u3002',computeMarketDefaultGroup:'\u7f3a\u7701\u7b97\u529b\u7ec4',computeMarketGroupRebound:'\u6240\u7ed1\u7ec4\u5df2\u66f4\u65b0\u3002',computeMarketOrderHub:'Hub\u670d\u52a1\u5668',computeMarketOrderTenant:'\u79df\u6237',computeMarketDefaultTenant:'\u9ed8\u8ba4\u79df\u6237'});
 }
 
 (function () {
@@ -21,9 +23,12 @@ if (typeof I18N_EN !== 'undefined') {
   let cmEditingCardID = '';
   let cmInitInFlight = null;
   let cmOrdersArchived = false;
+  let cmActiveCardsOnly = false;
+  let cmLastOrders = [];
   let cmOrdersPage = 0;
   const CM_ORDERS_PAGE_SIZE = 20;
   let cmRestoringOrders = {};
+  let cmRebindBusy = false;
 
   var CONFIRMABLE_STATUSES = ['pending', 'personal_created', 'personal_opened'];
   var CONFIRMABLE_STATUS_QUERY = CONFIRMABLE_STATUSES.map(encodeURIComponent).join(',');
@@ -79,18 +84,22 @@ if (typeof I18N_EN !== 'undefined') {
   // Card Types
   // ---------------------------------------------------------------------------
 
+  let cmServiceGroupsCache = null;
+  let cmServiceGroupsCacheAt = 0;
+  async function getServiceGroupsCached(force) {
+    var now = Date.now();
+    if (!force && cmServiceGroupsCache && (now - cmServiceGroupsCacheAt) < 30000) return cmServiceGroupsCache;
+    var gd = await api('/api/admin/llm/service-groups');
+    cmServiceGroupsCache = gd || { service_groups: [] };
+    cmServiceGroupsCacheAt = now;
+    return cmServiceGroupsCache;
+  }
+
   async function loadComputeCardTypes() {
     try {
       const data = await api('/api/admin/cardstore/types');
       cmCardTypes = data.card_types || [];
       renderComputeCards(cmCardTypes);
-      const groupSelect = document.getElementById('cmCardGroup');
-      if (groupSelect) {
-        try {
-          const gd = await api('/api/admin/llm/service-groups');
-          groupSelect.innerHTML = (gd.service_groups || []).map(function (g) { return '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>'; }).join('');
-        } catch (e) { groupSelect.innerHTML = ''; }
-      }
     } catch (e) { cmCardTypes = []; renderComputeCards([]); }
   }
 
@@ -104,9 +113,11 @@ if (typeof I18N_EN !== 'undefined') {
       var art = buildCardTemplateSVG(tmpl, 168, 100);
       var desc = (ct.description || '').trim();
       var meta = esc((ct.credits || 0).toLocaleString()) + ' ' + tr('computeMarketCardCreditsUnit') + ' | ' + esc(ct.period || '') + ' | ' + tr('computeMarketCardPriceUnit') + ' ' + esc(ct.price_rmb || 0);
-      var groupName = ct.service_group || ct.service_group_id || '';
-      var agentName = ct.agent_name || '';
-      var group = agentName ? '<span class="cm-card-group">' + tr('computeMarketCardAgent') + ': ' + esc(agentName) + (groupName ? ' | ' + tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) : '') + '</span>' : (groupName ? '<span class="cm-card-group">' + tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) + '</span>' : '');
+      var groupName = (ct.service_group || ct.service_group_id || '').trim();
+      var agentName = (ct.agent_name || '').trim();
+      var groupText = groupName ? tr('computeMarketCardServiceGroup') + ': ' + esc(groupName) : tr('computeMarketDefaultGroup');
+      var agentText = agentName ? tr('computeMarketCardAgent') + ': ' + esc(agentName) : '';
+      var group = '<span class="cm-card-group">' + (agentText && groupText ? agentText + ' | ' + groupText : (agentText || groupText)) + '</span>';
       return '<article class="cm-card-tile">'
         + '<div class="cm-card-visual">' + art + '</div>'
         + '<div class="cm-card-body">'
@@ -121,10 +132,8 @@ if (typeof I18N_EN !== 'undefined') {
 
   function showComputeCardEditor() {
     cmEditingCardID = '';
-    // Build card editor as a modal dialog
-    var groupOptionsHTML = '';
-    api('/api/admin/llm/service-groups').then(function(gd) {
-      groupOptionsHTML = (gd.service_groups || []).map(function(g) { return '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>'; }).join('');
+    getServiceGroupsCached().then(function(gd) {
+      var groupOptionsHTML = (gd.service_groups || []).map(function(g) { return '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>'; }).join('');
       renderCardEditorDialog(groupOptionsHTML, null);
     }).catch(function() { renderCardEditorDialog('', null); });
   }
@@ -133,7 +142,7 @@ if (typeof I18N_EN !== 'undefined') {
     var card = cmCardTypes.find(function (ct) { return ct.id === id; });
     if (!card) return;
     cmEditingCardID = id;
-    api('/api/admin/llm/service-groups').then(function(gd) {
+    getServiceGroupsCached().then(function(gd) {
       var groupOptionsHTML = (gd.service_groups || []).map(function(g) {
         return '<option value="' + esc(g.id) + '"' + (g.id === card.service_group_id ? ' selected' : '') + '>' + esc(g.name) + '</option>';
       }).join('');
@@ -279,7 +288,7 @@ if (typeof I18N_EN !== 'undefined') {
     try {
       updateComputeOrdersArchiveUI();
       const offset = cmOrdersPage * CM_ORDERS_PAGE_SIZE;
-      const ordersPath = '/api/admin/cardstore/orders?limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset + (cmOrdersArchived ? '&archived=1' : '');
+      const ordersPath = '/api/admin/cardstore/orders?limit=' + CM_ORDERS_PAGE_SIZE + '&offset=' + offset + (cmOrdersArchived ? '&archived=1' : '') + (cmActiveCardsOnly ? '&active_cards=1' : '');
       const pendingPath = '/api/admin/cardstore/orders?limit=1&statuses=' + CONFIRMABLE_STATUS_QUERY;
       const results = await Promise.all([
         api(ordersPath),
@@ -294,8 +303,17 @@ if (typeof I18N_EN !== 'undefined') {
   function updateComputeOrdersArchiveUI() {
     var btn = document.getElementById('cmArchivedOrdersBtn');
     if (btn) btn.textContent = cmOrdersArchived ? tr('computeMarketViewActiveOrders') : tr('computeMarketViewArchivedOrders');
+    var filterBtn = document.getElementById('cmActiveCardsBtn');
+    if (filterBtn) {
+      filterBtn.textContent = tr('computeMarketActiveCardsFilter');
+      filterBtn.className = cmActiveCardsOnly ? 'btn-secondary' : 'btn-ghost';
+      filterBtn.setAttribute('aria-pressed', cmActiveCardsOnly ? 'true' : 'false');
+    }
     var desc = document.getElementById('cmOrdersDesc');
-    if (desc) desc.textContent = cmOrdersArchived ? tr('computeMarketArchivedOrdersDesc') : tr('computeMarketOrdersDesc');
+    if (desc) {
+      if (cmActiveCardsOnly) desc.textContent = tr('computeMarketActiveCardsOn');
+      else desc.textContent = cmOrdersArchived ? tr('computeMarketArchivedOrdersDesc') : tr('computeMarketOrdersDesc');
+    }
   }
 
   function renderComputeOrders(orders, total, pendingTotal) {
@@ -316,32 +334,105 @@ if (typeof I18N_EN !== 'undefined') {
       return;
     }
     renderComputeOrdersPager(total);
+    cmLastOrders = orders || [];
     if (!orders.length) { container.innerHTML = '<div class="hint">' + tr('computeMarketNoOrders') + '</div>'; return; }
     container.innerHTML = orders.map(function (o) {
       var status = String(o.status || '').toLowerCase();
       var statusClass = status === 'activated' ? 'ok' : (CONFIRMABLE_STATUSES.indexOf(status) >= 0 ? 'warn' : '');
       var orderArg = esc(cmJSArg(o.order_no));
-      var confirmBtn = (!cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
-      var archiveBtn = !cmOrdersArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
-      var deleteBtn = (cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
-      var restoreBtn = (cmOrdersArchived && status === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
-      var agent = o.agent_name ? ' \u00b7 ' + tr('computeMarketCardAgent') + ': ' + esc(o.agent_name) : '';
-      var archivedMeta = cmOrdersArchived && o.archived_at ? ' \u00b7 ' + tr('computeMarketArchivedAt') + ': ' + esc(new Date(o.archived_at).toLocaleString()) : '';
+      var isArchived = !!String(o.archived_at || '').trim();
+      var confirmBtn = (!isArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0) ? '<button class="btn-primary compact-btn" onclick="confirmComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketConfirmOrder') + '</button>' : '';
+      var archiveBtn = !isArchived ? '<button class="btn-ghost compact-btn" onclick="archiveComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketArchiveOrder') + '</button>' : '';
+      var deleteBtn = (isArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0) ? '<button class="btn-danger-ghost compact-btn" onclick="deleteArchivedComputeOrder(\'' + orderArg + '\')">' + tr('computeMarketDeleteArchivedOrder') + '</button>' : '';
+      var restoreBtn = (isArchived && status === 'activated') ? '<button class="btn-secondary compact-btn" onclick="restoreArchivedComputeOrder(\'' + orderArg + '\', this)">' + tr('computeMarketRestoreOrder') + '</button>' : '';
+      var rebindBtn = o.can_rebind_service_group ? '<button class="btn-ghost compact-btn" onclick="showComputeOrderGroupEditor(\'' + orderArg + '\')">' + tr('computeMarketRebindGroup') + '</button>' : '';
+      var identity = renderComputeOrderIdentity(o);
+      var meta = renderComputeOrderMeta(o, identity, isArchived);
+      var groupName = cmText(o.service_group || o.service_group_id);
+      var agentName = cmText(o.agent_name || '');
+      var groupBadge = '<span class="badge cm-group-badge" title="' + esc(groupName) + '">' + esc(groupName) + '</span>';
       var totalCredits = formatCMCredits(o.credits);
       var usedCredits = cmHasNumber(o.credits_used) ? formatCMCredits(o.credits_used) : tr('computeMarketOrderUnknown');
       var remainingCredits = cmHasNumber(o.credits_remaining) ? formatCMCredits(o.credits_remaining) : tr('computeMarketOrderUnknown');
       var validity = formatCMPeriod(o.period);
-      var expiresAt = o.authorization_expires_at ? formatCMDate(o.authorization_expires_at) : (status === 'activated' ? tr('computeMarketOrderUnknown') : tr('computeMarketOrderPendingActivation'));
+      var expiresShort = o.authorization_expires_at ? formatCMDateShort(o.authorization_expires_at) : '';
+      var expiresTitle = o.authorization_expires_at ? formatCMDate(o.authorization_expires_at) : (status === 'activated' ? tr('computeMarketOrderUnknown') : tr('computeMarketOrderPendingActivation'));
+      var validityText = expiresShort ? (validity + ' · ' + expiresShort) : validity;
+      var actions = rebindBtn + confirmBtn + archiveBtn + restoreBtn + deleteBtn;
       return '<div class="data-row cm-order-row"><div class="data-row-main cm-order-main">'
-        + '<div class="cm-order-head"><strong>' + esc(o.order_no) + '</strong><span class="badge ' + statusClass + '">' + esc(o.status) + '</span></div>'
-        + '<span class="data-row-meta cm-order-meta">' + esc(o.email || '') + ' \u00b7 \u00a5' + esc(o.amount || 0) + ' \u00b7 ' + esc(o.product_label || o.product_id || '') + agent + archivedMeta + '</span>'
+        + '<div class="cm-order-head"><strong>' + esc(o.order_no) + '</strong><span class="badge ' + statusClass + '">' + esc(o.status) + '</span>'
+        + (status === 'activated' ? groupBadge : '')
+        + (actions ? '<div class="cm-order-head-actions">' + actions + '</div>' : '')
+        + '</div>'
+        + '<span class="data-row-meta cm-order-meta" title="' + esc(meta.title) + '">' + meta.html + '</span>'
         + '<div class="cm-order-metrics">'
+        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketCardServiceGroup')) + '</label><strong title="' + esc(groupName || tr('computeMarketDefaultGroup')) + '">' + esc(groupName || tr('computeMarketDefaultGroup')) + (agentName ? ' <small>(' + esc(agentName) + ')</small>' : '') + '</strong></div>'
         + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderCredits')) + '</label><strong title="' + esc(totalCredits) + '">' + esc(totalCredits) + '</strong></div>'
-        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderValidity')) + '</label><strong title="' + esc(validity) + '">' + esc(validity) + '</strong><small title="' + esc(expiresAt) + '">' + esc(expiresAt) + '</small></div>'
+        + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderValidity')) + '</label><strong title="' + esc(expiresTitle) + '">' + esc(validityText) + '</strong></div>'
         + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderUsed')) + '</label><strong title="' + esc(usedCredits) + '">' + esc(usedCredits) + '</strong></div>'
         + '<div class="cm-order-metric"><label>' + esc(tr('computeMarketOrderRemaining')) + '</label><strong title="' + esc(remainingCredits) + '">' + esc(remainingCredits) + '</strong></div>'
-        + '</div></div><div class="data-row-actions">' + confirmBtn + archiveBtn + restoreBtn + deleteBtn + '</div></div>';
+        + '</div></div></div>';
     }).join('');
+  }
+
+  function cmOrderHubLabel(order) {
+    return cmText(order && order.hub_name) || cmText(order && order.hub_id);
+  }
+
+  function cmOrderTenantLabel(order) {
+    var name = cmText(order && order.tenant_name);
+    if (name) return name;
+    var raw = cmText(order && order.tenant_id);
+    var id = raw.toLowerCase();
+    if (!id) return '';
+    if (id === 'tenant_default' || id === 'default') return tr('computeMarketDefaultTenant');
+    return raw;
+  }
+
+  function renderComputeOrderIdentity(order) {
+    var hub = cmOrderHubLabel(order);
+    var tenant = cmOrderTenantLabel(order);
+    var hubID = cmText(order && order.hub_id);
+    var tenantID = cmText(order && order.tenant_id);
+    var html = [];
+    var text = [];
+    if (hub) {
+      html.push('<span class="cm-order-identity-item" title="' + esc(hubID || hub) + '">' + esc(tr('computeMarketOrderHub')) + ': ' + esc(hub) + '</span>');
+      text.push(tr('computeMarketOrderHub') + ': ' + hub);
+    }
+    if (tenant) {
+      html.push('<span class="cm-order-identity-item" title="' + esc(tenantID || tenant) + '">' + esc(tr('computeMarketOrderTenant')) + ': ' + esc(tenant) + '</span>');
+      text.push(tr('computeMarketOrderTenant') + ': ' + tenant);
+    }
+    return { html: html.join(' \u00b7 '), text: text.join(' \u00b7 ') };
+  }
+
+  function renderComputeOrderMeta(order, identity, isArchived) {
+    identity = identity || { html: '', text: '' };
+    if (!order) return { html: identity.html || '', title: identity.text || '' };
+    var html = [];
+    var text = [];
+    var add = function (markup, plain) {
+      if (!plain) return;
+      html.push(markup);
+      text.push(plain);
+    };
+    add(identity.html, identity.text);
+    add(esc(order.email || ''), cmText(order.email));
+    if (cmHasNumber(order.amount)) add('\u00a5' + esc(order.amount), '\u00a5' + order.amount);
+    add(esc(order.product_label || order.product_id || ''), cmText(order.product_label || order.product_id));
+    var groupName = cmText(order.service_group || order.service_group_id);
+    if (groupName) add(esc(tr('computeMarketCardServiceGroup') + ': ' + groupName), tr('computeMarketCardServiceGroup') + ': ' + groupName);
+    var agentName = cmText(order.agent_name);
+    if (agentName) add(esc(tr('computeMarketCardAgent') + ': ' + agentName), tr('computeMarketCardAgent') + ': ' + agentName);
+    if (isArchived && order.archived_at) {
+      var archivedAt = new Date(order.archived_at);
+      if (!Number.isNaN(archivedAt.getTime())) {
+        var archivedText = archivedAt.toLocaleString();
+        add(esc(tr('computeMarketArchivedAt') + ': ' + archivedText), tr('computeMarketArchivedAt') + ': ' + archivedText);
+      }
+    }
+    return { html: html.join(' \u00b7 '), title: text.join(' \u00b7 ') };
   }
 
   function renderComputeOrdersPager(total) {
@@ -379,8 +470,117 @@ if (typeof I18N_EN !== 'undefined') {
 
   async function toggleComputeArchivedOrders() {
     cmOrdersArchived = !cmOrdersArchived;
+    if (cmOrdersArchived) cmActiveCardsOnly = false;
     cmOrdersPage = 0;
     await loadComputeOrders();
+  }
+
+  async function toggleComputeActiveCards() {
+    cmActiveCardsOnly = !cmActiveCardsOnly;
+    if (cmActiveCardsOnly) cmOrdersArchived = false;
+    cmOrdersPage = 0;
+    await loadComputeOrders();
+  }
+
+  function hideComputeOrderGroupEditor() {
+    var overlay = document.getElementById('cmOrderGroupOverlay');
+    if (overlay) overlay.classList.remove('show');
+  }
+
+  function showComputeOrderGroupEditor(orderNo) {
+    var order = (cmLastOrders || []).find(function (o) { return o && o.order_no === orderNo; });
+    if (!order || !order.can_rebind_service_group) return;
+    getServiceGroupsCached().then(function (gd) {
+      renderComputeOrderGroupDialog(order, gd || {});
+    }).catch(function () {
+      renderComputeOrderGroupDialog(order, {});
+    });
+  }
+
+  function renderComputeOrderGroupDialog(order, data) {
+    var overlay = document.getElementById('cmOrderGroupOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'cmOrderGroupOverlay';
+      overlay.className = 'session-modal-overlay';
+      if (typeof window.installOverlayDismiss === 'function') {
+        window.installOverlayDismiss(overlay, hideComputeOrderGroupEditor);
+      } else {
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) hideComputeOrderGroupEditor(); });
+      }
+      document.body.appendChild(overlay);
+    }
+    var rawGroups = data.service_groups || [];
+    var groups = rawGroups.filter(function (g) {
+      var id = String((g && g.id) || '').trim();
+      return id && id.toLowerCase() !== '__external_compute_permission__';
+    });
+    // Prefer grant_required groups first so the default target list is correct,
+    // contract: policy === 'grant_required' groups preferred (keep snippet for static check)
+    // but keep free groups visible so legacy/stale bindings remain selectable and debuggable.
+    groups.sort(function (a, b) {
+      var pa = String((a && a.access_policy) || '').toLowerCase() === 'grant_required' ? 0 : 1;
+      var pb = String((b && b.access_policy) || '').toLowerCase() === 'grant_required' ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      return String(a.name || a.id).localeCompare(String(b.name || b.id));
+    });
+    var defaultID = String(data.default_service_group_id || '').trim();
+    var current = String(order.service_group_id || '').trim();
+    var currentInList = groups.some(function (g) { return g && String(g.id || '').toLowerCase() === current.toLowerCase(); });
+    var defaultInList = groups.some(function (g) { return g && String(g.id || '').toLowerCase() === defaultID.toLowerCase(); });
+    var options = '';
+    if (defaultID && defaultInList) {
+      options += '<option value="__default__">' + esc(tr('computeMarketDefaultGroup')) + '</option>';
+    }
+    groups.forEach(function (g) {
+      if (!g || !g.id) return;
+      options += '<option value="' + esc(g.id) + '"' + (String(g.id).toLowerCase() === current.toLowerCase() ? ' selected' : '') + '>' + esc(g.name || g.id) + '</option>';
+    });
+    if (current && !currentInList) {
+      options = '<option value="' + esc(current) + '" selected>' + esc(order.service_group || current) + '</option>' + options;
+    }
+    overlay.innerHTML = '<div class="session-modal cm-dialog-sm" id="cmOrderGroupEditor">'
+      + '<h3>' + esc(tr('computeMarketRebindGroupTitle')) + '</h3>'
+      + '<p class="hintline">' + esc(order.order_no || '') + ' · ' + esc(tr('computeMarketRebindGroupHint')) + '</p>'
+      + '<div class="cm-form-gap cm-wide-field"><label>' + esc(tr('computeMarketCardGroup')) + '</label><select id="cmOrderGroupSelect">' + options + '</select></div>'
+      + '<div class="actions cm-template-actions"><button class="btn-primary" onclick="saveComputeOrderGroup(\'' + esc(cmJSArg(order.order_no)) + '\')">' + esc(tr('computeMarketSave')) + '</button><button class="btn-ghost" onclick="hideComputeOrderGroupEditor()">' + esc(tr('computeMarketCancel')) + '</button></div>'
+      + '</div>';
+    overlay.classList.add('show');
+  }
+
+  async function saveComputeOrderGroup(orderNo) {
+    if (cmRebindBusy) return;
+    var selected = ((document.getElementById('cmOrderGroupSelect') || {}).value || '').trim();
+    if (!selected) { if (window.showToast) showToast(tr('computeMarketCardGroupRequired'), 'error'); return; }
+    var body = selected.toLowerCase() === '__default__' ? { use_default: true } : { service_group_id: selected };
+    var selectedLabel = '';
+    try {
+      var selEl = document.getElementById('cmOrderGroupSelect');
+      if (selEl && selEl.selectedIndex >= 0 && selEl.options[selEl.selectedIndex]) selectedLabel = selEl.options[selEl.selectedIndex].textContent.trim();
+    } catch (_e) {}
+    cmRebindBusy = true;
+    var btn = document.querySelector('#cmOrderGroupEditor .btn-primary');
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      var updated = await api('/api/admin/cardstore/orders/' + encodeURIComponent(orderNo) + '/service-group', { method: 'PUT', body: JSON.stringify(body) });
+      // optimistic local patch for instant feedback before full reload
+      var idx = (cmLastOrders || []).findIndex(function (o) { return o && o.order_no === orderNo; });
+      if (idx >= 0 && updated) {
+        cmLastOrders[idx].service_group_id = updated.service_group_id || selected;
+        cmLastOrders[idx].service_group = updated.service_group || selectedLabel || updated.service_group_id || selected;
+        cmLastOrders[idx].agent_id = updated.agent_id || cmLastOrders[idx].agent_id;
+        cmLastOrders[idx].agent_name = updated.agent_name || cmLastOrders[idx].agent_name;
+        // re-render immediately from patched cache
+        renderComputeOrders(cmLastOrders.slice(), cmLastOrders.length, null);
+      }
+      hideComputeOrderGroupEditor();
+      await loadComputeOrders();
+      if (window.showToast) showToast(tr('computeMarketGroupRebound'), 'success');
+    } catch (e) { if (window.showToast) showToast(e.message, 'error'); }
+    finally {
+      cmRebindBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = tr('computeMarketSave'); }
+    }
   }
 
   async function confirmComputeOrder(orderNo) {
@@ -493,6 +693,14 @@ if (typeof I18N_EN !== 'undefined') {
     var d = new Date(raw);
     if (Number.isNaN(d.getTime())) return raw;
     return d.toLocaleString();
+  }
+
+  function formatCMDateShort(value) {
+    var raw = cmText(value);
+    if (!raw) return '';
+    var d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return raw;
+    return d.toLocaleDateString();
   }
 
   function cmHasNumber(value) {
@@ -666,6 +874,10 @@ if (typeof I18N_EN !== 'undefined') {
   window.restoreArchivedComputeOrder = restoreArchivedComputeOrder;
   window.deleteArchivedComputeOrder = deleteArchivedComputeOrder;
   window.toggleComputeArchivedOrders = toggleComputeArchivedOrders;
+  window.toggleComputeActiveCards = toggleComputeActiveCards;
+  window.showComputeOrderGroupEditor = showComputeOrderGroupEditor;
+  window.hideComputeOrderGroupEditor = hideComputeOrderGroupEditor;
+  window.saveComputeOrderGroup = saveComputeOrderGroup;
   window.queryComputeStats = queryComputeStats;
   window.loadStatsFilters = loadStatsFilters;
   window.CARD_TEMPLATES = CARD_TEMPLATES;

@@ -8,8 +8,8 @@
 
 #include "sdkconfig.h"
 
-#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
-#error "Bread input adapter may only be included by the Bread Compact profile"
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD && !CONFIG_MACLAW_BOARD_REFERENCE_FAKE
+#error "Bread input adapter may only be included by Bread Compact or the CI reference profile"
 #endif
 
 #ifndef MACLAW_COMPACT_INPUT_ADAPTER_IMPLEMENTATION
@@ -63,6 +63,15 @@ static inline void compact_input_adapter_read_raw(compact_input_raw_state_t *out
 
 static inline bool compact_input_adapter_has_volume_keys(void) {
     return true;
+}
+
+/* Bread exposes dedicated physical volume keys, so its activation key keeps
+ * only the established command/meeting/configuration gesture vocabulary. */
+static inline int64_t compact_input_adapter_local_volume_increase_hold_us(void) {
+    return 0;
+}
+static inline int64_t compact_input_adapter_local_volume_decrease_hold_us(void) {
+    return 0;
 }
 
 static inline bool compact_input_adapter_activate_is_released_now(void) {

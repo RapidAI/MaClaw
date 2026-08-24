@@ -122,22 +122,30 @@ func TestMemoryPromptProfiles(t *testing.T) {
 	}
 
 	core := CoreAgentProactivePromptOptions()
-	if !core.IncludeSceneIndex || core.Recall.MaxEntries != 12 || core.Recall.EntityLimit != 3 {
+	if !core.CatalogOnly || !core.IncludeMemoryIndex || core.Recall.MaxEntries != 0 || core.Recall.EntityLimit != 3 {
 		t.Fatalf("unexpected core proactive profile: %+v", core)
 	}
 
 	im := IMProactivePromptOptions("/tmp/project", true)
-	if !im.IncludeMemoryIndex || !im.IncludeDerivedFacts || !im.Recall.StrictProject || im.Recall.ProjectPath != "/tmp/project" {
+	if !im.IncludeMemoryIndex || !im.CatalogOnly || im.IncludeDerivedFacts || !im.Recall.StrictProject || im.Recall.ProjectPath != "/tmp/project" || im.Recall.MaxEntries != 0 {
 		t.Fatalf("unexpected IM proactive profile: %+v", im)
 	}
 
 	ve := VEProactivePromptOptions()
-	if !ve.IncludeMemoryIndex || !ve.Recall.IncludeUserProfile || ve.Recall.MaxEntries != 10 {
+	if !ve.CatalogOnly || !ve.IncludeMemoryIndex || !ve.Recall.IncludeUserProfile || ve.Recall.MaxEntries != 0 {
 		t.Fatalf("unexpected VE proactive profile: %+v", ve)
 	}
 
 	btw := BtwProactivePromptOptions("/tmp/project", "## Recall")
-	if btw.Recall.ProjectPath != "/tmp/project" || btw.RecallEntries.Header != "## Recall" || btw.Recall.MaxEntries != 8 {
+	if !btw.CatalogOnly || btw.Recall.ProjectPath != "/tmp/project" || btw.RecallEntries.Header != "## Recall" || btw.Recall.MaxEntries != 0 {
 		t.Fatalf("unexpected /btw proactive profile: %+v", btw)
+	}
+
+	footer := CatalogOnlyWorkingSetFooter()
+	if strings.Contains(footer, "必须先") {
+		t.Fatal("catalog footer must not mandate warehouse-first")
+	}
+	if !strings.Contains(footer, "仅当本轮工具列表里有") {
+		t.Fatal("catalog footer should gate retrieval on the current tool list")
 	}
 }

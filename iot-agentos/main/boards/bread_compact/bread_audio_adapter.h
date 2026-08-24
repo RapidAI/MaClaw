@@ -8,8 +8,8 @@
 
 #include "sdkconfig.h"
 
-#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
-#error "Bread audio adapter may only be included by the Bread Compact profile"
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD && !CONFIG_MACLAW_BOARD_REFERENCE_FAKE
+#error "Bread audio adapter may only be included by Bread Compact or the CI reference profile"
 #endif
 
 #ifndef MACLAW_COMPACT_AUDIO_ADAPTER_IMPLEMENTATION

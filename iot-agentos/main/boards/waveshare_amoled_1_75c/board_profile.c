@@ -18,6 +18,12 @@ bool board_profile_get(device_profile_t *out_profile) {
                         DEVICE_CAPABILITY_MOTION_SENSOR,
         .primary_interaction_source = DEVICE_INPUT_SOURCE_TOUCH,
         .primary_interaction_label = "触摸屏",
+        .volume_interaction_hint = "触摸屏长按调节音量",
+        /* The AMOLED touch surface and the hardware activation key both
+         * restore DISPLAY_OFF through the common App Intent policy. */
+        .display_wake_sources =
+            DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_TOUCH) |
+            DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_AUXILIARY_CONTROL),
     };
     return true;
 }

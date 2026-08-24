@@ -125,6 +125,30 @@ func MsgRole(m interface{}) string {
 	return ""
 }
 
+func isPendingAskContent(content string) bool {
+	content = strings.TrimSpace(content)
+	if IsAskUserResult(content) {
+		return true
+	}
+	return strings.HasPrefix(content, "Asked user:") || content == "Asked user"
+}
+
+func conversationHasPendingAsk(msgs []interface{}) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		role := MsgRole(msgs[i])
+		if role == "user" {
+			return false
+		}
+		if role == "tool" {
+			_, content := ExtractRoleContent(msgs[i])
+			if isPendingAskContent(content) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // MsgHasToolCalls checks if a conversation message has a non-nil tool_calls field.
 func MsgHasToolCalls(m interface{}) bool {
 	if v, ok := m.(map[string]interface{}); ok {
@@ -223,6 +247,10 @@ func GroupContaining(groups []EntryGroup, idx int) *EntryGroup {
 // short text so the LLM retains key context. When nil, dropped messages are
 // replaced with a generic placeholder.
 func TrimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summarizer func(string) string) []interface{} {
+	msgs = FoldComputerUseObserves(msgs)
+	if conversationHasPendingAsk(msgs) {
+		return msgs
+	}
 	if tokenLimit <= 0 {
 		tokenLimit = defaultContextTokens * 80 / 100
 	}
@@ -465,6 +493,7 @@ func MakeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 }
 
 func TrimHistory(entries []ConversationEntry) []ConversationEntry {
+	entries = FoldComputerUseObserveEntries(entries)
 	if len(entries) <= MaxConversationTurns {
 		// Within turn limit — check token budget.
 		if EstimateConversationEntryTokens(entries) <= MaxMemoryTokenEstimate {
@@ -530,7 +559,50 @@ func TruncateToolResult(s string) string {
 // WebFetchMaxToolResult allows web_fetch to return up to 32KB to the LLM,
 // since its content is already windowed inside the handler and carries
 // continuation metadata that must survive truncation.
-const WebFetchMaxToolResult = 32768
+const (
+	WebFetchMaxToolResult = 32768
+
+	// ComputerObserveMaxToolResult keeps eN refs in the latest observe.
+	// FoldComputerUseObserves fingerprints older dumps; this is the first cut
+	// so a 4 KiB generic cap cannot strip every click target.
+	ComputerObserveMaxToolResult = 32768
+
+	// DocumentReadMaxToolResult is deliberately larger than the general 4 KiB
+	// tool-result preview. Current model providers expose at least 200K-token
+	// windows (normally 400K), while document readers have their own paging
+	// contracts. A 96 KiB page keeps a normal CJK document page inline without
+	// consuming an unreasonable share of the turn's context budget.
+	DocumentReadMaxToolResult = 96 * 1024
+
+	// OfficeReadMaxToolResult is retained for callers that referred to the
+	// original Office-specific name. The budget now also covers the built-in
+	// plain-text reader used for Markdown, JSON, XML, YAML, and log files.
+	OfficeReadMaxToolResult = DocumentReadMaxToolResult
+)
+
+// DocumentReadToolResultLimit scales the model-visible document page to the
+// configured usable context window. It deliberately returns a bounded range:
+// a small-context provider still gets a useful page, while a very large window
+// cannot let one tool call monopolize the complete turn.
+func DocumentReadToolResultLimit(contextTokens int) int {
+	const (
+		minBytes = 32 * 1024
+		maxBytes = 256 * 1024
+	)
+	if contextTokens <= 0 {
+		return DocumentReadMaxToolResult
+	}
+	// Reserve about one quarter of the usable input window for one document
+	// page. EstimateBytesToTokens uses 2.5 bytes/token, hence /8 * 5 bytes.
+	bytes := contextTokens * 5 / 8
+	if bytes < minBytes {
+		return minBytes
+	}
+	if bytes > maxBytes {
+		return maxBytes
+	}
+	return bytes
+}
 
 func TruncateToolResultForTool(toolName, s string) string {
 	return PreviewToolResultForTool(toolName, s)
@@ -545,10 +617,7 @@ func TruncateToolResultForToolWithSession(toolName, sessionKey, original string)
 		if proj.Preview != "" {
 			return proj.Preview
 		}
-		limit := MaxToolResultLen
-		if toolName == "web_fetch" {
-			limit = WebFetchMaxToolResult
-		}
+		limit := toolResultPreviewLimit(toolName)
 		return toolresult.StructuredPreview(toolName, original, limit)
 	}
 	return proj.Preview
@@ -559,13 +628,7 @@ func TruncateToolResultForToolWithSession(toolName, sessionKey, original string)
 // message. Agent-loop paths should use TruncateToolResultForToolWithSession.
 func PreviewToolResultForTool(toolName, original string) string {
 	includeFooter := false
-	limit := MaxToolResultLen
-	if toolName == "web_fetch" {
-		limit = WebFetchMaxToolResult
-	}
-	if strings.HasPrefix(toolName, "browser") {
-		limit = max(limit, 4096)
-	}
+	limit := toolResultPreviewLimit(toolName)
 	proj, err := toolresult.Project(toolresult.ProjectOptions{
 		ToolName:            toolName,
 		Content:             original,
@@ -582,19 +645,49 @@ func PreviewToolResultForTool(toolName, original string) string {
 // hosts that need the full Projection metadata (for tests/metrics) instead of
 // only the preview string returned by TruncateToolResultForToolWithSession.
 func ProjectToolResult(toolName, sessionKey, original string) (toolresult.Projection, error) {
-	limit := MaxToolResultLen
-	if toolName == "web_fetch" {
-		limit = WebFetchMaxToolResult
-	}
-	if strings.HasPrefix(toolName, "browser") {
-		limit = max(limit, 4096)
-	}
+	return ProjectToolResultWithContext(toolName, sessionKey, original, 0)
+}
+
+// ProjectToolResultWithContext projects a tool result against the active
+// model's usable context window. A zero contextTokens keeps the stable default
+// used by legacy callers and direct tests.
+func ProjectToolResultWithContext(toolName, sessionKey, original string, contextTokens int) (toolresult.Projection, error) {
+	limit := toolResultPreviewLimitForContext(toolName, contextTokens)
 	return toolresult.Project(toolresult.ProjectOptions{
 		ToolName:   toolName,
 		SessionKey: sessionKey,
 		Content:    original,
 		Limit:      limit,
 	})
+}
+
+// toolResultPreviewLimit keeps the outer tool-result projection aligned with
+// readers that already provide their own safe pagination. The GUI exposes
+// binary document reads through the generic "office" tool, other hosts expose
+// format-specific readers directly, and read_file/FileRead cover text-like
+// documents such as Markdown, JSON, XML, YAML, and logs.
+func toolResultPreviewLimit(toolName string) int {
+	return toolResultPreviewLimitForContext(toolName, 0)
+}
+
+func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "office", "read_document", "read_doc", "read_docx", "read_pdf", "read_excel", "read_pptx",
+		"read_file", "file_read", "fileread", "read_files":
+		if contextTokens > 0 {
+			return DocumentReadToolResultLimit(contextTokens)
+		}
+		return DocumentReadMaxToolResult
+	case "web_fetch":
+		return WebFetchMaxToolResult
+	case "computer_observe":
+		return ComputerObserveMaxToolResult
+	default:
+		if strings.HasPrefix(toolName, "browser") {
+			return max(MaxToolResultLen, 4096)
+		}
+		return MaxToolResultLen
+	}
 }
 
 // InferFileDeliveryMessage is kept for compatibility. Without structured

@@ -1,7 +1,9 @@
 import React from "react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import { AIAssistantAttachmentPreviewDataURL, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
-import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
+import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot, CodingAgentTimelineItem } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
@@ -11,6 +13,7 @@ import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } fro
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import {
     prepareChatBodyForDisplay,
     prepareChatBodyLines,
@@ -24,48 +27,19 @@ import {
     orderedListMarkerLayoutStyle,
     parseOrderedListLine,
 } from "./orderedListMarkdown";
-import { IconBolt, IconCheck, IconClipboard, IconSearch, IconStar, StatusGlyph } from "./WorkbenchIcons";
+import { AssistantReplyCopyButton } from "./AssistantReplyCopyButton";
+import { IconBolt, IconSearch, IconStar, StatusGlyph } from "./WorkbenchIcons";
 import {
     RecordingSessionCard,
     type RecordingCompleteResult,
 } from "./RecordingSessionCard";
 import { AssistantMermaidDiagram, isMermaidCodeFence } from "./AssistantMermaidDiagram";
+import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
+import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
-
-/** Copy plain text to the system clipboard (with execCommand fallback). */
-export async function copyTextToClipboard(text: string): Promise<boolean> {
-    const value = String(text ?? "");
-    // Reject empty / whitespace-only so the control never pastes blank noise.
-    if (!value.trim()) return false;
-    try {
-        if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(value);
-            return true;
-        }
-    } catch {
-        // fall through to legacy path
-    }
-    try {
-        if (typeof document === "undefined") return false;
-        const ta = document.createElement("textarea");
-        ta.value = value;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        ta.style.top = "0";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        ta.setSelectionRange(0, value.length);
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        return ok;
-    } catch {
-        return false;
-    }
-}
+export { AssistantReplyCopyButton, copyTextToClipboard } from "./AssistantReplyCopyButton";
 
 /**
  * Build the plain-text payload for "copy reply": same body the user sees,
@@ -76,125 +50,12 @@ export function buildAssistantReplyCopyText(
     unfinishedSlot?: ChatUnfinishedSlot,
     lang = "en",
 ): string {
-    const raw = prepareChatBodyForDisplay(
+    const raw = stripCodingAgentAuditSections(prepareChatBodyForDisplay(
         formatUnfinishedSlotNotice(content || "", unfinishedSlot, lang),
-    );
+    ));
     return stripRolePrefixForDisplay(raw || "").replace(/\s+$/u, "");
 }
 
-/**
- * Top-right control on AI reply bubbles: copy the full reply text.
- * Shown only when there is non-empty content (hidden while empty streaming placeholder).
- */
-export function AssistantReplyCopyButton({
-    text,
-    theme: t,
-    lang = "en",
-    messageId,
-}: {
-    text: string;
-    theme: Theme;
-    lang?: string;
-    messageId?: string;
-}) {
-    const [state, setState] = React.useState<"idle" | "busy" | "ok" | "err">("idle");
-    const [hovered, setHovered] = React.useState(false);
-    const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-    const mountedRef = React.useRef(true);
-    const copyLabel = localizeText(lang, "Copy reply", "复制回复", "複製回覆");
-    const copiedLabel = localizeText(lang, "Copied", "已复制", "已複製");
-    const failedLabel = localizeText(lang, "Copy failed", "复制失败", "複製失敗");
-
-    React.useEffect(() => {
-        mountedRef.current = true;
-        return () => {
-            mountedRef.current = false;
-            if (timerRef.current) clearTimeout(timerRef.current);
-        };
-    }, []);
-
-    // Hooks must run unconditionally; hide after hooks when there is nothing to copy.
-    const body = String(text ?? "");
-    const hasBody = body.trim().length > 0;
-    const title = state === "ok" ? copiedLabel : state === "err" ? failedLabel : copyLabel;
-
-    if (!hasBody) return null;
-
-    const emphasize = hovered || state === "ok" || state === "err";
-
-    return (
-        <button
-            type="button"
-            data-testid={messageId ? `assistant-chat-copy-${messageId}` : "assistant-chat-copy"}
-            aria-label={title}
-            title={title}
-            disabled={state === "busy"}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            onFocus={() => setHovered(true)}
-            onBlur={() => setHovered(false)}
-            onClick={async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (state === "busy") return;
-                setState("busy");
-                const ok = await copyTextToClipboard(body);
-                if (!mountedRef.current) return;
-                setState(ok ? "ok" : "err");
-                if (timerRef.current) clearTimeout(timerRef.current);
-                timerRef.current = setTimeout(() => {
-                    if (mountedRef.current) setState("idle");
-                }, 1600);
-            }}
-            style={{
-                position: "relative",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 22,
-                height: 22,
-                padding: 0,
-                borderRadius: 6,
-                border: `1px solid ${t.fieldBorder}`,
-                background: state === "ok"
-                    ? "color-mix(in srgb, var(--theme-success, #16a34a) 14%, transparent)"
-                    : "color-mix(in srgb, var(--theme-surface, #fff) 92%, transparent)",
-                color: state === "ok"
-                    ? "var(--theme-success, #16a34a)"
-                    : state === "err"
-                        ? "var(--theme-danger, #dc2626)"
-                        : t.textMuted,
-                cursor: state === "busy" ? "wait" : "pointer",
-                opacity: state === "busy" ? 0.65 : emphasize ? 1 : 0.72,
-                boxShadow: emphasize
-                    ? "0 1px 3px color-mix(in srgb, #000 12%, transparent)"
-                    : "0 1px 2px color-mix(in srgb, #000 6%, transparent)",
-                transition: "background 120ms ease, color 120ms ease, opacity 120ms ease, box-shadow 120ms ease",
-            }}
-        >
-            {/* Live region announces copy result without moving focus. */}
-            <span
-                aria-live="polite"
-                style={{
-                    position: "absolute",
-                    width: 1,
-                    height: 1,
-                    padding: 0,
-                    margin: -1,
-                    overflow: "hidden",
-                    clip: "rect(0, 0, 0, 0)",
-                    whiteSpace: "nowrap",
-                    border: 0,
-                }}
-            >
-                {state === "ok" || state === "err" ? title : ""}
-            </span>
-            {state === "ok"
-                ? <IconCheck size={13} color="currentColor" />
-                : <IconClipboard size={13} color="currentColor" />}
-        </button>
-    );
-}
 /* Themed inline markdown rendering */
 const pathQuoteCharsPattern = /[`'"\u2018\u2019\u201c\u201d]/;
 const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
@@ -473,8 +334,142 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
     return parts.length > 0 ? parts : ["\u00A0"];
 }
 
+type InlineMathSegment =
+    | { kind: "text"; value: string }
+    | { kind: "math"; value: string };
+
+function isEscapedAt(text: string, index: number): boolean {
+    let slashCount = 0;
+    for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) slashCount++;
+    return slashCount % 2 === 1;
+}
+
+function isInlineMathBoundaryBefore(text: string, index: number): boolean {
+    const previous = text[index - 1] || "";
+    // TeX delimiters do not begin in the middle of identifiers, prices, or a
+    // word such as `US$`. This also prevents a lone closing dollar in prose from
+    // swallowing a later formula.
+    // Chinese prose commonly omits the space before a formula ("令$x$...").
+    // Treat Han characters as natural prose boundaries while keeping `$` inside
+    // Latin identifiers (for example `price$USD`) untouched.
+    return !previous || !/[\p{L}\p{N}_]/u.test(previous) || /\p{Script=Han}/u.test(previous);
+}
+
+function isInlineMathBoundaryAfter(text: string, index: number): boolean {
+    const next = text[index + 1] || "";
+    return !next || !/[\p{L}\p{N}_]/u.test(next) || /\p{Script=Han}/u.test(next);
+}
+
+function findUnescapedDelimiter(text: string, delimiter: string, from: number): number {
+    let index = text.indexOf(delimiter, from);
+    while (index !== -1 && isEscapedAt(text, index)) index = text.indexOf(delimiter, index + delimiter.length);
+    return index;
+}
+
+/**
+ * Split only the two inline LaTex forms we support. Backtick code spans remain
+ * opaque here so `$...$` in source code is never interpreted as mathematics.
+ */
+function splitInlineMath(text: string): InlineMathSegment[] {
+    const segments: InlineMathSegment[] = [];
+    let plainStart = 0;
+    let index = 0;
+
+    const pushMath = (end: number, value: string) => {
+        if (plainStart < index) segments.push({ kind: "text", value: text.slice(plainStart, index) });
+        segments.push({ kind: "math", value });
+        index = end;
+        plainStart = end;
+    };
+
+    while (index < text.length) {
+        if (text[index] === "`") {
+            let fenceLength = 1;
+            while (text[index + fenceLength] === "`") fenceLength++;
+            const close = text.indexOf("`".repeat(fenceLength), index + fenceLength);
+            index = close === -1 ? text.length : close + fenceLength;
+            continue;
+        }
+
+        if (text.startsWith("\\(", index) && !isEscapedAt(text, index)) {
+            const close = findUnescapedDelimiter(text, "\\)", index + 2);
+            if (close !== -1 && close > index + 2) {
+                pushMath(close + 2, text.slice(index + 2, close));
+                continue;
+            }
+        }
+
+        if (
+            text[index] === "$"
+            && !isEscapedAt(text, index)
+            && text[index + 1] !== "$"
+            && !/\s/u.test(text[index + 1] || "")
+            && isInlineMathBoundaryBefore(text, index)
+            // A dollar amount ("$5" / "$1,200") is prose, not TeX. Requiring
+            // an explicit closing delimiter already avoids most false positives;
+            // this keeps currency with a trailing "$" legible as well.
+            && !/\d/u.test(text[index + 1] || "")
+        ) {
+            let close = index + 1;
+            while (close < text.length) {
+                if (
+                    text[close] === "$"
+                    && !isEscapedAt(text, close)
+                    && text[close + 1] !== "$"
+                    && isInlineMathBoundaryAfter(text, close)
+                ) break;
+                close++;
+            }
+            if (close < text.length && close > index + 1 && !/\s/u.test(text[close - 1])) {
+                pushMath(close + 1, text.slice(index + 1, close));
+                continue;
+            }
+        }
+
+        index++;
+    }
+
+    if (segments.length === 0) return [{ kind: "text", value: text }];
+    if (plainStart < text.length) segments.push({ kind: "text", value: text.slice(plainStart) });
+    return segments;
+}
+
+function renderMath(latex: string, displayMode: boolean, key: React.Key): React.ReactNode {
+    let html: string;
+    try {
+        html = katex.renderToString(latex, {
+            displayMode,
+            throwOnError: false,
+            strict: "ignore",
+            trust: false,
+            output: "htmlAndMathml",
+        });
+    } catch {
+        // Keep malformed streaming content legible rather than losing the reply.
+        return displayMode
+            ? <div key={key} data-testid="assistant-display-math" style={{ margin: "6px 0", ...blockWrapStyle }}>{`$$${latex}$$`}</div>
+            : <span key={key} data-testid="assistant-inline-math" style={{ verticalAlign: "middle" }}>{`$${latex}$`}</span>;
+    }
+
+    const style: React.CSSProperties = displayMode
+        ? { margin: "6px 0", maxWidth: "100%", overflowX: "auto", overflowY: "hidden", ...blockWrapStyle }
+        // An inline expression is part of a prose line, not an independent
+        // scroll area. On Windows, the latter reserves a scrollbar that can
+        // obscure short formulas even when they otherwise fit.
+        : { verticalAlign: "middle" };
+    return displayMode
+        ? <div key={key} data-testid="assistant-display-math" style={style} dangerouslySetInnerHTML={{ __html: html }} />
+        : <span key={key} data-testid="assistant-inline-math" style={style} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 export function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] {
-    return renderInlineMarkdownRestored(text, t);
+    const segments = splitInlineMath(text);
+    if (segments.length === 1 && segments[0].kind === "text") return renderInlineMarkdownRestored(text, t);
+    return segments.flatMap((segment, index) => (
+        segment.kind === "math"
+            ? [renderMath(segment.value, false, `math-${index}`)]
+            : renderInlineMarkdownRestored(segment.value, t)
+    ));
 }
 
 // Shared across every chat body line (streaming-friendly: no per-call recompile).
@@ -726,14 +721,26 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     // Compact-heading / bare-marker attach can introduce line-leading pictographs
     // after a markdown prefix (e.g. "### <pictograph> Title"); strip them for display.
     // Use line-array form to avoid an extra join/split on long streaming messages.
-    const structureLines = normalized.includes("#") ? attachBareHeadingMarkers(rawLines) : rawLines;
+    // attachBareHeadingMarkers tracks code fences and display-math blocks, so
+    // ordinary headings after a formula still receive the streamed repair.
+    const structureLines = normalized.includes("#")
+        ? attachBareHeadingMarkers(rawLines)
+        : rawLines;
     const lines = prepareChatBodyLines(structureLines);
     let inCodeBlock = false;
     let codeFenceMarker = "";
     let codeBlockLines: string[] = [];
     let codeBlockLang = "";
     let tableLines: string[] = [];
+    let displayMathDelimiter: "$$" | "\\[" | "" = "";
+    let displayMathLines: string[] = [];
     let lineIdx = 0;
+
+    const flushDisplayMath = () => {
+        elements.push(renderMath(displayMathLines.join("\n"), true, `math-${elements.length}`));
+        displayMathDelimiter = "";
+        displayMathLines = [];
+    };
 
     const flushCodeBlock = (allowMermaidRender = true) => {
         if (inCodeBlock || codeBlockLines.length > 0) {
@@ -800,6 +807,24 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     };
 
     for (const line of lines) {
+        if (displayMathDelimiter) {
+            const trimmed = line.trim();
+            const closeDelimiter = displayMathDelimiter === "$$" ? "$$" : "\\]";
+            if (trimmed === closeDelimiter) {
+                flushDisplayMath();
+            } else if (trimmed.endsWith(closeDelimiter)) {
+                // TeX generators often put the final expression and its
+                // delimiter on one line (for example `\\end{aligned}$$`).
+                // Keep the expression, remove only the terminal delimiter,
+                // then render the complete display block.
+                displayMathLines.push(line.slice(0, line.lastIndexOf(closeDelimiter)));
+                flushDisplayMath();
+            } else {
+                displayMathLines.push(line);
+            }
+            lineIdx++;
+            continue;
+        }
         if (!inCodeBlock && /^\|+$/.test(line.trim())) {
             continue;
         }
@@ -823,6 +848,26 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
             }
         } else if (inCodeBlock) {
             codeBlockLines.push(line);
+        } else if (line.trim().startsWith("$$") && line.trim().endsWith("$$") && line.trim().length > 4) {
+            flushTable();
+            const trimmed = line.trim();
+            elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
+        } else if (line.trim().startsWith("$$") && line.trim().length > 2) {
+            flushTable();
+            displayMathDelimiter = "$$";
+            displayMathLines = [line.trim().slice(2)];
+        } else if (line.trim().startsWith("\\[") && line.trim().endsWith("\\]") && line.trim().length > 4) {
+            flushTable();
+            const trimmed = line.trim();
+            elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
+        } else if (line.trim().startsWith("\\[") && line.trim().length > 2) {
+            flushTable();
+            displayMathDelimiter = "\\[";
+            displayMathLines = [line.trim().slice(2)];
+        } else if (line.trim() === "$$" || line.trim() === "\\[") {
+            flushTable();
+            displayMathDelimiter = line.trim() as "$$" | "\\[";
+            displayMathLines = [];
         } else if (isMarkdownTableRow(line) || (tableLines.length > 0 && isSplitTableRowLabel(line))) {
             // Strip list markers so "- | a | b |" stays inside the table model.
             // buildMarkdownTableModel also normalizes; doing it here keeps the
@@ -833,6 +878,12 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
             elements.push(renderMarkdownLine(line, `md-${lineIdx}`, t));
         }
         lineIdx++;
+    }
+    if (displayMathDelimiter) {
+        // The response is still streaming or malformed. Preserve the source instead
+        // of attempting KaTeX on a partial block.
+        elements.push(renderMarkdownLine(displayMathDelimiter, `md-${lineIdx++}`, t));
+        for (const line of displayMathLines) elements.push(renderMarkdownLine(line, `md-${lineIdx++}`, t));
     }
     if (inCodeBlock) flushCodeBlock(false);
     flushTable();
@@ -1345,49 +1396,173 @@ function compactAttachmentLabel(fileName: string, extension: string): string {
     return raw ? raw.slice(0, 4).toUpperCase() : "FILE";
 }
 
-function UserAttachmentChip({ attachment, theme }: { attachment: NonNullable<ChatMessage["attachments"]>[number]; theme: Theme }) {
-    const [thumbnail, setThumbnail] = React.useState(attachment.thumbnailDataUrl || "");
+function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullable<ChatMessage["attachments"]>[number]; theme: Theme; lang: string }) {
+    // Composer object URLs are revoked when the message is sent, so they must
+    // not cross into the transcript. Always resolve a fresh data URL from the
+    // saved local attachment for reliable rendering and history restoration.
+    const [thumbnail, setThumbnail] = React.useState("");
+    const [previewFailed, setPreviewFailed] = React.useState(false);
 
     React.useEffect(() => {
-        if (attachment.thumbnailDataUrl) {
-            setThumbnail(attachment.thumbnailDataUrl);
-            return;
-        }
         if (!attachment.isImage) {
             setThumbnail("");
+            setPreviewFailed(false);
             return;
         }
         let active = true;
+        setPreviewFailed(false);
         void AIAssistantAttachmentPreviewDataURL(attachment.filePath)
-            .then(dataUrl => { if (active) setThumbnail(String(dataUrl || "")); })
-            .catch(() => { if (active) setThumbnail(""); });
+            .then(dataUrl => {
+                if (!active) return;
+                const resolved = String(dataUrl || "");
+                setThumbnail(resolved);
+                setPreviewFailed(!resolved);
+            })
+            .catch(() => {
+                if (!active) return;
+                setThumbnail("");
+                setPreviewFailed(true);
+            });
         return () => { active = false; };
-    }, [attachment.filePath, attachment.isImage, attachment.thumbnailDataUrl]);
+    }, [attachment.filePath, attachment.isImage]);
 
+    const chipStyle: React.CSSProperties = {
+        display: "inline-flex",
+        width: 30,
+        height: 30,
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "hidden",
+        flexShrink: 0,
+        borderRadius: 4,
+        background: theme.codeBlockBg,
+        border: `1px solid ${theme.codeBlockBorder}`,
+        color: theme.pathColor,
+        fontSize: 8,
+        fontWeight: 800,
+        lineHeight: 1,
+    };
+
+    if (thumbnail) {
+        return (
+            <AttachmentImageThumbnail
+                src={thumbnail}
+                filePath={attachment.filePath}
+                fileName={attachment.fileName}
+                lang={lang}
+                theme={theme}
+                frameStyle={chipStyle}
+                title={attachment.filePath}
+            />
+        );
+    }
+    if (attachment.isImage && !previewFailed) {
+        return <span aria-label={attachment.fileName} style={chipStyle} />;
+    }
     return (
-        <span
-            title={attachment.filePath}
-            aria-label={attachment.fileName}
-            style={{
-                display: "inline-flex",
-                width: 30,
-                height: 30,
-                alignItems: "center",
-                justifyContent: "center",
-                overflow: "hidden",
-                borderRadius: 4,
-                background: theme.codeBlockBg,
-                border: `1px solid ${theme.codeBlockBorder}`,
-                color: theme.pathColor,
-                fontSize: 8,
-                fontWeight: 800,
-                lineHeight: 1,
-            }}
-        >
-            {thumbnail
-                ? <img src={thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                : compactAttachmentLabel(attachment.fileName, attachment.extension)}
+        <span title={attachment.filePath} aria-label={attachment.fileName} style={chipStyle}>
+            {compactAttachmentLabel(attachment.fileName, attachment.extension)}
         </span>
+    );
+}
+
+function AssistantReasoningPanel({
+    defaultOpen,
+    label,
+    theme: t,
+    contentKey,
+    children,
+}: {
+    defaultOpen: boolean;
+    label: string;
+    theme: Theme;
+    contentKey: string;
+    children: React.ReactNode;
+}) {
+    const [isOpen, setIsOpen] = React.useState(defaultOpen);
+    const { bodyRef, contentRef, handleScroll, handleUserScrollIntent } = useNestedPinnedScroll(isOpen, contentKey);
+    const detailsRef = React.useRef<HTMLDetailsElement | null>(null);
+    React.useLayoutEffect(() => {
+        setIsOpen(defaultOpen);
+    }, [defaultOpen]);
+    return (
+        <details
+            ref={detailsRef}
+            open={isOpen}
+            onToggle={(event) => setIsOpen(event.currentTarget.open)}
+            style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}
+        >
+            <summary style={{ cursor: "pointer", opacity: 0.8 }}>{label}</summary>
+            <div
+                ref={bodyRef}
+                data-testid="assistant-reasoning-body"
+                data-nested-scroll=""
+                onWheel={(event) => {
+                    event.stopPropagation();
+                    handleUserScrollIntent(event);
+                }}
+                onTouchMove={(event) => {
+                    event.stopPropagation();
+                    handleUserScrollIntent(event);
+                }}
+                onPointerDown={handleUserScrollIntent}
+                onScroll={handleScroll}
+                style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}
+            >
+                <div ref={contentRef}>{children}</div>
+            </div>
+        </details>
+    );
+}
+
+/** One collapsed reasoning node at its actual position in a coding turn. */
+export function renderCodingAgentThinkingTimelineItem(
+    item: CodingAgentTimelineItem,
+    t: Theme,
+    lang: string,
+): React.ReactNode {
+    const displayReasoning = stripCodingAgentAuditSections(
+        stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(item.content || "")),
+    );
+    if (!displayReasoning.trim()) return null;
+    return (
+        <AssistantReasoningPanel
+            key={item.id}
+            defaultOpen={false}
+            label={lang === "en" ? "Thought" : "思考"}
+            theme={t}
+            contentKey={displayReasoning}
+        >
+            {renderContentWithCodeBlocks(displayReasoning, t)}
+        </AssistantReasoningPanel>
+    );
+}
+
+/** Visible assistant chrome: prose, thinking, cards, or attachments. */
+export function assistantMessageHasVisibleBody(msg: ChatMessage): boolean {
+    const savedPaths = msg.localFilePaths && msg.localFilePaths.length > 0
+        ? msg.localFilePaths
+        : (msg.localFilePath ? [msg.localFilePath] : []);
+    const visibleFields = (msg.fields || []).filter((field) => {
+        const label = String(field?.label || "").toLowerCase();
+        return label !== "recording_title" && label !== "recording_purpose";
+    });
+    // In the coding workbench reasoning is rendered as ordered timeline nodes.
+    // Do not leave an empty assistant bubble at the original placeholder.
+    const reasoningVisibleHere = !msg.codingTimeline?.length
+        && stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning((msg.reasoning || "").trim()));
+    return !!(
+        stripCodingAgentAuditSections((msg.content || "").trim())
+        || reasoningVisibleHere
+        || visibleFields.length
+        || msg.thumbnailBase64
+        || msg.imageKey
+        || savedPaths.length
+        || msg.actions?.length
+        || msg.confirmation
+        || msg.unfinishedSlot
+        || msg.recoverableSession
+        || msg.recordingSession
     );
 }
 
@@ -1401,6 +1576,7 @@ export function renderMessage(
     isStreaming = false,
     incrementalContentRenderer?: (formattedContent: string) => React.ReactNode[],
     onRecordingComplete?: (result: RecordingCompleteResult, messageId: string) => void,
+    collapseReasoningByDefault = false,
 ): React.ReactNode {
     switch (msg.role) {
         case "user":
@@ -1446,7 +1622,7 @@ export function renderMessage(
                         {msg.content && <div>{msg.content}</div>}
                         {!!msg.attachments?.length && (
                             <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: msg.content ? 7 : 0 }}>
-                                {msg.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} />)}
+                                {msg.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
                             </div>
                         )}
                     </ChatBubbleFrame>
@@ -1457,6 +1633,11 @@ export function renderMessage(
                 ? msg.localFilePaths
                 : (msg.localFilePath ? [msg.localFilePath] : []);
             const screenshotBase64 = msg.thumbnailBase64 || msg.imageKey;
+            // Coding workbench: empty placeholder is the trail's job (· Working),
+            // not a chat bubble that says 处理中 / 思考中.
+            if (collapseReasoningByDefault && !assistantMessageHasVisibleBody(msg)) {
+                return null;
+            }
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} style={{
                     display: "flex",
@@ -1497,31 +1678,32 @@ export function renderMessage(
                             borderRadius: "14px 14px 14px 4px",
                         }}
                     >
-                        {/* Streaming: show thinking indicator on the last assistant message placeholder */}
-                        {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
+                        {/* Ordinary chat only: coding workbench uses the · Working trail. */}
+                        {isLastAssistant && !collapseReasoningByDefault && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
                             <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
                                 {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
                             </span>
                         )}
-                        {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
-                        {/* Reasoning/thinking content from reasoning models —
-                            expanded while this turn is still in progress, then collapsed once the final result is ready.
-                            Some Responses providers return a final summary without text-streaming, so use the turn's busy
-                            state rather than the narrower stream state. The key forces the native details element to adopt
-                            the automatic close at completion while keeping user-controlled toggles within each phase. */}
-                        {msg.reasoning && (() => {
-                            const shouldOpen = isLastAssistant && isStreaming;
+                        {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, t, lang)}
+                        {/* Keep ordinary-chat thinking open for the whole active turn (including
+                            tool execution), then fold it once the final answer arrives. The
+                            coding workbench stays folded. */}
+                        {!msg.codingTimeline?.length && msg.reasoning && (() => {
                             const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
+                            const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
                             // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
-                            const displayReasoning = truncateRolePrefixForDisplay(msg.reasoning || "");
+                            const displayReasoning = stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(msg.reasoning || "")));
                             if (!displayReasoning.trim()) return null;
                             return (
-                                <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
-                                    <summary style={{ cursor: "pointer", opacity: 0.8 }}>{reasoningLabel}</summary>
-                                    <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
-                                        {renderContentWithCodeBlocks(displayReasoning, t)}
-                                    </div>
-                                </details>
+                                <AssistantReasoningPanel
+                                    key="reasoning"
+                                    defaultOpen={shouldOpen}
+                                    label={reasoningLabel}
+                                    theme={t}
+                                    contentKey={displayReasoning}
+                                >
+                                    {renderContentWithCodeBlocks(displayReasoning, t)}
+                                </AssistantReasoningPanel>
                             );
                         })()}
                         {(() => {
@@ -1529,9 +1711,9 @@ export function renderMessage(
                             // works on legacy history that still prefixes decorative marks.
                             // renderContentWithCodeBlocks re-strips after compact-heading normalize
                             // (idempotent; that second pass catches "### <pictograph> …").
-                            const rawFormattedContent = prepareChatBodyForDisplay(
+                            const rawFormattedContent = stripCodingAgentAuditSections(prepareChatBodyForDisplay(
                                 formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang),
-                            );
+                            ));
                             // /btw side query results are collapsible to reduce space.
                             // Detection: requestId starts with "btw-" (set by sendBtwMessage)
                             // OR content starts with the backend prefix (fallback for history reload).

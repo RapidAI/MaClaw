@@ -30,13 +30,13 @@ func TestIsolatedAssistantSessionStaticMemoryExcludesSharedAndOtherOwners(t *tes
 	var out strings.Builder
 	(&IMMessageHandler{memoryStore: store}).generateStaticMemorySection(&out, true, projectOwner)
 	got := out.String()
-	if !strings.Contains(got, "this session fact") {
-		t.Fatalf("isolated session should receive its own memory: %q", got)
-	}
-	for _, forbidden := range []string{"shared desktop fact", "local desktop fact", "other project fact"} {
+	for _, forbidden := range []string{"this session fact", "shared desktop fact", "local desktop fact", "other project fact"} {
 		if strings.Contains(got, forbidden) {
-			t.Fatalf("isolated session leaked %q into static prompt: %q", forbidden, got)
+			t.Fatalf("catalog-only static prompt must not dump warehouse text %q: %q", forbidden, got)
 		}
+	}
+	if !strings.Contains(got, memory.PromptSectionUserMemory) {
+		t.Fatalf("isolated session should still receive the memory section header: %q", got)
 	}
 }
 

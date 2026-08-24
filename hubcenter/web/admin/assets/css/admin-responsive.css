@@ -44,6 +44,11 @@
 
 .nav-group-label{color:#667085}.nav-group.is-follow{border-top-color:#e4e7ee}
 
+/* Retain the active LLM section tab after the final shared button overrides. */
+#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"]{background:#2563eb!important;color:#fff!important;border-color:#1d4ed8!important;box-shadow:inset 0 -2px 0 rgba(15,23,42,.24),0 2px 5px rgba(37,99,235,.22)!important;font-weight:800!important}
+#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"]:hover{background:#1d4ed8!important;color:#fff!important}
+#tab-llmservice .llm-subtabs [role="tab"][aria-selected="false"]{background:transparent!important;color:#586579!important;border-color:transparent!important;box-shadow:none!important}
+
 @media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;height:auto;overflow:visible;border-right:0}.nav{overflow:visible;max-height:none}}
 
 /* Missing panel-heading icons: without --head-icon the ::after renders as a solid slate block. */

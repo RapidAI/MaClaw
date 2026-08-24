@@ -38,6 +38,18 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		msg.CancelCtx, msg.UserID, trimmed, entries,
 		hasPendingTaskAnswer, false, false,
 	)
+	// A recovered in-flight slot is intentionally not resumed from a
+	// structural/fallback "continue": it may contain an unpaired side effect.
+	// When there is a live, non-session-exit recovery candidate, obtain the
+	// task-context classifier's explicit semantic decision before binding it.
+	// This is a narrow control-plane decision, not a keyword heuristic and not
+	// an authorization to replay the interrupted operation.
+	if shouldConfirmRecoveredSemanticContinuation(tcDecision, unfinishedSlot) {
+		tcDecision = h.resolveTaskContextWithClassification(
+			msg.CancelCtx, msg.UserID, trimmed, entries,
+			hasPendingTaskAnswer, false, false,
+		)
+	}
 	switch tcDecision.Action {
 	case agent.TaskNew:
 		if len(entries) >= 2 {
@@ -69,6 +81,13 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
 	}
 	return askUserContext, freshTask, false
+}
+
+func shouldConfirmRecoveredSemanticContinuation(decision agent.TaskContextDecision, unfinishedSlot **agent.UnfinishedTaskSlot) bool {
+	if decision.Action != agent.TaskContinue || decision.Source != "fallback" || unfinishedSlot == nil || *unfinishedSlot == nil {
+		return false
+	}
+	return !(*unfinishedSlot).Source.IsSessionExit()
 }
 
 func isConfirmedSemanticContinuation(decision agent.TaskContextDecision) bool {

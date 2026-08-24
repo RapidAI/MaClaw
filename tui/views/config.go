@@ -37,8 +37,8 @@ func configDisplayNameForLang(key, lang string) string {
 	zh := map[string]string{
 		"setup_status": "初始化状态", "onboarding": "初始化", "configuration": "配置", "hub_url": "Hub 服务地址", "hubcenter_url": "HubCenter 地址", "token": "认证令牌", "data_dir": "数据目录", "working_directory_profile": "工作目录方案", "working_directory": "自定义工作目录", "language": "界面语言", "max_iterations": "最大轮数", "check_update_on_startup": "启动检查更新",
 		"maclaw_llm_provider_preset": "LLM 服务商", "maclaw_llm_model_choice": "模型快选", "maclaw_llm_url": "LLM 地址", "maclaw_llm_key": "LLM 密钥", "maclaw_llm_model": "LLM 模型", "maclaw_llm_protocol": "LLM 协议", "maclaw_llm_context_length": "上下文长度",
-		"aux_llm_profile": "辅助 LLM 方案", "aux_llm_url": "辅助 LLM 地址", "aux_llm_key": "辅助 LLM 密钥", "aux_llm_model": "辅助 LLM 模型", "aux_llm_protocol": "辅助 LLM 协议",
-		"im_channel_profile": "IM 通道方案", "qqbot_enabled": "QQ 机器人开关", "qqbot_app_id": "QQ AppID", "qqbot_app_secret": "QQ AppSecret", "telegram_bot_enabled": "Telegram 开关", "telegram_bot_token": "Telegram Token", "weixin_enabled": "微信开关", "weixin_token": "微信 Token", "weixin_base_url": "微信地址", "lansenger_enabled": "蓝信开关", "lansenger_app_id": "蓝信 AppID", "lansenger_app_secret": "蓝信密钥", "lansenger_gateway_url": "蓝信网关",
+		"aux_llm_profile": "辅助 LLM 方案", "aux_llm_url": "辅助 LLM 地址", "aux_llm_key": "辅助 LLM 密钥", "aux_llm_model": "辅助 LLM 模型", "aux_llm_protocol": "辅助 LLM 协议", "aux_llm_context_length": "辅助 LLM 上下文长度",
+		"im_channel_profile": "IM 通道方案", "qqbot_enabled": "QQ 机器人开关", "qqbot_qr_login": "QQ 扫码绑定", "qqbot_app_id": "QQ AppID", "qqbot_app_secret": "QQ AppSecret", "telegram_bot_enabled": "Telegram 开关", "telegram_bot_token": "Telegram Token", "weixin_enabled": "微信开关", "weixin_token": "微信 Token", "weixin_base_url": "微信地址", "lansenger_enabled": "蓝信开关", "lansenger_app_id": "蓝信 AppID", "lansenger_app_secret": "蓝信密钥", "lansenger_gateway_url": "蓝信网关",
 		"default_proxy_profile": "代理方案", "default_proxy_enabled": "代理开关", "default_proxy_protocol": "代理协议", "default_proxy_host": "代理主机", "default_proxy_port": "代理端口", "default_proxy_username": "代理用户", "default_proxy_password": "代理密码", "default_proxy_scope_maclaw": "代理 LLM", "default_proxy_scope_agent": "代理 Agent",
 		"security_profile": "安全方案", "security_policy_mode": "安全策略", "sandbox_mode": "沙箱模式", "network_level": "网络级别", "yolo_mode_allowed": "YOLO 模式", "file_outbound_enabled": "文件外发", "image_outbound_enabled": "图片外发",
 		"skill_purchase_mode": "技能购买", "ui_mode": "界面模式", "memory_auto_compress": "记忆压缩", "log_detail_enabled": "详细日志", "llm_trajectory_logging": "LLM 轨迹", "maclaw_debug_tool_calls": "工具调试", "gossip_enabled": "Gossip 开关", "trial_reflect_enabled": "试错反思",
@@ -46,8 +46,8 @@ func configDisplayNameForLang(key, lang string) string {
 	en := map[string]string{
 		"setup_status": "Setup status", "onboarding": "Setup", "configuration": "configuration", "hub_url": "Hub URL", "hubcenter_url": "HubCenter URL", "token": "Auth token", "data_dir": "Data dir", "working_directory_profile": "Work dir profile", "working_directory": "Custom work dir", "language": "Language", "max_iterations": "Max rounds", "check_update_on_startup": "Check update",
 		"maclaw_llm_provider_preset": "LLM provider", "maclaw_llm_model_choice": "Model quick pick", "maclaw_llm_url": "LLM URL", "maclaw_llm_key": "LLM key", "maclaw_llm_model": "LLM model", "maclaw_llm_protocol": "LLM protocol", "maclaw_llm_context_length": "Context length",
-		"aux_llm_profile": "Aux LLM profile", "aux_llm_url": "Aux LLM URL", "aux_llm_key": "Aux LLM key", "aux_llm_model": "Aux LLM model", "aux_llm_protocol": "Aux LLM protocol",
-		"im_channel_profile": "IM channel", "qqbot_enabled": "QQ bot", "qqbot_app_id": "QQ AppID", "qqbot_app_secret": "QQ AppSecret", "telegram_bot_enabled": "Telegram", "telegram_bot_token": "Telegram token", "weixin_enabled": "WeChat", "weixin_token": "WeChat token", "weixin_base_url": "WeChat URL", "lansenger_enabled": "Lansenger", "lansenger_app_id": "Lansenger ID", "lansenger_app_secret": "Lansenger secret", "lansenger_gateway_url": "Lansenger gateway", "lansenger_group_policy": "Lansenger group policy", "lansenger_require_mention": "Lansenger require @", "lansenger_respond_to_at_all": "Lansenger @all", "lansenger_auto_mention_reply": "Lansenger auto @", "lansenger_auto_quote_reply": "Lansenger auto quote",
+		"aux_llm_profile": "Aux LLM profile", "aux_llm_url": "Aux LLM URL", "aux_llm_key": "Aux LLM key", "aux_llm_model": "Aux LLM model", "aux_llm_protocol": "Aux LLM protocol", "aux_llm_context_length": "Aux LLM context length",
+		"im_channel_profile": "IM channel", "qqbot_enabled": "QQ bot", "qqbot_qr_login": "QQ scan bind", "qqbot_app_id": "QQ AppID", "qqbot_app_secret": "QQ AppSecret", "telegram_bot_enabled": "Telegram", "telegram_bot_token": "Telegram token", "weixin_enabled": "WeChat", "weixin_token": "WeChat token", "weixin_base_url": "WeChat URL", "lansenger_enabled": "Lansenger", "lansenger_app_id": "Lansenger ID", "lansenger_app_secret": "Lansenger secret", "lansenger_gateway_url": "Lansenger gateway", "lansenger_group_policy": "Lansenger group policy", "lansenger_require_mention": "Lansenger require @", "lansenger_respond_to_at_all": "Lansenger @all", "lansenger_auto_mention_reply": "Lansenger auto @", "lansenger_auto_quote_reply": "Lansenger auto quote",
 		"default_proxy_profile": "Proxy profile", "default_proxy_enabled": "Proxy", "default_proxy_protocol": "Proxy protocol", "default_proxy_host": "Proxy host", "default_proxy_port": "Proxy port", "default_proxy_username": "Proxy user", "default_proxy_password": "Proxy password", "default_proxy_scope_maclaw": "Proxy LLM", "default_proxy_scope_agent": "Proxy Agent",
 		"security_profile": "Security profile", "security_policy_mode": "Security mode", "sandbox_mode": "Sandbox", "network_level": "Network level", "yolo_mode_allowed": "YOLO mode", "file_outbound_enabled": "File outbound", "image_outbound_enabled": "Image outbound",
 		"skill_purchase_mode": "Skill purchase", "ui_mode": "UI mode", "memory_auto_compress": "Memory compress", "log_detail_enabled": "Detail logs", "llm_trajectory_logging": "LLM trajectory", "maclaw_debug_tool_calls": "Debug tools", "gossip_enabled": "Gossip", "trial_reflect_enabled": "Trial reflect",
@@ -203,6 +203,20 @@ func configOptionDisplay(key, value, lang string) string {
 			return "Off"
 		}
 		return "关闭"
+	}
+	if key == "qqbot_qr_login" {
+		switch value {
+		case "bound":
+			if lang == "en" {
+				return "Bound"
+			}
+			return "已绑定"
+		default:
+			if lang == "en" {
+				return "Scan to bind"
+			}
+			return "扫码绑定"
+		}
 	}
 	if key == "setup_status" {
 		switch value {
@@ -560,6 +574,30 @@ type ConfigSaveMsg struct {
 
 type ConfigOpenSetupMsg struct{}
 
+type ConfigQQBotScanMsg struct{}
+
+type ConfigQQBotCancelMsg struct{ Token string }
+
+type ConfigQQBotPollMsg struct{ Token string }
+
+type ConfigQQBotQRMsg struct {
+	Success bool
+	Message string
+	QR      string
+	Token   string
+}
+
+type ConfigQQBotPollResultMsg struct {
+	Token     string
+	Status    string
+	Message   string
+	Success   bool
+	Completed bool
+	AppID     string
+}
+
+type ConfigQQBotTickMsg struct{ Token string }
+
 type ConfigOpenServiceRedeemMsg struct{}
 
 type ConfigOpenToolsMsg struct{}
@@ -606,11 +644,18 @@ type ConfigModel struct {
 	height            int // terminal height for rendering
 	cfg               corelib.AppConfig
 	statusOverview    bool
+	qqbotOverlay      bool
+	qqbotQR           string
+	qqbotToken        string
+	qqbotStatus       string
+	qqbotBusy         bool
+	qqbotElapsed      int
+	qqbotRefreshes    int
 }
 
 // IsEditing returns whether the view is in editing mode.
 func (m ConfigModel) IsEditing() bool {
-	return m.editing || m.selectMode
+	return m.editing || m.selectMode || m.qqBotQROverlayActive()
 }
 
 func (m ConfigModel) ActiveTab() int { return m.activeTab }
@@ -779,7 +824,7 @@ func (m *ConfigModel) refreshLLMVisibility(cfg corelib.AppConfig) {
 	m.setEntryHidden("maclaw_llm_key", !(custom || llmProviderNeedsKey(&cfg)) || hubService)
 
 	auxCustom := currentAuxLLMProfile(&cfg) == "custom"
-	for _, key := range []string{"aux_llm_url", "aux_llm_key", "aux_llm_model", "aux_llm_protocol"} {
+	for _, key := range []string{"aux_llm_url", "aux_llm_key", "aux_llm_model", "aux_llm_protocol", "aux_llm_context_length"} {
 		m.setEntryHidden(key, !auxCustom)
 	}
 	m.clampCursor()
@@ -894,7 +939,7 @@ func (m *ConfigModel) refreshAdvancedVisibility(cfg corelib.AppConfig) {
 func (m *ConfigModel) refreshIMVisibility(cfg corelib.AppConfig) {
 	profile := currentIMChannelProfile(&cfg)
 	for _, key := range []string{
-		"qqbot_enabled", "qqbot_app_id", "qqbot_app_secret",
+		"qqbot_enabled", "qqbot_qr_login", "qqbot_app_id", "qqbot_app_secret",
 		"telegram_bot_enabled", "telegram_bot_token",
 		"weixin_enabled", "weixin_token", "weixin_base_url",
 		"lansenger_enabled", "lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url",
@@ -908,7 +953,7 @@ func (m *ConfigModel) refreshIMVisibility(cfg corelib.AppConfig) {
 	}
 	switch profile {
 	case "qq":
-		show("qqbot_enabled", "qqbot_app_id", "qqbot_app_secret")
+		show("qqbot_enabled", "qqbot_qr_login", "qqbot_app_id", "qqbot_app_secret")
 	case "telegram":
 		show("telegram_bot_enabled", "telegram_bot_token")
 	case "weixin":
@@ -916,7 +961,7 @@ func (m *ConfigModel) refreshIMVisibility(cfg corelib.AppConfig) {
 	case "lansenger":
 		show("lansenger_enabled", "lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url")
 	case "custom":
-		show("qqbot_enabled", "qqbot_app_id", "qqbot_app_secret",
+		show("qqbot_enabled", "qqbot_qr_login", "qqbot_app_id", "qqbot_app_secret",
 			"telegram_bot_enabled", "telegram_bot_token",
 			"weixin_enabled", "weixin_token", "weixin_base_url",
 			"lansenger_enabled", "lansenger_app_id", "lansenger_app_secret", "lansenger_gateway_url")
@@ -1147,6 +1192,9 @@ func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	}
+	if cmd, handled := m.updateQQBotQR(msg); handled {
+		return m, cmd
+	}
 	if m.selectMode {
 		return m.updateSelect(msg)
 	}
@@ -1215,6 +1263,9 @@ func (m ConfigModel) updateNormal(msg tea.Msg) (ConfigModel, tea.Cmd) {
 			}
 			e := entries[m.cursor]
 			if e.ReadOnly {
+				if e.Key == "qqbot_qr_login" {
+					return m.startQQBotQROverlay(true)
+				}
 				if configReadOnlyOpensSetup(e.Key) {
 					return m, func() tea.Msg { return ConfigOpenSetupMsg{} }
 				}
@@ -1445,6 +1496,10 @@ func (m ConfigModel) View() string {
 	hint := configSetupHint(currentSetupStatus(&m.cfg), m.lang)
 	if hint != "" {
 		b.WriteString("  " + cfgDimStyle.Render(fitDisplay(hint, max(20, m.width-4))) + "\n")
+	}
+	if m.qqBotQROverlayActive() {
+		b.WriteString(m.viewQQBotQROverlay())
+		return fitRenderedLines(b.String(), m.width)
 	}
 
 	entries := m.currentEntries()
@@ -1839,6 +1894,12 @@ func configSetupLabel(lang, key string) string {
 }
 
 func configEntryActionLabel(e ConfigEntry, cfg corelib.AppConfig, lang string) string {
+	if e.Key == "qqbot_qr_login" {
+		if i18n.NormalizeLang(lang) == "en" {
+			return "Enter->Scan"
+		}
+		return "Enter->扫码"
+	}
 	if e.Key == "setup_status" {
 		switch currentSetupStatus(&cfg) {
 		case "needs_setup":
@@ -1889,6 +1950,8 @@ func configReadOnlyActionHint(key, lang string) string {
 			return "Enter opens Setup to activate Hub and refresh this token."
 		case "weixin_token":
 			return "Enter opens Setup to bind WeChat by QR code."
+		case "qqbot_qr_login":
+			return "Enter starts QQ scan bind. Manual AppID/AppSecret remain below."
 		}
 		return ""
 	}
@@ -1899,6 +1962,8 @@ func configReadOnlyActionHint(key, lang string) string {
 		return "Enter 打开初始化，激活 Hub 并刷新该令牌。"
 	case "weixin_token":
 		return "Enter 打开初始化，通过二维码绑定微信。"
+	case "qqbot_qr_login":
+		return "Enter 开始扫码绑定 QQ；也可在下方手动填写 AppID/AppSecret。"
 	}
 	return ""
 }

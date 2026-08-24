@@ -61,7 +61,30 @@ export interface SidebarHubPeriodLimits {
     Monthly?: number;
 }
 
+export interface SidebarHubPeriodUsageWindow {
+    window_start?: string;
+    window_end?: string;
+    credits_used?: number;
+    rolling?: boolean;
+    WindowStart?: string;
+    WindowEnd?: string;
+    CreditsUsed?: number;
+    Rolling?: boolean;
+}
+
+export interface SidebarHubPeriodUsage {
+    five_hour?: SidebarHubPeriodUsageWindow;
+    daily?: SidebarHubPeriodUsageWindow;
+    weekly?: SidebarHubPeriodUsageWindow;
+    monthly?: SidebarHubPeriodUsageWindow;
+    FiveHour?: SidebarHubPeriodUsageWindow;
+    Daily?: SidebarHubPeriodUsageWindow;
+    Weekly?: SidebarHubPeriodUsageWindow;
+    Monthly?: SidebarHubPeriodUsageWindow;
+}
+
 export interface SidebarHubCreditGrant {
+    service_group_id?: string;
     source?: string;
     active?: boolean;
     effective?: boolean;
@@ -72,6 +95,9 @@ export interface SidebarHubCreditGrant {
     credits_remaining?: number;
     credits_available?: number;
     period_limits?: SidebarHubPeriodLimits;
+    period_usage?: SidebarHubPeriodUsage;
+    permanent?: boolean;
+    rolling_five_hour?: boolean;
     retry_after_seconds?: number;
     retry_after_at?: string;
     starts_at?: string;
@@ -85,11 +111,15 @@ export interface SidebarHubCreditGrant {
     CreditsRemaining?: number;
     CreditsAvailable?: number;
     PeriodLimits?: SidebarHubPeriodLimits;
+    PeriodUsage?: SidebarHubPeriodUsage;
+    Permanent?: boolean;
+    RollingFiveHour?: boolean;
     RetryAfterSeconds?: number;
     RetryAfterAt?: string;
     StartsAt?: string;
     ExpiresAt?: string;
     Source?: string;
+    ServiceGroupID?: string;
 }
 
 export interface SidebarHubServiceStatus {
@@ -137,6 +167,22 @@ export interface SidebarHubCredits {
     status: string;
     retryAfterSeconds: number;
     retryAfterAt: string;
+    /** Independent new-user allowances. Limits are per service group, never a shared wallet balance. */
+    newUserLimitCards?: Array<{
+        serviceGroupID: string;
+        fiveHourLimit: number;
+        fiveHourUsed: number;
+        fiveHourRolling: boolean;
+        fiveHourResetAt: string;
+        dailyLimit: number;
+        dailyUsed: number;
+        dailyResetAt: string;
+        permanent: boolean;
+        expiresAt: string;
+        status: string;
+        retryAfterSeconds: number;
+        retryAfterAt: string;
+    }>;
 }
 
 export interface SidebarCreditDisplayFormatters {

@@ -22,6 +22,9 @@ export interface NotificationBellProps {
     theme: Theme;
     /** Whether the parent is in inline (Wails drag) mode. */
     inline?: boolean;
+    /** Whether the notification panel is currently open. */
+    open?: boolean;
+    lang?: string;
 }
 
 /** Bell SVG icon rendered inline for zero external dependencies. */
@@ -71,6 +74,9 @@ function ensureKeyframes() {
   60% { transform: rotate(0deg); }
   100% { transform: rotate(0deg); }
 }
+@media (prefers-reduced-motion: reduce) {
+  .notification-bell-btn svg { animation: none !important; }
+}
 `;
     document.head.appendChild(style);
 }
@@ -80,6 +86,8 @@ export function NotificationBell({
     onClick,
     theme,
     inline,
+    open,
+    lang,
 }: NotificationBellProps) {
     // Inject keyframes on first render with animation
     if (unreadCount > 0) {
@@ -131,17 +139,30 @@ export function NotificationBell({
         <button
             className="ai-titlebar-tool notification-bell-btn"
             data-testid="notification-bell-btn"
-            onClick={onClick}
+            onClick={inline ? undefined : onClick}
+            onMouseDown={inline ? (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onClick();
+            } : undefined}
+            onKeyDown={inline ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onClick();
+                }
+            } : undefined}
             style={buttonStyle}
+            aria-expanded={open}
+            aria-haspopup="dialog"
             aria-label={
                 unreadCount > 0
-                    ? `${unreadCount} unread notifications`
-                    : "Notifications"
+                    ? (lang?.startsWith("zh") ? `${unreadCount} 条未读通知` : `${unreadCount} unread notifications`)
+                    : (lang?.startsWith("zh") ? "通知" : "Notifications")
             }
             title={
                 unreadCount > 0
-                    ? `${unreadCount} 条未读通知`
-                    : "通知"
+                    ? (lang?.startsWith("zh") ? `${unreadCount} 条未读通知` : `${unreadCount} unread notifications`)
+                    : (lang?.startsWith("zh") ? "通知" : "Notifications")
             }
         >
             <BellIcon animate={shouldAnimate} theme={theme} />

@@ -65,6 +65,34 @@ func TestCodingExecResumeActionsOffersExplicitChildReview(t *testing.T) {
 	t.Fatalf("child review action missing: %#v", actions)
 }
 
+func TestCodingExecResumeGuidanceOmitsScorecard(t *testing.T) {
+	previous, _ := agentViewCurrentLang.Load().(string)
+	t.Cleanup(func() { setAgentViewLang(previous) })
+	setAgentViewLang("en")
+	got := codingExecResumeGuidance(codingExecCheckpoint{
+		Results: []v2.TaskRunResult{{Status: v2.TaskFailed}},
+	}, false)
+	for _, needle := range []string{"Current results", "Stats:", "Environment:", "执行报告"} {
+		if strings.Contains(got, needle) {
+			t.Fatalf("resume guidance should not reintroduce a scorecard: %q", got)
+		}
+	}
+	if !strings.Contains(got, "You can:") || !strings.Contains(got, "retry failed") {
+		t.Fatalf("resume guidance should keep actionable next steps: %q", got)
+	}
+	complete := formatCodingExecCompletedUserText("Created hello.cpp.")
+	if complete != "Created hello.cpp." {
+		t.Fatalf("completed user text = %q", complete)
+	}
+	incomplete := formatCodingExecIncompleteUserText(codingExecCheckpoint{Results: []v2.TaskRunResult{{Status: v2.TaskFailed}}}, false, "Created hello.cpp.\n\n`cl` failed.")
+	if strings.Contains(incomplete, "Stats:") || strings.Contains(incomplete, "T1:") {
+		t.Fatalf("incomplete user text still has a board: %q", incomplete)
+	}
+	if !strings.Contains(incomplete, "You can:") || !strings.Contains(incomplete, "`cl` failed.") {
+		t.Fatalf("incomplete user text should keep resume actions and engineer prose: %q", incomplete)
+	}
+}
+
 func TestCodingExecTextFollowsUILanguage(t *testing.T) {
 	previous, _ := agentViewCurrentLang.Load().(string)
 	t.Cleanup(func() { setAgentViewLang(previous) })

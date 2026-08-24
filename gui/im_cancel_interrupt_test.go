@@ -2,11 +2,229 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
+
+func TestStopCommandIsCancelAlias(t *testing.T) {
+	if got := classifyImmediateIMCommand(" /stop "); got != imCommandCancel {
+		t.Fatalf("/stop classification = %v, want cancel", got)
+	}
+}
+
+func TestStopCommandInterruptsActiveLoopWithoutWaiting(t *testing.T) {
+	const userID = "im:stop"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.setSessionLoopCtx(userID, loopCtx)
+	h.interruptHandler.handler = h
+
+	result := h.interruptHandler.TryInterrupt(userID, "/stop")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/stop result = %+v, want handled replace", result)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("/stop must cancel the active loop")
+	}
+	if !h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("/stop must establish a new-task boundary")
+	}
+	if !strings.Contains(result.Reply, "取消") && !strings.Contains(strings.ToLower(result.Reply), "cancel") {
+		t.Fatalf("/stop reply should confirm cancellation, got %q", result.Reply)
+	}
+}
+
+func TestStopInterruptAppliesFullCancellationPolicy(t *testing.T) {
+	const userID = "im:stop-policy"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.setSessionLoopCtx(userID, loopCtx)
+	h.interruptHandler.handler = h
+	btw := &BtwSubAgent{userID: userID}
+	h.activeBtwSubAgents.Store(userID, btw)
+
+	result := h.interruptHandler.TryInterrupt(userID, "/stop")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/stop result = %+v, want handled replace", result)
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("/stop interrupt must cancel the active side-runner")
+	}
+	// The current foreground loop must be stopped too, even if a side-runner is
+	// present for the same IM owner.
+	if !loopCtx.IsCancelled() {
+		t.Fatal("/stop interrupt must cancel the foreground loop")
+	}
+}
+
+func TestStopInterruptCancelsSideRunnerWithoutActiveLoop(t *testing.T) {
+	const userID = "im:stop-side-runner"
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	btw := &BtwSubAgent{userID: userID}
+	h.activeBtwSubAgents.Store(userID, btw)
+
+	result := h.interruptHandler.TryInterrupt(userID, "/stop")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/stop result = %+v, want handled replace", result)
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("/stop must cancel a side-runner even without an active LoopContext")
+	}
+}
+
+func TestResetInterruptCancelsSideRunnerWithoutActiveLoop(t *testing.T) {
+	const userID = "im:reset-side-runner"
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	btw := &BtwSubAgent{userID: userID}
+	h.activeBtwSubAgents.Store(userID, btw)
+
+	result := h.interruptHandler.TryInterrupt(userID, "/new")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/new result = %+v, want handled replace", result)
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("/new must cancel a side-runner even without an active LoopContext")
+	}
+}
+
+func TestExitInterruptCancelsActiveLoopInsteadOfQueueing(t *testing.T) {
+	const userID = "im:exit-interrupt"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem, interruptHandler: newIMInterruptHandler(nil)}
+	h.setSessionLoopCtx(userID, loopCtx)
+	h.interruptHandler.handler = h
+
+	result := h.interruptHandler.TryInterrupt(userID, "/exit")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/exit result = %+v, want handled replace", result)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("/exit must cancel the active loop")
+	}
+}
+
+func TestExitInterruptCancelsSideRunnerWithoutActiveLoop(t *testing.T) {
+	const userID = "im:exit-side-runner"
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	btw := &BtwSubAgent{userID: userID}
+	h.activeBtwSubAgents.Store(userID, btw)
+
+	result := h.interruptHandler.TryInterrupt(userID, "/exit")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/exit result = %+v, want handled replace", result)
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("/exit must cancel a side-runner even without an active LoopContext")
+	}
+}
+
+func TestCorrectionReplaceUsesImmediateFullCancellationPolicy(t *testing.T) {
+	const userID = "im:correction-stop"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.setSessionLoopCtx(userID, loopCtx)
+	h.interruptHandler.handler = h
+	btw := &BtwSubAgent{userID: userID}
+	h.activeBtwSubAgents.Store(userID, btw)
+
+	resultCh := make(chan progress.InterruptResult, 1)
+	go func() {
+		resultCh <- h.interruptHandler.HandleCorrection(userID, "replacement", progress.ActionMerge, progress.ActionReplace)
+	}()
+
+	select {
+	case result := <-resultCh:
+		if !result.Handled || result.Action != progress.ActionReplace {
+			t.Fatalf("correction result = %+v, want handled replace", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("correction replace must not wait for the active loop to exit")
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("correction replace must cancel the foreground loop")
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("correction replace must cancel active side-runners")
+	}
+}
+
+func TestAutomaticReplaceUsesImmediateFullCancellationPolicy(t *testing.T) {
+	const userID = "im:automatic-stop"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.setSessionLoopCtx(userID, loopCtx)
+	h.interruptHandler.handler = h
+	btw := &BtwSubAgent{userID: userID}
+	h.activeBtwSubAgents.Store(userID, btw)
+
+	resultCh := make(chan progress.InterruptResult, 1)
+	go func() {
+		resultCh <- h.interruptHandler.TryInterrupt(userID, "停止当前任务，改为处理新任务")
+	}()
+
+	select {
+	case result := <-resultCh:
+		if !result.Handled || result.Action != progress.ActionReplace {
+			t.Fatalf("automatic replace result = %+v, want handled replace", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("automatic replace must not wait for the active loop to exit")
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("automatic replace must cancel the foreground loop")
+	}
+	if btw.cancelled.Load() == 0 {
+		t.Fatal("automatic replace must cancel active side-runners")
+	}
+}
+
+func TestResetCommandInterruptsActiveLoop(t *testing.T) {
+	const userID = "im:reset"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	h.setSessionLoopCtx(userID, loopCtx)
+
+	resp, handled := h.handleImmediateIMCommand(IMUserMessage{UserID: userID, Text: "/new"}, "/new", nil, nil)
+	if !handled || resp == nil {
+		t.Fatal("/new should be handled")
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("/new must cancel the active loop before reset")
+	}
+}
+
+func TestNewInterruptResetsActiveLoopInsteadOfQueueing(t *testing.T) {
+	const userID = "im:new-interrupt"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	mem.Save(userID, []agent.ConversationEntry{{Role: "user", Content: "old task"}})
+	h := &IMMessageHandler{memory: mem, interruptHandler: newIMInterruptHandler(nil)}
+	h.setSessionLoopCtx(userID, loopCtx)
+	h.interruptHandler.handler = h
+
+	result := h.interruptHandler.TryInterrupt(userID, "/new")
+	if !result.Handled || result.Action != progress.ActionReplace {
+		t.Fatalf("/new result = %+v, want handled replace", result)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("/new must cancel the active loop")
+	}
+	if got := mem.Load(userID); len(got) != 0 {
+		t.Fatalf("/new must clear conversation memory, got %#v", got)
+	}
+}
 
 func TestCancelledLoopDoesNotTryInlineInterrupt(t *testing.T) {
 	loopCtx := NewLoopContext("chat", 3, nil)
@@ -324,6 +542,32 @@ func TestHubCancelSessionTargetsPayloadUser(t *testing.T) {
 	}
 	if !h.hasCancelledTaskBoundary("desktop-user") {
 		t.Fatal("hub cancel should mark a cancel boundary for the payload user")
+	}
+}
+
+func TestHubCancelSessionDoesNotWaitForLoopExit(t *testing.T) {
+	const userID = "im:hub-stop"
+	loopCtx := NewLoopContext("long task", 3, nil)
+	h := &IMMessageHandler{}
+	h.setSessionLoopCtx(userID, loopCtx)
+	payload, err := json.Marshal(map[string]string{"user_id": userID})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	client := &RemoteHubClient{imHandler: h}
+
+	done := make(chan struct{})
+	go func() {
+		client.handleIMCancelSession(inboundHubEnvelope{Payload: payload})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("hub cancellation must not wait for the target loop to exit")
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("hub cancellation must signal the target loop")
 	}
 }
 

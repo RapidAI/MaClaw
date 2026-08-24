@@ -6,6 +6,7 @@
 
 #include "audio_common.h"
 #include "device_api.h"
+#include "services/audio_arbitration_service.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -43,37 +44,24 @@ typedef struct {
     bool playback_started;
 } mp3_playback_t;
 
-static esp_err_t audio_error(esp_audio_err_t err) {
+static device_status_t audio_error(esp_audio_err_t err) {
     switch (err) {
         case ESP_AUDIO_ERR_MEM_LACK:
-            return ESP_ERR_NO_MEM;
+            return DEVICE_STATUS_RESOURCE_EXHAUSTED;
         case ESP_AUDIO_ERR_INVALID_PARAMETER:
         case ESP_AUDIO_ERR_HEADER_PARSE:
-            return ESP_ERR_INVALID_ARG;
+            return DEVICE_STATUS_INVALID_ARGUMENT;
         case ESP_AUDIO_ERR_DATA_LACK:
-            return ESP_ERR_INVALID_SIZE;
         case ESP_AUDIO_ERR_NOT_SUPPORT:
-            return ESP_ERR_NOT_SUPPORTED;
         case ESP_AUDIO_ERR_BUFF_NOT_ENOUGH:
-            return ESP_ERR_INVALID_SIZE;
+            return DEVICE_STATUS_INVALID_ARGUMENT;
         case ESP_AUDIO_ERR_FAIL:
-            return ESP_ERR_INVALID_RESPONSE;
+            /* A decoder failure is malformed/unsupported payload data, not a
+             * transient physical I/O failure.  Keep it in the permanent
+             * content-error class so Gateway polling cannot hot-retry it. */
+            return DEVICE_STATUS_INVALID_ARGUMENT;
         default:
-            return ESP_FAIL;
-    }
-}
-
-static esp_err_t device_status_to_esp_err(device_status_t status) {
-    switch (status) {
-        case DEVICE_STATUS_OK: return ESP_OK;
-        case DEVICE_STATUS_INVALID_ARGUMENT: return ESP_ERR_INVALID_ARG;
-        case DEVICE_STATUS_UNAVAILABLE: return ESP_ERR_NOT_SUPPORTED;
-        case DEVICE_STATUS_BUSY: return ESP_ERR_INVALID_STATE;
-        case DEVICE_STATUS_TIMEOUT: return ESP_ERR_TIMEOUT;
-        case DEVICE_STATUS_RESOURCE_EXHAUSTED: return ESP_ERR_NO_MEM;
-        case DEVICE_STATUS_IO_ERROR: return ESP_FAIL;
-        case DEVICE_STATUS_INTERNAL_ERROR:
-        default: return ESP_FAIL;
+            return DEVICE_STATUS_INTERNAL_ERROR;
     }
 }
 
@@ -90,20 +78,20 @@ static int16_t resample_source(const mp3_playback_t *state, const int16_t *pcm,
     return pcm[local * state->channels + channel];
 }
 
-static esp_err_t write_resampled_until(mp3_playback_t *state, const int16_t *pcm,
-                                       size_t frames, uint64_t output_end,
-                                       bool final) {
+static device_status_t write_resampled_until(mp3_playback_t *state,
+                                             const int16_t *pcm, size_t frames,
+                                             uint64_t output_end, bool final) {
     size_t output_count = (size_t)(output_end - state->output_frames);
-    if (output_count == 0) return ESP_OK;
+    if (output_count == 0) return DEVICE_STATUS_OK;
     if (!state->playback_started) {
-        esp_err_t err = device_status_to_esp_err(device_audio_playback_begin());
-        if (err != ESP_OK) return err;
+        device_status_t status = audio_arbitration_playback_begin();
+        if (status != DEVICE_STATUS_OK) return status;
         state->playback_started = true;
     }
     int16_t resampled[256 * 2];
     size_t written = 0;
-    esp_err_t err = ESP_OK;
-    while (written < output_count && err == ESP_OK) {
+    device_status_t status = DEVICE_STATUS_OK;
+    while (written < output_count && status == DEVICE_STATUS_OK) {
         size_t count = output_count - written;
         if (count > 256) count = 256;
         for (size_t out = 0; out < count; ++out) {
@@ -124,20 +112,20 @@ static esp_err_t write_resampled_until(mp3_playback_t *state, const int16_t *pcm
                     (int16_t)(mixed / AUDIO_RATE);
             }
         }
-        err = device_status_to_esp_err(device_audio_playback_write(
-            resampled, (uint32_t)count, (uint8_t)state->channels));
+        status = audio_arbitration_playback_write(resampled, (uint32_t)count,
+                                             (uint8_t)state->channels);
         written += count;
     }
-    if (err == ESP_OK) state->output_frames = output_end;
-    return err;
+    if (status == DEVICE_STATUS_OK) state->output_frames = output_end;
+    return status;
 }
 
-static esp_err_t write_resampled(mp3_playback_t *state, const int16_t *pcm,
-                                 size_t frames, unsigned channels,
-                                 uint32_t input_rate) {
+static device_status_t write_resampled(mp3_playback_t *state, const int16_t *pcm,
+                                       size_t frames, unsigned channels,
+                                       uint32_t input_rate) {
     if (!state || !pcm || frames == 0 || (channels != 1 && channels != 2) ||
         input_rate < 8000 || input_rate > 48000) {
-        return ESP_ERR_INVALID_ARG;
+        return DEVICE_STATUS_INVALID_ARGUMENT;
     }
     if (state->input_rate == 0) {
         state->input_rate = input_rate;
@@ -147,27 +135,28 @@ static esp_err_t write_resampled(mp3_playback_t *state, const int16_t *pcm,
         ESP_LOGW(TAG, "MP3 format changed mid-stream: %lu Hz/%u ch -> %lu Hz/%u ch",
                  (unsigned long)state->input_rate, state->channels,
                  (unsigned long)input_rate, channels);
-        return ESP_ERR_NOT_SUPPORTED;
+        return DEVICE_STATUS_UNAVAILABLE;
     }
 
     uint64_t input_end = state->input_frames + frames;
     // Only emit positions for which both interpolation endpoints are known.
     // Any fraction crossing this block boundary is emitted by the next call.
     uint64_t output_end = ((input_end - 1) * AUDIO_RATE / input_rate) + 1;
-    esp_err_t err = write_resampled_until(state, pcm, frames, output_end, false);
-    if (err == ESP_OK) {
+    device_status_t status =
+        write_resampled_until(state, pcm, frames, output_end, false);
+    if (status == DEVICE_STATUS_OK) {
         for (unsigned channel = 0; channel < channels; ++channel) {
             state->previous[channel] = pcm[(frames - 1) * channels + channel];
         }
         state->have_previous = true;
         state->input_frames = input_end;
     }
-    return err;
+    return status;
 }
 
-static esp_err_t finish_resampled(mp3_playback_t *state) {
+static device_status_t finish_resampled(mp3_playback_t *state) {
     if (!state || !state->have_previous || state->input_rate == 0) {
-        return ESP_ERR_INVALID_ARG;
+        return DEVICE_STATUS_INVALID_ARGUMENT;
     }
     uint64_t output_end = (state->input_frames * AUDIO_RATE +
                            state->input_rate - 1) / state->input_rate;
@@ -176,8 +165,10 @@ static esp_err_t finish_resampled(mp3_playback_t *state) {
     return write_resampled_until(state, state->previous, 1, output_end, true);
 }
 
-esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
-    if (!mp3 || mp3_len < 4 || mp3_len > UINT32_MAX) return ESP_ERR_INVALID_ARG;
+device_status_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
+    if (!mp3 || mp3_len < 4 || mp3_len > UINT32_MAX) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
 
     if (!s_decoder_registered) {
         esp_audio_err_t register_err = esp_mp3_dec_register();
@@ -205,13 +196,13 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
     if (!output) output = malloc(output_capacity);
     if (!output) {
         esp_audio_simple_dec_close(decoder);
-        return ESP_ERR_NO_MEM;
+        return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
 
     mp3_playback_t state = {0};
-    esp_err_t result = ESP_OK;
+    device_status_t result = DEVICE_STATUS_OK;
     size_t offset = 0;
-    while (offset < mp3_len && result == ESP_OK) {
+    while (offset < mp3_len && result == DEVICE_STATUS_OK) {
         size_t chunk = mp3_len - offset;
         if (chunk > MP3_INPUT_CHUNK) chunk = MP3_INPUT_CHUNK;
         esp_audio_simple_dec_raw_t raw = {
@@ -220,7 +211,7 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
             .eos = offset + chunk == mp3_len,
         };
         unsigned stalled_iterations = 0;
-        while (raw.len > 0 && result == ESP_OK) {
+        while (raw.len > 0 && result == DEVICE_STATUS_OK) {
             esp_audio_simple_dec_out_t frame = {
                 .buffer = output,
                 .len = (uint32_t)output_capacity,
@@ -229,13 +220,13 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
             if (dec_err == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
                 if (frame.needed_size <= output_capacity ||
                     frame.needed_size > MP3_OUTPUT_MAX) {
-                    result = ESP_ERR_INVALID_SIZE;
+                    result = DEVICE_STATUS_INVALID_ARGUMENT;
                     break;
                 }
                 uint8_t *larger = resize_output(output, output_capacity,
                                                 frame.needed_size);
                 if (!larger) {
-                    result = ESP_ERR_NO_MEM;
+                    result = DEVICE_STATUS_RESOURCE_EXHAUSTED;
                     break;
                 }
                 output = larger;
@@ -249,7 +240,7 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
                 break;
             }
             if (raw.consumed > raw.len) {
-                result = ESP_ERR_INVALID_RESPONSE;
+                result = DEVICE_STATUS_INVALID_ARGUMENT;
                 break;
             }
             if (frame.decoded_size > 0) {
@@ -257,13 +248,13 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
                 dec_err = esp_audio_simple_dec_get_info(decoder, &info);
                 if (dec_err != ESP_AUDIO_ERR_OK || info.bits_per_sample != 16 ||
                     (info.channel != 1 && info.channel != 2)) {
-                    result = dec_err == ESP_AUDIO_ERR_OK ? ESP_ERR_NOT_SUPPORTED
-                                                        : audio_error(dec_err);
+                    result = dec_err == ESP_AUDIO_ERR_OK ? DEVICE_STATUS_UNAVAILABLE
+                                                         : audio_error(dec_err);
                     break;
                 }
                 size_t sample_bytes = info.channel * sizeof(int16_t);
                 if (frame.decoded_size % sample_bytes != 0) {
-                    result = ESP_ERR_INVALID_SIZE;
+                    result = DEVICE_STATUS_INVALID_ARGUMENT;
                     break;
                 }
                 result = write_resampled(&state, (const int16_t *)output,
@@ -275,7 +266,7 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
                 // Keep a generous finite guard for a broken/corrupt stream.
                 if (frame.decoded_size == 0 ||
                     ++stalled_iterations > MP3_MAX_DRAIN_ITERATIONS) {
-                    result = ESP_ERR_INVALID_RESPONSE;
+                    result = DEVICE_STATUS_INVALID_ARGUMENT;
                     break;
                 }
                 continue;
@@ -287,23 +278,23 @@ esp_err_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
         }
     }
 
-    if (result == ESP_OK) {
+    if (result == DEVICE_STATUS_OK) {
         // A syntactically valid but frame-less/corrupt MP3 must not be ACKed
         // as successfully played. It also has no resampler state to flush.
         result = state.have_previous ? finish_resampled(&state)
-                                     : ESP_ERR_INVALID_RESPONSE;
+                                     : DEVICE_STATUS_INVALID_ARGUMENT;
     }
     if (state.playback_started) {
         /* Preserve a decoder/write failure. The physical end transaction is
          * still mandatory for codec/session cleanup, but a successful cleanup
          * must not turn a corrupt or truncated MP3 into a false success. */
-        esp_err_t end_result = device_status_to_esp_err(
-            device_audio_playback_end(result == ESP_OK));
-        if (result == ESP_OK) result = end_result;
+        device_status_t end_result =
+            audio_arbitration_playback_end(result == DEVICE_STATUS_OK);
+        if (result == DEVICE_STATUS_OK) result = end_result;
     }
     free(output);
     esp_audio_simple_dec_close(decoder);
-    if (result == ESP_OK) {
+    if (result == DEVICE_STATUS_OK) {
         ESP_LOGI(TAG, "MP3 playback complete: %u bytes, %lu Hz -> %u Hz",
                  (unsigned)mp3_len, (unsigned long)state.input_rate, AUDIO_RATE);
     }

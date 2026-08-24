@@ -6,3 +6,5 @@ package tensor
 //
 //go:noescape
 func siluMulASM(gate, up []float32)
+
+func vzeroupperASM() {}

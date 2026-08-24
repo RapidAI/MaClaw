@@ -42,6 +42,84 @@ func TestLLMProviderConcurrencyControllerQueueTimeout(t *testing.T) {
 	}
 }
 
+func TestLLMProviderConcurrencyControllerDefersConfigChangeUntilDrained(t *testing.T) {
+	controller := NewLLMProviderConcurrencyController()
+	release, err := controller.Acquire(context.Background(), "provider-a", 1, 1, 0)
+	if err != nil {
+		t.Fatalf("first Acquire() error = %v", err)
+	}
+
+	queuedResult := make(chan error, 1)
+	queuedRelease := make(chan func(), 1)
+	go func() {
+		release, err := controller.Acquire(context.Background(), "provider-a", 2, 2, 1000)
+		if err == nil {
+			queuedRelease <- release
+		}
+		queuedResult <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for controller.Snapshot("provider-a", 2, 2, 1000).QueueWaiters != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("changed-configuration request did not enter the original queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// The original policy permits only one waiter. The new policy must not be
+	// used for admission while the original lease is still outstanding.
+	if _, err := controller.Acquire(context.Background(), "provider-a", 2, 2, 1000); err == nil {
+		t.Fatal("second queued request unexpectedly succeeded")
+	} else if queueErr, ok := err.(*LLMProviderConcurrencyError); !ok || queueErr.Kind != LLMProviderConcurrencyQueueFull {
+		t.Fatalf("second queued request error = %v, want queue full", err)
+	}
+
+	release()
+	if err := <-queuedResult; err != nil {
+		t.Fatalf("queued request error after release = %v", err)
+	}
+	(<-queuedRelease)()
+
+	// Once the old lease has drained, the latest configuration takes effect.
+	first, err := controller.Acquire(context.Background(), "provider-a", 2, 2, 0)
+	if err != nil {
+		t.Fatalf("first Acquire() after drain error = %v", err)
+	}
+	defer first()
+	second, err := controller.Acquire(context.Background(), "provider-a", 2, 2, 0)
+	if err != nil {
+		t.Fatalf("second Acquire() after drain error = %v", err)
+	}
+	defer second()
+
+	snap := controller.Snapshot("provider-a", 2, 2, 0)
+	if snap.MaxConcurrency != 2 || snap.MaxQueueWaiters != 2 || snap.InFlight != 2 {
+		t.Fatalf("unexpected snapshot after configuration change: %+v", snap)
+	}
+}
+
+func TestLLMProviderConcurrencyControllerResetKeepsActiveLeaseBound(t *testing.T) {
+	controller := NewLLMProviderConcurrencyController()
+	release, err := controller.Acquire(context.Background(), "provider-a", 1, 0, 0)
+	if err != nil {
+		t.Fatalf("first Acquire() error = %v", err)
+	}
+
+	controller.Reset()
+	if _, err := controller.Acquire(context.Background(), "provider-a", 1, 0, 20); err == nil {
+		t.Fatal("Acquire() unexpectedly bypassed the active lease after Reset()")
+	} else if queueErr, ok := err.(*LLMProviderConcurrencyError); !ok || queueErr.Kind != LLMProviderConcurrencyQueueTimeout {
+		t.Fatalf("Acquire() error = %v, want queue timeout", err)
+	}
+
+	release()
+	controller.Reset()
+	if snap := controller.Snapshot("provider-a", 1, 0, 0); snap.InFlight != 0 || snap.QueueWaiters != 0 {
+		t.Fatalf("unexpected snapshot after drained reset: %+v", snap)
+	}
+}
+
 func TestLLMProviderResilienceControllerCircuitBreakerAndReset(t *testing.T) {
 	controller := NewLLMProviderResilienceController()
 	provider := LLMEndpointProvider{ID: "provider-a", CircuitBreakerThreshold: 1, CircuitBreakerCooldownMS: 60000, FailureBackoffBaseMS: 1000, FailureBackoffMaxMS: 1000}

@@ -25,8 +25,10 @@ Page actions:
 - observe: snapshot page and refs
 - click: click by ref, selector, or visible text
 - type: type text by ref/selector, or into current focused editable element; set content_format="markdown" for rich editors/article publishing
-- select, scroll, back, refresh, set_files
+- hover, press, dialog: open menus, send keys, accept/dismiss JS alerts
+- select, scroll, back, refresh, set_files (select/scroll/set_files accept ref)
 - extract, wait
+- Optional expect= url_contains:… / text:… / ref_appears:@eN / dialog after submit/publish click (required) or navigate. Links/tabs do not need expect. If page flags include captcha_widget, ask the user; after they continue, observe first. login_wall and MFA/OTP are not automatic stops.
 
 Task helpers:
 - task_run, task_status, task_verify, list_flows; task_run type steps support focused editable input after click, plus params.content_format="markdown" or top-level content_format="markdown"
@@ -58,6 +60,14 @@ var mergedBrowserInputSchema = map[string]interface{}{
 	"file_paths":       map[string]string{"type": "array", "description": "Files for set_files"},
 	"duration_ms":      map[string]string{"type": "number", "description": "Wait duration in ms"},
 	"success_criteria": map[string]string{"type": "string", "description": "Success criteria for task_run/task_verify"},
+	"expect":           map[string]string{"type": "string", "description": "Optional post-condition: url_contains:… / text:… / ref_appears:@eN / dialog"},
+	"query":            map[string]string{"type": "string", "description": "Optional observe filter on name/text/role"},
+	"key":              map[string]string{"type": "string", "description": "Key for press: Enter, Escape, Tab, ArrowDown"},
+	"accept":           map[string]string{"type": "boolean", "description": "For dialog: true accept, false dismiss"},
+	"append":           map[string]string{"type": "boolean", "description": "For type: append instead of replacing"},
+	"allow_popup":      map[string]string{"type": "boolean", "description": "session_start: allow new tabs, default false"},
+	"allow_download":   map[string]string{"type": "boolean", "description": "session_start: allow downloads, default false"},
+	"allow_upload":     map[string]string{"type": "boolean", "description": "session_start: allow set_files, default false"},
 }
 
 func dispatchMergedBrowser(registry *ToolRegistry, args map[string]interface{}) string {

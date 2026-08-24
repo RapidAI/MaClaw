@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
@@ -51,6 +52,7 @@ func InitMobileCoreAgent(runtimeDataDir string) {
 // tests can re-init against a fresh data root without cross-test leakage or
 // Windows file-lock failures on TempDir cleanup (knowledge.db / records.db).
 func resetMobileCoreAgentForTest() {
+	resetMobileDynamicSemanticRoutingForTest()
 	mobileResetKnowledgePurgeStateForTest()
 	if mobileKnowledgeStore != nil {
 		_ = mobileKnowledgeStore.Close()
@@ -137,16 +139,38 @@ func mobileEnsureCoreAgent() (*agentservice.CoreAgentExecutor, *agentservice.Ser
 			mobileAgentServiceErr = fmt.Errorf("create mobile agent service: %w", err)
 			return
 		}
+		// Reviewed dynamic capability family (semantic routing). Mirrors the
+		// MaClawSrv bootstrap: any failure is fail-closed — the mobile agent is
+		// unavailable rather than silently serving only the legacy bulk tool
+		// surface. ConfigureDynamicSemanticRouting also wires the routing onto
+		// the executor via its SetDynamicSemanticRouting support.
+		if err := configureMobileDynamicSemanticRouting(svc); err != nil {
+			log.Printf("[mobile-core-agent] dynamic semantic routing unavailable (fail-closed): %v", err)
+			_ = svc.Close()
+			mobileAgentServiceErr = fmt.Errorf("configure mobile dynamic semantic routing: %w", err)
+			return
+		}
+		// Generic dynamic-effect receipt reconciliation loop. No trusted
+		// receipt source is registered yet; the framework is in place.
+		if err := startMobileDynamicEffectReceiptWorker(svc); err != nil {
+			_ = svc.Close()
+			mobileAgentServiceErr = fmt.Errorf("start mobile dynamic effect receipt worker: %w", err)
+			return
+		}
 		// Same wiring as MaClawSrv: skill + MCP + knowledge onto CoreAgentExecutor.
+		// The legacy bridges stay for request families the resolver has not
+		// migrated; a managed (Managed=true) request is served solely by the
+		// grant-bound semantic surface.
 		skillBridge := agentservice.NewSkillToolBridge(svc)
 		mcpBridge := agentservice.NewMCPToolBridge(svc)
 		executor.SetSkillToolProvider(skillBridge)
 		executor.SetMCPToolProvider(mcpBridge)
 		mobileInitKnowledgeStore(dataRoot, executor)
+		wireMobileReviewedHostSpeechTranscriber(executor)
 		mobileCoreAgent = executor
 		mobileAgentService = svc
 		mobileMCPBridge = mcpBridge
-		log.Printf("[mobile-core-agent] initialized data_root=%s skills=on mcp=on knowledge=on", dataRoot)
+		log.Printf("[mobile-core-agent] initialized data_root=%s skills=on mcp=on knowledge=on semantic_routing=on effect_receipt_worker=on", dataRoot)
 	})
 	if mobileAgentServiceErr != nil {
 		return nil, nil, mobileAgentServiceErr
@@ -181,6 +205,7 @@ func mobileRunCoreAgent(
 	useDelegated bool,
 	baseMessages []map[string]string,
 	emit mobileAgentEventWriter,
+	attachments []agent.MessageAttachment,
 ) (string, string, error) {
 	if principal == nil {
 		return "", "", fmt.Errorf("principal is required for core agent")
@@ -284,6 +309,15 @@ func mobileRunCoreAgent(
 	executor.HTTPClient = llmClient
 	defer func() { executor.HTTPClient = prev }()
 
+	// Give the semantic intent classifier the same Hub-proxied, per-principal
+	// LLM path (viewer or delegated billing) as the agent loop itself. Without
+	// this slot the classifier fails closed rather than using other credentials.
+	if llmCfg, cfgErr := agentservice.ResolveLLMConfig(appCfg); cfgErr == nil {
+		ctx = mobileWithSemanticClassifierLLM(ctx, mobileSemanticClassifierLLM{config: llmCfg, client: llmClient})
+	} else {
+		log.Printf("[mobile-core-agent] semantic classifier llm config unavailable: %v", cfgErr)
+	}
+
 	now := time.Now().UTC()
 	sessionID := fmt.Sprintf("mobile-%s-%d", userID, now.UnixNano())
 	req := agentservice.ExecuteRequest{
@@ -308,6 +342,7 @@ func mobileRunCoreAgent(
 		Message: agentservice.Message{
 			ID: fmt.Sprintf("msg-%d", now.UnixNano()), SessionID: sessionID,
 			Role: agentservice.MessageRoleUser, Content: userText, CreatedAt: now,
+			Attachments: append([]agent.MessageAttachment(nil), attachments...),
 		},
 		History: history,
 		DataDir: dataDir,
@@ -664,8 +699,9 @@ func mobileTryCoreAgent(
 	useDelegated bool,
 	baseMessages []map[string]string,
 	emit mobileAgentEventWriter,
+	attachments []agent.MessageAttachment,
 ) (answer, requestID string, ok bool) {
-	answer, requestID, err := mobileRunCoreAgent(ctx, r, principal, officialLLM, delegated, useDelegated, baseMessages, emit)
+	answer, requestID, err := mobileRunCoreAgent(ctx, r, principal, officialLLM, delegated, useDelegated, baseMessages, emit, attachments)
 	if err != nil {
 		log.Printf("[mobile-core-agent] fallback to legacy loop: %v", err)
 		return "", "", false

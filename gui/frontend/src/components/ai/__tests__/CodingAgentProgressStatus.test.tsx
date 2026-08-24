@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { ChatMessage } from '../useAIAssistant';
 import {
     activeCodingAgentProgress,
@@ -8,6 +8,8 @@ import {
     codingAgentCommandStatusTone,
     codingAgentCommandPreviewText,
     codingAgentCompactText,
+    codingAgentComposerStatusText,
+    codingAgentInputStatusText,
     codingAgentDiffCheckStatusLabel,
     codingAgentDiffCheckStatusTone,
     codingAgentDisplayText,
@@ -15,6 +17,7 @@ import {
     codingAgentExplorationStatusTone,
     codingAgentFileActivityStatusLabel,
     codingAgentFileActivityStatusTone,
+    codingAgentFileChangeRows,
     codingAgentFilePreviewText,
     codingAgentGuardrailStatusLabel,
     codingAgentGuardrailStatusTone,
@@ -53,10 +56,19 @@ import {
     parseCodingAgentEventProgress,
     parseCodingAgentProgress,
     codingAgentFeedStableKey,
+    compactCodingTrailPath,
+    codingAgentEditedFileDetailText,
+    codingAgentPreviewTargetPaths,
+    codingAgentToolDisplayName,
+    CodingAgentPreviewFocusContext,
+    isCodingAgentChatHiddenEvent,
+    codingAgentMessagesHavePlainTrail,
+    isCodingAgentPlainTrailEvent,
     isCodingAgentProgressContent,
     pickCodingAgentFeedHeader,
     renderCodingAgentActivityFeed,
     renderCodingAgentProgressStatus,
+    renderCodingAgentWorkingTrail,
     resolveCodingAgentFeedTone,
 } from '../CodingAgentProgressStatus';
 
@@ -191,6 +203,23 @@ describe('CodingAgentProgressStatus', () => {
             turnID: 'coding-turn-run-1-T9',
             count: 3,
             files: ['b.go', 'a.go'],
+        });
+        expect(codingAgentFileChangeRows(parseCodingAgentProgress(raw)!)).toEqual([
+            { path: 'b.go', added: 0, removed: 0 },
+            { path: 'a.go', added: 0, removed: 0 },
+        ]);
+    });
+
+    it('parses per-file added and removed line counts', () => {
+        const raw = 'Coding Agent Event: {"version":1,"agent":"coding","event":"diff_summary","phase":"result","task_id":"T1","title":"Patch","count":2,"added":15,"removed":4,"files":["a.go","b.go"],"file_changes":[{"path":"a.go","added":12,"removed":1},{"path":"b.go","added":3,"removed":3}]}';
+        expect(parseCodingAgentEventProgress(raw)).toMatchObject({
+            event: 'diff_summary',
+            added: 15,
+            removed: 4,
+            fileChanges: [
+                { path: 'a.go', added: 12, removed: 1 },
+                { path: 'b.go', added: 3, removed: 3 },
+            ],
         });
     });
 
@@ -834,6 +863,25 @@ describe('CodingAgentProgressStatus', () => {
             .toBe('Coding \u00b7 Running \u00b7 T2 \u00b7 Fix stale edit guard');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans'))
             .toBe('\u7f16\u7a0b \u00b7 \u6267\u884c\u4e2d \u00b7 T2 \u00b7 Fix stale edit guard');
+        expect(codingAgentInputStatusText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'en')).toBe('Working...');
+        expect(codingAgentInputStatusText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans')).toBe('\u5904\u7406\u4e2d\u2026');
+        expect(codingAgentInputStatusText({
+            phase: 'running',
+            taskID: 'T1',
+            title: 'Fix stale edit guard',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'go test ./gui',
+        }, 'en')).toBe('$ go test ./gui');
+        expect(codingAgentComposerStatusText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans')).toBeUndefined();
+        expect(codingAgentComposerStatusText({
+            phase: 'running',
+            taskID: 'T1',
+            title: 'Fix stale edit guard',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'go test ./gui',
+        }, 'en')).toBe('$ go test ./gui');
         expect(codingAgentCompactText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans'))
             .toBe('\u7f16\u7a0b \u00b7 \u6267\u884c\u4e2d \u00b7 T2');
         expect(codingAgentCompactText({ phase: 'running', taskID: ' t2 ', title: 'Fix stale edit guard' }, 'en'))
@@ -936,8 +984,8 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentStatusSelector('title-bar', 'retrying', ' t9 ')).toBe('.coding-agent-status[data-variant="title-bar"][data-phase="retrying"][data-task-id="T9"]');
     });
 
-    it('renders an accessible visible status row for chat progress', () => {
-        render(
+    it('hides task-status-only chat progress until a tool trail exists', () => {
+        const { container } = render(
             <>
                 {renderCodingAgentProgressStatus(
                     makeProgressMsg('Coding Agent: failed T4 - Apply patch'),
@@ -946,16 +994,28 @@ describe('CodingAgentProgressStatus', () => {
                 )}
             </>,
         );
+        expect(container.querySelector('[data-testid="coding-agent-progress"]')).toBeNull();
+    });
+
+    it('renders an accessible visible status row for chat progress', () => {
+        render(
+            <>
+                {renderCodingAgentProgressStatus(
+                    makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"failed","task_id":"T4","title":"Apply patch","detail":"bash","outcome":"failed","command":"go test"}'),
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
 
         const status = screen.getByTestId('coding-agent-progress');
-        // Tool-trail layout: header (Coding · T4 · Failed · title) + mono tool line.
-        expect(status.textContent).toMatch(/Coding/);
-        expect(status.textContent).toContain('Failed');
-        expect(status.textContent).toContain('T4');
-        expect(status.textContent).toContain('Apply patch');
+        expect(status.textContent).toContain('$');
+        expect(status.textContent).toContain('go test');
         expect(status.getAttribute('role')).toBe('status');
         expect(status.getAttribute('aria-live')).toBe('polite');
-        expect(status.getAttribute('aria-label')).toBe('Coding \u00b7 Failed \u00b7 T4 \u00b7 Apply patch');
+        expect(status.getAttribute('aria-label')).toMatch(/T4/);
+        expect(status.getAttribute('aria-label')).toMatch(/Apply patch/);
+        expect(status.getAttribute('aria-label')).toMatch(/Failed/);
         expect(status.getAttribute('data-agent')).toBe('coding');
         expect(status.getAttribute('data-active')).toBe('false');
         expect(status.getAttribute('data-change-count')).toBe('');
@@ -970,8 +1030,8 @@ describe('CodingAgentProgressStatus', () => {
         expect(status.querySelector('[data-testid="coding-agent-tool-line"]')).toBeTruthy();
     });
 
-    it('renders quality summary failures as failed chat progress instead of generic result rows', () => {
-        render(
+    it('hides quality-summary-only chat progress instead of a scorecard board', () => {
+        const { container } = render(
             <>
                 {renderCodingAgentProgressStatus(
                     makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"quality_summary","phase":"result","task_id":"T4","title":"Apply patch","outcome":"failed","summary":"verification not run","count":1}'),
@@ -980,16 +1040,7 @@ describe('CodingAgentProgressStatus', () => {
                 )}
             </>,
         );
-
-        const status = screen.getByTestId('coding-agent-progress');
-        expect(status.textContent).toMatch(/quality/i);
-        expect(status.textContent).toMatch(/verification not run|Quality Not Passed|1 issues/i);
-        expect(status.getAttribute('aria-label')).toBe('Coding \u00b7 Quality Not Passed \u00b7 T4 \u00b7 1 issues \u00b7 Apply patch');
-        // Terminal-style feed uses top accent (box-shadow) + data-tone-accent, not a left stripe.
-        expect(status.getAttribute('data-tone-accent')).toBe(CODING_AGENT_FAILURE_ACCENT);
-        expect(status.style.boxShadow || '').toContain(CODING_AGENT_FAILURE_ACCENT);
-        // Soft amber — never alarmist red.
-        expect(status.getAttribute('data-tone-accent')).not.toMatch(/#c43d34|rgb\(196/i);
+        expect(container.querySelector('[data-testid="coding-agent-progress"]')).toBeNull();
     });
 
     it('detects coding progress content without false positives', () => {
@@ -1175,11 +1226,15 @@ describe('CodingAgentProgressStatus', () => {
         );
         const status = screen.getByTestId('coding-agent-progress');
         expect(status.getAttribute('data-phase')).toBe('completed');
-        expect(status.textContent).toMatch(/Completed|completed/i);
-        expect(status.textContent).toContain('bash');
+        expect(status.textContent).toContain('$');
         expect(status.textContent).toContain('go test');
-        // Only one tool line — terminal status is folded into the header.
+        expect(status.textContent).not.toMatch(/Coding/);
+        // Only one tool line — terminal status is folded into data-phase, not a board header.
         expect(container.querySelectorAll('[data-testid="coding-agent-tool-line"]').length).toBe(1);
+        expect(container.querySelector('[data-testid="coding-agent-feed-header"]')).toBeNull();
+        expect(status.getAttribute('data-coding-trail')).toBe('plain');
+        expect(status.style.boxShadow).toBe('none');
+        expect(status.style.background).toMatch(/transparent/i);
     });
 
     it('shows failure count in multi-line header while phase is still running', () => {
@@ -1204,10 +1259,12 @@ describe('CodingAgentProgressStatus', () => {
         const status = screen.getByTestId('coding-agent-progress');
         expect(status.getAttribute('data-phase')).toBe('running');
         expect(status.getAttribute('data-tone-accent')).toBe(CODING_AGENT_FAILURE_ACCENT);
-        expect(status.textContent).toMatch(/1 failed/);
+        expect(status.textContent).toContain('go test ./pkg');
+        expect(status.textContent).not.toMatch(/1 failed/);
+        expect(screen.queryByTestId('coding-agent-feed-header')).toBeNull();
     });
 
-    it('renders no more than the latest three activity rows', () => {
+    it('keeps a longer tool trail instead of only the last three rows', () => {
         const rows = Array.from({ length: 5 }, (_, index) => makeProgressMsg(
             `Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"echo ${index}"}`,
             `tool-${index}`,
@@ -1217,8 +1274,254 @@ describe('CodingAgentProgressStatus', () => {
         );
 
         const renderedLines = container.querySelectorAll('[data-testid="coding-agent-tool-line"]');
-        expect(renderedLines).toHaveLength(3);
-        expect(renderedLines[0].textContent).toContain('echo 2');
-        expect(renderedLines[2].textContent).toContain('echo 4');
+        expect(renderedLines).toHaveLength(5);
+        expect(renderedLines[0].textContent).toContain('echo 0');
+        expect(renderedLines[4].textContent).toContain('echo 4');
+    });
+
+    it('renders an OpenCode-style file change table with names and line counts', () => {
+        const payload = {
+            version: 1,
+            agent: 'coding',
+            event: 'diff_summary',
+            phase: 'result',
+            task_id: 'T1',
+            title: 'Fix parser',
+            count: 3,
+            added: 14,
+            removed: 5,
+            files: ['gui/a.go', 'gui/b.go', 'gui/new.go'],
+            file_changes: [
+                { path: 'gui/a.go', added: 12, removed: 3 },
+                { path: 'gui/b.go', added: 0, removed: 2 },
+                { path: 'gui/new.go', added: 2, removed: 0 },
+            ],
+        };
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg(`Coding Agent Event: ${JSON.stringify(payload)}`)],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const table = screen.getByTestId('coding-agent-file-changes');
+        expect(table.textContent).toContain('3 个文件已更改');
+        expect(table.textContent).toContain('+14');
+        expect(table.textContent).toContain('-5');
+        const rows = table.querySelectorAll('[data-testid="coding-agent-file-change-row"]');
+        expect(rows).toHaveLength(3);
+        expect(rows[0].textContent).toContain('gui/a.go');
+        expect(rows[0].textContent).toContain('+12');
+        expect(rows[0].textContent).toContain('-3');
+        expect(rows[1].textContent).toContain('gui/b.go');
+        expect(rows[1].textContent).toContain('+0');
+        expect(rows[1].textContent).toContain('-2');
+    });
+
+    it('renders a structured assistant note without requiring a tool line first', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"assistant_note","phase":"running","task_id":"T1","title":"Fix parser","detail":"I found the narrowest safe edit."}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        expect(screen.getByTestId('coding-agent-assistant-note').textContent).toContain('I found the narrowest safe edit.');
+    });
+
+    it('maps tool names to Codex trail labels and hides audit rollups from chat', () => {
+        expect(codingAgentToolDisplayName('read_file')).toBe('Read');
+        expect(codingAgentToolDisplayName('ssh_read_file')).toBe('Read');
+        expect(codingAgentToolDisplayName('apply_patch')).toBe('Edit');
+        expect(codingAgentToolDisplayName('ssh_write_file')).toBe('Write');
+        expect(codingAgentToolDisplayName('bash')).toBe('$');
+        expect(codingAgentToolDisplayName('ssh_bash')).toBe('$');
+        expect(isCodingAgentChatHiddenEvent({ phase: 'result', title: '', event: 'command_summary' })).toBe(true);
+        expect(isCodingAgentChatHiddenEvent({ phase: 'result', title: '', event: 'quality_summary' })).toBe(true);
+        expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'tool_finished', detail: 'bash' })).toBe(false);
+        expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'assistant_note', detail: 'Compiling the new hello world.' })).toBe(false);
+        expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'assistant_note', detail: '## 执行报告' })).toBe(true);
+        expect(isCodingAgentPlainTrailEvent({ phase: 'running', title: '', event: 'tool_finished', detail: 'write_file' })).toBe(true);
+        expect(isCodingAgentPlainTrailEvent({ phase: 'result', title: '', event: 'quality_summary' })).toBe(false);
+        expect(codingAgentMessagesHavePlainTrail([])).toBe(false);
+        expect(codingAgentMessagesHavePlainTrail([
+            makeProgressMsg('Coding Agent: running T1 - First task'),
+        ])).toBe(false);
+        expect(codingAgentMessagesHavePlainTrail([
+            makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Fix","detail":"read_file"}'),
+        ])).toBe(true);
+        expect(codingAgentMessagesHavePlainTrail([
+            makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","turn_id":"turn-1","detail":"read_file"}'),
+            makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"running","task_id":"T1","turn_id":"turn-2","title":"Next"}'),
+        ])).toBe(false);
+    });
+
+    it('renders a Codex-style Working trail instead of a chat thinking label', () => {
+        const { container } = render(
+            <>{renderCodingAgentWorkingTrail({ text: '#111827', fieldLabel: '#6b7280' }, 'zh-Hans')}</>,
+        );
+        const trail = container.querySelector('[data-testid="coding-agent-working-trail"]');
+        expect(trail?.textContent).toContain('Working');
+        expect(trail?.textContent).not.toMatch(/思考|处理中/);
+        expect(trail?.getAttribute('aria-label')).toBe('工作中');
+        expect(trail?.getAttribute('aria-live')).toBe('off');
+        expect(trail?.querySelector('.coding-agent-working-dot')).toBeTruthy();
+    });
+
+    it('renders apply_patch as Edit in the activity trail', () => {
+        const { container } = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"apply_patch","outcome":"success","files":["main.go"]}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+        expect(container.querySelector('[data-testid="coding-agent-tool-line"]')?.textContent).toContain('Edit');
+        expect(container.querySelector('[data-testid="coding-agent-tool-line"]')?.textContent).toContain('main.go');
+    });
+
+    it('collapses completed tool details but keeps a concise receipt visible', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Delete generated files","turn_id":"turn-1","detail":"bash","outcome":"success","command":"cmd /c del /F /Q build\\\\*.*"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        const line = screen.getByTestId('coding-agent-tool-line');
+        expect(line.getAttribute('data-tool-collapsed')).toBe('true');
+        expect(line.textContent).toContain('Completed');
+        const details = line as HTMLDetailsElement;
+        expect(details.open).toBe(false);
+        fireEvent.click(screen.getByText('Completed'));
+        expect(details.open).toBe(true);
+        expect(line.textContent).toContain('cmd /c del /F /Q build\\*.*');
+    });
+
+    it('keeps a critical completed tool failure expanded', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"failed","task_id":"T1","title":"Delete generated files","turn_id":"turn-1","detail":"bash","outcome":"failed","severity":"error","command":"cmd /c del /F /Q build\\\\*.*","summary":"Access is denied"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        const line = screen.getByTestId('coding-agent-tool-line') as HTMLDetailsElement;
+        expect(line.getAttribute('data-tool-collapsed')).toBe('false');
+        expect(line.open).toBe(true);
+        expect(line.textContent).toContain('cmd /c del /F /Q build\\*.*');
+    });
+
+    it('renders Edit/Write lines as Codex file cards with line counts', () => {
+        expect(compactCodingTrailPath('D:/workprj/demo/hello_world.cpp')).toBe('demo/hello_world.cpp');
+        expect(compactCodingTrailPath('/opt/app/src/pkg/foo.go')).toBe('pkg/foo.go');
+        expect(compactCodingTrailPath('src/main.go')).toBe('src/main.go');
+        expect(codingAgentEditedFileDetailText({
+            phase: 'running',
+            title: '',
+            event: 'tool_finished',
+            detail: 'write_file',
+            files: ['hello_world.cpp'],
+            added: 8,
+            removed: 0,
+            fileChanges: [{ path: 'hello_world.cpp', added: 8, removed: 0 }],
+        })).toBe('hello_world.cpp (+8 -0)');
+        expect(codingAgentEditedFileDetailText({
+            phase: 'running',
+            title: '',
+            event: 'tool_finished',
+            detail: 'write_file',
+            files: ['D:/workprj/demo/hello_world.cpp'],
+            added: 8,
+            removed: 0,
+            fileChanges: [{ path: 'D:/workprj/demo/hello_world.cpp', added: 8, removed: 0 }],
+        })).toBe('demo/hello_world.cpp (+8 -0)');
+        expect(codingAgentEditedFileDetailText({
+            phase: 'running',
+            title: '',
+            event: 'diff_updated',
+            detail: 'Edited D:/workprj/demo/hello_world.cpp (+8 -0)',
+        })).toBe('Edited demo/hello_world.cpp (+8 -0)');
+        expect(codingAgentEditedFileDetailText({
+            phase: 'running',
+            title: '',
+            event: 'diff_updated',
+            detail: 'Edited D:/workprj/My App/hello world.cpp (+8 -0)',
+        })).toBe('Edited My App/hello world.cpp (+8 -0)');
+        const { container } = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [
+                        makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success","files":["hello_world.cpp"],"added":8,"removed":0,"file_changes":[{"path":"hello_world.cpp","added":8,"removed":0}]}'),
+                        makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"assistant_note","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"Compiling the new hello world."}'),
+                    ],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+        expect(container.querySelector('[data-testid="coding-agent-tool-line"]')?.textContent).toContain('hello_world.cpp (+8 -0)');
+        expect(container.querySelector('[data-testid="coding-agent-assistant-note"]')?.textContent).toBe('Compiling the new hello world.');
+    });
+
+    it('opens the preview when a trail file card is clicked', () => {
+        expect(codingAgentPreviewTargetPaths({
+            phase: 'running',
+            title: '',
+            event: 'tool_finished',
+            detail: 'write_file',
+            files: ['hello_world.cpp'],
+        })).toEqual(['hello_world.cpp']);
+        const onOpen = vi.fn();
+        render(
+            <CodingAgentPreviewFocusContext.Provider value={onOpen}>
+                {renderCodingAgentActivityFeed(
+                    [
+                        makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success","files":["hello_world.cpp"],"added":8,"removed":0,"file_changes":[{"path":"hello_world.cpp","added":8,"removed":0}]}'),
+                    ],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </CodingAgentPreviewFocusContext.Provider>,
+        );
+        fireEvent.click(screen.getByTestId('coding-agent-preview-link'));
+        expect(onOpen).toHaveBeenCalledWith('hello_world.cpp');
+    });
+
+    it('opens the preview when a file-change row is clicked', () => {
+        const onOpen = vi.fn();
+        const payload = {
+            version: 1,
+            agent: 'coding',
+            event: 'diff_summary',
+            phase: 'result',
+            task_id: 'T1',
+            title: 'Fix parser',
+            file_changes: [{ path: 'gui/a.go', added: 12, removed: 3 }],
+        };
+        render(
+            <CodingAgentPreviewFocusContext.Provider value={onOpen}>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg(`Coding Agent Event: ${JSON.stringify(payload)}`)],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </CodingAgentPreviewFocusContext.Provider>,
+        );
+        fireEvent.click(screen.getByTestId('coding-agent-file-change-row'));
+        expect(onOpen).toHaveBeenCalledWith('gui/a.go');
     });
 });

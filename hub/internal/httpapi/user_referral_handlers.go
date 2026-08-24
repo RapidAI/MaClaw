@@ -368,6 +368,24 @@ func verifyUserReferralIdentityReservationForValue(ctx context.Context, repo sto
 	return false
 }
 
+// completedUserReferralSessionMatches allows the first desktop started after a
+// completed browser registration to bind itself with the newly claimed session.
+// The original browser identity reservation is deliberately tied to the
+// browser session, so it cannot be replayed by arbitrary desktop sessions.
+// This narrower recovery check requires the claimed session itself to be
+// marked completed and to reference the same user/referral pair.
+func completedUserReferralSessionMatches(ctx context.Context, repo store.UserReferralRepository, r *http.Request, tenantID string, user *store.User, referral *store.UserReferral) bool {
+	if repo == nil || r == nil || user == nil || referral == nil || strings.TrimSpace(user.ID) == "" {
+		return false
+	}
+	sessionHash, ok := userReferralRegistrationSessionHash(r, tenantID)
+	if !ok {
+		return false
+	}
+	session, err := repo.GetRegistrationSession(ctx, tenantID, sessionHash, time.Now().UTC())
+	return err == nil && session != nil && session.CompletedAt != nil && strings.TrimSpace(session.InviteeUserID) == strings.TrimSpace(user.ID) && strings.TrimSpace(session.ReferralID) == strings.TrimSpace(referral.ID) && strings.TrimSpace(referral.InviteeUserID) == strings.TrimSpace(user.ID)
+}
+
 func releaseUserReferralIdentityReservation(ctx context.Context, repo store.UserReferralRepository, r *http.Request, tenantID, identityHash string) {
 	if repo == nil || strings.TrimSpace(identityHash) == "" {
 		return
@@ -713,7 +731,14 @@ func normalizeUserReferralConfig(cfg UserReferralConfig) UserReferralConfig {
 		*pair.target = normalizeReferralDownloadURL(*pair.target, pair.fallback)
 	}
 	cfg.ServiceGroupID = strings.TrimSpace(cfg.ServiceGroupID)
+	if llmservice.IsSystemFreeServiceGroup(cfg.ServiceGroupID) {
+		cfg.ServiceGroupID = ""
+	}
 	return cfg
+}
+
+func validateUserReferralServiceGroup(registry *llmservice.Registry, serviceGroupID string) error {
+	return llmservice.ReferralRewardServiceGroupAllowed(registry, serviceGroupID)
 }
 
 func validateUserReferralCredits(inviterCredits, inviteeCredits float64) error {
@@ -790,6 +815,10 @@ func UpdateUserReferralConfigHandler(system store.SystemSettingsRepository, audi
 			writeError(w, http.StatusBadRequest, "INVALID_DOWNLOAD_URL", err.Error())
 			return
 		}
+		if llmservice.IsSystemFreeServiceGroup(cfg.ServiceGroupID) {
+			writeError(w, http.StatusBadRequest, "SERVICE_GROUP_NOT_ALLOWED", "Referral credits cannot be issued to system-free")
+			return
+		}
 		cfg = normalizeUserReferralConfig(cfg)
 		if (cfg.InviterCredits > 0 || cfg.InviteeCredits > 0) && strings.TrimSpace(cfg.ServiceGroupID) == "" {
 			writeError(w, 400, "SERVICE_GROUP_REQUIRED", "Service group ID is required when referral credits are enabled")
@@ -802,8 +831,12 @@ func UpdateUserReferralConfigHandler(system store.SystemSettingsRepository, audi
 				writeError(w, 500, "SERVICE_GROUP_LOAD_FAILED", "Unable to validate service group")
 				return
 			}
-			if registry == nil || registry.FindModelServiceGroup(cfg.ServiceGroupID) == nil {
-				writeError(w, 400, "SERVICE_GROUP_NOT_FOUND", "Referral service group does not exist")
+			if err := validateUserReferralServiceGroup(registry, cfg.ServiceGroupID); err != nil {
+				if errors.Is(err, llmservice.ErrReferralServiceGroupMissing) {
+					writeError(w, 400, "SERVICE_GROUP_NOT_FOUND", "Referral service group does not exist")
+					return
+				}
+				writeError(w, 400, "SERVICE_GROUP_NOT_ALLOWED", "Referral credits require a metered service group")
 				return
 			}
 		}
@@ -1671,6 +1704,14 @@ func userReferralRegistrationRecoveryStatus(status string) string {
 	}
 }
 
+// userReferralAllowsDesktopEnrollment keeps the completed-handoff path aligned
+// with the referral enrollment endpoints. A rejected or revoked attribution
+// must never issue a desktop session that the UI presents as bindable.
+func userReferralAllowsDesktopEnrollment(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return status != "rejected" && status != "revoked"
+}
+
 func registrationAuthMethodForConfig(r *http.Request, system store.SystemSettingsRepository, tenantID string) string {
 	cfg, err := loadRegistrationAuthConfigForTenant(r, system, tenantID)
 	if err != nil {
@@ -1755,6 +1796,31 @@ type publicReferralEmailEnrollRequest struct {
 	Arch                 string `json:"arch"`
 	AppVersion           string `json:"app_version"`
 	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
+}
+
+// updateReferralEnrollmentMachineMetadata keeps a referral-created desktop as
+// observable as a normal enrollment. Machine credentials are already durable
+// at this point, so metadata remains best-effort and must not turn a successful
+// device bind into an error merely because a secondary update fails.
+func updateReferralEnrollmentMachineMetadata(ctx context.Context, identity *auth.IdentityService, machineID, name, platform, hostname, arch, appVersion string, heartbeatSec int) {
+	if identity == nil || strings.TrimSpace(machineID) == "" {
+		return
+	}
+	if heartbeatSec <= 0 || heartbeatSec > 3600 {
+		heartbeatSec = 30
+	} else if heartbeatSec < 5 {
+		heartbeatSec = 5
+	}
+	if err := identity.UpdateMachineMetadata(ctx, machineID, auth.MachineMetadata{
+		Name:                 name,
+		Platform:             platform,
+		Hostname:             hostname,
+		Arch:                 arch,
+		AppVersion:           appVersion,
+		HeartbeatIntervalSec: heartbeatSec,
+	}); err != nil {
+		log.Printf("[referral-enroll] update machine metadata failed for %s: %v", machineID, err)
+	}
 }
 
 // referralResponseRecorder observes the delegated SMS handler without
@@ -1923,6 +1989,14 @@ func referralTenantAllowsRegistration(tenant *store.Tenant) bool {
 	return true
 }
 
+// referralTenantIsActive is the non-admission part of the tenant policy.
+// A completed referral may bind its first desktop after new-user registration
+// has been closed, but a disabled or deleted tenant must never accept a
+// handoff or issue machine credentials.
+func referralTenantIsActive(tenant *store.Tenant) bool {
+	return tenant != nil && tenant.DeletedAt == nil && strings.EqualFold(strings.TrimSpace(tenant.Status), "active")
+}
+
 func PublicUserReferralLandingHandler(identity *auth.IdentityService, repo store.UserReferralRepository, system store.SystemSettingsRepository, tenants store.TenantRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !allowUserReferralPublicRequest(r, "landing", userReferralLandingLimit) {
@@ -1994,6 +2068,13 @@ func PublicUserReferralHandoffHandler(identity *auth.IdentityService, repo store
 		}
 		code := strings.TrimSpace(r.PathValue("code"))
 		tenantID, _, cfg, inviterCode, err := resolvePublicReferral(r.Context(), code, repo, system, tenants, identity.UsersRepo())
+		if err != nil {
+			// A completed invitation is already attributed to its inviter. If that
+			// inviter rotates the share link before the browser presses “Open
+			// MaClaw”, retain only this short-lived, UA-bound completion path. New
+			// and incomplete visitors still require the active public code above.
+			tenantID, _, cfg, inviterCode, err = resolveCompletedPublicReferralHandoff(r.Context(), r, code, repo, system, tenants, identity.UsersRepo())
+		}
 		if err != nil || !cfg.Enabled || !verifyUserReferralRegistrationSession(r.Context(), repo, w, r, tenantID, inviterCode.CodeHash, cfg.SessionEpoch) {
 			if err != nil {
 				clearUserReferralRegistrationSessionCookie(w, r)
@@ -2001,11 +2082,8 @@ func PublicUserReferralHandoffHandler(identity *auth.IdentityService, repo store
 			}
 			return
 		}
-		if tenant, tenantErr := tenants.GetByID(r.Context(), tenantID); tenantErr != nil || !referralTenantAllowsRegistration(tenant) {
-			writeError(w, http.StatusForbidden, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
-			return
-		}
-		if allowed, allowedErr := identity.TenantAllowsNewUserRegistration(auth.WithTenant(r.Context(), tenantID)); allowedErr != nil || !allowed {
+		tenant, tenantErr := tenants.GetByID(r.Context(), tenantID)
+		if tenantErr != nil || !referralTenantIsActive(tenant) {
 			writeError(w, http.StatusForbidden, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
 			return
 		}
@@ -2015,7 +2093,37 @@ func PublicUserReferralHandoffHandler(identity *auth.IdentityService, repo store
 			return
 		}
 		now := time.Now().UTC()
-		handoff := &store.UserReferralHandoff{TokenHash: userReferralHandoffTokenHash(raw), TenantID: tenantID, CodeHash: inviterCode.CodeHash, ReferralCodeID: inviterCode.ID, InviterUserID: inviterCode.InviterUserID, ConfigEpoch: cfg.SessionEpoch, ServiceGroupID: cfg.ServiceGroupID, InviterCredits: cfg.InviterCredits, InviteeCredits: cfg.InviteeCredits, DurationDays: cfg.DurationDays, ExpiresAt: now.Add(userReferralHandoffTTL), CreatedAt: now}
+		// A completed browser session already proves the invitee identity. Carry
+		// only its internal user ID into the opaque handoff; the email/phone is
+		// resolved after the desktop claims the one-time token and is never put in
+		// the URL or persisted with the handoff.
+		inviteeUserID := ""
+		if sessionToken, ok := userReferralRegistrationSessionToken(r); ok {
+			if session, sessionErr := repo.GetRegistrationSession(r.Context(), tenantID, userReferralRegistrationSessionTokenHash(tenantID, sessionToken), now); sessionErr == nil && session != nil && session.CompletedAt != nil && strings.TrimSpace(session.ReferralID) != "" {
+				if referral, referralErr := repo.GetReferralByID(r.Context(), tenantID, session.ReferralID); referralErr == nil && referral != nil && referral.ReferralCodeID == inviterCode.ID && referral.InviteeUserID == session.InviteeUserID {
+					if !userReferralAllowsDesktopEnrollment(referral.Status) {
+						writeError(w, http.StatusGone, "REFERRAL_HANDOFF_EXPIRED", "This MaClaw handoff is no longer available")
+						return
+					}
+					inviteeUserID = strings.TrimSpace(session.InviteeUserID)
+				}
+			}
+		}
+		// A newly registered invitee is binding an existing account, not creating
+		// a new one. Keep that final device-binding step available even if an
+		// administrator closes new-user registration after the browser flow has
+		// completed. Incomplete handoffs retain the normal admission check.
+		if inviteeUserID == "" {
+			if !referralTenantAllowsRegistration(tenant) {
+				writeError(w, http.StatusForbidden, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
+				return
+			}
+			if allowed, allowedErr := identity.TenantAllowsNewUserRegistration(auth.WithTenant(r.Context(), tenantID)); allowedErr != nil || !allowed {
+				writeError(w, http.StatusForbidden, "REGISTRATION_UNAVAILABLE", "Registration is unavailable")
+				return
+			}
+		}
+		handoff := &store.UserReferralHandoff{TokenHash: userReferralHandoffTokenHash(raw), TenantID: tenantID, CodeHash: inviterCode.CodeHash, ReferralCodeID: inviterCode.ID, InviterUserID: inviterCode.InviterUserID, InviteeUserID: inviteeUserID, ConfigEpoch: cfg.SessionEpoch, ServiceGroupID: cfg.ServiceGroupID, InviterCredits: cfg.InviterCredits, InviteeCredits: cfg.InviteeCredits, DurationDays: cfg.DurationDays, ExpiresAt: now.Add(userReferralHandoffTTL), CreatedAt: now}
 		if err := repo.CreateHandoff(r.Context(), handoff); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "REFERRAL_HANDOFF_UNAVAILABLE", "Unable to open MaClaw right now")
 			return
@@ -2065,10 +2173,39 @@ func PublicUserReferralHandoffClaimHandler(identity *auth.IdentityService, repo 
 		}
 		cfg, cfgErr := loadUserReferralConfig(r.Context(), system, handoff.TenantID)
 		tenant, tenantErr := tenants.GetByID(r.Context(), handoff.TenantID)
-		allowed, allowedErr := identity.TenantAllowsNewUserRegistration(auth.WithTenant(r.Context(), handoff.TenantID))
-		if cfgErr != nil || tenantErr != nil || !cfg.Enabled || cfg.SessionEpoch != handoff.ConfigEpoch || !referralTenantAllowsRegistration(tenant) || allowedErr != nil || !allowed {
+		if cfgErr != nil || tenantErr != nil || !cfg.Enabled || cfg.SessionEpoch != handoff.ConfigEpoch || !referralTenantIsActive(tenant) {
 			writeError(w, http.StatusGone, "REFERRAL_HANDOFF_EXPIRED", "This MaClaw handoff is no longer available")
 			return
+		}
+		var completedInvitee *store.User
+		var completedReferral *store.UserReferral
+		completedIdentityType, completedIdentity := "", ""
+		if inviteeUserID := strings.TrimSpace(handoff.InviteeUserID); inviteeUserID != "" {
+			invitee, inviteeErr := identity.UsersRepo().GetByID(auth.WithTenant(r.Context(), handoff.TenantID), inviteeUserID)
+			referral, referralErr := repo.GetReferralForInvitee(r.Context(), handoff.TenantID, inviteeUserID)
+			if inviteeErr != nil || invitee == nil || referralErr != nil || referral == nil || referral.ReferralCodeID != handoff.ReferralCodeID || referral.InviteeUserID != inviteeUserID || !userReferralAllowsDesktopEnrollment(referral.Status) {
+				writeError(w, http.StatusGone, "REFERRAL_HANDOFF_EXPIRED", "This MaClaw handoff is invalid or expired")
+				return
+			}
+			completedIdentityType, completedIdentity = "email", strings.TrimSpace(invitee.Email)
+			if strings.HasPrefix(strings.ToLower(completedIdentity), "phone:") {
+				completedIdentityType = "phone"
+				completedIdentity = userReferralNormalizedIdentityValue("phone", strings.TrimSpace(strings.TrimPrefix(completedIdentity, "phone:")))
+			}
+			if completedIdentity == "" {
+				writeError(w, http.StatusGone, "REFERRAL_HANDOFF_EXPIRED", "This MaClaw handoff is invalid or expired")
+				return
+			}
+			completedInvitee, completedReferral = invitee, referral
+		} else {
+			if !referralTenantAllowsRegistration(tenant) {
+				writeError(w, http.StatusGone, "REFERRAL_HANDOFF_EXPIRED", "This MaClaw handoff is no longer available")
+				return
+			}
+			if allowed, allowedErr := identity.TenantAllowsNewUserRegistration(auth.WithTenant(r.Context(), handoff.TenantID)); allowedErr != nil || !allowed {
+				writeError(w, http.StatusGone, "REFERRAL_HANDOFF_EXPIRED", "This MaClaw handoff is no longer available")
+				return
+			}
 		}
 		consumed, err := repo.ConsumeHandoff(r.Context(), handoff.TokenHash, now)
 		if err != nil {
@@ -2089,7 +2226,20 @@ func PublicUserReferralHandoffClaimHandler(identity *auth.IdentityService, repo 
 			return
 		}
 		authCfg, _ := loadRegistrationAuthConfigForTenant(r, system, handoff.TenantID)
-		writeJSON(w, http.StatusOK, map[string]any{"registration_session": session, "expires_in_seconds": int(userReferralRegistrationSessionTTL.Seconds()), "tenant": map[string]any{"id": handoff.TenantID, "name": tenant.Name, "slug": tenant.Slug}, "registration_method": authCfg.Method, "invitee_credits": handoff.InviteeCredits, "duration_days": handoff.DurationDays})
+		payload := map[string]any{"registration_session": session, "expires_in_seconds": int(userReferralRegistrationSessionTTL.Seconds()), "tenant": map[string]any{"id": handoff.TenantID, "name": tenant.Name, "slug": tenant.Slug}, "registration_method": authCfg.Method, "invitee_credits": handoff.InviteeCredits, "duration_days": handoff.DurationDays}
+		if completedInvitee != nil && completedReferral != nil {
+			// Make the desktop session a resumable completed session as well,
+			// so status recovery and the enrollment endpoints stay tied to the
+			// same invitation rather than falling back to registration.
+			if err := repo.MarkRegistrationSessionCompleted(r.Context(), handoff.TenantID, userReferralRegistrationSessionTokenHash(handoff.TenantID, session), completedInvitee.ID, completedReferral.ID, now); err != nil {
+				writeError(w, http.StatusServiceUnavailable, "REFERRAL_HANDOFF_UNAVAILABLE", "Unable to resume invitation registration right now")
+				return
+			}
+			payload["registration_status"] = userReferralRegistrationRecoveryStatus(completedReferral.Status)
+			payload["registered_identity"] = completedIdentity
+			payload["registered_identity_type"] = completedIdentityType
+		}
+		writeJSON(w, http.StatusOK, payload)
 	}
 }
 
@@ -2409,12 +2559,12 @@ func PublicUserReferralPhoneEnrollHandler(identity *auth.IdentityService, repo s
 			writeError(w, http.StatusConflict, "REFERRAL_REGISTRATION_REQUIRED", "Complete invitation registration first")
 			return
 		}
-		if !verifyUserReferralIdentityReservationForValue(r.Context(), repo, r, tenantID, inviterCode.CodeHash, "phone", canonicalPhone) {
+		referral, err := repo.GetReferralForInvitee(r.Context(), tenantID, user.ID)
+		if err != nil || referral == nil || referral.ReferralCodeID != inviterCode.ID || strings.EqualFold(referral.Status, "revoked") || strings.EqualFold(referral.Status, "rejected") {
 			writeError(w, http.StatusForbidden, "REFERRAL_ENROLLMENT_UNAVAILABLE", "Invitation registration is unavailable")
 			return
 		}
-		referral, err := repo.GetReferralForInvitee(r.Context(), tenantID, user.ID)
-		if err != nil || referral == nil || referral.ReferralCodeID != inviterCode.ID || strings.EqualFold(referral.Status, "revoked") || strings.EqualFold(referral.Status, "rejected") {
+		if !verifyUserReferralIdentityReservationForValue(r.Context(), repo, r, tenantID, inviterCode.CodeHash, "phone", canonicalPhone) && !completedUserReferralSessionMatches(r.Context(), repo, r, tenantID, user, referral) {
 			writeError(w, http.StatusForbidden, "REFERRAL_ENROLLMENT_UNAVAILABLE", "Invitation registration is unavailable")
 			return
 		}
@@ -2423,6 +2573,7 @@ func PublicUserReferralPhoneEnrollHandler(identity *auth.IdentityService, repo s
 			writeError(w, http.StatusInternalServerError, "ENROLL_FAILED", "Desktop enrollment is unavailable")
 			return
 		}
+		updateReferralEnrollmentMachineMetadata(r.Context(), identity, result.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
 		payload := enrollmentStartResponseMap(result)
 		payload["phone_number"] = phone
 		writeJSON(w, http.StatusOK, payload)
@@ -2464,12 +2615,12 @@ func PublicUserReferralEmailEnrollHandler(identity *auth.IdentityService, repo s
 			writeError(w, http.StatusConflict, "REFERRAL_REGISTRATION_REQUIRED", "Complete invitation registration first")
 			return
 		}
-		if !verifyUserReferralIdentityReservation(r.Context(), repo, r, tenantID, inviterCode.CodeHash, userReferralIdentityHash(tenantID, "email", email)) {
+		referral, err := repo.GetReferralForInvitee(r.Context(), tenantID, user.ID)
+		if err != nil || referral == nil || referral.ReferralCodeID != inviterCode.ID || strings.EqualFold(referral.Status, "revoked") || strings.EqualFold(referral.Status, "rejected") {
 			writeError(w, http.StatusForbidden, "REFERRAL_ENROLLMENT_UNAVAILABLE", "Invitation registration is unavailable")
 			return
 		}
-		referral, err := repo.GetReferralForInvitee(r.Context(), tenantID, user.ID)
-		if err != nil || referral == nil || referral.ReferralCodeID != inviterCode.ID || strings.EqualFold(referral.Status, "revoked") || strings.EqualFold(referral.Status, "rejected") {
+		if !verifyUserReferralIdentityReservation(r.Context(), repo, r, tenantID, inviterCode.CodeHash, userReferralIdentityHash(tenantID, "email", email)) && !completedUserReferralSessionMatches(r.Context(), repo, r, tenantID, user, referral) {
 			writeError(w, http.StatusForbidden, "REFERRAL_ENROLLMENT_UNAVAILABLE", "Invitation registration is unavailable")
 			return
 		}
@@ -2478,6 +2629,7 @@ func PublicUserReferralEmailEnrollHandler(identity *auth.IdentityService, repo s
 			writeError(w, http.StatusInternalServerError, "ENROLL_FAILED", "Desktop enrollment is unavailable")
 			return
 		}
+		updateReferralEnrollmentMachineMetadata(r.Context(), identity, result.MachineID, req.MachineName, req.Platform, req.Hostname, req.Arch, req.AppVersion, req.HeartbeatIntervalSec)
 		payload := enrollmentStartResponseMap(result)
 		payload["email"] = email
 		writeJSON(w, http.StatusOK, payload)
@@ -2725,15 +2877,31 @@ func grantUserReferralRewards(ctx context.Context, repo store.UserReferralReposi
 		return err
 	}
 	tenantSystem := ScopedSystemSettingsForTenant(referral.TenantID, system)
+	serviceGroupID := strings.TrimSpace(referral.ServiceGroupID)
+	if referral.InviterCredits > 0 || referral.InviteeCredits > 0 {
+		registry, registryErr := llmservice.LoadRegistry(ctx, tenantSystem)
+		if registryErr != nil {
+			_ = repo.UpdateRewardGrants(ctx, referral.TenantID, referral.ID, "reward_failed", referral.InviterGrantID, referral.InviteeGrantID, time.Now().UTC())
+			return registryErr
+		}
+		if llmservice.ReferralRewardServiceGroupAllowed(registry, serviceGroupID) != nil {
+			cfg, cfgErr := loadUserReferralConfig(ctx, system, referral.TenantID)
+			if cfgErr != nil || llmservice.ReferralRewardServiceGroupAllowed(registry, cfg.ServiceGroupID) != nil {
+				_ = repo.UpdateRewardGrants(ctx, referral.TenantID, referral.ID, "reward_failed", referral.InviterGrantID, referral.InviteeGrantID, time.Now().UTC())
+				return errors.New("referral rewards require a metered service group")
+			}
+			serviceGroupID = strings.TrimSpace(cfg.ServiceGroupID)
+		}
+	}
 	inviterGrant, inviteeGrant := referral.InviterGrantID, referral.InviteeGrantID
 	if referral.InviterCredits > 0 && inviterGrant == "" {
-		inviterGrant, err = llmservice.GrantUserReferralBenefitForUserID(ctx, tenantSystem, inviter.ID, inviter.Email, referral.ID, referral.ServiceGroupID, referral.DurationDays, referral.InviterCredits, referral.RegisteredAt)
+		inviterGrant, err = llmservice.GrantUserReferralBenefitForUserID(ctx, tenantSystem, inviter.ID, inviter.Email, referral.ID, serviceGroupID, referral.DurationDays, referral.InviterCredits, referral.RegisteredAt)
 		if err == nil && inviterGrant == "" {
 			err = errors.New("inviter reward grant was not created")
 		}
 	}
 	if err == nil && referral.InviteeCredits > 0 && inviteeGrant == "" {
-		inviteeGrant, err = llmservice.GrantUserReferralBenefitForUserID(ctx, tenantSystem, invitee.ID, invitee.Email, referral.ID, referral.ServiceGroupID, referral.DurationDays, referral.InviteeCredits, referral.RegisteredAt)
+		inviteeGrant, err = llmservice.GrantUserReferralBenefitForUserID(ctx, tenantSystem, invitee.ID, invitee.Email, referral.ID, serviceGroupID, referral.DurationDays, referral.InviteeCredits, referral.RegisteredAt)
 		if err == nil && inviteeGrant == "" {
 			err = errors.New("invitee reward grant was not created")
 		}
@@ -2832,6 +3000,12 @@ func ReconcileUserReferralRewards(ctx context.Context, identity *auth.IdentitySe
 		if tenant == nil || tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
 			continue
 		}
+		cfg, _ := loadUserReferralConfig(ctx, system, tenant.ID)
+		userReferralMu.Lock()
+		if _, detachErr := llmservice.DetachSystemFreeFromReferralOwners(ctx, ScopedSystemSettingsForTenant(tenant.ID, system), cfg.ServiceGroupID); detachErr != nil {
+			log.Printf("[user-referrals] detach leaked system-free access for tenant %s: %v", tenant.ID, detachErr)
+		}
+		userReferralMu.Unlock()
 		candidates, err := repo.ListRewardRecoveryCandidates(ctx, tenant.ID, 0)
 		if err != nil {
 			return result, err
@@ -2912,6 +3086,68 @@ func resolvePublicReferral(ctx context.Context, code string, repo store.UserRefe
 	return "", "", UserReferralConfig{}, nil, errors.New("not found")
 }
 
+// resolveCompletedPublicReferralHandoff is the sole exception to active-code
+// lookup. A retired link cannot start or resume registration, but the browser
+// session that completed registration before rotation may still mint its
+// one-time desktop handoff. Every relationship is checked against durable
+// state; the raw code remains only a hash comparison and is never returned.
+func resolveCompletedPublicReferralHandoff(ctx context.Context, r *http.Request, code string, repo store.UserReferralRepository, system store.SystemSettingsRepository, tenants store.TenantRepository, users ...store.UserRepository) (string, string, UserReferralConfig, *store.UserReferralCode, error) {
+	if r == nil || repo == nil || tenants == nil || strings.TrimSpace(code) == "" {
+		return "", "", UserReferralConfig{}, nil, errors.New("invalid completed referral handoff")
+	}
+	token, ok := userReferralRegistrationSessionToken(r)
+	if !ok {
+		return "", "", UserReferralConfig{}, nil, errors.New("missing referral session")
+	}
+	all, err := tenants.List(ctx)
+	if err != nil {
+		return "", "", UserReferralConfig{}, nil, err
+	}
+	now := time.Now().UTC()
+	for _, tenant := range all {
+		if !referralTenantIsActive(tenant) {
+			continue
+		}
+		tenantID := store.NormalizeTenantID(tenant.ID)
+		session, sessionErr := repo.GetRegistrationSession(ctx, tenantID, userReferralRegistrationSessionTokenHash(tenantID, token), now)
+		if sessionErr != nil || session == nil || session.CompletedAt == nil || !userReferralSessionMatchesCode(tenantID, session.CodeHash, code) || strings.TrimSpace(session.InviteeUserID) == "" || strings.TrimSpace(session.ReferralID) == "" {
+			continue
+		}
+		cfg, cfgErr := loadUserReferralConfig(ctx, system, tenantID)
+		if cfgErr != nil || !cfg.Enabled || cfg.SessionEpoch != session.ConfigEpoch {
+			continue
+		}
+		referral, referralErr := repo.GetReferralByID(ctx, tenantID, session.ReferralID)
+		if referralErr != nil || referral == nil || strings.TrimSpace(referral.InviteeUserID) != strings.TrimSpace(session.InviteeUserID) || !userReferralAllowsDesktopEnrollment(referral.Status) {
+			continue
+		}
+		found, codeErr := repo.GetCodeByID(ctx, tenantID, referral.ReferralCodeID)
+		if codeErr != nil || found == nil || !strings.EqualFold(strings.TrimSpace(found.Status), "rotated") || found.CodeHash != session.CodeHash || strings.TrimSpace(found.InviterUserID) != strings.TrimSpace(referral.InviterUserID) {
+			continue
+		}
+		if len(users) > 0 && users[0] != nil {
+			inviter, inviterErr := users[0].GetByID(ctx, found.InviterUserID)
+			if inviterErr != nil || inviter == nil || store.NormalizeTenantID(inviter.TenantID) != tenantID || !strings.EqualFold(strings.TrimSpace(inviter.Status), "active") {
+				continue
+			}
+		}
+		return tenantID, code, cfg, found, nil
+	}
+	return "", "", UserReferralConfig{}, nil, errors.New("completed referral handoff unavailable")
+}
+
+// userReferralSessionMatchesCode preserves the same legacy spelling rules as
+// public-link resolution. Sessions store the exact historic code HMAC, while
+// newer links use a case-insensitive canonical hash.
+func userReferralSessionMatchesCode(tenantID, sessionCodeHash, code string) bool {
+	for _, candidate := range userReferralCodeHashCandidates(tenantID, code) {
+		if candidate == sessionCodeHash {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvePublicReferralRequest accepts either the public invitation-code path
 // (browser flow) or a claimed desktop handoff. A desktop request carries no
 // referral code: the short-lived session token and tenant header are resolved
@@ -2939,8 +3175,26 @@ func resolvePublicReferralRequest(ctx context.Context, r *http.Request, code str
 		return "", "", UserReferralConfig{}, nil, errors.New("desktop referral session unavailable")
 	}
 	found, err := repo.GetCodeByHash(ctx, tenantID, session.CodeHash)
-	if err != nil || found == nil {
+	if err != nil {
 		return "", "", UserReferralConfig{}, nil, errors.New("desktop referral invitation unavailable")
+	}
+	if found == nil {
+		// Rotating a link must invalidate new and incomplete registrations, but
+		// it must not strand an invitee who has already completed registration
+		// and holds this short-lived, UA-bound desktop session. Resolve that
+		// narrowly scoped case through the immutable referral attribution rather
+		// than accepting an arbitrary rotated code hash.
+		if session.CompletedAt == nil || strings.TrimSpace(session.InviteeUserID) == "" || strings.TrimSpace(session.ReferralID) == "" {
+			return "", "", UserReferralConfig{}, nil, errors.New("desktop referral invitation unavailable")
+		}
+		referral, referralErr := repo.GetReferralByID(ctx, tenantID, session.ReferralID)
+		if referralErr != nil || referral == nil || strings.TrimSpace(referral.InviteeUserID) != strings.TrimSpace(session.InviteeUserID) || strings.TrimSpace(referral.ReferralCodeID) == "" {
+			return "", "", UserReferralConfig{}, nil, errors.New("desktop referral invitation unavailable")
+		}
+		found, err = repo.GetCodeByID(ctx, tenantID, referral.ReferralCodeID)
+		if err != nil || found == nil || !strings.EqualFold(strings.TrimSpace(found.Status), "rotated") || found.CodeHash != session.CodeHash || strings.TrimSpace(found.InviterUserID) != strings.TrimSpace(referral.InviterUserID) {
+			return "", "", UserReferralConfig{}, nil, errors.New("desktop referral invitation unavailable")
+		}
 	}
 	if len(users) > 0 && users[0] != nil {
 		inviter, inviterErr := users[0].GetByID(ctx, found.InviterUserID)

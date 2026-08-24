@@ -241,6 +241,7 @@ const (
 	MsgTUIConfigDescLLMContextLength      = "msg.tui_config_desc_llm_context_length"
 	MsgTUIConfigDescIMChannelProfile      = "msg.tui_config_desc_im_channel_profile"
 	MsgTUIConfigDescQQBotEnabled          = "msg.tui_config_desc_qqbot_enabled"
+	MsgTUIConfigDescQQBotQRLogin          = "msg.tui_config_desc_qqbot_qr_login"
 	MsgTUIConfigDescQQBotAppID            = "msg.tui_config_desc_qqbot_app_id"
 	MsgTUIConfigDescQQBotAppSecret        = "msg.tui_config_desc_qqbot_app_secret"
 	MsgTUIConfigDescTelegramEnabled       = "msg.tui_config_desc_telegram_enabled"
@@ -705,6 +706,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLLMContextLength:      "上下文长度 (tokens)",
 		MsgTUIConfigDescIMChannelProfile:      "选择常用 IM 通道；高级凭据可在下方对应通道继续配置",
 		MsgTUIConfigDescQQBotEnabled:          "启用 QQ 机器人",
+		MsgTUIConfigDescQQBotQRLogin:          "用手机 QQ 扫码绑定，成功后自动写入 AppID 和 AppSecret",
 		MsgTUIConfigDescQQBotAppID:            "QQ 机器人 AppID",
 		MsgTUIConfigDescQQBotAppSecret:        "QQ 机器人 AppSecret",
 		MsgTUIConfigDescTelegramEnabled:       "启用 Telegram 机器人",
@@ -1141,6 +1143,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLLMContextLength:      "context length (tokens)",
 		MsgTUIConfigDescIMChannelProfile:      "Choose a common IM channel; advanced credentials remain configurable below",
 		MsgTUIConfigDescQQBotEnabled:          "enable QQ bot",
+		MsgTUIConfigDescQQBotQRLogin:          "Scan with mobile QQ to bind; AppID and AppSecret are saved automatically",
 		MsgTUIConfigDescQQBotAppID:            "QQ Bot AppID",
 		MsgTUIConfigDescQQBotAppSecret:        "QQ Bot AppSecret",
 		MsgTUIConfigDescTelegramEnabled:       "enable Telegram bot",

@@ -145,6 +145,7 @@ func TestProductionCases_Coverage(t *testing.T) {
 	requiredLabels := []IntentLabel{
 		LabelCoding, LabelBugFix, LabelMaintenance, LabelSSH,
 		LabelBrowser, LabelSearch, LabelNonCoding, LabelDocumentDelivery,
+		LabelDocumentGenerate, LabelDocumentOpen,
 		LabelOffice, LabelContinuation,
 	}
 	for _, label := range requiredLabels {

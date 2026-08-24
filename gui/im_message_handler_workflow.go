@@ -621,12 +621,19 @@ func (h *IMMessageHandler) shouldEscapeActiveUnderstanding(userID, text string) 
 		return false
 	}
 	// Escaping an existing understanding session is a routing convenience, not
-	// an execution authority. Keep it off the first-response L3 path; when L2
-	// is unavailable or uncertain the safe outcome is to retain the session.
+	// an execution authority. Prefer embedding-only classification. When L2 is
+	// degraded or unknown, fall back to full Classify so a configured L3 can
+	// still prove a direct-execution intent such as ssh.
 	result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
 		Text:   text,
 		UserID: userID,
 	})
+	if result.Degraded || result.Primary == intent.LabelUnknown {
+		result = uic.Classify(intent.MessageContext{
+			Text:   text,
+			UserID: userID,
+		})
+	}
 	return shouldEscapeActiveUnderstandingForClassification(result, uic.IsWorkflowCandidate(result.Primary), uic.GetWorkflowRejectThreshold())
 }
 

@@ -1,0 +1,50 @@
+{
+  "category": "high_risk_refusal",
+  "category_id": 6,
+  "title": "high-risk capability refusal",
+  "design_ref": "10.1 item 6",
+  "samples": [
+    {
+      "id": "deny-local-shell",
+      "title": "Policy denies shell.execute.local even when a provider exists",
+      "needs": [{"id": "shell", "capability": "shell.execute.local"}],
+      "constraints": [
+        {"id": "deny-shell", "capability": "shell.execute.local", "effect": "deny", "authority": "policy"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "bash_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "shell.execute.local"}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "shell", "reason": "policy_denied"}]
+      }
+    },
+    {
+      "id": "deny-remote-host",
+      "title": "Policy denies remote host execution",
+      "needs": [{"id": "remote", "capability": "shell.execute.remote_host"}],
+      "constraints": [
+        {"id": "deny-remote", "capability": "shell.execute.remote_host", "effect": "deny", "authority": "policy"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "ssh_adapter",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "shell.execute.remote_host"}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "remote", "reason": "policy_denied"}]
+      }
+    }
+  ]
+}

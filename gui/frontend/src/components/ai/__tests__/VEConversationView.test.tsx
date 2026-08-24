@@ -14,6 +14,7 @@ import {
     classifySessionInitError,
     classifySendError,
     visibleVEStreamContent,
+    sanitizeVisibleVEText,
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
@@ -136,6 +137,8 @@ describe("VEConversationView", () => {
     it("drops private reasoning markers from streamed VE content", () => {
         expect(visibleVEStreamContent("\x01private reasoning")).toBe("");
         expect(visibleVEStreamContent("visible\u0000 text\nnext")).toBe("visible text\nnext");
+        expect(visibleVEStreamContent("I am \uEB90Kate")).toBe("I am Kate");
+        expect(sanitizeVisibleVEText("\x01visible answer")).toBe("visible answer");
     });
 
     it("does not show the generic coding-agent permission selector", () => {
@@ -2475,6 +2478,21 @@ describe("VEConversationView", () => {
             expect(GroupDiscussionGetConsultationDetail).toHaveBeenCalledWith("test-session-1");
             expect(screen.getByText("之前的问题")).toBeTruthy();
             expect(screen.getByText("历史回复")).toBeTruthy();
+        });
+
+        it("keeps persisted answers that still start with the reasoning sentinel", async () => {
+            (GroupDiscussionGetConsultationDetail as any).mockResolvedValueOnce({
+                discussion: { id: "test-session-1", local_relation: "initiated_by_me" },
+                session: { participants: [{ id: "human-1", role_code: "initiator" }, { id: "ve-1", role_code: "speaker" }] },
+                messages: [
+                    { id: "history-answer", from_id: "ve-1", from_name: "Test VE", kind: "answer", content: "\x01visible answer", created_at: "2026-05-01T00:00:00Z" },
+                ],
+            });
+
+            renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            expect(screen.getByText("visible answer")).toBeTruthy();
         });
 
         it("filters private reasoning markers while restoring saved messages", async () => {

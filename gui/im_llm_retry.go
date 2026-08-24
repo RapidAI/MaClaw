@@ -52,6 +52,11 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAfterError(
 		result.Cancelled = true
 		return result
 	}
+	// Thinking or answer text already reached the host. Another stream would
+	// duplicate the visible turn and can wipe this prefix if the retry fails.
+	if llmResponseHasVisibleOutput(resp) {
+		return result
+	}
 	if adaptiveRetry != nil {
 		h.retryAgentLoopLLMRequestAdaptive(ctx, reqCtx, cfg, conversation, tools, httpClient, onToken, onProgress, streamDoneCallback, adaptiveRetry, firstRequestMetrics, firstRequestMarked, &result)
 		return result

@@ -343,7 +343,7 @@ func putCachedAuthorizedModelResponse(ctx context.Context, cache llmPromptCacheS
 	now := time.Now().UTC()
 	orderedProviders := []string(nil)
 	if model != nil {
-		orderedProviders = llmservice.OrderProvidersForRequest(normalizePromptCacheBody(body, cfg), model)
+		orderedProviders = llmservice.PeekProvidersForRequest(normalizePromptCacheBody(body, cfg), model)
 	}
 	serviceGroupIDs = normalizeCacheServiceGroupIDs(serviceGroupIDs)
 	normalizedBody := normalizePromptCacheBody(body, cfg)

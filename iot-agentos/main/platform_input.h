@@ -3,10 +3,13 @@
 /*
  * Internal physical-input SPI.
  *
- * Input Service owns the public event envelope and queueing; this port owns
- * only the selected adapter's normalized action/source publisher and bounded
- * scanner stop.  It deliberately exposes no controller handle, GPIO, touch
- * coordinate, gesture timing, task handle or restart/deinit promise.
+ * Platform Bootstrap establishes the selected profile's boot-lifetime
+ * hardware first. Input Service owns the public event envelope and queueing;
+ * this port owns only the selected adapter's normalized action/source
+ * publisher and bounded scanner stop. It deliberately exposes no controller
+ * handle, GPIO, touch coordinate, gesture timing or task handle. A successful
+ * scanner stop/join may later accept a fresh publisher generation, but this
+ * is not a panel/controller deinit or full hardware restart promise.
  */
 
 #include <stdint.h>

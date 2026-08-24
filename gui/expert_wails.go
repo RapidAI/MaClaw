@@ -255,6 +255,12 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		} else if def.OptimizedFromID != "" {
 			return "", fmt.Errorf("an existing expert cannot be converted into an optimized expert")
 		}
+		// The desktop editor does not yet edit capability_rules. An omitted
+		// field must not wipe a reviewed control-plane restriction. An
+		// explicit empty array still clears the rules.
+		if !expertJSONHasCapabilityRules(expertJSON) {
+			def.CapabilityRules = cloneExpertCapabilityRules(storedExisting.CapabilityRules)
+		}
 	}
 	isBuiltinID := builtinExpertByID(def.ID) != nil
 	// RFC3339Nano keeps sub-second precision so rapid successive edits keep a
@@ -323,6 +329,15 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+func expertJSONHasCapabilityRules(expertJSON string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(expertJSON), &raw); err != nil {
+		return false
+	}
+	_, ok := raw["capability_rules"]
+	return ok
 }
 
 // DeleteExpert removes a user expert and records a tombstone so a later Hub

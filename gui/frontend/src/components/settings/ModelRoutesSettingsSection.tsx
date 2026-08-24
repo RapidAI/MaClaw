@@ -9,6 +9,7 @@ type RouteRow = {
     url: string;
     protocol: string;
     provider: string;
+    contextLength: string;
 };
 
 type ModelRoutesSettingsSectionProps = {
@@ -28,6 +29,7 @@ const emptyRow = (task = ''): RouteRow => ({
     url: '',
     protocol: '',
     provider: '',
+    contextLength: '',
 });
 
 function routesFromConfig(config: corelib.AppConfig | null): RouteRow[] {
@@ -46,12 +48,13 @@ function routesFromConfig(config: corelib.AppConfig | null): RouteRow[] {
                 url: String(v.url || ''),
                 protocol: String(v.protocol || ''),
                 provider: String(v.provider || ''),
+                contextLength: Number(v.context_length) > 0 ? String(v.context_length) : '',
             };
         });
 }
 
-function rowsToRoutes(rows: RouteRow[]): Record<string, { model: string; url?: string; protocol?: string; provider?: string }> {
-    const out: Record<string, { model: string; url?: string; protocol?: string; provider?: string }> = {};
+function rowsToRoutes(rows: RouteRow[]): Record<string, { model: string; url?: string; protocol?: string; provider?: string; context_length?: number }> {
+    const out: Record<string, { model: string; url?: string; protocol?: string; provider?: string; context_length?: number }> = {};
     for (const row of rows) {
         const task = row.task.trim().toLowerCase();
         const model = row.model.trim();
@@ -61,6 +64,7 @@ function rowsToRoutes(rows: RouteRow[]): Record<string, { model: string; url?: s
             ...(row.url.trim() ? { url: row.url.trim() } : {}),
             ...(row.protocol.trim() ? { protocol: row.protocol.trim() } : {}),
             ...(row.provider.trim() ? { provider: row.provider.trim() } : {}),
+            ...(Number(row.contextLength) > 0 ? { context_length: Math.floor(Number(row.contextLength)) } : {}),
         };
     }
     return out;
@@ -207,7 +211,7 @@ export const ModelRoutesSettingsSection = ({
                         data-testid={`model-route-row-${index}`}
                         style={{
                             display: 'grid',
-                            gridTemplateColumns: 'minmax(100px, 1fr) minmax(140px, 1.4fr) minmax(120px, 1.2fr) auto',
+                            gridTemplateColumns: 'minmax(90px, 0.9fr) minmax(130px, 1.3fr) minmax(120px, 1.15fr) minmax(90px, 0.8fr) auto',
                             gap: 8,
                             alignItems: 'end',
                         }}
@@ -220,6 +224,18 @@ export const ModelRoutesSettingsSection = ({
                                 value={row.task}
                                 placeholder="reasoning"
                                 onChange={(e) => updateRow(index, { task: e.target.value })}
+                            />
+                        </label>
+                        <label className="proxy-settings-field" style={{ margin: 0 }}>
+                            <span className="form-label">{textForLang(lang, 'Context (tokens)', '上下文（token）', '上下文（token）')}</span>
+                            <input
+                                className="form-input"
+                                type="number"
+                                min="0"
+                                step="1000"
+                                value={row.contextLength}
+                                placeholder="inherit primary"
+                                onChange={(e) => updateRow(index, { contextLength: e.target.value })}
                             />
                         </label>
                         <label className="proxy-settings-field" style={{ margin: 0 }}>

@@ -81,6 +81,10 @@ func (a *App) migrateOAuthCredentialsOnStartup(config corelib.AppConfig) {
 //
 // This is called from ensureOAuthToken (app_maclaw_llm.go).
 func (a *App) ensureOAuthTokenViaStore(provider corelib.MaclawLLMProvider, providerIdx int) error {
+	return a.ensureOAuthTokenViaStoreMaybeSync(provider, providerIdx, true)
+}
+
+func (a *App) ensureOAuthTokenViaStoreMaybeSync(provider corelib.MaclawLLMProvider, providerIdx int, syncConfig bool) error {
 	storeID := credentialStoreProviderID(provider)
 	if storeID == "" || a.credentialStore == nil {
 		return nil // not an OAuth provider or store not initialized
@@ -90,19 +94,9 @@ func (a *App) ensureOAuthTokenViaStore(provider corelib.MaclawLLMProvider, provi
 	var syncCred *oauth.StoredCredential
 
 	err := a.credentialStore.Modify(storeID, func(old *oauth.StoredCredential) (*oauth.StoredCredential, error) {
-		// If store has no credential, try to use config.json fields as source
+		old = completeStoredOAuthCredential(old, provider)
 		if old == nil {
-			if provider.Key == "" {
-				return nil, nil // nothing to work with
-			}
-			// Bootstrap from config.json fields (first-time migration at refresh time)
-			old = &oauth.StoredCredential{
-				Type:           "oauth",
-				AccessToken:    provider.Key,
-				RawAccessToken: provider.OAuthAccessToken,
-				RefreshToken:   provider.RefreshToken,
-				ExpiresAt:      provider.TokenExpiresAt,
-			}
+			return nil, nil
 		}
 
 		// Check if refresh is needed
@@ -167,10 +161,77 @@ func (a *App) ensureOAuthTokenViaStore(provider corelib.MaclawLLMProvider, provi
 	})
 
 	// Sync back to config.json OUTSIDE of Modify (no lock nesting risk).
-	if err == nil && syncCred != nil {
+	// Test & Save skips this dual-write so it can keep the original provider
+	// revision and persist the refreshed secret itself after a successful probe.
+	if err == nil && syncCred != nil && syncConfig {
 		a.syncCredentialToConfig(provider.Name, syncCred, providerIdx)
 	}
 	return err
+}
+
+// completeStoredOAuthCredential fills blank store fields from the provider
+// snapshot. Test & Save hydrates the candidate from config first; an older
+// store row that kept only an expired access token must still be able to use
+// the config refresh token.
+func completeStoredOAuthCredential(cred *oauth.StoredCredential, provider corelib.MaclawLLMProvider) *oauth.StoredCredential {
+	existed := cred != nil
+	if cred == nil {
+		if strings.TrimSpace(provider.Key) == "" &&
+			strings.TrimSpace(provider.OAuthAccessToken) == "" &&
+			strings.TrimSpace(provider.RefreshToken) == "" {
+			return nil
+		}
+		cred = &oauth.StoredCredential{Type: "oauth"}
+	} else {
+		copied := *cred
+		cred = &copied
+		if cred.Type == "" {
+			cred.Type = "oauth"
+		}
+	}
+	if cred.AccessToken == "" {
+		cred.AccessToken = strings.TrimSpace(provider.Key)
+	}
+	if cred.RawAccessToken == "" {
+		cred.RawAccessToken = strings.TrimSpace(provider.OAuthAccessToken)
+	}
+	if cred.RefreshToken == "" {
+		cred.RefreshToken = strings.TrimSpace(provider.RefreshToken)
+	}
+	// A stored ExpiresAt of 0 means "no expiry info" and is treated as valid.
+	// Do not copy a stale config expiry onto an existing row; that would force
+	// a refresh/re-login of a token the store still considers usable.
+	if !existed && cred.ExpiresAt == 0 {
+		cred.ExpiresAt = provider.TokenExpiresAt
+	}
+	return cred
+}
+
+// applyStoredOAuthCredential copies the credential-store secret onto a provider
+// snapshot using the same field mapping as syncCredentialToConfig, so a later
+// save writes the token the probe materialized rather than a stale config copy.
+func (a *App) applyStoredOAuthCredential(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	storeID := credentialStoreProviderID(provider)
+	if storeID == "" || a.credentialStore == nil {
+		return provider
+	}
+	cred, err := a.credentialStore.Read(storeID)
+	if err != nil || cred == nil {
+		return provider
+	}
+	if cred.AccessToken != "" {
+		provider.Key = cred.AccessToken
+	}
+	if cred.RawAccessToken != "" {
+		provider.OAuthAccessToken = cred.RawAccessToken
+	}
+	if cred.RefreshToken != "" {
+		provider.RefreshToken = cred.RefreshToken
+	}
+	if cred.ExpiresAt != 0 {
+		provider.TokenExpiresAt = cred.ExpiresAt
+	}
+	return provider
 }
 
 // syncCredentialToConfig writes the refreshed credential back to config.json

@@ -310,6 +310,30 @@ func TestValidate_FullPass(t *testing.T) {
 	}
 }
 
+func TestValidateArgsTreatsBlankRequiredStringAsMissing(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"query"},
+		"properties": map[string]interface{}{
+			"query": map[string]interface{}{"type": "string"},
+		},
+	}
+	for _, args := range []map[string]interface{}{
+		{},
+		{"query": ""},
+		{"query": "   "},
+		{"query": nil},
+	} {
+		errs := ValidateArgs(schema, args)
+		if len(errs) != 1 || errs[0].Code != "missing_required" || errs[0].Param != "query" {
+			t.Fatalf("args=%#v: expected missing query, got %#v", args, errs)
+		}
+	}
+	if errs := ValidateArgs(schema, map[string]interface{}{"query": "王展毅"}); len(errs) != 0 {
+		t.Fatalf("non-empty query should pass, got %#v", errs)
+	}
+}
+
 func TestConstructSampleArgs_RoundTrip(t *testing.T) {
 	schema := map[string]interface{}{
 		"type": "object",

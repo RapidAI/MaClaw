@@ -22,6 +22,9 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import { classifyDisplayAttachmentType, isBinaryDocumentAttachment } from "./attachmentClassification";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
+import { firstVEStreamText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
+
+export { firstVEStreamText, sanitizeVisibleVEText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 
 let wailsAppModulePromise: Promise<WailsAppModule> | null = null;
 let virtualEmployeeDirectoryInFlight: Promise<unknown> | null = null;
@@ -153,25 +156,6 @@ export interface VEConversationState {
     error: VEConversationError | null;
     connectionState: "connected" | "disconnected" | "reconnecting";
     reconnectAttempt: number;
-}
-
-/**
- * VE chat does not render a reasoning panel. The shared agent loop prefixes
- * private reasoning deltas with \x01, which Chromium displays as a square when
- * it leaks through an older backend or a remote Hub. Drop those deltas and any
- * remaining non-whitespace control characters as a client-side safety net.
- */
-export function visibleVEStreamContent(value: unknown): string {
-    const content = typeof value === "string" ? value : "";
-    if (content.startsWith("\x01")) return "";
-    return content.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
-}
-
-function firstVEStreamText(...values: unknown[]): unknown {
-    for (const value of values) {
-        if (typeof value === "string" && value !== "") return value;
-    }
-    return values[0];
 }
 
 export type VEConversationError =
@@ -2501,10 +2485,10 @@ function veMessagesFromHistoryDetail(detail: VEHistoryDetail, veId: string, assi
         const kind = String(message.kind || message.Kind || "").trim().toLowerCase();
         const fromId = String(message.from_id || message.fromId || message.FromID || "").trim();
         const attachments = normalizeVEHistoryAttachments(message);
-        // Older Hub records may contain raw streamed reasoning deltas. Apply the
-        // same boundary filter used for live chunks so reopening a session cannot
-        // reintroduce the control-character square into the transcript.
-        const content = visibleVEStreamContent(firstVEStreamText(message.content, message.Content));
+        // Stream records may still contain raw reasoning-lane deltas. Drop those
+        // whole chunks. Persisted answers are assembled text: strip tofu runes
+        // but keep the reply even if a leftover U+0001 leads the string.
+        const content = visibleHistoryMessageContent(kind, message.content, message.Content);
         if (kind === "stream_end") {
             if (streamIndex >= 0 && (!fromId || sameHistorySender(streamFromId, fromId))) {
                 const existing = out[streamIndex];

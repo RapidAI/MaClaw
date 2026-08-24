@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -56,6 +57,29 @@ func TestUserFacingErrorFallsBackToErrorString(t *testing.T) {
 	}
 }
 
+func TestUserFacingErrorOfficialOwnerUnreachable(t *testing.T) {
+	err := errors.New("maclaw official: tenant bound to node hc-3 but owner https://hubs2.maclaw.top is unreachable")
+	got := UserFacingError(err)
+	if got != "官方模型当前绑定的节点不可达，请稍后重试" {
+		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(got, "hubs2") {
+		t.Fatalf("must not leak owner URL: %q", got)
+	}
+	wrapped := fmt.Errorf("%w: tenant bound to node hc-3 but owner https://hubs2.maclaw.top is unreachable", ErrOfficialOwnerUnreachable)
+	if got := UserFacingError(wrapped); got != "官方模型当前绑定的节点不可达，请稍后重试" {
+		t.Fatalf("sentinel wrap got %q", got)
+	}
+}
+
+func TestUserFacingHTTPStatusTenantBoundCode(t *testing.T) {
+	body := []byte(`{"code":"TENANT_BOUND_TO_NODE","error":{"message":"tenant bound to node hc-3, please redirect","code":"TENANT_BOUND_TO_NODE"}}`)
+	got := UserFacingHTTPStatus(http.StatusConflict, body)
+	if got != "官方模型正在切换服务节点，请稍后重试" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestUserFacingErrorHTTPStatusWithoutKnownBody(t *testing.T) {
 	err := &HTTPStatusError{StatusCode: http.StatusForbidden, Body: []byte(`plain forbidden`)}
 	got := UserFacingError(err)
@@ -68,6 +92,54 @@ func TestUserFacingErrorHTTPStatusWithoutKnownBody(t *testing.T) {
 	}
 	if strings.Contains(got, "body_len") {
 		t.Fatalf("should not fall back to body_len when status is classifiable: %q", got)
+	}
+}
+
+func TestUserFacingErrorExtractsOpenCodeModelErrorFromString(t *testing.T) {
+	err := errors.New(`POST "https://opencode.ai/zen/v1/chat/completions": 401 Unauthorized {"type":"ModelError","message":"Free promotion has ended for DeepSeek V4 Flash Free."}`)
+	got := UserFacingError(err)
+	if !strings.Contains(got, "免费活动已结束") {
+		t.Fatalf("got %q, want ended-promotion guidance from error string", got)
+	}
+}
+
+func TestExtractJSONObjectFromTextIgnoresTrailingText(t *testing.T) {
+	got := extractJSONObjectFromText(`POST url: 401 Unauthorized {"type":"ModelError","message":"gone"} leftover`)
+	if string(got) != `{"type":"ModelError","message":"gone"}` {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestUserFacingErrorWithProviderNamesOpenCode(t *testing.T) {
+	err := errors.New(`POST "https://opencode.ai/zen/v1/chat/completions": 401 Unauthorized {"type":"ModelError","message":"Free promotion has ended for DeepSeek V4 Flash Free."}`)
+	got := UserFacingErrorWithProvider(err, "OpenCode")
+	if !strings.Contains(got, "OpenCode") || !strings.Contains(got, "免费活动已结束") {
+		t.Fatalf("got %q, want named OpenCode ended-promotion guidance", got)
+	}
+}
+
+func TestUserFacingHTTPStatusOpenCodeFreePromotionEnded(t *testing.T) {
+	body := []byte(`{"type":"ModelError","message":"Free promotion has ended for DeepSeek V4 Flash Free. You can continue using the model by subscribing to OpenCode Go - https://opencode.ai/go"}`)
+	got := UserFacingHTTPStatusWithProvider(http.StatusUnauthorized, body, "OpenCode")
+	if !strings.Contains(got, "免费活动已结束") {
+		t.Fatalf("got %q, want ended-promotion guidance", got)
+	}
+	if strings.Contains(got, "认证失败") || strings.Contains(got, "重新登录") {
+		t.Fatalf("ended free promotion must not look like an invalid API key: %q", got)
+	}
+}
+
+func TestUserFacingHTTPStatusModelErrorIsNotAuthFailure(t *testing.T) {
+	body := []byte(`{"type":"ModelError","message":"model deepseek-v4-flash-free is not available for this account"}`)
+	got := UserFacingHTTPStatusWithProvider(http.StatusUnauthorized, body, "OpenCode")
+	if !strings.Contains(got, "当前模型不可用") {
+		t.Fatalf("got %q, want model-unavailable guidance", got)
+	}
+	if strings.Contains(got, "认证失败") {
+		t.Fatalf("ModelError must not look like an invalid API key: %q", got)
+	}
+	if !strings.Contains(got, "not available") {
+		t.Fatalf("got %q, want original model message", got)
 	}
 }
 

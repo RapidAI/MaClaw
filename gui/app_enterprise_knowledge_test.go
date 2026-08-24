@@ -13,11 +13,14 @@ import (
 )
 
 func TestAppendEnterpriseKnowledgeAutoRecall_NoopWhenEmpty(t *testing.T) {
-	var b strings.Builder
-	app := &App{}
-	app.AppendEnterpriseKnowledgeAutoRecall(&b, "hello policy", nil)
-	if strings.Contains(b.String(), "企业知识库参考") {
-		t.Fatalf("unexpected enterprise header when store empty: %q", b.String())
+	// Hosts no longer dump enterprise hits into the system prompt.
+	// Search stays on knowledge.read.local tools (SearchActiveFromDataDir).
+	hits, err := enterpriseknowledge.SearchActiveFromDataDir(context.Background(), t.TempDir(), "hello policy", "")
+	if err != nil {
+		t.Fatalf("SearchActiveFromDataDir empty dir: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("expected no hits from empty dir, got %+v", hits)
 	}
 }
 

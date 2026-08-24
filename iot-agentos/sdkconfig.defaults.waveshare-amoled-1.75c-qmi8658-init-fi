@@ -1,0 +1,5 @@
+# Dedicated non-release Waveshare Motion HAL startup fault artifact. It makes
+# the profile-private QMI8658 acquisition fail before an I2C handle exists;
+# all shared business services must still reach ready with Motion unavailable.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_WAVESHARE_QMI8658_INIT_FAILURE=y

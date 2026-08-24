@@ -2880,7 +2880,7 @@ func liveTestSystemFree(r *http.Request, system store.SystemSettingsRepository) 
 			{"role": "user", "content": "Reply with exactly: pong"},
 		},
 	}
-	model, externalModel, err := resolveAuthorizedModel(body, models)
+	model, externalModel, _, err := resolveAuthorizedModel(r, body, models, reg)
 	if err != nil {
 		return map[string]any{"ok": false, "status": status}, err
 	}

@@ -2276,6 +2276,82 @@ func TestStartEnrollmentGrantsInvitationLLMBenefitForNewSelfEnrollUser(t *testin
 	}
 }
 
+func TestRegisterReferralUserWithAttributionDoesNotGrantInvitationCodeLLM(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, deps.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			llmservice.SystemFreeTemplate(),
+			{ID: "redeem", Name: "Redeem", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		},
+		DefaultNewUserServiceGroups: []string{"redeem"},
+		DefaultNewUserCredits:       1000,
+		DefaultNewUserDurationDays:  30,
+	}); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
+	}
+	invitationSvc := invitation.NewService(deps.store.InvitationCodes, deps.store.System)
+	svc := NewIdentityService(
+		deps.store.Users,
+		deps.store.Enrollments,
+		deps.store.EmailBlocks,
+		deps.store.Machines,
+		deps.store.ViewerTokens,
+		deps.store.LoginTokens,
+		deps.store.System,
+		invitationSvc,
+		"open",
+		true,
+		nil,
+		"http://127.0.0.1:9399",
+	)
+	inviter := &store.User{ID: "u_ref_inviter", TenantID: store.DefaultTenantID, Email: "ref-inviter@example.com", SN: "SN-REF-INVITER", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := deps.store.Users.Create(ctx, inviter); err != nil {
+		t.Fatalf("create inviter: %v", err)
+	}
+	codes, err := invitationSvc.GenerateCodesForTenantWithOptions(ctx, store.DefaultTenantID, invitation.GenerateCodeOptions{
+		Count: 1, LLMServiceGroupID: llmservice.SystemFreeServiceGroupID, LLMGrantDurationDays: 30, LLMGrantCredits: 999,
+	})
+	if err != nil || len(codes) != 1 {
+		t.Fatalf("generate invitation codes=%d err=%v", len(codes), err)
+	}
+	email := "ref-invitee@example.com"
+	if err := invitationSvc.ValidateAndConsumeForTenant(ctx, store.DefaultTenantID, codes[0].Code, email); err != nil {
+		t.Fatalf("consume invitation code: %v", err)
+	}
+	referral := &store.UserReferral{
+		ID: "referral_no_system_free", TenantID: store.DefaultTenantID, ReferralCodeID: "ref-code", InviterUserID: inviter.ID,
+		Status: "attributed", RegisteredAt: now, ServiceGroupID: "redeem", InviterCredits: 200, InviteeCredits: 100, DurationDays: 30, CreatedAt: now, UpdatedAt: now,
+	}
+	user, err := svc.RegisterReferralUserWithAttribution(WithTenant(ctx, store.DefaultTenantID), email, "", false, referral)
+	if err != nil || user == nil {
+		t.Fatalf("RegisterReferralUserWithAttribution user=%#v err=%v", user, err)
+	}
+	reg, err := llmservice.LoadRegistry(ctx, deps.store.System)
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	for _, grant := range reg.Grants {
+		if grant.UserID != user.ID && !strings.EqualFold(grant.Email, email) {
+			continue
+		}
+		if llmservice.IsSystemFreeServiceGroup(grant.ServiceGroupID) || grant.Source == "invitation_code" {
+			t.Fatalf("referral invitee must not receive invitation-code/system-free grant: %#v", grant)
+		}
+	}
+	for _, binding := range reg.UserBindings {
+		if binding.UserID != user.ID && !strings.EqualFold(binding.Email, email) {
+			continue
+		}
+		for _, id := range binding.ServiceGroupIDs {
+			if llmservice.IsSystemFreeServiceGroup(id) {
+				t.Fatalf("referral invitee must not be bound to system-free: %#v", binding)
+			}
+		}
+	}
+}
+
 func TestApproveEnrollmentGrantsInvitationLLMBenefitForExistingUser(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()

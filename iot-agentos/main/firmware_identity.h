@@ -3,7 +3,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "esp_err.h"
 #include "device_api.h"
 
 #define FIRMWARE_IDENTITY_PRODUCT_ID_CAPACITY 96
@@ -52,19 +51,26 @@ extern "C" {
 // Starts the non-blocking USB Serial/JTAG identity query task and emits the
 // boot identity event once. Safe to call only after the ESP-IDF console VFS is
 // initialized (app_main satisfies this requirement).
-esp_err_t firmware_identity_start(void);
+device_status_t firmware_identity_start(void);
 
 // Stops and joins the USB Serial/JTAG query task.  It is intentionally
 // idempotent so Boot/Power coordinators can use it during failed startup,
 // quiesce and shutdown without having to infer task ownership.  `timeout_ms`
 // bounds the cooperative join; no task is forcibly deleted while it may be
 // parsing a host request or emitting diagnostic output.
-esp_err_t firmware_identity_stop(uint32_t timeout_ms);
+device_status_t firmware_identity_stop(uint32_t timeout_ms);
+
+/* Future System Sleep participant. PREPARE closes USB diagnostic emission and
+ * parks the retained query worker after already-running request formatting has
+ * completed. ABORT reopens that same worker; neither operation changes USB
+ * wiring, board power, or MCU sleep state. */
+device_status_t firmware_identity_prepare_system_sleep(uint32_t timeout_ms);
+void firmware_identity_abort_system_sleep_prepare(void);
 
 // Returns the immutable identity of the currently running firmware. The
 // caller supplies the physical device ID (derived from the chip MAC) when it
 // serializes this snapshot into a gateway request.
-esp_err_t firmware_identity_get(firmware_identity_info_t *out);
+device_status_t firmware_identity_get(firmware_identity_info_t *out);
 
 // Local readiness deliberately excludes Wi-Fi and Hub availability. It means
 // the firmware, NVS, local storage, UI and board HAL completed initialization.

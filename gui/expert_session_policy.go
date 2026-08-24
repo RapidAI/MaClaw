@@ -243,9 +243,19 @@ func expertSkillAllowed(def *ExpertDefinition, skillName string) bool {
 	return false
 }
 
+// expertToolNameAllowListAppliesToManagedSemantic is false because
+// ExpertDefinition.Tools is a legacy function-name list. There is no
+// reviewed control-plane name→capability mapping, so a managed turn must
+// ignore that list: the model-visible surface comes only from ToolPlanner
+// plus CatalogRenderer. The name filter remains for unmigrated legacy loops.
+func expertToolNameAllowListAppliesToManagedSemantic() bool {
+	return false
+}
+
 // filterToolsForExpert applies the expert's tool allow-list. A nil definition
 // or an empty Tools list means "all tools" and the input is returned as-is.
 // Tool defs without an extractable name are kept (fail-open for unknown shapes).
+// Do not call this on a managed semantic surface.
 func filterToolsForExpert(tools []map[string]interface{}, def *ExpertDefinition) []map[string]interface{} {
 	if def == nil || len(def.Tools) == 0 || len(tools) == 0 {
 		return tools

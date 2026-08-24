@@ -83,12 +83,22 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
     };
 }
 
+/** Codex-style checklist mark for a workbench / agent step. */
+export function codingStepGlyph(status: string): string {
+    const s = (status || "").toLowerCase();
+    if (s === "passed" || s === "completed") return "☑";
+    if (s === "failed" || s === "verify_failed") return "✗";
+    if (s === "running" || s === "in_progress") return "…";
+    if (s === "skipped" || s === "cancelled") return "–";
+    return "☐";
+}
+
 /** Step row color for the control-panel checklist (dark keeps sage/coral, not neon). */
 export function codingStepStatusColor(status: string, isDark: boolean, chrome: Pick<CodingBannerChrome, "accentStrong" | "muted">): string {
     const s = (status || "").toLowerCase();
     if (s === "passed") return isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : "#16a34a";
     if (s === "failed" || s === "verify_failed") return isDark ? "#e07a72" : "#dc2626";
-    if (s === "running") return chrome.accentStrong;
+    if (s === "running" || s === "in_progress") return chrome.accentStrong;
     return chrome.muted;
 }
 
@@ -260,7 +270,7 @@ export function CodingWorkbenchControlPanel({
             ? (remoteHost
                 ? localizeText(lang, `Remote coding environment · ${remoteHost}`, `远程编程环境 · ${remoteHost}`, `遠端程式開發環境 · ${remoteHost}`)
                 : localizeText(lang, "Remote coding environment", "远程编程环境", "遠端程式開發環境"))
-            : localizeText(lang, "Full coding environment", "全功能编程环境", "全功能程式開發環境")
+            : localizeText(lang, "Coding environment", "编程环境", "程式環境")
     ), [intent, lang, remote, remoteHost]);
 
     // Prefer step progress on the chip; pending/conflict badges carry those states.

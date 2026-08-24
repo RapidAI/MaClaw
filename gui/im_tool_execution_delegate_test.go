@@ -3,12 +3,14 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
@@ -244,6 +246,35 @@ func TestBonusRoundDelegateTaskBlockedByDocOnlyWorkflowPolicy(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "not allowed") {
 		t.Fatalf("expected not allowed text, got %q", result.Text)
+	}
+}
+
+func TestBonusRoundUsesRoutedContextForOfficeRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "routed-context.json")
+	pageRunes := agent.DocumentReadMaxRunesForContext(320_000)
+	if err := os.WriteFile(path, []byte(strings.Repeat("文", pageRunes+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seenContext := 0
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	if err := h.registry.Register(RegisteredTool{
+		Name: "office",
+		Handler: func(args map[string]interface{}) string {
+			seenContext = runtimeContextTokensFromToolArgs(args)
+			return agent.ToolReadDocumentWithContext(args, seenContext)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := h.executeBonusRoundToolWithConfig(llm.ToolCall{Function: llm.ToolCallFunction{
+		Name:      "office",
+		Arguments: fmt.Sprintf(`{"action":"read_document","file_path":%q}`, path),
+	}}, nil, nil, nil, "desktop-user", nil, corelib.MaclawLLMConfig{ContextLength: 400_000})
+	if seenContext != 320_000 {
+		t.Fatalf("office context = %d, want 320000", seenContext)
+	}
+	if got, want := parseOfficeReadCharsForTest(t, result.Text), pageRunes; got != want {
+		t.Fatalf("document page chars = %d, want %d", got, want)
 	}
 }
 

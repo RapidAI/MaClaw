@@ -386,6 +386,9 @@ func TestTuiBtwSystemPromptFollowsLanguage(t *testing.T) {
 	if strings.Contains(prompt, "侧查询模式") || strings.Contains(prompt, "用户信息") {
 		t.Fatalf("English /btw prompt should not contain Chinese UI prompt text:\n%s", prompt)
 	}
+	if strings.Contains(prompt, "自动召回") || strings.Contains(prompt, agent.KnowledgeAutoRecallHeader) {
+		t.Fatalf("/btw must not dump warehouse bodies:\n%s", prompt)
+	}
 }
 
 func TestTUIProviderDisplayNameLocalizesOfficialProvider(t *testing.T) {
@@ -449,6 +452,28 @@ func TestBuildLLMConfigUsesViewerTokenForSavedOfficialService(t *testing.T) {
 	}
 	if !tuiConfigLLMReady(cfg) {
 		t.Fatal("official LLM with viewer token should be treated as ready")
+	}
+}
+
+func TestBuildLLMConfigMigratesZhipuCodingDefault(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMUrl:             "https://open.bigmodel.cn/api/anthropic",
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProtocol:        "anthropic",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic",
+		}},
+	}
+	llm := buildLLMConfigFromAppConfig(cfg)
+	if llm.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("model = %q, want migrated %q", llm.Model, corelib.ZhipuCodingDefaultModel)
+	}
+
+	cfg.MaclawLLMModel = ""
+	llm = buildLLMConfigFromAppConfig(cfg)
+	if llm.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("empty flat model = %q, want migrated from provider %q", llm.Model, corelib.ZhipuCodingDefaultModel)
 	}
 }
 

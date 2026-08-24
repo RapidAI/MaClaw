@@ -916,7 +916,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 			protected = append(protected, e) // 其他用户的记忆视为受保护
 			continue
 		}
-		if e.Pinned || e.Category.IsProtected() {
+		if e.Pinned || e.Category.IsProtected() || IsDurableTaskManagementEntry(&e) {
 			protected = append(protected, e)
 			result.SkippedPinned++
 		} else {

@@ -1157,6 +1157,70 @@ func TestHeartbeatSeparatesTenantAdminInventoryFromNormalUserRoutes(t *testing.T
 	}
 }
 
+func TestSyncHubTenantAdminLinkKeepsAdminDistinctAndReplacesOldEmail(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_direct_admin_sync", OwnerEmail: "owner@example.com", Name: "Direct Admin Sync", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	if err := svc.SyncHubTenantAdminLink(ctx, hub.ID, "secret", "new@example.com", "tenant_acme", "old@example.com"); err != nil {
+		t.Fatalf("sync tenant admin: %v", err)
+	}
+	links, err := st.HubUserLinks.ListByEmail(ctx, "new@example.com")
+	if err != nil || len(links) != 1 || !isHubTenantAdminLink(links[0]) || links[0].TenantID != "tenant_acme" {
+		t.Fatalf("new administrator inventory = %+v err=%v", links, err)
+	}
+	oldLinks, err := st.HubUserLinks.ListByEmail(ctx, "old@example.com")
+	if err != nil || len(oldLinks) != 0 {
+		t.Fatalf("old administrator inventory should be removed, links=%+v err=%v", oldLinks, err)
+	}
+	entrySvc := entry.NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs)
+	ok, err := entrySvc.EmailHasHubTenantAdministratorLink(ctx, "new@example.com", hub.ID, "tenant_acme")
+	if err != nil || !ok {
+		t.Fatalf("administrator lookup = %v, %v", ok, err)
+	}
+	userRoute, err := entrySvc.EmailHasHubTenantLink(ctx, "new@example.com", hub.ID, "tenant_acme")
+	if err != nil || userRoute {
+		t.Fatalf("administrator must not create normal-user route, route=%v err=%v", userRoute, err)
+	}
+}
+
+func TestTenantAdminInventoryRevisionRejectsStaleHeartbeat(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{ID: "hub_admin_revision", OwnerEmail: "owner@example.com", Name: "Admin Revision", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	newRevision := now.Add(2 * time.Minute).UTC().Format(time.RFC3339Nano)
+	if err := svc.SyncHubTenantAdminLink(ctx, hub.ID, "secret", "new@example.com", "tenant_acme", "old@example.com", newRevision); err != nil {
+		t.Fatalf("direct admin sync: %v", err)
+	}
+	staleRevision := now.Add(time.Minute).UTC().Format(time.RFC3339Nano)
+	if err := svc.HeartbeatHubWithSecret(ctx, hub.ID, "secret", nil, &HeartbeatHubUpdate{Capabilities: map[string]any{
+		"tenant_user_emails":              map[string]any{"tenant_acme": []any{}},
+		"tenant_admin_emails":             map[string]any{"tenant_acme": []any{"old@example.com"}},
+		"tenant_admin_inventory_revision": staleRevision,
+	}}); err != nil {
+		t.Fatalf("stale heartbeat: %v", err)
+	}
+	newLinks, err := st.HubUserLinks.ListByEmail(ctx, "new@example.com")
+	if err != nil || len(newLinks) != 1 || !isHubTenantAdminLink(newLinks[0]) {
+		t.Fatalf("new administrator must survive stale heartbeat, links=%+v err=%v", newLinks, err)
+	}
+	oldLinks, err := st.HubUserLinks.ListByEmail(ctx, "old@example.com")
+	if err != nil || len(oldLinks) != 0 {
+		t.Fatalf("stale heartbeat must not restore superseded administrator, links=%+v err=%v", oldLinks, err)
+	}
+}
+
 func TestHeartbeatUpgradesLegacyAdminUserInventoryRoute(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)
@@ -1872,6 +1936,32 @@ func TestDashboardTenantCapabilitiesAcceptTypedMaps(t *testing.T) {
 	}
 	if got := tenantDashboardName(caps, "tenant_e"); got != "QA" {
 		t.Fatalf("tenant_e name = %q", got)
+	}
+}
+
+func TestResolveHubTenantDisplayNamesUsesHubAndTenantNames(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{
+		ID: "hub-1", OwnerEmail: "owner@example.com", Name: "EcoFlow Hub",
+		BaseURL: "https://hub.example.com", Status: "online",
+		CapabilitiesJSON: mustJSON(map[string]any{"tenant_names": map[string]any{"tenant_a": "研发部"}}),
+		CreatedAt:        now, UpdatedAt: now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	hubName, tenantName := svc.ResolveHubTenantDisplayNames(ctx, "hub-1", "tenant_a")
+	if hubName != "EcoFlow Hub" || tenantName != "研发部" {
+		t.Fatalf("names = %q/%q", hubName, tenantName)
+	}
+	missingHub, missingTenant := svc.ResolveHubTenantDisplayNames(ctx, "missing", "tenant_a")
+	if missingHub != "" || missingTenant != "" {
+		t.Fatalf("missing hub names = %q/%q", missingHub, missingTenant)
 	}
 }
 

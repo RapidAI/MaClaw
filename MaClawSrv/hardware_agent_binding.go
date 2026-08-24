@@ -213,18 +213,31 @@ func (s *srvDeviceAgentBindingStore) activate(p agentservice.Principal, clientID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := srvHardwareBindingKey(p, clientID)
-	if binding, ok := s.bindings[key]; ok && binding.DeletedAt.IsZero() {
-		return binding, nil
+	// A valid pairing code explicitly transfers this physical client to its new
+	// MaClaw owner. Tombstone every prior owner-scoped binding first so an old
+	// gateway credential cannot keep using the same device conversation.
+	previousBindings := make(map[string]srvDeviceAgentBinding, len(s.bindings))
+	for candidate, binding := range s.bindings {
+		previousBindings[candidate] = binding
 	}
 	now := time.Now().UTC()
-	binding := srvDeviceAgentBinding{DeviceID: clientID, ClientID: clientID, TenantID: p.TenantID, UserID: p.UserID, AssistantMode: srvHardwareAssistantGeneral, Version: 1, CreatedAt: now, UpdatedAt: now}
-	previous, found := s.bindings[key]
-	s.bindings[key] = binding
+	for candidate, binding := range s.bindings {
+		if candidate == key || binding.ClientID != clientID || !binding.DeletedAt.IsZero() {
+			continue
+		}
+		s.bindings[candidate] = srvDeviceAgentBinding{DeviceID: binding.DeviceID, ClientID: binding.ClientID, TenantID: binding.TenantID, UserID: binding.UserID, Version: binding.Version + 1, CreatedAt: binding.CreatedAt, UpdatedAt: now, DeletedAt: now}
+	}
+	binding, found := s.bindings[key]
+	if !found || !binding.DeletedAt.IsZero() {
+		binding = srvDeviceAgentBinding{DeviceID: clientID, ClientID: clientID, TenantID: p.TenantID, UserID: p.UserID, AssistantMode: srvHardwareAssistantGeneral, Version: 1, CreatedAt: now, UpdatedAt: now}
+		s.bindings[key] = binding
+	}
 	if err := s.saveBindingsLocked(); err != nil {
-		if found {
-			s.bindings[key] = previous
-		} else {
-			delete(s.bindings, key)
+		for candidate := range s.bindings {
+			delete(s.bindings, candidate)
+		}
+		for candidate, previous := range previousBindings {
+			s.bindings[candidate] = previous
 		}
 		return srvDeviceAgentBinding{}, err
 	}

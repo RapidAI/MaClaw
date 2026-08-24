@@ -579,6 +579,63 @@ func TestUpdateLLMServicesAdminHandlerValidatesSecurityGroupsWithinTenant(t *tes
 	}
 }
 
+func TestUpdateLLMServicesAdminHandlerValidatesNewUserLimitCardGroups(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	body := []byte(`{
+		"model_service_groups":[
+			{"id":"welcome","name":"Welcome","access_policy":"free"},
+			{"id":"recharge","name":"Recharge","access_policy":"grant_required"}
+		],
+		"default_new_user_limit_card":{"service_group_ids":["recharge"],"period_limits":{"five_hour":10,"daily":20}}
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "LLM_NEW_USER_LIMIT_CARD_GROUP_INVALID") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+
+	body = []byte(`{
+		"model_service_groups":[{"id":"welcome","name":"Welcome","access_policy":"free"}],
+		"default_new_user_limit_card":{"service_group_ids":["welcome"],"duration_days":0,"period_limits":{"five_hour":10,"daily":20}}
+	}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("binding-active group should be accepted: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateLLMServicesAdminHandlerPreservesBenefitModeWhenOmitted(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups:        []llmservice.ModelServiceGroup{{ID: "welcome", Name: "Welcome", AccessPolicy: llmservice.AccessPolicyFree}},
+		DefaultNewUserBenefitMode: llmservice.NewUserBenefitModeLimitCard,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model_service_groups":[{"id":"welcome","name":"Welcome","access_policy":"free"}]}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	reg, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.NewUserBenefitMode() != llmservice.NewUserBenefitModeLimitCard {
+		t.Fatalf("omitted benefit mode reverted to %q", reg.NewUserBenefitMode())
+	}
+}
+
 func TestCreateLLMServiceCardHandlerAuditsGlobalAdminTenantQuery(t *testing.T) {
 	ctx := context.Background()
 	system := newTestLLMServiceSystemSettings()
@@ -1188,7 +1245,7 @@ func TestUpdateLLMServicesAdminHandlerWritesBindingAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	audit := &testAdminAuditRepo{}
-	body := []byte(`{"model_service_groups":[{"id":"coding-basic","name":"Coding Basic"},{"id":"ops-pro","name":"Ops Pro"}],"global_service_group_ids":["ops-pro"],"group_bindings":[{"group_id":"ops","service_group_ids":["ops-pro"]}],"user_bindings":[{"email":"lead@example.com","service_group_ids":["ops-pro"]}],"default_new_user_service_groups":["coding-basic"]}`)
+	body := []byte(`{"model_service_groups":[{"id":"coding-basic","name":"Coding Basic"},{"id":"ops-pro","name":"Ops Pro"}],"global_service_group_ids":["ops-pro"],"group_bindings":[{"group_id":"ops","service_group_ids":["ops-pro"]}],"user_bindings":[{"email":"lead@example.com","service_group_ids":["ops-pro"]}],"default_new_user_service_groups":["coding-basic"],"default_new_user_benefit_mode":"limit_card"}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
 	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-bind"}))
 	rec := httptest.NewRecorder()
@@ -1206,6 +1263,9 @@ func TestUpdateLLMServicesAdminHandlerWritesBindingAudit(t *testing.T) {
 	}
 	if !strings.Contains(audit.logs[0].PayloadJSON, "global_service_group_ids") || !strings.Contains(audit.logs[0].PayloadJSON, "lead@example.com") || !strings.Contains(audit.logs[0].PayloadJSON, "ops-pro") {
 		t.Fatalf("audit payload missing binding details: %s", audit.logs[0].PayloadJSON)
+	}
+	if !strings.Contains(audit.logs[0].PayloadJSON, `"default_new_user_benefit_mode":"limit_card"`) || !strings.Contains(rec.Body.String(), `"default_new_user_benefit_mode":"limit_card"`) {
+		t.Fatalf("benefit mode was not persisted and exposed: audit=%s response=%s", audit.logs[0].PayloadJSON, rec.Body.String())
 	}
 }
 

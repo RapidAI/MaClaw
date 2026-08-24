@@ -68,7 +68,7 @@ Key characteristics:
 
 
 
-- `MaClawSrv` is a pure agent service. It does not expose coding-session orchestration APIs.
+- `MaClawSrv` is the headless Maclaw GUI: the same shared agent core (loop, tools, skills, MCP, knowledge, memory, coding/delegate, ASR/TTS). Coding work uses `delegate_task` and coding-runtime adapters; it does not ship a desktop IDE chrome.
 
 
 
@@ -8572,7 +8572,7 @@ For products with a conversation history page:
 
 
 
-- Do not assume coding-session orchestration APIs exist in `MaClawSrv`.
+- Coding/delegate uses the shared executor (`delegate_task` and coding-runtime adapters). Do not assume a desktop IDE chrome.
 
 
 

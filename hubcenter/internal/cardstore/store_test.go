@@ -59,9 +59,10 @@ func (r *cardTypeTestRepo) Delete(_ context.Context, _ string) error {
 }
 
 type orderTestRepo struct {
-	created   []*PurchaseOrder
-	byNo      map[string]*PurchaseOrder
-	updateErr error
+	created    []*PurchaseOrder
+	byNo       map[string]*PurchaseOrder
+	updateErr  error
+	lastFilter OrderFilter
 }
 
 func (r *orderTestRepo) Create(_ context.Context, order *PurchaseOrder) error {
@@ -80,7 +81,8 @@ func (r *orderTestRepo) GetByOrderNo(_ context.Context, orderNo string) (*Purcha
 	return r.byNo[orderNo], nil
 }
 
-func (r *orderTestRepo) List(_ context.Context, _ OrderFilter) ([]*PurchaseOrder, int, error) {
+func (r *orderTestRepo) List(_ context.Context, filter OrderFilter) ([]*PurchaseOrder, int, error) {
+	r.lastFilter = filter
 	var orders []*PurchaseOrder
 	for _, order := range r.byNo {
 		orders = append(orders, order)
@@ -187,7 +189,15 @@ func (r *authTestRepo) ListAll(_ context.Context) ([]*llmservice.TenantAuthoriza
 	return items, nil
 }
 
-func (r *authTestRepo) Update(_ context.Context, _ *llmservice.TenantAuthorization) error {
+func (r *authTestRepo) Update(_ context.Context, auth *llmservice.TenantAuthorization) error {
+	if auth == nil {
+		return nil
+	}
+	if r.byID == nil {
+		r.byID = map[string]*llmservice.TenantAuthorization{}
+	}
+	copied := *auth
+	r.byID[auth.ID] = &copied
 	return nil
 }
 
@@ -1237,4 +1247,443 @@ func TestConfirmOrderReturnsErrorWhenReactivatedOrderCannotBeSaved(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "save reactivated order") {
 		t.Fatalf("ConfirmOrder error = %v, want reactivated-order save failure", err)
 	}
+}
+
+func TestListOrdersActiveCardsOnlyKeepsUsableSoldCards(t *testing.T) {
+	now := time.Now().UTC()
+	archived := usableSoldOrder("HC-ARCHIVED", "g1", now)
+	archived.ArchivedAt = now.Format(time.RFC3339)
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-ACTIVE":    usableSoldOrder("HC-ACTIVE", "g1", now),
+		"HC-ARCHIVED":  archived,
+		"HC-EXPIRED":   expiredSoldOrder("HC-EXPIRED", "g1", now),
+		"HC-EXHAUSTED": exhaustedSoldOrder("HC-EXHAUSTED", "g1", now),
+		"HC-PENDING": {
+			Order:          corecardstore.Order{OrderNo: "HC-PENDING", Status: corecardstore.StatusPending},
+			HubID:          "hub-1",
+			TenantID:       "tenant-a",
+			ServiceGroupID: "g1",
+			Credits:        100,
+		},
+	}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{
+		"auth-HC-ACTIVE":    usableSoldAuth("HC-ACTIVE", "g1", now),
+		"auth-HC-ARCHIVED":  usableSoldAuth("HC-ARCHIVED", "g1", now),
+		"auth-HC-EXPIRED":   expiredSoldAuth("HC-EXPIRED", "g1", now),
+		"auth-HC-EXHAUSTED": exhaustedSoldAuth("HC-EXHAUSTED", "g1", now),
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	all, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	byNo := ordersByNo(all)
+	if !byNo["HC-ACTIVE"].CanRebindServiceGroup {
+		t.Fatal("usable sold card should allow rebind")
+	}
+	if byNo["HC-EXPIRED"].CanRebindServiceGroup || byNo["HC-EXHAUSTED"].CanRebindServiceGroup || byNo["HC-PENDING"].CanRebindServiceGroup {
+		t.Fatal("expired, exhausted, or pending orders must not allow rebind")
+	}
+
+	orders, total, err := svc.ListOrders(context.Background(), OrderFilter{ActiveCardsOnly: true, ArchivedOnly: true})
+	if err != nil {
+		t.Fatalf("ListOrders active cards: %v", err)
+	}
+	if !orderRepo.lastFilter.IncludeArchived || orderRepo.lastFilter.ArchivedOnly {
+		t.Fatalf("active-card list filter = %+v, want all activated orders including archived", orderRepo.lastFilter)
+	}
+	if total != 2 || len(orders) != 2 {
+		t.Fatalf("active cards = %d/%d %#v, want HC-ACTIVE and HC-ARCHIVED", total, len(orders), orderNos(orders))
+	}
+	got := ordersByNo(orders)
+	if got["HC-ACTIVE"] == nil || got["HC-ARCHIVED"] == nil {
+		t.Fatalf("active cards = %#v, want HC-ACTIVE and HC-ARCHIVED", orderNos(orders))
+	}
+}
+
+func TestListOrdersEnrichesHubAndTenantNames(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetHubTenantResolver(func(_ context.Context, hubID, tenantID string) (string, string) {
+		if hubID != "hub-1" || tenantID != "tenant-a" {
+			t.Fatalf("resolver ids = %q/%q", hubID, tenantID)
+		}
+		return "EcoFlow Hub", "研发部"
+	})
+
+	orders, _, err := svc.ListOrders(context.Background(), OrderFilter{})
+	if err != nil {
+		t.Fatalf("ListOrders: %v", err)
+	}
+	if len(orders) != 1 || orders[0].HubName != "EcoFlow Hub" || orders[0].TenantName != "研发部" {
+		t.Fatalf("order identity = %#v", orders)
+	}
+}
+
+func TestRebindOrderServiceGroupUpdatesOrderAndAuthorization(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	auth := usableSoldAuth("HC-ACTIVE", "g1", now)
+	auth.AllowExternalProviders = true
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": auth}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{
+			{ID: "g1", Name: "Group 1", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "g2", Name: "Group 2", AgentID: "agent-2", AgentName: "Agent 2", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		}, "g2"
+	})
+
+	got, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "g2", false)
+	if err != nil {
+		t.Fatalf("RebindOrderServiceGroup: %v", err)
+	}
+	if got.ServiceGroupID != "g2" || got.ServiceGroup != "Group 2" || got.AgentName != "Agent 2" {
+		t.Fatalf("order group = %+v", got)
+	}
+	if authRepo.byID["auth-HC-ACTIVE"].ServiceGroupID != "g2" {
+		t.Fatalf("auth group = %q", authRepo.byID["auth-HC-ACTIVE"].ServiceGroupID)
+	}
+	if orderRepo.byNo["HC-ACTIVE"].ServiceGroupID != "g2" {
+		t.Fatalf("persisted order group = %q", orderRepo.byNo["HC-ACTIVE"].ServiceGroupID)
+	}
+	if authRepo.byID["auth-HC-ACTIVE"].AllowExternalProviders {
+		t.Fatal("rebind onto a billed group must clear external provider permission")
+	}
+}
+
+func TestRebindOrderServiceGroupUsesDefaultGroup(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{
+			{ID: "g1", Name: "Group 1", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "default-g", Name: "Default", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		}, "default-g"
+	})
+
+	got, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", DefaultServiceGroupSentinel, false)
+	if err != nil {
+		t.Fatalf("RebindOrderServiceGroup default: %v", err)
+	}
+	if got.ServiceGroupID != "default-g" {
+		t.Fatalf("group = %q, want default-g", got.ServiceGroupID)
+	}
+}
+
+func TestRebindOrderServiceGroupRevertsAuthWhenOrderUpdateFails(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{
+		byNo:      map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)},
+		updateErr: errors.New("database unavailable"),
+	}
+	auth := usableSoldAuth("HC-ACTIVE", "g1", now)
+	auth.AllowExternalProviders = true
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": auth}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{
+			{ID: "g1", Name: "Group 1", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "g2", Name: "Group 2", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		}, "g2"
+	})
+
+	_, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "g2", false)
+	if err == nil || !strings.Contains(err.Error(), "update order group") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := authRepo.byID["auth-HC-ACTIVE"].ServiceGroupID; got != "g1" {
+		t.Fatalf("auth group = %q, want g1 after revert", got)
+	}
+	if got := orderRepo.byNo["HC-ACTIVE"].ServiceGroupID; got != "g1" {
+		t.Fatalf("order group = %q, want g1 after failed persist", got)
+	}
+	if !authRepo.byID["auth-HC-ACTIVE"].AllowExternalProviders {
+		t.Fatal("external provider permission should revert when order persist fails")
+	}
+}
+
+func TestRebindOrderServiceGroupClearsStaleExternalFlagOnSameGroup(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	auth := usableSoldAuth("HC-ACTIVE", "g1", now)
+	auth.AllowExternalProviders = true
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": auth}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g1", Name: "Group 1", AccessPolicy: llmservice.AccessPolicyGrantRequired}}, "g1"
+	})
+
+	got, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "g1", false)
+	if err != nil {
+		t.Fatalf("same-group rebind: %v", err)
+	}
+	if got.ServiceGroupID != "g1" {
+		t.Fatalf("group = %q, want g1", got.ServiceGroupID)
+	}
+	if authRepo.byID["auth-HC-ACTIVE"].AllowExternalProviders {
+		t.Fatal("same-group save must clear leftover external provider permission")
+	}
+}
+
+func TestRebindOrderServiceGroupClearsStaleExternalFlagWhenCurrentLeftCatalog(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "stale-g", now)}}
+	auth := usableSoldAuth("HC-ACTIVE", "stale-g", now)
+	auth.AllowExternalProviders = true
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": auth}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g2", Name: "Group 2", AccessPolicy: llmservice.AccessPolicyGrantRequired}}, "g2"
+	})
+
+	got, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "stale-g", false)
+	if err != nil {
+		t.Fatalf("same-group heal: %v", err)
+	}
+	if got.ServiceGroupID != "stale-g" {
+		t.Fatalf("group = %q, want stale-g", got.ServiceGroupID)
+	}
+	if orderRepo.byNo["HC-ACTIVE"].ServiceGroupID != "stale-g" {
+		t.Fatalf("persisted order group = %q, want stale-g", orderRepo.byNo["HC-ACTIVE"].ServiceGroupID)
+	}
+	if authRepo.byID["auth-HC-ACTIVE"].AllowExternalProviders {
+		t.Fatal("saving the current group must clear leftover external permission even if it left the catalog")
+	}
+}
+
+func TestRebindOrderServiceGroupKeepsExternalFlagOnExternalGroup(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", llmservice.ExternalComputePermissionServiceGroupID, now)}}
+	auth := usableSoldAuth("HC-ACTIVE", llmservice.ExternalComputePermissionServiceGroupID, now)
+	auth.AllowExternalProviders = true
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": auth}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g2", Name: "Group 2", AccessPolicy: llmservice.AccessPolicyGrantRequired}}, "g2"
+	})
+
+	got, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", llmservice.ExternalComputePermissionServiceGroupID, false)
+	if err != nil {
+		t.Fatalf("external-group no-op: %v", err)
+	}
+	if got.ServiceGroupID != llmservice.ExternalComputePermissionServiceGroupID {
+		t.Fatalf("group = %q, want external sentinel", got.ServiceGroupID)
+	}
+	if !authRepo.byID["auth-HC-ACTIVE"].AllowExternalProviders {
+		t.Fatal("saving the current external group must keep provider permission")
+	}
+}
+
+func TestRebindOrderServiceGroupNoopsWhenCurrentGroupLeftCatalog(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "stale-g", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "stale-g", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g2", Name: "Group 2"}}, "g2"
+	})
+
+	got, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "stale-g", false)
+	if err != nil {
+		t.Fatalf("same-group rebind: %v", err)
+	}
+	if got.ServiceGroupID != "stale-g" {
+		t.Fatalf("group = %q, want stale-g", got.ServiceGroupID)
+	}
+}
+
+func TestListOrdersActiveCardsOnlyPaginates(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-A":       usableSoldOrder("HC-A", "g1", now),
+		"HC-B":       usableSoldOrder("HC-B", "g1", now),
+		"HC-C":       usableSoldOrder("HC-C", "g1", now),
+		"HC-EXPIRED": expiredSoldOrder("HC-EXPIRED", "g1", now),
+	}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{
+		"auth-HC-A":       usableSoldAuth("HC-A", "g1", now),
+		"auth-HC-B":       usableSoldAuth("HC-B", "g1", now),
+		"auth-HC-C":       usableSoldAuth("HC-C", "g1", now),
+		"auth-HC-EXPIRED": expiredSoldAuth("HC-EXPIRED", "g1", now),
+	}}
+	svc := NewService(nil, orderRepo, authRepo)
+
+	page1, total, err := svc.ListOrders(context.Background(), OrderFilter{ActiveCardsOnly: true, Offset: 0, Limit: 2})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if total != 3 || len(page1) != 2 {
+		t.Fatalf("page1 = %d/%d, want 2/3", len(page1), total)
+	}
+	page2, total, err := svc.ListOrders(context.Background(), OrderFilter{ActiveCardsOnly: true, Offset: 2, Limit: 2})
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if total != 3 || len(page2) != 1 {
+		t.Fatalf("page2 = %d/%d, want 1/3", len(page2), total)
+	}
+}
+
+func TestRebindOrderServiceGroupRejectsFreeGroup(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{
+			{ID: "g1", Name: "Group 1", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "free-g", Name: "Free", AccessPolicy: llmservice.AccessPolicyFree},
+		}, "free-g"
+	})
+
+	_, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "free-g", false)
+	if err == nil || !strings.Contains(err.Error(), "does not require grant") {
+		t.Fatalf("free group error = %v", err)
+	}
+	if got := orderRepo.byNo["HC-ACTIVE"].ServiceGroupID; got != "g1" {
+		t.Fatalf("order group = %q, want g1", got)
+	}
+	_, err = svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", DefaultServiceGroupSentinel, false)
+	if err == nil || !strings.Contains(err.Error(), "default service group does not require grant") {
+		t.Fatalf("free default error = %v", err)
+	}
+	_, err = svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "g1", false)
+	if err != nil {
+		t.Fatalf("same grant-required group should no-op: %v", err)
+	}
+}
+
+func TestRebindOrderServiceGroupRejectsEmptyAccessPolicy(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g1", Name: "Group 1"}, {ID: "g2", Name: "Group 2"}}, "g2"
+	})
+	_, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "g2", false)
+	if err == nil || !strings.Contains(err.Error(), "does not require grant") {
+		t.Fatalf("empty policy error = %v", err)
+	}
+}
+
+func TestRebindOrderServiceGroupRejectsUnknownGroup(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g1", Name: "Group 1"}}, ""
+	})
+	_, err := svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", "missing", false)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error = %v", err)
+	}
+	_, err = svc.RebindOrderServiceGroup(context.Background(), "HC-ACTIVE", DefaultServiceGroupSentinel, false)
+	if err == nil || !strings.Contains(err.Error(), "default service group is not configured") {
+		t.Fatalf("default error = %v", err)
+	}
+}
+
+func TestRebindOrderServiceGroupRejectsUnusableCards(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name  string
+		order *PurchaseOrder
+		auth  *llmservice.TenantAuthorization
+	}{
+		{name: "expired", order: expiredSoldOrder("HC-EXPIRED", "g1", now), auth: expiredSoldAuth("HC-EXPIRED", "g1", now)},
+		{name: "expired-status-case", order: usableSoldOrder("HC-EXPIRED-CASE", "g1", now), auth: expiredStatusCaseAuth("HC-EXPIRED-CASE", "g1", now)},
+		{name: "exhausted", order: exhaustedSoldOrder("HC-EXHAUSTED", "g1", now), auth: exhaustedSoldAuth("HC-EXHAUSTED", "g1", now)},
+		{name: "pending", order: &PurchaseOrder{Order: corecardstore.Order{OrderNo: "HC-PENDING", Status: corecardstore.StatusPending}, HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: "g1"}, auth: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{tt.order.OrderNo: tt.order}}
+			authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{}}
+			if tt.auth != nil {
+				authRepo.byID[tt.auth.ID] = tt.auth
+			}
+			svc := NewService(nil, orderRepo, authRepo)
+			svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+				return []ServiceGroupRecord{{ID: "g2", Name: "Group 2"}}, "g2"
+			})
+			_, err := svc.RebindOrderServiceGroup(context.Background(), tt.order.OrderNo, "g2", false)
+			if err == nil || !strings.Contains(err.Error(), "only unused remaining active cards") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func usableSoldOrder(orderNo, groupID string, now time.Time) *PurchaseOrder {
+	return &PurchaseOrder{
+		Order:          corecardstore.Order{OrderNo: orderNo, Status: corecardstore.StatusActivated, PaymentID: "auth-" + orderNo},
+		HubID:          "hub-1",
+		TenantID:       "tenant-a",
+		ServiceGroupID: groupID,
+		Credits:        1000,
+	}
+}
+
+func expiredSoldOrder(orderNo, groupID string, now time.Time) *PurchaseOrder {
+	return usableSoldOrder(orderNo, groupID, now)
+}
+
+func exhaustedSoldOrder(orderNo, groupID string, now time.Time) *PurchaseOrder {
+	return usableSoldOrder(orderNo, groupID, now)
+}
+
+func usableSoldAuth(orderNo, groupID string, now time.Time) *llmservice.TenantAuthorization {
+	return &llmservice.TenantAuthorization{
+		ID: "auth-" + orderNo, HubID: "hub-1", TenantID: "tenant-a", ServiceGroupID: groupID,
+		CreditsTotal: 1000, CreditsUsed: 10, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour),
+		Status: "active", Source: "card", CardOrderID: orderNo, CreatedAt: now,
+	}
+}
+
+func expiredSoldAuth(orderNo, groupID string, now time.Time) *llmservice.TenantAuthorization {
+	auth := usableSoldAuth(orderNo, groupID, now)
+	auth.ExpiresAt = now.Add(-time.Hour)
+	auth.Status = "expired"
+	return auth
+}
+
+func expiredStatusCaseAuth(orderNo, groupID string, now time.Time) *llmservice.TenantAuthorization {
+	auth := usableSoldAuth(orderNo, groupID, now)
+	auth.Status = "EXPIRED"
+	return auth
+}
+
+func exhaustedSoldAuth(orderNo, groupID string, now time.Time) *llmservice.TenantAuthorization {
+	auth := usableSoldAuth(orderNo, groupID, now)
+	auth.CreditsUsed = 1000
+	auth.Status = "exhausted"
+	return auth
+}
+
+func ordersByNo(orders []*PurchaseOrder) map[string]*PurchaseOrder {
+	out := map[string]*PurchaseOrder{}
+	for _, order := range orders {
+		if order != nil {
+			out[order.OrderNo] = order
+		}
+	}
+	return out
+}
+
+func orderNos(orders []*PurchaseOrder) []string {
+	var out []string
+	for _, order := range orders {
+		if order != nil {
+			out = append(out, order.OrderNo)
+		}
+	}
+	return out
 }

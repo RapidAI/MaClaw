@@ -380,11 +380,18 @@ func (c *SkillMarketClient) refreshSkillMarketSession(ctx context.Context, bases
 	if err != nil {
 		return false, err
 	}
+	userID := strings.TrimSpace(cfg.RemoteUserID)
 	account := strings.TrimSpace(cfg.RemoteEmail)
+	if account == "" && strings.TrimSpace(cfg.RemoteMobile) != "" {
+		account = "phone:" + strings.TrimSpace(cfg.RemoteMobile)
+	}
+	if userID == "" {
+		userID = account
+	}
 	machineID := strings.TrimSpace(cfg.RemoteMachineID)
 	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
-	if account == "" || machineID == "" || viewerToken == "" {
-		return false, fmt.Errorf("hub enrollment incomplete (need remote_email, remote_machine_id, remote_viewer_token)")
+	if strings.TrimSpace(cfg.RemoteHubID) == "" || userID == "" || machineID == "" || viewerToken == "" {
+		return false, fmt.Errorf("hub enrollment incomplete (need remote_hub_id, remote_user_id or contact, remote_machine_id, remote_viewer_token)")
 	}
 	candidates := make([]string, 0, len(bases)+1)
 	seen := make(map[string]struct{}, len(bases)+1)
@@ -412,7 +419,7 @@ func (c *SkillMarketClient) refreshSkillMarketSession(ctx context.Context, bases
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		result, loginErr := authClient.MachineLogin(ctx, baseURL, account, machineID, viewerToken)
+		result, loginErr := authClient.MachineLogin(ctx, baseURL, cfg.RemoteHubID, userID, account, machineID, viewerToken)
 		if loginErr != nil {
 			lastErr = loginErr
 			continue
@@ -426,7 +433,7 @@ func (c *SkillMarketClient) refreshSkillMarketSession(ctx context.Context, bases
 		}); err != nil {
 			return false, err
 		}
-		log.Printf("[skillmarket] session refreshed via hub machine-login account=%s center=%s", account, baseURL)
+		log.Printf("[skillmarket] session refreshed via hub machine-login user_id=%s center=%s", userID, baseURL)
 		return true, nil
 	}
 	if lastErr != nil {

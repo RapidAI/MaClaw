@@ -21,18 +21,10 @@ func TestBrowserPublicationAffordance(t *testing.T) {
 	}
 }
 
-func TestExecutionAffordanceAddsBrowserSecondaryTools(t *testing.T) {
+func TestExecutionAffordanceDoesNotAddCapabilityLabelsFromWording(t *testing.T) {
 	result := ClassificationResult{Primary: LabelSearch, Confidence: 0.91}
 	applyExecutionAffordances("\u627e\u7bc7\u6700\u65b0\u8bba\u6587\uff0c\u5199\u5b8c\u540e\u53d1\u5e03\u5230\u77e5\u4e4e", &result)
-	if len(result.Secondary) != 1 || result.Secondary[0] != LabelBrowser {
-		t.Fatalf("secondary = %#v, want browser", result.Secondary)
-	}
-	tools := NewToolAffinityRegistry().Resolve(result.Primary, result.Secondary)
-	seen := map[string]bool{}
-	for _, name := range tools {
-		seen[name] = true
-	}
-	if !seen["web_search"] || !seen["browser"] {
-		t.Fatalf("tools = %#v, want web_search and browser", tools)
+	if len(result.Secondary) != 0 {
+		t.Fatalf("wording added capability secondary = %#v", result.Secondary)
 	}
 }

@@ -558,7 +558,7 @@ func TestSkillRecoverReappliesCodingImplementationWorkflowFilter(t *testing.T) {
 	}
 }
 
-func TestInjectionAugmentReappliesCodingImplementationWorkflowFilter(t *testing.T) {
+func TestInjectionReplacementReappliesCodingImplementationWorkflowFilter(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "workflow-injection-implementation-filter-user"
 	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
@@ -600,13 +600,36 @@ func TestInjectionAugmentReappliesCodingImplementationWorkflowFilter(t *testing.
 	names := toolNameSetForWorkflowFilterTest(got)
 	for _, name := range []string{"read_file", "list_directory", "delegate_task"} {
 		if !names[name] {
-			t.Fatalf("injection augment should keep implementation handoff/read tool %s, got %#v", name, names)
+			t.Fatalf("injection replacement should contain implementation handoff/read tool %s, got %#v", name, names)
 		}
 	}
 	for _, name := range []string{"bash", "write_file", "edit_file", "task", "memory", "craft_tool"} {
 		if names[name] {
 			t.Fatalf("injection augment must not resurrect workflow-blocked tool %s, got %#v", name, names)
 		}
+	}
+}
+
+func TestInjectionReplacementDropsToolsFromPreviousTask(t *testing.T) {
+	handler := &IMMessageHandler{}
+	handler.toolDefGen = NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("browser", "browse the web", nil, nil),
+		toolDef("read_file", "read a local file", nil, nil),
+		toolDef("ssh", "connect to a remote server", nil, nil),
+	})
+	handler.toolRouter = NewToolRouter(handler.toolDefGen)
+
+	current := []map[string]interface{}{
+		toolDef("browser", "browse the web", nil, nil),
+		toolDef("read_file", "read a local file", nil, nil),
+	}
+	got, _ := handler.augmentToolsFromInjection(nil, "user-1", "[用户补充] 使用 ssh 连接服务器", current, handler.getTools(), false)
+	names := toolNameSetForWorkflowFilterTest(got)
+	if names["browser"] {
+		t.Fatalf("replacement retained previous-task tools: %#v", names)
+	}
+	if len(names) == 0 {
+		t.Fatalf("replacement unexpectedly produced an empty surface")
 	}
 }
 

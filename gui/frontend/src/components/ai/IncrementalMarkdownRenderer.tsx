@@ -29,20 +29,22 @@ import { renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
 /**
  * 从已冻结位置向后扫描，找到 content 中最远的安全分割点。
  *
- * 安全分割点 = \n\n 位置，且该位置不在未闭合代码块内。
+ * 安全分割点 = \n\n 位置，且该位置不在未闭合代码块或展示公式内。
  *
  * 扫描从 scanFrom 开始，到 maxPos 结束。
- * 正向单次 O(maxPos - scanFrom) 扫描，同时追踪 fence 奇偶。
+ * 正向单次 O(maxPos - scanFrom) 扫描，同时追踪代码围栏和展示公式状态。
  */
 function findBestSplitPointForward(
     content: string,
     scanFrom: number,
     maxPos: number,
 ): number {
-    // Frozen segments only ever end at a split point outside a fence, so the
-    // scan can start closed and remain linear in newly appended content.
+    // Frozen segments only ever end at a split point outside a fence or display
+    // formula, so the scan can start closed and remain linear in newly appended
+    // content.
     // Keep the opener so an embedded shorter fence cannot close a longer one.
     let fenceMarker = "";
+    let displayMathDelimiter: "$$" | "\\[" | "" = "";
     let bestSplit = -1;
     let i = scanFrom;
 
@@ -51,22 +53,41 @@ function findBestSplitPointForward(
         if (nlIdx === -1 || nlIdx >= maxPos) break;
 
         const line = content.slice(i, nlIdx);
-        const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
-        if (fenceMatch) {
-            const marker = fenceMatch[1];
-            if (!fenceMarker) {
-                fenceMarker = marker;
-            } else if (
-                marker[0] === fenceMarker[0]
-                && marker.length >= fenceMarker.length
-                && !fenceMatch[2].trim()
-            ) {
-                fenceMarker = "";
+        const trimmed = line.trim();
+
+        // Match renderContentWithCodeBlocks: while a display formula is open,
+        // every line is formula source until its own closing delimiter. Code
+        // fences inside TeX are not Markdown fences.
+        if (displayMathDelimiter) {
+            const closeDelimiter = displayMathDelimiter === "$$" ? "$$" : "\\]";
+            if (trimmed.endsWith(closeDelimiter)) displayMathDelimiter = "";
+        } else {
+            const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
+            if (fenceMatch) {
+                const marker = fenceMatch[1];
+                if (!fenceMarker) {
+                    fenceMarker = marker;
+                } else if (
+                    marker[0] === fenceMarker[0]
+                    && marker.length >= fenceMarker.length
+                    && !fenceMatch[2].trim()
+                ) {
+                    fenceMarker = "";
+                }
+            } else if (!fenceMarker) {
+                // Single-line formulas are already complete and are safe to
+                // freeze. Only retain state for an opener that has no closer
+                // on the same line, exactly as the markdown renderer does.
+                if (trimmed.startsWith("$$") && !(trimmed.endsWith("$$") && trimmed.length > 4)) {
+                    displayMathDelimiter = "$$";
+                } else if (trimmed.startsWith("\\[") && !(trimmed.endsWith("\\]") && trimmed.length > 4)) {
+                    displayMathDelimiter = "\\[";
+                }
             }
         }
 
         // 检查是否是 \n\n（当前行结束后紧跟空行）
-        if (!fenceMarker && nlIdx + 1 < content.length && content[nlIdx + 1] === '\n') {
+        if (!fenceMarker && !displayMathDelimiter && nlIdx + 1 < content.length && content[nlIdx + 1] === '\n') {
             // 分割点在 \n\n 结束之后
             bestSplit = nlIdx + 2;
         }

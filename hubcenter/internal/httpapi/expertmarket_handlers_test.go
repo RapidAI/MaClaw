@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -75,7 +77,214 @@ func expertMarketMultipart(t *testing.T, archive []byte, price int64) (*bytes.Bu
 	}
 	return &body, mw.FormDataContentType()
 }
+
+func expertMarketMultipartWithVisibility(t *testing.T, archive []byte, price int64, visibility string, platformDistribution bool) (*bytes.Buffer, string) {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("version", "1.0.0")
+	_ = mw.WriteField("price", fmtInt(price))
+	_ = mw.WriteField("visibility", visibility)
+	_ = mw.WriteField("platform_distribution", strconv.FormatBool(platformDistribution))
+	part, err := mw.CreateFormFile("package", "expert.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(archive); err != nil {
+		t.Fatal(err)
+	}
+	if err = mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &body, mw.FormDataContentType()
+}
 func fmtInt(v int64) string { return strconv.FormatInt(v, 10) }
+
+func TestExpertMarketPrivateShareCannotEnablePlatformDistribution(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "private-distribution-seller", "private-distribution@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, contentType := expertMarketMultipartWithVisibility(t, expertMarketArchive(t, "pkgexp-private-distribution", "Private distribution"), 0, "private", true)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts", body)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	h.SubmitExpertMarketListing(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("submit=%d %s", rec.Code, rec.Body.String())
+	}
+	var listing expertMarketAdminListing
+	if err := json.Unmarshal(rec.Body.Bytes(), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if listing.PlatformDistribution {
+		t.Fatalf("private listing returned platform distribution consent: %+v", listing)
+	}
+	var enabled int
+	if err := h.store.DB().QueryRow(`SELECT platform_distribution FROM sm_expert_market_listings WHERE id=?`, listing.ID).Scan(&enabled); err != nil || enabled != 0 {
+		t.Fatalf("private listing platform_distribution=%d err=%v, want 0", enabled, err)
+	}
+}
+
+func TestExpertMarketPublicShareReturnsPlatformDistributionAcrossReadAPIs(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "public-distribution-seller", "public-distribution@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, contentType := expertMarketMultipartWithVisibility(t, expertMarketArchive(t, "pkgexp-public-distribution", "Public distribution"), 0, "public", true)
+	submit := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts", body)
+	submit.Header.Set("Authorization", "Bearer "+session.Token)
+	submit.Header.Set("Content-Type", contentType)
+	submitRec := httptest.NewRecorder()
+	h.SubmitExpertMarketListing(submitRec, submit)
+	if submitRec.Code != http.StatusCreated {
+		t.Fatalf("submit=%d %s", submitRec.Code, submitRec.Body.String())
+	}
+	var created expertMarketAdminListing
+	if err := json.Unmarshal(submitRec.Body.Bytes(), &created); err != nil || !created.PlatformDistribution {
+		t.Fatalf("created listing=%+v err=%v, want distribution enabled", created, err)
+	}
+	if _, err := h.store.DB().Exec(`UPDATE sm_expert_market_listings SET status='listed' WHERE id=?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	account := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/account", nil)
+	account.Header.Set("Authorization", "Bearer "+session.Token)
+	accountRec := httptest.NewRecorder()
+	h.GetExpertMarketAccount(accountRec, account)
+	if accountRec.Code != http.StatusOK || !bytes.Contains(accountRec.Body.Bytes(), []byte(`"platform_distribution":true`)) {
+		t.Fatalf("account=%d %s, want enabled distribution", accountRec.Code, accountRec.Body.String())
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts", nil)
+	list.Header.Set("Authorization", "Bearer "+session.Token)
+	listRec := httptest.NewRecorder()
+	h.ListExpertMarketListings(listRec, list)
+	if listRec.Code != http.StatusOK || !bytes.Contains(listRec.Body.Bytes(), []byte(`"platform_distribution":true`)) {
+		t.Fatalf("list=%d %s, want enabled distribution", listRec.Code, listRec.Body.String())
+	}
+
+	detail := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+created.ID, nil)
+	detail.SetPathValue("id", created.ID)
+	detail.Header.Set("Authorization", "Bearer "+session.Token)
+	detailRec := httptest.NewRecorder()
+	h.GetExpertMarketListing(detailRec, detail)
+	if detailRec.Code != http.StatusOK || !bytes.Contains(detailRec.Body.Bytes(), []byte(`"platform_distribution":true`)) {
+		t.Fatalf("detail=%d %s, want enabled distribution", detailRec.Code, detailRec.Body.String())
+	}
+}
+
+func TestExpertMarketAccountUsesUserIDAcrossBoundLoginContacts(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	userID := "expert-bound-contact-owner"
+	_, err := users.EnsureAccountWithID(ctx, userID, "owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSession, err := auth.CreateSessionForUser(ctx, userID, "owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, contentType := expertMarketMultipartWithVisibility(t, expertMarketArchive(t, "pkgexp-bound-contact-owner", "Bound contact expert"), 0, "private", false)
+	submit := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts", body)
+	submit.Header.Set("Authorization", "Bearer "+firstSession.Token)
+	submit.Header.Set("Content-Type", contentType)
+	submitRec := httptest.NewRecorder()
+	h.SubmitExpertMarketListing(submitRec, submit)
+	if submitRec.Code != http.StatusCreated {
+		t.Fatalf("submit=%d %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	// The Hub can authenticate this same principal through a phone on a later
+	// login. The session contact is intentionally different; asset ownership
+	// remains keyed by the immutable user ID.
+	secondSession, err := auth.CreateSessionForUser(ctx, userID, "phone:17000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/account", nil)
+	account.Header.Set("Authorization", "Bearer "+secondSession.Token)
+	accountRec := httptest.NewRecorder()
+	h.GetExpertMarketAccount(accountRec, account)
+	if accountRec.Code != http.StatusOK || !bytes.Contains(accountRec.Body.Bytes(), []byte(`"name":"Bound contact expert"`)) {
+		t.Fatalf("phone-contact account=%d %s, want submission owned by user ID", accountRec.Code, accountRec.Body.String())
+	}
+	if !bytes.Contains(accountRec.Body.Bytes(), []byte(`"email":"owner@example.test"`)) {
+		t.Fatalf("account response=%s, want the canonical contact without changing ownership", accountRec.Body.String())
+	}
+}
+
+func TestExpertMarketSubmissionAuditActorUsesUserID(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	userID := "expert-audit-user-id"
+	owner, err := users.EnsureAccountWithID(ctx, userID, "owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, contentType := expertMarketMultipartWithVisibility(t, expertMarketArchive(t, "pkgexp-audit-user-id", "Audit actor expert"), 0, "public", true)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts", body)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	h.SubmitExpertMarketListing(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("submit=%d %s", rec.Code, rec.Body.String())
+	}
+	var actor string
+	if err := h.store.DB().QueryRow(`SELECT actor FROM sm_expert_market_events ORDER BY created_at DESC LIMIT 1`).Scan(&actor); err != nil || actor != userID {
+		t.Fatalf("event actor=%q err=%v, want user ID %q", actor, err, userID)
+	}
+}
+
+func TestExpertMarketMakePrivateClearsPlatformDistribution(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "make-private-distribution-seller", "make-private-distribution@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`, platform_distribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'public', 'listed', ?, 0, 0, 0, 0, '', ?, ?, 1)`, "make-private-distribution", seller.ID, seller.Email, "pkgexp-make-private-distribution", "Make private distribution", "", "", "1.0.0", 0, filepath.Join(h.expertMarketDir(), "unused.zip"), now, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/make-private-distribution/make-private", nil)
+	req.SetPathValue("id", "make-private-distribution")
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	rec := httptest.NewRecorder()
+	h.MakeExpertMarketListingPrivate(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("make private=%d %s", rec.Code, rec.Body.String())
+	}
+	var visibility, status string
+	var enabled int
+	if err := h.store.DB().QueryRow(`SELECT visibility, status, platform_distribution FROM sm_expert_market_listings WHERE id='make-private-distribution'`).Scan(&visibility, &status, &enabled); err != nil || visibility != "private" || status != "private" || enabled != 0 {
+		t.Fatalf("private listing visibility=%q status=%q platform_distribution=%d err=%v", visibility, status, enabled, err)
+	}
+}
 
 func TestExpertMarketSubmitReviewPurchaseAndDownload(t *testing.T) {
 	h, users, auth, credits := newExpertMarketTestHandler(t)
@@ -359,6 +568,47 @@ func TestExpertMarketPrivateVisibilitySkipsReviewAndCanBeRepublished(t *testing.
 	}
 }
 
+func TestExpertMarketAccountKeepsListingsWithTheAuthenticatedUserID(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "shared-identity-seller", "seller@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSession, err := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, contentType := expertMarketMultipart(t, expertMarketArchive(t, "pkgexp-shared-identity", "Shared identity expert"), 0)
+	submit := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts", body)
+	submit.Header.Set("Authorization", "Bearer "+firstSession.Token)
+	submit.Header.Set("Content-Type", contentType)
+	submitRec := httptest.NewRecorder()
+	h.SubmitExpertMarketListing(submitRec, submit)
+	if submitRec.Code != http.StatusCreated {
+		t.Fatalf("submit=%d %s", submitRec.Code, submitRec.Body.String())
+	}
+
+	// A subsequent login may present a different verified contact (for example,
+	// phone versus email) but keeps the same Hub user ID. Ownership must remain
+	// attached to that ID, not the contact stored with the original session.
+	secondSession, err := auth.CreateSessionForUser(ctx, seller.ID, "seller-phone-login@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/account", nil)
+	account.Header.Set("Authorization", "Bearer "+secondSession.Token)
+	accountRec := httptest.NewRecorder()
+	h.GetExpertMarketAccount(accountRec, account)
+	if accountRec.Code != http.StatusOK || !bytes.Contains(accountRec.Body.Bytes(), []byte(`"source_expert_id":"pkgexp-shared-identity"`)) {
+		t.Fatalf("same user ID must retain submitted experts across login contacts: status=%d body=%s", accountRec.Code, accountRec.Body.String())
+	}
+	var ownerID string
+	if err := h.store.DB().QueryRow(`SELECT owner_user_id FROM sm_expert_market_listings WHERE source_expert_id='pkgexp-shared-identity'`).Scan(&ownerID); err != nil || ownerID != seller.ID {
+		t.Fatalf("listing owner id=%q err=%v, want %q", ownerID, err, seller.ID)
+	}
+}
+
 func TestExpertMarketOwnerCanDeletePrivateShare(t *testing.T) {
 	h, users, auth, _ := newExpertMarketTestHandler(t)
 	ctx := context.Background()
@@ -590,6 +840,239 @@ func TestExpertMarketPrivateListingOwnerCanRestoreDownloadedPackage(t *testing.T
 	h.DownloadExpertMarketListing(rec, req)
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), packageData) {
 		t.Fatalf("owner private restore=%d body=%q", rec.Code, rec.Body.Bytes())
+	}
+}
+
+func TestExpertMarketDownloadNeverServesPackageOutsideMarketStorage(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "download-foreign-seller", "download-foreign@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, seller.ID, seller.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := os.CreateTemp(t.TempDir(), "not-a-market-package-*.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPath := foreign.Name()
+	if _, err := foreign.WriteString("must not be served"); err != nil {
+		t.Fatal(err)
+	}
+	if err := foreign.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	const listingID = "download-foreign-listing"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-download-foreign", "External package", "", "", "1", 0, "private", "private", foreignPath, 19, now, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+listingID+"/download", nil)
+	req.SetPathValue("id", listingID)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	rec := httptest.NewRecorder()
+	h.DownloadExpertMarketListing(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("foreign package download=%d %s", rec.Code, rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("must not be served")) {
+		t.Fatal("download response disclosed a file outside market storage")
+	}
+}
+
+func TestExpertMarketAdminPrivateOperations(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "admin-private-owner", "admin-private-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := users.EnsureAccountWithID(ctx, "admin-private-target", "admin-private-target@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now, listingID := expertMarketNow(), "admin-private-operations"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-admin-private-ops", "Private operations", "owner transfer and admin publication", "", "1", 0, "private", "private", "", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, keyword := range []string{"", "t"} {
+		listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/expert-market/users?keyword="+keyword, nil)
+		listRec := httptest.NewRecorder()
+		h.AdminListExpertMarketUsers(listRec, listReq)
+		if listRec.Code != http.StatusBadRequest {
+			t.Fatalf("short user query %q status=%d body=%s", keyword, listRec.Code, listRec.Body.String())
+		}
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/expert-market/users?keyword=target", nil)
+	listRec := httptest.NewRecorder()
+	h.AdminListExpertMarketUsers(listRec, listReq)
+	if listRec.Code != http.StatusOK || !bytes.Contains(listRec.Body.Bytes(), []byte(target.Email)) {
+		t.Fatalf("target users=%d %s", listRec.Code, listRec.Body.String())
+	}
+
+	transferReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/expert-market/experts/"+listingID+"/transfer-owner", strings.NewReader(`{"target_user_id":"`+target.ID+`","expected_owner_id":"`+owner.ID+`","reason":"operations handoff"}`))
+	transferReq.Header.Set("Content-Type", "application/json")
+	transferReq.SetPathValue("id", listingID)
+	transferRec := httptest.NewRecorder()
+	h.AdminTransferExpertMarketOwner(transferRec, transferReq)
+	if transferRec.Code != http.StatusOK {
+		t.Fatalf("transfer=%d %s", transferRec.Code, transferRec.Body.String())
+	}
+	var gotOwner, gotEmail string
+	if err := h.store.DB().QueryRow(`SELECT owner_user_id, owner_email FROM sm_expert_market_listings WHERE id=?`, listingID).Scan(&gotOwner, &gotEmail); err != nil || gotOwner != target.ID || gotEmail != target.Email {
+		t.Fatalf("owner=%q email=%q err=%v", gotOwner, gotEmail, err)
+	}
+	var transferAudits int
+	if err := h.store.DB().QueryRow(`SELECT COUNT(*) FROM sm_expert_market_audit_events WHERE listing_id=? AND action='transfer_owner'`, listingID).Scan(&transferAudits); err != nil || transferAudits != 1 {
+		t.Fatalf("transfer audit=%d err=%v", transferAudits, err)
+	}
+
+	publishReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/expert-market/experts/"+listingID+"/submit-publication", strings.NewReader(`{"reason":"review requested"}`))
+	publishReq.Header.Set("Content-Type", "application/json")
+	publishReq.SetPathValue("id", listingID)
+	publishRec := httptest.NewRecorder()
+	h.AdminSubmitExpertMarketPublication(publishRec, publishReq)
+	if publishRec.Code != http.StatusOK {
+		t.Fatalf("publication=%d %s", publishRec.Code, publishRec.Body.String())
+	}
+	var visibility, status string
+	if err := h.store.DB().QueryRow(`SELECT visibility, status FROM sm_expert_market_listings WHERE id=?`, listingID).Scan(&visibility, &status); err != nil || visibility != "public" || status != "pending_review" {
+		t.Fatalf("publication visibility=%q status=%q err=%v", visibility, status, err)
+	}
+}
+
+func TestExpertMarketAdminSearchEscapesLikeMetacharacters(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "search-owner", "search-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	for _, item := range []struct{ id, name string }{{"search-percent", "100% verified"}, {"search-plain", "100x verified"}} {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, item.id, owner.ID, owner.Email, "pkgexp-"+item.id, item.name, "", "", "1", 0, "private", "private", "", 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/expert-market/experts?keyword=%25", nil)
+	rec := httptest.NewRecorder()
+	h.AdminListExpertMarketListings(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search=%d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Experts []expertMarketAdminListing `json:"experts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Experts) != 1 || payload.Experts[0].ID != "search-percent" {
+		t.Fatalf("literal percent search=%+v", payload.Experts)
+	}
+}
+
+func TestExpertMarketAdminPrivateDeletePreventsOwnerDownload(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "admin-delete-owner", "admin-delete-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	if err := os.MkdirAll(h.expertMarketDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listingID, packagePath := "admin-private-delete", filepath.Join(h.expertMarketDir(), "admin-private-delete.zip")
+	if err := os.WriteFile(packagePath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := expertMarketNow()
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-admin-private-delete", "Private delete", "", "", "1", 0, "private", "private", packagePath, 7, now, now); err != nil {
+		t.Fatal(err)
+	}
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/expert-market/experts/"+listingID+"/private", strings.NewReader(`{"reason":"policy removal"}`))
+	deleteReq.Header.Set("Content-Type", "application/json")
+	deleteReq.SetPathValue("id", listingID)
+	deleteRec := httptest.NewRecorder()
+	h.AdminDeletePrivateExpertMarketListing(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("private delete=%d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+listingID+"/download", nil)
+	downloadReq.Header.Set("Authorization", "Bearer "+session.Token)
+	downloadReq.SetPathValue("id", listingID)
+	downloadRec := httptest.NewRecorder()
+	h.DownloadExpertMarketListing(downloadRec, downloadReq)
+	if downloadRec.Code != http.StatusGone {
+		t.Fatalf("deleted private download=%d %s", downloadRec.Code, downloadRec.Body.String())
+	}
+	purgeReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/expert-market/experts/"+listingID+"/private/purge", strings.NewReader(`{"reason":"retention elapsed"}`))
+	purgeReq.Header.Set("Content-Type", "application/json")
+	purgeReq.SetPathValue("id", listingID)
+	purgeRec := httptest.NewRecorder()
+	h.AdminPurgePrivateExpertMarketListing(purgeRec, purgeReq)
+	if purgeRec.Code != http.StatusOK {
+		t.Fatalf("private purge=%d %s", purgeRec.Code, purgeRec.Body.String())
+	}
+	if _, err := os.Stat(packagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private package still exists after purge: %v", err)
+	}
+	var status string
+	if err := h.store.DB().QueryRow(`SELECT status FROM sm_expert_market_listings WHERE id=?`, listingID).Scan(&status); err != nil || status != "purged" {
+		t.Fatalf("private purge status=%q err=%v", status, err)
+	}
+	var audits int
+	if err := h.store.DB().QueryRow(`SELECT COUNT(*) FROM sm_expert_market_audit_events WHERE listing_id=? AND action='purge_private'`, listingID).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("private purge audit=%d err=%v", audits, err)
+	}
+}
+
+func TestExpertMarketPrivatePurgeKeepsPackageWhenAuditWriteFails(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "private-purge-audit-owner", "private-purge-audit-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	if err := os.MkdirAll(h.expertMarketDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packagePath := filepath.Join(h.expertMarketDir(), "private-purge-audit-failure.zip")
+	if err := os.WriteFile(packagePath, []byte("private package"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := expertMarketNow()
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "private-purge-audit-failure", owner.ID, owner.Email, "pkgexp-private-purge-audit-failure", "Private purge audit failure", "", "", "1", 0, "private", "deleted", packagePath, 15, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_private_purge_audit BEFORE INSERT ON sm_expert_market_audit_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"retention elapsed"}`))
+	req.SetPathValue("id", "private-purge-audit-failure")
+	rec := httptest.NewRecorder()
+	h.AdminPurgePrivateExpertMarketListing(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("purge=%d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("package must remain after failed audit: %v", err)
+	}
+	var status, zipPath string
+	if err := h.store.DB().QueryRow(`SELECT status, zip_path FROM sm_expert_market_listings WHERE id='private-purge-audit-failure'`).Scan(&status, &zipPath); err != nil || status != "deleted" || zipPath != packagePath {
+		t.Fatalf("listing status=%q path=%q err=%v", status, zipPath, err)
 	}
 }
 
@@ -942,6 +1425,82 @@ func TestExpertMarketOptionalModerationNoteAndInstallationAudit(t *testing.T) {
 	}
 }
 
+func TestExpertMarketInstallationReportRejectsTrailingOrOversizedInput(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "installation-validation-owner", "installation-validation@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	const listingID = "installation-validation-listing"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-installation-validation", "Installation validation", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"status":"installed","local_expert_id":"local"}{}`,
+		`{"status":"failed","error_message":"` + strings.Repeat("x", 2049) + `"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/"+listingID+"/installations", strings.NewReader(body))
+		req.SetPathValue("id", listingID)
+		req.Header.Set("Authorization", "Bearer "+session.Token)
+		rec := httptest.NewRecorder()
+		h.ReportExpertMarketInstallation(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("installation validation body=%q status=%d response=%s", body[:min(len(body), 80)], rec.Code, rec.Body.String())
+		}
+	}
+	var reports int
+	if err := h.store.DB().QueryRow(`SELECT COUNT(*) FROM sm_expert_market_installations WHERE listing_id=?`, listingID).Scan(&reports); err != nil || reports != 0 {
+		t.Fatalf("invalid reports persisted: count=%d err=%v", reports, err)
+	}
+}
+
+func TestExpertMarketInstallationReportUpsertsRetryState(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	owner, err := users.EnsureAccountWithID(ctx, "installation-retry-owner", "installation-retry@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, owner.ID, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	const listingID = "installation-retry-listing"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, owner.ID, owner.Email, "pkgexp-installation-retry", "Installation retry", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"status":"failed","version":"1.0","failure_stage":"download","error_message":"network unavailable"}`,
+		`{"status":"installed","local_expert_id":"local-retry","version":"1.1"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/expert-market/experts/"+listingID+"/installations", strings.NewReader(body))
+		req.SetPathValue("id", listingID)
+		req.Header.Set("Authorization", "Bearer "+session.Token)
+		rec := httptest.NewRecorder()
+		h.ReportExpertMarketInstallation(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("installation report=%d %s", rec.Code, rec.Body.String())
+		}
+	}
+	var reports int
+	var status, localID, version, stage, message string
+	if err := h.store.DB().QueryRow(`SELECT COUNT(*), MAX(status), MAX(local_expert_id), MAX(version), MAX(failure_stage), MAX(error_message) FROM sm_expert_market_installations WHERE listing_id=? AND user_id=?`, listingID, owner.ID).Scan(&reports, &status, &localID, &version, &stage, &message); err != nil {
+		t.Fatal(err)
+	}
+	if reports != 1 || status != "installed" || localID != "local-retry" || version != "1.1" || stage != "" || message != "" {
+		t.Fatalf("installation retry state reports=%d status=%q local=%q version=%q stage=%q message=%q", reports, status, localID, version, stage, message)
+	}
+}
+
 func TestExpertMarketRejectAllowsEmptyReviewNote(t *testing.T) {
 	h, users, _, _ := newExpertMarketTestHandler(t)
 	ctx := context.Background()
@@ -1011,6 +1570,65 @@ func TestExpertMarketAdminLifecycleRollsBackWhenAuditWriteFails(t *testing.T) {
 	var status string
 	if err := h.store.DB().QueryRow(`SELECT status FROM sm_expert_market_listings WHERE id='admin-audit-rollback'`).Scan(&status); err != nil || status != "listed" {
 		t.Fatalf("status after failed admin audit=%q err=%v", status, err)
+	}
+}
+
+func TestExpertMarketStructuredAuditIncludesPublicLifecycleTransitions(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "seller-public-audit", "seller-public-audit@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	insert := func(id, status string) {
+		t.Helper()
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, "pkgexp-"+id, id, "", "", "1", 0, "public", status, "", 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("public-audit-approve", "pending_review")
+	insert("public-audit-unlist", "listed")
+	insert("public-audit-delete", "unlisted")
+	insert("public-audit-purge", "deleted")
+	tests := []struct {
+		id      string
+		action  string
+		from    string
+		to      string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{id: "public-audit-approve", action: "approved", from: "pending_review", to: "listed", handler: h.AdminApproveExpertMarketListing},
+		{id: "public-audit-unlist", action: "unlisted", from: "listed", to: "unlisted", handler: h.AdminUnlistExpertMarketListing},
+		{id: "public-audit-delete", action: "deleted", from: "unlisted", to: "deleted", handler: h.AdminDeleteExpertMarketListing},
+		{id: "public-audit-purge", action: "purged", from: "deleted", to: "purged", handler: h.AdminPurgeExpertMarketListing},
+	}
+	for _, tc := range tests {
+		t.Run(tc.action, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reason":"policy review"}`))
+			req.Header.Set("X-Request-ID", "audit-request-"+tc.action)
+			req.SetPathValue("id", tc.id)
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s=%d %s", tc.action, rec.Code, rec.Body.String())
+			}
+			var action, reason, beforeJSON, afterJSON, requestID string
+			if err := h.store.DB().QueryRow(`SELECT action, reason, before_json, after_json, request_id FROM sm_expert_market_audit_events WHERE listing_id=?`, tc.id).Scan(&action, &reason, &beforeJSON, &afterJSON, &requestID); err != nil {
+				t.Fatal(err)
+			}
+			var before, after map[string]string
+			if err := json.Unmarshal([]byte(beforeJSON), &before); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(afterJSON), &after); err != nil {
+				t.Fatal(err)
+			}
+			if action != tc.action || reason != "policy review" || requestID != "audit-request-"+tc.action || before["visibility"] != "public" || after["visibility"] != "public" || before["status"] != tc.from || after["status"] != tc.to {
+				t.Fatalf("audit action=%q reason=%q request=%q before=%v after=%v", action, reason, requestID, before, after)
+			}
+		})
 	}
 }
 
@@ -1102,6 +1720,54 @@ func TestExpertMarketLifecycleActionsStillRequireReason(t *testing.T) {
 			tc.handler(rec, req)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestExpertMarketAdminLifecycleRejectsMalformedAndOversizedRequests(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "seller-lifecycle-validation", "seller-lifecycle-validation@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	insert := func(id, status string) {
+		t.Helper()
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, id, seller.ID, seller.Email, "pkgexp-"+id, id, "", "", "1", 0, "public", status, "", 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("validation-approve", "pending_review")
+	insert("validation-unlist", "listed")
+	insert("validation-delete", "unlisted")
+	insert("validation-purge", "deleted")
+	tests := []struct {
+		name    string
+		id      string
+		body    string
+		handler func(http.ResponseWriter, *http.Request)
+		status  string
+	}{
+		{name: "approve malformed", id: "validation-approve", body: `{"reason":`, handler: h.AdminApproveExpertMarketListing, status: "pending_review"},
+		{name: "unlist trailing payload", id: "validation-unlist", body: `{"reason":"reviewed"}{}`, handler: h.AdminUnlistExpertMarketListing, status: "listed"},
+		{name: "delete malformed", id: "validation-delete", body: `not-json`, handler: h.AdminDeleteExpertMarketListing, status: "unlisted"},
+		{name: "purge oversized reason", id: "validation-purge", body: `{"reason":"` + strings.Repeat("x", 2049) + `"}`, handler: h.AdminPurgeExpertMarketListing, status: "deleted"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			req.SetPathValue("id", tc.id)
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var status string
+			if err := h.store.DB().QueryRow(`SELECT status FROM sm_expert_market_listings WHERE id=?`, tc.id).Scan(&status); err != nil || status != tc.status {
+				t.Fatalf("listing status=%q err=%v", status, err)
 			}
 		})
 	}
@@ -1406,6 +2072,9 @@ func TestExpertMarketAdminEventsUseWriteDBAndStableOrdering(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_audit_events (id, listing_id, actor_admin_id, action, reason, created_at) VALUES ('audit-event-c', ?, 'admin-id', 'transfer_owner', 'handoff', ?)`, "event-listing", now); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.SetPathValue("id", "event-listing")
@@ -1420,8 +2089,217 @@ func TestExpertMarketAdminEventsUseWriteDBAndStableOrdering(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Events) != 2 || payload.Events[0]["id"] != "event-b" || payload.Events[1]["id"] != "event-a" {
+	if len(payload.Events) != 3 || payload.Events[0]["id"] != "event-b" || payload.Events[1]["id"] != "event-a" || payload.Events[2]["id"] != "audit-event-c" || payload.Events[2]["source"] != "structured" || payload.Events[2]["before_json"] != "{}" || payload.Events[2]["after_json"] != "{}" || payload.Events[2]["request_id"] != "" || payload.Events[0]["source"] != "legacy" {
 		t.Fatalf("events ordering=%+v", payload.Events)
+	}
+}
+
+func TestExpertMarketAdminEventsOrderChronologicallyAndExposeStructuredAudit(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "seller-event-details", "seller-event-details@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "event-details-listing", seller.ID, seller.Email, "pkgexp-event-details", "Event details", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_events (id, listing_id, actor, action, reason, created_at) VALUES ('event-whole-second', 'event-details-listing', 'administrator', 'unlisted', 'legacy', '2026-08-15T09:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_audit_events (id, listing_id, actor_admin_id, action, reason, before_json, after_json, request_id, created_at) VALUES ('event-fractional-second', 'event-details-listing', 'admin-1', 'listed', 'approved', '{"status":"pending_review"}', '{"status":"listed"}', 'request-123', '2026-08-15T09:00:00.100Z')`); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetPathValue("id", "event-details-listing")
+	rec := httptest.NewRecorder()
+	h.AdminListExpertMarketEvents(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("events=%d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Events []map[string]string `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Events) != 2 || payload.Events[0]["id"] != "event-fractional-second" || payload.Events[0]["source"] != "structured" || payload.Events[0]["before_json"] != `{"status":"pending_review"}` || payload.Events[0]["after_json"] != `{"status":"listed"}` || payload.Events[0]["request_id"] != "request-123" || payload.Events[1]["id"] != "event-whole-second" {
+		t.Fatalf("events=%+v", payload.Events)
+	}
+
+	missing := httptest.NewRequest(http.MethodGet, "/", nil)
+	missing.SetPathValue("id", "missing-event-listing")
+	missingRec := httptest.NewRecorder()
+	h.AdminListExpertMarketEvents(missingRec, missing)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing listing events=%d %s", missingRec.Code, missingRec.Body.String())
+	}
+}
+
+func TestExpertMarketAdminEventsArePaginatedAndBounded(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "seller-event-pagination", "seller-event-pagination@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	const listingID = "event-pagination-listing"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-event-pagination", "Event pagination", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 55; i++ {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_events (id, listing_id, actor, action, reason, created_at) VALUES (?, ?, 'administrator', 'reviewed', '', ?)`, fmt.Sprintf("event-page-%03d", i), listingID, fmt.Sprintf("2026-08-15T09:%02d:00Z", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := func(rawQuery string) map[string]any {
+		req := httptest.NewRequest(http.MethodGet, "/?"+rawQuery, nil)
+		req.SetPathValue("id", listingID)
+		rec := httptest.NewRecorder()
+		h.AdminListExpertMarketEvents(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("events query %q status=%d response=%s", rawQuery, rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	first := request("")
+	firstEvents := first["events"].([]any)
+	if len(firstEvents) != 50 || !first["has_more"].(bool) || int(first["page"].(float64)) != 1 || int(first["page_size"].(float64)) != 50 {
+		t.Fatalf("default event page=%+v", first)
+	}
+	second := request("page=2&page_size=50")
+	secondEvents := second["events"].([]any)
+	if len(secondEvents) != 5 || second["has_more"].(bool) || int(second["page"].(float64)) != 2 || int(second["page_size"].(float64)) != 50 {
+		t.Fatalf("second event page=%+v", second)
+	}
+	custom := request("page=1&page_size=2")
+	if events := custom["events"].([]any); len(events) != 2 || !custom["has_more"].(bool) {
+		t.Fatalf("custom event page=%+v", custom)
+	}
+}
+
+func TestExpertMarketAdminEventsHasMoreUsesLookahead(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "seller-event-lookahead", "seller-event-lookahead@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	const listingID = "event-lookahead-listing"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, seller.ID, seller.Email, "pkgexp-event-lookahead", "Event lookahead", "", "", "1", 0, "public", "listed", "", 0, "2026-08-15T09:00:00Z", "2026-08-15T09:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_events (id, listing_id, actor, action, reason, created_at) VALUES (?, ?, 'administrator', 'reviewed', '', ?)`, fmt.Sprintf("event-lookahead-%d", i), listingID, fmt.Sprintf("2026-08-15T09:00:0%dZ", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := func(page int) map[string]any {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/?page=%d&page_size=2", page), nil)
+		req.SetPathValue("id", listingID)
+		rec := httptest.NewRecorder()
+		h.AdminListExpertMarketEvents(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("events page %d status=%d response=%s", page, rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	first, second, third := request(1), request(2), request(3)
+	if len(first["events"].([]any)) != 2 || !first["has_more"].(bool) {
+		t.Fatalf("first exact-multiple event page=%+v", first)
+	}
+	if len(second["events"].([]any)) != 2 || second["has_more"].(bool) {
+		t.Fatalf("last exact-multiple event page=%+v", second)
+	}
+	if len(third["events"].([]any)) != 0 || third["has_more"].(bool) {
+		t.Fatalf("empty event page=%+v", third)
+	}
+}
+
+func TestExpertMarketListEndpointsRejectInvalidPages(t *testing.T) {
+	h, users, auth, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	viewer, err := users.EnsureAccountWithID(ctx, "invalid-page-viewer", "invalid-page@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := auth.CreateSessionForUser(ctx, viewer.ID, viewer.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	now := expertMarketNow()
+	const listingID = "invalid-page-listing"
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, listingID, viewer.ID, viewer.Email, "pkgexp-invalid-page", "Invalid page", "", "", "1", 0, "public", "listed", "", 0, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		path    string
+		admin   bool
+	}{
+		{name: "public listings", handler: h.ListExpertMarketListings, path: "/?page=100001"},
+		{name: "admin listings", handler: h.AdminListExpertMarketListings, path: "/?page=-1", admin: true},
+		{name: "admin users", handler: h.AdminListExpertMarketUsers, path: "/?keyword=ex&page=invalid", admin: true},
+		{name: "admin events", handler: h.AdminListExpertMarketEvents, path: "/?page=999999999", admin: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			if !tc.admin {
+				req.Header.Set("Authorization", "Bearer "+session.Token)
+			}
+			if tc.name == "admin events" {
+				req.SetPathValue("id", listingID)
+			}
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("invalid page status=%d response=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestExpertMarketListingIDRejectsMalformedRouteValues(t *testing.T) {
+	for _, rawID := range []string{"", " ", "../outside", "expert/other", strings.Repeat("x", 129)} {
+		t.Run(strconv.Quote(rawID), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.SetPathValue("id", rawID)
+			rec := httptest.NewRecorder()
+			if id, ok := expertMarketListingID(rec, req); ok || id != "" || rec.Code != http.StatusNotFound {
+				t.Fatalf("route id %q accepted: id=%q ok=%v status=%d", rawID, id, ok, rec.Code)
+			}
+		})
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.SetPathValue("id", "expert_valid-1.0")
+	rec := httptest.NewRecorder()
+	if id, ok := expertMarketListingID(rec, req); !ok || id != "expert_valid-1.0" {
+		t.Fatalf("valid route id rejected: id=%q ok=%v", id, ok)
+	}
+}
+
+func TestExpertMarketAuditRequestIDIsBounded(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("X-Request-ID", "  request-123  ")
+	if got := expertMarketRequestID(request); got != "request-123" {
+		t.Fatalf("trimmed request ID=%q", got)
+	}
+	request.Header.Set("X-Request-ID", strings.Repeat("x", expertMarketMaxRequestIDRunes+1))
+	if got := expertMarketRequestID(request); got != "" {
+		t.Fatalf("oversized request ID stored=%q", got)
 	}
 }
 
@@ -1458,6 +2336,44 @@ func TestExpertMarketPurgesUnentitledArchivedPackage(t *testing.T) {
 	}
 }
 
+func TestExpertMarketPublicPurgeKeepsPackageWhenAuditWriteFails(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, err := users.EnsureAccountWithID(ctx, "public-purge-audit-owner", "public-purge-audit-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ensureExpertMarketSchema()
+	if err := os.MkdirAll(h.expertMarketDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packagePath := filepath.Join(h.expertMarketDir(), "public-purge-audit-failure.zip")
+	if err := os.WriteFile(packagePath, []byte("public package"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := expertMarketNow()
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "public-purge-audit-failure", seller.ID, seller.Email, "pkgexp-public-purge-audit-failure", "Public purge audit failure", "", "", "1", 0, "public", "deleted", packagePath, 14, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.DB().Exec(`CREATE TRIGGER fail_public_purge_audit BEFORE INSERT ON sm_expert_market_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"retention elapsed"}`))
+	req.SetPathValue("id", "public-purge-audit-failure")
+	rec := httptest.NewRecorder()
+	h.AdminPurgeExpertMarketListing(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("purge=%d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("package must remain after failed audit: %v", err)
+	}
+	var status, zipPath string
+	if err := h.store.DB().QueryRow(`SELECT status, zip_path FROM sm_expert_market_listings WHERE id='public-purge-audit-failure'`).Scan(&status, &zipPath); err != nil || status != "deleted" || zipPath != packagePath {
+		t.Fatalf("listing status=%q path=%q err=%v", status, zipPath, err)
+	}
+}
+
 func TestExpertMarketPurgeNeverRemovesPackageOutsideMarketStorage(t *testing.T) {
 	h, users, _, _ := newExpertMarketTestHandler(t)
 	ctx := context.Background()
@@ -1491,6 +2407,78 @@ func TestExpertMarketPurgeNeverRemovesPackageOutsideMarketStorage(t *testing.T) 
 	var status string
 	if err := h.store.DB().QueryRow(`SELECT status FROM sm_expert_market_listings WHERE id='purge-foreign-listing'`).Scan(&status); err != nil || status != "deleted" {
 		t.Fatalf("listing status=%q err=%v", status, err)
+	}
+}
+
+func TestExpertMarketPurgeNeverFollowsDirectorySymlinkOutsideMarketStorage(t *testing.T) {
+	h, users, _, _ := newExpertMarketTestHandler(t)
+	ctx := context.Background()
+	seller, _ := users.EnsureAccountWithID(ctx, "seller-purge-symlink", "seller-purge-symlink@example.test")
+	h.ensureExpertMarketSchema()
+	if err := os.MkdirAll(h.expertMarketDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	foreignDir := t.TempDir()
+	foreignPath := filepath.Join(foreignDir, "not-a-market-package.zip")
+	if err := os.WriteFile(foreignPath, []byte("must remain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(h.expertMarketDir(), "outside-link")
+	if err := os.Symlink(foreignDir, linkPath); err != nil {
+		t.Skipf("directory symlinks are unavailable on this test host: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "purge-symlink-listing", seller.ID, seller.Email, "pkgexp-purge-symlink", "Symlinked archive", "", "", "1", 0, "public", "deleted", filepath.Join(linkPath, filepath.Base(foreignPath)), 11, now, now); err != nil {
+		t.Fatal(err)
+	}
+	purge := httptest.NewRequest(http.MethodDelete, "/", strings.NewReader(`{"reason":"remove bytes"}`))
+	purge.SetPathValue("id", "purge-symlink-listing")
+	purgeRec := httptest.NewRecorder()
+	h.AdminPurgeExpertMarketListing(purgeRec, purge)
+	if purgeRec.Code != http.StatusInternalServerError {
+		t.Fatalf("purge=%d %s", purgeRec.Code, purgeRec.Body.String())
+	}
+	if _, err := os.Stat(foreignPath); err != nil {
+		t.Fatalf("purge must not remove a package through a directory symlink: %v", err)
+	}
+	var status string
+	if err := h.store.DB().QueryRow(`SELECT status FROM sm_expert_market_listings WHERE id='purge-symlink-listing'`).Scan(&status); err != nil || status != "deleted" {
+		t.Fatalf("listing status=%q err=%v", status, err)
+	}
+}
+
+func TestRemoveExpertMarketPackageRejectsNonRegularTargets(t *testing.T) {
+	h, _, _, _ := newExpertMarketTestHandler(t)
+	if err := os.MkdirAll(h.expertMarketDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	directoryPath := filepath.Join(h.expertMarketDir(), "not-a-package")
+	if err := os.Mkdir(directoryPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.removeExpertMarketPackage(directoryPath); err == nil {
+		t.Fatal("package cleanup must reject a directory")
+	}
+	if info, err := os.Stat(directoryPath); err != nil || !info.IsDir() {
+		t.Fatalf("directory target changed after rejected cleanup: info=%v err=%v", info, err)
+	}
+
+	packagePath := filepath.Join(h.expertMarketDir(), "real-package.zip")
+	if err := os.WriteFile(packagePath, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(h.expertMarketDir(), "package-link.zip")
+	if err := os.Symlink(packagePath, linkPath); err != nil {
+		t.Skipf("file symlinks are unavailable on this test host: %v", err)
+	}
+	if err := h.removeExpertMarketPackage(linkPath); err == nil {
+		t.Fatal("package cleanup must reject a symlink")
+	}
+	if _, err := os.Stat(packagePath); err != nil {
+		t.Fatalf("symlink target changed after rejected cleanup: %v", err)
+	}
+	if info, err := os.Lstat(linkPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("symlink changed after rejected cleanup: info=%v err=%v", info, err)
 	}
 }
 

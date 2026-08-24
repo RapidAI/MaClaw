@@ -5,6 +5,7 @@ package guiautomation
 import (
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,12 +19,101 @@ func NewInputSimulator() InputSimulator { return &linuxInputSimulator{} }
 
 // runXdotool executes an xdotool command with the given arguments.
 func runXdotool(args ...string) error {
-	cmd := exec.Command("xdotool", args...)
+	if _, err := exec.LookPath("xdotool"); err == nil {
+		cmd := exec.Command("xdotool", args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("xdotool %s failed: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		if _, err := exec.LookPath("ydotool"); err == nil {
+			return runYdotool(args)
+		}
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		return fmt.Errorf("no Linux input backend: install xdotool (X11) or ydotool (Wayland)")
+	}
+	return fmt.Errorf("xdotool not found: install xdotool to simulate input on Linux")
+}
+
+func runYdotool(xdotoolArgs []string) error {
+	ydArgs, err := mapXdotoolToYdotool(xdotoolArgs)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("ydotool", ydArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("xdotool %s failed: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("ydotool %s failed: %w (output: %s)", strings.Join(ydArgs, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func mapXdotoolToYdotool(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("empty ydotool mapping")
+	}
+	switch args[0] {
+	case "mousemove":
+		if len(args) < 3 {
+			return nil, fmt.Errorf("mousemove needs x y")
+		}
+		return []string{"mousemove", "--absolute", args[1], args[2]}, nil
+	case "click":
+		btn := "0xC0"
+		repeat := 1
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--repeat" && i+1 < len(args) {
+				n, _ := strconv.Atoi(args[i+1])
+				if n > 0 {
+					repeat = n
+				}
+				i++
+				continue
+			}
+			if args[i] == "--delay" {
+				i++
+				continue
+			}
+			switch args[i] {
+			case "1":
+				btn = "0xC0"
+			case "3":
+				btn = "0xC1"
+			case "4":
+				btn = "0xC3"
+			case "5":
+				btn = "0xC4"
+			}
+		}
+		out := []string{"click"}
+		for i := 0; i < repeat; i++ {
+			out = append(out, btn)
+		}
+		return out, nil
+	case "type":
+		text := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--clearmodifiers" {
+				continue
+			}
+			text = args[i]
+		}
+		return []string{"type", "--", text}, nil
+	case "key":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("key combo required")
+		}
+		return []string{"key", args[1]}, nil
+	case "mousedown":
+		return []string{"click", "0x40"}, nil
+	case "mouseup":
+		return []string{"click", "0x80"}, nil
+	default:
+		return nil, fmt.Errorf("ydotool cannot map xdotool %q", args[0])
+	}
 }
 
 func (l *linuxInputSimulator) Click(x, y int) error {
@@ -61,12 +151,12 @@ var xdotoolKeyMap = map[string]string{
 	"backspace": "BackSpace", "delete": "Delete", "del": "Delete",
 	"escape": "Escape", "esc": "Escape",
 	"insert": "Insert",
-	"home": "Home", "end": "End",
+	"home":   "Home", "end": "End",
 	"pageup": "Prior", "pagedown": "Next",
 	"up": "Up", "down": "Down", "left": "Left", "right": "Right",
 	"printscreen": "Print",
-	"capslock": "Caps_Lock",
-	"f1": "F1", "f2": "F2", "f3": "F3", "f4": "F4",
+	"capslock":    "Caps_Lock",
+	"f1":          "F1", "f2": "F2", "f3": "F3", "f4": "F4",
 	"f5": "F5", "f6": "F6", "f7": "F7", "f8": "F8",
 	"f9": "F9", "f10": "F10", "f11": "F11", "f12": "F12",
 }
@@ -111,9 +201,10 @@ func (l *linuxInputSimulator) Scroll(x, y, deltaX, deltaY int) error {
 		return err
 	}
 	// xdotool: button 4 = scroll up, button 5 = scroll down.
-	button := "5" // down
+	// computer_scroll: positive deltaY means scroll down (content moves up).
+	button := "4" // up
 	if deltaY > 0 {
-		button = "4" // up
+		button = "5" // down
 	}
 	clicks := int(math.Abs(float64(deltaY)))
 	if clicks == 0 {

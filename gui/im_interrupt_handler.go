@@ -101,7 +101,42 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	if messageText == "" {
 		return progress.InterruptResult{}
 	}
-	if ih.handler == nil || ih.handler.hasCancelledTaskBoundary(userID) || !ih.handler.hasActiveLoopForUser(userID) {
+	if ih.handler == nil {
+		return progress.InterruptResult{}
+	}
+	// Control commands must never enter the relevance scheduler. In particular,
+	// a short "/stop" otherwise looks unrelated and can be queued behind the
+	// very task it is meant to interrupt. This check intentionally happens
+	// before the active LoopContext guard: /btw and /loop are long-running
+	// commands protected by the gateway lock, but do not create that context.
+	switch classifyImmediateIMCommand(messageText) {
+	case imCommandCancel:
+		resp := ih.handler.cancelCurrentTaskForUser(userID, ih.handler.imCommandResponseLang(""))
+		return progress.InterruptResult{
+			Handled: true,
+			Action:  progress.ActionReplace,
+			Reply:   resp.Text,
+		}
+	case imCommandReset:
+		// Reset is also a control action: it must not enter the scheduler and
+		// be queued behind the task whose conversation it is clearing.
+		resp := ih.handler.resetIMSessionForUser(userID, ih.handler.imCommandResponseLang(""))
+		return progress.InterruptResult{
+			Handled: true,
+			Action:  progress.ActionReplace,
+			Reply:   resp.Text,
+		}
+	case imCommandExit:
+		// Like /new, /exit clears session state and must never wait behind the
+		// task whose state it is discarding.
+		resp := ih.handler.handleExitCommand(userID, ih.handler.imCommandResponseLang(""))
+		return progress.InterruptResult{
+			Handled: true,
+			Action:  progress.ActionReplace,
+			Reply:   resp.Text,
+		}
+	}
+	if ih.handler.hasCancelledTaskBoundary(userID) || !ih.handler.hasActiveLoopForUser(userID) {
 		return progress.InterruptResult{}
 	}
 
@@ -227,13 +262,11 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		// Correction-triggered Replace: cancel the old loop, but do NOT
 		// consume the message. Return Handled=false so the message re-enters
 		// normal processing as a fresh request (waits for session mutex,
-		// starts a new loop with the corrected text).
+		// starts a new loop with the corrected text). This is still an explicit
+		// cancellation boundary, so it must not wait for a long-running tool
+		// call to finish before admitting the corrected request.
 		if correctionDetected {
-			_, err := ih.handler.CancelSessionForUser(userID)
-			if err != nil {
-				log.Printf("[interrupt] correction CancelSessionForUser error: %v", err)
-				return progress.InterruptResult{}
-			}
+			_ = ih.handler.cancelCurrentTaskForUser(userID, ih.handler.imCommandResponseLang(""))
 			return progress.InterruptResult{
 				Handled: false, // message NOT consumed — it becomes the new task
 				Queued:  false, // not explicitly queued, just falls through
@@ -260,14 +293,10 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 				},
 			}
 		}
-		taskText, err := ih.handler.CancelSessionForUser(userID)
-		if err != nil {
-			log.Printf("[interrupt] CancelSessionForUser error: %v", err)
-			return progress.InterruptResult{}
-		}
+		cancelled := ih.handler.cancelCurrentTaskForUser(userID, ih.handler.imCommandResponseLang(""))
 		cancelReply := "已停止当前任务。"
-		if taskText != "" {
-			cancelReply = "已停止任务「" + truncateForLog(taskText, 20) + "」。"
+		if cancelled != nil && strings.TrimSpace(cancelled.Text) != "" {
+			cancelReply = cancelled.Text
 		}
 		if tracker != nil {
 			if summary := tracker.Buffer().CompletedOutputSummary(); summary != "" {
@@ -393,16 +422,13 @@ func (ih *imInterruptHandler) HandleCorrection(
 		if originalAction == progress.ActionMerge {
 			ih.handler.pendingInjection.LoadAndDelete(userID) // best-effort retract
 		}
-		taskText, err := ih.handler.CancelSessionForUser(userID)
-		if err != nil {
-			log.Printf("[correction] CancelSessionForUser error: %v", err)
-			return progress.InterruptResult{Reply: "打断失败: " + err.Error()}
-		}
-		reply := "已改为打断"
-		if taskText != "" {
-			reply += "，已停止任务「" + truncateForLog(taskText, 20) + "」。"
-		} else {
-			reply += "。"
+		// A correction is an explicit user cancellation just like /stop. It must
+		// use the non-blocking policy so a stuck tool call cannot keep the
+		// correction button waiting for CancelSessionForUser's 30-second grace.
+		cancelled := ih.handler.cancelCurrentTaskForUser(userID, ih.handler.imCommandResponseLang(""))
+		reply := "已改为打断。"
+		if cancelled != nil && strings.TrimSpace(cancelled.Text) != "" {
+			reply += "\n" + cancelled.Text
 		}
 		return progress.InterruptResult{
 			Handled: true,

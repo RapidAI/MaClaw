@@ -336,8 +336,15 @@ func (c *LLMProviderConcurrencyController) Acquire(ctx context.Context, provider
 	if maxConcurrency <= 0 {
 		return func() {}, nil
 	}
-	state := c.stateForProvider(providerID, maxConcurrency, maxQueueWaiters, queueTimeoutMS)
 	c.mu.Lock()
+	state := c.stateForProviderLocked(providerID, maxConcurrency, maxQueueWaiters, queueTimeoutMS)
+	// stateForProvider defers a configuration replacement until current work
+	// drains. Apply that active state's complete policy consistently: using the
+	// caller's newer queue settings here would otherwise change admission or
+	// timeout behavior before the replacement is safe.
+	maxConcurrency = state.maxConcurrency
+	maxQueueWaiters = state.maxQueueWaiters
+	queueTimeoutMS = state.queueTimeoutMS
 	if len(state.sema) < cap(state.sema) {
 		state.sema <- struct{}{}
 		state.inFlight++
@@ -403,9 +410,9 @@ func (c *LLMProviderConcurrencyController) Snapshot(providerID string, maxConcur
 	if maxConcurrency <= 0 {
 		return LLMProviderConcurrencySnapshot{}
 	}
-	state := c.stateForProvider(providerID, maxConcurrency, maxQueueWaiters, queueTimeoutMS)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	state := c.stateForProviderLocked(providerID, maxConcurrency, maxQueueWaiters, queueTimeoutMS)
 	return LLMProviderConcurrencySnapshot{
 		MaxConcurrency:  state.maxConcurrency,
 		MaxQueueWaiters: state.maxQueueWaiters,
@@ -417,8 +424,15 @@ func (c *LLMProviderConcurrencyController) Snapshot(providerID string, maxConcur
 
 func (c *LLMProviderConcurrencyController) Reset() {
 	c.mu.Lock()
-	c.states = map[string]*llmProviderConcurrencyState{}
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	// Do not detach an active state from the map. A lease releases directly to
+	// its state semaphore, so deleting that state while it is in use would let a
+	// later Acquire create a fresh semaphore and exceed the configured limit.
+	for providerID, state := range c.states {
+		if state == nil || (state.inFlight == 0 && state.queueWaiters == 0) {
+			delete(c.states, providerID)
+		}
+	}
 }
 
 func (c *LLMProviderConcurrencyController) releaseFunc(state *llmProviderConcurrencyState) func() {
@@ -439,11 +453,11 @@ func (c *LLMProviderConcurrencyController) releaseFunc(state *llmProviderConcurr
 	}
 }
 
-func (c *LLMProviderConcurrencyController) stateForProvider(providerID string, maxConcurrency int, maxQueueWaiters int, queueTimeoutMS int) *llmProviderConcurrencyState {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// stateForProviderLocked returns the active state for a provider. c.mu must be
+// held so state selection and the caller's admission decision remain atomic.
+func (c *LLMProviderConcurrencyController) stateForProviderLocked(providerID string, maxConcurrency int, maxQueueWaiters int, queueTimeoutMS int) *llmProviderConcurrencyState {
 	state := c.states[providerID]
-	if state == nil || state.maxConcurrency != maxConcurrency || state.maxQueueWaiters != maxQueueWaiters || state.queueTimeoutMS != queueTimeoutMS {
+	if state == nil {
 		state = &llmProviderConcurrencyState{
 			providerID:      providerID,
 			maxConcurrency:  maxConcurrency,
@@ -452,6 +466,21 @@ func (c *LLMProviderConcurrencyController) stateForProvider(providerID string, m
 			sema:            make(chan struct{}, maxConcurrency),
 		}
 		c.states[providerID] = state
+	} else if state.maxConcurrency != maxConcurrency || state.maxQueueWaiters != maxQueueWaiters || state.queueTimeoutMS != queueTimeoutMS {
+		// Keep in-flight leases attached to their original semaphore. Replacing
+		// state here would allow a second request to bypass an active limit
+		// whenever a caller observes the provider with different queue options.
+		// Configuration changes take effect after the current work drains.
+		if state.inFlight == 0 && state.queueWaiters == 0 {
+			state = &llmProviderConcurrencyState{
+				providerID:      providerID,
+				maxConcurrency:  maxConcurrency,
+				maxQueueWaiters: maxQueueWaiters,
+				queueTimeoutMS:  queueTimeoutMS,
+				sema:            make(chan struct{}, maxConcurrency),
+			}
+			c.states[providerID] = state
+		}
 	}
 	return state
 }

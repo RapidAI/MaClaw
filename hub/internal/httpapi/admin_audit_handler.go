@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -93,8 +94,22 @@ func adminAuditUserID(r *http.Request) string {
 	return "admin"
 }
 
+// writeAdminAuditLog records an admin action that has already taken effect.
+//
+// It cannot refuse the action, because by the time it runs the verdict is
+// applied; failing here would only add a second problem to the first. What it
+// must not do is disappear. Both ways of losing a record — no repository wired
+// on this instance, and a repository that rejected the write — leave an admin
+// action with no trace, which is indistinguishable from an admin action nobody
+// took. Every real bootstrap supplies the repository (hub/internal/app), so a
+// nil one is a misconfiguration, and the operator learns about it here or not
+// at all.
 func writeAdminAuditLog(ctx context.Context, audit store.AdminAuditRepository, adminUserID, action string, payload map[string]any) {
 	if audit == nil {
+		// The action name and actor are enough to reconstruct what was lost.
+		// The payload is not logged: it carries admin-supplied values that the
+		// audit store is the reviewed place for.
+		log.Printf("[admin-audit] MISSING RECORD: no audit repository configured; action=%q admin=%q took effect unrecorded", action, adminUserID)
 		return
 	}
 	payloadJSON, err := json.Marshal(payload)
@@ -109,5 +124,7 @@ func writeAdminAuditLog(ctx context.Context, audit store.AdminAuditRepository, a
 			tenantID = strings.TrimSpace(requestedTenantID)
 		}
 	}
-	_ = audit.Create(ctx, &store.AdminAuditLog{ID: uuid.New().String(), TenantID: tenantID, AdminUserID: adminUserID, Action: action, PayloadJSON: string(payloadJSON), CreatedAt: time.Now().UTC()})
+	if err := audit.Create(ctx, &store.AdminAuditLog{ID: uuid.New().String(), TenantID: tenantID, AdminUserID: adminUserID, Action: action, PayloadJSON: string(payloadJSON), CreatedAt: time.Now().UTC()}); err != nil {
+		log.Printf("[admin-audit] MISSING RECORD: write failed; action=%q admin=%q tenant=%q took effect unrecorded: %v", action, adminUserID, tenantID, err)
+	}
 }

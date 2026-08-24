@@ -4,7 +4,7 @@
  * Renders one tab per file in the files map. Each tab shows:
  *   - File name only as label (extracted from full path)
  *   - Full file path as tooltip (title attribute)
- *   - Compact opType label: MOD, NEW, or READ
+ *   - Compact change badge: `+12 -3`, or MOD / NEW / READ when no line delta
  *   - Active tab highlighted with distinct theme colors
  *   - Close (×) button when onCloseFile is provided
  *
@@ -14,7 +14,15 @@
  * measurement so long labels collapse without multi-frame shrink cascades.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, type CodeFile } from './useCodePreviewState';
+import {
+    codeFileLineDeltaHasChange,
+    computeCodeFileLineDelta,
+    formatCodeFileLineDelta,
+    getDisplayFilePaths,
+    getMruCycleOrder,
+    isCodeFileDirty,
+    type CodeFile,
+} from './useCodePreviewState';
 import { ShowItemInFolder, OpenSystemUrl } from '../../../wailsjs/go/main/App';
 
 // ── Theme Interface ──
@@ -77,6 +85,70 @@ export function getOpTypeIndicator(opType: 'create' | 'modify' | 'read'): string
     if (opType === 'modify') return 'MOD';
     if (opType === 'read') return 'READ';
     return 'NEW';
+}
+
+/** Codex-style `+12 -3` marks for a preview file. */
+export function CodeFileDiffStat({
+    file,
+    theme,
+    testId,
+}: {
+    file: Pick<CodeFile, 'opType' | 'content' | 'original'>;
+    theme: Pick<CodePreviewTheme, 'diffAddText' | 'diffDeleteText'>;
+    testId?: string;
+}) {
+    const delta = computeCodeFileLineDelta(file);
+    if (!codeFileLineDeltaHasChange(delta)) return null;
+    return (
+        <span
+            data-testid={testId || 'code-file-diff-stat'}
+            style={{
+                display: 'inline-flex',
+                gap: 4,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                fontSize: 10,
+                fontWeight: 600,
+                fontVariantNumeric: 'tabular-nums',
+                lineHeight: '16px',
+                flexShrink: 0,
+            }}
+        >
+            <span style={{ color: theme.diffAddText }}>+{delta.added}</span>
+            <span style={{ color: theme.diffDeleteText }}>-{delta.removed}</span>
+        </span>
+    );
+}
+
+function FileOpOrDiffBadge({
+    file,
+    theme,
+    testId,
+}: {
+    file: CodeFile;
+    theme: CodePreviewTheme;
+    testId?: string;
+}) {
+    if (codeFileLineDeltaHasChange(computeCodeFileLineDelta(file))) {
+        return <CodeFileDiffStat file={file} theme={theme} testId={testId} />;
+    }
+    return (
+        <span
+            style={{
+                minWidth: 24,
+                padding: '0 4px',
+                borderRadius: 3,
+                border: `1px solid ${theme.border}`,
+                color: theme.textMuted,
+                fontSize: 10,
+                fontWeight: 700,
+                lineHeight: '16px',
+                textAlign: 'center',
+                flexShrink: 0,
+            }}
+        >
+            {getOpTypeIndicator(file.opType)}
+        </span>
+    );
 }
 
 /**
@@ -687,9 +759,12 @@ const FileTabButton = React.memo(function FileTabButton({
     onDropOnTab?: (fromPath: string, overPath: string, placeAfter: boolean) => void;
 }) {
     const [hovered, setHovered] = useState(false);
-    const indicator = getOpTypeIndicator(file.opType);
     const fileName = extractFileName(filePath);
     const dirty = isCodeFileDirty(file);
+    const deltaLabel = formatCodeFileLineDelta(computeCodeFileLineDelta(file));
+    const tabTitle = deltaLabel
+        ? `${file.absPath || filePath}  ${deltaLabel}`
+        : (file.absPath || filePath);
 
     let backgroundColor = theme.tabBg;
     if (isActive) {
@@ -709,7 +784,7 @@ const FileTabButton = React.memo(function FileTabButton({
             data-dirty={dirty ? 'true' : 'false'}
             data-drag-over={dragOverSide || undefined}
             draggable={canDrag}
-            title={file.absPath || filePath}
+            title={tabTitle}
             aria-selected={isActive}
             onClick={() => onSelectFile(filePath)}
             onMouseDown={(e) => {
@@ -796,17 +871,7 @@ const FileTabButton = React.memo(function FileTabButton({
                     {'\u25B2'}
                 </span>
             )}
-            <span style={{
-                minWidth: 24,
-                padding: '0 4px',
-                borderRadius: 3,
-                border: `1px solid ${theme.border}`,
-                color: theme.textMuted,
-                fontSize: 10,
-                fontWeight: 700,
-                lineHeight: '16px',
-                flexShrink: 0,
-            }}>{indicator}</span>
+            <FileOpOrDiffBadge file={file} theme={theme} testId="file-tab-diff-stat" />
             <span style={{
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -1402,7 +1467,6 @@ export function FileTabBar({
                                     if (!file) return null;
                                     const isActive = filePath === activeFilePath;
                                     const isHighlighted = index === highlightIndex;
-                                    const indicator = getOpTypeIndicator(file.opType);
                                     const fileName = extractFileName(filePath);
                                     const isPinned = pinnedSet.has(filePath);
                                     const dirty = isCodeFileDirty(file);
@@ -1431,18 +1495,7 @@ export function FileTabBar({
                                             {isPinned && (
                                                 <span style={{ fontSize: 10, flexShrink: 0, opacity: 0.9 }} aria-hidden>{'\u25B2'}</span>
                                             )}
-                                            <span style={{
-                                                minWidth: 28,
-                                                padding: '0 3px',
-                                                borderRadius: 3,
-                                                border: `1px solid ${theme.border}`,
-                                                color: theme.textMuted,
-                                                fontSize: 10,
-                                                fontWeight: 700,
-                                                lineHeight: '14px',
-                                                textAlign: 'center',
-                                                flexShrink: 0,
-                                            }}>{indicator}</span>
+                                            <FileOpOrDiffBadge file={file} theme={theme} testId="file-tab-overflow-diff-stat" />
                                             <span style={{
                                                 flex: 1,
                                                 minWidth: 0,

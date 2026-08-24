@@ -13,6 +13,9 @@ import (
 
 func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient *http.Client, loopCtx *LoopContext, history []agent.ConversationEntry, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, []agent.ConversationEntry, bool) {
 	ownerID := h.workflowPolicyOwnerID(msg.UserID, loopCtx)
+	if h.horizonActive(msg.UserID) || h.horizonActive(ownerID) {
+		return nil, history, false
+	}
 	if ShouldUseSubAgent(h.getTaskOrchestratorReadOnly(ownerID)) {
 		if allowed, reason := h.workflowAllowsSubAgentExecutionForOwner(ownerID); !allowed {
 			log.Printf("[subagent-intercept] blocked SubAgent route by workflow policy user=%s owner=%s reason=%s", msg.UserID, ownerID, reason)

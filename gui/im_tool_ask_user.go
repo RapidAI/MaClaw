@@ -160,7 +160,10 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 			displayText = trimmedMsg + "\n\n---\n\n" + displayText
 		}
 	}
-	toolResult := fmt.Sprintf("Asked user: %s", askReq.Question)
+	toolResult := agent.FormatAskedUserHistoryResult(&agent.AskUserRequest{
+		Question: askReq.Question,
+		Context:  askReq.Context,
+	})
 	out.ToolResults = append(out.ToolResults, toolResult)
 	// "paused" matches shared RecordEarlyStopToolResult / interactive training labels.
 	if recordToolResult != nil {
@@ -181,7 +184,7 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 	shouldPersistHistory := len(persistHistory) == 0 || persistHistory[0]
 	if shouldPersistHistory {
 		h.saveConversationHistoryTimed(userID, out.History, nil)
-		h.commitPendingAskUser(userID, askReq, out.History)
+		h.commitPendingAskUser(userID, askReq, out.History, nil)
 	}
 	resp := buildAskUserResponse(displayText, askReq)
 	out.Response = resp
@@ -192,16 +195,18 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 // has reached durable conversation history. Shared-loop callers defer this
 // until their history-and-checkpoint transition succeeds, so a failed atomic
 // write cannot strand an interactive answer in process-local state.
-func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRequest, history []agent.ConversationEntry) {
+func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRequest, history []agent.ConversationEntry, workingState *agent.WorkingState) {
 	if h == nil || askReq == nil {
 		return
 	}
 	h.pendingAskUser.Store(userID, &pendingAskUserState{
-		Question:  askReq.Question,
-		Options:   askReq.Options,
-		InputType: askReq.InputType,
-		History:   cloneConversationEntries(history),
-		Timestamp: time.Now(),
+		Question:     askReq.Question,
+		Options:      askReq.Options,
+		InputType:    askReq.InputType,
+		Context:      askReq.Context,
+		History:      cloneConversationEntries(history),
+		Timestamp:    time.Now(),
+		WorkingState: agent.CloneWorkingState(workingState),
 	})
 }
 

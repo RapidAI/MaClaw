@@ -8,6 +8,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -115,19 +116,19 @@ func filterRemoteCodingToolsForRole(tools []map[string]interface{}, agent *Remot
 
 func (c *remoteCodingCallbacks) executeSpawnRemoteCodingAgent(args map[string]interface{}) string {
 	if c == nil || c.agent == nil {
-		return "remote coding subagent is unavailable"
+		return codingSpawnRemoteFailure("remote coding subagent is unavailable")
 	}
 	parent := c.agent
 	if !parent.canSpawnRemoteCodingAgent() {
-		return fmt.Sprintf("%s unavailable: only remote pure-coding root can spawn (depth=%d role=%q)",
-			codingSubAgentSpawnToolName, parent.nestDepth, parent.role)
+		return codingSpawnRemoteFailure(fmt.Sprintf("%s unavailable: only remote pure-coding root can spawn (depth=%d role=%q)",
+			codingSubAgentSpawnToolName, parent.nestDepth, parent.role))
 	}
 	specs, err := parseCodingSpawnSpecs(args)
 	if err != nil {
-		return "spawn_coding_agent: " + err.Error()
+		return codingSpawnRemoteFailure("spawn_coding_agent: " + err.Error())
 	}
 	if parent.loopCtx != nil && parent.loopCtx.IsCancelled() {
-		return "remote coding subagent cancelled before spawn"
+		return codingSpawnRemoteFailure("remote coding subagent cancelled before spawn")
 	}
 	// Runtime attempt status is the durable authority. A callback can arrive
 	// after cancellation or after another callback admitted children; neither
@@ -135,28 +136,17 @@ func (c *remoteCodingCallbacks) executeSpawnRemoteCodingAgent(args map[string]in
 	if parent.runtimeAttempt != nil && parent.runtimeStore != nil {
 		current, getErr := parent.runtimeStore.GetAttempt(parent.runtimeAttempt.AttemptID)
 		if getErr != nil || current.Status != codingruntime.TaskRunning {
-			return "spawn_coding_agent: runtime parent attempt is no longer running"
+			return codingSpawnRemoteFailure("spawn_coding_agent: runtime parent attempt is no longer running")
 		}
+	}
+	if codingSpawnHasWorker(specs) {
+		return c.executeIsolatedRemoteWorkerSpawn(specs)
 	}
 	if parent.runtimeAttempt != nil {
 		return c.executeLedgerReadOnlyRemoteSpawn(specs)
 	}
 
-	var progressMu sync.Mutex
-	progress := func(msg string) {
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		emitCodingSubAgentProgress(parent.onProgress, msg)
-	}
-	childProgress := func(text string) {
-		if parent.onProgress == nil {
-			return
-		}
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		parent.onProgress(text)
-	}
-
+	progress, childProgress := newCodingSpawnProgress(parent.onProgress)
 	parallel := shouldParallelizeCodingSpawn(specs)
 	mode := "sequential"
 	if parallel {
@@ -208,58 +198,30 @@ func (c *remoteCodingCallbacks) executeSpawnRemoteCodingAgent(args map[string]in
 		}
 	}
 
-	var b strings.Builder
 	passed := 0
-	for _, o := range outcomes {
-		res := o.result
-		if res != nil && res.Status == "success" {
-			passed++
-		}
-	}
-	failed := len(outcomes) - passed
-	// Prefix with 错误 so remoteCodingToolOutcome marks tool failure when any child fails.
-	if failed > 0 {
-		b.WriteString(fmt.Sprintf("错误: spawn_coding_agent(remote) 有子代理失败 passed=%d failed=%d mode=%s\n", passed, failed, mode))
-	} else {
-		b.WriteString(fmt.Sprintf("spawn_coding_agent(remote) completed: %d agent(s) mode=%s\n", len(outcomes), mode))
-	}
+	var body strings.Builder
 	for _, o := range outcomes {
 		res := o.result
 		if res == nil {
-			b.WriteString(fmt.Sprintf("\n### agent[%d] role=%s\nstatus=failed\nerror=nil result\n", o.idx, o.spec.Role))
+			appendCodingSpawnChildReport(&body, o.idx, o.spec.Role, o.spec.Task, "failed", 0, 0, "", "", "nil result", nil, nil)
 			continue
 		}
-		b.WriteString(fmt.Sprintf("\n### agent[%d] role=%s task=%q\n", o.idx, o.spec.Role, truncateRunesForSubAgent(o.spec.Task, 120)))
-		b.WriteString(fmt.Sprintf("status=%s iterations=%d tools=%d\n", res.Status, res.Iterations, res.ToolCalls))
-		if res.Summary != "" {
-			b.WriteString("summary:\n")
-			b.WriteString(truncateRunesForSubAgent(res.Summary, 4000))
-			b.WriteString("\n")
+		markRemoteInspectionSpawnWriteFailure(o.spec.Role, res)
+		if res.Status == "success" {
+			passed++
 		}
-		if res.Error != "" {
-			b.WriteString("error: ")
-			b.WriteString(compactSubAgentErrorSummary(res.Error))
-			b.WriteString("\n")
-		}
-		if len(res.FilesModified) > 0 {
-			b.WriteString("files_modified: ")
-			b.WriteString(strings.Join(res.FilesModified, ", "))
-			b.WriteString("\n")
-		}
-		if len(res.FilesCreated) > 0 {
-			b.WriteString("files_created: ")
-			b.WriteString(strings.Join(res.FilesCreated, ", "))
-			b.WriteString("\n")
-		}
-		c.mergeRemoteSpawnedFileAudit(res.FilesModified, res.FilesCreated)
+		appendCodingSpawnChildReport(&body, o.idx, o.spec.Role, o.spec.Task, res.Status, res.Iterations, res.ToolCalls, "", res.Summary, res.Error, res.FilesModified, res.FilesCreated)
 	}
-	b.WriteString(fmt.Sprintf("\npassed=%d failed=%d\n", passed, failed))
-	return strings.TrimSpace(b.String())
+	failed := len(outcomes) - passed
+	return strings.TrimSpace(codingSpawnBatchHeader("spawn_coding_agent(remote)", len(outcomes), passed, failed, mode) + body.String() + fmt.Sprintf("\npassed=%d failed=%d\n", passed, failed))
 }
 
 func (c *remoteCodingCallbacks) executeLedgerReadOnlyRemoteSpawn(specs []codingSpawnSpec) string {
 	if c == nil || c.agent == nil || c.agent.runtimeAttempt == nil || c.agent.runtimeStore == nil {
-		return "spawn_coding_agent: runtime child admission is unavailable"
+		return codingSpawnRemoteFailure("spawn_coding_agent: runtime child admission is unavailable")
+	}
+	if codingSpawnHasWorker(specs) {
+		return codingSpawnRemoteFailure("spawn_coding_agent: inspection ledger admission cannot run worker children")
 	}
 	parent := c.agent
 	remoteTarget := guiRemoteCodingTargetIdentity(parent.handler, parent.sessionID, parent.projectDir)
@@ -271,7 +233,7 @@ func (c *remoteCodingCallbacks) executeLedgerReadOnlyRemoteSpawn(specs []codingS
 	service := codingruntime.ChildTaskService{Store: parent.runtimeStore}
 	handles, err := service.AdmitReadOnlyChildren(parent.runtimeAttempt.AttemptID, parent.runtimeAttempt.LeaseOwner, childSpecs, policy)
 	if err != nil {
-		return "spawn_coding_agent: runtime admission failed: " + err.Error()
+		return codingSpawnRemoteFailure("spawn_coding_agent: runtime admission failed: " + err.Error())
 	}
 	// See the local counterpart: return durable admission handles now. A child
 	// runs after the parent has stopped and can only deliver its bounded result
@@ -312,7 +274,12 @@ func runAdmittedRemoteReadOnlyChild(store codingruntime.Store, parentTaskID stri
 }
 
 func (parent *RemoteCodingSubAgent) newReadOnlyNestedRemoteCodingAgent(spec codingSpawnSpec, _ *remoteCodingCallbacks) *RemoteCodingSubAgent {
-	child := NewRemoteCodingSubAgent(parent.handler, parent.cfg, parent.httpClient, parent.sessionID, parent.workDir, parent.projectDir, parent.loopCtx)
+	childExecution := newCodingChildExecutionContext(parent.loopCtx, parent.httpClient, true)
+	child := NewRemoteCodingSubAgent(parent.handler, parent.cfg, parent.httpClient, parent.sessionID, parent.workDir, parent.projectDir, childExecution.loopCtx)
+	child.nestedLoopRelease = childExecution.release
+	// SSH session inheritance is transport-only. The child must resolve a fresh
+	// trusted runtime-to-semantic anchor for its own Attempt; never copy the
+	// parent's dynamic identity into this constructor.
 	child.nestDepth, child.role = parent.nestDepth+1, spec.Role
 	// The child receives its own Attempt later in ExecuteReadOnlyChild; the
 	// store is shared solely for cancellation/lease observation during that
@@ -367,29 +334,189 @@ func (c *remoteCodingCallbacks) mergeRemoteSpawnedFileAudit(modified, created []
 	}
 }
 
+func remapRemoteIsolatePaths(paths []string, isolateDir, sourceDir string) []string {
+	if len(paths) == 0 {
+		return paths
+	}
+	isolateDir = path.Clean(strings.ReplaceAll(strings.TrimSpace(isolateDir), "\\", "/"))
+	sourceDir = path.Clean(strings.ReplaceAll(strings.TrimSpace(sourceDir), "\\", "/"))
+	if isolateDir == "." || isolateDir == "" || sourceDir == "." || sourceDir == "" {
+		return paths
+	}
+	out := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		p := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+		if p == "" {
+			continue
+		}
+		clean := path.Clean(p)
+		if clean == isolateDir {
+			out = append(out, sourceDir)
+			continue
+		}
+		if isolateDir != "/" && strings.HasPrefix(clean, isolateDir+"/") {
+			rel := strings.TrimPrefix(clean, isolateDir+"/")
+			if rel == "" || rel == "." {
+				out = append(out, sourceDir)
+			} else {
+				out = append(out, path.Join(sourceDir, rel))
+			}
+			continue
+		}
+		out = append(out, clean)
+	}
+	return uniqueSortedSubAgentStrings(out)
+}
+
+func (c *remoteCodingCallbacks) executeIsolatedRemoteWorkerSpawn(specs []codingSpawnSpec) string {
+	if c == nil || c.agent == nil {
+		return codingSpawnRemoteFailure("remote coding subagent is unavailable")
+	}
+	parent := c.agent
+	if parent.handler == nil || strings.TrimSpace(parent.sessionID) == "" || strings.TrimSpace(parent.projectDir) == "" {
+		return codingSpawnRemoteFailure("spawn_coding_agent: remote worker requires an active SSH session and project directory")
+	}
+	if err := validateRemoteIsolatedWorkerSpecs(parent.projectDir, specs); err != nil {
+		return codingSpawnRemoteFailure("spawn_coding_agent: " + err.Error())
+	}
+
+	progress, childProgress := newCodingSpawnProgress(parent.onProgress)
+	progress(fmt.Sprintf("spawn_coding_agent(remote): launching %d nested agent(s) (sequential isolated worker)", len(specs)))
+	var body strings.Builder
+	passed := 0
+	for i, spec := range specs {
+		if parent.loopCtx != nil && parent.loopCtx.IsCancelled() {
+			appendCodingSpawnChildReport(&body, i, spec.Role, spec.Task, "failed", 0, 0, "", "", "remote coding subagent cancelled before nested agent start", nil, nil)
+			continue
+		}
+		progress(fmt.Sprintf("nested remote agent [%d/%d] role=%s starting", i+1, len(specs), spec.Role))
+		res, mergeNote, err := c.runIsolatedOrInspectionRemoteSpawn(spec, i, childProgress)
+		if res == nil {
+			res = &RemoteCodingSubAgentResult{Status: "failed", Error: "nested remote coding agent returned nil"}
+		}
+		if err != nil {
+			res.Status = "failed"
+			res.Error = attachSpawnChildError(res.Error, err.Error())
+		}
+		markRemoteInspectionSpawnWriteFailure(spec.Role, res)
+		if res.Status == "success" {
+			passed++
+		}
+		progress(fmt.Sprintf("nested remote agent [%d/%d] role=%s finished status=%s", i+1, len(specs), spec.Role, res.Status))
+		appendCodingSpawnChildReport(&body, i, spec.Role, spec.Task, res.Status, res.Iterations, res.ToolCalls, mergeNote, res.Summary, res.Error, res.FilesModified, res.FilesCreated)
+	}
+	failed := len(specs) - passed
+	return strings.TrimSpace(codingSpawnBatchHeader("spawn_coding_agent(remote)", len(specs), passed, failed, "sequential") + body.String() + fmt.Sprintf("\npassed=%d failed=%d\n", passed, failed))
+}
+
+func (c *remoteCodingCallbacks) runIsolatedOrInspectionRemoteSpawn(spec codingSpawnSpec, index int, onProgress func(string)) (*RemoteCodingSubAgentResult, string, error) {
+	parent := c.agent
+	if spec.Role != codingRoleWorker {
+		return parent.runNestedRemoteCodingAgent(spec, c, onProgress), "", nil
+	}
+	iso, err := createRemoteCodingIsolate(parent.handler, parent.sessionID, parent.projectDir, index+1, false, spec.Files)
+	if err != nil {
+		return nil, "", fmt.Errorf("create remote isolated workspace: %w", err)
+	}
+	if iso == nil || strings.TrimSpace(iso.IsolateDir) == "" {
+		if iso != nil {
+			iso.cleanup(parent.handler)
+		}
+		return nil, "", fmt.Errorf("remote worker spawn requires a git worktree isolate")
+	}
+	spec.projectPath = iso.IsolateDir
+	result := parent.runNestedRemoteCodingAgent(spec, c, onProgress)
+	if result == nil {
+		if !isolatedRemoteWorkerShouldKeepIsolate(iso, parent.handler, nil) {
+			iso.cleanup(parent.handler)
+		}
+		return nil, "", fmt.Errorf("nested remote coding agent returned nil")
+	}
+	if result.Status != "success" {
+		if !isolatedRemoteWorkerShouldKeepIsolate(iso, parent.handler, result) {
+			iso.cleanup(parent.handler)
+		}
+		return result, "", nil
+	}
+	mergeNote, mergeErr := iso.mergeBack(parent.handler, spec.Files)
+	if mergeErr != nil {
+		return result, mergeNote, mergeErr
+	}
+	iso.cleanup(parent.handler)
+	result.FilesModified = remapRemoteIsolatePaths(result.FilesModified, iso.IsolateDir, iso.SourceDir)
+	result.FilesCreated = remapRemoteIsolatePaths(result.FilesCreated, iso.IsolateDir, iso.SourceDir)
+	c.mergeRemoteSpawnedFileAudit(result.FilesModified, result.FilesCreated)
+	if strings.TrimSpace(mergeNote) == "" {
+		mergeNote = "remote isolate produced no mergeable file changes"
+	}
+	return result, mergeNote, nil
+}
+
+func codingSpawnRemotePathsEqual(left, right string) bool {
+	left = path.Clean(strings.ReplaceAll(strings.TrimSpace(left), "\\", "/"))
+	right = path.Clean(strings.ReplaceAll(strings.TrimSpace(right), "\\", "/"))
+	if left == "." || right == "." || left == "" || right == "" {
+		return false
+	}
+	return left == right
+}
+
+func codingSpawnRemoteChildDirs(parent *RemoteCodingSubAgent, spec codingSpawnSpec) (workDir, projectDir string, err error) {
+	if spec.Role == codingRoleWorker {
+		projectDir, err = codingSpawnWorkerIsolatePath(spec)
+		if err != nil {
+			return "", "", err
+		}
+		if parent != nil && codingSpawnRemotePathsEqual(projectDir, parent.projectDir) {
+			return "", "", fmt.Errorf("worker isolate must not be the primary project")
+		}
+		return projectDir, projectDir, nil
+	}
+	if parent == nil {
+		return "", "", fmt.Errorf("parent remote coding subagent is nil")
+	}
+	return parent.workDir, parent.projectDir, nil
+}
+
 func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnSpec, parentCB *remoteCodingCallbacks, onProgress func(string)) *RemoteCodingSubAgentResult {
 	if parent == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "parent remote coding subagent is nil"}
 	}
+	// The child has a fresh runtime Attempt and semantic anchor. Retire any
+	// parent-owned future dynamic reservation before the handoff; SSH session
+	// reuse is transport-only and cannot preserve callback execution authority.
+	parent.closeCodingSubAgentDynamicLifecycle(codingBoundDynamicRequestNestedExit)
+	workDir, projectDir, err := codingSpawnRemoteChildDirs(parent, spec)
+	if err != nil {
+		return &RemoteCodingSubAgentResult{Status: "failed", Error: err.Error()}
+	}
+	childExecution := newCodingChildExecutionContext(parent.loopCtx, parent.httpClient, false)
 	child := NewRemoteCodingSubAgent(
 		parent.handler,
 		parent.cfg,
 		parent.httpClient,
 		parent.sessionID,
-		parent.workDir,
-		parent.projectDir,
-		parent.loopCtx,
+		workDir,
+		projectDir,
+		childExecution.loopCtx,
 	)
+	defer childExecution.release()
+	// The remote connection above is not a semantic session/root identity. The
+	// admitted child resolves its own anchor at runtime start.
 	child.nestDepth = parent.nestDepth + 1
 	child.role = spec.Role
+	if spec.Role == codingRoleWorker {
+		child.setNestedRemoteWorkerApproval(nil)
+	}
 	child.codingKB = parent.codingKB
 	child.generalKB = parent.generalKB
-	// Reuse parent preview session so nested file edits still stream to the same panel.
-	child.sourcePreviewEnabled = parent.sourcePreviewEnabled
-	child.sourcePreviewSessionID = parent.sourcePreviewSessionID
-	// Share high-risk approval state (mutex-protected).
-	child.highRiskApproval = parent.highRiskApproval
-	child.highRiskApprovalExplicit = true
+	// Nested agents must not inherit the root preview lifecycle: workers write
+	// under an isolate, and inspection children cannot close the parent panel.
+	child.sourcePreviewEnabled = false
+	child.sourcePreviewSessionID = ""
+	// Child approval is established afresh by SetCallbacks. A parent decision
+	// is not a child authorization, even when both executions use the same SSH
+	// transport.
 
 	if onProgress == nil {
 		onProgress = parent.onProgress
@@ -406,10 +533,13 @@ func (parent *RemoteCodingSubAgent) runNestedRemoteCodingAgent(spec codingSpawnS
 	if spec.Context != "" {
 		taskCtx += "\n\n## Spawn context\n" + truncateRunesForSubAgent(spec.Context, 2000)
 	}
+	if spec.Role == codingRoleWorker && len(spec.Files) > 0 {
+		taskCtx += "\n\n## Declared write-set\n" + strings.Join(spec.Files, "\n")
+	}
 	taskDesc := fmt.Sprintf("[%s] %s", spec.Role, spec.Task)
 
 	log.Printf("[remote-coding-spawn] start role=%s depth=%d task=%q session=%s project=%s",
-		spec.Role, child.nestDepth, truncateRunesForSubAgent(spec.Task, 80), parent.sessionID, parent.projectDir)
+		spec.Role, child.nestDepth, truncateRunesForSubAgent(spec.Task, 80), parent.sessionID, projectDir)
 	result := child.ExecuteTask(taskDesc, taskCtx)
 	if result == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "nested remote coding agent returned nil"}

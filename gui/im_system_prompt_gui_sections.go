@@ -24,8 +24,11 @@ import (
 // coding workflow contract is omitted to prevent the LLM from self-confirming
 // and re-emitting documents within a single response.
 // platform is the originating conversation platform (desktop / weixin / feishu / …).
-func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool, suppressCodingContract bool, platform string) {
-	b.WriteString(`
+// managedSemantic skips soup-name routing: host-bound send_file/send_to_im
+// grants reject path/channel fields the legacy sections still teach.
+func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool, suppressCodingContract bool, platform string, managedSemantic bool) {
+	if !managedSemantic {
+		b.WriteString(`
 ## 上下文管理（长程任务优化）
 - 当 context 较大（连续执行了 10+ 轮工具调用）或切换工作方向时，调用 compress_context 压缩之前的详细工具调用历史为一段摘要。
 - 调用 compress_context 后你可以继续工作——它不会中断对话，只是释放空间。
@@ -38,13 +41,14 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 - 重要：compress_context 和其他工具调用一样，执行后对话继续。如果你还有未完成的工作，压缩后直接继续执行。
 `)
 
-	if !suppressCodingContract {
-		appendCodingWorkflowContract(b)
+		if !suppressCodingContract {
+			appendCodingWorkflowContract(b)
+		}
 	}
 
 	b.WriteString(agent.PromptPassthroughCommands)
 
-	if !isProMode {
+	if !managedSemantic && !isProMode {
 		b.WriteString(`
 ## 当前模式
 你当前运行在简洁模式，编程会话工具不可用（未配置编程 LLM provider）。
@@ -55,7 +59,8 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 `)
 	}
 
-	b.WriteString(`
+	if !managedSemantic {
+		b.WriteString(`
 
 ## Local Coding Tools Boundary
 - External programming session tools/providers may be unavailable in simplified mode.
@@ -64,7 +69,8 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 - Do not tell the user that bash/write_file/edit_file are unavailable merely because simplified mode is active.
 - If a tool is not in the current tool list, choose another available local path or ask for a mode/provider change only for external coding sessions.
 `)
-	appendFileDeliveryChannelRules(b, platform)
+		appendFileDeliveryChannelRules(b, platform)
+	}
 
 	if trialReflectEnabled {
 		b.WriteString(`
@@ -77,6 +83,24 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 - 如果最近一轮已经证明某种做法无效，下一轮优先换方法、换参数或补充证据。
 `)
 	}
+}
+
+// appendManagedSemanticSurfaceRules replaces the name-routing guidance with a
+// description of the surface a capability-managed turn actually has.
+//
+// Names are the ordinary host spellings (web_search, generate_pdf). A model
+// still has to be told that the list is exhaustive, why a tool disappears
+// mid-turn, and what to do when the next step has not unlocked yet.
+func appendManagedSemanticSurfaceRules(b *strings.Builder) {
+	b.WriteString(`
+## 本回合的工具面
+- 本回合的工具是按你要做的事预先授权的。**工具列表就是全部可用工具**（仅限此刻列表里出现的名字），名称就是普通工具名（如 web_search、generate_pdf、send_file），没有需要另唤起的隐藏工具。
+- 多步任务会按顺序解锁：当前列表可能只有查询；查询成功后，文档生成或投递会出现在**同一次回复**的下一次请求列表里。那不是「没有 PDF 工具」，不要向用户宣布缺工具，也不要用 python、bash、write_file 绕过。工具一旦出现在当前列表（例如 generate_pdf），必须立刻调用；禁止说「请稍候」然后结束，也不要等用户再发一条消息。
+- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、download_file、craft_tool、search_and_install_skill、previous_turn_tool，也不要复用历史里的 invoke_* 名称：它们在本回合不存在，调用只会被拒绝，并且浪费一轮。
+- 同一个工具可能有调用次数上限。用完之后它会从列表里消失——这是预算用尽，不是故障，也不代表这件事做不了。下一步授权出现时，再按新列表里的同名工具继续。
+- 参数以当前列表的 schema 为准。投递类工具的目的地已由宿主绑定：不要传 path、channel、group_id，也不要套用旧的 send_to_im(path=...) 签名。
+- 只有当前列表为空、且下一步也没有新授权出现时，才说明缺什么并停下来。不要声称已经做了。
+`)
 }
 
 // appendFileDeliveryChannelRules tells the model how send_file / send_to_im map
@@ -111,12 +135,26 @@ func appendFileDeliveryChannelRules(b *strings.Builder, platform string) {
 // appendGUIPostSSHRules injects GUI-only content after SSH rules:
 // skills with usage stats, skill priority, MCP servers, dynamic tools,
 // security firewall, device status, sessions, background tasks, MIS, group discussion.
-func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode bool, currentNickname string, cfg corelib.AppConfig, ownerID string) {
+//
+// managedSemantic marks a capability-managed turn, where the model's tools are
+// the planned host names rather than the full registry. Gateway sections that
+// say "call manage_skill / discover_tool" are still refused. Sections that
+// state facts (device, working directory, background tasks, slash commands)
+// still apply and are kept; sections that say "call X" for a gateway are
+// replaced by one block describing the surface the model actually has.
+func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode bool, currentNickname string, cfg corelib.AppConfig, ownerID string, managedSemantic bool) {
+	if managedSemantic {
+		appendManagedSemanticSurfaceRules(b)
+	}
 	// Skills with usage stats
-	if h.getSkillExecutor() != nil {
+	if !managedSemantic && h.getSkillExecutor() != nil {
 		skills := h.getSkillExecutor().List()
 		// Expert session: only advertise the expert's bound skills (empty = all).
 		skills = h.filterSkillsForExpertUser(ownerID, skills)
+		// Self-learned skills stay in the pool they were learned from, so a
+		// coding workbench and a general chat do not advertise each other's
+		// distilled requests as capabilities.
+		skills = filterSkillsForExperienceDomain(h.skillExperienceDomainForOwner(ownerID), skills)
 		if len(skills) > 0 {
 			b.WriteString("\n## 已注册 Skill\n")
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
@@ -139,7 +177,8 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 
 	// Skill priority strategy
 	if h.app != nil {
-		b.WriteString(`
+		if !managedSemantic {
+			b.WriteString(`
 ## Skill 优先策略（重要）
 当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：
 1. **内置下载工具（HTTP/PDF）**：通用「下载 URL / 保存 PDF」优先用 download_file（或 web_fetch + save_path）。禁止为简单下载去 Hub 安装 wget/curl/Paper Fetch。
@@ -151,6 +190,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 
 不要跳过内置 download_file 去装社区下载 skill；不要跳过本地可用 Skill 直接 craft_tool。
 `)
+		}
 		// Working directory + download landing zone (owner-aware; matches tool cwd).
 		wd := ""
 		if h != nil {
@@ -168,14 +208,18 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 			b.WriteString("\n## 工作目录与下载落点\n")
 			b.WriteString(fmt.Sprintf("- 当前有效工作目录：`%s`\n", wd))
 			b.WriteString(fmt.Sprintf("- 临时/scratch 目录：`%s`（不是系统 Temp）\n", skillTemp))
-			b.WriteString("- download_file / web_fetch(save_path=...) 的相对路径相对工作目录。\n")
-			b.WriteString("- Skill 运行时 TEMP/TMP 会重定向到上述 `.maclaw-tmp`（勿再到 %TEMP%\\maclaw-arxiv 等系统路径找文件）。\n")
+			if !managedSemantic {
+				b.WriteString("- download_file / web_fetch(save_path=...) 的相对路径相对工作目录。\n")
+				b.WriteString("- Skill 运行时 TEMP/TMP 会重定向到上述 `.maclaw-tmp`（勿再到 %TEMP%\\maclaw-arxiv 等系统路径找文件）。\n")
+			} else {
+				b.WriteString("- 工具参数里的相对路径相对上述工作目录。\n")
+			}
 			b.WriteString("- 打开路径时使用绝对路径；不要使用未展开的 `~\\...` 字面路径。\n")
 		}
 	}
 
 	// MCP servers
-	if h.getMCPRegistry() != nil {
+	if !managedSemantic && h.getMCPRegistry() != nil {
 		servers := h.getMCPRegistry().ListServers()
 		if len(servers) > 0 {
 			b.WriteString("\n## 已注册 MCP Server\n")
@@ -186,7 +230,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	}
 
 	// Dynamic tools info
-	if h.registry != nil {
+	if !managedSemantic && h.registry != nil {
 		allTools := h.registry.ListAvailable()
 		mcpTools := h.registry.ListByCategory(ToolCategoryMCP)
 		nonCodeTools := h.registry.ListByCategory(ToolCategoryNonCode)
@@ -203,7 +247,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	}
 
 	// Security firewall
-	if h.firewall != nil {
+	if !managedSemantic && h.firewall != nil {
 		b.WriteString("\n## 安全防火墙\n")
 		b.WriteString("- 所有工具调用经过安全风险评估和策略检查\n")
 		b.WriteString("- 高风险操作（删除文件、修改权限、数据库 DROP 等）会按安全级别处理：宽松/开发者记录放行，标准优先确认、无确认通道则记录放行，严格才阻止\n")
@@ -212,7 +256,8 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	}
 
 	// MIS Dynamic AgentView + Group Discussion
-	b.WriteString(`
+	if !managedSemantic {
+		b.WriteString(`
 ## MIS Dynamic AgentView
 - When the user asks to submit, edit, continue, validate, approve, query, or store business data such as expenses, reimbursements, purchase requests, leave requests, invoices, customers, contracts, assets, or tickets, prefer the mis_data tool over free-form chat.
 - Do not identify business objects by keyword matching. Use semantic business intent handling: call mis_data(action="resolve_intent", query=the user's natural-language request) when the requested business object or action must be inferred.
@@ -232,6 +277,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 - Use group_discussion(action="cleanup_stale", dry_run=true) to inspect stale open discussions; cancel stale discussions only when local policy/user intent makes cleanup safe.
 - When a useful discussion result is available, incorporate it into your answer as supporting input, not as unquestioned truth.
 `)
+	}
 
 	// Device status
 	b.WriteString("## 当前设备状态\n")
@@ -269,7 +315,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	}
 
 	// Advanced capabilities (pro mode)
-	if isProMode {
+	if isProMode && !managedSemantic {
 		b.WriteString("\n## 高级能力\n")
 		b.WriteString("- orchestrate_task: 将复杂任务拆分为多个子任务按队列逐个执行；编程执行走内部 CodingSubAgent\n")
 		b.WriteString("- add_context_note: 记录项目上下文备注，跨会话共享\n")
@@ -321,14 +367,31 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 }
 
 // appendGUIEpilogue injects final GUI-only sections:
-// steering (handled by deps), memory, knowledge auto-recall, knowledge skills,
+// steering (handled by deps), memory catalog, knowledge skills,
 // skill repairs, bundle context.
 func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string, history []agent.ConversationEntry, loopCtx *LoopContext) {
 	epilogueStart := time.Now()
 	userID = strings.TrimSpace(userID)
 
 	// Computer Use playbook for text-only models (OmniParser local vision).
-	if section := computerUsePlaybookSection(h.shouldActivateComputerUse(agent.CompactQueryForEmbedding(msg))); section != "" {
+	cuGateText := msg
+	if loopCtx != nil && strings.TrimSpace(loopCtx.ComputerUseRoutingText) != "" {
+		cuGateText = loopCtx.ComputerUseRoutingText
+	}
+	cuActive := false
+	cuOwner := ""
+	if loopCtx != nil {
+		// Owner fallback is LoopContext.UserID, never promptRuntimeUserID / PolicyOwnerID.
+		syncComputerUseTurn(h, loopCtx, loopCtx.UserID, msg)
+		cuActive = loopCtx.ComputerUseActive
+		cuOwner = loopCtx.ComputerUseOwner
+	} else {
+		cuActive, _ = recordComputerUseGate(h, nil, cuGateText)
+	}
+	if section := computerUsePlaybookSectionFor(cuActive, cuOwner); section != "" {
+		b.WriteString(section)
+	}
+	if section := browserPlaybookSection(h.shouldActivateBrowser(agent.CompactQueryForEmbedding(semanticUserIntentText(msg)))); section != "" {
 		b.WriteString(section)
 	}
 
@@ -345,36 +408,25 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	}
 	memoryElapsed := time.Since(epilogueStart)
 
-	// Knowledge base auto-recall (multi-turn query when history is available).
-	// A Lansenger group may only receive explicitly authorised personal sources;
-	// enterprise digital assets remain available when ACL-synced to this client.
+	// Knowledge snippets stay in the warehouse. A new task does not receive
+	// auto-recalled cards; the model pulls them through retrieval tools.
+	// Group ACL still governs who may call those tools.
 	knowledgeStart := time.Now()
 	knowledgeElapsed := time.Duration(0)
-	prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
-	if loopCtx == nil || loopCtx.LansengerGroupPermissions == nil {
-		h.appendKnowledgeAutoRecall(b, msg, prior)
-	} else if loopCtx.LansengerGroupPermissions.allowsKnowledge() {
-		if h.appendKnowledgeAutoRecall(b, msg, prior, loopCtx.LansengerGroupPermissions.KnowledgeSourceIDs) {
-			loopCtx.LansengerGroupPermissions.markKnowledgeAutoRecallEvidence()
-		}
+	if loopCtx != nil && loopCtx.LansengerGroupPermissions != nil && loopCtx.LansengerGroupPermissions.allowsKnowledge() {
 		b.WriteString(lansengerGroupKnowledgePriorityPrompt())
-	}
-	if h.app != nil {
-		h.app.AppendEnterpriseKnowledgeAutoRecall(b, msg, prior)
 	}
 	knowledgeElapsed = time.Since(knowledgeStart)
 
-	// Knowledge skill section
-	h.appendKnowledgeSkillSection(b, msg)
-
-	// Skill repair notifications
-	h.appendSkillRepairNotifications(b)
-
-	// High-value skill maintenance hints (read-only curator → next-turn prompt)
-	h.appendMaintenanceExperienceHints(b)
-
-	// Bundle context banner
-	h.appendBundleContextBanner(b)
+	// Skill docs and repair hints teach manage_skill. ConsumeRepairNotifications
+	// is one-shot, so skip the whole family on managed turns and leave the
+	// notification for the next unmanaged turn.
+	if !loopContextIsSemanticManaged(loopCtx) {
+		h.appendKnowledgeSkillSection(b, msg, userID)
+		h.appendSkillRepairNotifications(b)
+		h.appendMaintenanceExperienceHints(b)
+		h.appendBundleContextBanner(b)
+	}
 
 	totalElapsed := time.Since(epilogueStart)
 	if totalElapsed > 200*time.Millisecond {

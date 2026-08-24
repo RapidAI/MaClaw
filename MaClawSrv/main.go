@@ -61,6 +61,16 @@ func runServer(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
+	if err := configureSrvDynamicSemanticRouting(svc); err != nil {
+		_ = svc.Close()
+		return err
+	}
+	receiptWorker, err := startSrvDynamicEffectReceiptWorker(ctx, svc)
+	if err != nil {
+		_ = svc.Close()
+		return err
+	}
+	defer receiptWorker.Stop()
 
 	// Wire skill source control — three-level resolution (global/tenant/user).
 	// Uses the same SourceControlService as the hub, backed by a file-based KVStore.
@@ -94,8 +104,15 @@ func runServer(ctx context.Context) error {
 	executor.SetSkillToolProvider(agentservice.NewSkillToolBridge(svc))
 
 	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
+	server.StartHTTPThreat(ctx)
 	if server != nil {
 		server.enterpriseSync = enterpriseSync
+		wireSrvReviewedHostSpeechTranscriber(executor, server)
+		wireSrvReviewedHostSpeechSynthesizer(executor, server)
+		wireSrvReviewedHostSpeechPlayer(executor)
+		wireSrvReviewedHostDesktopCapturer(executor)
+		wireSrvReviewedHostDocumentLauncher(executor)
+		wireSrvReviewedHostURLLauncher(executor)
 	}
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 
@@ -104,10 +121,14 @@ func runServer(ctx context.Context) error {
 		setSrvWeixinProactiveSender(func(text string) (string, error) {
 			return server.weixinRuntime.SendProactiveTextAny(text)
 		})
+		setSrvWeixinExactFileSender(func(ctx context.Context, peer string, data []byte, fileName, mimeType string) error {
+			return server.weixinRuntime.SendProactiveFileToPeer(ctx, peer, data, fileName, mimeType)
+		})
 		setSrvScheduleCatalogWeixinLister(func() []scheduler.TargetRef {
 			return server.weixinRuntime.ListProactivePeers()
 		})
 		defer setSrvWeixinProactiveSender(nil)
+		defer setSrvWeixinExactFileSender(nil)
 		defer setSrvScheduleCatalogWeixinLister(nil)
 	}
 	// Warm delivery target catalog registry (lansenger/weixin/telegram/qq).

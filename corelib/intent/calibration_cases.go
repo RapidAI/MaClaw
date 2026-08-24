@@ -66,6 +66,8 @@ func ProductionCases() []CalibrationCase {
 		// =====================================================================
 		// Browser
 		// =====================================================================
+		{Message: "打开 Chrome 点购买", ExpectedLabel: LabelBrowser, Note: "web task must not go to computer_use"},
+		{Message: "open Chrome and click Buy", ExpectedLabel: LabelBrowser},
 		{Message: "打开浏览器帮我在网页上点击购买按钮", ExpectedLabel: LabelBrowser},
 		{Message: "用浏览器自动化填写表单", ExpectedLabel: LabelBrowser},
 		{Message: "录制浏览器操作步骤", ExpectedLabel: LabelBrowser},
@@ -106,6 +108,17 @@ func ProductionCases() []CalibrationCase {
 		{Message: "帮我发送这份报告", ExpectedLabel: LabelDocumentDelivery},
 		{Message: "把结果导出为文件发送", ExpectedLabel: LabelDocumentDelivery},
 
+		{Message: "打开桌面上的PDF文件", ExpectedLabel: LabelDocumentOpen},
+		{Message: "用默认程序打开这个文档", ExpectedLabel: LabelDocumentOpen},
+		{Message: "open the PDF document on my desktop", ExpectedLabel: LabelDocumentOpen},
+
+		// =====================================================================
+		// Document generate (single-stage PDF render; not a research workflow)
+		// =====================================================================
+		{Message: "生成一份PDF文档并发给我", ExpectedLabel: LabelDocumentGenerate},
+		{Message: "generate a PDF and send it over", ExpectedLabel: LabelDocumentGenerate},
+		{Message: "export pdf", ExpectedLabel: LabelDocumentGenerate},
+
 		// =====================================================================
 		// Office
 		// =====================================================================
@@ -138,5 +151,104 @@ func ProductionCases() []CalibrationCase {
 		// =====================================================================
 		{Message: "处理一下线上问题", ExpectedLabel: LabelAmbiguous, Note: "could be SSH or coding"},
 		{Message: "看看服务", ExpectedLabel: LabelAmbiguous, Note: "could be SSH or monitoring"},
+
+		// =====================================================================
+		// S2b1 governed families
+		// =====================================================================
+		{Message: "读取一下这个文件的内容", ExpectedLabel: LabelFileRead},
+		{Message: "列出当前目录下的文件", ExpectedLabel: LabelFileRead},
+		{Message: "show me what is in the README file", ExpectedLabel: LabelFileRead},
+
+		{Message: "把这段内容保存到 notes.txt", ExpectedLabel: LabelFileWrite},
+		{Message: "在这个文件末尾追加一行", ExpectedLabel: LabelFileWrite},
+		{Message: "save this text to a local file", ExpectedLabel: LabelFileWrite},
+
+		{Message: "在本机执行一下这个命令", ExpectedLabel: LabelShellCommand},
+		{Message: "帮我运行这个脚本", ExpectedLabel: LabelShellCommand},
+		{Message: "run this shell command on my machine", ExpectedLabel: LabelShellCommand},
+
+		{Message: "看看当前 git 状态", ExpectedLabel: LabelGitInspect},
+		{Message: "帮我看下现在的 diff", ExpectedLabel: LabelGitInspect},
+		{Message: "show me the current diff", ExpectedLabel: LabelGitInspect},
+
+		{Message: "把这些改动提交一下", ExpectedLabel: LabelGitMutate},
+		{Message: "把本地提交推送到远程", ExpectedLabel: LabelGitMutate},
+		{Message: "commit the current changes", ExpectedLabel: LabelGitMutate},
+
+		{Message: "开始录音", ExpectedLabel: LabelAudioRecord},
+		{Message: "帮我录一下这个会议", ExpectedLabel: LabelAudioRecord},
+		{Message: "start recording audio", ExpectedLabel: LabelAudioRecord},
+
+		{Message: "把这个音频文件转成文字", ExpectedLabel: LabelAudioTranscribe},
+		{Message: "转写一下这段录音", ExpectedLabel: LabelAudioTranscribe},
+		{Message: "transcribe this audio file", ExpectedLabel: LabelAudioTranscribe},
+
+		{Message: "把这段话念给我听", ExpectedLabel: LabelAudioSynthesize},
+		{Message: "朗读这段文字", ExpectedLabel: LabelAudioSynthesize},
+		{Message: "read this paragraph aloud", ExpectedLabel: LabelAudioSynthesize},
+
+		{Message: "用语音发到群里", ExpectedLabel: LabelAudioDeliver},
+		{Message: "发成语音消息", ExpectedLabel: LabelAudioDeliver},
+		{Message: "send this as a voice message", ExpectedLabel: LabelAudioDeliver},
+
+		{Message: "抓取这个链接的内容", ExpectedLabel: LabelWebFetch, Note: "specific URL supplied, not an open-ended search"},
+		{Message: "帮我看看这个网页写了什么", ExpectedLabel: LabelWebFetch},
+		{Message: "fetch the content of this URL", ExpectedLabel: LabelWebFetch},
+
+		{Message: "查一下最近的安全审计日志", ExpectedLabel: LabelAuditRead},
+		{Message: "搜索我们之前的对话记录", ExpectedLabel: LabelAuditRead},
+		{Message: "check the project health status", ExpectedLabel: LabelAuditRead},
+
+		{Message: "在知识库里查一下这个概念的笔记", ExpectedLabel: LabelKnowledgeRead},
+		{Message: "检索我的外脑中关于这个项目的资料", ExpectedLabel: LabelKnowledgeRead},
+		{Message: "search my knowledge base for this topic", ExpectedLabel: LabelKnowledgeRead},
+
+		// =====================================================================
+		// S2b2 governed administration families
+		// =====================================================================
+		{Message: "用默认浏览器打开这个网址", ExpectedLabel: LabelAppLaunch, Note: "launch via OS handler, not browser automation"},
+		{Message: "在资源管理器里打开这个文件夹", ExpectedLabel: LabelAppLaunch},
+		{Message: "launch the calculator app", ExpectedLabel: LabelAppLaunch},
+
+		{Message: "把这个链接的文件下载到本地", ExpectedLabel: LabelFileDownload, Note: "save to disk, not read page text"},
+		{Message: "帮我把这个安装包下载下来", ExpectedLabel: LabelFileDownload},
+		{Message: "download this file to my machine", ExpectedLabel: LabelFileDownload},
+
+		{Message: "每天早上九点提醒我站会", ExpectedLabel: LabelScheduleManage},
+		{Message: "列出所有定时任务", ExpectedLabel: LabelScheduleManage},
+		{Message: "pause my daily reminder task", ExpectedLabel: LabelScheduleManage},
+		{Message: "每天早上发给群里", ExpectedLabel: LabelScheduleDispatch},
+
+		{Message: "把当前的 LLM 服务商切换成智谱", ExpectedLabel: LabelConfigManage},
+		{Message: "把最大推理轮数调到 50", ExpectedLabel: LabelConfigManage},
+		{Message: "switch to a different LLM provider", ExpectedLabel: LabelConfigManage},
+
+		{Message: "记住我偏好用中文交流", ExpectedLabel: LabelMemoryManage, Note: "agent memory, not knowledge ingestion"},
+		{Message: "你都记住了我的哪些偏好", ExpectedLabel: LabelMemoryManage},
+		{Message: "what do you remember about me", ExpectedLabel: LabelMemoryManage},
+
+		{Message: "帮我建一个待办清单", ExpectedLabel: LabelTaskTrack},
+		{Message: "把这个任务标记为已完成", ExpectedLabel: LabelTaskTrack},
+		{Message: "show my current todo list", ExpectedLabel: LabelTaskTrack},
+
+		{Message: "创建一个长期目标：持续监控这个服务的可用性", ExpectedLabel: LabelGoalManage},
+		{Message: "查看当前长期目标的进展", ExpectedLabel: LabelGoalManage},
+		{Message: "create a long-running goal to keep this documentation up to date", ExpectedLabel: LabelGoalManage},
+
+		{Message: "创建一个用 codex 的会话模板", ExpectedLabel: LabelTemplateManage},
+		{Message: "用之前那个模板启动一个新会话", ExpectedLabel: LabelTemplateManage},
+		{Message: "list my session templates", ExpectedLabel: LabelTemplateManage},
+
+		{Message: "列出当前所有编码会话", ExpectedLabel: LabelSessionManage, Note: "managing sessions, not doing the coding"},
+		{Message: "中断正在运行的会话", ExpectedLabel: LabelSessionManage},
+		{Message: "show the recent output of that session", ExpectedLabel: LabelSessionManage},
+
+		{Message: "把这个任务委派给编码子 agent", ExpectedLabel: LabelDelegateTask, Note: "explicit delegation, not a plain build request"},
+		{Message: "并行执行这三个独立的任务", ExpectedLabel: LabelDelegateTask},
+		{Message: "run these three tasks in parallel", ExpectedLabel: LabelDelegateTask},
+
+		{Message: "刷新一下知识库里的这个来源", ExpectedLabel: LabelKnowledgeAdmin, Note: "admin maintenance, not retrieval"},
+		{Message: "禁用这个知识库数据源", ExpectedLabel: LabelKnowledgeAdmin},
+		{Message: "run the knowledge quality maintenance plan", ExpectedLabel: LabelKnowledgeAdmin},
 	}
 }

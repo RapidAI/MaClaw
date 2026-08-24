@@ -197,7 +197,8 @@ func TestCodingGoalToolDefinitionAndExecute(t *testing.T) {
 	if g := h.getGoalStore().Get(userID); g == nil || g.Objective != "ship billing API" {
 		t.Fatalf("store goal = %+v", g)
 	}
-	// Root full-env tools include goal.
+	// Goal is host/orchestrator-owned while Coding S3 lacks durable goal CAS;
+	// it must not re-enter the model-visible legacy compatibility surface.
 	tools := cb.BuildTools("test")
 	found := false
 	for _, tool := range tools {
@@ -207,7 +208,7 @@ func TestCodingGoalToolDefinitionAndExecute(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Fatal("full env BuildTools should include goal")
+	if found {
+		t.Fatal("full env BuildTools must not expose model-writable goal without durable CAS")
 	}
 }

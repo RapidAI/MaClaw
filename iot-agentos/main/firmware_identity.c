@@ -1,4 +1,5 @@
 #include "firmware_identity.h"
+#include "firmware_identity_sleep_gate.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "app_intent_service.h"
+#include "audio_service.h"
 #include "fall_detection_service.h"
 #include "operation_context.h"
 #include "sleep_schedule_service.h"
@@ -34,6 +36,16 @@ static volatile bool s_service_ready;
 // reconfigured; never leave a hidden permanent reader task behind.
 static volatile bool s_query_task_stop_requested;
 static TaskHandle_t s_query_task;
+/* System Sleep does not destroy the USB reader: COMMIT needs a reversible
+ * diagnostic boundary, while ABORT must reopen the same task generation. */
+static volatile bool s_system_sleep_preparing;
+static SemaphoreHandle_t s_system_sleep_quiesced;
+static volatile uint32_t s_system_sleep_emissions;
+/* The USB task is not Firmware Identity's only observer: Gateway code can
+ * synchronously request its by-value diagnostics.  Count both public snapshot
+ * calls and start/create work so System Sleep PREPARE has a real safe point
+ * before Power may hand control to a profile-private electrical adapter. */
+static volatile uint32_t s_system_sleep_observers;
 /* Startup registers the diagnostic owner before the reader can execute.  The
  * start gate closes the short xTaskCreate()/registry window, and the completion
  * semaphore gives stop() a real cooperative-join acknowledgement instead of
@@ -41,13 +53,34 @@ static TaskHandle_t s_query_task;
 static SemaphoreHandle_t s_query_task_start_gate;
 static SemaphoreHandle_t s_query_task_stopped;
 static volatile bool s_query_task_starting;
+/* A diagnostic worker remains a Registry generation until its immutable entry
+ * is gone. Completion/handle state must never make a failed retirement look
+ * restartable to a later Manufacturing or System Sleep transaction. */
+static volatile bool s_query_task_retiring;
+static volatile esp_err_t s_query_task_exit_status = ESP_OK;
+static volatile bool s_query_task_registry_retirement_failed;
 
 static TaskHandle_t query_task_handle(void);
+static esp_err_t firmware_identity_start_legacy(void);
+static esp_err_t firmware_identity_stop_legacy(uint32_t timeout_ms);
+static esp_err_t firmware_identity_get_legacy(firmware_identity_info_t *out);
+
+static device_status_t firmware_identity_status_from_esp_err(esp_err_t err) {
+    switch (err) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        case ESP_ERR_NOT_FOUND: return DEVICE_STATUS_NOT_FOUND;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
 
 static esp_err_t stop_identity_registry_entry(void *context, uint32_t timeout_ms) {
     TaskHandle_t task = query_task_handle();
     if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
-    return firmware_identity_stop(timeout_ms);
+    return device_status_to_platform_error(firmware_identity_stop(timeout_ms));
 }
 
 static TaskHandle_t query_task_handle(void) {
@@ -67,7 +100,8 @@ static void set_query_task_starting(bool starting) {
 }
 
 static bool query_task_is_active(void) {
-    return query_task_handle() != NULL || query_task_is_starting();
+    return query_task_handle() != NULL || query_task_is_starting() ||
+           __atomic_load_n(&s_query_task_retiring, __ATOMIC_ACQUIRE);
 }
 
 static esp_err_t ensure_query_task_sync_primitives(void) {
@@ -84,6 +118,36 @@ static esp_err_t ensure_query_task_sync_primitives(void) {
 
 static void signal_query_task_stopped(void) {
     if (s_query_task_stopped) (void)xSemaphoreGive(s_query_task_stopped);
+}
+
+static void begin_system_sleep_emission(void) {
+    __atomic_add_fetch(&s_system_sleep_emissions, 1u, __ATOMIC_ACQ_REL);
+}
+
+static void end_system_sleep_emission(void) {
+    uint32_t observed = __atomic_load_n(&s_system_sleep_emissions, __ATOMIC_ACQUIRE);
+    while (observed != 0 &&
+           !__atomic_compare_exchange_n(&s_system_sleep_emissions, &observed,
+                                        observed - 1u, false,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    }
+}
+
+static bool begin_system_sleep_observer(void) {
+    return firmware_identity_sleep_gate_begin(&s_system_sleep_preparing,
+                                              &s_system_sleep_observers);
+}
+
+static void end_system_sleep_observer(void) {
+    firmware_identity_sleep_gate_end(&s_system_sleep_observers);
+}
+
+/* FreeRTOS rounds small millisecond values down at the configured tick rate.
+ * A non-zero parent deadline must still yield once rather than spin while an
+ * already-admitted diagnostic emission is completing. */
+static TickType_t identity_ticks_for_timeout_ms(uint32_t timeout_ms) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    return timeout_ms != 0 && ticks == 0 ? 1 : ticks;
 }
 
 static bool nonce_is_valid(const char *nonce) {
@@ -138,7 +202,7 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
     cJSON_AddStringToObject(root, "layout_id", CONFIG_MACLAW_LAYOUT_ID);
     cJSON_AddStringToObject(root, "compat_id", CONFIG_MACLAW_COMPAT_ID);
     firmware_identity_info_t identity = {0};
-    if (firmware_identity_get(&identity) != ESP_OK) {
+    if (firmware_identity_get(&identity) != DEVICE_STATUS_OK) {
         cJSON_Delete(root);
         return NULL;
     }
@@ -246,6 +310,51 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
         cJSON_Delete(root);
         return NULL;
     }
+    audio_service_snapshot_t audio = {0};
+    if (!audio_service_get_snapshot(&audio)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON *audio_json = cJSON_AddObjectToObject(root, "audio");
+    if (!audio_json ||
+        !cJSON_AddNumberToObject(audio_json, "abi_version", audio.abi_version) ||
+        !cJSON_AddNumberToObject(audio_json, "nominal_sample_rate_hz",
+                                 AUDIO_SERVICE_NOMINAL_SAMPLE_RATE_HZ) ||
+        !cJSON_AddNumberToObject(audio_json, "foreground_session",
+                                 audio.foreground_session) ||
+        !cJSON_AddNumberToObject(audio_json, "observed_session",
+                                 audio.observed_session) ||
+        !cJSON_AddNumberToObject(audio_json, "session_generation",
+                                 audio.session_generation) ||
+        !cJSON_AddNumberToObject(audio_json, "last_terminal_status",
+                                 audio.last_terminal_status) ||
+        !cJSON_AddBoolToObject(audio_json, "wake_word_running",
+                               audio.wake_word_running) ||
+        !cJSON_AddBoolToObject(audio_json, "wake_word_paused",
+                               audio.wake_word_paused) ||
+        !cJSON_AddNumberToObject(audio_json, "capture_frames",
+                                 (double)audio.captured_sample_frames) ||
+        !cJSON_AddNumberToObject(audio_json, "capture_sequence",
+                                 audio.capture_delivery_sequence) ||
+        !cJSON_AddNumberToObject(audio_json, "capture_delivery_gaps",
+                                 audio.capture_delivery_gap_count) ||
+        !cJSON_AddNumberToObject(audio_json, "capture_timeouts",
+                                 audio.capture_timeout_count) ||
+        !cJSON_AddNumberToObject(audio_json, "capture_errors",
+                                 audio.capture_error_count) ||
+        !cJSON_AddNumberToObject(audio_json, "playback_frames",
+                                 (double)audio.played_sample_frames) ||
+        !cJSON_AddNumberToObject(audio_json, "playback_sequence",
+                                 audio.playback_delivery_sequence) ||
+        !cJSON_AddNumberToObject(audio_json, "playback_delivery_gaps",
+                                 audio.playback_delivery_gap_count) ||
+        !cJSON_AddNumberToObject(audio_json, "playback_timeouts",
+                                 audio.playback_timeout_count) ||
+        !cJSON_AddNumberToObject(audio_json, "playback_errors",
+                                 audio.playback_error_count)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
     device_operation_context_t operation = {0};
     if (!operation_context_get_active(&operation)) {
         cJSON_Delete(root);
@@ -340,14 +449,31 @@ static cJSON *create_identity_event(const char *type, const char *nonce) {
 }
 
 static void emit_event(const char *type, const char *nonce) {
+    /* A response already admitted by the query worker is counted through its
+     * full format/print lifetime. Boot/service broadcasts are simply dropped
+     * once PREPARE closes the diagnostic boundary; they are observational and
+     * must never block or reopen a future physical Power commit. */
+    if (__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE)) return;
+    begin_system_sleep_emission();
+    if (__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE)) {
+        end_system_sleep_emission();
+        return;
+    }
     cJSON *root = create_identity_event(type, nonce);
-    if (!root) return;
+    if (!root) {
+        end_system_sleep_emission();
+        return;
+    }
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
-    if (!json) return;
+    if (!json) {
+        end_system_sleep_emission();
+        return;
+    }
     printf(IDENTITY_EVENT_PREFIX "%s\n", json);
     fflush(stdout);
     cJSON_free(json);
+    end_system_sleep_emission();
 }
 
 static void handle_query_line(char *line) {
@@ -378,17 +504,24 @@ static void identity_query_task(void *arg) {
      * stop request already set, so the worker exits without touching USB. */
     if (!s_query_task_start_gate ||
         xSemaphoreTake(s_query_task_start_gate, portMAX_DELAY) != pdTRUE) {
-        TaskHandle_t self = xTaskGetCurrentTaskHandle();
-        if (query_task_handle() == self) set_query_task_handle(NULL);
-        set_query_task_starting(false);
-        signal_query_task_stopped();
-        vTaskDelete(NULL);
-        return;
+        goto finish;
     }
     char line[IDENTITY_LINE_CAPACITY];
     size_t used = 0;
     bool discarding = false;
     while (!__atomic_load_n(&s_query_task_stop_requested, __ATOMIC_ACQUIRE)) {
+        if (__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE)) {
+            if (s_system_sleep_quiesced) {
+                (void)xSemaphoreGive(s_system_sleep_quiesced);
+            }
+            while (__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE) &&
+                   !__atomic_load_n(&s_query_task_stop_requested, __ATOMIC_ACQUIRE)) {
+                (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            }
+            used = 0;
+            discarding = false;
+            continue;
+        }
         unsigned char input[64];
         int count = usb_serial_jtag_ll_read_rxfifo(input, sizeof(input));
         for (int i = 0; i < count; ++i) {
@@ -411,33 +544,78 @@ static void identity_query_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(count > 0 ? 10 : 50));
     }
+finish: {
     TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    __atomic_store_n(&s_query_task_retiring, true, __ATOMIC_RELEASE);
+    /* Natural exit is the authoritative retirement owner. A Registry stop
+     * callback may be waiting for this same worker, but task_registry stops
+     * invoke callbacks after releasing their own lock, so this bounded pass
+     * cannot deadlock that owner-wide transaction. */
+    const esp_err_t registry_err = task_registry_unregister_with_timeout(
+        TASK_REGISTRY_OWNER_DIAGNOSTICS, (void *)self, 10);
+    __atomic_store_n(&s_query_task_exit_status, registry_err, __ATOMIC_RELEASE);
     if (query_task_handle() == self) set_query_task_handle(NULL);
     set_query_task_starting(false);
+    if (registry_err != ESP_OK) {
+        __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_query_task_registry_retirement_failed, true,
+                         __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&s_query_task_retiring, false, __ATOMIC_RELEASE);
     signal_query_task_stopped();
     vTaskDelete(NULL);
 }
+}
 
-esp_err_t firmware_identity_start(void) {
+static esp_err_t firmware_identity_start_legacy(void) {
     // Broadcasts remain diagnostic only. The host accepts only a query-bound,
     // nonce-bearing BOOT_STATUS response as post-flash success evidence.
+    /* Never create a diagnostic worker across a System Sleep PREPARE marker.
+     * The caller receives a normal lifecycle BUSY result and Power can retain
+     * a closed, fully observable participant set until ABORT. */
+    if (!begin_system_sleep_observer()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t result = ESP_OK;
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
-    if (query_task_is_active()) return ESP_OK;
+    if (__atomic_load_n(&s_query_task_registry_retirement_failed,
+                        __ATOMIC_ACQUIRE)) {
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+    if (query_task_is_active()) goto done;
     esp_err_t sync_err = ensure_query_task_sync_primitives();
-    if (sync_err != ESP_OK) return sync_err;
+    if (sync_err != ESP_OK) {
+        result = sync_err;
+        goto done;
+    }
     /* A prior generation always consumed its gate before completion. Drain a
      * stale completion token so this generation's bounded join cannot report
      * the predecessor's exit. */
     (void)xSemaphoreTake(s_query_task_stopped, 0);
     (void)xSemaphoreTake(s_query_task_start_gate, 0);
+    if (!s_system_sleep_quiesced) {
+        s_system_sleep_quiesced = xSemaphoreCreateBinary();
+        if (!s_system_sleep_quiesced) {
+            result = ESP_ERR_NO_MEM;
+            goto done;
+        }
+    }
+    while (xSemaphoreTake(s_system_sleep_quiesced, 0) == pdTRUE) {
+    }
+    __atomic_store_n(&s_system_sleep_emissions, 0u, __ATOMIC_RELEASE);
     __atomic_store_n(&s_query_task_stop_requested, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_query_task_exit_status, ESP_OK, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_query_task_registry_retirement_failed, false,
+                     __ATOMIC_RELEASE);
     set_query_task_starting(true);
     TaskHandle_t task = NULL;
     BaseType_t created = xTaskCreate(identity_query_task, "firmware_identity", 4096,
                                      NULL, 1, &task);
     if (created != pdPASS) {
         set_query_task_starting(false);
-        return ESP_ERR_NO_MEM;
+        result = ESP_ERR_NO_MEM;
+        goto done;
     }
     /* The newborn task is held at its start gate, so publishing its immutable
      * handle and registering that exact generation cannot race USB reads or
@@ -455,8 +633,9 @@ esp_err_t firmware_identity_start(void) {
         __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
         set_query_task_starting(false);
         (void)xSemaphoreGive(s_query_task_start_gate);
-        (void)firmware_identity_stop(500);
-        return registry_err;
+        (void)firmware_identity_stop_legacy(500);
+        result = registry_err;
+        goto done;
     }
     set_query_task_starting(false);
     /* A concurrent lifecycle stop may have closed admission while this task
@@ -464,26 +643,38 @@ esp_err_t firmware_identity_start(void) {
      * the stop request and acknowledges its own cooperative join. */
     if (xSemaphoreGive(s_query_task_start_gate) != pdTRUE) {
         __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
-        (void)firmware_identity_stop(500);
-        return ESP_FAIL;
+        (void)firmware_identity_stop_legacy(500);
+        result = ESP_FAIL;
+        goto done;
     }
 #endif
+    /* End creation admission before the optional boot broadcast.  If PREPARE
+     * starts now, emit_event observes its marker and intentionally drops this
+     * diagnostic-only publication instead of crossing the sleep boundary. */
+    end_system_sleep_observer();
     emit_event("IDENTITY", NULL);
-    return ESP_OK;
+    return result;
+
+done:
+    end_system_sleep_observer();
+    return result;
 }
 
-esp_err_t firmware_identity_stop(uint32_t timeout_ms) {
+static esp_err_t firmware_identity_stop_legacy(uint32_t timeout_ms) {
 #if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     TaskHandle_t task = query_task_handle();
     if (!task && !query_task_is_starting()) return ESP_OK;
     __atomic_store_n(&s_query_task_stop_requested, true, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_system_sleep_preparing, false, __ATOMIC_RELEASE);
+    TaskHandle_t wake_task = query_task_handle();
+    if (wake_task) xTaskNotifyGive(wake_task);
     while (query_task_is_active()) {
         int64_t remaining_us = deadline_us - esp_timer_get_time();
         if (remaining_us <= 0) return ESP_ERR_TIMEOUT;
-        TickType_t wait_ticks = pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000));
-        if (wait_ticks == 0) wait_ticks = 1;
+        TickType_t wait_ticks = identity_ticks_for_timeout_ms(
+            (uint32_t)((remaining_us + 999) / 1000));
         (void)xSemaphoreTake(s_query_task_stopped, wait_ticks);
     }
     /* Natural exit must not take the Registry's unbounded lock after it has
@@ -508,7 +699,7 @@ void firmware_identity_set_local_ready(bool ready) {
     if (ready) emit_event("BOOT_STATUS", NULL);
 }
 
-esp_err_t firmware_identity_get(firmware_identity_info_t *out) {
+static esp_err_t firmware_identity_get_legacy(firmware_identity_info_t *out) {
     if (!out) return ESP_ERR_INVALID_ARG;
     const esp_app_desc_t *app = esp_app_get_description();
     if (!app) return ESP_ERR_INVALID_STATE;
@@ -537,4 +728,91 @@ void firmware_identity_set_service_ready(bool ready) {
     bool changed = s_service_ready != ready;
     s_service_ready = ready;
     if (changed) emit_event("SERVICE_STATUS", NULL);
+}
+device_status_t firmware_identity_start(void) {
+    return firmware_identity_status_from_esp_err(firmware_identity_start_legacy());
+}
+
+device_status_t firmware_identity_stop(uint32_t timeout_ms) {
+    return firmware_identity_status_from_esp_err(firmware_identity_stop_legacy(timeout_ms));
+}
+
+device_status_t firmware_identity_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    if (__atomic_exchange_n(&s_system_sleep_preparing, true, __ATOMIC_ACQ_REL)) {
+        return DEVICE_STATUS_BUSY;
+    }
+    const esp_err_t exit_status =
+        __atomic_load_n(&s_query_task_exit_status, __ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&s_query_task_registry_retirement_failed,
+                        __ATOMIC_ACQUIRE)) {
+        return exit_status;
+    }
+#if !CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    /* Even a console-free profile can service a synchronous Firmware Identity
+     * snapshot for Gateway startup. Keep that observer fenced before a future
+     * electrical commit; there is simply no retained USB task to park. */
+#else
+    /* Firmware Identity may not have been started yet when an early Power
+     * coordinator asks for a transaction.  That is a valid no-worker state:
+     * the admission marker above already prevents a later start/create from
+     * crossing PREPARE, while synchronous snapshots below still drain.  Only
+     * a published task requires the retained-worker semaphore. */
+    if (query_task_is_starting() ||
+        __atomic_load_n(&s_query_task_retiring, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_query_task_registry_retirement_failed,
+                        __ATOMIC_ACQUIRE)) return DEVICE_STATUS_BUSY;
+    TaskHandle_t task = query_task_handle();
+    if (task && !s_system_sleep_quiesced) return DEVICE_STATUS_UNAVAILABLE;
+    if (task) {
+        while (xSemaphoreTake(s_system_sleep_quiesced, 0) == pdTRUE) {
+        }
+        xTaskNotifyGive(task);
+    }
+    /* The task is optional only on a console configuration where the worker
+     * never started. A published worker must acknowledge its parked state. */
+    if (task) {
+        int64_t remaining_us = deadline_us - esp_timer_get_time();
+        const uint32_t remaining_ms =
+            remaining_us > 0 ? (uint32_t)((remaining_us + 999) / 1000) : 0;
+        if (remaining_us <= 0 ||
+            xSemaphoreTake(s_system_sleep_quiesced,
+                           identity_ticks_for_timeout_ms(remaining_ms)) != pdTRUE) {
+            /* The worker may have observed the marker but not yet published
+             * its acknowledgement. Keep all identity admission closed until
+             * Power performs its mandatory transaction rollback; otherwise a
+             * late reader could race a subsequent electrical decision. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+    }
+#endif
+    while (__atomic_load_n(&s_system_sleep_emissions, __ATOMIC_ACQUIRE) != 0 ||
+           __atomic_load_n(&s_system_sleep_observers, __ATOMIC_ACQUIRE) != 0) {
+        if (esp_timer_get_time() >= deadline_us) {
+            /* Keep admission closed until the caller performs the mandatory
+             * System Sleep rollback. A timed-out pre-fence snapshot may still
+             * be unwinding and must not be joined by new diagnostic readers. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(identity_ticks_for_timeout_ms(1));
+    }
+    return DEVICE_STATUS_OK;
+}
+
+void firmware_identity_abort_system_sleep_prepare(void) {
+    const bool was_preparing =
+        __atomic_exchange_n(&s_system_sleep_preparing, false, __ATOMIC_ACQ_REL);
+    if (!was_preparing) return;
+    TaskHandle_t task = query_task_handle();
+    if (task) xTaskNotifyGive(task);
+}
+
+device_status_t firmware_identity_get(firmware_identity_info_t *out) {
+    if (!out) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!begin_system_sleep_observer()) return DEVICE_STATUS_BUSY;
+    const device_status_t status =
+        firmware_identity_status_from_esp_err(firmware_identity_get_legacy(out));
+    end_system_sleep_observer();
+    return status;
 }

@@ -602,20 +602,135 @@ func TestSkillAutoSummary_DraftSkill_NilSession(t *testing.T) {
 	}
 }
 
+// SessionID is the agent loop ID ("chat" for every foreground turn), so
+// falling back to it produced skills named and described after the transport
+// rather than the work. A trajectory with no user request has nothing to
+// describe and must not become a skill.
 func TestSkillAutoSummary_DraftSkill_NoUserMessage(t *testing.T) {
 	session := &TrajectorySession{
-		SessionID: "fallback-desc",
+		SessionID: "chat",
 		Entries: []TrajectoryEntry{
 			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "read_file", `{"path":"a.go"}`)},
 			{Role: "tool", ToolCallID: "c1", Content: "content"},
 		},
 	}
 	draft, err := DraftSkill(session)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatalf("DraftSkill succeeded without a user request: %#v", draft)
 	}
-	if draft.Description != "fallback-desc" {
-		t.Errorf("Description: got %q, want %q (session_id fallback)", draft.Description, "fallback-desc")
+	if !strings.Contains(err.Error(), "no user request") {
+		t.Fatalf("error = %v, want a missing-user-request rejection", err)
+	}
+}
+
+func TestRedactLearnedSkillIntent(t *testing.T) {
+	tests := []struct {
+		name   string
+		intent string
+		want   string
+	}{
+		{"plain request kept", "deploy the application", "deploy the application"},
+		{"windows path", `对比评分表 C:\Users\ma139\Desktop\bid.xlsx 的技术分`, "对比评分表 <路径> 的技术分"},
+		{"unix path", "read /home/ma139/proj/main.go and fix it", "read <路径> and fix it"},
+		{"url", "抓取 https://example.com/a/b?q=1 的内容", "抓取 <链接> 的内容"},
+		{"email", "把结果发给 ma139@example.com", "把结果发给 <邮箱>"},
+		{"quoted document title", `请修改 "一代智慧零信任安全管理平台软件设计报告" 的章节`, "请修改 <文档> 的章节"},
+		{"date is not a path", "统计 2026/08/17 的数据", "统计 2026/08/17 的数据"},
+		{"whitespace collapsed", "check\n\n  the   build", "check the build"},
+		{"empty", "   ", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactLearnedSkillIntent(tc.intent); got != tc.want {
+				t.Fatalf("redactLearnedSkillIntent(%q) = %q, want %q", tc.intent, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRedactLearnedSkillIntentCapsLength(t *testing.T) {
+	got := redactLearnedSkillIntent(strings.Repeat("长", 200))
+	runes := []rune(got)
+	if len(runes) != learnedSkillIntentMaxRunes+1 || runes[len(runes)-1] != '…' {
+		t.Fatalf("capped intent = %q (%d runes), want %d runes plus an ellipsis",
+			got, len(runes), learnedSkillIntentMaxRunes)
+	}
+}
+
+// The stored description reaches other agents' prompts, so a request full of
+// local paths must not survive into it verbatim.
+func TestSkillAutoSummary_DraftSkill_RedactsRequestDetails(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "chat",
+		UserID:    "desktop-user:D:/proj",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: `汇总 C:\Users\ma139\Desktop\report.docx 并发到 ma139@example.com`},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "read_file", `{"path":"a.go"}`)},
+			{Role: "tool", ToolCallID: "c1", Content: "ok"},
+			{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "write_file", `{"path":"b.go"}`)},
+			{Role: "tool", ToolCallID: "c2", Content: "ok"},
+		},
+	}
+	draft, err := DraftSkill(session)
+	if err != nil {
+		t.Fatalf("DraftSkill: %v", err)
+	}
+	for _, leaked := range []string{"ma139@example.com", `C:\Users`, "report.docx"} {
+		if strings.Contains(draft.Description, leaked) {
+			t.Fatalf("description %q still carries %q", draft.Description, leaked)
+		}
+	}
+	if !strings.Contains(draft.Description, "汇总") {
+		t.Fatalf("description %q lost the task gist", draft.Description)
+	}
+}
+
+// A learned skill belongs to the pool it was distilled from, so coding work and
+// general assistant work accumulate experience separately.
+func TestSkillAutoSummary_DraftSkill_StampsExperienceDomain(t *testing.T) {
+	newSession := func(domain string) *TrajectorySession {
+		return &TrajectorySession{
+			SessionID:        "chat",
+			UserID:           "desktop-user:D:/proj",
+			ExperienceDomain: domain,
+			Entries: []TrajectoryEntry{
+				{Role: "user", Content: "rebuild and run the tests"},
+				{Role: "assistant", ToolCalls: makeToolCallsWithID("c1", "read_file", `{"path":"a.go"}`)},
+				{Role: "tool", ToolCallID: "c1", Content: "ok"},
+				{Role: "assistant", ToolCalls: makeToolCallsWithID("c2", "write_file", `{"path":"b.go"}`)},
+				{Role: "tool", ToolCallID: "c2", Content: "ok"},
+			},
+		}
+	}
+	for _, tc := range []struct{ session, want string }{
+		{corelib.SkillDomainCoding, corelib.SkillDomainCoding},
+		{corelib.SkillDomainGeneral, corelib.SkillDomainGeneral},
+		{"", corelib.SkillDomainUniversal},
+		{"nonsense", corelib.SkillDomainUniversal},
+	} {
+		draft, err := DraftSkill(newSession(tc.session))
+		if err != nil {
+			t.Fatalf("DraftSkill(domain=%q): %v", tc.session, err)
+		}
+		if draft.ExperienceDomain != tc.want {
+			t.Errorf("session domain %q → draft domain %q, want %q", tc.session, draft.ExperienceDomain, tc.want)
+		}
+	}
+}
+
+// The loop ID is "chat" for every foreground turn, so it cannot identify the
+// tab a draft came from on its own.
+func TestAutoSummarySessionKeyDistinguishesTabs(t *testing.T) {
+	a := autoSummarySessionKey(&TrajectorySession{SessionID: "chat", UserID: "desktop-user:D:/a"})
+	b := autoSummarySessionKey(&TrajectorySession{SessionID: "chat", UserID: "desktop-user:D:/b"})
+	if a == b {
+		t.Fatalf("two task tabs share the auto-summary key %q", a)
+	}
+	if got := autoSummarySessionKey(&TrajectorySession{SessionID: "chat"}); got != "chat" {
+		t.Fatalf("key without an owner = %q, want %q", got, "chat")
+	}
+	if got := autoSummarySessionKey(nil); got != "" {
+		t.Fatalf("nil session key = %q, want empty", got)
 	}
 }
 

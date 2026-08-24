@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
@@ -45,6 +46,11 @@ type SkillMarketHandlers struct {
 	dataDir        string
 	petStoreSync   petStoreSyncRecorder
 	petStoreMailer mail.Mailer
+	hubVerifier    hubViewerMachineVerifier
+}
+
+type hubViewerMachineVerifier interface {
+	AuthenticateViewerMachine(ctx context.Context, hubID, viewerToken, machineID string) (*hubs.ViewerMachinePrincipal, error)
 }
 
 // SkillMarket upload auth mode constants.
@@ -81,6 +87,7 @@ type SkillMarketConfig struct {
 	DataDir        string
 	PetStoreSync   petStoreSyncRecorder
 	PetStoreMailer mail.Mailer
+	HubVerifier    hubViewerMachineVerifier
 }
 
 // NewSkillMarketHandlers 创建 SkillMarket HTTP handlers。
@@ -105,6 +112,7 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 		dataDir:        cfg.DataDir,
 		petStoreSync:   cfg.PetStoreSync,
 		petStoreMailer: cfg.PetStoreMailer,
+		hubVerifier:    cfg.HubVerifier,
 	}
 }
 

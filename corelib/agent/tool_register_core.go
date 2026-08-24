@@ -370,11 +370,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_document",
-		Description: "Read text from office/PDF documents using native parsers (no Python/Word required). Supports PDF (.pdf), Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.ppt/.pptx), and plain text (.txt/.md). Prefer this over read_file/bash for documents. For long docs, use offset+max_chars to page through (# next_offset in the result).",
+		Description: "Read text from documents and text-based data using native readers (no Python/Word required). Supports PDF (.pdf), Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.ppt/.pptx), and text-based files (.txt/.md/.json/.xml/.yaml/.yml/.log). Prefer this over read_file/bash for documents. For long content, use offset+max_chars to page through (# next_offset in the result).",
 		Properties: map[string]interface{}{
 			"file_path":    map[string]string{"type": "string", "description": "Document file path (alias: path)"},
 			"path":         map[string]string{"type": "string", "description": "Alias for file_path"},
-			"max_chars":    map[string]string{"type": "integer", "description": "Max characters for this chunk (default 120000)"},
+			"max_chars":    map[string]string{"type": "integer", "description": "Max characters for this chunk (default 30000)"},
 			"offset":       map[string]string{"type": "integer", "description": "Rune offset into the full document (default 0). Use next_offset from a truncated result to continue."},
 			"line_numbers": map[string]string{"type": "boolean", "description": "If true, prefix each line with L1:/L2: markers (stable across offset pages)"},
 		},

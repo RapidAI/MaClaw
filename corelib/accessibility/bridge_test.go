@@ -33,15 +33,15 @@ func TestNoopBridgeFindElement(t *testing.T) {
 
 func TestNoopBridgeClickElement(t *testing.T) {
 	b := &noopBridge{}
-	if err := b.ClickElement(&Element{}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := b.ClickElement(&Element{}); err == nil {
+		t.Fatal("expected unsupported-platform error")
 	}
 }
 
 func TestNoopBridgeTypeInElement(t *testing.T) {
 	b := &noopBridge{}
-	if err := b.TypeInElement(&Element{}, "hello"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := b.TypeInElement(&Element{}, "hello"); err == nil {
+		t.Fatal("expected unsupported-platform error")
 	}
 }
 

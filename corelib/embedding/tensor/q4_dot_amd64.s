@@ -2,7 +2,7 @@
 
 // func dotQ4Q8BlockASM(q4, q8 *byte) int32
 // q4 has low nibbles for q[0:16] and high nibbles for q[16:32].
-TEXT ·dotQ4Q8BlockASM(SB), NOSPLIT, $0-24
+TEXT ·dotQ4Q8BlockASM(SB), NOSPLIT, $0-20
 	MOVQ q4+0(FP), AX
 	MOVQ q8+8(FP), BX
 	XORQ CX, CX
@@ -114,7 +114,7 @@ q4q8_avx_outer:
 
 // func q4Q8BlockVNNIASM(out *int32, aQ, q4 *byte)
 // Produces eight VPDPBUSD lanes (four products each).
-TEXT ·q4Q8BlockVNNIASM(SB), NOSPLIT, $0-32
+TEXT ·q4Q8BlockVNNIASM(SB), NOSPLIT, $0-24
 	MOVQ out+0(FP), AX
 	MOVQ aQ+8(FP), BX
 	MOVQ q4+16(FP), CX
@@ -177,7 +177,7 @@ q4q8_vnni_outer:
 	RET
 
 // func q4Q8BlocksVNNIStrideASM(out *int32, aQ, q4 *byte, nBlocks, stride int)
-TEXT ·q4Q8BlocksVNNIStrideASM(SB), NOSPLIT, $0-48
+TEXT ·q4Q8BlocksVNNIStrideASM(SB), NOSPLIT, $0-40
 	MOVQ out+0(FP), AX
 	MOVQ aQ+8(FP), BX
 	MOVQ q4+16(FP), CX

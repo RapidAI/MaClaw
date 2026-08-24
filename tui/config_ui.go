@@ -59,6 +59,37 @@ func (m configUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ConfigOpenToolsMsg:
 		m.status = configUIStatusOpenFullTUI(m.cfg.Language, "tools")
 		return m, nil
+	case views.ConfigQQBotScanMsg:
+		if !m.config.QQBotQRScanRequested() {
+			return m, nil
+		}
+		return m, startQQBotQRLoginCmd(m.cfg.Language)
+	case views.ConfigQQBotPollMsg:
+		if !m.config.QQBotQRPollTokenMatches(msg.Token) {
+			return m, nil
+		}
+		return m, pollQQBotQRLoginCmd(m.cfg.Language, msg.Token)
+	case views.ConfigQQBotCancelMsg:
+		tuiQQBotQRClient().CancelBindTask(msg.Token)
+		return m, nil
+	case views.ConfigQQBotQRMsg:
+		var cmd tea.Cmd
+		m.config, cmd = m.config.Update(msg)
+		return m, cmd
+	case views.ConfigQQBotPollResultMsg:
+		var cmd tea.Cmd
+		m.config, cmd = m.config.Update(msg)
+		if msg.Success {
+			store := commands.NewFileConfigStore(commands.ResolveDataDir())
+			if cfg, err := store.LoadConfig(); err == nil {
+				m.cfg = cfg
+				m.config.LoadFromAppConfig(cfg)
+			}
+			m.status = tuiText(m.cfg.Language, "qqbotBound")
+		} else if strings.TrimSpace(msg.Message) != "" {
+			m.status = msg.Message
+		}
+		return m, cmd
 	case views.ConfigSaveMsg:
 		if blocked, reason := rejectHubManagedSecurityConfigChange(m.cfg, msg.Key); blocked {
 			m.status = configUIStatusSaveFailed(m.cfg.Language, views.ConfigDisplayNameForLang(msg.Key, m.cfg.Language), reason)

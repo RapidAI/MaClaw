@@ -65,9 +65,14 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 // from tool arguments or model output, so a profile cannot choose another
 // bot's artifact directory.
 func (h *IMMessageHandler) localArtifactDir(kind string) string {
-	if h != nil && h.app != nil && strings.TrimSpace(h.lansengerBotProfileID) != "" {
-		if base := lansengerBotDataDir(h.app, h.lansengerBotProfileID); base != "" {
-			return filepath.Join(base, "artifacts", kind)
+	if h != nil && h.app != nil {
+		if strings.TrimSpace(h.lansengerBotProfileID) != "" {
+			if base := lansengerBotDataDir(h.app, h.lansengerBotProfileID); base != "" {
+				return filepath.Join(base, "artifacts", kind)
+			}
+		}
+		if base := strings.TrimSpace(h.app.GetDataDir()); base != "" {
+			return filepath.Join(base, kind)
 		}
 	}
 	return filepath.Join(corelib.MaclawDataDir(), kind)

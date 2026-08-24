@@ -2,15 +2,18 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// ToolDefinitionGenerator dynamically generates the Agent's tool definition
-// list by merging builtin tool definitions with tools from healthy MCP Servers
-// and running local (stdio) MCP Servers.
+// ToolDefinitionGenerator renders the static legacy host catalog. Dynamic MCP
+// and Skill gateways deliberately do not enter this compatibility surface:
+// their provider identity, observed schema and contract must be bound by the
+// managed semantic planner, rather than inferred from a model-emitted function
+// name.
 type ToolDefinitionGenerator struct {
 	registry          *MCPRegistry
 	localMCPManager   *LocalMCPManager
@@ -36,7 +39,7 @@ func filterAgentVisibleBuiltinToolDefs(defs []map[string]interface{}) []map[stri
 	out := make([]map[string]interface{}, 0, len(filtered))
 	for _, def := range filtered {
 		name := extractToolName(def)
-		if shouldHideToolFromDiscovery(name) {
+		if shouldHideToolFromDiscovery(name) || coretool.IsLegacyModelDynamicGateway(name) {
 			continue
 		}
 		out = append(out, def)
@@ -153,9 +156,9 @@ func (g *ToolDefinitionGenerator) SetLocalMCPManager(mgr *LocalMCPManager) {
 	g.localMCPManager = mgr
 }
 
-// Generate produces the complete tool definition list: builtin + dynamic MCP tools.
-// Dynamic tool names that conflict with builtin names get a server_id prefix.
-// Only tools from healthy remote MCP Servers and running local MCP Servers are included.
+// Generate produces the static legacy host tool definition list. MCP inventory
+// remains available to lifecycle-owned semantic routing, but is never rendered
+// here as an unbound legacy function.
 func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
 	deferred, activated := g.deferredStateSnapshot()
 	// Start with a copy of builtin definitions, excluding deferred tools.
@@ -168,79 +171,6 @@ func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
 		if name != "" && deferred[name] && !activated[name] {
 			continue
 		}
-		result = append(result, def)
-	}
-
-	// Build a set of builtin tool names for conflict detection.
-	builtinNames := make(map[string]bool, len(g.builtinDefs))
-	for _, def := range g.builtinDefs {
-		if name := extractToolName(def); name != "" {
-			if isDisabledExternalCodingSessionTool(name) {
-				continue
-			}
-			builtinNames[name] = true
-		}
-	}
-
-	// Track dynamic tool names across all servers for conflict detection.
-	// Maps tool name → server ID of the first server that registered it.
-	dynamicNames := make(map[string]string)
-	type pendingTool struct {
-		serverID string
-		tool     MCPToolView
-	}
-	var pending []pendingTool
-
-	// Collect tools from healthy remote MCP Servers.
-	if g.registry != nil {
-		servers := g.registry.ListServers()
-		for _, srv := range servers {
-			if normalizeMCPHealthStatus(srv.HealthStatus) != mcpHealthStatusHealthy {
-				continue
-			}
-			tools := g.registry.GetServerTools(srv.ID)
-			for _, t := range tools {
-				pending = append(pending, pendingTool{serverID: srv.ID, tool: t})
-				if _, exists := dynamicNames[t.Name]; !exists {
-					dynamicNames[t.Name] = srv.ID
-				} else {
-					dynamicNames[t.Name] = ""
-				}
-			}
-		}
-	}
-
-	// Collect tools from running local (stdio) MCP Servers.
-	if g.localMCPManager != nil {
-		for _, ts := range g.localMCPManager.GetAllTools() {
-			for _, t := range ts.Tools {
-				pending = append(pending, pendingTool{serverID: ts.ServerID, tool: t})
-				if _, exists := dynamicNames[t.Name]; !exists {
-					dynamicNames[t.Name] = ts.ServerID
-				} else {
-					dynamicNames[t.Name] = ""
-				}
-			}
-		}
-	}
-
-	// Generate definitions for each dynamic tool.
-	for _, p := range pending {
-		name := p.tool.Name
-		if isDisabledExternalCodingSessionTool(name) || shouldHideToolFromDiscovery(name) {
-			continue
-		}
-		needsPrefix := builtinNames[name]
-		if !needsPrefix {
-			if ownerID := dynamicNames[name]; ownerID == "" {
-				needsPrefix = true
-			}
-		}
-		finalName := name
-		if needsPrefix {
-			finalName = fmt.Sprintf("%s_%s", p.serverID, name)
-		}
-		def := mcpToolToDefinition(finalName, p.tool)
 		result = append(result, def)
 	}
 

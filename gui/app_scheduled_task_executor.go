@@ -203,20 +203,26 @@ func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) schedule
 				a.log(fmt.Sprintf("[scheduled-task] delivery failed: %v", err))
 				resultText, runErr = scheduler.MergeDeliveryOutcome(task.Delivery, resultText, runErr, err)
 			}
-		} else {
-			var proactiveMsg string
-			if hasError {
-				if resultText != "" {
-					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nResult:\n%s\n\nError: %s", task.Name, resultText, resp.Error)
-				} else {
-					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nError: %s", task.Name, resp.Error)
+		} else if store := a.scheduleDispatchBindingStore(); store != nil {
+			if _, ok := store.Get(task.ID); ok {
+				if err := a.deliverScheduledTaskResult(task, resultText, runErr); err != nil {
+					a.log(fmt.Sprintf("[scheduled-task] managed dispatch failed: %v", err))
 				}
-			} else if resultText != "" {
-				proactiveMsg = fmt.Sprintf("Task %s completed successfully.\n\nResult:\n%s", task.Name, resultText)
-			}
-			if proactiveMsg != "" {
-				if err := hubClient.SendIMProactiveMessage(proactiveMsg); err != nil {
-					a.log(fmt.Sprintf("[scheduled-task] proactive message send failed: %v", err))
+			} else {
+				var proactiveMsg string
+				if hasError {
+					if resultText != "" {
+						proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nResult:\n%s\n\nError: %s", task.Name, resultText, resp.Error)
+					} else {
+						proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nError: %s", task.Name, resp.Error)
+					}
+				} else if resultText != "" {
+					proactiveMsg = fmt.Sprintf("Task %s completed successfully.\n\nResult:\n%s", task.Name, resultText)
+				}
+				if proactiveMsg != "" {
+					if err := hubClient.SendIMProactiveMessage(proactiveMsg); err != nil {
+						a.log(fmt.Sprintf("[scheduled-task] proactive message send failed: %v", err))
+					}
 				}
 			}
 		}

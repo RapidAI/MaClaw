@@ -30,11 +30,18 @@ type AsyncTask interface {
 }
 
 var (
-	poolOnce   sync.Once
-	jobQueue   chan matmulRangeJob
-	poolSize   int32
-	poolInited int32
+	poolOnce     sync.Once
+	jobQueue     chan matmulRangeJob
+	poolSize     int32
+	poolInited   int32
+	jobEnqueueN  int64
 )
+
+// JobEnqueueCount is the number of jobs submitted to the process-wide matmul pool.
+func JobEnqueueCount() int64 { return atomic.LoadInt64(&jobEnqueueN) }
+
+// ResetJobEnqueueCount zeros the enqueue counter (tests).
+func ResetJobEnqueueCount() { atomic.StoreInt64(&jobEnqueueN, 0) }
 
 func ensureMatmulPool() {
 	poolOnce.Do(func() {
@@ -162,6 +169,7 @@ func parallelRangesWithWorkers(total, nw int, fn func(start, end int)) {
 			break
 		}
 		wg.Add(1)
+		atomic.AddInt64(&jobEnqueueN, 1)
 		jobQueue <- matmulRangeJob{start: s, end: e, fn: fn, wg: &wg}
 	}
 	wg.Wait()
@@ -197,6 +205,9 @@ func shouldParallel(M, N, K int) bool {
 	if poolWorkers() <= 1 {
 		return false
 	}
+	if N <= 1 {
+		return false
+	}
 	flops := int64(M) * int64(N) * int64(K)
-	return flops >= flopThreshold && N > 1
+	return flops >= flopThreshold
 }

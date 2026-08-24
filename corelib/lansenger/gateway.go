@@ -151,6 +151,15 @@ type OutgoingMedia struct {
 	Strict bool
 }
 
+// MediaReceipt is the bounded provider acknowledgement returned only after a
+// successful upload and message-send API response. It intentionally carries
+// identifiers rather than raw response bodies, so execution journals can bind
+// a delivery settlement to trusted evidence without persisting credentials or
+// channel payloads.
+type MediaReceipt struct {
+	MediaID string
+}
+
 // MessageHandler is the callback for incoming messages.
 type MessageHandler func(msg IncomingMessage)
 
@@ -1681,16 +1690,24 @@ func isLansengerTokenExpiredError(err error) bool {
 // mediaType + mediaIds attachment. Per the Lansenger API docs, media is sent
 // via msgType="text" with mediaType (1=video, 2=image, 3=file) and mediaIds.
 func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
+	_, err := g.SendMediaWithReceipt(ctx, msg)
+	return err
+}
+
+// SendMediaWithReceipt is the receipt-aware counterpart of SendMedia. New
+// transactional outbox workers use it to persist an acknowledgement digest;
+// existing callers retain SendMedia's compatibility signature.
+func (g *Gateway) SendMediaWithReceipt(ctx context.Context, msg OutgoingMedia) (MediaReceipt, error) {
 	if strings.TrimSpace(msg.ToUserID) == "" {
-		return fmt.Errorf("lansenger: recipient is required")
+		return MediaReceipt{}, fmt.Errorf("lansenger: recipient is required")
 	}
 	if len(msg.FileData) == 0 {
-		return fmt.Errorf("lansenger: empty file data")
+		return MediaReceipt{}, fmt.Errorf("lansenger: empty file data")
 	}
 
 	token, err := g.getAppToken(ctx)
 	if err != nil {
-		return err
+		return MediaReceipt{}, err
 	}
 
 	if msg.FileName == "" {
@@ -1704,36 +1721,40 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		}
 	}
 
-	if err := g.sendMediaWithToken(ctx, token, msg); err != nil {
+	if receipt, err := g.sendMediaWithToken(ctx, token, msg); err != nil {
 		if isLansengerTokenExpiredError(err) {
 			log.Printf("[lansenger] token expired while sending media, refreshing and retrying once")
 			g.tokens.clear()
 			freshToken, tokenErr := g.getAppToken(ctx)
 			if tokenErr != nil {
-				return tokenErr
+				return MediaReceipt{}, tokenErr
 			}
 			return g.sendMediaWithToken(ctx, freshToken, msg)
 		}
-		return err
+		return MediaReceipt{}, err
+	} else {
+		return receipt, nil
 	}
-	return nil
 }
 
-func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg OutgoingMedia) error {
+func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg OutgoingMedia) (MediaReceipt, error) {
 	mediaID, err := g.uploadMedia(ctx, token, msg.FileData, msg.FileName, msg.MediaType)
 	if err != nil {
 		if isLansengerTokenExpiredError(err) {
-			return err
+			return MediaReceipt{}, err
 		}
 		if msg.Strict {
-			return fmt.Errorf("media upload failed: %w", err)
+			return MediaReceipt{}, fmt.Errorf("media upload failed: %w", err)
 		}
 		log.Printf("[lansenger] media upload failed: %v, sending text fallback", err)
-		return g.SendText(ctx, OutgoingText{
+		if fallbackErr := g.SendText(ctx, OutgoingText{
 			ToUserID: msg.ToUserID,
 			Text:     fmt.Sprintf("[%s: %s upload failed]", msg.MediaType, msg.FileName),
 			IsGroup:  msg.IsGroup,
-		})
+		}); fallbackErr != nil {
+			return MediaReceipt{}, fallbackErr
+		}
+		return MediaReceipt{}, nil
 	}
 
 	mediaTypeInt := 3
@@ -1753,9 +1774,13 @@ func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg Outg
 	}
 
 	if msg.IsGroup {
-		return g.sendGroupMessage(ctx, token, msg.ToUserID, "text", msgData, nil)
+		if err := g.sendGroupMessage(ctx, token, msg.ToUserID, "text", msgData, nil); err != nil {
+			return MediaReceipt{}, err
+		}
+	} else if err := g.sendPrivateMessage(ctx, token, msg.ToUserID, "text", msgData, nil); err != nil {
+		return MediaReceipt{}, err
 	}
-	return g.sendPrivateMessage(ctx, token, msg.ToUserID, "text", msgData, nil)
+	return MediaReceipt{MediaID: mediaID}, nil
 }
 
 // uploadMedia uploads a file to Lansenger's media storage and returns the mediaId.

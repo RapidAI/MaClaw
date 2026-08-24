@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -38,6 +39,9 @@ type qqBotGatewayManager struct {
 	// localHandler is a fully-wired IMMessageHandler for local mode.
 	// Created lazily on first local-mode message.
 	localHandler *IMMessageHandler
+
+	// qr holds AES bind-session keys for scan login. Never sent to the UI.
+	qr *qqbot.QRClient
 }
 
 func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
@@ -46,7 +50,18 @@ func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
 		app:        app,
 		status:     gatewayConnectionStatusDisconnected,
 		lastOpenID: strings.TrimSpace(peers.QQLastOpenID),
+		qr:         qqbot.NewQRClient(),
 	}
+}
+
+func (m *qqBotGatewayManager) qrClient() *qqbot.QRClient {
+	if m == nil {
+		return qqbot.DefaultQRClient()
+	}
+	if m.qr == nil {
+		m.qr = qqbot.NewQRClient()
+	}
+	return m.qr
 }
 
 func (m *qqBotGatewayManager) currentLocalHandler() *IMMessageHandler {
@@ -487,13 +502,14 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 		if normalizeIMMediaKind(msg.MediaType).IsImage() {
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, msg.MimeType))
 		} else {
-			mediaPath, err := saveQQMediaToTemp(msg)
-			if err != nil {
-				log.Printf("[qqbot-mgr] save media error: %v", err)
-			} else {
-				prefix := "[收到" + mediaLabel(msg.MediaType) + ": " + mediaPath + "]\n"
-				text = prefix + text
-			}
+			text, attachments = appendTrustedHostMediaOrStage(text, attachments, trustedHostMediaInput{
+				MediaType: msg.MediaType,
+				FileName:  msg.MediaName,
+				MimeType:  msg.MimeType,
+				Data:      msg.MediaData,
+			}, func() (string, error) {
+				return saveQQMediaToTemp(msg)
+			})
 		}
 	}
 
@@ -746,6 +762,106 @@ func (a *App) SetQQBotLocalMode(enabled bool) error {
 		}
 	}
 	return nil
+}
+
+func (a *App) ensureQQBotQRManager() *qqBotGatewayManager {
+	if a.qqBotGateway == nil {
+		a.qqBotGateway = newQQBotGatewayManager(a)
+	}
+	return a.qqBotGateway
+}
+
+func (a *App) saveQQBotLoginConfig(creds *qqbot.QRCredentials) error {
+	if creds == nil {
+		return fmt.Errorf("qqbot login result is nil")
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.QQBotEnabled = true
+		cfg.QQBotAppID = strings.TrimSpace(creds.AppID)
+		cfg.QQBotAppSecret = creds.AppSecret
+		if strings.TrimSpace(cfg.QQBotOwnerOpenID) == "" && strings.TrimSpace(creds.UserOpenID) != "" {
+			cfg.QQBotOwnerOpenID = strings.TrimSpace(creds.UserOpenID)
+		}
+		if cfg.QQBotLocalMode == nil {
+			local := true
+			cfg.QQBotLocalMode = &local
+			log.Printf("[qqbot-mgr] first-time binding: auto-setting local mode")
+		}
+	})
+}
+
+const qqbotQRStatusPollTimeout = 5 * time.Second
+
+// StartQQBotQRLogin starts a scan-bind session and returns the QR payload URL.
+func (a *App) StartQQBotQRLogin() map[string]string {
+	mgr := a.ensureQQBotQRManager()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	taskID, qrURL, err := mgr.qrClient().CreateBindTask(ctx)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	taskID = strings.TrimSpace(taskID)
+	qrURL = strings.TrimSpace(qrURL)
+	if taskID == "" || qrURL == "" {
+		if taskID != "" {
+			mgr.qrClient().CancelBindTask(taskID)
+		}
+		return map[string]string{"error": "empty qr bind response"}
+	}
+	return map[string]string{
+		"qrcode_url":   qrURL,
+		"qrcode_token": taskID,
+	}
+}
+
+// PollQQBotQRStatus polls one bind token. On confirmed, saves credentials and starts the gateway.
+func (a *App) PollQQBotQRStatus(qrcodeToken string) map[string]string {
+	mgr := a.ensureQQBotQRManager()
+	qrcodeToken = strings.TrimSpace(qrcodeToken)
+	if qrcodeToken == "" {
+		return map[string]string{"error": qqbot.ErrQRCodeTokenEmpty.Error(), "status": "error"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), qqbotQRStatusPollTimeout)
+	defer cancel()
+	status, creds, err := mgr.qrClient().PollBindStatus(ctx, qrcodeToken)
+	if err != nil {
+		resp := map[string]string{"error": err.Error(), "status": gatewayConnectionStatusError.String()}
+		if errors.Is(err, qqbot.ErrQRSessionNotFound) {
+			resp["status"] = qqbot.QRLoginStatusExpired.String()
+			return resp
+		}
+		if errors.Is(err, qqbot.ErrQRCodeTokenEmpty) {
+			resp["status"] = "error"
+			return resp
+		}
+		resp["retryable"] = "true"
+		return resp
+	}
+	resp := map[string]string{"status": status.String()}
+	if status == qqbot.QRLoginStatusConfirmed {
+		if creds == nil || strings.TrimSpace(creds.AppID) == "" || strings.TrimSpace(creds.AppSecret) == "" {
+			resp["status"] = qqbot.QRLoginStatusWait.String()
+			resp["retryable"] = "true"
+			resp["error"] = "qqbot login was not connected"
+			return resp
+		}
+		if err := a.saveQQBotLoginConfig(creds); err != nil {
+			resp["status"] = qqbot.QRLoginStatusWait.String()
+			resp["retryable"] = "true"
+			resp["error"] = err.Error()
+			return resp
+		}
+		mgr.qrClient().CancelBindTask(qrcodeToken)
+		go a.ensureQQBotGateway()
+		resp["app_id"] = creds.AppID
+	}
+	return resp
+}
+
+// CancelQQBotQRLogin drops the in-memory AES bind session for token.
+func (a *App) CancelQQBotQRLogin(qrcodeToken string) {
+	a.ensureQQBotQRManager().qrClient().CancelBindTask(qrcodeToken)
 }
 
 // saveQQMediaToTemp saves media from a QQ message to a temp file.

@@ -2,6 +2,7 @@ package llmservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 )
 
@@ -199,6 +201,13 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 	}
 	status.CreditGrants = creditGrantSummariesForOwner(reg, owner, now)
 	for _, g := range status.CreditGrants {
+		// A new-user limit card has no lifetime balance. Its CreditsAvailable
+		// value is the remaining amount in a short window and is exposed through
+		// PeriodLimits/PeriodUsage below; including it in account totals would
+		// falsely turn a zero-total entitlement into a 10-credit wallet.
+		if strings.EqualFold(strings.TrimSpace(g.Source), "new_user_limit_card") && g.CreditsTotal <= 0 {
+			continue
+		}
 		// Only accumulate credits from currently effective grants.
 		// Exclude "queued" (not yet started) and "expired" grants from totals
 		// so users see accurate available credits.
@@ -222,7 +231,10 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 		for _, g := range grants {
 			creditsAvailable += availableGrantCredits(g, now)
 			status.ActiveGrants = append(status.ActiveGrants, grantSummary(g, now))
-			if nearest == nil || g.ExpiresAt.Before(*nearest) {
+			// Permanent grants use a far-future storage sentinel. It is not a
+			// customer-visible expiry date, so do not surface year 9999 through
+			// nearest_expires_at.
+			if !g.Permanent && (nearest == nil || g.ExpiresAt.Before(*nearest)) {
 				copyVal := g.ExpiresAt
 				nearest = &copyVal
 			}
@@ -240,6 +252,12 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 	if len(serviceGroupIDs) > 0 {
 		creditsAvailable = availableCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
 	}
+	// A welcome limit card's spendable amount is a rolling/daily window, not a
+	// lifetime account balance. Its detailed period allowance remains on the
+	// grant summary; do not expose it as the wallet-level available amount.
+	if hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
+		creditsAvailable = 0
+	}
 	if effectiveExpiresAt := effectiveGrantExpiresAt(reg, owner, now); effectiveExpiresAt != nil {
 		status.EffectiveExpiresAt = effectiveExpiresAt.Format(time.RFC3339)
 	}
@@ -248,7 +266,7 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 	// spendable on a metered grant (CreditsAvailable==0). If a paid point card
 	// is currently spendable (Available>0), keep showing its balance even when
 	// a free unlimited gift is also present.
-	if status.Active && len(serviceGroupIDs) > 0 && status.CreditsAvailable <= 0 && (hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, serviceGroupIDs, now)) {
+	if status.Active && len(serviceGroupIDs) > 0 && status.CreditsAvailable <= 0 && (hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, serviceGroupIDs, now)) && !hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
 		status.CreditsTotal = 0
 		status.CreditsUsed = 0
 		status.CreditsRemaining = 0
@@ -328,7 +346,7 @@ func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.
 		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
 			continue
 		}
-		if !g.ExpiresAt.After(now) {
+		if !grantIsValidAt(g, now) {
 			if latestExpired == nil || g.ExpiresAt.After(latestExpired.ExpiresAt) {
 				copyGrant := g
 				latestExpired = &copyGrant
@@ -430,6 +448,8 @@ func grantSummary(g Grant, now time.Time) ActiveGrant {
 		CardID:           g.CardID,
 		StartsAt:         g.StartsAt,
 		ExpiresAt:        g.ExpiresAt,
+		Permanent:        g.Permanent,
+		RollingFiveHour:  g.RollingFiveHour,
 		Active:           active,
 		Effective:        effective,
 		Status:           status,
@@ -450,14 +470,20 @@ func grantSummary(g Grant, now time.Time) ActiveGrant {
 		// Build API-facing usage summary with precise window_end computed from
 		// the same window functions used for billing eligibility checks.
 		fhStart := fiveHourWindowStart(now)
+		fhEnd := fhStart.Add(5 * time.Hour)
+		fhUsed := g.PeriodUsage.FiveHour.CreditsUsed
+		if g.RollingFiveHour {
+			fhStart, fhEnd, fhUsed = rollingFiveHourUsage(g, now)
+		}
 		dStart := dayWindowStart(now)
 		wStart := weekWindowStart(now)
 		mStart := monthWindowStart(now)
 		summary.PeriodUsage = &ActiveGrantPeriodUsage{
 			FiveHour: ActiveGrantUsageWindow{
-				WindowStart: g.PeriodUsage.FiveHour.WindowStart,
-				WindowEnd:   fhStart.Add(5 * time.Hour),
-				CreditsUsed: roundCredits(g.PeriodUsage.FiveHour.CreditsUsed),
+				WindowStart: fhStart,
+				WindowEnd:   fhEnd,
+				CreditsUsed: roundCredits(fhUsed),
+				Rolling:     g.RollingFiveHour,
 			},
 			Daily: ActiveGrantUsageWindow{
 				WindowStart: g.PeriodUsage.Daily.WindowStart,
@@ -484,7 +510,7 @@ func grantStatus(g Grant, now time.Time) (string, string, bool, *time.Time) {
 		copyVal := g.StartsAt
 		return "queued", "grant starts in the future", false, &copyVal
 	}
-	if !now.Before(g.ExpiresAt) {
+	if !grantIsValidAt(g, now) {
 		return "expired", "grant has expired", false, nil
 	}
 	if g.CreditsTotal > 0 {
@@ -497,6 +523,10 @@ func grantStatus(g Grant, now time.Time) (string, string, bool, *time.Time) {
 		return "period_limited", "current period credit limit is exhausted", false, grantPeriodRetryAt(g, now)
 	}
 	return "active", "grant is active", true, nil
+}
+
+func grantIsValidAt(g Grant, now time.Time) bool {
+	return g.Permanent || g.ExpiresAt.After(now)
 }
 
 func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email, code, hubBaseURL string) (*ServiceStatus, error) {
@@ -666,7 +696,7 @@ func hasActiveWindowGrantForOwnerGroup(reg *Registry, owner userAccountRef, serv
 		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		return true
@@ -689,7 +719,7 @@ func nextGrantStart(reg *Registry, owner userAccountRef, serviceGroupID string, 
 			continue
 		}
 		// Only consider grants currently within their validity window.
-		if now.Before(g.StartsAt) || !now.Before(g.ExpiresAt) {
+		if now.Before(g.StartsAt) || !grantIsValidAt(g, now) {
 			continue
 		}
 		// Track the latest expiry among active grants for queuing.
@@ -732,7 +762,12 @@ func effectiveGrantExpiresAt(reg *Registry, owner userAccountRef, now time.Time)
 		if g.CreditsTotal > 0 && remainingGrantCredits(g) <= 0 {
 			continue
 		}
-		if !g.ExpiresAt.After(now) {
+		// A usable permanent grant makes the entitlement long-term. Its sentinel
+		// expiry must never override the UI with a literal 9999 date.
+		if g.Permanent {
+			return nil
+		}
+		if !grantIsValidAt(g, now) {
 			continue
 		}
 		if latest == nil || g.ExpiresAt.After(*latest) {
@@ -847,7 +882,7 @@ func effectiveServiceGroupIDsForOwner(ctx context.Context, reg *Registry, securi
 		if g.Frozen {
 			continue
 		}
-		if !now.Before(g.ExpiresAt) {
+		if !grantIsValidAt(g, now) {
 			continue
 		}
 		appendID(g.ServiceGroupID)
@@ -912,16 +947,23 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 			idx, ok := modelIndex[strings.ToLower(model.Name)]
 			if !ok {
 				models = append(models, AuthorizedModel{
-					Name:                      model.Name,
-					CapabilityTags:            append([]string(nil), model.CapabilityTags...),
-					Priority:                  model.Priority,
-					ResolutionTier:            model.ResolutionTier,
-					CreditMultiplier:          normalizeCreditMultiplier(model.CreditMultiplier),
-					ProviderCapabilityTags:    map[string][]string{},
-					ProviderPriorities:        map[string]int{},
-					ProviderResolutionTiers:   map[string]int{},
-					ProviderServiceGroups:     map[string][]string{},
-					ProviderCreditMultipliers: map[string]float64{},
+					Name:                          model.Name,
+					Kind:                          llmpool.NormalizeServiceGroupKind(group.Kind),
+					CapabilityTags:                append([]string(nil), model.CapabilityTags...),
+					Priority:                      model.Priority,
+					ResolutionTier:                model.ResolutionTier,
+					CreditMultiplier:              normalizeCreditMultiplier(model.CreditMultiplier),
+					ProviderCapabilityTags:        map[string][]string{},
+					ProviderPriorities:            map[string]int{},
+					ProviderResolutionTiers:       map[string]int{},
+					ProviderServiceGroups:         map[string][]string{},
+					ProviderCreditMultipliers:     map[string]float64{},
+					ProviderUpstreamModels:        map[string]string{},
+					ProviderUpstreamRouteModels:   map[string]map[string]string{},
+					ProviderServiceGroupUpstreams: map[string]map[string]string{},
+					ProviderBillingModes:          map[string]string{},
+					ProviderTokenPricing:          map[string]llmpool.TokenPricing{},
+					ProviderRouteBilling:          map[string]map[string]ProviderRouteBilling{},
 				})
 				idx = len(models) - 1
 				modelIndex[strings.ToLower(model.Name)] = idx
@@ -958,6 +1000,46 @@ func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]Authorize
 					models[idx].ProviderResolutionTiers[key] = cfg.ResolutionTier
 				}
 				models[idx].ProviderServiceGroups[key] = mergeStrings(models[idx].ProviderServiceGroups[key], []string{serviceGroupID})
+				if models[idx].ProviderUpstreamModels == nil {
+					models[idx].ProviderUpstreamModels = map[string]string{}
+				}
+				if upstream := strings.TrimSpace(cfg.Model); upstream != "" {
+					models[idx].ProviderUpstreamModels[key] = upstream
+				}
+				if models[idx].ProviderUpstreamRouteModels == nil {
+					models[idx].ProviderUpstreamRouteModels = map[string]map[string]string{}
+				}
+				if models[idx].ProviderUpstreamRouteModels[key] == nil {
+					models[idx].ProviderUpstreamRouteModels[key] = map[string]string{}
+				}
+				models[idx].ProviderUpstreamRouteModels[key][strings.ToLower(strings.TrimSpace(model.Name))] = strings.TrimSpace(cfg.Model)
+				if models[idx].ProviderServiceGroupUpstreams == nil {
+					models[idx].ProviderServiceGroupUpstreams = map[string]map[string]string{}
+				}
+				if models[idx].ProviderServiceGroupUpstreams[key] == nil {
+					models[idx].ProviderServiceGroupUpstreams[key] = map[string]string{}
+				}
+				models[idx].ProviderServiceGroupUpstreams[key][strings.ToLower(strings.TrimSpace(serviceGroupID))] = strings.TrimSpace(cfg.Model)
+				if models[idx].ProviderRouteBilling == nil {
+					models[idx].ProviderRouteBilling = map[string]map[string]ProviderRouteBilling{}
+				}
+				if models[idx].ProviderRouteBilling[key] == nil {
+					models[idx].ProviderRouteBilling[key] = map[string]ProviderRouteBilling{}
+				}
+				routeKey := normalizedUpstreamModelKey(cfg.Model, model.Name)
+				models[idx].ProviderRouteBilling[key][routeKey] = ProviderRouteBilling{
+					BillingMode:  llmpool.NormalizeBillingMode(cfg.BillingMode),
+					TokenPricing: cfg.TokenPricing,
+				}
+				if mode := llmpool.NormalizeBillingMode(cfg.BillingMode); mode != "" {
+					models[idx].ProviderBillingModes[key] = mode
+				}
+				if llmpool.NormalizeBillingMode(cfg.BillingMode) != llmpool.BillingModeFree && cfg.TokenPricing.HasCreditPricing() {
+					models[idx].ProviderTokenPricing[key] = cfg.TokenPricing
+				}
+				if group.IsDynamic() {
+					models[idx].Kind = llmpool.ServiceGroupKindDynamic
+				}
 				candidate := normalizeCreditMultiplier(cfg.CreditMultiplier)
 				if existing, ok := models[idx].ProviderCreditMultipliers[key]; !ok || candidate < existing {
 					models[idx].ProviderCreditMultipliers[key] = candidate
@@ -989,6 +1071,13 @@ func BuildAuthorizedModelsForServiceGroups(reg *Registry, serviceGroupIDs []stri
 
 func normalizedProviderKey(providerID string) string {
 	return strings.ToLower(strings.TrimSpace(providerID))
+}
+
+func normalizedUpstreamModelKey(upstreamModel, logicalModel string) string {
+	if key := strings.ToLower(strings.TrimSpace(upstreamModel)); key != "" {
+		return key
+	}
+	return strings.ToLower(strings.TrimSpace(logicalModel))
 }
 
 func CapabilityTagsForProvider(model *AuthorizedModel, providerID string) []string {
@@ -1041,20 +1130,37 @@ func CreditMultiplierForProvider(model *AuthorizedModel, providerID string) floa
 	return normalizeCreditMultiplier(model.CreditMultiplier)
 }
 
+var requestProviderWRR = llmpool.NewWRRScheduler()
+
+func ResetRequestProviderWRR() {
+	requestProviderWRR.Reset()
+}
+
 func OrderProvidersForRequest(body map[string]any, model *AuthorizedModel) []string {
+	return providerIDsFromBalancedRoutes(orderProvidersForRequest(body, model, nil, time.Time{}, true, ""))
+}
+
+func PeekProvidersForRequest(body map[string]any, model *AuthorizedModel) []string {
+	return providerIDsFromBalancedRoutes(orderProvidersForRequest(body, model, nil, time.Time{}, false, ""))
+}
+
+func OrderProvidersForRequestWithMeta(body map[string]any, model *AuthorizedModel, metas map[string]llmpool.ProviderDispatchMeta, now time.Time) []llmpool.BalancedRoute {
+	return orderProvidersForRequest(body, model, metas, now, true, "")
+}
+
+func OrderProvidersForRequestWithMetaInPool(body map[string]any, model *AuthorizedModel, metas map[string]llmpool.ProviderDispatchMeta, now time.Time, pool string) []llmpool.BalancedRoute {
+	return orderProvidersForRequest(body, model, metas, now, true, pool)
+}
+
+func orderProvidersForRequest(body map[string]any, model *AuthorizedModel, metas map[string]llmpool.ProviderDispatchMeta, now time.Time, rotate bool, pool string) []llmpool.BalancedRoute {
 	if model == nil || len(model.ProviderIDs) == 0 {
 		return nil
 	}
-	type scoredProvider struct {
-		providerID       string
-		originalIndex    int
-		score            int
-		resolutionTier   int
-		priority         int
-		creditMultiplier float64
+	if now.IsZero() {
+		now = time.Now()
 	}
 	capabilityNeeds := detectCapabilityNeeds(body)
-	scored := make([]scoredProvider, 0, len(model.ProviderIDs))
+	candidates := make([]llmpool.BalanceCandidate, 0, len(model.ProviderIDs))
 	for idx, providerID := range model.ProviderIDs {
 		score := 0
 		tags := map[string]struct{}{}
@@ -1072,42 +1178,53 @@ func OrderProvidersForRequest(body map[string]any, model *AuthorizedModel) []str
 		}
 		priority := PriorityForProvider(model, providerID)
 		score += priority
-		scored = append(scored, scoredProvider{
-			providerID:       providerID,
-			originalIndex:    idx,
-			score:            score,
-			resolutionTier:   normalizedResolutionTier(ResolutionTierForProvider(model, providerID)),
-			priority:         priority,
-			creditMultiplier: normalizeCreditMultiplier(CreditMultiplierForProvider(model, providerID)),
+		route := llmpool.DispatchProviderRoute{
+			ProviderID:       providerID,
+			Priority:         priority,
+			ResolutionTier:   normalizedResolutionTier(ResolutionTierForProvider(model, providerID)),
+			CreditMultiplier: normalizeCreditMultiplier(CreditMultiplierForProvider(model, providerID)),
+			OriginalIndex:    idx,
+		}
+		meta, ok := metas[normalizedProviderKey(providerID)]
+		if !ok {
+			meta = llmpool.ProviderDispatchMeta{ID: providerID, Sequence: idx + 1}
+		}
+		if meta.Sequence <= 0 {
+			meta.Sequence = idx + 1
+		}
+		candidates = append(candidates, llmpool.BalanceCandidate{
+			Route:               route,
+			Score:               score,
+			ResolutionTier:      route.ResolutionTier,
+			EffectiveMultiplier: llmpool.EffectiveRouteMultiplier(meta, route, now),
+			Sequence:            meta.Sequence,
+			MaxConcurrency:      meta.MaxConcurrency,
+			SkipWRR:             meta.SkipWRR,
 		})
 	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score != scored[j].score {
-			return scored[i].score > scored[j].score
-		}
-		if scored[i].resolutionTier != scored[j].resolutionTier {
-			return scored[i].resolutionTier < scored[j].resolutionTier
-		}
-		if scored[i].creditMultiplier != scored[j].creditMultiplier {
-			return scored[i].creditMultiplier < scored[j].creditMultiplier
-		}
-		if scored[i].priority != scored[j].priority {
-			return scored[i].priority > scored[j].priority
-		}
-		return scored[i].originalIndex < scored[j].originalIndex
-	})
-	ordered := make([]string, 0, len(scored))
-	for _, item := range scored {
-		ordered = append(ordered, item.providerID)
+	var sched *llmpool.WRRScheduler
+	if rotate {
+		sched = requestProviderWRR
+	}
+	if strings.TrimSpace(pool) == "" && model != nil {
+		pool = strings.TrimSpace(model.Name)
+	}
+	return llmpool.BalanceProviderRoutes(sched, pool, candidates)
+}
+
+func providerIDsFromBalancedRoutes(routes []llmpool.BalancedRoute) []string {
+	if len(routes) == 0 {
+		return nil
+	}
+	ordered := make([]string, 0, len(routes))
+	for _, item := range routes {
+		ordered = append(ordered, item.Route.ProviderID)
 	}
 	return ordered
 }
 
 func normalizeCreditMultiplier(v float64) float64 {
-	if v <= 0 {
-		return 1
-	}
-	return v
+	return llmpool.NormalizeCreditMultiplier(v)
 }
 
 func mergeStrings(dst []string, src []string) []string {
@@ -1144,7 +1261,81 @@ func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRep
 }
 
 func GrantDefaultServiceForNewUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
-	return grantNewUserBenefitForUserID(ctx, system, userID, email, "new_user_default", 0.30, false)
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	if reg.NewUserBenefitMode() == NewUserBenefitModeLimitCard {
+		return grantNewUserLimitCardForRegistry(ctx, system, reg, userID, email)
+	}
+	return grantNewUserBenefitForRegistry(ctx, system, reg, userID, email, "new_user_default", 0.30, false)
+}
+
+// grantNewUserLimitCardForUserID issues the independent welcome-rate-limit
+// entitlement. It is not a top-up: its zero credit total leaves the period
+// limits as the only consumption constraint. Only binding-active service
+// groups are eligible, so recharge groups keep their existing semantics.
+func grantNewUserLimitCardForUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	return grantNewUserLimitCardForRegistry(ctx, system, reg, userID, email)
+}
+
+func grantNewUserLimitCardForRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry, userID, email string) error {
+	owner := newUserAccountRef(userID, email)
+	if owner.empty() {
+		return fmt.Errorf("email is required")
+	}
+	if reg == nil {
+		return nil
+	}
+	card := reg.DefaultNewUserLimitCard
+	serviceGroupIDs := normalizeStringSlice(card.ServiceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return nil
+	}
+	validIDs := make([]string, 0, len(serviceGroupIDs))
+	for _, serviceGroupID := range serviceGroupIDs {
+		if reg.FindModelServiceGroup(serviceGroupID) == nil || reg.AccessPolicyForServiceGroup(serviceGroupID) != AccessPolicyFree {
+			continue
+		}
+		validIDs = append(validIDs, serviceGroupID)
+	}
+	if len(validIDs) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	changed := false
+	for _, serviceGroupID := range validIDs {
+		if findGrantWithSource(reg, owner, serviceGroupID, "new_user_limit_card") != nil {
+			continue
+		}
+		permanent := card.DurationDays <= 0
+		expiresAt := now.AddDate(0, 0, card.DurationDays)
+		if permanent {
+			expiresAt = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+		}
+		reg.Grants = append(reg.Grants, Grant{
+			ID:              NewID("grant"),
+			UserID:          owner.UserID,
+			Email:           owner.Email,
+			ServiceGroupID:  serviceGroupID,
+			Source:          "new_user_limit_card",
+			StartsAt:        now,
+			ExpiresAt:       expiresAt,
+			Permanent:       permanent,
+			CreatedAt:       now,
+			PeriodLimits:    card.PeriodLimits,
+			RollingFiveHour: true,
+		})
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return SaveRegistry(ctx, system, reg)
 }
 
 func GrantEmailConfirmedBenefitForUser(ctx context.Context, system SystemSettingsRepository, email string) error {
@@ -1152,7 +1343,14 @@ func GrantEmailConfirmedBenefitForUser(ctx context.Context, system SystemSetting
 }
 
 func GrantEmailConfirmedBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
-	return grantNewUserBenefitForUserID(ctx, system, userID, email, "new_user_email_confirmed", 0.70, true)
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	if reg.NewUserBenefitMode() != NewUserBenefitModeCredits {
+		return nil
+	}
+	return grantNewUserBenefitForRegistry(ctx, system, reg, userID, email, "new_user_email_confirmed", 0.70, true)
 }
 
 func GrantPhoneVerifiedBenefitForUser(ctx context.Context, system SystemSettingsRepository, email string) error {
@@ -1160,7 +1358,14 @@ func GrantPhoneVerifiedBenefitForUser(ctx context.Context, system SystemSettings
 }
 
 func GrantPhoneVerifiedBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
-	return grantNewUserBenefitForUserID(ctx, system, userID, email, "new_user_phone_verified", 0.70, true)
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	if reg.NewUserBenefitMode() != NewUserBenefitModeCredits {
+		return nil
+	}
+	return grantNewUserBenefitForRegistry(ctx, system, reg, userID, email, "new_user_phone_verified", 0.70, true)
 }
 
 func GrantInvitationCodeBenefitForUser(ctx context.Context, system SystemSettingsRepository, email, invitationCodeID, serviceGroupID string, durationDays int, credits float64) error {
@@ -1224,11 +1429,14 @@ func GrantUserReferralBenefitForUserID(ctx context.Context, system SystemSetting
 		return "", err
 	}
 	serviceGroupID = strings.TrimSpace(serviceGroupID)
-	if reg.FindModelServiceGroup(serviceGroupID) == nil {
-		return "", nil
+	if err := ReferralRewardServiceGroupAllowed(reg, serviceGroupID); err != nil {
+		if errors.Is(err, ErrReferralServiceGroupMissing) {
+			return "", nil
+		}
+		return "", err
 	}
 	for _, grant := range reg.Grants {
-		if grantMatchesUser(grant, owner) && strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") && strings.TrimSpace(grant.CardID) == strings.TrimSpace(referralID) && strings.TrimSpace(grant.ServiceGroupID) == serviceGroupID {
+		if grantMatchesUser(grant, owner) && strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") && strings.TrimSpace(grant.CardID) == strings.TrimSpace(referralID) && strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
 			return grant.ID, nil
 		}
 	}
@@ -1269,11 +1477,198 @@ func FreezeUserReferralBenefits(ctx context.Context, system SystemSettingsReposi
 	return SaveRegistry(ctx, system, reg)
 }
 
+var (
+	ErrReferralServiceGroupRequired   = errors.New("service group ID is required")
+	ErrReferralServiceGroupSystemFree = errors.New("referral rewards cannot use the reserved system-free service group")
+	ErrReferralServiceGroupMissing    = errors.New("referral service group does not exist")
+	ErrReferralServiceGroupNotMetered = errors.New("referral rewards require a metered service group")
+)
+
+// ReferralRewardServiceGroupAllowed reports whether a group can receive
+// metered invitation credits. Free-policy groups, including system-free,
+// make billing unlimited and are rejected.
+func ReferralRewardServiceGroupAllowed(reg *Registry, serviceGroupID string) error {
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if serviceGroupID == "" {
+		return ErrReferralServiceGroupRequired
+	}
+	if IsSystemFreeServiceGroup(serviceGroupID) {
+		return ErrReferralServiceGroupSystemFree
+	}
+	if reg == nil || reg.FindModelServiceGroup(serviceGroupID) == nil {
+		return ErrReferralServiceGroupMissing
+	}
+	if reg.AccessPolicyForServiceGroup(serviceGroupID) != AccessPolicyGrantRequired {
+		return ErrReferralServiceGroupNotMetered
+	}
+	return nil
+}
+
+// DetachSystemFreeFromReferralOwners freezes leaked system-free grants on
+// accounts that already received a user-referral reward. Invitation-code
+// overlays are the leak that made invitees unlimited; those bindings are
+// stripped. Inviters who only received a metered referral grant keep any
+// intentional system-free binding. Frozen grants stay for audit. When
+// reissueGroupID is a metered group, frozen system-free user_referral
+// grants are copied onto that group so the original credit amount is kept.
+func DetachSystemFreeFromReferralOwners(ctx context.Context, system SystemSettingsRepository, reissueGroupID string) (int, error) {
+	if system == nil {
+		return 0, nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil || reg == nil {
+		return 0, err
+	}
+	owners := newReferralAccountSet()
+	for _, grant := range reg.Grants {
+		if strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") {
+			owners.add(grant.UserID, grant.Email)
+		}
+	}
+	if owners.empty() {
+		return 0, nil
+	}
+	leaked := newReferralAccountSet()
+	changed := 0
+	for idx := range reg.Grants {
+		grant := &reg.Grants[idx]
+		if !IsSystemFreeServiceGroup(grant.ServiceGroupID) || !owners.contains(grant.UserID, grant.Email) {
+			continue
+		}
+		source := strings.ToLower(strings.TrimSpace(grant.Source))
+		if source != "invitation_code" && source != "user_referral" {
+			continue
+		}
+		if source == "invitation_code" {
+			leaked.add(grant.UserID, grant.Email)
+		}
+		if !grant.Frozen {
+			grant.Frozen = true
+			changed++
+		}
+	}
+	bindings := make([]UserBinding, 0, len(reg.UserBindings))
+	for _, binding := range reg.UserBindings {
+		if !leaked.contains(binding.UserID, binding.Email) {
+			bindings = append(bindings, binding)
+			continue
+		}
+		kept := make([]string, 0, len(binding.ServiceGroupIDs))
+		for _, id := range binding.ServiceGroupIDs {
+			if IsSystemFreeServiceGroup(id) {
+				changed++
+				continue
+			}
+			kept = append(kept, id)
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		binding.ServiceGroupIDs = kept
+		bindings = append(bindings, binding)
+	}
+	reg.UserBindings = bindings
+	reissueGroupID = strings.TrimSpace(reissueGroupID)
+	if ReferralRewardServiceGroupAllowed(reg, reissueGroupID) == nil {
+		have := map[string]struct{}{}
+		grantKey := func(userID, email, cardID string) string {
+			return normalizeUserID(userID) + "\n" + normalizeEmail(email) + "\n" + strings.TrimSpace(cardID)
+		}
+		for _, grant := range reg.Grants {
+			if strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") && strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), reissueGroupID) {
+				have[grantKey(grant.UserID, grant.Email, grant.CardID)] = struct{}{}
+			}
+		}
+		existing := append([]Grant(nil), reg.Grants...)
+		now := time.Now().UTC()
+		for _, grant := range existing {
+			if !IsSystemFreeServiceGroup(grant.ServiceGroupID) || !strings.EqualFold(strings.TrimSpace(grant.Source), "user_referral") || grant.CreditsTotal <= 0 {
+				continue
+			}
+			if !grantIsValidAt(grant, now) {
+				continue
+			}
+			key := grantKey(grant.UserID, grant.Email, grant.CardID)
+			if _, ok := have[key]; ok {
+				continue
+			}
+			reg.Grants = append(reg.Grants, Grant{
+				ID:             NewID("grant"),
+				UserID:         grant.UserID,
+				Email:          grant.Email,
+				ServiceGroupID: reissueGroupID,
+				Source:         "user_referral",
+				CardID:         strings.TrimSpace(grant.CardID),
+				StartsAt:       grant.StartsAt,
+				ExpiresAt:      grant.ExpiresAt,
+				CreatedAt:      now,
+				CreditsTotal:   grant.CreditsTotal,
+			})
+			have[key] = struct{}{}
+			changed++
+		}
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
+type referralAccountSet struct {
+	ids    map[string]struct{}
+	emails map[string]struct{}
+}
+
+func newReferralAccountSet() referralAccountSet {
+	return referralAccountSet{ids: map[string]struct{}{}, emails: map[string]struct{}{}}
+}
+
+func (s *referralAccountSet) add(userID, email string) {
+	if s == nil {
+		return
+	}
+	if id := normalizeUserID(userID); id != "" {
+		s.ids[id] = struct{}{}
+	}
+	if email := normalizeEmail(email); email != "" {
+		s.emails[email] = struct{}{}
+	}
+}
+
+func (s referralAccountSet) contains(userID, email string) bool {
+	if id := normalizeUserID(userID); id != "" {
+		if _, ok := s.ids[id]; ok {
+			return true
+		}
+	}
+	if email := normalizeEmail(email); email != "" {
+		if _, ok := s.emails[email]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s referralAccountSet) empty() bool {
+	return len(s.ids) == 0 && len(s.emails) == 0
+}
+
 func grantNewUserBenefit(ctx context.Context, system SystemSettingsRepository, email, source string, ratio float64, useRegistrationWindow bool) error {
 	return grantNewUserBenefitForUserID(ctx, system, "", email, source, ratio, useRegistrationWindow)
 }
 
 func grantNewUserBenefitForUserID(ctx context.Context, system SystemSettingsRepository, userID, email, source string, ratio float64, useRegistrationWindow bool) error {
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	return grantNewUserBenefitForRegistry(ctx, system, reg, userID, email, source, ratio, useRegistrationWindow)
+}
+
+func grantNewUserBenefitForRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry, userID, email, source string, ratio float64, useRegistrationWindow bool) error {
 	owner := newUserAccountRef(userID, email)
 	email = owner.Email
 	if email == "" {
@@ -1282,9 +1677,8 @@ func grantNewUserBenefitForUserID(ctx context.Context, system SystemSettingsRepo
 	if ratio <= 0 {
 		return nil
 	}
-	reg, err := LoadRegistry(ctx, system)
-	if err != nil {
-		return err
+	if reg == nil {
+		return nil
 	}
 	serviceGroupIDs := normalizeStringSlice(reg.DefaultNewUserServiceGroups)
 	if len(serviceGroupIDs) == 0 {
@@ -1292,6 +1686,9 @@ func grantNewUserBenefitForUserID(ctx context.Context, system SystemSettingsRepo
 	}
 	validServiceGroupIDs := make([]string, 0, len(serviceGroupIDs))
 	for _, serviceGroupID := range serviceGroupIDs {
+		if IsSystemFreeServiceGroup(serviceGroupID) {
+			continue
+		}
 		if reg.FindModelServiceGroup(serviceGroupID) != nil {
 			validServiceGroupIDs = append(validServiceGroupIDs, serviceGroupID)
 		}
@@ -1387,12 +1784,188 @@ func EstimateCreditsWithFloor(tokens int64, multiplier float64, tokensPerCredit 
 	return credits
 }
 
+// BillingGroupMultiplier resolves the only multiplier that may affect a user
+// credit charge. Provider/model CreditMultiplier remains a dispatch concern.
+func BillingGroupMultiplier(reg *Registry, serviceGroupIDs []string) float64 {
+	if reg == nil {
+		return 1
+	}
+	for _, id := range serviceGroupIDs {
+		group := reg.FindModelServiceGroup(id)
+		if group == nil {
+			continue
+		}
+		if group.BillingGroupMultiplier > 0 && !math.IsNaN(group.BillingGroupMultiplier) && !math.IsInf(group.BillingGroupMultiplier, 0) {
+			return group.BillingGroupMultiplier
+		}
+		return 1
+	}
+	return 1
+}
+
+// ResolveTokenPricingForProvider returns the model-route pricing configured
+// for providerID. The returned snapshot must be persisted by a later ledger
+// implementation; for now it keeps billing deterministic within a request.
+func ResolveTokenPricingForProvider(model *AuthorizedModel, providerID string, startedAt time.Time) (llmpool.ResolvedTokenPricing, bool) {
+	return ResolveTokenPricingForProviderRoute(model, providerID, "", startedAt)
+}
+
+// ResolveTokenPricingForProviderRoute resolves one provider/model route. The
+// concrete upstream model takes precedence, preventing a provider reused by
+// multiple routes from inheriting another route's price during settlement.
+func ResolveTokenPricingForProviderRoute(model *AuthorizedModel, providerID, upstreamModel string, startedAt time.Time) (llmpool.ResolvedTokenPricing, bool) {
+	if model == nil {
+		return llmpool.ResolvedTokenPricing{}, false
+	}
+	providerKey := normalizedProviderKey(providerID)
+	if route, ok := providerRouteBilling(model, providerKey, upstreamModel); ok {
+		if route.BillingMode == llmpool.BillingModeFree {
+			return llmpool.ResolvedTokenPricing{}, false
+		}
+		return llmpool.ResolveTokenPricing(route.TokenPricing, startedAt)
+	}
+	if llmpool.NormalizeBillingMode(model.ProviderBillingModes[providerKey]) == llmpool.BillingModeFree {
+		return llmpool.ResolvedTokenPricing{}, false
+	}
+	pricing, ok := model.ProviderTokenPricing[providerKey]
+	if !ok {
+		return llmpool.ResolvedTokenPricing{}, false
+	}
+	return llmpool.ResolveTokenPricing(pricing, startedAt)
+}
+
+// IsFreeBillingRoute reports whether providerID is explicitly configured as a
+// free route for model. An explicit free route must never fall through to the
+// legacy CreditMultiplier billing path when it has no token-price snapshot.
+func IsFreeBillingRoute(model *AuthorizedModel, providerID string) bool {
+	return IsFreeBillingProviderRoute(model, providerID, "")
+}
+
+// IsFreeBillingProviderRoute reports a terminal free policy for a concrete
+// provider route. The upstream-model argument removes ambiguity when one
+// provider is configured under several logical models.
+func IsFreeBillingProviderRoute(model *AuthorizedModel, providerID, upstreamModel string) bool {
+	if model == nil {
+		return false
+	}
+	providerKey := normalizedProviderKey(providerID)
+	if route, ok := providerRouteBilling(model, providerKey, upstreamModel); ok {
+		return route.BillingMode == llmpool.BillingModeFree
+	}
+	return llmpool.NormalizeBillingMode(model.ProviderBillingModes[providerKey]) == llmpool.BillingModeFree
+}
+
+func providerRouteBilling(model *AuthorizedModel, providerKey, upstreamModel string) (ProviderRouteBilling, bool) {
+	if model == nil || providerKey == "" {
+		return ProviderRouteBilling{}, false
+	}
+	routes := model.ProviderRouteBilling[providerKey]
+	if len(routes) == 0 {
+		return ProviderRouteBilling{}, false
+	}
+	if upstreamKey := normalizedUpstreamModelKey(upstreamModel, model.Name); upstreamKey != "" {
+		if route, ok := routes[upstreamKey]; ok {
+			return route, true
+		}
+	}
+	if len(routes) == 1 {
+		for _, route := range routes {
+			return route, true
+		}
+	}
+	return ProviderRouteBilling{}, false
+}
+
+// EstimateTokenPricingCredits calculates input and output separately, then
+// applies the route's provider-owned minimum after the service-group markup.
+func EstimateTokenPricingCredits(inputTokens, outputTokens int64, pricing llmpool.ResolvedTokenPricing, billingGroupMultiplier float64) float64 {
+	if microcredits, ok := llmpool.EstimateTokenPricingMicrocredits(inputTokens, outputTokens, pricing, billingGroupMultiplier); ok {
+		return llmpool.MicrocreditsToCredits(microcredits)
+	}
+	if billingGroupMultiplier <= 0 || math.IsNaN(billingGroupMultiplier) || math.IsInf(billingGroupMultiplier, 0) {
+		billingGroupMultiplier = 1
+	}
+	input := float64(maxInt64(inputTokens, 0)) * pricing.InputCreditsPer10K * billingGroupMultiplier / 10000
+	output := float64(maxInt64(outputTokens, 0)) * pricing.OutputCreditsPer10K * billingGroupMultiplier / 10000
+	credits := input + output
+	minimum := pricing.MinimumRequestCredits * billingGroupMultiplier
+	if credits < minimum {
+		credits = minimum
+	}
+	return roundCredits(credits)
+}
+
+func maxInt64(value, floor int64) int64 {
+	if value < floor {
+		return floor
+	}
+	return value
+}
+
 func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []string, credits float64, now time.Time) float64 {
 	return applyCreditUsageToRegistry(reg, newUserAccountRef("", email), serviceGroupIDs, credits, now)
 }
 
 func ApplyCreditUsageToRegistryForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, credits float64, now time.Time) float64 {
 	return applyCreditUsageToRegistry(reg, newUserAccountRef(userID, email), serviceGroupIDs, credits, now)
+}
+
+// HasBillingRequest reports whether this request was already finalized. It is
+// deliberately request-scoped, rather than user-scoped, so a network replay
+// cannot debit a successful upstream response twice.
+func HasBillingRequest(reg *Registry, requestID string) bool {
+	if reg == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	for _, entry := range reg.BillingLedger {
+		if strings.EqualFold(strings.TrimSpace(entry.RequestID), strings.TrimSpace(requestID)) {
+			return true
+		}
+	}
+	return false
+}
+
+// BillingLedgerEntryForRequest returns a copy of an existing immutable entry.
+// It enables the staged SQLite audit mirror to be repaired after a transient
+// mirror write failure without charging the user's mutable balance again.
+func BillingLedgerEntryForRequest(reg *Registry, requestID string) (BillingLedgerEntry, bool) {
+	if reg == nil || strings.TrimSpace(requestID) == "" {
+		return BillingLedgerEntry{}, false
+	}
+	for _, entry := range reg.BillingLedger {
+		if strings.EqualFold(strings.TrimSpace(entry.RequestID), strings.TrimSpace(requestID)) {
+			if entry.Pricing != nil {
+				pricing := *entry.Pricing
+				entry.Pricing = &pricing
+			}
+			entry.ServiceGroupIDs = append([]string(nil), entry.ServiceGroupIDs...)
+			return entry, true
+		}
+	}
+	return BillingLedgerEntry{}, false
+}
+
+func AppendBillingLedgerEntry(reg *Registry, entry BillingLedgerEntry) {
+	if reg == nil || strings.TrimSpace(entry.RequestID) == "" || HasBillingRequest(reg, entry.RequestID) {
+		return
+	}
+	entry.RequestID = strings.TrimSpace(entry.RequestID)
+	entry.UserID = strings.TrimSpace(entry.UserID)
+	entry.Email = normalizeEmail(entry.Email)
+	entry.ProviderID = strings.TrimSpace(entry.ProviderID)
+	entry.ServiceGroupIDs = normalizeStringSlice(entry.ServiceGroupIDs)
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now().UTC()
+	}
+	entry.RequestedCredits = roundCredits(entry.RequestedCredits)
+	entry.DeductedCredits = roundCredits(entry.DeductedCredits)
+	if entry.RequestedMicrocredits <= 0 && entry.RequestedCredits > 0 {
+		entry.RequestedMicrocredits = int64(math.Round(entry.RequestedCredits * float64(llmpool.MicrocreditsPerCredit)))
+	}
+	if entry.DeductedMicrocredits <= 0 && entry.DeductedCredits > 0 {
+		entry.DeductedMicrocredits = int64(math.Round(entry.DeductedCredits * float64(llmpool.MicrocreditsPerCredit)))
+	}
+	reg.BillingLedger = append(reg.BillingLedger, entry)
 }
 
 func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGroupIDs []string, credits float64, now time.Time) float64 {
@@ -1403,7 +1976,18 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 	if owner.empty() || len(serviceGroupIDs) == 0 {
 		return 0
 	}
-	if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) {
+	// Route selection can yield more than one service group for the same
+	// provider. If any of them remains an ordinary free route, this request is
+	// free: do not debit a welcome limit card that happens to be attached to a
+	// different group on that provider. This must mirror billing eligibility;
+	// otherwise the request is correctly admitted as free but silently consumes
+	// the card's five-hour/daily allowance.
+	if hasUnrestrictedFreeServiceGroup(reg, owner, serviceGroupIDs, now) {
+		return 0
+	}
+	// A normal unlimited entitlement bypasses billing. A new-user limit card
+	// needs ledger entries only when it has a configured period cap.
+	if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) && !hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
 		return 0
 	}
 	if idx := earlyStartableUnmeteredUnlimitedGrantIndex(reg, owner, serviceGroupIDs, now); idx >= 0 {
@@ -1420,6 +2004,7 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 	for _, id := range serviceGroupIDs {
 		serviceGroupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
 	}
+	limitCardGroupSet := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, serviceGroupSet, now)
 	for i, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
 			continue
@@ -1430,7 +2015,14 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if !now.Before(grant.ExpiresAt) {
+		// A welcome limit card is an overlay on a free group. While it is
+		// active, all usage for that group's routed entitlement must consume its
+		// own allowance; a legacy gift/top-up for the same group must not bypass
+		// the configured five-hour or daily cap.
+		if _, limited := limitCardGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; limited && !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
+			continue
+		}
+		if !grantIsValidAt(grant, now) {
 			continue
 		}
 		earlyStart := false
@@ -1502,12 +2094,210 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 	return roundCredits(consumed)
 }
 
+func hasNewUserLimitCardForAnyServiceGroup(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
+	for _, serviceGroupID := range serviceGroupIDs {
+		if hasNewUserLimitCardForServiceGroup(reg, owner, serviceGroupID, now) {
+			return true
+		}
+	}
+	return false
+}
+
 func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) float64 {
 	return availableCreditsForServiceGroups(reg, newUserAccountRef("", email), serviceGroupIDs, now)
 }
 
 func AvailableCreditsForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) float64 {
 	return availableCreditsForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
+}
+
+// ReserveBillingCreditsForUserID records a short-lived admission hold without
+// prematurely adding usage to a grant. This makes concurrent preflight checks
+// see each other's maximum possible cost while preserving the existing rule
+// that period usage is recorded only for actual upstream consumption.
+func ReserveBillingCreditsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, requestID string, credits float64, expiresAt, now time.Time) (float64, bool) {
+	if reg == nil || strings.TrimSpace(requestID) == "" || credits <= 0 || expiresAt.IsZero() {
+		return 0, false
+	}
+	pruneExpiredBillingReservations(reg, now)
+	if HasBillingRequest(reg, requestID) {
+		return 0, true
+	}
+	for _, reservation := range reg.BillingReservations {
+		if strings.EqualFold(strings.TrimSpace(reservation.RequestID), strings.TrimSpace(requestID)) {
+			return roundCredits(reservation.Credits), true
+		}
+	}
+	owner := newUserAccountRef(userID, email)
+	groups := normalizeStringSlice(serviceGroupIDs)
+	if owner.empty() || len(groups) == 0 {
+		return 0, false
+	}
+	available := availableCreditsForServiceGroups(reg, owner, groups, now)
+	if available > 0 && available+0.000001 < credits {
+		return 0, false
+	}
+	// Existing unlimited entitlements use 0 as their compatibility availability
+	// value; they never need a finite monetary hold. Do not treat a finite
+	// balance that other in-flight requests have fully reserved as unlimited.
+	if available <= 0 {
+		allowed, _, _, _, _, _, _ := billingEligibilityForServiceGroups(reg, owner, groups, now)
+		return 0, allowed
+	}
+	credits = roundCredits(credits)
+	reg.BillingReservations = append(reg.BillingReservations, BillingReservation{
+		RequestID:       strings.TrimSpace(requestID),
+		UserID:          owner.UserID,
+		Email:           owner.Email,
+		ServiceGroupIDs: groups,
+		Credits:         credits,
+		ExpiresAt:       expiresAt.UTC(),
+		CreatedAt:       now.UTC(),
+	})
+	return credits, true
+}
+
+// ReleaseBillingReservation removes an unfinished hold. Final settlement also
+// calls it in the same registry write before applying actual usage.
+func ReleaseBillingReservation(reg *Registry, requestID string, now time.Time) bool {
+	if reg == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	pruneExpiredBillingReservations(reg, now)
+	removed := false
+	out := reg.BillingReservations[:0]
+	for _, reservation := range reg.BillingReservations {
+		if strings.EqualFold(strings.TrimSpace(reservation.RequestID), strings.TrimSpace(requestID)) {
+			removed = true
+			continue
+		}
+		out = append(out, reservation)
+	}
+	reg.BillingReservations = out
+	return removed
+}
+
+// MarkBillingReservationSent records the point at which the request may have
+// left Hub. Recovery must retain a sent reservation until it is settled or a
+// trusted upstream reconciliation proves that no billable work occurred.
+func MarkBillingReservationSent(reg *Registry, requestID string, now time.Time) bool {
+	if reg == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	for i := range reg.BillingReservations {
+		if !strings.EqualFold(strings.TrimSpace(reg.BillingReservations[i].RequestID), strings.TrimSpace(requestID)) {
+			continue
+		}
+		if reg.BillingReservations[i].SentAt.IsZero() {
+			reg.BillingReservations[i].SentAt = now.UTC()
+		}
+		return true
+	}
+	return false
+}
+
+// SetBillingReservationBillingDetails freezes the dispatch identity needed by
+// delayed official reconciliation after a response or trailer is lost.
+func SetBillingReservationBillingDetails(reg *Registry, requestID, providerID string, multiplier float64) bool {
+	if reg == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(providerID) == "" || multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
+		return false
+	}
+	for i := range reg.BillingReservations {
+		if strings.EqualFold(strings.TrimSpace(reg.BillingReservations[i].RequestID), strings.TrimSpace(requestID)) {
+			reg.BillingReservations[i].ProviderID = strings.TrimSpace(providerID)
+			reg.BillingReservations[i].BillingGroupMultiplier = multiplier
+			return true
+		}
+	}
+	return false
+}
+
+// SentBillingReservationsForUserID returns copies, preserving Registry's
+// single-save mutation boundary for recovery and settlement.
+func SentBillingReservationsForUserID(reg *Registry, userID, email string) []BillingReservation {
+	if reg == nil {
+		return nil
+	}
+	owner := newUserAccountRef(userID, email)
+	if owner.empty() {
+		return nil
+	}
+	out := make([]BillingReservation, 0)
+	for _, reservation := range reg.BillingReservations {
+		if reservation.SentAt.IsZero() || !sameReservationOwner(reservation, owner) {
+			continue
+		}
+		copyReservation := reservation
+		copyReservation.ServiceGroupIDs = append([]string(nil), reservation.ServiceGroupIDs...)
+		out = append(out, copyReservation)
+	}
+	return out
+}
+
+// SentBillingReservations returns copies of every sent reservation. It is used
+// by the background reconciliation worker; callers must still scope their
+// registry/settings repository to one tenant before using the result.
+func SentBillingReservations(reg *Registry) []BillingReservation {
+	if reg == nil {
+		return nil
+	}
+	out := make([]BillingReservation, 0)
+	for _, reservation := range reg.BillingReservations {
+		if reservation.SentAt.IsZero() {
+			continue
+		}
+		copyReservation := reservation
+		copyReservation.ServiceGroupIDs = append([]string(nil), reservation.ServiceGroupIDs...)
+		out = append(out, copyReservation)
+	}
+	return out
+}
+
+func pruneExpiredBillingReservations(reg *Registry, now time.Time) {
+	if reg == nil || len(reg.BillingReservations) == 0 {
+		return
+	}
+	out := reg.BillingReservations[:0]
+	for _, reservation := range reg.BillingReservations {
+		// A quote TTL may expire while a streaming response is in progress or
+		// after a transport failure. Once sent, only settlement/reconciliation may
+		// release the hold; expiration alone is safe only before dispatch.
+		if reservation.SentAt.IsZero() && (reservation.ExpiresAt.IsZero() || !reservation.ExpiresAt.After(now)) {
+			continue
+		}
+		out = append(out, reservation)
+	}
+	reg.BillingReservations = out
+}
+
+func reservedBillingCreditsForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) float64 {
+	if reg == nil || owner.empty() || len(serviceGroupIDs) == 0 {
+		return 0
+	}
+	groupSet := make(map[string]struct{}, len(serviceGroupIDs))
+	for _, id := range serviceGroupIDs {
+		groupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
+	}
+	total := 0.0
+	for _, reservation := range reg.BillingReservations {
+		if (reservation.SentAt.IsZero() && (reservation.ExpiresAt.IsZero() || !reservation.ExpiresAt.After(now))) || !sameReservationOwner(reservation, owner) {
+			continue
+		}
+		for _, id := range reservation.ServiceGroupIDs {
+			if _, ok := groupSet[strings.ToLower(strings.TrimSpace(id))]; ok {
+				total += reservation.Credits
+				break
+			}
+		}
+	}
+	return roundCredits(total)
+}
+
+func sameReservationOwner(reservation BillingReservation, owner userAccountRef) bool {
+	if owner.UserID != "" && normalizeUserID(reservation.UserID) == owner.UserID {
+		return true
+	}
+	return owner.UserID == "" && owner.Email != "" && normalizeEmail(reservation.Email) == owner.Email
 }
 
 func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) float64 {
@@ -1522,6 +2312,7 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 	for _, id := range serviceGroupIDs {
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
+	limitCardGroupSet := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, serviceGroupSet, now)
 	total := 0.0
 	for i, grant := range reg.Grants {
 		if !grantMatchesUser(grant, owner) {
@@ -1533,7 +2324,10 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if !now.Before(grant.ExpiresAt) {
+		if _, limited := limitCardGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; limited && !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
+			continue
+		}
+		if !grantIsValidAt(grant, now) {
 			continue
 		}
 		if now.Before(grant.StartsAt) {
@@ -1543,6 +2337,14 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 			grant = grantWithEarlyStartWindow(grant, now)
 		}
 		total += availableGrantCredits(grant, now)
+	}
+	// Holds are not grant usage. They only reduce admission availability until
+	// actual usage is finalized or the hold expires/releases.
+	if total > 0 {
+		total -= reservedBillingCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
+		if total < 0 {
+			total = 0
+		}
 	}
 	return roundCredits(total)
 }
@@ -1577,7 +2379,7 @@ func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, owner userAccount
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if grant.CreditsTotal > 0 || hasGrantPeriodLimits(grant) || !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
+		if grant.CreditsTotal > 0 || hasGrantPeriodLimits(grant) || !grant.StartsAt.After(now) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if !canEarlyStartQueuedGrant(reg, owner, grant, i, serviceGroupSet, now) {
@@ -1602,7 +2404,7 @@ func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serv
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if availableGrantCredits(grant, now) > 0 || (grant.CreditsTotal <= 0 && !hasGrantPeriodLimits(grant)) {
@@ -1620,7 +2422,7 @@ func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serv
 }
 
 func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time) bool {
-	if reg == nil || queued.Frozen || !queued.StartsAt.After(now) || !queued.ExpiresAt.After(now) {
+	if reg == nil || queued.Frozen || !queued.StartsAt.After(now) || !grantIsValidAt(queued, now) {
 		return false
 	}
 	if queued.CreditsTotal > 0 && remainingGrantCredits(queued) <= 0 {
@@ -1638,7 +2440,7 @@ func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant,
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if availableGrantCredits(grant, now) > 0 || (grant.CreditsTotal <= 0 && !hasGrantPeriodLimits(grant)) {
@@ -1672,7 +2474,7 @@ func hasEarlierQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, qu
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
+		if !grant.StartsAt.After(now) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if grant.CreditsTotal > 0 && remainingGrantCredits(grant) <= 0 {
@@ -1785,7 +2587,18 @@ func availableGrantPeriodCredits(grant Grant, now time.Time) float64 {
 			available = remain
 		}
 	}
-	check(limits.FiveHour, usage.FiveHour, fiveHourWindowStart(now))
+	if limits.FiveHour > 0 && grant.RollingFiveHour {
+		_, _, used := rollingFiveHourUsage(grant, now)
+		remain := roundCredits(limits.FiveHour - used)
+		if remain < 0 {
+			remain = 0
+		}
+		if remain < available {
+			available = remain
+		}
+	} else {
+		check(limits.FiveHour, usage.FiveHour, fiveHourWindowStart(now))
+	}
 	check(limits.Daily, usage.Daily, dayWindowStart(now))
 	check(limits.Weekly, usage.Weekly, weekWindowStart(now))
 	check(limits.Monthly, usage.Monthly, monthWindowStart(now))
@@ -1808,11 +2621,20 @@ func grantPeriodRetryAt(grant Grant, now time.Time) *time.Time {
 			retryAt = &copyVal
 		}
 	}
+	if limits.FiveHour > 0 && grant.RollingFiveHour {
+		_, rollingRetryAt, used := rollingFiveHourUsage(grant, now)
+		if roundCredits(limits.FiveHour-used) <= 0 && !rollingRetryAt.IsZero() {
+			copyVal := rollingRetryAt
+			retryAt = &copyVal
+		}
+	}
 	fiveHourStart := fiveHourWindowStart(now)
 	dayStart := dayWindowStart(now)
 	weekStart := weekWindowStart(now)
 	monthStart := monthWindowStart(now)
-	check(limits.FiveHour, usage.FiveHour, fiveHourStart, fiveHourStart.Add(5*time.Hour))
+	if !grant.RollingFiveHour {
+		check(limits.FiveHour, usage.FiveHour, fiveHourStart, fiveHourStart.Add(5*time.Hour))
+	}
 	check(limits.Daily, usage.Daily, dayStart, dayStart.AddDate(0, 0, 1))
 	check(limits.Weekly, usage.Weekly, weekStart, weekStart.AddDate(0, 0, 7))
 	check(limits.Monthly, usage.Monthly, monthStart, monthStart.AddDate(0, 1, 0))
@@ -1833,10 +2655,48 @@ func applyGrantPeriodUsage(grant *Grant, credits float64, now time.Time) {
 		}
 		window.CreditsUsed = roundCredits(window.CreditsUsed + credits)
 	}
-	apply(grant.PeriodLimits.FiveHour, &grant.PeriodUsage.FiveHour, fiveHourWindowStart(now))
+	if grant.PeriodLimits.FiveHour > 0 && grant.RollingFiveHour {
+		grant.UsageEvents = append(grant.UsageEvents, CreditUsageEvent{OccurredAt: now.UTC(), CreditsUsed: roundCredits(credits)})
+		pruneRollingFiveHourEvents(grant, now)
+	} else {
+		apply(grant.PeriodLimits.FiveHour, &grant.PeriodUsage.FiveHour, fiveHourWindowStart(now))
+	}
 	apply(grant.PeriodLimits.Daily, &grant.PeriodUsage.Daily, dayWindowStart(now))
 	apply(grant.PeriodLimits.Weekly, &grant.PeriodUsage.Weekly, weekWindowStart(now))
 	apply(grant.PeriodLimits.Monthly, &grant.PeriodUsage.Monthly, monthWindowStart(now))
+}
+
+func pruneRollingFiveHourEvents(grant *Grant, now time.Time) {
+	if grant == nil || len(grant.UsageEvents) == 0 {
+		return
+	}
+	cutoff := now.UTC().Add(-5 * time.Hour)
+	kept := grant.UsageEvents[:0]
+	for _, event := range grant.UsageEvents {
+		if event.OccurredAt.After(cutoff) && event.CreditsUsed > 0 {
+			kept = append(kept, event)
+		}
+	}
+	grant.UsageEvents = kept
+}
+
+func rollingFiveHourUsage(grant Grant, now time.Time) (time.Time, time.Time, float64) {
+	cutoff := now.UTC().Add(-5 * time.Hour)
+	used := 0.0
+	var earliest time.Time
+	for _, event := range grant.UsageEvents {
+		if !event.OccurredAt.After(cutoff) || event.CreditsUsed <= 0 {
+			continue
+		}
+		used += event.CreditsUsed
+		if earliest.IsZero() || event.OccurredAt.Before(earliest) {
+			earliest = event.OccurredAt
+		}
+	}
+	if earliest.IsZero() {
+		return cutoff, time.Time{}, roundCredits(used)
+	}
+	return earliest, earliest.Add(5 * time.Hour), roundCredits(used)
 }
 
 func fiveHourWindowStart(t time.Time) time.Time {
@@ -1922,7 +2782,7 @@ func grantStartAtForServiceGroups(reg *Registry, owner userAccountRef, serviceGr
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
+		if !grant.StartsAt.After(now) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if grant.CreditsTotal > 0 && remainingGrantCredits(grant) <= 0 {
@@ -1962,7 +2822,7 @@ func hasActiveGrantForServiceGroups(reg *Registry, owner userAccountRef, service
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		return true
@@ -2000,7 +2860,7 @@ func periodLimitRetryAtForServiceGroups(reg *Registry, owner userAccountRef, ser
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if (grant.CreditsTotal > 0 && remainingGrantCredits(grant) <= 0) || availableGrantPeriodCredits(grant, now) > 0 {
@@ -2041,7 +2901,7 @@ func hasUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userAccountRef
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if grant.CreditsTotal > 0 || availableGrantPeriodCredits(grant, now) <= 0 {
@@ -2078,7 +2938,7 @@ func hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userA
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
-		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) {
 			continue
 		}
 		if grant.CreditsTotal <= 0 && !hasGrantPeriodLimits(grant) {
@@ -2101,47 +2961,147 @@ func billingEligibilityForServiceGroups(reg *Registry, owner userAccountRef, ser
 		return true, AccessPolicyFree, "", "", 0, false, false
 	}
 	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
-	grantRequiredGroupIDs := make([]string, 0, len(serviceGroupIDs))
-	for _, serviceGroupID := range serviceGroupIDs {
-		if reg.AccessPolicyForServiceGroup(serviceGroupID) != AccessPolicyGrantRequired {
-			return true, AccessPolicyFree, "", "", 0, false, false
-		}
-		grantRequiredGroupIDs = append(grantRequiredGroupIDs, serviceGroupID)
+	if len(serviceGroupIDs) == 0 {
+		return true, AccessPolicyFree, "", "", 0, false, false
 	}
+
+	// A provider may belong to several service groups. Any free group that is
+	// not currently overlaid by a new-user limit card keeps its normal free
+	// access path; it must never be blocked by an exhausted card on a separate
+	// group. All remaining groups require grant-backed eligibility.
+	if hasUnrestrictedFreeServiceGroup(reg, owner, serviceGroupIDs, now) {
+		return true, AccessPolicyFree, "", "", 0, false, false
+	}
+	grantRequiredGroupIDs := append([]string(nil), serviceGroupIDs...)
 	if len(grantRequiredGroupIDs) == 0 {
 		return true, AccessPolicyFree, "", "", 0, false, false
 	}
-	if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, grantRequiredGroupIDs, now) {
+	return billingEligibilityForGrantBackedServiceGroups(reg, owner, grantRequiredGroupIDs, now)
+}
+
+// hasUnrestrictedFreeServiceGroup reports whether a provider route includes a
+// group that should keep its normal no-ledger free behavior for this user. An
+// active period-limited welcome card is the only per-user overlay that changes
+// that behavior.
+func hasUnrestrictedFreeServiceGroup(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
+	if reg == nil {
+		return false
+	}
+	for _, serviceGroupID := range normalizeStringSlice(serviceGroupIDs) {
+		// Callers that account usage can operate on a lightweight registry with
+		// grants only. Unknown groups in that compatibility path are not evidence
+		// of an explicitly configured free route.
+		if reg.FindModelServiceGroup(serviceGroupID) != nil && reg.AccessPolicyForServiceGroup(serviceGroupID) == AccessPolicyFree && !hasPeriodLimitedNewUserLimitCardForServiceGroup(reg, owner, serviceGroupID, now) {
+			return true
+		}
+	}
+	return false
+}
+
+func billingEligibilityForGrantBackedServiceGroups(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) (bool, string, string, string, float64, bool, bool) {
+	if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) && !hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
 		return true, AccessPolicyGrantRequired, "", "", 0, true, true
 	}
-	if hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, grantRequiredGroupIDs, now) {
+	if hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, serviceGroupIDs, now) && !hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
 		return true, AccessPolicyGrantRequired, "", "", 0, true, true
 	}
-	availableCredits := availableCreditsForServiceGroups(reg, owner, grantRequiredGroupIDs, now)
+	availableCredits := availableCreditsForServiceGroups(reg, owner, serviceGroupIDs, now)
 	if availableCredits > 0 {
 		return true, AccessPolicyGrantRequired, "", "", roundCredits(availableCredits), true, true
 	}
-	hasActiveGrant := hasActiveGrantForServiceGroups(reg, owner, grantRequiredGroupIDs, now)
+	hasActiveGrant := hasActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now)
 	if hasActiveGrant {
-		if hasUnlimitedActiveGrantForServiceGroups(reg, owner, grantRequiredGroupIDs, now) {
+		if hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) && !hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg, owner, serviceGroupIDs, now) {
 			return true, AccessPolicyGrantRequired, "", "", 0, true, true
 		}
-		if retryAt := periodLimitRetryAtForServiceGroups(reg, owner, grantRequiredGroupIDs, now); retryAt != nil {
+		if retryAt := periodLimitRetryAtForServiceGroups(reg, owner, serviceGroupIDs, now); retryAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
 		}
-		if startsAt := grantStartAtForServiceGroups(reg, owner, grantRequiredGroupIDs, now); startsAt != nil {
+		if startsAt := grantStartAtForServiceGroups(reg, owner, serviceGroupIDs, now); startsAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, true, true
 		}
 		return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model grant credits are exhausted", 0, true, true
 	}
-	hasAnyGrant := hasAnyGrantForServiceGroups(reg, owner, grantRequiredGroupIDs)
+	hasAnyGrant := hasAnyGrantForServiceGroups(reg, owner, serviceGroupIDs)
 	if hasAnyGrant {
-		if startsAt := grantStartAtForServiceGroups(reg, owner, grantRequiredGroupIDs, now); startsAt != nil {
+		if startsAt := grantStartAtForServiceGroups(reg, owner, serviceGroupIDs, now); startsAt != nil {
 			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, false, true
 		}
 		return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_EXPIRED", "selected model grant has expired", 0, false, true
 	}
 	return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_REQUIRED", "selected model requires a grant-backed service group with remaining credits", 0, false, false
+}
+
+func hasNewUserLimitCardForServiceGroup(reg *Registry, owner userAccountRef, serviceGroupID string, now time.Time) bool {
+	if reg == nil || owner.empty() || strings.TrimSpace(serviceGroupID) == "" {
+		return false
+	}
+	for _, grant := range reg.Grants {
+		if !grantMatchesUser(grant, owner) || grant.Frozen || !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), strings.TrimSpace(serviceGroupID)) {
+			continue
+		}
+		return !now.Before(grant.StartsAt) && grantIsValidAt(grant, now)
+	}
+	return false
+}
+
+func hasPeriodLimitedNewUserLimitCardForServiceGroup(reg *Registry, owner userAccountRef, serviceGroupID string, now time.Time) bool {
+	if reg == nil || owner.empty() || strings.TrimSpace(serviceGroupID) == "" {
+		return false
+	}
+	found := false
+	for _, grant := range reg.Grants {
+		if !grantMatchesUser(grant, owner) || grant.Frozen || !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), strings.TrimSpace(serviceGroupID)) {
+			continue
+		}
+		if !now.Before(grant.StartsAt) && grantIsValidAt(grant, now) && hasGrantPeriodLimits(grant) {
+			found = true
+		}
+	}
+	return found
+}
+
+func hasPeriodLimitedNewUserLimitCardForAnyServiceGroup(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {
+	for _, serviceGroupID := range serviceGroupIDs {
+		if hasPeriodLimitedNewUserLimitCardForServiceGroup(reg, owner, serviceGroupID, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// activePeriodLimitedNewUserLimitCardGroupSet identifies selected groups whose
+// current entitlement is governed by a welcome limit card. Callers use it to
+// keep legacy grants for the same group from increasing the card's spendable
+// allowance. The group itself remains free for everyone else.
+func activePeriodLimitedNewUserLimitCardGroupSet(reg *Registry, owner userAccountRef, serviceGroupSet map[string]struct{}, now time.Time) map[string]struct{} {
+	if reg == nil || owner.empty() || len(serviceGroupSet) == 0 {
+		return nil
+	}
+	limited := make(map[string]struct{})
+	for _, grant := range reg.Grants {
+		if !grantMatchesUser(grant, owner) || grant.Frozen || !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
+			continue
+		}
+		groupID := strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))
+		if _, selected := serviceGroupSet[groupID]; !selected {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !grantIsValidAt(grant, now) || !hasGrantPeriodLimits(grant) {
+			continue
+		}
+		limited[groupID] = struct{}{}
+	}
+	if len(limited) == 0 {
+		return nil
+	}
+	return limited
 }
 
 func ExplainBillingRoutes(reg *Registry, email string, models []AuthorizedModel, now time.Time) []BillingRoute {
@@ -2182,14 +3142,52 @@ func ExplainBillingRoutes(reg *Registry, email string, models []AuthorizedModel,
 }
 
 type ModelSelectionDebug struct {
-	SelectedModel    string   `json:"selected_model"`
-	CapabilityNeeds  []string `json:"capability_needs,omitempty"`
-	MatchedTags      []string `json:"matched_tags,omitempty"`
-	Score            int      `json:"score"`
-	Priority         int      `json:"priority,omitempty"`
-	ResolutionTier   int      `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64  `json:"credit_multiplier,omitempty"`
-	SelectionReason  string   `json:"selection_reason,omitempty"`
+	SelectedModel        string   `json:"selected_model"`
+	RequestedGroup       string   `json:"requested_group,omitempty"`
+	RequestedModel       string   `json:"requested_model,omitempty"`
+	WorkloadClass        string   `json:"workload_class,omitempty"`
+	ClassSource          string   `json:"class_source,omitempty"`
+	ResolvedModel        string   `json:"resolved_model,omitempty"`
+	ResolvedProvider     string   `json:"resolved_provider,omitempty"`
+	UpstreamModel        string   `json:"upstream_model,omitempty"`
+	OfficialProviderPool string   `json:"official_provider_pool,omitempty"`
+	CapabilityNeeds      []string `json:"capability_needs,omitempty"`
+	MatchedTags          []string `json:"matched_tags,omitempty"`
+	Score                int      `json:"score"`
+	Priority             int      `json:"priority,omitempty"`
+	ResolutionTier       int      `json:"resolution_tier,omitempty"`
+	CreditMultiplier     float64  `json:"credit_multiplier,omitempty"`
+	SelectionReason      string   `json:"selection_reason,omitempty"`
+}
+
+func (d *ModelSelectionDebug) ApplyAttribution(attr llmpool.RouteAttribution) {
+	if d == nil {
+		return
+	}
+	d.RequestedGroup = attr.RequestedGroup
+	d.RequestedModel = attr.RequestedModel
+	d.WorkloadClass = attr.WorkloadClass
+	d.ClassSource = attr.ClassSource
+	d.ResolvedModel = attr.ResolvedModel
+	d.ResolvedProvider = attr.ResolvedProvider
+	d.UpstreamModel = attr.UpstreamModel
+	d.OfficialProviderPool = attr.OfficialProviderPool
+	if attr.SelectionReason != "" {
+		d.SelectionReason = attr.SelectionReason
+	}
+}
+
+func (d *ModelSelectionDebug) ApplyResolvedProvider(providerID, upstreamModel, officialPool string) {
+	if d == nil {
+		return
+	}
+	d.ResolvedProvider = strings.TrimSpace(providerID)
+	if name := strings.TrimSpace(upstreamModel); name != "" {
+		d.UpstreamModel = name
+	}
+	if pool := strings.TrimSpace(officialPool); pool != "" {
+		d.OfficialProviderPool = pool
+	}
 }
 
 func SelectBestModelForRequest(body map[string]any, models []AuthorizedModel) *AuthorizedModel {

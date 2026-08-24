@@ -35,11 +35,12 @@ const (
 
 // ModelRoute defines a model override for a specific task type.
 type ModelRoute struct {
-	Model    string `json:"model"`              // model name override
-	Provider string `json:"provider,omitempty"` // provider name (for multi-provider setups)
-	URL      string `json:"url,omitempty"`      // API URL override (empty = use primary)
-	Key      string `json:"key,omitempty"`      // API key override (empty = use primary)
-	Protocol string `json:"protocol,omitempty"` // protocol override (empty = use primary)
+	Model         string `json:"model"`                    // model name override
+	Provider      string `json:"provider,omitempty"`       // provider name (for multi-provider setups)
+	URL           string `json:"url,omitempty"`            // API URL override (empty = use primary)
+	Key           string `json:"key,omitempty"`            // API key override (empty = use primary)
+	Protocol      string `json:"protocol,omitempty"`       // protocol override (empty = use primary)
+	ContextLength int    `json:"context_length,omitempty"` // model context window; 0 inherits primary
 }
 
 // ModelRouter manages task-type-to-model routing.
@@ -102,14 +103,19 @@ func (r *ModelRouter) RouteWithAux(task TaskType, primary corelib.MaclawLLMConfi
 // configs intentionally only contain connection details, so rebuilding a
 // config here must not make the global thinking switch disappear.
 func applyAuxiliaryLLM(primary corelib.MaclawLLMConfig, aux corelib.AuxiliaryLLMConfig) corelib.MaclawLLMConfig {
-	return corelib.MaclawLLMConfig{
+	cfg := corelib.MaclawLLMConfig{
 		URL:             aux.URL,
 		Key:             aux.Key,
 		Model:           aux.Model,
 		Protocol:        aux.Protocol,
+		ContextLength:   primary.ContextLength,
 		ThinkingMode:    primary.ThinkingMode,
 		ReasoningEffort: primary.ReasoningEffort,
 	}
+	if aux.ContextLength > 0 {
+		cfg.ContextLength = aux.ContextLength
+	}
+	return cfg
 }
 
 // SetRoutes replaces all routes atomically.
@@ -178,6 +184,9 @@ func applyRoute(primary corelib.MaclawLLMConfig, route ModelRoute) corelib.Macla
 	}
 	if route.Provider != "" {
 		cfg.ProviderName = route.Provider
+	}
+	if route.ContextLength > 0 {
+		cfg.ContextLength = route.ContextLength
 	}
 	return cfg
 }

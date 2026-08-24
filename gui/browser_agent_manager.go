@@ -223,7 +223,7 @@ func (m *BrowserAgentManager) Start(args map[string]interface{}) (BrowserSession
 		return BrowserSessionView{}, err
 	}
 	if startURL := strings.TrimSpace(stringValue(args["start_url"])); startURL != "" {
-		if _, err := sess.Navigate(startURL); err != nil {
+		if err := sess.OpenURL(startURL); err != nil {
 			return BrowserSessionView{}, err
 		}
 	}

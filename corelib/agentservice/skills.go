@@ -222,6 +222,9 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 	if dir == "" {
 		return fmt.Errorf("skill directory not found")
 	}
+	if err := s.revokeSkillDynamicContract(p, skillStableID(entry)); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
@@ -426,10 +429,11 @@ func (s *Service) skillMarketAuthToken(ctx context.Context, p Principal, cfg Use
 	if token := strings.TrimSpace(cfg.AppConfig.SkillMarketSessionToken); token != "" {
 		return token
 	}
-	if strings.TrimSpace(email) == "" || strings.TrimSpace(cfg.AppConfig.RemoteMachineID) == "" || strings.TrimSpace(cfg.AppConfig.RemoteViewerToken) == "" {
+	userID := firstNonEmpty(cfg.AppConfig.RemoteUserID, cfg.UserID, p.UserID, email)
+	if userID == "" || strings.TrimSpace(cfg.AppConfig.RemoteMachineID) == "" || strings.TrimSpace(cfg.AppConfig.RemoteViewerToken) == "" {
 		return ""
 	}
-	result, err := remote.NewSkillMarketAuthClient().MachineLogin(ctx, strings.TrimRight(strings.TrimSpace(baseURL), "/"), email, cfg.AppConfig.RemoteMachineID, cfg.AppConfig.RemoteViewerToken)
+	result, err := remote.NewSkillMarketAuthClient().MachineLogin(ctx, strings.TrimRight(strings.TrimSpace(baseURL), "/"), cfg.AppConfig.RemoteHubID, userID, email, cfg.AppConfig.RemoteMachineID, cfg.AppConfig.RemoteViewerToken)
 	if err != nil || result == nil || strings.TrimSpace(result.SessionToken) == "" {
 		return ""
 	}
@@ -820,6 +824,7 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 	scanned := make([]corelib.NLSkillEntry, 0, len(entries))
 	seenNames := make(map[string]struct{}, len(entries))
 	seenDirs := make(map[string]struct{}, len(entries))
+	revokedStableIDs := make(map[string]struct{})
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
@@ -833,10 +838,21 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 			return nil, fmt.Errorf("duplicate skill %q in import", entry.Name)
 		}
 		seenNames[nameKey] = struct{}{}
-		if _, _, err := s.findSkill(p, entry.Name); err == nil && !overwrite {
-			return nil, fmt.Errorf("skill %q already exists", entry.Name)
+		if existing, _, err := s.findSkill(p, entry.Name); err == nil {
+			if !overwrite {
+				return nil, fmt.Errorf("skill %q already exists", entry.Name)
+			}
+			revokedStableIDs[skillStableID(existing)] = struct{}{}
 		}
 		scanned = append(scanned, entry)
+	}
+	// Replacement cannot retain the previous package's contract. Perform this
+	// fence before altering directories; an interrupted import is quarantined
+	// until a trusted lifecycle publisher binds the new content.
+	for stableID := range revokedStableIDs {
+		if err := s.revokeSkillDynamicContract(p, stableID); err != nil {
+			return nil, err
+		}
 	}
 	staged := make([]stagedInstall, 0, len(scanned))
 	defer func() {
@@ -975,8 +991,13 @@ func (s *Service) persistExtractedSkillDir(p Principal, entry corelib.NLSkillEnt
 	if err != nil {
 		return corelib.NLSkillEntry{}, err
 	}
-	if _, _, err := s.findSkill(p, entry.Name); err == nil && !overwrite {
-		return corelib.NLSkillEntry{}, fmt.Errorf("skill %q already exists", entry.Name)
+	if existing, _, err := s.findSkill(p, entry.Name); err == nil {
+		if !overwrite {
+			return corelib.NLSkillEntry{}, fmt.Errorf("skill %q already exists", entry.Name)
+		}
+		if err := s.revokeSkillDynamicContract(p, skillStableID(existing)); err != nil {
+			return corelib.NLSkillEntry{}, err
+		}
 	}
 	dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
 	if overwrite {

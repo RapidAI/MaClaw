@@ -231,6 +231,9 @@ type skillRun struct {
 	// todos is the per-run checklist used by todo_write steps. It deliberately
 	// lives on the run rather than the shared runner so concurrent skills do not
 	// overwrite each other's progress.
+	// It uses revision zero, the explicit non-model direct-host path: Skill
+	// workflow steps are host-owned and must not forge a Coding callback's
+	// rendered-surface revision/version token.
 	todos codingAgentTodoState
 }
 
@@ -548,8 +551,35 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	return r.StartRunForOwner(r.defaultSkillRunPolicyOwnerID(), skillName, runArgs)
 }
 
-// StartRunForOwner starts a skill run under an explicit workflow policy owner.
-func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) (runID string, retErr error) {
+// StartRunForOwner starts a skill run under an explicit workflow policy owner,
+// resolving the skill from a caller-supplied display name.
+func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs map[string]interface{}) (string, error) {
+	return r.startRunForOwner(policyOwnerID, skillName, nil, runArgs)
+}
+
+// StartRunForInstalledEntry starts a run for the exact package an installer
+// just registered, instead of handing its display name back to the name
+// resolver. See SkillExecutor.ExecuteInstalledWithArgs for why an install path
+// must not re-resolve: the installer already holds the entry it wrote, and a
+// name lookup can reach a different installed package that carries that name
+// as an alias.
+//
+// Status is checked downstream rather than here, so a freshly installed skill
+// that landed as needs_setup still reports that specific reason.
+func (r *SkillRunner) StartRunForInstalledEntry(policyOwnerID string, installed corelib.NLSkillEntry, runArgs map[string]interface{}) (string, error) {
+	if r == nil || r.executor == nil {
+		return "", fmt.Errorf("skill runner not initialized")
+	}
+	target, err := r.executor.resolveRegisteredInstalledEntry(installed)
+	if err != nil {
+		return "", err
+	}
+	return r.startRunForOwner(policyOwnerID, target.Name, target, runArgs)
+}
+
+// startRunForOwner runs preResolved when the caller already holds the entry,
+// and otherwise resolves skillName the usual way.
+func (r *SkillRunner) startRunForOwner(policyOwnerID, skillName string, preResolved *corelib.NLSkillEntry, runArgs map[string]interface{}) (runID string, retErr error) {
 	startedAt := time.Now()
 	policyOwnerID = strings.TrimSpace(policyOwnerID)
 	log.Printf("[skill-runner] start_run requested owner=%q skill=%q args=%d", policyOwnerID, skillName, len(runArgs))
@@ -571,32 +601,36 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 			log.Printf("[skill-runner] start_run policy_check owner=%q skill=%q elapsed=%s", policyOwnerID, skillName, elapsed.Round(time.Millisecond))
 		}
 	}
-	// Match by name regardless of status so we can provide specific error
-	// messages for disabled/needs_setup skills. Do not take SkillExecutor.mu
-	// here: loadSkills is protected by config/cache locks, and holding the
-	// executor read lock makes new agent runs wait behind unrelated usage-stat
-	// writes from other agent instances.
-	loadStart := time.Now()
-	loadedSkills := r.executor.loadSkills()
-	if elapsed := time.Since(loadStart); elapsed > 100*time.Millisecond {
-		log.Printf("[skill-runner] start_run load_skills owner=%q skill=%q count=%d elapsed=%s", policyOwnerID, skillName, len(loadedSkills), elapsed.Round(time.Millisecond))
-	}
-	target, resolveErr := resolveLoadedSkillForRun(skillName, loadedSkills)
-	if resolveErr != nil {
-		return "", resolveErr
-	}
+	target := preResolved
 	if target == nil {
-		// Fuzzy match fallback: suggest only — never auto-run disk-scanned names
-		// that are not admitted into the config registry.
-		if similar, score := cskill.FindSimilarSkill(skillName, 0.3); similar != nil {
-			suggest := similar.Name
-			if hubID := strings.TrimSpace(similar.HubSkillID); hubID != "" && !strings.EqualFold(hubID, suggest) {
-				suggest = fmt.Sprintf("%s (hub_skill_id=%s)", suggest, hubID)
-			}
-			return "", fmt.Errorf("skill %q not found. Did you mean %q? (%.0f%% match)\nUse list_skills to see installed skills",
-				skillName, suggest, score*100)
+		// Match by name regardless of status so we can provide specific error
+		// messages for disabled/needs_setup skills. Do not take SkillExecutor.mu
+		// here: loadSkills is protected by config/cache locks, and holding the
+		// executor read lock makes new agent runs wait behind unrelated usage-stat
+		// writes from other agent instances.
+		loadStart := time.Now()
+		loadedSkills := r.executor.loadSkills()
+		if elapsed := time.Since(loadStart); elapsed > 100*time.Millisecond {
+			log.Printf("[skill-runner] start_run load_skills owner=%q skill=%q count=%d elapsed=%s", policyOwnerID, skillName, len(loadedSkills), elapsed.Round(time.Millisecond))
 		}
-		return "", fmt.Errorf("skill %q not found. Use list_skills to see installed skills", skillName)
+		resolved, resolveErr := resolveLoadedSkillForRun(skillName, loadedSkills)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		if resolved == nil {
+			// Fuzzy match fallback: suggest only — never auto-run disk-scanned names
+			// that are not admitted into the config registry.
+			if similar, score := cskill.FindSimilarSkill(skillName, 0.3); similar != nil {
+				suggest := similar.Name
+				if hubID := strings.TrimSpace(similar.HubSkillID); hubID != "" && !strings.EqualFold(hubID, suggest) {
+					suggest = fmt.Sprintf("%s (hub_skill_id=%s)", suggest, hubID)
+				}
+				return "", fmt.Errorf("skill %q not found. Did you mean %q? (%.0f%% match)\nUse list_skills to see installed skills",
+					skillName, suggest, score*100)
+			}
+			return "", fmt.Errorf("skill %q not found. Use list_skills to see installed skills", skillName)
+		}
+		target = resolved
 	}
 
 	// BUG-005: Normalize skill directory path (resolve 8.3 short paths on Windows)
@@ -5018,47 +5052,29 @@ func resolveCommandForDisplay(step corelib.NLSkillStep) string {
 
 // -- Platform compatibility -----------------------------------------------------
 
-// mapPython3ToWindows replaces `python3` with `python` in commands on Windows,
-// since Windows Python installations typically only provide `python.exe`.
-// Only replaces when `python3` appears as a command (not inside a path).
+// mapPython3ToWindows replaces command-token `python3` with a same-arch
+// `python` or `py` on Windows. Store stubs and pythoncore builds for another
+// PE machine are treated as missing. Tokens after && / ; / | are rewritten;
+// path segments such as C:\python3\bin are left alone.
 func mapPython3ToWindows(command string) string {
 	if !python3NeedsMapping() {
 		return command
 	}
-	lines := strings.Split(command, "\n")
-	changed := false
-	for i, line := range lines {
-		ltrimmed := strings.TrimSpace(line)
-		ll := strings.ToLower(ltrimmed)
-		if strings.HasPrefix(ll, "python3 ") || ll == "python3" {
-			lines[i] = strings.Replace(line, "python3", "python", 1)
-			changed = true
-		}
+	replacement := firstUsableWindowsPython()
+	if replacement == "" {
+		return command
 	}
-	if changed {
-		return strings.Join(lines, "\n")
-	}
-	return command
+	return replaceWindowsPython3Command(command, replacement)
 }
 
-// python3NeedsMapping returns true if `python3` is not available but `python` is.
-// Result is cached after first call to avoid repeated filesystem lookups.
-// On Windows, the Microsoft Store installs a stub `python3.exe` in
-// WindowsApps that opens the Store instead of running Python. We detect
-// this by checking if the resolved path contains "WindowsApps".
+// python3NeedsMapping reports that PATH's python3 is missing or unusable for
+// this process, but another interpreter (python / py) is.
 var python3NeedsMapping = sync.OnceValue(func() bool {
 	p3, err := exec.LookPath("python3")
-	if err == nil {
-		// Check for Windows Store stub: the path typically contains
-		// "AppData\Local\Microsoft\WindowsApps" or "WindowsApps".
-		if runtime.GOOS == "windows" && strings.Contains(strings.ToLower(p3), "windowsapps") {
-			// This is the Store redirect, not a real python3
-		} else {
-			return false // real python3 exists, no mapping needed
-		}
+	if err == nil && windowsCodingPythonUsable(p3) {
+		return false
 	}
-	_, err2 := exec.LookPath("python")
-	return err2 == nil // map only if python exists
+	return firstUsableWindowsPython() != ""
 })
 
 // mapBarePipToModule replaces bare `pip`/`pip3` command invocations with

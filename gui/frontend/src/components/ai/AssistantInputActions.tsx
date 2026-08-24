@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { localizeText } from "./aiAssistantI18n";
 import {
     getComposeActionIcon,
@@ -58,36 +59,42 @@ interface AssistantInputActionsProps {
 }
 
 const MENU_MIN_WIDTH = 176;
-const MENU_EST_HEIGHT = 280;
+const MENU_MAX_HEIGHT = 360;
+const MENU_MIN_INTERACTIVE_HEIGHT = 44;
 
-/** Place the + menu above the trigger when possible; flip below near the top edge. */
+/** Place the menu on the roomier side and constrain it to the viewport. */
 export function clampMenuPosition(
     triggerRect: { left: number; top: number; bottom: number; width: number },
     viewport: { width: number; height: number } = typeof window !== "undefined"
         ? { width: window.innerWidth, height: window.innerHeight }
         : { width: 1280, height: 800 },
-): { left: number; top: number; openUp: boolean } {
+): { left: number; top: number; openUp: boolean; maxHeight: number } {
     const pad = 8;
-    const spaceAbove = triggerRect.top - pad;
-    const openUp = spaceAbove >= MENU_EST_HEIGHT;
+    const gap = 6;
+    const spaceAbove = Math.max(0, triggerRect.top - gap - pad);
+    const spaceBelow = Math.max(0, viewport.height - triggerRect.bottom - gap - pad);
+    const openUp = spaceAbove >= MENU_MAX_HEIGHT || spaceAbove >= spaceBelow;
+    const maxHeight = Math.min(MENU_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow);
     // Keep the menu fully in view even on narrow viewports.
     const maxLeft = Math.max(pad, viewport.width - MENU_MIN_WIDTH - pad);
     const clampedLeft = Math.min(Math.max(pad, triggerRect.left), maxLeft);
     if (openUp) {
         // Anchor is the bottom edge of the menu (translateY(-100%)).
-        return { left: clampedLeft, top: triggerRect.top - 6, openUp: true };
+        return { left: clampedLeft, top: triggerRect.top - gap, openUp: true, maxHeight };
     }
     // Anchor is the top edge of the menu, just below the trigger.
     return {
         left: clampedLeft,
-        top: Math.min(viewport.height - pad, triggerRect.bottom + 6),
+        top: Math.min(viewport.height - pad, triggerRect.bottom + gap),
         openUp: false,
+        maxHeight,
     };
 }
 
 function menuItems(menu: HTMLElement): HTMLButtonElement[] {
-    // Skip disabled items so keyboard nav never lands on busy-only actions.
-    return Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+    return Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"], [role="menuitemradio"]')).filter(
+        (item) => !item.disabled,
+    );
 }
 
 function focusMenuItem(menu: HTMLElement, index: number) {
@@ -149,9 +156,10 @@ export function AssistantInputActionsLeft({
 >) {
     const voiceDisabled = !ready || voiceInput.state === "transcribing" || !voiceInput.asrReady;
     const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-    const [plusMenuPos, setPlusMenuPos] = useState<{ left: number; top: number; openUp: boolean } | null>(null);
+    const [plusMenuPos, setPlusMenuPos] = useState<ReturnType<typeof clampMenuPosition> | null>(null);
     const plusMenuRef = useRef<HTMLDivElement | null>(null);
     const plusButtonRef = useRef<HTMLButtonElement | null>(null);
+    const plusMenuId = useId();
     // Match AIAssistantPanel / WelcomeView: non-English UI uses Chinese copy.
     const isZh = !lang?.startsWith("en");
     const dark = themeMode === "dark";
@@ -184,36 +192,42 @@ export function AssistantInputActionsLeft({
         setPlusMenuPos(null);
     }, []);
 
-    const updatePlusMenuPosition = useCallback(() => {
+    const updatePlusMenuPosition = useCallback((): ReturnType<typeof clampMenuPosition> | null => {
         const btn = plusButtonRef.current;
-        if (!btn) return;
+        if (!btn) return null;
         const rect = btn.getBoundingClientRect();
-        setPlusMenuPos(clampMenuPosition(rect));
+        const position = clampMenuPosition(rect);
+        setPlusMenuPos(position);
+        return position;
     }, []);
 
     const togglePlusMenu = useCallback(() => {
         setPlusMenuOpen((open) => {
             const next = !open;
-            if (next) updatePlusMenuPosition();
+            if (next) {
+                const btn = plusButtonRef.current;
+                if (!btn) return false;
+                const position = clampMenuPosition(btn.getBoundingClientRect());
+                if (position.maxHeight < MENU_MIN_INTERACTIVE_HEIGHT) return false;
+                setPlusMenuPos(position);
+            }
             else setPlusMenuPos(null);
             return next;
         });
-    }, [updatePlusMenuPosition]);
+    }, []);
 
     useEffect(() => {
         if (!plusMenuOpen) return;
-        // Focus first item for keyboard users once the menu is mounted.
         requestAnimationFrame(() => {
             if (plusMenuRef.current) focusMenuItem(plusMenuRef.current, 0);
         });
-        const onPointerDown = (event: MouseEvent) => {
+        const onPointerDown = (event: globalThis.PointerEvent) => {
             if (plusMenuRef.current?.contains(event.target as Node)) return;
             if (plusButtonRef.current?.contains(event.target as Node)) return;
             closePlusMenu();
         };
         const onKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape" || event.key === "Tab") {
-                // Escape / Tab dismisses the floating menu so focus returns to the page flow.
                 if (event.key === "Escape") event.preventDefault();
                 closePlusMenu();
                 if (event.key === "Escape") plusButtonRef.current?.focus();
@@ -222,7 +236,6 @@ export function AssistantInputActionsLeft({
             const liveMenu = plusMenuRef.current;
             if (!liveMenu) return;
             const active = document.activeElement;
-            // Only hijack arrow keys when focus is inside the menu (or still on the trigger).
             const focusInMenu =
                 (active instanceof Node && liveMenu.contains(active))
                 || (active instanceof Node && !!plusButtonRef.current?.contains(active));
@@ -244,21 +257,22 @@ export function AssistantInputActionsLeft({
                 focusMenuItem(liveMenu, items.length - 1);
             }
         };
-        const onReposition = () => updatePlusMenuPosition();
-        document.addEventListener("mousedown", onPointerDown);
+        const onReposition = () => {
+            const position = updatePlusMenuPosition();
+            if (position && position.maxHeight < MENU_MIN_INTERACTIVE_HEIGHT) closePlusMenu();
+        };
+        document.addEventListener("pointerdown", onPointerDown);
         document.addEventListener("keydown", onKeyDown);
         window.addEventListener("resize", onReposition);
         window.addEventListener("scroll", onReposition, true);
         return () => {
-            document.removeEventListener("mousedown", onPointerDown);
+            document.removeEventListener("pointerdown", onPointerDown);
             document.removeEventListener("keydown", onKeyDown);
             window.removeEventListener("resize", onReposition);
             window.removeEventListener("scroll", onReposition, true);
         };
     }, [closePlusMenu, plusMenuOpen, updatePlusMenuPosition]);
 
-    // The menu is fixed-position. Close it before its owning panel becomes
-    // hidden so it cannot float above System/Monitor pages.
     useEffect(() => {
         if (!active) closePlusMenu();
     }, [active, closePlusMenu]);
@@ -301,6 +315,7 @@ export function AssistantInputActionsLeft({
     const renderMenuItem = (item: PlusMenuItemDef) => {
         const active = item.kind === "compose" && item.composeAction === composeAction;
         const itemDisabled = !!(item.disableWhenBusy && inputLocked);
+        const isComposeMode = item.kind === "compose";
         const label = isZh ? item.labelZh : item.labelEn;
         const hint = itemDisabled
             ? (isZh ? "请等待当前任务完成" : "Please wait for the current task to finish")
@@ -309,11 +324,11 @@ export function AssistantInputActionsLeft({
             <button
                 key={item.id}
                 type="button"
-                role="menuitem"
+                role={isComposeMode ? "menuitemradio" : "menuitem"}
                 className="ai-plus-menu-item"
                 data-testid={item.testId}
                 data-active={active ? "true" : "false"}
-                aria-current={active ? "true" : undefined}
+                aria-checked={isComposeMode ? active : undefined}
                 aria-disabled={itemDisabled || undefined}
                 disabled={itemDisabled}
                 onClick={() => handleMenuItem(item)}
@@ -363,14 +378,17 @@ export function AssistantInputActionsLeft({
                         aria-label={localizeText(lang, "Commands", "命令")}
                         aria-haspopup="menu"
                         aria-expanded={plusMenuOpen}
+                        aria-controls={plusMenuOpen ? plusMenuId : undefined}
                         data-testid="ai-plus-menu-button"
                     >
                         <AssistantInputIcon name="plus" size={13} />
                     </button>
-                    {plusMenuOpen && plusMenuPos && (
+                    {plusMenuOpen && plusMenuPos && typeof document !== "undefined" && createPortal(
                         <div
                             ref={plusMenuRef}
+                            id={plusMenuId}
                             role="menu"
+                            aria-orientation="vertical"
                             aria-label={localizeText(lang, "Commands", "命令")}
                             data-testid="ai-plus-menu"
                             style={{
@@ -380,7 +398,7 @@ export function AssistantInputActionsLeft({
                                 transform: plusMenuPos.openUp ? "translateY(-100%)" : "none",
                                 minWidth: MENU_MIN_WIDTH,
                                 maxWidth: "240px",
-                                maxHeight: "min(70vh, 360px)",
+                                maxHeight: `${plusMenuPos.maxHeight}px`,
                                 overflowY: "auto",
                                 padding: "4px",
                                 borderRadius: "10px",
@@ -409,7 +427,7 @@ export function AssistantInputActionsLeft({
                             )}
                             {fireItems.map(renderMenuItem)}
                         </div>
-                    )}
+                    , document.body)}
                 </div>
             )}
             {composeAction && (

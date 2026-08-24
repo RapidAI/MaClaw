@@ -58,103 +58,14 @@ func (g *GemmaEmbedder) EmbedTokenStates(text string) (states []float32, seq, di
 // forwardTokenStates runs the transformer and returns per-token hidden states
 // instead of the mean-pooled output.
 func (g *GemmaEmbedder) forwardTokenStates(tokenIDs []int, sc *gemmaScratch) ([]float32, error) {
-	hp := g.hp
 	seq := len(tokenIDs)
-	dim := hp.Dim
-
-	// Run the same forward pass as forwardWithScratch but skip mean pooling.
-	// We reuse forwardWithScratch's logic up to the final RMSNorm,
-	// then copy out the per-token states instead of pooling.
-
-	// Token embedding
-	x := sc.x[:seq*dim]
-	embScale := float32(math.Sqrt(float64(dim)))
-	for si, id := range tokenIDs {
-		if id < 0 || id >= hp.VocabSize {
-			return nil, fmt.Errorf("gemma: token id %d out of range", id)
-		}
-		dst := x[si*dim : (si+1)*dim]
-		if cached := g.tokenCache.Get(id); cached != nil {
-			copy(dst, cached)
-		} else {
-			g.weights.tokenEmb.DequantRow(id, sc.rowBuf)
-			copy(dst, sc.rowBuf)
-		}
-		tensor.Scale(dst, embScale)
+	dim := g.hp.Dim
+	if err := g.lookupTokens(tokenIDs, sc); err != nil {
+		return nil, err
 	}
-
-	// Run all transformer layers (same as forwardWithScratch)
-	normed := sc.normed[:seq*dim]
-	q := sc.q[:seq*dim]
-	k := sc.k[:seq*hp.KVDim]
-	v := sc.v[:seq*hp.KVDim]
-	attnOut := sc.attnOut[:seq*dim]
-	projOut := sc.projOut[:seq*dim]
-	ffGate := sc.ffGate[:seq*hp.FFDim]
-	ffUp := sc.ffUp[:seq*hp.FFDim]
-	ffDown := sc.ffDown[:seq*dim]
-	halfDim := hp.HeadDim / 2
-
-	nLayers := hp.NLayers
-	if ee := int(atomic.LoadInt32(&g.earlyExit)); ee > 0 && ee < nLayers {
-		nLayers = ee
-	}
-
-	for l := 0; l < nLayers; l++ {
-		layer := &g.weights.layers[l]
-
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.attnNormW, hp.RMSNormEps)
-		}
-		tensor.MatMulQ8(q, normed, &layer.attnQWeight, seq, dim, dim)
-		tensor.MatMulQ8(k, normed, &layer.attnKWeight, seq, hp.KVDim, dim)
-		tensor.MatMulQ8(v, normed, &layer.attnVWeight, seq, hp.KVDim, dim)
-
-		for s := 0; s < seq; s++ {
-			for h := 0; h < hp.NHeads; h++ {
-				off := s*dim + h*hp.HeadDim
-				tensor.RMSNorm(q[off:off+hp.HeadDim], q[off:off+hp.HeadDim], layer.attnQNormW, hp.RMSNormEps)
-			}
-			for h := 0; h < hp.NKVHeads; h++ {
-				off := s*hp.KVDim + h*hp.HeadDim
-				tensor.RMSNorm(k[off:off+hp.HeadDim], k[off:off+hp.HeadDim], layer.attnKNormW, hp.RMSNormEps)
-			}
-			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
-			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
-			tensor.RoPEPrecomputed(q[s*dim:(s+1)*dim], hp.NHeads, hp.HeadDim, cosTab, sinTab)
-			tensor.RoPEPrecomputed(k[s*hp.KVDim:(s+1)*hp.KVDim], hp.NKVHeads, hp.HeadDim, cosTab, sinTab)
-		}
-
-		g.gqaAttention(attnOut, q, k, v, seq, hp.NHeads, hp.NKVHeads, hp.HeadDim, dim, hp.KVDim, sc.scores[:seq])
-		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
-
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(projOut[s*dim:(s+1)*dim], projOut[s*dim:(s+1)*dim], layer.postAttnNormW, hp.RMSNormEps)
-		}
-		tensor.Add(x, x, projOut)
-
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.ffNormW, hp.RMSNormEps)
-		}
-		tensor.MatMulQ8(ffGate, normed, &layer.ffGateWeight, seq, hp.FFDim, dim)
-		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, hp.FFDim, dim)
-		tensor.SiLUMul(ffGate, ffUp)
-		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, hp.FFDim)
-
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(ffDown[s*dim:(s+1)*dim], ffDown[s*dim:(s+1)*dim], layer.postFFNNormW, hp.RMSNormEps)
-		}
-		tensor.Add(x, x, ffDown)
-	}
-
-	// Final RMSNorm
-	for s := 0; s < seq; s++ {
-		tensor.RMSNorm(x[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], g.weights.outputNorm, hp.RMSNormEps)
-	}
-
-	// Copy per-token states out of scratch
+	g.layerLoop(sc, seq, gemmaMatMulWorkers(seq))
 	result := make([]float32, seq*dim)
-	copy(result, x[:seq*dim])
+	copy(result, sc.x[:seq*dim])
 	return result, nil
 }
 
@@ -172,13 +83,14 @@ func (g *GemmaEmbedder) EmbedConcurrent(text string) ([]float32, error) {
 	}
 
 	s := g.getScratchFromPool(len(tokens))
-	emb, err := g.forwardWithScratch(tokens, s)
-	g.putScratchToPool(s)
+	emb, err := g.forwardWithScratch(tokens, s, 1)
 	if err != nil {
+		g.putScratchToPool(s)
 		return nil, err
 	}
-
-	return g.truncateAndNormalize(emb), nil
+	out := g.truncateAndNormalize(emb)
+	g.putScratchToPool(s)
+	return out, nil
 }
 
 // truncateAndNormalize applies MRL dimension truncation and L2 normalization.
@@ -211,15 +123,12 @@ func (g *GemmaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 	errs := make([]error, len(texts))
 
 	maxWorkers := runtime.NumCPU()
+	if maxWorkers > 8 {
+		maxWorkers = 8
+	}
 	if maxWorkers > len(texts) {
 		maxWorkers = len(texts)
 	}
-
-	// Disable internal MatMul parallelism; we're parallelizing at the batch
-	// level instead. Each goroutine runs a full single-threaded inference,
-	// which avoids nested goroutine contention and maximizes CPU utilization.
-	tensor.SetMatMulMaxParallel(1)
-	defer tensor.SetMatMulMaxParallel(0) // restore default
 
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
@@ -250,93 +159,11 @@ func (g *GemmaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 // Dim returns the output embedding dimension.
 func (g *GemmaEmbedder) Dim() int { return g.dim }
 
-// newGemmaScratch allocates a fresh set of scratch buffers for the given
-// hyperparameters and sequence length. Each concurrent inference goroutine
-// gets its own scratch to avoid contention.
-func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {
-	dim := hp.Dim
-	kvDim := hp.KVDim
-	ffDim := hp.FFDim
-	headDim := hp.HeadDim
-	halfDim := headDim / 2
-
-	// Pre-compute RoPE cos/sin tables for all positions
-	ropeCos := make([]float32, seq*halfDim)
-	ropeSin := make([]float32, seq*halfDim)
-	for pos := 0; pos < seq; pos++ {
-		for i := 0; i < halfDim; i++ {
-			freq := 1.0 / float32(math.Pow(float64(hp.RopeTheta), float64(2*i)/float64(headDim)))
-			angle := float32(pos) * freq
-			ropeCos[pos*halfDim+i] = float32(math.Cos(float64(angle)))
-			ropeSin[pos*halfDim+i] = float32(math.Sin(float64(angle)))
-		}
-	}
-
-	return &gemmaScratch{
-		x:       make([]float32, seq*dim),
-		normed:  make([]float32, seq*dim),
-		q:       make([]float32, seq*dim),
-		k:       make([]float32, seq*kvDim),
-		v:       make([]float32, seq*kvDim),
-		attnOut: make([]float32, seq*dim),
-		projOut: make([]float32, seq*dim),
-		ffGate:  make([]float32, seq*ffDim),
-		ffUp:    make([]float32, seq*ffDim),
-		ffDown:  make([]float32, seq*dim),
-		rowBuf:  make([]float32, dim),
-		scores:  make([]float32, seq),
-		poolOut: make([]float32, dim),
-		ropeCos: ropeCos,
-		ropeSin: ropeSin,
-		seqCap:  seq,
-		ropeSeq: seq,
-	}
-}
-
-// getScratchFromPool retrieves a scratch buffer from the pool, or allocates
-// a new one if the pooled buffer is too small for the given sequence length.
-func (g *GemmaEmbedder) getScratchFromPool(seq int) *gemmaScratch {
-	if v := g.scratchPool.Get(); v != nil {
-		s := v.(*gemmaScratch)
-		if s.seqCap >= seq {
-			// Recompute RoPE tables only if seq changed (tables are position-dependent)
-			g.recomputeRoPE(s, seq)
-			return s
-		}
-		// Too small; discard and allocate fresh.
-	}
-	return newGemmaScratch(g.hp, seq)
-}
-
-// putScratchToPool returns a scratch buffer to the pool for reuse.
-func (g *GemmaEmbedder) putScratchToPool(s *gemmaScratch) {
-	g.scratchPool.Put(s)
-}
-
-// recomputeRoPE updates the pre-computed RoPE cos/sin tables for a new seq length.
-// Skips recomputation if the tables already cover the requested seq length.
-func (g *GemmaEmbedder) recomputeRoPE(s *gemmaScratch, seq int) {
-	if s.ropeSeq >= seq {
-		return // tables already valid for this seq length
-	}
-	headDim := g.hp.HeadDim
-	halfDim := headDim / 2
-	for pos := 0; pos < seq; pos++ {
-		for i := 0; i < halfDim; i++ {
-			freq := 1.0 / float32(math.Pow(float64(g.hp.RopeTheta), float64(2*i)/float64(headDim)))
-			angle := float32(pos) * freq
-			s.ropeCos[pos*halfDim+i] = float32(math.Cos(float64(angle)))
-			s.ropeSin[pos*halfDim+i] = float32(math.Sin(float64(angle)))
-		}
-	}
-	s.ropeSeq = seq
-}
-
 // ensureScratch returns scratch buffers large enough for the given seq length.
-// Buffers are allocated once and reused; reallocated only if seq exceeds previous capacity.
 // Only used by the mutex-protected Embed path.
 func (g *GemmaEmbedder) ensureScratch(seq int) *gemmaScratch {
-	if g.scratch != nil && g.scratch.seqCap >= seq {
+	S := scratchBucket(seq)
+	if g.scratch != nil && g.scratch.seqCap == S {
 		return g.scratch
 	}
 	g.scratch = newGemmaScratch(g.hp, seq)
@@ -346,40 +173,90 @@ func (g *GemmaEmbedder) ensureScratch(seq int) *gemmaScratch {
 // forward runs the Gemma2 transformer using the shared scratch (mutex-protected path).
 func (g *GemmaEmbedder) forward(tokenIDs []int) ([]float32, error) {
 	sc := g.ensureScratch(len(tokenIDs))
-	return g.forwardWithScratch(tokenIDs, sc)
+	return g.forwardWithScratch(tokenIDs, sc, gemmaMatMulWorkers(len(tokenIDs)))
+}
+
+// gemmaMatMulWorkers: 0 uses shouldParallel so short M=3 Dual3 can N-split
+// across cores (tryGemmaFusedPlain handles M=3 ranges). EmbedConcurrent
+// still passes 1 to avoid nested pools.
+func gemmaMatMulWorkers(seq int) int {
+	_ = seq
+	return 0
 }
 
 // forwardWithScratch runs the Gemma2 transformer with an externally provided
 // scratch buffer. This is the core inference function, safe to call from
 // multiple goroutines as long as each has its own scratch and weights are
 // read-only (mmap-backed Q8 tensors).
-func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]float32, error) {
+func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch, maxWorkers int) ([]float32, error) {
 	hp := g.hp
 	seq := len(tokenIDs)
+	dim := hp.Dim
+	if err := g.lookupTokens(tokenIDs, sc); err != nil {
+		return nil, err
+	}
+	g.layerLoop(sc, seq, maxWorkers)
+
+	out := sc.poolOut[:dim]
+	for i := range out {
+		out[i] = 0
+	}
+	x := sc.x[:seq*dim]
+	for s := 0; s < seq; s++ {
+		tensor.Add(out, out, x[s*dim:(s+1)*dim])
+	}
+	tensor.Scale(out, 1.0/float32(seq))
+	// Alias of scratch poolOut; caller must copy (truncateAndNormalize)
+	// before the scratch is reused.
+	return out, nil
+}
+
+func (g *GemmaEmbedder) lookupTokens(tokenIDs []int, sc *gemmaScratch) error {
+	hp := g.hp
+	seq := len(tokenIDs)
+	dim := hp.Dim
+	x := sc.x[:seq*dim]
+	embScale := float32(math.Sqrt(float64(dim)))
+	for si, id := range tokenIDs {
+		if id < 0 || id >= hp.VocabSize {
+			return fmt.Errorf("gemma: token id %d out of range [0,%d)", id, hp.VocabSize)
+		}
+		dst := x[si*dim : (si+1)*dim]
+		if cached := g.tokenCache.Get(id); cached != nil {
+			copy(dst, cached)
+		} else {
+			g.weights.tokenEmb.DequantRow(id, dst)
+			tensor.Scale(dst, embScale)
+		}
+	}
+	return nil
+}
+
+func (g *GemmaEmbedder) useFusion() bool {
+	return !g.fusionOff && g.hp.Dim == 768 && g.hp.FFDim == 1152 && g.hp.KVDim == 256 && g.hp.HeadDim == 256
+}
+
+func (g *GemmaEmbedder) ensurePackedQS() {
+	if g == nil {
+		return
+	}
+	g.packOnce.Do(func() {
+		packGemmaLayerQS(&g.weights)
+	})
+}
+
+func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
+	if seq > 0 && seq <= 4 && !g.skipPack {
+		g.ensurePackedQS()
+	}
+	hp := g.hp
 	dim := hp.Dim
 	kvDim := hp.KVDim
 	headDim := hp.HeadDim
 	nHeads := hp.NHeads
 	nKVHeads := hp.NKVHeads
 	ffDim := hp.FFDim
-
-	// Token embedding lookup: use cache for hot tokens, dequantize for the rest.
 	x := sc.x[:seq*dim]
-	embScale := float32(math.Sqrt(float64(dim)))
-	for si, id := range tokenIDs {
-		if id < 0 || id >= hp.VocabSize {
-			return nil, fmt.Errorf("gemma: token id %d out of range [0,%d)", id, hp.VocabSize)
-		}
-		dst := x[si*dim : (si+1)*dim]
-		if cached := g.tokenCache.Get(id); cached != nil {
-			copy(dst, cached)
-		} else {
-			g.weights.tokenEmb.DequantRow(id, sc.rowBuf)
-			copy(dst, sc.rowBuf)
-		}
-		tensor.Scale(dst, embScale)
-	}
-
 	normed := sc.normed[:seq*dim]
 	q := sc.q[:seq*dim]
 	k := sc.k[:seq*kvDim]
@@ -389,97 +266,47 @@ func (g *GemmaEmbedder) forwardWithScratch(tokenIDs []int, sc *gemmaScratch) ([]
 	ffGate := sc.ffGate[:seq*ffDim]
 	ffUp := sc.ffUp[:seq*ffDim]
 	ffDown := sc.ffDown[:seq*dim]
-	halfDim := headDim / 2
 
-	// Early exit: run fewer layers when output dim is small (MRL truncation).
 	nLayers := hp.NLayers
 	if ee := int(atomic.LoadInt32(&g.earlyExit)); ee > 0 && ee < nLayers {
 		nLayers = ee
 	}
+	fuse := g.useFusion()
 
 	for l := 0; l < nLayers; l++ {
 		layer := &g.weights.layers[l]
-
-		// === Self-attention ===
-		// Pre-attention RMSNorm
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.attnNormW, hp.RMSNormEps)
+		tensor.RMSNormRows(normed, x, layer.attnNormW, seq, dim, hp.RMSNormEps)
+		if fuse {
+			tensor.MatMulQ8PackedQKV(q, k, v, normed, &layer.attnQWeight, &layer.attnKWeight, &layer.attnVWeight, seq, maxWorkers)
+			tensor.RMSNormRoPESeq(q, layer.attnQNormW, sc.ropeCos, sc.ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
+			tensor.RMSNormRoPESeq(k, layer.attnKNormW, sc.ropeCos, sc.ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
+		} else {
+			tensor.MatMulQ8N(q, normed, &layer.attnQWeight, seq, dim, dim, maxWorkers)
+			tensor.MatMulQ8N(k, normed, &layer.attnKWeight, seq, kvDim, dim, maxWorkers)
+			tensor.MatMulQ8N(v, normed, &layer.attnVWeight, seq, kvDim, dim, maxWorkers)
+			tensor.RMSNormRoPESeq(q, layer.attnQNormW, sc.ropeCos, sc.ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
+			tensor.RMSNormRoPESeq(k, layer.attnKNormW, sc.ropeCos, sc.ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		}
-
-		// Q, K, V projections using Q8 MatMul (normed is float32, weights are Q8).
-		tensor.MatMulQ8(q, normed, &layer.attnQWeight, seq, dim, dim)
-		tensor.MatMulQ8(k, normed, &layer.attnKWeight, seq, kvDim, dim)
-		tensor.MatMulQ8(v, normed, &layer.attnVWeight, seq, kvDim, dim)
-
-		// QK-norm + RoPE per position (using pre-computed cos/sin tables)
-		for s := 0; s < seq; s++ {
-			for h := 0; h < nHeads; h++ {
-				off := s*dim + h*headDim
-				// In-place RMSNorm avoids copying through a temp buffer.
-				tensor.RMSNorm(q[off:off+headDim], q[off:off+headDim], layer.attnQNormW, hp.RMSNormEps)
-			}
-			for h := 0; h < nKVHeads; h++ {
-				off := s*kvDim + h*headDim
-				tensor.RMSNorm(k[off:off+headDim], k[off:off+headDim], layer.attnKNormW, hp.RMSNormEps)
-			}
-			cosTab := sc.ropeCos[s*halfDim : (s+1)*halfDim]
-			sinTab := sc.ropeSin[s*halfDim : (s+1)*halfDim]
-			tensor.RoPEPrecomputed(q[s*dim:(s+1)*dim], nHeads, headDim, cosTab, sinTab)
-			tensor.RoPEPrecomputed(k[s*kvDim:(s+1)*kvDim], nKVHeads, headDim, cosTab, sinTab)
-		}
-
-		// GQA attention
 		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, sc.scores[:seq])
-
-		// Output projection using Q8 MatMul.
-		tensor.MatMulQ8(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim)
-
-		// Post-attention norm + residual
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(projOut[s*dim:(s+1)*dim], projOut[s*dim:(s+1)*dim], layer.postAttnNormW, hp.RMSNormEps)
+		if fuse {
+			tensor.MatMulQ8RMSResidual(x, attnOut, sc.yTile, &layer.attnOutWeight, layer.postAttnNormW, seq, dim, dim, 8, maxWorkers, hp.RMSNormEps)
+			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
+			tensor.MatMulQ8DualOut(ffGate, ffUp, normed, &layer.ffGateWeight, &layer.ffUpWeight, seq, maxWorkers)
+			tensor.MatMulQ8RMSResidual(x, ffGate, sc.yTile, &layer.ffDownWeight, layer.postFFNNormW, seq, dim, ffDim, 8, maxWorkers, hp.RMSNormEps)
+		} else {
+			tensor.MatMulQ8N(projOut, attnOut, &layer.attnOutWeight, seq, dim, dim, maxWorkers)
+			tensor.RMSNormRows(projOut, projOut, layer.postAttnNormW, seq, dim, hp.RMSNormEps)
+			tensor.Add(x, x, projOut)
+			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
+			tensor.MatMulQ8N(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim, maxWorkers)
+			tensor.MatMulQ8N(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim, maxWorkers)
+			tensor.SiLUMul(ffGate, ffUp)
+			tensor.MatMulQ8N(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim, maxWorkers)
+			tensor.RMSNormRows(ffDown, ffDown, layer.postFFNNormW, seq, dim, hp.RMSNormEps)
+			tensor.Add(x, x, ffDown)
 		}
-		tensor.Add(x, x, projOut)
-
-		// === FFN ===
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(normed[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], layer.ffNormW, hp.RMSNormEps)
-		}
-
-		// Gate + Up using Q8 MatMul.
-		tensor.MatMulQ8(ffGate, normed, &layer.ffGateWeight, seq, ffDim, dim)
-		tensor.MatMulQ8(ffUp, normed, &layer.ffUpWeight, seq, ffDim, dim)
-		// Fused SiLU(gate) * up saves one full pass over ffDim*seq elements.
-		tensor.SiLUMul(ffGate, ffUp)
-
-		// Down projection using Q8 MatMul.
-		tensor.MatMulQ8(ffDown, ffGate, &layer.ffDownWeight, seq, dim, ffDim)
-
-		// Post-FFN norm + residual
-		for s := 0; s < seq; s++ {
-			tensor.RMSNorm(ffDown[s*dim:(s+1)*dim], ffDown[s*dim:(s+1)*dim], layer.postFFNNormW, hp.RMSNormEps)
-		}
-		tensor.Add(x, x, ffDown)
 	}
-
-	// Final RMSNorm
-	for s := 0; s < seq; s++ {
-		tensor.RMSNorm(x[s*dim:(s+1)*dim], x[s*dim:(s+1)*dim], g.weights.outputNorm, hp.RMSNormEps)
-	}
-
-	// Mean pooling uses a scratch buffer and SIMD-accelerated addition.
-	out := sc.poolOut[:dim]
-	for i := range out {
-		out[i] = 0
-	}
-	for s := 0; s < seq; s++ {
-		tensor.Add(out, out, x[s*dim:(s+1)*dim])
-	}
-	tensor.Scale(out, 1.0/float32(seq))
-
-	// Copy result out of scratch so caller owns the memory.
-	result := make([]float32, dim)
-	copy(result, out)
-	return result, nil
+	tensor.RMSNormRows(x, x, g.weights.outputNorm, seq, dim, hp.RMSNormEps)
 }
 
 // gqaAttention computes grouped-query attention using SIMD-accelerated dot products.
@@ -488,23 +315,36 @@ func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
 
 	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
 	headsPerGroup := nHeads / nKVHeads
+	nQ := 4
+	if seq > 0 && seq < nQ {
+		nQ = seq // seq=3 short Embed: one batched nQ=3 tile, not 3 leftover passes
+	}
+	var scoreTile [4 * 512]float32
 
 	for h := 0; h < nHeads; h++ {
 		kvH := h / headsPerGroup
+		vBase := v[kvH*headDim:]
+		hOff := h * headDim
 
-		for sq := 0; sq < seq; sq++ {
-			qOff := sq*qStride + h*headDim
-			qVec := q[qOff : qOff+headDim]
-
-			// Score computation: use SIMD dot product instead of scalar loop
-			for sk := 0; sk < seq; sk++ {
-				kOff := sk*kvStride + kvH*headDim
-				scores[sk] = tensor.Dot(qVec, k[kOff:kOff+headDim]) * scale
+		sq := 0
+		if seq <= 512 {
+			for ; sq+nQ <= seq; sq += nQ {
+				for t := 0; t < nQ; t++ {
+					qVec := q[(sq+t)*qStride+hOff : (sq+t)*qStride+hOff+headDim]
+					row := scoreTile[t*seq : (t+1)*seq]
+					for sk := 0; sk < seq; sk++ {
+						row[sk] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:(sk*kvStride+kvH*headDim)+headDim]) * scale
+					}
+				}
+				tensor.SoftmaxWeightedSumBatched(out, scoreTile[:nQ*seq], vBase, nQ, seq, kvStride, headDim, qStride, hOff, sq)
 			}
-
-			outOff := sq*qStride + h*headDim
-			outSlice := out[outOff : outOff+headDim]
-			tensor.SoftmaxWeightedSumStrided(outSlice, scores[:seq], v[kvH*headDim:], seq, kvStride, headDim)
+		}
+		for ; sq < seq; sq++ {
+			qVec := q[sq*qStride+hOff : sq*qStride+hOff+headDim]
+			for sk := 0; sk < seq; sk++ {
+				scores[sk] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:(sk*kvStride+kvH*headDim)+headDim]) * scale
+			}
+			tensor.SoftmaxWeightedSumStrided(out[sq*qStride+hOff:sq*qStride+hOff+headDim], scores[:seq], vBase, seq, kvStride, headDim)
 		}
 	}
 }

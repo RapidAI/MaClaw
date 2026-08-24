@@ -12,6 +12,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -70,6 +71,77 @@ type IMMessageHandler struct {
 	// implementation uses SkillMarket; tests can replace the dependency without
 	// hijacking the registry dispatch path.
 	skillSearchInstallHandler func(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult
+	// semanticTrustedAudioTranscribe is a host-owned test/runtime hook for
+	// managed speech transcription. It never reads model path arguments.
+	semanticTrustedAudioTranscribe func(mime string, data []byte) (string, error)
+	// semanticTrustedAuditRead is a host-owned test/runtime hook for the
+	// managed audit+history reader. It never reads tool_name or project_path.
+	semanticTrustedAuditRead func(userID, query string) (string, error)
+	// semanticTrustedKnowledgeAdmin is a host-owned test/runtime hook for
+	// managed knowledge-source administration. It never reads action soup.
+	semanticTrustedKnowledgeAdmin func(userID, id, status string, refresh, hasRefresh bool) (string, error)
+	// semanticTrustedKnowledgeIngest is a host-owned test/runtime hook for
+	// managed knowledge ingest. It never reads action/title/labels/save_scope.
+	semanticTrustedKnowledgeIngest func(userID, text, url, path string) (string, error)
+	// semanticTrustedKnowledgeRead is a host-owned test/runtime hook for
+	// managed knowledge retrieval. It never reads search_scope/source_ids soup.
+	semanticTrustedKnowledgeRead func(userID, query string) (string, error)
+	// semanticTrustedFileWrite is a host-owned test/runtime hook for managed
+	// workspace file writes. It never reads phase_id/doc_type/file_path soup.
+	semanticTrustedFileWrite func(userID, path, content, mode string) (string, error)
+	// semanticTrustedFileEdit is a host-owned test/runtime hook for managed
+	// single-passage replacement. It never reads replace_all/line-number soup.
+	semanticTrustedFileEdit func(userID, path, oldString, newString string) (string, error)
+	// semanticTrustedFileRead is a host-owned test/runtime hook for managed
+	// workspace inspect. It never reads lines/start_line/file_path soup.
+	semanticTrustedFileRead func(userID, path, query, filePattern string) (string, error)
+	// semanticTrustedRepoInspect is a host-owned test/runtime hook for managed
+	// workspace git inspect. It never reads project_path/staged soup.
+	semanticTrustedRepoInspect func(userID string) (string, error)
+	// semanticTrustedWebFetch is a host-owned test/runtime hook for managed
+	// single-URL fetch. It never reads save_path/offset/render_js soup.
+	semanticTrustedWebFetch func(userID, url string) (string, error)
+	// semanticTrustedWebSearch is a host-owned test/runtime hook for managed
+	// public web search. It never reads max_results/provider soup.
+	semanticTrustedWebSearch func(userID, query string) (string, error)
+	// semanticTrustedArtifactAcquire is a host-owned test/runtime hook for
+	// managed remote acquisition. It never reads save_path/headers/via_browser.
+	semanticTrustedArtifactAcquire func(userID, url string) (string, error)
+	// semanticTrustedClock is a host-owned test/runtime hook for managed
+	// local clock reads. It never reads timezone/format soup.
+	semanticTrustedClock func(userID string) (string, error)
+	// semanticTrustedConfig is a host-owned test/runtime hook for managed
+	// agent-self config. It never switches provider/url/key/model.
+	semanticTrustedConfig func(userID string, maxIterations int, hasMax bool, thinkingMode string, hasThinking bool) (string, error)
+	// semanticTrustedMemory is a host-owned test/runtime hook for managed
+	// agent memory. It never reads action/surgery/themes soup.
+	semanticTrustedMemory func(userID, content, query, id string) (string, error)
+	// semanticTrustedTask is a host-owned test/runtime hook for managed
+	// local todos. It never reads action/task_id/delegate_to.
+	semanticTrustedTask func(userID, title, description, id, status, note string) (string, error)
+	// semanticTrustedGoal is a host-owned test/runtime hook for managed
+	// long-running goals. It never starts continuation or pause/resume.
+	semanticTrustedGoal func(userID, objective, status, note string) (string, error)
+	// semanticTrustedTemplate is a host-owned test/runtime hook for managed
+	// session templates. It never launches a coding session.
+	semanticTrustedTemplate func(userID, name, codingTool string) (string, error)
+	// semanticTrustedSession is a host-owned test/runtime hook for managed
+	// coding-session inspect. It never sends input, interrupts, or launches.
+	semanticTrustedSession func(userID, id string) (string, error)
+	// semanticTrustedSchedule is a host-owned test/runtime hook for managed
+	// local schedule records. It never binds delivery or starts a fire.
+	semanticTrustedSchedule    func(userID string, args semanticTrustedScheduleArgs) (string, error)
+	semanticTrustedOfficeWrite func(userID, path string, data map[string]interface{}) (string, error)
+	semanticTrustedShell       func(userID, command string, timeout time.Duration) (string, error)
+	semanticTrustedDelegate    func(userID, task string) (string, error)
+	semanticTrustedSSH         func(userID, command string) (string, error)
+	semanticTrustedBrowser     func(userID, action, url string) (string, error)
+	semanticTrustedComputerUse func(userID, action string) (string, error)
+	semanticTrustedRepoMutate  func(userID, action, message string) (string, error)
+	// semanticTrustedBuildVerify is a host-owned test/runtime hook for managed
+	// build/test/lint verification. It receives a reviewed task name and an
+	// optional workspace subdirectory, never a command line.
+	semanticTrustedBuildVerify func(userID, task, target string) (string, error)
 
 	// Security firewall (Phase 2 upgrade).
 	firewall *SecurityFirewall
@@ -105,6 +177,12 @@ type IMMessageHandler struct {
 	// Scheduled task manager (lazily initialized via setter).
 	scheduledTaskManagerMu sync.RWMutex
 	scheduledTaskManager   *scheduler.Manager
+	// semanticLastAdministeredTaskID is host-observed from a managed
+	// schedule.administer create/update in this process. Dispatch consumes it
+	// to bind a trusted destination; it is never a model argument.
+	semanticAdministeredTaskMu     sync.Mutex
+	semanticLastAdministeredTaskID string
+	scheduleDispatchBindings       *scheduleDispatchBindingStore
 
 	traceService *AITraceService
 
@@ -124,6 +202,13 @@ type IMMessageHandler struct {
 	// mutex and loop context. This allows project tabs to run agent loops
 	// concurrently with the local tab without data races.
 	sessionLoops sync.Map // map[string]*sessionLoopState
+
+	// horizonSessions is independent of sessionLoops. A LongHorizon supervisor
+	// must not look like an IM agent loop or follow-up text is serialized/interrupted.
+	horizonSessions        sync.Map // map[string]*horizonSession
+	horizonRunning         sync.Map // map[string]*horizonSession; supervisor goroutine still alive
+	horizonProjectPathFn   func(userID string) string
+	horizonStartSupervisor func(*horizonSession)
 
 	// loopMaxOverride is a legacy bridge — set by "set_max_iterations" tool.
 	// Kept for backward compat; new code should use LoopContext.MaxIterations.
@@ -151,10 +236,6 @@ type IMMessageHandler struct {
 
 	sshMirrorWatchMu sync.Mutex
 	sshMirrorWatch   map[string]struct{}
-
-	// proactiveRecallInFlight prevents repeated prompt-build recalls for the
-	// same user from piling up after the front-end budget has already expired.
-	proactiveRecallInFlight sync.Map // map[string]proactiveRecallState
 
 	// Local background task manager for long-running local processes.
 	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
@@ -515,6 +596,24 @@ type IMMessageHandler struct {
 	// next interaction.
 	// Keyed by userID, value is string.
 	pendingExperimentNotification sync.Map
+
+	// sessionGovernedTasks stores the last granted semantic needs for a
+	// channel-scoped user session. Continuation replay reads this map; /new
+	// and other session resets must clear it. Keyed by
+	// sessionGovernedTaskKey(userID, channel, destination).
+	sessionGovernedTasks sync.Map
+
+	// activeLocalDocuments is a host-owned, owner/channel scoped reference to
+	// the current desktop-picker document. It is a resource context, not a
+	// sticky tool grant, and is revalidated before every semantic read.
+	activeLocalDocuments sync.Map // map[string][]activeLocalDocumentContext
+
+	// taskAnchors records the subject and primary evidence explicitly supplied
+	// for an active conversational task. It is deliberately host-derived (from
+	// the user's message/attachment markers), rather than a model-managed
+	// memory. This prevents a follow-up such as "condense it" from silently
+	// switching to a similarly-worded profile found in another old task.
+	taskAnchors sync.Map // map[string]taskIdentityAnchor
 }
 
 // NewIMMessageHandler creates a new handler.
@@ -548,7 +647,7 @@ func newIMMessageHandler(app *App, manager *RemoteSessionManager, conversationMe
 	// Optimised transport for interactive chat 鈥?larger connection pool
 	// so concurrent requests don't queue behind each other.
 	chatTransport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: llmOrEnvProxy,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -564,7 +663,7 @@ func newIMMessageHandler(app *App, manager *RemoteSessionManager, conversationMe
 	// Separate transport for background tasks (scheduled tasks, auto-picked
 	// tasks) so they never starve the chat connection pool.
 	taskTransport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: llmOrEnvProxy,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -861,8 +960,12 @@ func (h *IMMessageHandler) SetTrajectoryRecorderFactory(factory func() *Trajecto
 	h.trajectoryRecorderFactory = factory
 }
 
-// getTools returns the current tool definitions, using the generator with
-// a 5-second cache when configured, falling back to buildToolDefinitions().
+// getTools returns a request-local snapshot of the current tool definitions.
+// The five-second cache is an inventory cache only: its JSON-shaped definition
+// trees must never be handed to routing/rendering callers by reference. Those
+// callers annotate, filter and serialize definitions on a request path, and a
+// shared map would let one request mutate a later request's authority before
+// RunLoop can freeze and receipt it.
 func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	var tools []map[string]interface{}
 
@@ -925,7 +1028,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	tools = filterCodingTools(tools)
 	tools = filterDisabledExternalCodingSessionToolDefs(tools)
 
-	return tools
+	return cloneToolDefinitionMaps(tools)
 }
 
 func (h *IMMessageHandler) filterInactiveDeferredTools(tools []map[string]interface{}) []map[string]interface{} {
@@ -957,14 +1060,12 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	return h.routeToolsForUser("", userMessage, allTools, true)
 }
 
-// routeToolsWithOptions is like routeTools. The skipHeavySemantic argument is
-// retained for API compatibility; interactive routing never makes an auxiliary
-// LLM request before the main agent response.
-func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
-	return h.routeToolsForUser("", userMessage, allTools, true)
+func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
+	_ = skipHeavySemantic
+	return h.routeSessionTools(userID, userMessage, allTools, false, nil)
 }
 
-func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
+func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult) []map[string]interface{} {
 	h.toolsMu.RLock()
 	router := h.toolRouter
 	h.toolsMu.RUnlock()
@@ -990,7 +1091,7 @@ func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTool
 		if isIMManagementRequest(userMessage) {
 			filtered = ensureIMManagementToolsRouted(filtered, allTools, userMessage)
 		}
-		return filtered
+		return mergeAmbientRetrievalTools(filtered, allTools)
 	}
 	// IM task and message management are safe, shared-state tools. Keep them
 	// available for the current request when its intent is explicit, so every
@@ -1004,27 +1105,105 @@ func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTool
 	// LLM request just to rewrite a message before the main Agent can respond.
 	// BM25 plus optional local embedding provides enough pruning; uncertain
 	// conditional tools stay hidden and can be discovered explicitly later.
-	// Keep the parameter for callers compiled against the older API.
-	_ = skipHeavySemantic
 	routeOpts := tool.RouteOptions{
-		SkipUnifiedClassifier: false,
+		SkipUnifiedClassifier: skipUnifiedClassifier,
 		PreferEmbeddingOnly:   true,
+		PreResolved:           preResolved,
 	}
 	routed := router.RouteForSession(userID, userMessage, allTools, routeOpts)
 	if isIMManagementRequest(userMessage) {
 		routed = ensureIMManagementToolsRouted(routed, allTools, userMessage)
 	}
+	// An explicit knowledge-write turn narrows writers and suppresses memory
+	// inside the router so the model cannot save to the wrong store. The
+	// ambient merge must not silently re-add it.
+	knowledgeWriteTurn := preResolved != nil && !preResolved.Degraded &&
+		preResolved.Primary == intent.LabelKnowledgeWrite && preResolved.Confidence >= 0.50
 	if isExplicitNicknameRequest(userMessage) {
+		routed = mergeAmbientRetrievalTools(routed, allTools)
+	} else {
+		filtered := make([]map[string]interface{}, 0, len(routed))
+		for _, item := range routed {
+			if extractToolName(item) == "set_nickname" {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		routed = mergeAmbientRetrievalTools(filtered, allTools)
+	}
+	if knowledgeWriteTurn {
+		kept := make([]map[string]interface{}, 0, len(routed))
+		for _, item := range routed {
+			if extractToolName(item) == "memory" {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		routed = kept
+	}
+	return routed
+}
+
+// unmanagedRetrievalToolForNeed is the host-owned name that satisfies an
+// ambient retrieval Need on unmanaged chat. coding_knowledge_search stays
+// out: it is not knowledge.read.local.
+func unmanagedRetrievalToolForNeed(capability tool.CapabilityID) string {
+	switch capability {
+	case tool.CapabilityKnowledgeReadLocal:
+		return "knowledge_search"
+	case tool.CapabilityMemoryRecallAgent, tool.CapabilityMemoryManageAgent:
+		// Unmanaged chat still uses the host `memory` tool. Write stays
+		// available there so "记住…" on a non_coding turn is not blocked;
+		// managed ambient uses the ReadOnly recall adapter instead.
+		return "memory"
+	default:
+		return ""
+	}
+}
+
+var (
+	unmanagedRetrievalNeedsOnce sync.Once
+	unmanagedRetrievalNeeds     []tool.CapabilityNeed
+)
+
+func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
+	unmanagedRetrievalNeedsOnce.Do(func() {
+		unmanagedRetrievalNeeds = agentservice.AppendAmbientRetrievalNeeds(newIMSemanticCapabilityRegistry(), nil)
+	})
+	return unmanagedRetrievalNeeds
+}
+
+// mergeAmbientRetrievalTools is the unmanaged retrieval Need path. It walks
+// AppendAmbientRetrievalNeeds and adds the matching host tool when present.
+// It does not pin tool names that are not a Need.
+func mergeAmbientRetrievalTools(routed, allTools []map[string]interface{}) []map[string]interface{} {
+	if len(allTools) == 0 {
 		return routed
 	}
-	filtered := make([]map[string]interface{}, 0, len(routed))
+	needs := ambientRetrievalNeedsForUnmanaged()
+	if len(needs) == 0 {
+		return routed
+	}
+	available := make(map[string]map[string]interface{}, len(allTools))
+	for _, item := range allTools {
+		if name := extractToolName(item); name != "" {
+			available[name] = item
+		}
+	}
+	selected := make(map[string]bool, len(routed))
 	for _, item := range routed {
-		if extractToolName(item) == "set_nickname" {
+		selected[extractToolName(item)] = true
+	}
+	for _, need := range needs {
+		name := unmanagedRetrievalToolForNeed(need.Capability)
+		item, ok := available[name]
+		if !ok || name == "" || selected[name] {
 			continue
 		}
-		filtered = append(filtered, item)
+		routed = append(routed, item)
+		selected[name] = true
 	}
-	return filtered
+	return routed
 }
 
 func ensureIMManagementToolsRouted(routed, allTools []map[string]interface{}, userMessage string) []map[string]interface{} {

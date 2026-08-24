@@ -1,0 +1,190 @@
+{
+  "category": "budget_phase",
+  "category_id": 11,
+  "title": "budget pressure must not drop required dependencies",
+  "design_ref": "10.1 item 11",
+  "format_note": "Planner keeps a closed dependency-wave prefix and reports budget_exceeded / planning_budget_exceeded. It never silently drops generate or deliver. max_invocations expands one need into sibling plan nodes (id, id#02, ...), which is how the coding family's repeat budget is spent; those siblings are ordinary nodes under the same selection budget.",
+  "samples": [
+    {
+      "id": "no-silent-truncation",
+      "title": "Unlimited budget keeps the full search-generate-deliver plan",
+      "notes": "Without a selection budget the required DAG stays intact.",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"},
+          {"need_id": "generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "deliver", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "ready_without_facts": ["search"]
+      }
+    },
+    {
+      "id": "budget-exceeded-later-wave",
+      "title": "Selection budget keeps the lookup prefix and reports later waves",
+      "notes": "MaxSelections=1 fits only the first closed wave (search). generate and deliver are budget_exceeded, not dropped from Unmet.",
+      "context": {"max_selections": 1},
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"}
+        ],
+        "unmet": [
+          {"need_id": "generate", "reason": "budget_exceeded"},
+          {"need_id": "deliver", "reason": "budget_exceeded"}
+        ],
+        "ready_without_facts": ["search"]
+      }
+    },
+    {
+      "id": "planning-budget-exceeded-first-wave",
+      "title": "Two independent required lookups cannot be randomly trimmed",
+      "notes": "The first closed wave has two required selections and MaxSelections=1, so the planner reports planning_budget_exceeded and keeps none.",
+      "context": {"max_selections": 1},
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "fetch", "capability": "information.fetch.web"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "fetch_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.fetch.web"}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {"need_id": "search", "reason": "planning_budget_exceeded"},
+          {"need_id": "fetch", "reason": "planning_budget_exceeded"}
+        ]
+      }
+    },
+    {
+      "id": "coding-repeat-budget-becomes-plan-nodes",
+      "title": "An iterative family's budget is planned as sibling nodes, not a counter",
+      "notes": "The coding family is the first whose turn is iterative. Its budget is spent as plan nodes: a need permitting N invocations becomes N sibling selections, each independently planned and separately grantable. Nothing in the plan is a runtime counter.",
+      "input_text": "read these files and fix the bug",
+      "needs": [
+        {"id": "code-read", "capability": "fs.read.local", "max_invocations": 3},
+        {"id": "code-write", "capability": "fs.write.local", "max_invocations": 2},
+        {"id": "code-verify", "capability": "build.verify.local", "qualifiers": {"task": "test"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "fs.read.local"}]
+          },
+          {
+            "adapter": "file_write_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "fs.write.local"}]
+          },
+          {
+            "adapter": "build_verify_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "build.verify.local", "qualifiers": {"task": "test"}}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution"},
+          {"need_id": "code-read#02", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution"},
+          {"need_id": "code-read#03", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution"},
+          {"need_id": "code-write", "capability": "fs.write.local", "adapter": "file_write_adapter", "phase": "execution"},
+          {"need_id": "code-write#02", "capability": "fs.write.local", "adapter": "file_write_adapter", "phase": "execution"},
+          {"need_id": "code-verify", "capability": "build.verify.local", "adapter": "build_verify_adapter", "phase": "execution"}
+        ],
+        "ready_without_facts": ["code-read", "code-read#02", "code-read#03", "code-write", "code-write#02", "code-verify"]
+      }
+    },
+    {
+      "id": "coding-repeat-budget-is-not-exempt-from-the-selection-budget",
+      "title": "Sibling invocations are ordinary plan nodes under the selection budget",
+      "notes": "Spending a repeat budget as nodes means those nodes are counted like any other. A selection budget smaller than the expanded family reports budget_exceeded for the siblings that do not fit rather than quietly granting the family a smaller ceiling.",
+      "context": {"max_selections": 2},
+      "needs": [
+        {"id": "code-read", "capability": "fs.read.local", "max_invocations": 3}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "fs.read.local"}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {"need_id": "code-read", "reason": "planning_budget_exceeded"},
+          {"need_id": "code-read#02", "reason": "planning_budget_exceeded"},
+          {"need_id": "code-read#03", "reason": "planning_budget_exceeded"}
+        ]
+      }
+    }
+  ]
+}

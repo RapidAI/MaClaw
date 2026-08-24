@@ -264,6 +264,7 @@ export type AssistantInputIconName =
     | "helpCircle"
     | "messagePlus"
     | "layers"
+    | "monitor"
     | "shieldCheck"
     | "alertTriangle"
     | "folder";
@@ -387,6 +388,13 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="M12 2 2 7l10 5 10-5-10-5Z" />
                     <path {...common} d="m2 12 10 5 10-5" />
                     <path {...common} d="m2 17 10 5 10-5" />
+                </>
+            )}
+            {name === "monitor" && (
+                <>
+                    <rect {...common} x="3" y="4" width="18" height="13" rx="2" />
+                    <path {...common} d="M8 21h8" />
+                    <path {...common} d="M12 17v4" />
                 </>
             )}
             {name === "shieldCheck" && (
@@ -580,6 +588,9 @@ export const baseActionBtnStyle: React.CSSProperties = {
 export const AI_PANEL_STATIC_STYLE_ID = "ai-panel-static-style";
 export const AI_PANEL_STATIC_STYLE_TEXT = `
     @keyframes blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+        .coding-agent-working-dot { animation: none !important; }
+    }
     @keyframes ai-spinner-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes maclaw-spin { to { transform: rotate(360deg); } }
     @keyframes maclaw-brand-breathe {

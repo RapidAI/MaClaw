@@ -143,6 +143,10 @@ func parseToolPayloadResultForPlatformLang(result, platform, lang string) toolPa
 		}
 		obs.TraceResult = obs.ToolContent
 		return obs
+	case toolPayloadSpeechArtifact:
+		obs.TraceResult = "Speech artifact rendered. This is not a send."
+		obs.ToolContent = obs.TraceResult
+		return obs
 	case toolPayloadVoiceBase64:
 		obs.TraceResult = toolPayloadPreparedMessage
 		rest := payload.Body

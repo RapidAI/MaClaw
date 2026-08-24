@@ -370,6 +370,115 @@ func TestAuditLog_RedactsSensitiveArgumentsBeforePersisting(t *testing.T) {
 	}
 }
 
+func TestAuditLog_QueryNewestMatchingStopsAtLimit(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if err := al.Log(security.AuditEntry{
+			Timestamp: now.Add(time.Duration(i) * time.Minute), UserID: "user-1", ToolName: "bash",
+			RiskLevel: security.RiskLow, PolicyAction: security.PolicyAllow, Result: "ok",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := al.Log(security.AuditEntry{
+			Timestamp: now.Add(time.Duration(i)*time.Minute + time.Second), UserID: "user-2", ToolName: "secret_tool",
+			RiskLevel: security.RiskHigh, PolicyAction: security.PolicyDeny, Result: "denied",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := al.QueryNewestMatching(func(entry security.AuditEntry) bool {
+		return entry.UserID == "user-1"
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("newest matching=%#v", got)
+	}
+	if got[0].Timestamp.After(got[1].Timestamp) {
+		t.Fatalf("expected chronological newest-N: %#v", got)
+	}
+	if got[0].UserID != "user-1" || got[1].UserID != "user-1" {
+		t.Fatalf("foreign entry leaked: %#v", got)
+	}
+	if got[1].Timestamp.Unix() != now.Add(4*time.Minute).Unix() {
+		t.Fatalf("expected the two newest user-1 events, last=%v want=%v", got[1].Timestamp, now.Add(4*time.Minute))
+	}
+}
+
+func TestAuditLog_QueryNewestMatchingReadsTailWithoutLoadingWholeFile(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+	oldChunk := auditNewestReadChunk
+	auditNewestReadChunk = 80
+	t.Cleanup(func() { auditNewestReadChunk = oldChunk })
+
+	now := time.Now().UTC()
+	for i := 0; i < 8; i++ {
+		if err := al.Log(security.AuditEntry{
+			Timestamp: now.Add(time.Duration(i) * time.Minute), UserID: "user-1", ToolName: "bash",
+			RiskLevel: security.RiskLow, PolicyAction: security.PolicyAllow, Result: "ok",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := al.QueryNewestMatching(func(entry security.AuditEntry) bool {
+		return entry.UserID == "user-1"
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Timestamp.Unix() != now.Add(6*time.Minute).Unix() || got[1].Timestamp.Unix() != now.Add(7*time.Minute).Unix() {
+		t.Fatalf("tail newest=%#v", got)
+	}
+
+	all, err := al.QueryNewestMatching(func(entry security.AuditEntry) bool {
+		return entry.UserID == "user-1"
+	}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 8 || all[0].Timestamp.Unix() != now.Unix() || all[7].Timestamp.Unix() != now.Add(7*time.Minute).Unix() {
+		t.Fatalf("tail must reconstruct the first file line, got=%#v", all)
+	}
+}
+
+func TestAuditLog_QueryNewestMatchingZeroChunkFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	al, err := NewAuditLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+	oldChunk := auditNewestReadChunk
+	auditNewestReadChunk = 0
+	t.Cleanup(func() { auditNewestReadChunk = oldChunk })
+	now := time.Now().UTC()
+	if err := al.Log(security.AuditEntry{
+		Timestamp: now, UserID: "user-1", ToolName: "bash",
+		RiskLevel: security.RiskLow, PolicyAction: security.PolicyAllow, Result: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := al.QueryNewestMatching(func(entry security.AuditEntry) bool {
+		return entry.UserID == "user-1"
+	}, 1)
+	if err != nil || len(got) != 1 || got[0].UserID != "user-1" {
+		t.Fatalf("zero chunk fallback=%#v err=%v", got, err)
+	}
+}
+
 func TestAuditAction_Constants(t *testing.T) {
 	// Verify the security.AuditAction constants have the expected string values.
 	if security.AuditActionHubSkillInstall != "hub_skill_install" {

@@ -6,6 +6,13 @@
  * The Wails bindings exchange it as JSON strings (ListExperts/SaveExpert).
  */
 
+/** Reviewed capability-level restriction. Effect may only tighten. */
+export interface ExpertCapabilityRule {
+    capability: string;
+    qualifiers?: Record<string, string>;
+    effect: 'deny' | 'require_confirmation';
+}
+
 /** An AI expert persona: custom system prompt + optional tool/skill allow-lists. */
 export interface ExpertDefinition {
     /** Builtin: "builtin-…"; user-created: uuid. */
@@ -19,6 +26,11 @@ export interface ExpertDefinition {
     tools: string[];
     /** Skill name allow-list; empty = no restriction. */
     skills: string[];
+    /**
+     * Optional reviewed capability-level restrictions. Never derived from
+     * tools/skills. Empty keeps the current managed-turn behavior.
+     */
+    capability_rules?: ExpertCapabilityRule[];
     builtin: boolean;
     /**
      * Lineage ("专家优化"): non-empty means this expert was distilled from the

@@ -511,6 +511,38 @@ func TestMaClawComputeCreditDisplayPreservesFractionalCredits(t *testing.T) {
 	}
 }
 
+func TestMaClawComputeStoreKeepsUserActivationForFirstClick(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "maclaw-compute-module.js"))
+	if err != nil {
+		t.Fatalf("read maclaw-compute-module.js: %v", err)
+	}
+	content := string(body)
+	start := strings.Index(content, "window.openComputeStore = async function()")
+	if start < 0 {
+		t.Fatal("MaClaw compute module is missing openComputeStore")
+	}
+	handler := content[start:]
+	placeholder := strings.Index(handler, "var storeWindow = window.open('about:blank', '_blank');")
+	refresh := strings.Index(handler, "await window.checkComputeAuthorization();")
+	if placeholder < 0 || refresh < 0 || placeholder > refresh {
+		t.Fatal("MaClaw compute store must open its placeholder before the async authorization refresh")
+	}
+	for _, want := range []string{
+		"storeWindow.opener = null;",
+		"storeWindow.document.body.textContent = t('openingComputeStore');",
+		"storeWindow.close();",
+		"storeWindow.location.replace(url);",
+		"window.location.assign(url);",
+	} {
+		if !strings.Contains(handler, want) {
+			 t.Fatalf("MaClaw compute store is missing first-click fallback %s", want)
+		}
+	}
+	if strings.Contains(handler, "if (storeWindow.closed) return;") {
+		t.Fatal("MaClaw compute store must fall back to the current page if its placeholder is closed")
+	}
+}
+
 func TestAdminModelServiceCreditDisplaysPreserveFractionalCredits(t *testing.T) {
 	for _, file := range []string{"governance-tab.js", "security-tab.js"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", file))

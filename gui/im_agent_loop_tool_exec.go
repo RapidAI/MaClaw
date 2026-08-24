@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/progress"
@@ -40,14 +41,17 @@ type agentLoopToolPathOptions struct {
 	Context                    *LoopContext
 	UserID                     string
 	UserText                   string
+	TaskAnchor                 *taskIdentityAnchor
 	Iteration                  int
 	Platform                   string
+	Config                     corelib.MaclawLLMConfig
 	MessageContent             string
 	LengthContinuationText     string
 	Choice                     llm.Choice
 	Phase                      *agentLoopPhase
 	Tools                      []map[string]interface{}
 	BaseTools                  []map[string]interface{}
+	ClientToolNames            []string
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
 	VisibleArtifacts           *pendingVisibleArtifacts
@@ -127,11 +131,15 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		Context:                    opts.Context,
 		UserID:                     opts.UserID,
 		UserText:                   opts.UserText,
+		TaskAnchor:                 opts.TaskAnchor,
 		Iteration:                  opts.Iteration,
 		Platform:                   opts.Platform,
+		Config:                     opts.Config,
 		GateActive:                 false,
 		MessageContent:             opts.MessageContent,
 		ToolCalls:                  opts.Choice.Message.ToolCalls,
+		ExposedTools:               opts.Tools,
+		ClientToolNames:            opts.ClientToolNames,
 		Phase:                      opts.Phase,
 		Conversation:               opts.Conversation,
 		History:                    opts.History,
@@ -289,14 +297,23 @@ func hasNativePDFGenerationFailure(results []toolExecutionResult) bool {
 }
 
 type agentLoopToolCallsOptions struct {
-	Context                    *LoopContext
-	UserID                     string
-	UserText                   string
-	Iteration                  int
-	Platform                   string
-	GateActive                 bool
-	MessageContent             string
-	ToolCalls                  []llm.ToolCall
+	Context        *LoopContext
+	UserID         string
+	UserText       string
+	TaskAnchor     *taskIdentityAnchor
+	Iteration      int
+	Platform       string
+	Config         corelib.MaclawLLMConfig
+	GateActive     bool
+	MessageContent string
+	ToolCalls      []llm.ToolCall
+	// ExposedTools is the exact replacement surface attached to the model
+	// request that produced ToolCalls. It is intentionally passed as definitions
+	// rather than reconstructed from history, pins, or the registry.
+	ExposedTools []map[string]interface{}
+	// ClientToolNames records which exposed definitions were dynamically bound
+	// to this request. It is never reconstructed from the current LoopContext.
+	ClientToolNames            []string
 	Phase                      *agentLoopPhase
 	Conversation               []interface{}
 	History                    []agent.ConversationEntry
@@ -349,6 +366,12 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		ToolOutcomes:    make([]toolOutcome, 0, len(opts.ToolCalls)),
 		ToolExecResults: make([]toolExecutionResult, 0, len(opts.ToolCalls)),
 	}
+	legacySurface := newLegacyToolSurfaceWithClientTools(opts.ExposedTools, opts.ClientToolNames)
+	if loopContextBlocksLegacyToolRouter(opts.Context) {
+		// Managed turns admit through semantic grants and their SurfaceEpoch.
+		// Do not treat their opaque adapter aliases as legacy registered names.
+		legacySurface = legacyToolSurface{}
+	}
 	for tcIdx, tc := range opts.ToolCalls {
 		if opts.Context != nil && opts.Context.IsCancelled() {
 			opts.Context.SetLoopState(LoopStateStopped)
@@ -382,9 +405,12 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		execResult := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 			Context:          opts.Context,
 			UserID:           opts.UserID,
+			ContextTokens:    opts.Config.EffectiveContextTokens(),
 			UserText:         opts.UserText,
+			TaskAnchor:       opts.TaskAnchor,
 			SkipWorkflowGate: h.shouldSkipWorkflowToolExecutionGate(opts.UserID, opts.Context),
 			ToolCall:         tc,
+			LegacySurface:    legacySurface,
 			Iteration:        opts.Iteration,
 			Phase:            derefAgentLoopPhase(opts.Phase),
 			Debug:            opts.Debug,
@@ -534,7 +560,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		if h != nil {
 			projectionOwnerID = h.workflowPolicyOwnerID(opts.UserID, opts.Context)
 		}
-		truncated := truncateToolResultForToolWithSession(tc.Function.Name, projectionOwnerID, toolContent)
+		proj, err := agent.ProjectToolResultWithContext(tc.Function.Name, projectionOwnerID, toolContent, opts.Config.EffectiveContextTokens())
+		truncated := proj.Preview
+		if err != nil && truncated == "" {
+			truncated = truncateToolResultForToolWithSession(tc.Function.Name, projectionOwnerID, toolContent)
+		}
 		// OpenHuman-inspired: check tool result for prompt injection attempts.
 		// Only check external-source tools (web_fetch, web_search, read_file, bash)
 		// to avoid wasting CPU on internal tools that return safe content.

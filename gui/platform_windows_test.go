@@ -1,9 +1,33 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestEnsureHiddenHostConsoleLeavesExistingConsole(t *testing.T) {
+	before := windowsConsoleWindow()
+	if before == 0 {
+		t.Skip("no console attached")
+	}
+	ensureHiddenHostConsole()
+	if got := windowsConsoleWindow(); got != before {
+		t.Fatalf("must not replace an existing developer/test console: before=%v after=%v", before, got)
+	}
+}
+
+func TestHideCommandWindowSetsCreateNoWindow(t *testing.T) {
+	cmd := exec.Command("cmd.exe", "/d", "/c", "echo ok")
+	hideCommandWindow(cmd)
+	if cmd.SysProcAttr == nil || cmd.SysProcAttr.CreationFlags&_CREATE_NO_WINDOW == 0 {
+		t.Fatal("hideCommandWindow must set CREATE_NO_WINDOW")
+	}
+	hideCommandWindow(cmd)
+	if cmd.SysProcAttr.CreationFlags&_CREATE_NO_WINDOW == 0 {
+		t.Fatal("hideCommandWindow must be idempotent")
+	}
+}
 
 func TestIsWSLShell_WindowsSystem32(t *testing.T) {
 	if !isWSLShell(`C:\Windows\System32\bash.exe`) {

@@ -14,12 +14,15 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 			LabelSSH:              {"ssh"},
 			LabelSearch:           {"web_search", "web_fetch", "download_file"},
 			LabelLiveData:         {"web_search", "web_fetch", "download_file"},
-			LabelDocumentDelivery: {"send_file", "send_to_im", "im_message", "open", "craft_tool", "download_file"},
+			LabelDocumentDelivery: {"send_file", "send_to_im", "im_message"},
+			LabelDocumentGenerate: {},
 			LabelBusinessData:     {"mis_data"},
 			LabelBrowser: {
 				"browser",
 			},
 			LabelOffice:      {"office"},
+			LabelScreenshot:  {"screenshot"},
+			LabelAudioRecord: {"record_audio"},
 			LabelCurrentTime: {"current_datetime"},
 			LabelKnowledgeWrite: {
 				"knowledge_save_text",

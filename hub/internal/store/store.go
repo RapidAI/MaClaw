@@ -186,6 +186,8 @@ type DigitalAssetLibrary struct {
 	SourceCount        int64
 	CardCount          int64
 	ByteSize           int64
+	LibraryKind        string
+	AcceptsSubmissions bool
 	CreatedBy          string
 	UpdatedBy          string
 	CreatedAt          time.Time
@@ -193,14 +195,64 @@ type DigitalAssetLibrary struct {
 	DeletedAt          *time.Time
 }
 
+const (
+	DigitalAssetLibraryKindBusiness  = "business"
+	DigitalAssetLibraryKindTechnical = "technical"
+
+	DigitalAssetSubmissionKindBusiness = "business_knowledge"
+	DigitalAssetSubmissionKindCoding   = "coding_experience"
+
+	DigitalAssetSubmissionSubmitted    = "submitted"
+	DigitalAssetSubmissionApproved     = "approved"
+	DigitalAssetSubmissionRejected     = "rejected"
+	DigitalAssetSubmissionWithdrawn    = "withdrawn"
+	DigitalAssetSubmissionImportFailed = "import_failed"
+)
+
 // DigitalAssetLibraryFilter lists libraries within a tenant.
 type DigitalAssetLibraryFilter struct {
 	TenantID       string
 	Status         string // empty = all non-deleted unless IncludeDeleted
 	IncludeDeleted bool
 	Keyword        string
+	Kind           string
 	Offset         int
 	Limit          int
+}
+
+// DigitalAssetSubmission is a user contribution waiting for admin review.
+type DigitalAssetSubmission struct {
+	ID              string
+	TenantID        string
+	LibraryID       string
+	SubmitterUserID string
+	SubmitterEmail  string
+	Kind            string
+	Status          string
+	Title           string
+	Summary         string
+	PackageRef      string
+	PackageSHA256   string
+	PackageBytes    int64
+	ItemCount       int
+	SourceShareID   string
+	ReviewerUserID  string
+	ReviewNote      string
+	ReviewedAt      *time.Time
+	ImportJobID     string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// DigitalAssetSubmissionFilter lists submissions within a tenant.
+type DigitalAssetSubmissionFilter struct {
+	TenantID        string
+	LibraryID       string
+	SubmitterUserID string
+	Status          string
+	Kind            string
+	Offset          int
+	Limit           int
 }
 
 // DigitalAssetChangelog is one content revision of a library.
@@ -272,6 +324,11 @@ type DigitalAssetRepository interface {
 
 	UpsertSyncCursor(ctx context.Context, cur *DigitalAssetSyncCursor) error
 	GetSyncCursor(ctx context.Context, tenantID, libraryID, userID, deviceID string) (*DigitalAssetSyncCursor, error)
+
+	CreateSubmission(ctx context.Context, row *DigitalAssetSubmission) error
+	GetSubmission(ctx context.Context, tenantID, submissionID string) (*DigitalAssetSubmission, error)
+	ListSubmissions(ctx context.Context, filter DigitalAssetSubmissionFilter) ([]*DigitalAssetSubmission, int, error)
+	UpdateSubmission(ctx context.Context, row *DigitalAssetSubmission) error
 }
 
 type User struct {
@@ -448,6 +505,7 @@ type UserReferralHandoff struct {
 	CodeHash       string
 	ReferralCodeID string
 	InviterUserID  string
+	InviteeUserID  string
 	ConfigEpoch    string
 	ServiceGroupID string
 	InviterCredits float64
@@ -723,6 +781,7 @@ type EmailInviteRepository interface {
 type UserReferralRepository interface {
 	GetActiveCodeForInviter(ctx context.Context, tenantID, inviterUserID string) (*UserReferralCode, error)
 	GetCodeByHash(ctx context.Context, tenantID, codeHash string) (*UserReferralCode, error)
+	GetCodeByID(ctx context.Context, tenantID, codeID string) (*UserReferralCode, error)
 	// ListActiveCodes returns encrypted source values only for the bounded
 	// legacy case-folded lookup fallback. Callers must never expose them.
 	ListActiveCodes(ctx context.Context, tenantID string) ([]*UserReferralCode, error)
@@ -923,24 +982,76 @@ type LLMPromptCacheRepository interface {
 	Stats(ctx context.Context, now time.Time) (*LLMPromptCacheStats, error)
 }
 
+type LLMUsageRecord struct {
+	ID             int64
+	TenantID       string
+	UserID         string
+	Email          string
+	ProviderID     string
+	Model          string
+	ServiceGroupID string
+	WorkloadClass  string
+	ClassSource    string
+	Preview        string
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	Credits        float64
+	CreatedAt      time.Time
+}
+
+type LLMUsageRepository interface {
+	Insert(ctx context.Context, rec *LLMUsageRecord) error
+	ListByGroupClass(ctx context.Context, tenantID, groupID, class string) ([]LLMUsageRecord, error)
+}
+
+// LLMBillingSettlement is the immutable financial evidence for one finalized
+// Hub request. Amounts are fixed-point microcredits; the float fields used by
+// older usage views are deliberately not part of this persistence contract.
+type LLMBillingSettlement struct {
+	TenantID               string
+	RequestID              string
+	UserID                 string
+	Email                  string
+	ProviderID             string
+	ServiceGroupIDsJSON    string
+	InputTokens            int64
+	OutputTokens           int64
+	RequestedMicrocredits  int64
+	DeductedMicrocredits   int64
+	BillingGroupMultiplier float64
+	PricingJSON            string
+	CreatedAt              time.Time
+}
+
+// LLMBillingLedgerRepository stores request-idempotent settlement facts in
+// SQLite. It is an audit mirror while balances/grants remain in the legacy
+// registry document; callers must not treat an audit insert as a balance
+// mutation.
+type LLMBillingLedgerRepository interface {
+	RecordSettlement(ctx context.Context, settlement *LLMBillingSettlement) (inserted bool, err error)
+}
+
 type Store struct {
-	Tenants         TenantRepository
-	Admins          AdminUserRepository
-	System          SystemSettingsRepository
-	AdminAudit      AdminAuditRepository
-	FailureLogs     FailureEventLogRepository
-	Users           UserRepository
-	Enrollments     EnrollmentRepository
-	EmailBlocks     EmailBlocklistRepository
-	InvitationCodes InvitationCodeRepository
-	EmailInvites    EmailInviteRepository
-	UserReferrals   UserReferralRepository
-	Machines        MachineRepository
-	ViewerTokens    ViewerTokenRepository
-	LoginTokens     LoginTokenRepository
-	Sessions        SessionRepository
-	WorkflowRepo    WorkflowRepository
-	LLMPromptCache  LLMPromptCacheRepository
-	KnowledgeShares KnowledgeShareRepository
-	DigitalAssets   DigitalAssetRepository
+	Tenants          TenantRepository
+	Admins           AdminUserRepository
+	System           SystemSettingsRepository
+	AdminAudit       AdminAuditRepository
+	FailureLogs      FailureEventLogRepository
+	Users            UserRepository
+	Enrollments      EnrollmentRepository
+	EmailBlocks      EmailBlocklistRepository
+	InvitationCodes  InvitationCodeRepository
+	EmailInvites     EmailInviteRepository
+	UserReferrals    UserReferralRepository
+	Machines         MachineRepository
+	ViewerTokens     ViewerTokenRepository
+	LoginTokens      LoginTokenRepository
+	Sessions         SessionRepository
+	WorkflowRepo     WorkflowRepository
+	LLMPromptCache   LLMPromptCacheRepository
+	LLMUsage         LLMUsageRepository
+	LLMBillingLedger LLMBillingLedgerRepository
+	KnowledgeShares  KnowledgeShareRepository
+	DigitalAssets    DigitalAssetRepository
 }

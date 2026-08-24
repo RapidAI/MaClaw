@@ -1,0 +1,55 @@
+{
+  "category": "capability_deprecation",
+  "category_id": 14,
+  "title": "deprecated capability cannot publish or plan; replacement stays explicit",
+  "design_ref": "10.1 item 14",
+  "format_note": "eval.legacy.capture is registered Deprecated with Replacement visual.capture.desktop. Planner maps deprecated needs to unknown_capability. Catalog publish rejects a provider that still declares the deprecated contract.",
+  "samples": [
+    {
+      "id": "deprecated-need-is-unknown",
+      "title": "A need for eval.legacy.capture is unknown_capability",
+      "needs": [{"id": "legacy", "capability": "eval.legacy.capture"}],
+      "catalog": {"coverage": {"state": "complete"}, "providers": []},
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "legacy", "reason": "unknown_capability"}]
+      }
+    },
+    {
+      "id": "deprecated-provider-cannot-publish",
+      "title": "Catalog publish rejects a provider that declares the deprecated capability",
+      "needs": [{"id": "legacy", "capability": "eval.legacy.capture"}],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "legacy_capture",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "eval.legacy.capture"}]
+          }
+        ]
+      },
+      "expected": {
+        "publish_error_contains": "deprecated"
+      }
+    },
+    {
+      "id": "replacement-capture-is-selected",
+      "title": "The replacement visual.capture.desktop contract still plans",
+      "needs": [{"id": "capture", "capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}}],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "capture_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}}],
+            "produces": [{"kind": "image", "mime_type": "image/png"}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "capture", "capability": "visual.capture.desktop", "adapter": "capture_adapter"}]
+      }
+    }
+  ]
+}

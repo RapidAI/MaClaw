@@ -150,6 +150,56 @@ func TestCollectCodingWorkbenchDirectoryEntriesBoundsTheFirstPage(t *testing.T) 
 	}
 }
 
+func TestIsCodingWorkbenchHiddenBrowserName(t *testing.T) {
+	for _, name := range []string{".maclaw-tmp", ".git", ".gitignore", ".."} {
+		if !isCodingWorkbenchHiddenBrowserName(name) {
+			t.Fatalf("%q must be hidden", name)
+		}
+	}
+	for _, name := range []string{"build", "hello.cpp", "CMakeLists.txt", ""} {
+		if isCodingWorkbenchHiddenBrowserName(name) {
+			t.Fatalf("%q must stay visible", name)
+		}
+	}
+}
+
+func TestCollectCodingWorkbenchDirectoryEntriesSkipsHiddenNames(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".maclaw-tmp", ".git"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hello.cpp"), []byte("int main(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	entries, truncated, err := collectCodingWorkbenchDirectoryEntries(handle, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("small directory must not be truncated")
+	}
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if isCodingWorkbenchHiddenBrowserName(entry.Name) {
+			t.Fatalf("hidden entry was listed: %+v", entry)
+		}
+		got = append(got, entry.Name)
+	}
+	if strings.Join(got, ",") != "build,hello.cpp" {
+		t.Fatalf("entries = %v, want visible items only", got)
+	}
+}
+
 func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(t *testing.T) {
 	raw := strings.Join([]string{
 		"$ python3 -c '<hidden>'",
@@ -164,6 +214,23 @@ func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(
 	}
 	if entries[0].Name != "src" || !entries[0].IsDir || entries[1].Path != "main.go" {
 		t.Fatalf("parsed entries = %+v", entries)
+	}
+}
+
+func TestParseCodingWorkbenchRemoteDirectoryRecordsSkipsHiddenNames(t *testing.T) {
+	raw := strings.Join([]string{
+		`{"truncated":false}`,
+		`{"name":".maclaw-tmp","is_dir":true}`,
+		`{"name":".git","is_dir":true}`,
+		`{"name":"hello.cpp","is_dir":false}`,
+		`{"name":"build","is_dir":true}`,
+	}, "\n")
+	entries, truncated := parseCodingWorkbenchRemoteDirectoryRecords(raw, "")
+	if truncated || len(entries) != 2 {
+		t.Fatalf("truncated=%v entries=%v, want visible items only", truncated, entries)
+	}
+	if entries[0].Name != "build" || entries[1].Name != "hello.cpp" {
+		t.Fatalf("parsed entries = %+v, want build then hello.cpp", entries)
 	}
 }
 

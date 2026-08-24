@@ -1,0 +1,49 @@
+{
+  "category": "crash_recovery_ledger",
+  "category_id": 24,
+  "title": "crash recovery ledger",
+  "design_ref": "10.1 item 24",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "search-plan-not-receipt",
+      "title": "A planned search is not a delivery receipt",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "search",
+            "capability": "information.search.web"
+          }
+        ]
+      },
+      "notes": "Crash recovery is in semantic_outbox_fencing_test.go."
+    }
+  ]
+}

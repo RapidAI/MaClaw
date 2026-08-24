@@ -18,6 +18,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -58,10 +61,82 @@ const (
 
 // codingSubAgentSkillMatch is a skill that matched the current task.
 type codingSubAgentSkillMatch struct {
-	Name         string
+	Name string
+	// QualifiedID is an identity the host skill resolver matches exactly, or ""
+	// for a skill that only has a display name. See
+	// codingSubAgentSkillQualifiedID.
+	QualifiedID  string
 	Description  string
 	Score        float64
 	RequiredArgs []string // parameter names the skill expects (e.g. "input", "output")
+	// Binding fields are a snapshot of the selected installed Skill. They are
+	// revalidated immediately before a request-local alias executes; a changed
+	// package must replan rather than inherit the old alias authority.
+	StableID       string
+	Version        string
+	ContentDigest  string
+	ContractDigest string
+}
+
+func codingSubAgentSkillContentDigest(def NLSkillDefinition) string {
+	return codingSubAgentBindingDigest(struct {
+		Name        string
+		Description string
+		Steps       []corelib.NLSkillStep
+		Content     string
+		Source      string
+	}{
+		Name:        strings.TrimSpace(def.Name),
+		Description: def.Description,
+		Steps:       def.Steps,
+		Content:     def.Content,
+		Source:      def.Source,
+	})
+}
+
+func codingSubAgentSkillContractDigest(def NLSkillDefinition) string {
+	return codingSubAgentBindingDigest(struct {
+		RequiredArgs []string
+		Params       []corelib.NLSkillParam
+		Capabilities []string
+		Requires     []string
+	}{
+		RequiredArgs: def.RequiredArgs,
+		Params:       def.Params,
+		Capabilities: def.Capabilities,
+		Requires:     def.RequiresTools,
+	})
+}
+
+func codingSubAgentBindingDigest(value interface{}) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+// codingSubAgentSkillQualifiedID returns an identity that MatchesQualifiedID
+// resolves exactly, or "" when the skill carries only a display name.
+//
+// This is deliberately not DynamicSkillStableID: that one falls back to
+// "legacy:<name>" for skills with no stable identity, and no resolver in the
+// run path matches that form. A skill without a qualified identity has to keep
+// travelling as its display name.
+func codingSubAgentSkillQualifiedID(def NLSkillDefinition) string {
+	if id := strings.TrimSpace(def.SkillID); id != "" {
+		return id
+	}
+	if hub := strings.TrimSpace(def.HubSkillID); hub != "" {
+		return hub
+	}
+	if pub := strings.TrimSpace(def.Publisher); pub != "" {
+		if name := strings.TrimSpace(def.Name); name != "" {
+			return pub + ":" + name
+		}
+	}
+	return ""
 }
 
 // selectRelevantSkillsForTask returns up to codingSubAgentMaxSkills skills
@@ -77,6 +152,15 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	}
 
 	allSkills := exec.List()
+	if len(allSkills) == 0 {
+		return nil
+	}
+	// A coding turn only draws on the coding experience pool. Skills learned
+	// from general chat stay out entirely, so no amount of scoring can put a
+	// past conversation in front of the model as a capability.
+	registrySize := len(allSkills)
+	allSkills = filterSkillsForExperienceDomain(corelib.SkillDomainCoding, allSkills)
+	skippedByExperienceDomain := registrySize - len(allSkills)
 	if len(allSkills) == 0 {
 		return nil
 	}
@@ -96,10 +180,15 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	// recipe to the CodingSubAgent only makes it attempt a run that the runner
 	// will reject during preflight.
 	type candidate struct {
-		name         string
-		description  string
-		doc          string   // scoring input: name + description + triggers
-		requiredArgs []string // params the skill expects
+		name           string
+		qualifiedID    string
+		description    string
+		doc            string   // scoring input: name + description + triggers
+		requiredArgs   []string // params the skill expects
+		stableID       string
+		version        string
+		contentDigest  string
+		contractDigest string
 	}
 	var candidates []candidate
 	skippedByTaskFit := 0
@@ -129,10 +218,15 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			continue
 		}
 		candidates = append(candidates, candidate{
-			name:         s.Name,
-			description:  s.Description,
-			doc:          doc,
-			requiredArgs: s.RequiredArgs,
+			name:           s.Name,
+			qualifiedID:    codingSubAgentSkillQualifiedID(s),
+			description:    s.Description,
+			doc:            doc,
+			requiredArgs:   s.RequiredArgs,
+			stableID:       codingSubAgentSkillQualifiedID(s),
+			version:        strings.TrimSpace(s.HubVersion),
+			contentDigest:  codingSubAgentSkillContentDigest(s),
+			contractDigest: codingSubAgentSkillContractDigest(s),
 		})
 	}
 	if len(candidates) == 0 {
@@ -158,26 +252,15 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	emb := getSubAgentEmbedder(c.subagent.handler)
 	scored := scoreAndSelectTopK(taskForScore, docs, emb, maxK, threshold)
 
-	// Full env: if still thin, fill remaining slots with any leftover candidates
-	// (score 0) so installed skills stay reachable like Claude Code extensions.
-	if fullEnv && len(scored) < maxK {
-		picked := make(map[int]bool, len(scored))
-		for _, s := range scored {
-			picked[s.Idx] = true
-		}
-		for i := range candidates {
-			if len(scored) >= maxK {
-				break
-			}
-			if picked[i] {
-				continue
-			}
-			scored = append(scored, scoredCandidate{Idx: i, Score: 0})
-			picked[i] = true
-		}
-	}
-
+	// Every injected skill must have earned its slot. A learned skill's
+	// description is the raw request of the session it was distilled from, so
+	// padding unfilled slots with unscored candidates puts an unrelated past
+	// task ("北京天气") in front of the model as if it were the current one.
+	// A full environment widens maxK and lowers the threshold; it does not
+	// waive the threshold.
 	if len(scored) == 0 {
+		log.Printf("[coding-subagent] skill selection: task=%q full_env=%v candidates=%d skipped_other_domain=%d skipped_task_fit=%d skipped_runner_incompatible=%d matched=none threshold=%.2f",
+			truncateLogText(taskDescription, 60), fullEnv, len(candidates), skippedByExperienceDomain, skippedByTaskFit, skippedByRunnerCompatibility, threshold)
 		return nil
 	}
 
@@ -189,20 +272,27 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			desc = string([]rune(desc)[:80]) + "..."
 		}
 		results[i] = codingSubAgentSkillMatch{
-			Name:         cand.name,
-			Description:  desc,
-			Score:        s.Score,
-			RequiredArgs: cand.requiredArgs,
+			Name:           cand.name,
+			QualifiedID:    cand.qualifiedID,
+			Description:    desc,
+			Score:          s.Score,
+			RequiredArgs:   cand.requiredArgs,
+			StableID:       cand.stableID,
+			Version:        cand.version,
+			ContentDigest:  cand.contentDigest,
+			ContractDigest: cand.contractDigest,
 		}
 	}
 
-	// Log selection results for diagnostics.
+	// Log selection results for diagnostics. Names and scores make it possible
+	// to tell an intentional match from context bleed when a coding session
+	// reasons about an unrelated topic.
 	names := make([]string, len(results))
 	for i, r := range results {
 		names[i] = fmt.Sprintf("%s(%.2f)", r.Name, r.Score)
 	}
-	log.Printf("[coding-subagent] skill selection: task=%q full_env=%v candidates=%d skipped_task_fit=%d skipped_runner_incompatible=%d matched=%s",
-		truncateLogText(taskDescription, 60), fullEnv, len(candidates), skippedByTaskFit, skippedByRunnerCompatibility, strings.Join(names, ", "))
+	log.Printf("[coding-subagent] skill selection: task=%q full_env=%v registry=%d candidates=%d skipped_other_domain=%d skipped_task_fit=%d skipped_runner_incompatible=%d threshold=%.2f matched=%s",
+		truncateLogText(taskDescription, 60), fullEnv, registrySize, len(candidates), skippedByExperienceDomain, skippedByTaskFit, skippedByRunnerCompatibility, threshold, strings.Join(names, ", "))
 
 	return results
 }
@@ -213,10 +303,11 @@ func codingSubAgentSkillFitsTask(taskDescription, skillDoc string) bool {
 	if task == "" || doc == "" {
 		return true
 	}
+	// Only an explicit document request in the task admits document/office
+	// skills. Short or unrecognized task text ("push", "continue") used to fall
+	// through here and admit every installed skill, which is how document and
+	// learned-from-chat skills reached a coding turn.
 	if codingSubAgentTextHasAny(task, codingSubAgentDocumentIntentMarkers()) {
-		return true
-	}
-	if !codingSubAgentTextHasAny(task, codingSubAgentSoftwareTaskMarkers()) {
 		return true
 	}
 	if codingSubAgentTextHasAny(doc, codingSubAgentSoftwareSkillMarkers()) {
@@ -232,14 +323,6 @@ func codingSubAgentTextHasAny(text string, markers []string) bool {
 		}
 	}
 	return false
-}
-
-func codingSubAgentSoftwareTaskMarkers() []string {
-	return []string{
-		"code", "coding", "program", "software", "driver", "kernel", "windows", "linux",
-		"c++", "golang", "typescript", "javascript", "python", "rust", "cmake",
-		"build", "test", "tests", "tdd", "代码", "编程", "开发", "驱动", "实现", "修复", "测试",
-	}
 }
 
 func codingSubAgentSoftwareSkillMarkers() []string {
@@ -308,17 +391,20 @@ func buildCodingSubAgentSkillSection(skills []codingSubAgentSkillMatch) string {
 		return ""
 	}
 	var b strings.Builder
+	injected := make([]string, 0, len(skills))
 	b.WriteString("\n## 可用 Skill\n")
-	b.WriteString("以下 Skill 可通过 manage_skill(action=\"run\", name=\"...\", args={...}) 调用：\n")
+	b.WriteString("以下条目是本机已安装的能力清单，不是用户的请求，不要把它们当成当前任务。仅在当前任务确实需要时，调用本轮工具列表中与该条目对应的 Skill 函数；函数别名和 Skill 身份由宿主绑定，不能自行传入或猜测。\n")
 	for _, s := range skills {
 		if len(s.RequiredArgs) > 0 {
 			b.WriteString(fmt.Sprintf("- **%s**: %s（参数: %s）\n", s.Name, s.Description, compactCodingSubAgentRequiredArgs(s.RequiredArgs)))
 		} else {
 			b.WriteString(fmt.Sprintf("- **%s**: %s\n", s.Name, s.Description))
 		}
+		injected = append(injected, fmt.Sprintf("%s(%.2f)", s.Name, s.Score))
 	}
+	log.Printf("[coding-subagent] skill prompt injection: count=%d skills=%s", len(skills), strings.Join(injected, ", "))
 	b.WriteString("\n调用规则：\n")
-	b.WriteString("- 只允许 action=\"run\" 和 action=\"status\"，禁止 install/uninstall/upload/patch\n")
+	b.WriteString("- 每个 Skill 函数只执行已经绑定的一个 Skill，禁止 install/uninstall/upload/patch/status 或传入 Skill 名称\n")
 	b.WriteString("- 如果 Skill 需要输入文件，先用 write_file 准备好文件，再传路径给 Skill\n")
 	b.WriteString("- Skill 执行失败时不要反复重试，改用 bash + 手动命令完成任务\n")
 	return b.String()
@@ -345,26 +431,22 @@ func compactCodingSubAgentRequiredArgs(args []string) string {
 	return strings.Join(parts, ", ")
 }
 
-// buildManageSkillToolDefinition returns the manage_skill tool definition
-// scoped to run/status actions only (SubAgent cannot install/uninstall/patch).
-func buildManageSkillToolDefinition() map[string]interface{} {
+// buildCodingSkillInvocationDefinition renders a request-local alias for one
+// already-selected Skill. The alias accepts business arguments only; the model
+// never controls the Skill identity or a run record ID.
+func buildCodingSkillInvocationDefinition(alias string, skill codingSubAgentSkillMatch) map[string]interface{} {
+	description := "执行本轮已绑定的 Skill"
+	if name := strings.TrimSpace(skill.Name); name != "" {
+		description += "（" + name + "）"
+	}
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
-			"name":        "manage_skill",
-			"description": "调用已安装的 Skill 执行辅助任务（如 UI 分析、代码格式化等）。仅支持 run 和 status 操作。",
+			"name":        alias,
+			"description": description,
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action": map[string]interface{}{
-						"type":        "string",
-						"description": "操作类型：run（执行 Skill）或 status（查询执行状态）",
-						"enum":        []string{"run", "status"},
-					},
-					"name": map[string]interface{}{
-						"type":        "string",
-						"description": "Skill 名称（run 时必填）",
-					},
 					"args": map[string]interface{}{
 						"type":        "object",
 						"description": "Skill 运行参数。Skill 命令中的 {{key}} 占位符会被替换为 args 中对应的值。",
@@ -377,12 +459,7 @@ func buildManageSkillToolDefinition() map[string]interface{} {
 						"type":        "string",
 						"description": "输出路径（可选）",
 					},
-					"run_id": map[string]interface{}{
-						"type":        "string",
-						"description": "运行 ID（status 时必填）",
-					},
 				},
-				"required": []string{"action"},
 			},
 		},
 	}
@@ -395,10 +472,13 @@ var codingSubAgentAllowedSkillActions = map[string]bool{
 	"status": true,
 }
 
-// executeManageSkill handles manage_skill calls from the SubAgent with
-// action restriction (only run/status allowed) and skill name validation.
+// executeManageSkill is retained for explicit host-maintenance callers while
+// the legacy transport is removed. It is not a model-dispatch entry point:
+// model calls must use the durable bound-selection bridge, which does not
+// accept a Skill selector from arguments.
 func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}) codingToolExecutionResult {
-	// Guard: manage_skill is only available when skills were matched for this task.
+	// Explicit-maintenance guard: legacy gateway callers may use only matches
+	// supplied by their host. Model callers are rejected before they reach here.
 	if len(c.matchedSkills) == 0 {
 		log.Printf("[coding-subagent] manage_skill blocked: no matched skills for this task")
 		msg := "manage_skill is not available for this task (no relevant skills found)"
@@ -421,13 +501,6 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 		}
 	}
 
-	if action == "status" {
-		runID, _ := args["run_id"].(string)
-		if strings.TrimSpace(runID) == "" {
-			return missingCodingSubAgentRequiredArgumentResult("manage_skill", "run_id")
-		}
-	}
-
 	// For "run" action, validate skill name against matched skills.
 	if action == "run" {
 		name, _ := args["name"].(string)
@@ -435,8 +508,10 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 		if name == "" {
 			return missingCodingSubAgentRequiredArgumentResult("manage_skill", "name")
 		}
-		matchedSkill, matched := c.matchedSkill(name)
-		if !matched {
+		candidates := c.matchedSkillCandidates(name)
+		switch len(candidates) {
+		case 1:
+		case 0:
 			allowed := make([]string, len(c.matchedSkills))
 			for i, s := range c.matchedSkills {
 				allowed[i] = s.Name
@@ -447,18 +522,43 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 				Text:    c.rejectToolCall("manage_skill", args, msg),
 				Outcome: codingToolOutcomeBlocked,
 			}
+		default:
+			refs := make([]string, len(candidates))
+			for i, s := range candidates {
+				refs[i] = codingSubAgentSkillBoundIdentity(s)
+			}
+			log.Printf("[coding-subagent] manage_skill blocked: skill=%q is ambiguous across %v", name, refs)
+			msg := fmt.Sprintf("skill %q is ambiguous for this task: it names %d matched skills (%s). Reissue manage_skill with name set to one of those identifiers.", name, len(candidates), strings.Join(refs, ", "))
+			return codingToolExecutionResult{
+				Text:    c.rejectToolCall("manage_skill", args, msg),
+				Outcome: codingToolOutcomeBlocked,
+			}
 		}
-		if result, rejected := rejectMissingCodingSubAgentSkillRequiredArguments(matchedSkill, args); rejected {
-			return result
-		}
+		return c.executeBoundCodingSkill("manage_skill", args, candidates[0])
 	}
+	return codingToolExecutionResult{Text: c.rejectToolCall("manage_skill", args, "status is unavailable without a request-local run binding"), Outcome: codingToolOutcomeBlocked}
+}
+
+// executeBoundCodingSkill is an explicit host-maintenance helper. The durable
+// model path must reach a fixed bridge only after ResolveAlias, Validate and
+// Admit; it must never route here from a request-local in-memory alias map.
+func (c *codingSubAgentCallbacks) executeBoundCodingSkill(invocationName string, args map[string]interface{}, matchedSkill codingSubAgentSkillMatch) codingToolExecutionResult {
+	if isCodingDynamicInvocationAlias(invocationName) && !c.codingSkillBindingIsCurrent(matchedSkill) {
+		return codingToolExecutionResult{Text: "[system rejected] skill_binding_stale; request a managed replan", Outcome: codingToolOutcomeBlocked}
+	}
+	if result, rejected := rejectMissingCodingSubAgentSkillRequiredArguments(matchedSkill, args); rejected {
+		return result
+	}
+	boundArgs := cloneCodingDynamicArguments(args)
+	boundArgs["action"] = "run"
+	boundArgs["name"] = codingSubAgentSkillBoundIdentity(matchedSkill)
 
 	// Delegate to the host handler's toolManageSkill.
 	h := c.subagent.handler
 	if h == nil {
 		msg := "manage_skill: host handler unavailable"
 		return codingToolExecutionResult{
-			Text:    c.rejectToolCall("manage_skill", args, msg),
+			Text:    c.rejectToolCall(invocationName, boundArgs, msg),
 			Outcome: codingToolOutcomeFailed,
 		}
 	}
@@ -471,10 +571,10 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 		}
 	}
 
-	skillName, _ := args["name"].(string)
-	log.Printf("[coding-subagent] manage_skill: action=%s name=%q", action, skillName)
+	skillName, _ := boundArgs["name"].(string)
+	log.Printf("[coding-subagent] dynamic skill: alias=%s name=%q", invocationName, skillName)
 
-	result := h.toolManageSkill(context.Background(), args, progressCB)
+	result := h.toolManageSkill(context.Background(), boundArgs, progressCB)
 
 	// Classify outcome based on known failure prefixes from toolManageSkill.
 	// Do NOT use substring matching on the result body — skill output may
@@ -491,8 +591,41 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 		(len(result) > 0 && []rune(result)[0] == 0x274C) {
 		outcome = codingToolOutcomeFailed
 	}
-	c.trackDynamicToolResult("manage_skill", skillName, result, outcome == codingToolOutcomeSuccess)
+	c.trackDynamicToolResult(invocationName, skillName, result, outcome == codingToolOutcomeSuccess)
 	return codingToolExecutionResult{Text: result, Outcome: outcome}
+}
+
+// codingSkillBindingIsCurrent re-reads the installed inventory at admission.
+// Matching by the alias's captured identity plus content/contract digests keeps
+// a changed package from inheriting authority granted to an earlier request.
+func (c *codingSubAgentCallbacks) codingSkillBindingIsCurrent(binding codingSubAgentSkillMatch) bool {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil || strings.TrimSpace(binding.StableID) == "" ||
+		strings.TrimSpace(binding.ContentDigest) == "" || strings.TrimSpace(binding.ContractDigest) == "" {
+		return false
+	}
+	exec := c.subagent.handler.getSkillExecutor()
+	if exec == nil {
+		return false
+	}
+	for _, current := range exec.List() {
+		if current.Status != "active" || codingSubAgentSkillQualifiedID(current) != binding.StableID {
+			continue
+		}
+		if strings.TrimSpace(current.HubVersion) != strings.TrimSpace(binding.Version) {
+			return false
+		}
+		return codingSubAgentSkillContentDigest(current) == binding.ContentDigest &&
+			codingSubAgentSkillContractDigest(current) == binding.ContractDigest
+	}
+	return false
+}
+
+func cloneCodingDynamicArguments(args map[string]interface{}) map[string]interface{} {
+	copy := make(map[string]interface{}, len(args)+2)
+	for key, value := range args {
+		copy[key] = value
+	}
+	return copy
 }
 func isCodingSubAgentDynamicToolFailure(result string) bool {
 	trimmed := strings.TrimSpace(result)
@@ -513,6 +646,7 @@ func isCodingSubAgentDynamicToolFailure(result string) bool {
 		"panic:",
 		"tool error:",
 		"skill failed",
+		"[mcp error]",
 		"mcp call failed:",
 		"mcp tool error",
 		"mcp 调用失败",
@@ -535,14 +669,57 @@ func (c *codingSubAgentCallbacks) isMatchedSkill(name string) bool {
 	return ok
 }
 
+// matchedSkill resolves a skill reference to the single matched entry it stands
+// for. A reference covering no entry, or more than one, resolves to nothing:
+// the caller must not guess which skill was meant.
 func (c *codingSubAgentCallbacks) matchedSkill(name string) (codingSubAgentSkillMatch, bool) {
-	lower := strings.ToLower(name)
-	for _, s := range c.matchedSkills {
-		if strings.ToLower(s.Name) == lower {
-			return s, true
-		}
+	candidates := c.matchedSkillCandidates(name)
+	if len(candidates) != 1 {
+		return codingSubAgentSkillMatch{}, false
 	}
-	return codingSubAgentSkillMatch{}, false
+	return candidates[0], true
+}
+
+// matchedSkillCandidates returns every distinct matched entry a reference can
+// stand for. A reference matches a display name or a qualified identity.
+//
+// Rows identical in both fields collapse to one. Two genuinely different
+// skills that share a display name and have no qualified identity are
+// indistinguishable here and also collapse; the host resolver reports those as
+// ambiguous on its own, because neither can win its stable-identity pass.
+func (c *codingSubAgentCallbacks) matchedSkillCandidates(name string) []codingSubAgentSkillMatch {
+	if c == nil {
+		return nil
+	}
+	want := strings.TrimSpace(name)
+	if want == "" {
+		return nil
+	}
+	var candidates []codingSubAgentSkillMatch
+	seen := make(map[string]bool)
+	for _, s := range c.matchedSkills {
+		if !strings.EqualFold(strings.TrimSpace(s.Name), want) &&
+			!strings.EqualFold(strings.TrimSpace(s.QualifiedID), want) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(s.QualifiedID)) + "\x00" + strings.ToLower(strings.TrimSpace(s.Name))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		candidates = append(candidates, s)
+	}
+	return candidates
+}
+
+// codingSubAgentSkillBoundIdentity returns the identity the host should resolve:
+// the qualified identity when the skill has one, otherwise the display name.
+// Both come from the matched entry, never from the model.
+func codingSubAgentSkillBoundIdentity(match codingSubAgentSkillMatch) string {
+	if id := strings.TrimSpace(match.QualifiedID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(match.Name)
 }
 
 func rejectMissingCodingSubAgentSkillRequiredArguments(skill codingSubAgentSkillMatch, args map[string]interface{}) (codingToolExecutionResult, bool) {

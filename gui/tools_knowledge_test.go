@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	coreintent "github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"image"
 	"image/color"
 	"image/png"
@@ -13,9 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	coreintent "github.com/RapidAI/CodeClaw/corelib/intent"
-	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
 func TestRegisterKnowledgeTools(t *testing.T) {
@@ -32,12 +32,10 @@ func TestRegisterKnowledgeTools(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeImportToolsDescribeSixOfficeFormatsWithoutConverterRequirement(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{"knowledge_import_directory", "knowledge_import_files"} {
 		tool, ok := registry.Get(name)
 		if !ok {
@@ -63,12 +61,10 @@ func TestKnowledgeImportToolsDescribeSixOfficeFormatsWithoutConverterRequirement
 		}
 	}
 }
-
 func TestKnowledgeRecallToolSchemasDescribeAllSixOfficeSourceKinds(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{
 		"knowledge_search",
 		"knowledge_explain",
@@ -94,11 +90,9 @@ func TestKnowledgeRecallToolSchemasDescribeAllSixOfficeSourceKinds(t *testing.T)
 		}
 	}
 }
-
 func TestNewIMMessageHandlerRegistersKnowledgeTools(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	handler := NewIMMessageHandler(app, nil)
-
 	for _, name := range []string{"knowledge_search", "knowledge_image_search", "knowledge_context_pack"} {
 		registered, ok := handler.registry.Get(name)
 		if !ok || registered == nil || registered.Handler == nil {
@@ -106,7 +100,6 @@ func TestNewIMMessageHandlerRegistersKnowledgeTools(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeImageSearchToolReturnsOnlyImageEvidence(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	store, err := app.openKnowledgeStore()
@@ -133,7 +126,6 @@ func TestKnowledgeImageSearchToolReturnsOnlyImageEvidence(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	out := app.toolKnowledgeImageSearch(map[string]interface{}{"query": "gateway architecture diagram"})
 	if !strings.Contains(out, "\"mode\": \"text_to_image\"") || !strings.Contains(out, "image-node") {
 		t.Fatalf("unexpected image search output: %s", out)
@@ -142,7 +134,6 @@ func TestKnowledgeImageSearchToolReturnsOnlyImageEvidence(t *testing.T) {
 		t.Fatalf("image search returned non-image node: %s", out)
 	}
 }
-
 func TestKnowledgeImageSearchNeverLeaksImageSourcePaths(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
@@ -184,7 +175,6 @@ func TestKnowledgeImageSearchNeverLeaksImageSourcePaths(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	if _, err := os.Stat(absolutePath); !os.IsNotExist(err) {
 		t.Fatalf("test setup unexpectedly has a readable asset at %q: %v", absolutePath, err)
 	}
@@ -208,7 +198,6 @@ func TestKnowledgeImageSearchNeverLeaksImageSourcePaths(t *testing.T) {
 		}
 	}
 }
-
 func TestVEKnowledgeImageSearchReturnsDisplaySafeEvidence(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
@@ -238,7 +227,6 @@ func TestVEKnowledgeImageSearchReturnsDisplaySafeEvidence(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	imageResult := veToolKnowledgeImageSearch(app, map[string]interface{}{"query": "gateway architecture"})
 	if !strings.Contains(imageResult, "[KB_IMAGE:"+assetID+"|data:image/jpeg;base64,") {
 		t.Fatalf("VE image search did not return a safe display marker: %s", imageResult)
@@ -246,7 +234,6 @@ func TestVEKnowledgeImageSearchReturnsDisplaySafeEvidence(t *testing.T) {
 	if strings.Contains(imageResult, app.GetDataDir()) || strings.Contains(imageResult, "original.png") {
 		t.Fatalf("VE image search leaked a host asset path: %s", imageResult)
 	}
-
 	generalResult := veToolKnowledgeSearch(app, map[string]interface{}{"query": "gateway architecture"})
 	if !strings.Contains(generalResult, "ve-image-node") {
 		t.Fatalf("VE general search lost image text evidence: %s", generalResult)
@@ -255,7 +242,6 @@ func TestVEKnowledgeImageSearchReturnsDisplaySafeEvidence(t *testing.T) {
 		t.Fatalf("VE general search leaked display media: %s", generalResult)
 	}
 }
-
 func TestVEKnowledgeImageSearchForwardsReadOnlyFilters(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	store, err := app.openKnowledgeStore()
@@ -282,7 +268,6 @@ func TestVEKnowledgeImageSearchForwardsReadOnlyFilters(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	result := veToolKnowledgeImageSearch(app, map[string]interface{}{
 		"query":      "network topology",
 		"source_ids": []interface{}{"ve-filter-keep"},
@@ -295,7 +280,6 @@ func TestVEKnowledgeImageSearchForwardsReadOnlyFilters(t *testing.T) {
 		t.Fatalf("VE image search ignored source_ids filter: %s", result)
 	}
 }
-
 func TestVERemoteImageSearchDefinitionExposesReadOnlyFilters(t *testing.T) {
 	definitions := veRemoteToolDefinitions(true)
 	for _, definition := range definitions {
@@ -314,7 +298,6 @@ func TestVERemoteImageSearchDefinitionExposesReadOnlyFilters(t *testing.T) {
 	}
 	t.Fatal("VE knowledge_image_search definition not found")
 }
-
 func veKnowledgeImageToolPNG(t *testing.T) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
@@ -325,7 +308,6 @@ func veKnowledgeImageToolPNG(t *testing.T) []byte {
 	}
 	return out.Bytes()
 }
-
 func TestKnowledgeSearchDoesNotExposeImageDisplayMarkers(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
@@ -350,7 +332,6 @@ func TestKnowledgeSearchDoesNotExposeImageDisplayMarkers(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	out := app.toolKnowledgeSearch(map[string]interface{}{"query": "gateway architecture diagram"})
 	if !strings.Contains(out, "image-node") {
 		t.Fatalf("general search lost image evidence: %s", out)
@@ -359,7 +340,6 @@ func TestKnowledgeSearchDoesNotExposeImageDisplayMarkers(t *testing.T) {
 		t.Fatalf("general search leaked display media: %s", out)
 	}
 }
-
 func TestKnowledgeToolSourceFilterLimit(t *testing.T) {
 	t.Parallel()
 	if got := knowledgeToolSourceFilterLimit(map[string]interface{}{"limit": 900}, 100, 500, 5000); got != 500 {
@@ -376,12 +356,10 @@ func TestKnowledgeToolSourceFilterLimit(t *testing.T) {
 		t.Fatalf("explicit source hard-capped limit = %d, want 5", got)
 	}
 }
-
 func TestKnowledgeExecuteQualityMaintenanceSchemaDocumentsExecutableActions(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	tool, ok := registry.Get("knowledge_execute_quality_maintenance_plan")
 	if !ok {
 		t.Fatalf("expected knowledge_execute_quality_maintenance_plan to be registered")
@@ -428,12 +406,10 @@ func TestKnowledgeExecuteQualityMaintenanceSchemaDocumentsExecutableActions(t *t
 		}
 	}
 }
-
 func TestKnowledgeQualityOverviewSchemasDocumentExplicitSourceLimitRaise(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	tests := map[string][]string{
 		"knowledge_health":                   {"explicit source_ids", "health limit", "cover those sources", "5000"},
 		"knowledge_source_quality":           {"explicit source_ids", "scoring limit", "cover those sources", "5000"},
@@ -456,12 +432,10 @@ func TestKnowledgeQualityOverviewSchemasDocumentExplicitSourceLimitRaise(t *test
 		}
 	}
 }
-
 func TestKnowledgeQualityActionSchemasDocumentExplicitSourceLimitRaise(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{
 		"knowledge_rebuild_quality_gaps",
 		"knowledge_backfill_quality_labels",
@@ -484,7 +458,6 @@ func TestKnowledgeQualityActionSchemasDocumentExplicitSourceLimitRaise(t *testin
 		}
 	}
 }
-
 func TestKnowledgeToolQualityInspectionLimitCoversExplicitSourceIDs(t *testing.T) {
 	sourceIDs := make([]interface{}, 0, 5002)
 	sourceIDs = append(sourceIDs, "ksrc_0", "ksrc_0", "")
@@ -498,12 +471,10 @@ func TestKnowledgeToolQualityInspectionLimitCoversExplicitSourceIDs(t *testing.T
 		t.Fatalf("expected default quality inspection limit for invalid input, got %d", got)
 	}
 }
-
 func TestKnowledgeByFilterSchemasDocumentExplicitSourceLimitRaise(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{
 		"knowledge_preview_sources_refresh_by_filter",
 		"knowledge_refresh_changed_sources_by_filter",
@@ -528,7 +499,6 @@ func TestKnowledgeByFilterSchemasDocumentExplicitSourceLimitRaise(t *testing.T) 
 		}
 	}
 }
-
 func TestKnowledgeToolSourceFilterLimitCoversExplicitSourceIDs(t *testing.T) {
 	sourceIDs := make([]interface{}, 0, 703)
 	sourceIDs = append(sourceIDs, "ksrc_0", "ksrc_0", "")
@@ -549,12 +519,10 @@ func TestKnowledgeToolSourceFilterLimitCoversExplicitSourceIDs(t *testing.T) {
 		t.Fatalf("expected unscoped source filter limit to keep normal max, got %d", got)
 	}
 }
-
 func TestKnowledgeSourceIDsAliasIsExposedInSchemas(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{
 		"knowledge_search",
 		"knowledge_explain",
@@ -595,7 +563,6 @@ func TestKnowledgeSourceIDsAliasIsExposedInSchemas(t *testing.T) {
 			t.Fatalf("%s ids description = %q, want alias description", name, alias["description"])
 		}
 	}
-
 	for _, name := range []string{
 		"knowledge_preview_sources_refresh",
 		"knowledge_refresh_changed_sources",
@@ -618,12 +585,10 @@ func TestKnowledgeSourceIDsAliasIsExposedInSchemas(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeByFilterSchemasExposeSourceSelectors(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{
 		"knowledge_preview_sources_refresh_by_filter",
 		"knowledge_refresh_changed_sources_by_filter",
@@ -643,12 +608,10 @@ func TestKnowledgeByFilterSchemasExposeSourceSelectors(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeSingleSourceSchemasExposeIDAlias(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{
 		"knowledge_source_detail",
 		"knowledge_list_source_links",
@@ -693,12 +656,10 @@ func TestKnowledgeSingleSourceSchemasExposeIDAlias(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeAliasSchemasForBatchCardAndLinkTools(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, name := range []string{"knowledge_list_import_items", "knowledge_retry_import_batch"} {
 		tool, ok := registry.Get(name)
 		if !ok {
@@ -712,7 +673,6 @@ func TestKnowledgeAliasSchemasForBatchCardAndLinkTools(t *testing.T) {
 			t.Fatalf("%s schema missing batch id alias: %#v", name, tool.InputSchema["id"])
 		}
 	}
-
 	restoreTool, ok := registry.Get("knowledge_restore_suppressed_cards")
 	if !ok {
 		t.Fatalf("expected knowledge_restore_suppressed_cards to be registered")
@@ -723,7 +683,6 @@ func TestKnowledgeAliasSchemasForBatchCardAndLinkTools(t *testing.T) {
 	if _, ok := restoreTool.InputSchema["ids"]; !ok {
 		t.Fatalf("restore schema missing ids alias")
 	}
-
 	for _, name := range []string{"knowledge_source_path", "knowledge_link_sources", "knowledge_unlink_sources"} {
 		tool, ok := registry.Get(name)
 		if !ok {
@@ -736,12 +695,10 @@ func TestKnowledgeAliasSchemasForBatchCardAndLinkTools(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeAlternativeInputSchemasDoNotRequirePrimaryOnlyFields(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	cases := map[string][]string{
 		"knowledge_save_url":                 {"url", "link", "href", "uri", "target"},
 		"knowledge_save_urls":                {"urls", "links", "hrefs", "text", "url_list", "link_list", "html"},
@@ -777,12 +734,10 @@ func TestKnowledgeAlternativeInputSchemasDoNotRequirePrimaryOnlyFields(t *testin
 		}
 	}
 }
-
 func TestKnowledgeArraySchemasDeclareStringItems(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
-
 	for _, tool := range registry.List() {
 		if tool.Source != "builtin:knowledge" {
 			continue
@@ -799,7 +754,6 @@ func TestKnowledgeArraySchemasDeclareStringItems(t *testing.T) {
 		}
 	}
 }
-
 func TestNormalizeKnowledgeSearchOptionsTrimsAndDedupesFilters(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	opts := app.normalizeKnowledgeSearchOptions(knowledge.SearchOptions{
@@ -815,7 +769,6 @@ func TestNormalizeKnowledgeSearchOptionsTrimsAndDedupesFilters(t *testing.T) {
 		SourceIDs:    []string{" KSRC_1 ", "ksrc_1"},
 		Labels:       []string{" Governed ", "governed", "Docs"},
 	})
-
 	if opts.Query != "Prism Anchor" || opts.SearchScope != "personal" || opts.TopicHint != "Local Brain" || opts.Domain != "Docs.Example.COM" || opts.Entity != "Project Alpha" || opts.Predicate != "uses" {
 		t.Fatalf("unexpected scalar normalization: %#v", opts)
 	}
@@ -835,7 +788,6 @@ func TestNormalizeKnowledgeSearchOptionsTrimsAndDedupesFilters(t *testing.T) {
 		t.Fatalf("labels = %q, want %q", got, want)
 	}
 }
-
 func TestNormalizeKnowledgeListOptionsTrimsAndDedupesFilters(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	opts := app.normalizeKnowledgeListOptions(knowledge.ListSourcesOptions{
@@ -853,7 +805,6 @@ func TestNormalizeKnowledgeListOptionsTrimsAndDedupesFilters(t *testing.T) {
 		QualityGrades:  []string{" Poor ", "poor", "Good"},
 		Limit:          -1,
 	})
-
 	if opts.SearchScope != "all" || opts.Query != "prism" || opts.Status != "distilled" || opts.Kind != "markdown" || opts.Domain != "Docs.Example.COM" || opts.Label != "Governed" || opts.CoverageFilter != "Missing Cards" || opts.QualityGrade != "needs_attention" || opts.Limit != 100 {
 		t.Fatalf("unexpected list scalar normalization: %#v", opts)
 	}
@@ -870,7 +821,6 @@ func TestNormalizeKnowledgeListOptionsTrimsAndDedupesFilters(t *testing.T) {
 		t.Fatalf("quality grades = %q, want %q", got, want)
 	}
 }
-
 func TestKnowledgeToolListSourcesOptionsAcceptsIDsAlias(t *testing.T) {
 	opts := knowledgeToolListSourcesOptions(map[string]interface{}{
 		"ids": []interface{}{" KSRC_1 ", "ksrc_1", "ksrc_2"},
@@ -882,7 +832,6 @@ func TestKnowledgeToolListSourcesOptionsAcceptsIDsAlias(t *testing.T) {
 		t.Fatalf("ids alias should count as a knowledge source filter")
 	}
 }
-
 func TestKnowledgeToolSourceIDsAcceptsIDsAlias(t *testing.T) {
 	got := knowledgeToolSourceIDs(map[string]interface{}{"ids": []interface{}{" KSRC_1 ", "ksrc_1", "ksrc_2"}})
 	if want := []string{"KSRC_1", "ksrc_1", "ksrc_2"}; strings.Join(got, ",") != strings.Join(want, ",") {
@@ -896,14 +845,12 @@ func TestKnowledgeToolSourceIDsAcceptsIDsAlias(t *testing.T) {
 		t.Fatalf("source_ids should take precedence over ids alias, got %#v", preferred)
 	}
 }
-
 func TestKnowledgeToolStringSliceSplitsCommonSeparators(t *testing.T) {
 	got := knowledgeToolStringSlice("alpha, beta;gamma\n delta\t epsilon\uFF0Czeta\uFF1Beta\u3001theta;alpha")
 	if want := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("knowledgeToolStringSlice = %#v, want %#v", got, want)
 	}
 }
-
 func TestKnowledgeToolStringSliceDedupesArrayInputs(t *testing.T) {
 	got := knowledgeToolStringSlice([]interface{}{" alpha ", "beta,gamma", "alpha", "", "delta；epsilon", "gamma", "zeta、eta"})
 	want := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"}
@@ -911,7 +858,6 @@ func TestKnowledgeToolStringSliceDedupesArrayInputs(t *testing.T) {
 		t.Fatalf("knowledgeToolStringSlice array = %#v, want %#v", got, want)
 	}
 }
-
 func TestKnowledgeToolFilePathSlicePreservesPunctuationFileNames(t *testing.T) {
 	got := knowledgeToolFilePathSlice([]interface{}{
 		`D:\docs\a,b;c.md` + "\n" + `D:\docs\second.md`,
@@ -927,7 +873,6 @@ func TestKnowledgeToolFilePathSlicePreservesPunctuationFileNames(t *testing.T) {
 		t.Fatalf("knowledgeToolFilePathSlice = %#v, want %#v", got, want)
 	}
 }
-
 func TestKnowledgeImportFilesAcceptsPathAliases(t *testing.T) {
 	root := t.TempDir()
 	app := &App{testHomeDir: root}
@@ -954,7 +899,6 @@ func TestKnowledgeImportFilesAcceptsPathAliases(t *testing.T) {
 		}
 	}
 }
-
 func TestDiscoverToolFindsKnowledgeImportFilesForChineseNeed(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
@@ -965,24 +909,20 @@ func TestDiscoverToolFindsKnowledgeImportFilesForChineseNeed(t *testing.T) {
 		t.Fatalf("discover_tool should find knowledge_import_files for Chinese import need, got %s", out)
 	}
 }
-
 func TestDiscoverToolFindsKnowledgeDirectoryAndURLWritersForChineseNeed(t *testing.T) {
 	registry := NewToolRegistry()
 	app := &App{testHomeDir: t.TempDir()}
 	registerKnowledgeTools(registry, app)
 	h := &IMMessageHandler{registry: registry}
-
 	dirOut := h.toolDiscoverTool(map[string]interface{}{"need": "把本地目录导入知识库外脑"})
 	if !strings.Contains(dirOut, "knowledge_import_directory") {
 		t.Fatalf("discover_tool should find knowledge_import_directory for Chinese directory import need, got %s", dirOut)
 	}
-
 	urlOut := h.toolDiscoverTool(map[string]interface{}{"need": "保存网页链接到知识库外脑"})
 	if !strings.Contains(urlOut, "knowledge_save_url") && !strings.Contains(urlOut, "knowledge_save_urls") {
 		t.Fatalf("discover_tool should find URL knowledge save tools for Chinese URL save need, got %s", urlOut)
 	}
 }
-
 func TestKnowledgeToolURLListSplitsAndDedupesBatchText(t *testing.T) {
 	got := knowledgeToolURLList("https://a.example.com, https://b.example.com；https://a.example.com\nhttps://c.example.com、https://b.example.com")
 	want := []string{"https://a.example.com", "https://b.example.com", "https://c.example.com"}
@@ -990,7 +930,6 @@ func TestKnowledgeToolURLListSplitsAndDedupesBatchText(t *testing.T) {
 		t.Fatalf("knowledgeToolURLList = %#v, want %#v", got, want)
 	}
 }
-
 func TestKnowledgeToolFirstStringAcceptsArrayWrappedScalars(t *testing.T) {
 	got := knowledgeToolFirstString(map[string]interface{}{
 		"url":      []interface{}{"", " https://example.com/docs "},
@@ -1006,7 +945,6 @@ func TestKnowledgeToolFirstStringAcceptsArrayWrappedScalars(t *testing.T) {
 		t.Fatalf("knowledgeToolFirstString []string = %q", got)
 	}
 }
-
 func TestKnowledgeToolScalarArgsAcceptArrayWrappedValues(t *testing.T) {
 	args := map[string]interface{}{
 		"limit":         []interface{}{"", json.Number("12")},
@@ -1036,7 +974,6 @@ func TestKnowledgeToolScalarArgsAcceptArrayWrappedValues(t *testing.T) {
 		t.Fatalf("knowledgeToolStringArg = %q, want trimmed array-wrapped string", got)
 	}
 }
-
 func TestKnowledgeToolUniqueStringsDedupesMergedURLInputs(t *testing.T) {
 	got := knowledgeToolUniqueStrings([]string{" https://a.example.com ", "https://b.example.com", "https://a.example.com", "", "https://c.example.com", "https://b.example.com"})
 	want := []string{"https://a.example.com", "https://b.example.com", "https://c.example.com"}
@@ -1044,9 +981,15 @@ func TestKnowledgeToolUniqueStringsDedupesMergedURLInputs(t *testing.T) {
 		t.Fatalf("knowledgeToolUniqueStrings = %#v, want %#v", got, want)
 	}
 }
-
 func TestKnowledgeSaveURLsAcceptsLinkAliases(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+		websearch.CloseDownloadLogger()
+	})
 	out := app.toolKnowledgeSaveURLs(map[string]interface{}{
 		"links":     []interface{}{"notaurl"},
 		"hrefs":     []interface{}{"http://127.0.0.1/private"},
@@ -1056,7 +999,6 @@ func TestKnowledgeSaveURLsAcceptsLinkAliases(t *testing.T) {
 		t.Fatalf("link aliases should feed batch URL save, got %s", out)
 	}
 }
-
 func TestKnowledgeToolMissingArgumentErrorsAreASCII(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	for name, output := range map[string]string{
@@ -1075,7 +1017,6 @@ func TestKnowledgeToolMissingArgumentErrorsAreASCII(t *testing.T) {
 		}
 	}
 }
-
 func TestKnowledgeToolsAreRoutedForAgentKnowledgeRequests(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	handler := &IMMessageHandler{app: app}
@@ -1091,7 +1032,6 @@ func TestKnowledgeToolsAreRoutedForAgentKnowledgeRequests(t *testing.T) {
 			Handler:     func(args map[string]interface{}) string { return "{}" },
 		})
 	}
-
 	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
 	if len(tools) <= maxToolBudget {
 		t.Fatalf("need more than %d tools to verify routed visibility, got %d", maxToolBudget, len(tools))
@@ -1099,23 +1039,19 @@ func TestKnowledgeToolsAreRoutedForAgentKnowledgeRequests(t *testing.T) {
 	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
 	router.SetRegistry(handler.registry)
 	handler.SetToolRouter(router)
-
 	recallRouted := handler.routeTools("Use the saved local corpus to answer what the prism anchor note says.", tools)
 	recallNames := knowledgeToolNames(recallRouted)
 	if !recallNames["knowledge_search"] && !recallNames["knowledge_context_pack"] {
 		t.Fatalf("expected a knowledge recall tool to be routed, got %v", sortedKnowledgeToolNames(recallNames))
 	}
-
-	importRouted := handler.routeTools("I approved D:\\docs; scan and import those documents into the saved local corpus.", tools)
+	importRouted := routeKnowledgeWriteForTest(handler, coreintent.LabelKnowledgeWrite, "I approved D:\\docs; scan and import those documents into the saved local corpus.", tools)
 	importNames := knowledgeToolNames(importRouted)
 	if !importNames["knowledge_import_directory"] && !importNames["knowledge_import_files"] {
 		t.Fatalf("expected a knowledge import tool to be routed, got %v", sortedKnowledgeToolNames(importNames))
 	}
 }
-
 func TestKnowledgeSearchRoutedForLocalServerMemoryQuestion(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
-
 	routed := handler.routeTools("\u77e5\u9053api2\u670d\u52a1\u5668\u4fe1\u606f\u5417\uff1f", tools)
 	names := knowledgeToolNames(routed)
 	if !names["knowledge_search"] {
@@ -1129,12 +1065,9 @@ func TestKnowledgeSearchRoutedForLocalServerMemoryQuestion(t *testing.T) {
 		t.Fatalf("read-only local info question must not expose knowledge write tools, got %v", sortedKnowledgeToolNames(names))
 	}
 }
-
 func TestKnowledgeSaveTextIsRoutedForExplicitKnowledgeWrite(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
-	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
-
-	routed := handler.routeTools("\u5c06\u4ee5\u4e0b\u5185\u5bb9\u4fdd\u5b58\u8fdb\u77e5\u8bc6\u5e93\uff1aPrism anchor uses route policy.", tools)
+	routed := routeKnowledgeWriteForTest(handler, coreintent.LabelKnowledgeWrite, "\u5c06\u4ee5\u4e0b\u5185\u5bb9\u4fdd\u5b58\u8fdb\u77e5\u8bc6\u5e93\uff1aPrism anchor uses route policy.", tools)
 	names := knowledgeToolNames(routed)
 	if !names["knowledge_save_text"] {
 		t.Fatalf("expected knowledge_save_text for explicit knowledge write, got %v", sortedKnowledgeToolNames(names))
@@ -1144,12 +1077,9 @@ func TestKnowledgeSaveTextIsRoutedForExplicitKnowledgeWrite(t *testing.T) {
 		t.Fatalf("memory must be suppressed for explicit knowledge writes so the model cannot save to the wrong store")
 	}
 }
-
 func TestKnowledgeImportFilesIsRoutedForSelectedFileKnowledgeWrite(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
-	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
-
-	routed := handler.routeTools("\u628a\u8fd9\u4e2a\u6587\u4ef6\u4fdd\u5b58\u8fdb\u77e5\u8bc6\u5e93\n\n[\u7528\u6237\u9009\u62e9\u7684\u672c\u5730\u6587\u4ef6\u8def\u5f84]\nD:\\cases\\evidence.pdf\n\u8bf7\u76f4\u63a5\u4f7f\u7528\u8fd9\u4e9b\u8def\u5f84\u3002", tools)
+	routed := routeKnowledgeWriteForTest(handler, coreintent.LabelKnowledgeWrite, "\u628a\u8fd9\u4e2a\u6587\u4ef6\u4fdd\u5b58\u8fdb\u77e5\u8bc6\u5e93\n\n[\u7528\u6237\u9009\u62e9\u7684\u672c\u5730\u6587\u4ef6\u8def\u5f84]\nD:\\cases\\evidence.pdf\n\u8bf7\u76f4\u63a5\u4f7f\u7528\u8fd9\u4e9b\u8def\u5f84\u3002", tools)
 	names := knowledgeToolNames(routed)
 	if !names["knowledge_import_files"] {
 		t.Fatalf("expected knowledge_import_files for selected-file knowledge write, got %v", sortedKnowledgeToolNames(names))
@@ -1162,12 +1092,9 @@ func TestKnowledgeImportFilesIsRoutedForSelectedFileKnowledgeWrite(t *testing.T)
 		t.Fatalf("memory must be suppressed for explicit selected-file knowledge writes")
 	}
 }
-
 func TestKnowledgeImportDirectoryIsRoutedForExplicitDirectoryKnowledgeWrite(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
-	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
-
-	routed := handler.routeTools("\u5bfc\u5165\u8fd9\u4e2a\u76ee\u5f55\u5230\u77e5\u8bc6\u5e93\uff1aD:\\docs\\research", tools)
+	routed := routeKnowledgeWriteForTest(handler, coreintent.LabelKnowledgeWrite, "\u5bfc\u5165\u8fd9\u4e2a\u76ee\u5f55\u5230\u77e5\u8bc6\u5e93\uff1aD:\\docs\\research", tools)
 	names := knowledgeToolNames(routed)
 	if !names["knowledge_import_directory"] {
 		t.Fatalf("expected knowledge_import_directory for explicit directory knowledge write, got %v", sortedKnowledgeToolNames(names))
@@ -1176,12 +1103,9 @@ func TestKnowledgeImportDirectoryIsRoutedForExplicitDirectoryKnowledgeWrite(t *t
 		t.Fatalf("directory imports must not route knowledge_save_text")
 	}
 }
-
 func TestKnowledgeSaveURLIsRoutedForExplicitURLKnowledgeWrite(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
-	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
-
-	routed := handler.routeTools("Archive https://example.com/research into my saved corpus", tools)
+	routed := routeKnowledgeWriteForTest(handler, coreintent.LabelKnowledgeWrite, "Archive https://example.com/research into my saved corpus", tools)
 	names := knowledgeToolNames(routed)
 	if !names["knowledge_save_url"] && !names["knowledge_save_urls"] {
 		t.Fatalf("expected URL knowledge save tools, got %v", sortedKnowledgeToolNames(names))
@@ -1190,12 +1114,9 @@ func TestKnowledgeSaveURLIsRoutedForExplicitURLKnowledgeWrite(t *testing.T) {
 		t.Fatalf("URL knowledge writes should only expose URL save tools, got %v", sortedKnowledgeToolNames(names))
 	}
 }
-
 func TestKnowledgeMixedPayloadRoutesEveryNeededKnowledgeWriter(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
-	setTestKnowledgeWriteIntent(handler, coreintent.LabelKnowledgeWrite)
-
-	routed := handler.routeTools("Archive https://example.com/research and D:\\cases\\evidence.pdf into my saved corpus", tools)
+	routed := routeKnowledgeWriteForTest(handler, coreintent.LabelKnowledgeWrite, "Archive https://example.com/research and D:\\cases\\evidence.pdf into my saved corpus", tools)
 	names := knowledgeToolNames(routed)
 	if !names["knowledge_save_url"] || !names["knowledge_import_files"] {
 		t.Fatalf("expected URL and file knowledge writers, got %v", sortedKnowledgeToolNames(names))
@@ -1204,11 +1125,9 @@ func TestKnowledgeMixedPayloadRoutesEveryNeededKnowledgeWriter(t *testing.T) {
 		t.Fatalf("mixed URL/file payload should not expose unrelated writers, got %v", sortedKnowledgeToolNames(names))
 	}
 }
-
 func TestKnowledgeSaveQuestionDoesNotForceWriteTool(t *testing.T) {
 	handler, tools := newCrowdedKnowledgeRoutingHandler(t)
 	setTestKnowledgeWriteIntent(handler, coreintent.LabelUnknown)
-
 	for _, msg := range []string{
 		"\u521a\u624d\u4fdd\u5b58\u5230\u77e5\u8bc6\u5e93\u4e86\u5417\uff1f",
 		"\u4eceAI\u52a9\u624b\u9762\u677f\u4e0d\u80fd\u4fdd\u5b58\u5185\u5bb9\u8fdb\u77e5\u8bc6\u5e93\uff1f",
@@ -1225,6 +1144,17 @@ func TestKnowledgeSaveQuestionDoesNotForceWriteTool(t *testing.T) {
 	}
 }
 
+// routeKnowledgeWriteForTest mirrors the production agent-loop path: the
+// turn's semantic classification is computed upstream (full context) and
+// handed to routing via RouteOptions.PreResolved, exactly like
+// prepareAgentLoopTools passes ctx.Runtime.SemanticIntent. The legacy
+// handler.routeTools compat path has no such context and fails closed, which
+// is not what these tests are about.
+func routeKnowledgeWriteForTest(handler *IMMessageHandler, label coreintent.IntentLabel, msg string, tools []map[string]interface{}) []map[string]interface{} {
+	result := coreintent.ClassificationResult{Primary: label, Confidence: 0.96}
+	result.ToolNames = coreintent.NewToolAffinityRegistry().Resolve(label, nil)
+	return handler.routeSessionTools("", msg, tools, false, &result)
+}
 func setTestKnowledgeWriteIntent(handler *IMMessageHandler, label coreintent.IntentLabel) {
 	if handler.toolRouter == nil {
 		return
@@ -1233,7 +1163,6 @@ func setTestKnowledgeWriteIntent(handler *IMMessageHandler, label coreintent.Int
 		return `{"top":[{"skill":"` + string(label) + `","score":0.96}]}`, nil
 	}}))
 }
-
 func newCrowdedKnowledgeRoutingHandler(t *testing.T) (*IMMessageHandler, []map[string]interface{}) {
 	t.Helper()
 	app := &App{testHomeDir: t.TempDir()}
@@ -1259,7 +1188,6 @@ func newCrowdedKnowledgeRoutingHandler(t *testing.T) (*IMMessageHandler, []map[s
 	handler.SetToolRouter(router)
 	return handler, tools
 }
-
 func allToolNames(tools []map[string]interface{}) map[string]bool {
 	names := make(map[string]bool, len(tools))
 	for _, tool := range tools {
@@ -1267,7 +1195,6 @@ func allToolNames(tools []map[string]interface{}) map[string]bool {
 	}
 	return names
 }
-
 func knowledgeToolNames(tools []map[string]interface{}) map[string]bool {
 	names := make(map[string]bool, len(tools))
 	for _, tool := range tools {
@@ -1275,7 +1202,6 @@ func knowledgeToolNames(tools []map[string]interface{}) map[string]bool {
 	}
 	return names
 }
-
 func sortedKnowledgeToolNames(names map[string]bool) []string {
 	out := make([]string, 0, len(names))
 	for name := range names {
@@ -1286,9 +1212,15 @@ func sortedKnowledgeToolNames(names map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
-
 func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		if app.enterpriseClient != nil {
+			_ = app.enterpriseClient.Close()
+			app.enterpriseClient = nil
+		}
+		websearch.CloseDownloadLogger()
+	})
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("# Notes\n\nProject uses prism anchor in local knowledge."), 0o644); err != nil {
 		t.Fatalf("write note: %v", err)
@@ -2177,10 +2109,8 @@ func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {
 		t.Fatalf("enabled source should return to default search: %s", enabledSearch)
 	}
 }
-
 func TestNormalizeKnowledgeSourceIDsPreservesCase(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-
 	searchOpts := app.normalizeKnowledgeSearchOptions(knowledge.SearchOptions{
 		SourceIDs:   []string{" Src_Mixed_001 ", "Src_Mixed_001", "src_mixed_001", " "},
 		SourceKinds: []string{" CSV "},
@@ -2191,7 +2121,6 @@ func TestNormalizeKnowledgeSourceIDsPreservesCase(t *testing.T) {
 	if got, want := searchOpts.SourceKinds, []string{"csv"}; !stringSlicesEqual(got, want) {
 		t.Fatalf("source kinds should still normalize case, got %#v want %#v", got, want)
 	}
-
 	structuredOpts := app.normalizeKnowledgeStructuredSearchOptions(knowledge.StructuredSearchOptions{
 		SourceID:  " Src_One ",
 		SourceIDs: []string{" Src_Mixed_001 ", "src_mixed_001"},
@@ -2202,7 +2131,6 @@ func TestNormalizeKnowledgeSourceIDsPreservesCase(t *testing.T) {
 	if got, want := structuredOpts.SourceIDs, []string{"Src_Mixed_001", "src_mixed_001"}; !stringSlicesEqual(got, want) {
 		t.Fatalf("structured source IDs = %#v, want %#v", got, want)
 	}
-
 	catalogOpts := app.normalizeKnowledgeStructuredCatalogOptions(knowledge.StructuredCatalogOptions{
 		SourceID:  " Src_Catalog ",
 		SourceIDs: []string{" Src_Mixed_001 ", "src_mixed_001"},
@@ -2214,7 +2142,6 @@ func TestNormalizeKnowledgeSourceIDsPreservesCase(t *testing.T) {
 		t.Fatalf("catalog source IDs = %#v, want %#v", got, want)
 	}
 }
-
 func stringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

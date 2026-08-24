@@ -32,6 +32,7 @@ func runGitInProject(ctx context.Context, projectPath string, args ...string) (s
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = projectPath
+	hideCommandWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

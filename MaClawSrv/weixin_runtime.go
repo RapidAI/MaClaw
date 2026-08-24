@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -316,6 +318,9 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 			"context_token": msg.ContextToken,
 			"runtime":       "maclawsrv",
 			"media_type":    msg.MediaType,
+			"destination_id": agentservice.TrustedChannelDestinationID(map[string]string{
+				"contact_id": strings.TrimSpace(msg.FromUserID),
+			}),
 		},
 	})
 	if asrOK {
@@ -332,6 +337,9 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 		ClientSessionKey: "weixin:" + msg.FromUserID,
 		ClientMessageID:  srvWeixinClientMessageID(msg, text),
 	}
+	if att, ok := srvWeixinTrustedIncomingAttachment(msg); ok {
+		sendInput.Attachments = []agent.MessageAttachment{att}
+	}
 	_, _, assistant, err := m.svc.SendMessage(ctx, p, instanceID, sendInput)
 	if errors.Is(err, agentservice.ErrInstanceNotFound) {
 		m.clearCachedInstanceID(p)
@@ -346,9 +354,12 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 		m.reply(ctx, p, expected, msg, "WeChat message failed: "+err.Error())
 		return
 	}
-	if assistant != nil && strings.TrimSpace(assistant.Content) != "" {
-		m.reply(ctx, p, expected, msg, assistant.Content)
-		m.replyVoiceIfEnabled(ctx, p, expected, msg, assistant.Content, cfg, srvWeixinIncomingIsVoice(msg))
+	if assistant != nil {
+		text := textutil.SanitizeVisibleChatText(assistant.Content)
+		if strings.TrimSpace(text) != "" {
+			m.reply(ctx, p, expected, msg, text)
+			m.replyVoiceIfEnabled(ctx, p, expected, msg, text, cfg, srvWeixinIncomingIsVoice(msg))
+		}
 	}
 	_ = parent
 }
@@ -565,6 +576,76 @@ func (m *srvWeixinGatewayManager) SendProactiveTextAny(text string) (peer string
 		return "", lastErr
 	}
 	return "", fmt.Errorf("weixin proactive send failed")
+}
+
+// SendProactiveFileToPeer sends one file to exactly one WeChat private peer
+// that already has a live context token. It never falls back to the last
+// active conversation or another user. A nil SendMedia error is not a
+// channel receipt; callers must settle unknown.
+func (m *srvWeixinGatewayManager) SendProactiveFileToPeer(ctx context.Context, peer string, data []byte, fileName, mimeType string) error {
+	peer = strings.TrimSpace(peer)
+	if peer == "" || scheduler.IsSelfPeerID(peer) {
+		return fmt.Errorf("weixin: exact target id is required")
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("file payload is empty")
+	}
+	if m == nil {
+		return fmt.Errorf("weixin file delivery unavailable")
+	}
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		fileName = "file"
+	}
+	_ = mimeType
+	type candidate struct {
+		gw  srvWeixinGateway
+		p   agentservice.Principal
+		rt  *srvWeixinRuntime
+		tok string
+	}
+	var cands []candidate
+	m.mu.Lock()
+	for _, rt := range m.runtimes {
+		if rt == nil || rt.gateway == nil {
+			continue
+		}
+		st := strings.TrimSpace(rt.status.Status)
+		if st != srvWeixinStatusConnected && st != srvWeixinStatusConnecting {
+			continue
+		}
+		tok := strings.TrimSpace(rt.gateway.GetContextToken(peer))
+		if tok == "" {
+			continue
+		}
+		cands = append(cands, candidate{gw: rt.gateway, p: rt.principal, rt: rt, tok: tok})
+	}
+	m.mu.Unlock()
+	if len(cands) == 0 {
+		return fmt.Errorf("weixin file delivery unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var lastErr error
+	for _, c := range cands {
+		if err := c.gw.SendMedia(ctx, weixin.OutgoingMedia{
+			ToUserID:     peer,
+			ContextToken: c.tok,
+			FileData:     data,
+			FileName:     fileName,
+			MediaType:    srvIMOutgoingMediaKind(mimeType),
+		}); err != nil {
+			lastErr = err
+			m.setStatus(c.p, c.rt, srvWeixinStatusError, err.Error())
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("weixin file delivery unavailable")
 }
 
 func (m *srvWeixinGatewayManager) replyVoiceFile(ctx context.Context, p agentservice.Principal, expected *srvWeixinRuntime, msg weixin.IncomingMessage, mp3 []byte) {

@@ -75,9 +75,20 @@ func BuildUserContentWithAttachmentStagingDirAndOfficeReadConfig(userText string
 	return buildUserContentWithAttachmentStagingDirAndSettings(userText, attachments, protocol, supportsVision, imageOCR, voiceConvert, stagingDir, officeReadSettingsForConfig(config))
 }
 
+// BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext is
+// the context-aware variant for hosts that know the active model window. It
+// scales automatic document extraction before the payload is assembled.
+func BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, imageOCR ImageTextRecognizer, voiceConvert VoiceConverter, stagingDir string, config OfficeReadConfig, contextTokens int) interface{} {
+	return buildUserContentWithAttachmentStagingDirAndSettingsWithContext(userText, attachments, protocol, supportsVision, imageOCR, voiceConvert, stagingDir, officeReadSettingsForConfig(config), contextTokens)
+}
+
 func buildUserContentWithAttachmentStagingDirAndSettings(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, imageOCR ImageTextRecognizer, voiceConvert VoiceConverter, stagingDir string, settings officeReadSettings) interface{} {
+	return buildUserContentWithAttachmentStagingDirAndSettingsWithContext(userText, attachments, protocol, supportsVision, imageOCR, voiceConvert, stagingDir, settings, 0)
+}
+
+func buildUserContentWithAttachmentStagingDirAndSettingsWithContext(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, imageOCR ImageTextRecognizer, voiceConvert VoiceConverter, stagingDir string, settings officeReadSettings, contextTokens int) interface{} {
 	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
-	userText = expandUserSelectedFilePathsWithSettings(userText, settings)
+	userText = expandUserSelectedFilePathsWithSettingsAndBudget(userText, settings, contextTokens)
 	if len(attachments) == 0 {
 		return userText
 	}
@@ -154,7 +165,7 @@ func buildUserContentWithAttachmentStagingDirAndSettings(userText string, attach
 		}
 	}
 
-	fileDescriptions = appendDocumentExtractsToDescriptionsWithSettings(fileDescriptions, userText, settings)
+	fileDescriptions = appendDocumentExtractsToDescriptionsWithSettingsAndBudget(fileDescriptions, userText, settings, contextTokens)
 
 	// userText was already expanded at function entry (idempotent).
 	fullText := userText

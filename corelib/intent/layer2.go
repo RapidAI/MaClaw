@@ -94,7 +94,6 @@ func defaultAnchors() []intentAnchor {
 				"整理会议纪要",
 				"总结这篇文章",
 				"帮我整理资料",
-				"生成PDF报告",
 				"把这段话翻译成英文",
 				// English (non-coding tasks) — from gateAnchors non_coding
 				"summarize this article",
@@ -120,6 +119,11 @@ func defaultAnchors() []intentAnchor {
 				"start working",
 				"go ahead",
 				"continue",
+				"切换到完整模式",
+				"切换到完整agent模式",
+				"用完整能力再做一次",
+				"switch to full agent",
+				"switch to full agent mode",
 			},
 		},
 		{
@@ -148,6 +152,7 @@ func defaultAnchors() []intentAnchor {
 				"搜索一下最新的AI论文",
 				"帮我在网上查找这个问题的解决方案",
 				"搜索关于机器学习的资料",
+				"全网搜索这个人的资料",
 				"上网查一下这个API的文档",
 				"帮我搜索这个错误信息",
 				"网上找一下这个库的用法",
@@ -165,24 +170,42 @@ func defaultAnchors() []intentAnchor {
 			Texts: []string{
 				// Chinese
 				"把这个文件发送给我",
-				"打开桌面上的PDF文件",
 				"帮我发送这份报告",
-				"生成一份PDF文档并发给我",
-				"打开这个Excel文件看看内容",
 				"把结果导出为文件发送",
 				// English
 				"send me this file",
-				"open the PDF document on my desktop",
 				"deliver the report to me",
-				"generate a PDF and send it over",
-				"open this spreadsheet file",
 				"export the results and send the file",
+			},
+		},
+		{
+			Label: LabelDocumentOpen,
+			Texts: []string{
+				"打开桌面上的PDF文件",
+				"用默认程序打开这个文档",
+				"open the PDF document on my desktop",
+				"open this document with the default app",
+			},
+		},
+		{
+			Label: LabelDocumentGenerate,
+			Texts: []string{
+				"生成一份PDF文档并发给我",
+				"生成pdf报告",
+				"把这些内容生成PDF",
+				"export pdf",
+				"generate a PDF and send it over",
+				"generate a PDF document",
+				"render this as a PDF file",
+				"make a PDF from these facts",
 			},
 		},
 		{
 			Label: LabelBrowser,
 			Texts: []string{
 				// Chinese
+				"打开 Chrome 点购买",
+				"open Chrome and click Buy",
 				"打开浏览器访问这个网站",
 				"帮我在网页上点击购买按钮",
 				"用浏览器自动化填写表单",
@@ -228,11 +251,39 @@ func defaultAnchors() []intentAnchor {
 	}
 }
 
+const (
+	EmbeddingConfidentMinScore = 0.78
+	EmbeddingConfidentMinGap   = 0.10
+	// The companion floor is calibrated against the installed production Gemma
+	// model.  It is intentionally separate from a single-label grant: the
+	// leading label must still meet EmbeddingCompositePrimaryMinScore and the
+	// pair must be explicitly declared by the taxonomy.
+	// The floor is calibrated with generic live-data-to-PDF requests against
+	// PDF-only negative controls, and it is dimension-sensitive: absolute
+	// cosines rise with the embedding width, so the value must be re-measured
+	// whenever DefaultEmbeddingDim or the model changes. At 768 dimensions
+	// (2026-08-24) the strongest observed PDF-only live_data score is 0.715
+	// ("将附件里的内容排版并导出为PDF报告") and the weakest genuine weather+PDF
+	// companion is 0.744 ("天津天气…"); 0.73 sits between them. (At 256 the
+	// same negatives peaked at 0.643 and the floor was 0.67.)
+	EmbeddingCompositeSecondaryMinScore = 0.73
+	// EmbeddingCompositePrimaryMinScore is the minimum score for the leading
+	// half of a declared composite to stand on its own.  A compound result is
+	// only locally decisive when both independently embedded meanings clear
+	// their reviewed thresholds; it is not inferred from words in the request.
+	EmbeddingCompositePrimaryMinScore = EmbeddingConfidentMinScore
+	EmbeddingLookupMinScore           = 0.70
+	EmbeddingLookupMinGap             = 0.05
+	EmbeddingLookupCompositeFloor     = 0.60
+)
+
 // classifyByEmbedding performs Layer 2 embedding-based classification using
 // cosine similarity between the user message embedding and pre-computed anchor
 // vectors for each intent label category.
 //
-// Returns (result, true) when confident (top1Score >= 0.78 and gap >= 0.10),
+// Returns (result, true) when confident (top1Score >= EmbeddingConfidentMinScore
+// and gap >= EmbeddingConfidentMinGap, or a read-only search/live_data hit with
+// score >= EmbeddingLookupMinScore and gap >= EmbeddingLookupMinGap),
 // or (result, false) when the result is ambiguous and should escalate to Layer 3.
 //
 // Caching is handled one level up: UnifiedIntentClassifier memoizes results
@@ -269,7 +320,10 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		return ClassificationResult{}, false
 	}
 
-	// 3. Find top-1 and top-2 categories.
+	// 3. Find top-1 and top-2 categories, plus the strongest declared
+	// composite companion.  The runner-up is not necessarily the companion:
+	// a broad non-capability label can rank between the two halves of a real
+	// lookup + artifact request.
 	var top1, top2 labelScore
 	for _, s := range scores {
 		if s.score > top1.score {
@@ -277,6 +331,12 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			top1 = s
 		} else if s.score > top2.score {
 			top2 = s
+		}
+	}
+	var composite labelScore
+	for _, s := range scores {
+		if s.label != top1.label && locallyVerifiedEmbeddingCompositePair(top1.label, s.label) && s.score > composite.score {
+			composite = s
 		}
 	}
 
@@ -289,8 +349,48 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		Layer:      2,
 	}
 
-	if top1.score >= 0.78 && gap >= 0.10 {
+	// Live external data and an artifact-generating candidate form a dependency
+	// graph, not two interchangeable labels. The pair is a narrowly reviewed
+	// local decision: both independently embedded meanings must clear their
+	// thresholds. This avoids making a valid local semantic result depend on an
+	// unrelated model's structured-output behavior.
+	if composite.label != "" && composite.score >= EmbeddingCompositeSecondaryMinScore {
+		result.Secondary = []IntentLabel{composite.label}
+		if top1.score >= EmbeddingCompositePrimaryMinScore {
+			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
+			return result, true
+		}
+		result.Reason = fmt.Sprintf("embedding semantic composite requires tree: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
+		return result, false
+	}
+
+	// A document-generation candidate without a declared lookup companion
+	// remains unresolved.  Layer 2 can recognize the requested artifact, but it
+	// cannot prove whether its source facts are already supplied or must first
+	// be acquired.
+	if top1.label == LabelDocumentGenerate {
+		result.Reason = fmt.Sprintf("embedding document generation requires tree: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
+		return result, false
+	}
+
+	if top1.score >= EmbeddingConfidentMinScore && gap >= EmbeddingConfidentMinGap {
 		result.Reason = fmt.Sprintf("embedding: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
+		return result, true
+	}
+
+	// Read-only lookup: a slightly weaker live_data/search hit is still a
+	// lookup. Escalating to the chat model as Layer 3 makes the tree parser
+	// fail closed (the model answers as an assistant instead of emitting
+	// candidates) and HostRejects ordinary weather queries. A PDF/generate
+	// composite must not take this shortcut: it is mutating and has to keep
+	// the confident path or Layer 3 rather than collapsing to search-only.
+	if (top1.label == LabelSearch || top1.label == LabelLiveData) && top1.score >= EmbeddingLookupMinScore && gap >= EmbeddingLookupMinGap {
+		if composite.label != "" && composite.score >= EmbeddingLookupCompositeFloor {
+			result.Secondary = []IntentLabel{composite.label}
+			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
+			return result, false
+		}
+		result.Reason = fmt.Sprintf("embedding lookup: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 		return result, true
 	}
 
@@ -301,20 +401,38 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 
 // warmupAnchors pre-computes embeddings for all anchor texts using the
 // provided embedder. This should be called in a background goroutine at
-// startup to avoid blocking the main thread.
-func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) {
-	for i := range anchors {
-		if len(anchors[i].Texts) == 0 {
+// startup to avoid blocking the main thread. It returns a fully populated
+// replacement snapshot only when every anchor set received one vector per
+// source text; a partial warmup must never make the classifier appear ready.
+// It deliberately does not mutate the caller's anchors, because a reader may
+// still hold a snapshot from the previous model while this warmup runs.
+func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]intentAnchor, error) {
+	if embedder == nil || embedding.IsNoop(embedder) {
+		return nil, fmt.Errorf("embedding unavailable for anchor warmup")
+	}
+	warmed := make([]intentAnchor, len(anchors))
+	for i, anchor := range anchors {
+		warmed[i] = intentAnchor{Label: anchor.Label, Texts: append([]string(nil), anchor.Texts...)}
+		if len(anchor.Texts) == 0 {
 			continue
 		}
-		vecs, err := embedder.EmbedBatch(anchors[i].Texts)
+		vecs, err := embedder.EmbedBatch(anchor.Texts)
 		if err != nil {
-			log.Printf("[UnifiedIntentClassifier] warmup failed for %s: %v", anchors[i].Label, err)
-			return
+			log.Printf("[UnifiedIntentClassifier] warmup failed for %s: %v", anchor.Label, err)
+			return nil, fmt.Errorf("warm %s anchors: %w", anchor.Label, err)
 		}
-		anchors[i].Vecs = vecs
+		if len(vecs) != len(anchor.Texts) {
+			return nil, fmt.Errorf("warm %s anchors: got %d vectors for %d texts", anchor.Label, len(vecs), len(anchor.Texts))
+		}
+		for j, vec := range vecs {
+			if len(vec) == 0 || (embedder.Dim() > 0 && len(vec) != embedder.Dim()) {
+				return nil, fmt.Errorf("warm %s anchors: invalid vector %d (len=%d, dim=%d)", anchor.Label, j, len(vec), embedder.Dim())
+			}
+		}
+		warmed[i].Vecs = vecs
 	}
-	log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels)", len(anchors))
+	log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels)", len(warmed))
+	return warmed, nil
 }
 
 // cosineSimilarity computes the cosine similarity between two float32 vectors.

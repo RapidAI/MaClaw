@@ -9,7 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-func TestImplicitInFlightRecoveryDecisionStartsNewForOrdinaryInput(t *testing.T) {
+func TestImplicitInFlightRecoveryDecisionDefersOrdinaryInputToSemanticClassifier(t *testing.T) {
 	slot := &agent.UnfinishedTaskSlot{
 		SlotID: "slot-recovery",
 		Source: "in_flight_recovery",
@@ -20,18 +20,12 @@ func TestImplicitInFlightRecoveryDecisionStartsNewForOrdinaryInput(t *testing.T)
 		slot,
 		explicitTaskSlotDecision{},
 	)
-	if !decision.StartNewTask {
-		t.Fatal("expected ordinary input to start a new task instead of binding recovery slot")
-	}
-	if decision.DismissSlotID != slot.SlotID {
-		t.Fatalf("DismissSlotID = %q, want %q", decision.DismissSlotID, slot.SlotID)
-	}
-	if decision.ResumeSlotID != "" {
-		t.Fatalf("ResumeSlotID = %q, want empty", decision.ResumeSlotID)
+	if decision != (explicitTaskSlotDecision{}) {
+		t.Fatalf("decision = %#v, want semantic classification to decide ordinary recovery input", decision)
 	}
 }
 
-func TestImplicitInFlightRecoveryDecisionResumesOnlyForExplicitResume(t *testing.T) {
+func TestImplicitInFlightRecoveryDecisionDoesNotBindKeywordResume(t *testing.T) {
 	slot := &agent.UnfinishedTaskSlot{
 		SlotID: "slot-recovery",
 		Source: "in_flight_lease_expired",
@@ -42,11 +36,8 @@ func TestImplicitInFlightRecoveryDecisionResumesOnlyForExplicitResume(t *testing
 		slot,
 		explicitTaskSlotDecision{},
 	)
-	if decision.ResumeSlotID != slot.SlotID {
-		t.Fatalf("ResumeSlotID = %q, want %q", decision.ResumeSlotID, slot.SlotID)
-	}
-	if decision.StartNewTask {
-		t.Fatal("did not expect explicit resume input to start a new task")
+	if decision != (explicitTaskSlotDecision{}) {
+		t.Fatalf("decision = %#v, want semantic classifier rather than keyword binding", decision)
 	}
 }
 
@@ -374,7 +365,7 @@ func TestRecoverableSessionPayloadLocalizesKnownProgress(t *testing.T) {
 	}
 }
 
-func TestImplicitInFlightRecoveryDecisionResumesForChineseContinue(t *testing.T) {
+func TestImplicitInFlightRecoveryDecisionDoesNotBindChineseKeywordResume(t *testing.T) {
 	slot := &agent.UnfinishedTaskSlot{
 		SlotID: "slot-recovery",
 		Source: "in_flight_lease_expired",
@@ -385,11 +376,8 @@ func TestImplicitInFlightRecoveryDecisionResumesForChineseContinue(t *testing.T)
 		slot,
 		explicitTaskSlotDecision{},
 	)
-	if decision.ResumeSlotID != slot.SlotID {
-		t.Fatalf("ResumeSlotID = %q, want %q", decision.ResumeSlotID, slot.SlotID)
-	}
-	if decision.StartNewTask {
-		t.Fatal("did not expect Chinese resume input to start a new task")
+	if decision != (explicitTaskSlotDecision{}) {
+		t.Fatalf("decision = %#v, want semantic classifier rather than keyword binding", decision)
 	}
 }
 

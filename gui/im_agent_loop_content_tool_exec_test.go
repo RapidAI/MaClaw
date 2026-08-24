@@ -88,6 +88,85 @@ TOOL_CALL
 	}
 }
 
+func TestAgentLoopRejectsToolCallOutsideExposedLegacySurface(t *testing.T) {
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	sshCalled := false
+	if err := handler.registry.Register(RegisteredTool{
+		Name:     "ssh",
+		Category: ToolCategoryBuiltin,
+		Status:   RegToolAvailable,
+		Handler: func(map[string]interface{}) string {
+			sshCalled = true
+			return "must not run"
+		},
+	}); err != nil {
+		t.Fatalf("register ssh: %v", err)
+	}
+	if err := handler.registry.Register(RegisteredTool{
+		Name:     "read_file",
+		Category: ToolCategoryBuiltin,
+		Status:   RegToolAvailable,
+		Handler:  func(map[string]interface{}) string { return "read" },
+	}); err != nil {
+		t.Fatalf("register read_file: %v", err)
+	}
+
+	result := handler.executeAgentLoopToolCalls(agentLoopToolCallsOptions{
+		UserID:       "desktop-user",
+		ExposedTools: []map[string]interface{}{toolDef("read_file", "read", nil, nil)},
+		ToolCalls: []llm.ToolCall{{
+			ID: "stale-ssh",
+			Function: llm.ToolCallFunction{
+				Name:      "ssh",
+				Arguments: `{}`,
+			},
+		}},
+	})
+
+	if sshCalled {
+		t.Fatal("tool outside the model request's replacement surface was executed")
+	}
+	if len(result.ToolExecResults) != 1 {
+		t.Fatalf("results = %#v, want one rejection", result.ToolExecResults)
+	}
+	got := result.ToolExecResults[0]
+	if got.FailureKind != toolFailurePolicyRejected || !strings.Contains(got.Text, "not available on this request's tool surface") {
+		t.Fatalf("result = %+v, want surface admission rejection", got)
+	}
+}
+
+func TestAgentLoopRejectsLegacyToolArgumentsOutsideExposedSchema(t *testing.T) {
+	handler := &IMMessageHandler{}
+	surface := newLegacyToolSurface([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{
+			"name": "read_file",
+			"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"path": map[string]interface{}{"type": "string"},
+			}},
+		}},
+	})
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		ToolCall:      llm.ToolCall{Function: llm.ToolCallFunction{Name: "read_file", Arguments: `{"path":"README.md","provider":"hidden"}`}},
+		LegacySurface: surface,
+	})
+	if result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "parameter_contract_denied") {
+		t.Fatalf("unexpected legacy parameter admission result: %+v", result)
+	}
+}
+
+func TestAgentLoopPlanBackedLegacySurfaceRejectsNameWithoutLiveProvision(t *testing.T) {
+	handler := &IMMessageHandler{}
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		ToolCall: llm.ToolCall{Function: llm.ToolCallFunction{Name: "unprovisioned_tool", Arguments: `{}`}},
+		LegacySurface: newLegacyToolSurfaceFromPlan([]map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{"name": "unprovisioned_tool"}},
+		}),
+	})
+	if result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "catalog_incomplete") {
+		t.Fatalf("plan-backed surface must require a provision, got %+v", result)
+	}
+}
+
 func TestAgentLoopNormalizesMissingToolCallIDAndType(t *testing.T) {
 	handler := &IMMessageHandler{registry: NewToolRegistry()}
 	if err := handler.registry.Register(RegisteredTool{

@@ -10,6 +10,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "wake_deadline_sleep_gate.h"
+
 #define WAKE_DEADLINE_MAX_SLOTS 8u
 #define WAKE_DEADLINE_MIN_TIMER_US 1000u
 #define WAKE_DEADLINE_TRUSTED_EPOCH_MS 1672531200000LL /* 2023-01-01 UTC */
@@ -45,6 +47,11 @@ static SemaphoreHandle_t s_stopped;
 static deadline_slot_t s_slots[WAKE_DEADLINE_MAX_SLOTS];
 static volatile bool s_initialized;
 static volatile bool s_stop_requested;
+/* System Sleep retains the dispatcher and every client slot; it only closes
+ * physical timer delivery/callback selection until a parent Power rollback
+ * decides whether those logical deadlines may resume. */
+static volatile bool s_system_sleep_preparing;
+static uint32_t s_system_sleep_callbacks_inflight;
 /* `esp_timer_stop()` only rejects future alarms.  The timer-service callback
  * may already have copied the dispatcher handle, so deinit must drain that
  * tiny lease before it deletes the timer or recycles the stopped semaphore. */
@@ -144,7 +151,7 @@ static bool handle_matches_generation(wake_deadline_handle_t handle, size_t *out
 
 /* s_lock is held. */
 static void rearm_timer_locked(int64_t now_ms) {
-    if (!s_timer || s_stop_requested) return;
+    if (!s_timer || s_stop_requested || s_system_sleep_preparing) return;
     (void)esp_timer_stop(s_timer);
     if (!clock_is_trusted(now_ms)) return;
 
@@ -186,13 +193,14 @@ static void deadline_task(void *arg) {
         size_t callback_count = 0;
         int64_t now_ms = current_epoch_ms();
         if (xSemaphoreTake(s_lock, portMAX_DELAY) == pdTRUE) {
-            if (clock_is_trusted(now_ms)) {
+            if (!s_system_sleep_preparing && clock_is_trusted(now_ms)) {
                 for (size_t i = 0; i < WAKE_DEADLINE_MAX_SLOTS; ++i) {
                     deadline_slot_t *slot = &s_slots[i];
                     if (!slot->registered || !slot->armed || slot->epoch_ms > now_ms) continue;
                     slot->armed = false; /* callbacks explicitly re-arm repeating policy. */
                     if (slot->callback) {
                         slot->callback_inflight = true;
+                        ++s_system_sleep_callbacks_inflight;
                         callbacks[callback_count] = slot->callback;
                         callback_args[callback_count] = slot->arg;
                         callback_slots[callback_count] = i;
@@ -213,6 +221,9 @@ static void deadline_task(void *arg) {
                 deadline_slot_t *slot = &s_slots[callback_slots[i]];
                 if (slot->generation == callback_generations[i]) {
                     slot->callback_inflight = false;
+                }
+                if (s_system_sleep_callbacks_inflight > 0) {
+                    --s_system_sleep_callbacks_inflight;
                 }
                 xSemaphoreGive(s_lock);
             }
@@ -283,6 +294,8 @@ device_status_t wake_deadline_service_init(void) {
     s_timer_callback_admission_open = true;
     taskEXIT_CRITICAL(&s_timer_callback_lock);
     s_initialized = true;
+    s_system_sleep_preparing = false;
+    s_system_sleep_callbacks_inflight = 0;
     xSemaphoreGive(s_deinit_lock);
     ESP_LOGI(TAG, "service ready: slots=%u", WAKE_DEADLINE_MAX_SLOTS);
     return DEVICE_STATUS_OK;
@@ -309,6 +322,7 @@ device_status_t wake_deadline_service_deinit(uint32_t timeout_ms) {
     }
     const bool already_stopping = s_stop_requested;
     s_stop_requested = true;
+    s_system_sleep_preparing = false;
     /* Close public admission while holding the same permanent lock used by
      * each public API. A caller that was already waiting rechecks this state
      * after it obtains the lock and will not touch timer/slot resources. */
@@ -361,6 +375,7 @@ device_status_t wake_deadline_service_deinit(uint32_t timeout_ms) {
         return DEVICE_STATUS_TIMEOUT;
     }
     s_stop_requested = false;
+    s_system_sleep_callbacks_inflight = 0;
     xSemaphoreGive(s_lock);
     /* No worker or queued timer callback can touch this completion object
      * after the joined task signal and timer deletion, so it is safe to
@@ -374,11 +389,69 @@ device_status_t wake_deadline_service_deinit(uint32_t timeout_ms) {
     return DEVICE_STATUS_OK;
 }
 
+device_status_t wake_deadline_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0 || !s_lock) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = stop_timeout_ticks(timeout_ms);
+    TickType_t remaining = stop_remaining_ticks(started, budget);
+    if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (!s_initialized || s_stop_requested) {
+        xSemaphoreGive(s_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    if (s_system_sleep_preparing) {
+        xSemaphoreGive(s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    if (!wake_deadline_sleep_gate_begin(&s_system_sleep_preparing)) {
+        xSemaphoreGive(s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    /* `esp_timer_stop()` suppresses future timer-service delivery; a callback
+     * already copied by deadline_task is covered by the counter below. */
+    if (s_timer) (void)esp_timer_stop(s_timer);
+    xSemaphoreGive(s_lock);
+
+    for (;;) {
+        remaining = stop_remaining_ticks(started, budget);
+        if (remaining == 0 || xSemaphoreTake(s_lock, remaining) != pdTRUE) {
+            /* Preserve the fence until Power executes its mandatory ABORT.
+             * A callback selected before this timeout may still be unwinding;
+             * reopening here would admit a new deadline across a possible
+             * future electrical commit. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        const bool drained = wake_deadline_sleep_gate_callbacks_drained(
+            &s_system_sleep_callbacks_inflight);
+        xSemaphoreGive(s_lock);
+        if (drained) return DEVICE_STATUS_OK;
+        if (stop_remaining_ticks(started, budget) == 0) {
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(1);
+    }
+}
+
+void wake_deadline_service_abort_system_sleep_prepare(void) {
+    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    const bool was_preparing = s_system_sleep_preparing;
+    wake_deadline_sleep_gate_abort(&s_system_sleep_preparing);
+    if (was_preparing && s_initialized && !s_stop_requested) {
+        /* Keep persisted epochs intact. A deadline that elapsed while PREPARE
+         * was closed is re-evaluated by the normal client worker after this
+         * one bounded re-arm, rather than being synthesized by Power. */
+        rearm_timer_locked(current_epoch_ms());
+    }
+    xSemaphoreGive(s_lock);
+}
+
 device_status_t wake_deadline_service_register(wake_deadline_callback_t callback, void *arg,
                                          wake_deadline_handle_t *out_handle) {
     if (!callback || !out_handle || !s_lock) return DEVICE_STATUS_INVALID_ARGUMENT;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return DEVICE_STATUS_TIMEOUT;
-    if (!s_initialized || s_stop_requested) {
+    if (!s_initialized || s_stop_requested || s_system_sleep_preparing) {
         xSemaphoreGive(s_lock);
         return DEVICE_STATUS_BUSY;
     }
@@ -408,7 +481,7 @@ device_status_t wake_deadline_service_register(wake_deadline_callback_t callback
 device_status_t wake_deadline_service_arm(wake_deadline_handle_t handle, int64_t epoch_ms) {
     if (!s_lock || epoch_ms <= 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return DEVICE_STATUS_TIMEOUT;
-    if (!s_initialized || s_stop_requested) {
+    if (!s_initialized || s_stop_requested || s_system_sleep_preparing) {
         xSemaphoreGive(s_lock);
         return DEVICE_STATUS_BUSY;
     }
@@ -492,5 +565,5 @@ void wake_deadline_service_unregister(wake_deadline_handle_t handle) {
 }
 
 void wake_deadline_service_on_wall_clock_updated(void) {
-    if (s_task && !s_stop_requested) xTaskNotifyGive(s_task);
+    if (s_task && !s_stop_requested && !s_system_sleep_preparing) xTaskNotifyGive(s_task);
 }

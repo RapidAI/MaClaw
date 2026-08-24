@@ -3,22 +3,29 @@ package memory
 import "strings"
 
 const (
-	PromptSectionUserMemory         = "## 用户记忆"
-	PromptSectionMemoryGuide        = "## 记忆管理指引"
-	PromptSectionProactiveMemory    = "## 主动记忆"
-	PromptActionRecallColon         = "memory(action: recall"
-	PromptActionSaveColon           = "memory(action: save)"
-	PromptActionSaveEquals          = "memory(action=save)"
-	PromptCategoryProjectKnowledge  = "project_knowledge"
-	PromptCategoryInstruction       = "instruction"
-	PromptTagProactive              = "proactive"
-	PromptProactiveAck              = "已主动记录"
-	PromptSaveCategorySummary       = "user_fact | 偏好 → preference | 项目知识 → " + PromptCategoryProjectKnowledge + " | 指令 → " + PromptCategoryInstruction
+	PromptSectionUserMemory        = "## 用户记忆"
+	PromptSectionMemoryGuide       = "## 记忆管理指引"
+	PromptSectionProactiveMemory   = "## 主动记忆"
+	PromptActionRecallColon        = "memory(action: recall"
+	PromptActionSaveColon          = "memory(action: save)"
+	PromptActionSaveEquals         = "memory(action=save)"
+	PromptCategoryProjectKnowledge = "project_knowledge"
+	PromptCategoryInstruction      = "instruction"
+	PromptTagProactive             = "proactive"
+	PromptProactiveAck             = "已主动记录"
+	PromptSaveCategorySummary      = "user_fact | 偏好 → preference | 项目知识 → " + PromptCategoryProjectKnowledge + " | 指令 → " + PromptCategoryInstruction
 )
+
+// CatalogOnlyWorkingSetFooter is the IM/Core instruction when the prompt
+// carries a memory catalog but no recalled warehouse text.
+func CatalogOnlyWorkingSetFooter() string {
+	return "（当前任务工作集为空。上方索引只是目录指针，不是已确认事实。仅当本轮工具列表里有记忆检索或知识库检索时才调用它们拉取正文；没有这些工具时不要把目录当作答案，也不要先搜知识库。）"
+}
 
 func BuildIMMemoryGuidePrompt() string {
 	return strings.Join([]string{
 		PromptSectionMemoryGuide,
+		"需要已保存的经验或资料时，仅当本轮工具列表里有记忆检索或知识库检索时才调用它们；没有这些工具时不要先搜知识库，也不要把记忆索引或训练数据当作已确认事实。",
 		"识别到有价值的信息时，主动调用 " + PromptActionSaveColon + " 保存：",
 		"- " + PromptSaveCategorySummary,
 		"- tags: 提供 3-5 个具体实体名（主机名、工具名、项目名），不要用泛词",

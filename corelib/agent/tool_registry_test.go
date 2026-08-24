@@ -95,6 +95,74 @@ func TestCoreToolRegistry_BuildDefinitions(t *testing.T) {
 	}
 }
 
+func TestCoreToolRegistry_BuildDefinitionsReturnsRequestLocalSchemas(t *testing.T) {
+	r := NewCoreToolRegistry()
+	properties := map[string]interface{}{
+		"payload": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{"type": "string"},
+			},
+		},
+	}
+	required := []string{"payload"}
+	r.Register(ToolEntry{Name: "mutable", Description: "mutable schema", Properties: properties, Required: required})
+
+	first := r.BuildDefinitions()
+	second := r.BuildDefinitions()
+	firstParams := first[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	firstProps := firstParams["properties"].(map[string]interface{})
+	firstPayload := firstProps["payload"].(map[string]interface{})
+	firstPayload["request_local_mutation"] = true
+	firstParams["required"].([]string)[0] = "rewritten"
+
+	secondParams := second[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	secondPayload := secondParams["properties"].(map[string]interface{})["payload"].(map[string]interface{})
+	if _, leaked := secondPayload["request_local_mutation"]; leaked {
+		t.Fatal("nested definition mutation leaked into successor request")
+	}
+	if got := secondParams["required"].([]string); len(got) != 1 || got[0] != "payload" {
+		t.Fatalf("required mutation leaked into successor request: %v", got)
+	}
+	registered := r.tools["mutable"]
+	if _, leaked := registered.Properties["payload"].(map[string]interface{})["request_local_mutation"]; leaked {
+		t.Fatal("request mutation leaked into registry inventory")
+	}
+	if got := registered.Required; len(got) != 1 || got[0] != "payload" {
+		t.Fatalf("required mutation leaked into registry inventory: %v", got)
+	}
+}
+
+func TestCoreToolRegistry_BuildDefinitionsClonesNamedJSONCollectionTypes(t *testing.T) {
+	type namedProperties map[string]interface{}
+	type namedRequired []string
+	r := NewCoreToolRegistry()
+	properties := namedProperties{
+		"payload": namedProperties{
+			"type": "object",
+			"enum": namedRequired{"first", "second"},
+		},
+	}
+	r.Register(ToolEntry{Name: "named", Description: "named schema", Properties: properties, Required: namedRequired{"payload"}})
+
+	first := r.BuildDefinitions()
+	firstParams := first[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	firstPayload := firstParams["properties"].(map[string]interface{})["payload"].(namedProperties)
+	firstPayload["type"] = "array"
+	firstPayload["enum"].(namedRequired)[0] = "rewritten"
+	firstParams["required"].([]string)[0] = "rewritten"
+
+	second := r.BuildDefinitions()
+	secondParams := second[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	secondPayload := secondParams["properties"].(map[string]interface{})["payload"].(namedProperties)
+	if secondPayload["type"] != "object" || secondPayload["enum"].(namedRequired)[0] != "first" {
+		t.Fatalf("named nested collection mutation leaked into successor: %#v", secondPayload)
+	}
+	if got := secondParams["required"].([]string); got[0] != "payload" {
+		t.Fatalf("named required mutation leaked into successor: %#v", got)
+	}
+}
+
 func TestCoreToolRegistry_DefinitionAndHandlerBound(t *testing.T) {
 	r := NewCoreToolRegistry()
 	RegisterCoreTools(r, CoreToolDeps{})

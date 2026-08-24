@@ -384,6 +384,14 @@ describe('IM settings → 蓝信 → 关注 e2e', () => {
                 setWeixinQRWaiting={vi.fn()}
                 weixinQRError=""
                 setWeixinQRError={vi.fn()}
+                qqBotQRCode=""
+                setQQBotQRCode={vi.fn()}
+                qqBotQRLoading={false}
+                setQQBotQRLoading={vi.fn()}
+                qqBotQRWaiting={false}
+                setQQBotQRWaiting={vi.fn()}
+                qqBotQRError=""
+                setQQBotQRError={vi.fn()}
             />
         );
     }

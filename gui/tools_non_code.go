@@ -52,6 +52,11 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			return out
 		},
 	})
+	// git_status stays annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_inspect_trusted_repo.
+	annotateSemanticTool(registry, "git_status", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityRepoInspectVCS, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	registry.Register(RegisteredTool{
 		Name:        "git_diff",
@@ -90,6 +95,11 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			return out
 		},
 	})
+	// git_diff stays annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_inspect_trusted_repo.
+	annotateSemanticTool(registry, "git_diff", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityRepoInspectVCS, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	registry.Register(RegisteredTool{
 		Name:        "git_commit",
@@ -149,6 +159,13 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			return out
 		},
 	})
+	// Legacy git mutate soup. Managed catalog unpublishes these names;
+	// repo.mutate.vcs stays quarantined (no UIC label) on the host adapter.
+	for _, name := range []string{"git_commit", "git_push"} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityRepoMutateVCS, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectExternalEffect})
+	}
 
 	// --- File search tool ---
 	registry.Register(RegisteredTool{
@@ -176,6 +193,11 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			return searchFilesInProjectCtx(ctx, path, pattern, stringVal(args, "file_pattern"))
 		},
 	})
+	// search_files stays annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_read_trusted_file.
+	annotateSemanticTool(registry, "search_files", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSReadLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	registerCurrentDateTimeTool(registry, ToolCategoryNonCode, "non_code")
 
@@ -198,6 +220,8 @@ func registerNonCodeTools(registry *ToolRegistry, app *App) {
 			return checkProjectHealthCtx(ctx, path)
 		},
 	})
+	// check_health is project compile health, not security.audit.read. It stays
+	// available on unmanaged/legacy turns and must not enter the managed catalog.
 }
 
 func registerCurrentDateTimeTool(registry *ToolRegistry, category ToolCategory, source string) {
@@ -231,6 +255,11 @@ func registerCurrentDateTimeTool(registry *ToolRegistry, category ToolCategory, 
 			)
 		},
 	})
+	// current_datetime stays annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_read_trusted_clock.
+	annotateSemanticTool(registry, "current_datetime", []tool.CapabilityProvision{{
+		Capability: "information.current_time", Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 }
 
 // runGitCmd executes a git command in the given directory.

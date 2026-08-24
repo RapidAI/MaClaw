@@ -20,7 +20,7 @@ func newProjectSearchTestApp(t *testing.T) *App {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
 	t.Cleanup(func() {
 		app.stopMemoryPipelineSchedule("test-cleanup")
 		if app.memoryStore != nil {
@@ -274,6 +274,154 @@ func TestSearchProjectsFiltersNonOutputRecords(t *testing.T) {
 	}
 	if results[0].Name != "Improve Task Management Filtering" || !results[0].HasOutput {
 		t.Fatalf("result = %+v, want output-backed task", results[0])
+	}
+}
+
+func TestRecoverManagedTaskRecordsFromDiskRestoresMissingIndexRows(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.disableBackgroundEmbeddingForTest = true
+
+	created := app.CreateTask("磁盘恢复任务", "")
+	coding := app.CreateTaskWithMode("本地编程恢复", "", "coding_dev")
+	if created.ProjectPath == "" || coding.ProjectPath == "" {
+		t.Fatalf("setup paths created=%q coding=%q", created.ProjectPath, coding.ProjectPath)
+	}
+	if err := os.WriteFile(filepath.Join(coding.ProjectPath, stickyCodingMemoryFileName), []byte(`{"kind":"local"}`), 0o644); err != nil {
+		t.Fatalf("write coding workbench: %v", err)
+	}
+
+	hidden := app.CreateTask("Hidden restore", "")
+	if hidden.ProjectPath == "" {
+		t.Fatal("CreateTask hidden returned empty path")
+	}
+	app.HideTask(hidden.ProjectPath)
+
+	stampedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.Local)
+	stampedDir := filepath.Join(app.GetDataDir(), "tasks", fmt.Sprintf("stamped-restore-%d", stampedAt.UnixNano()))
+	if err := os.MkdirAll(stampedDir, 0o755); err != nil {
+		t.Fatalf("mkdir stamped: %v", err)
+	}
+	stampedFile := filepath.Join(stampedDir, "task.md")
+	if err := os.WriteFile(stampedFile, []byte(fmt.Sprintf("# 带时间戳恢复\n\nCreated from task management.\nTask ID: %d\n", stampedAt.UnixNano())), 0o644); err != nil {
+		t.Fatalf("write stamped task.md: %v", err)
+	}
+	if err := os.Chtimes(stampedFile, stampedAt, stampedAt); err != nil {
+		t.Fatalf("chtimes stamped task.md: %v", err)
+	}
+
+	forkDir := filepath.Join(app.GetDataDir(), "tasks", "fork-restore-1787000000000000001")
+	if err := os.MkdirAll(forkDir, 0o755); err != nil {
+		t.Fatalf("mkdir fork: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(forkDir, "task.md"), []byte("# Forked restore\n\nOpened from task management.\nSource task: "+created.ProjectPath+"\nFork ID: 1\n"), 0o644); err != nil {
+		t.Fatalf("write fork task.md: %v", err)
+	}
+
+	memoryDir := memory.DataDirStoreDir(app.getMaclawBaseDir())
+	prefsPath := filepath.Join(memoryDir, "task_prefs.json")
+	prefs, err := os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatalf("read task prefs: %v", err)
+	}
+	if app.memoryStore != nil {
+		app.memoryStore.Stop()
+	}
+	app.memoryStore = nil
+	if err := os.RemoveAll(memoryDir); err != nil {
+		t.Fatalf("remove memory dir: %v", err)
+	}
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		t.Fatalf("recreate memory dir: %v", err)
+	}
+	if err := os.WriteFile(prefsPath, prefs, 0o644); err != nil {
+		t.Fatalf("restore task prefs: %v", err)
+	}
+
+	app.ensureMemoryStore()
+	listed := app.ListTasks(50)
+	paths := map[string]bool{}
+	var codingItem ProjectSearchResult
+	var stampedItem ProjectSearchResult
+	for _, item := range listed {
+		paths[item.ProjectPath] = true
+		if item.ProjectPath == coding.ProjectPath {
+			codingItem = item
+		}
+		if item.ProjectPath == stampedDir {
+			stampedItem = item
+		}
+	}
+	if !paths[created.ProjectPath] || !paths[coding.ProjectPath] || !paths[stampedDir] {
+		t.Fatalf("ListTasks after restart = %#v, want recovered created, coding, and stamped tasks", paths)
+	}
+	if got, err := time.Parse(time.RFC3339, stampedItem.CreatedAt); err != nil || !got.Equal(stampedAt) {
+		t.Fatalf("stamped CreatedAt = %q err=%v, want %s", stampedItem.CreatedAt, err, stampedAt.Format(time.RFC3339))
+	}
+	if got, err := time.Parse(time.RFC3339, stampedItem.LastActivity); err != nil || !got.Equal(stampedAt) {
+		t.Fatalf("stamped LastActivity = %q err=%v, want %s", stampedItem.LastActivity, err, stampedAt.Format(time.RFC3339))
+	}
+	if paths[hidden.ProjectPath] {
+		t.Fatalf("ListTasks recovered hidden task %q", hidden.ProjectPath)
+	}
+	if paths[forkDir] {
+		t.Fatalf("ListTasks recovered forked task %q", forkDir)
+	}
+	if !projectRecordHasTag(memory.ProjectRecord{Tags: codingItem.Tags}, taskCodingDevTag) {
+		t.Fatalf("recovered coding tags = %#v, want coding_dev", codingItem.Tags)
+	}
+
+	if n := app.recoverManagedTaskRecordsFromDisk(); n != 0 {
+		t.Fatalf("second recover wrote %d records, want 0", n)
+	}
+}
+
+func TestRecoveredTaskMetadataHelpers(t *testing.T) {
+	t.Parallel()
+	if !isRecoveredForkedTaskContent("# Forked\n\nOpened from task management.\nSource task: C:/tasks/src\nFork ID: 1\n") {
+		t.Fatal("fork content should be detected")
+	}
+	if isRecoveredForkedTaskContent("# Chat\n\nCreated from task management.\nNotes mention Fork ID: only in prose.\n") {
+		t.Fatal("prose mentioning Fork ID should not look like a fork")
+	}
+	createdAt := recoveredTaskCreatedAt(fmt.Sprintf("Task ID: %d\n", time.Date(2026, 3, 1, 12, 0, 0, 0, time.Local).UnixNano()), "")
+	if createdAt.IsZero() || createdAt.Year() != 2026 || createdAt.Month() != time.March {
+		t.Fatalf("createdAt = %v, want March 2026 from Task ID", createdAt)
+	}
+
+	title, tags := inferRecoveredTaskMetadata(
+		`C:\Users\me\.maclaw\data\tasks\本地编程-1787000000001`,
+		"# 贪吃蛇\n\nCreated from task management.\nWorking directory: C:\\Users\\me\\Desktop\\prog-test\n",
+	)
+	if title != "贪吃蛇" {
+		t.Fatalf("title = %q, want 贪吃蛇", title)
+	}
+	if !projectRecordHasTag(memory.ProjectRecord{Tags: tags}, taskCodingDevTag) {
+		t.Fatalf("tags = %#v, want coding_dev from directory name", tags)
+	}
+	if recentTaskWorkingDirFromTags(tags) == "" {
+		t.Fatalf("tags = %#v, want working_dir", tags)
+	}
+
+	expertID := recoveredExpertIDFromTaskContent("AI expert task. Reopen this task to continue working with expert: paper-review.")
+	if expertID != "paper-review" {
+		t.Fatalf("expert id = %q, want paper-review", expertID)
+	}
+	if recoveredExpertIDFromTaskContent("Talk about an AI expert: not-an-id") != "" {
+		t.Fatal("loose expert: mention should not become a source tag")
+	}
+	if recoveredCodingMode("search-remote-papers-1", "") != "" {
+		t.Fatal("generic remote/coding directory names must not force a coding mode")
+	}
+
+	merged := mergeRecoveredTaskTags(
+		[]string{taskForkedTag, "remote_host:10.0.0.1", taskRemoteCodingDevTag},
+		[]string{taskLegacyManualTag, taskLegacyRecentTag, "C:/tasks/keep", taskManagementTag},
+	)
+	if projectRecordHasTag(memory.ProjectRecord{Tags: merged}, taskForkedTag) {
+		t.Fatalf("merged tags = %#v, must drop forked_task", merged)
+	}
+	if !projectRecordHasTag(memory.ProjectRecord{Tags: merged}, taskRemoteCodingDevTag) {
+		t.Fatalf("merged tags = %#v, want preserved remote coding tag", merged)
 	}
 }
 
@@ -1094,6 +1242,337 @@ func TestCreateTaskWithModeTagsCodingDev(t *testing.T) {
 	}
 }
 
+func TestCreateCodingTaskInheritsCurrentWorkingDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "prog-test")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", workingDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+
+	created := app.CreateTaskWithMode("新建本地编程任务", "", "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	want := filepath.Clean(workingDir)
+	if created.WorkingDir != want {
+		t.Fatalf("WorkingDir = %q, want current working dir %q", created.WorkingDir, want)
+	}
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != want {
+		t.Fatalf("recentTaskExecutionProjectPath = %q, want %q", got, want)
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(app, created.ProjectPath)
+	if err != nil {
+		t.Fatalf("codingWorkbenchBrowserLocalRoot: %v", err)
+	}
+	if filepath.Clean(root) != want {
+		t.Fatalf("preview root = %q, want current working dir %q (not task dir %q)", root, want, created.ProjectPath)
+	}
+}
+
+func TestSetTabWorkingDirSyncsCodingWorkbenchDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	initial := filepath.Join(t.TempDir(), "initial")
+	next := filepath.Join(t.TempDir(), "next")
+	for _, dir := range []string{initial, next} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+	}
+	if err := app.SetTabWorkingDir("", initial); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+
+	created := app.CreateTaskWithMode("Snake game", "", "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	tabID := "proj-coding-workdir"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty message")
+	}
+	if err := app.SetTabWorkingDir(tabID, next); err != nil {
+		t.Fatalf("SetTabWorkingDir coding tab: %v", err)
+	}
+
+	want := filepath.Clean(next)
+	if got := app.recentTaskWorkingDir(created.ProjectPath); got != want {
+		t.Fatalf("persisted working dir = %q, want %q", got, want)
+	}
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != want {
+		t.Fatalf("tab working dir = %q, want %q", got, want)
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(app, created.ProjectPath)
+	if err != nil {
+		t.Fatalf("codingWorkbenchBrowserLocalRoot: %v", err)
+	}
+	if filepath.Clean(root) != want {
+		t.Fatalf("preview root = %q, want switched dir %q", root, want)
+	}
+}
+
+func TestCodingWorkbenchWorkRootIgnoresTaskSandbox(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "prog-test")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", workingDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+
+	// Legacy coding task: tagged coding_dev but no working_dir tag, so the
+	// metadata helper still points at taskDir/workspace.
+	created := app.createTaskRecordWithWorkingDir("legacy coding", "", []string{taskManagementTag, taskUserCreatedTag, taskCodingDevTag}, "", true)
+	if created.ProjectPath == "" {
+		t.Fatal("createTaskRecordWithWorkingDir returned empty project path")
+	}
+	sandbox := filepath.Join(created.ProjectPath, "workspace")
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != sandbox {
+		t.Fatalf("metadata exec path = %q, want sandbox %q (must stay unused)", got, sandbox)
+	}
+
+	want := filepath.Clean(workingDir)
+	if got := app.codingWorkbenchLocalExecDir(created.ProjectPath); got != want {
+		t.Fatalf("coding work root = %q, want current working dir %q", got, want)
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(app, created.ProjectPath)
+	if err != nil {
+		t.Fatalf("codingWorkbenchBrowserLocalRoot: %v", err)
+	}
+	if filepath.Clean(root) != want {
+		t.Fatalf("preview root = %q, want current working dir %q, not sandbox %q", root, want, sandbox)
+	}
+
+	h := &IMMessageHandler{app: app}
+	if got := h.projectTabWorkDirForOwner(projectSessionOwnerID(created.ProjectPath)); got != want {
+		t.Fatalf("tool cwd = %q, want current working dir %q", got, want)
+	}
+	staleSandbox := sandbox
+	if got := h.liveLocalCodingExecDir(projectSessionOwnerID(created.ProjectPath), staleSandbox); got != want {
+		t.Fatalf("live exec dir = %q, want current working dir %q (stale pending %q ignored)", got, want, staleSandbox)
+	}
+	planPath, _, remote, errMsg := h.resolveCodingPlanExecutionTarget(projectSessionOwnerID(created.ProjectPath), staleSandbox, stickyCodingWorkbenchMemory{
+		Kind:        "local",
+		ProjectPath: staleSandbox,
+	})
+	if remote {
+		t.Fatal("expected local plan target")
+	}
+	if errMsg != "" {
+		t.Fatalf("resolveCodingPlanExecutionTarget err=%q", errMsg)
+	}
+	if filepath.Clean(planPath) != want {
+		t.Fatalf("plan target = %q, want current working dir %q", planPath, want)
+	}
+}
+
+func TestRemoteCodingWorkbenchDoesNotUseLocalCurrentDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	localDir := filepath.Join(t.TempDir(), "local-cwd")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", localDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	created := app.CreateTaskWithMode("Remote coding", "", "remote_coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	if app.projectPathIsLocalCodingWorkbench(created.ProjectPath) {
+		t.Fatal("remote coding task must not be treated as a local workbench")
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(app, created.ProjectPath)
+	if err != nil {
+		t.Fatalf("codingWorkbenchBrowserLocalRoot: %v", err)
+	}
+	if filepath.Clean(root) == filepath.Clean(localDir) {
+		t.Fatalf("remote preview listed local cwd %q", localDir)
+	}
+
+	h := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID(created.ProjectPath)
+	got := h.codingSessionWorkRoot(owner, stickyCodingWorkbenchMemory{})
+	if filepath.Clean(got) == filepath.Clean(localDir) {
+		t.Fatalf("remote slash root used local cwd %q (sticky kind empty)", localDir)
+	}
+}
+
+func TestCodingSessionWorkRoot_LocalIgnoresStaleSandbox(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "prog-test")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", workingDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	created := app.createTaskRecordWithWorkingDir("legacy coding", "", []string{taskManagementTag, taskUserCreatedTag, taskCodingDevTag}, "", true)
+	if created.ProjectPath == "" {
+		t.Fatal("createTaskRecordWithWorkingDir returned empty project path")
+	}
+	sandbox := filepath.Join(created.ProjectPath, "workspace")
+	h := &IMMessageHandler{app: app}
+	got := h.codingSessionWorkRoot(projectSessionOwnerID(created.ProjectPath), stickyCodingWorkbenchMemory{
+		Kind:        "local",
+		ProjectPath: sandbox,
+	})
+	want := filepath.Clean(workingDir)
+	if filepath.Clean(got) != want {
+		t.Fatalf("codingSessionWorkRoot = %q, want live cwd %q (stale sandbox %q ignored)", got, want, sandbox)
+	}
+}
+
+func TestAssistantTabWorkingDirIgnoresCodingSandbox(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "prog-test")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", workingDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	created := app.createTaskRecordWithWorkingDir("legacy coding", "", []string{taskManagementTag, taskUserCreatedTag, taskCodingDevTag}, "", true)
+	if created.ProjectPath == "" {
+		t.Fatal("createTaskRecordWithWorkingDir returned empty project path")
+	}
+	tabID := "proj-coding-stale-sandbox"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty message")
+	}
+	sandbox := filepath.Join(created.ProjectPath, "workspace")
+	persist := app.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v session=%#v", err, session)
+	}
+	session.WorkingDir = sandbox
+	if err := persist.SaveSession(session); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	app.tabWorkingDirOverrides.Delete(tabID)
+	app.assistantSessionWorkingDirs.Delete(projectSessionOwnerID(created.ProjectPath))
+
+	if got := app.assistantTabWorkingDir(tabID); got != "" {
+		t.Fatalf("assistantTabWorkingDir = %q, want empty (sandbox is not a coding work root)", got)
+	}
+	want := filepath.Clean(workingDir)
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != want {
+		t.Fatalf("GetTabWorkingDir = %q, want live cwd %q", got, want)
+	}
+	if got := app.codingWorkbenchLocalExecDir(created.ProjectPath); filepath.Clean(got) != want {
+		t.Fatalf("coding work root = %q, want live cwd %q", got, want)
+	}
+}
+
+func TestResolveCodingPlanExecutionTarget_RemoteByTagDoesNotUseLocalCwd(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	localDir := filepath.Join(t.TempDir(), "local-cwd")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", localDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	created := app.CreateTaskWithMode("Remote coding", "", "remote_coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	h := &IMMessageHandler{app: app}
+	owner := projectSessionOwnerID(created.ProjectPath)
+	path, remoteCtx, remote, errMsg := h.resolveCodingPlanExecutionTarget(owner, localDir, stickyCodingWorkbenchMemory{})
+	if !remote {
+		t.Fatal("expected remote plan target from task tag")
+	}
+	if path != "" {
+		t.Fatalf("local plan path = %q, want empty", path)
+	}
+	if filepath.Clean(remoteCtx.WorkDir) == filepath.Clean(localDir) {
+		t.Fatalf("remote work dir used local cwd %q", localDir)
+	}
+	if errMsg == "" {
+		t.Fatal("expected a remote session error, not a silent local run")
+	}
+}
+
+func TestResolveCodingPlanExecutionTarget_RejectsSandboxFallback(t *testing.T) {
+	h := &IMMessageHandler{}
+	identity := filepath.Join(t.TempDir(), "task")
+	sandbox := filepath.Join(identity, "workspace")
+	owner := projectSessionOwnerID(identity)
+	path, _, remote, errMsg := h.resolveCodingPlanExecutionTarget(owner, sandbox, stickyCodingWorkbenchMemory{
+		Kind:        "local",
+		ProjectPath: sandbox,
+	})
+	if remote {
+		t.Fatal("expected local plan target")
+	}
+	if path != "" {
+		t.Fatalf("plan path = %q, want empty (sandbox must not be a work root)", path)
+	}
+	if errMsg == "" {
+		t.Fatal("expected missing-path error when only a sandbox path is available")
+	}
+}
+
+func TestSetTabWorkingDirRewritesCodingIdentitySandbox(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "prog-test")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", workingDir); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+	created := app.CreateTaskWithMode("Snake game", "", "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	tabID := "proj-coding-reject-sandbox"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); msg == "" {
+		t.Fatal("CreateProjectTabSession returned empty message")
+	}
+	sandbox := filepath.Join(created.ProjectPath, "workspace")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatalf("MkdirAll sandbox: %v", err)
+	}
+	if err := app.SetTabWorkingDir(tabID, sandbox); err != nil {
+		t.Fatalf("SetTabWorkingDir sandbox: %v", err)
+	}
+	want := filepath.Clean(workingDir)
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != want {
+		t.Fatalf("GetTabWorkingDir = %q, want live cwd %q after sandbox pick", got, want)
+	}
+	if got := app.recentTaskWorkingDir(created.ProjectPath); filepath.Clean(got) == filepath.Clean(sandbox) {
+		t.Fatalf("persisted working_dir tag must not be sandbox %q", got)
+	}
+	if got := app.codingWorkbenchLocalExecDir(created.ProjectPath); filepath.Clean(got) != want {
+		t.Fatalf("coding work root = %q, want live cwd %q", got, want)
+	}
+}
+
+func TestIsLocalCodingIdentityOrSandboxRejectsTaskChildren(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateTaskWithMode("Snake game", "", "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	child := filepath.Join(created.ProjectPath, "workspace", "src")
+	if !isLocalCodingIdentityOrSandbox(created.ProjectPath, child) {
+		t.Fatalf("child of managed task identity must not be a work root: %q", child)
+	}
+	outside := filepath.Join(t.TempDir(), "prog-test")
+	if isLocalCodingIdentityOrSandbox(created.ProjectPath, outside) {
+		t.Fatalf("live cwd %q must not be treated as identity", outside)
+	}
+	if got := app.codingWorkbenchLocalExecDirOrDesktop(created.ProjectPath); isLocalCodingIdentityOrSandbox(created.ProjectPath, got) {
+		t.Fatalf("OrDesktop returned identity/sandbox %q", got)
+	}
+}
+
 func TestCreateExpertTaskIsListedAndDeduplicated(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 
@@ -1446,6 +1925,110 @@ func TestEnsureCodingWorkbenchArmedRestoresPureCodingOnly(t *testing.T) {
 	}
 	if strings.TrimSpace(mem.SessionPlan) == "" {
 		t.Fatal("expected session plan seeded from task title for compaction recovery")
+	}
+}
+
+func TestIncomingCodingMessageRearmsDroppedPending(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+	app.disableBackgroundEmbeddingForTest = true
+	manager := NewRemoteSessionManager(app)
+	app.remoteSessions = manager
+	client := NewRemoteHubClient(app, manager)
+	manager.SetHubClient(client)
+	handler := client.ensureIMHandler()
+	if handler == nil {
+		t.Fatal("expected IM handler")
+	}
+
+	coding := app.CreateTaskWithMode("Luxury hello world", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("failed to create coding task")
+	}
+	userID := projectSessionOwnerID(coding.ProjectPath)
+	if _, err := app.EnsureCodingWorkbenchArmed(coding.ProjectPath); err != nil {
+		t.Fatalf("initial arm: %v", err)
+	}
+	handler.pendingV2SubAgentExecution.Delete(userID)
+	handler.pendingTemplateCodingProjectPath.Delete(userID)
+	if handler.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("setup: pending should be dropped")
+	}
+
+	handler.ensurePureCodingArmedForIncomingMessage(userID)
+	if !handler.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("incoming coding workbench message must re-arm CodingSubAgent")
+	}
+}
+
+func TestIncomingCodingMessageRearmsAfterSessionClear(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+	app.disableBackgroundEmbeddingForTest = true
+	manager := NewRemoteSessionManager(app)
+	app.remoteSessions = manager
+	client := NewRemoteHubClient(app, manager)
+	manager.SetHubClient(client)
+	handler := client.ensureIMHandler()
+	if handler == nil {
+		t.Fatal("expected IM handler")
+	}
+
+	coding := app.CreateTaskWithMode("Snake GUI rewrite", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("failed to create coding task")
+	}
+	userID := projectSessionOwnerID(coding.ProjectPath)
+	if _, err := app.EnsureCodingWorkbenchArmed(coding.ProjectPath); err != nil {
+		t.Fatalf("initial arm: %v", err)
+	}
+	handler.clearPerUserSessionState(userID)
+	if handler.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("setup: /clear must drop pending")
+	}
+	if mem := handler.getStickyCodingWorkbenchMemory(userID); strings.TrimSpace(mem.Kind) != "" {
+		t.Fatalf("setup: /clear must drop sticky kind, got %q", mem.Kind)
+	}
+
+	handler.ensurePureCodingArmedForIncomingMessage(userID)
+	if !handler.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("/clear follow-up on a coding_dev tab must re-arm CodingSubAgent")
+	}
+}
+
+func TestCodingWorkbenchSessionRecognizedWithoutPendingOrSticky(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+	app.disableBackgroundEmbeddingForTest = true
+	manager := NewRemoteSessionManager(app)
+	app.remoteSessions = manager
+	client := NewRemoteHubClient(app, manager)
+	manager.SetHubClient(client)
+	handler := client.ensureIMHandler()
+	if handler == nil {
+		t.Fatal("expected IM handler")
+	}
+
+	coding := app.CreateTaskWithMode("Luxury hello world", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("failed to create coding task")
+	}
+	userID := projectSessionOwnerID(coding.ProjectPath)
+	handler.clearStickyCodingEnvironment(userID)
+	if handler.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("setup: pending should be empty")
+	}
+	if mem := handler.getStickyCodingWorkbenchMemory(userID); strings.TrimSpace(mem.Kind) != "" {
+		t.Fatalf("setup: sticky kind should be empty, got %q", mem.Kind)
+	}
+	if !handler.isPureCodingWorkbenchSession(userID) {
+		t.Fatal("coding_dev tab must stay a workbench after pending and sticky Kind drop")
+	}
+	if !app.projectPathIsCodingWorkbench(coding.ProjectPath) {
+		t.Fatal("coding_dev project must keep the workbench tag")
 	}
 }
 

@@ -5,10 +5,52 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+func TestOpenAISDKStreamForwardsReasoningAliases(t *testing.T) {
+	for _, field := range []string{"reasoning", "thinking"} {
+		t.Run(field, func(t *testing.T) {
+			var reasoning string
+			client := &http.Client{Transport: openAISDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if !strings.Contains(req.URL.Path, "/chat/completions") {
+					t.Fatalf("request path = %q", req.URL.Path)
+				}
+				body := `data: {"choices":[{"delta":{"` + field + `":"Plan first."}}]}` + "\n" +
+					`data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}` + "\n" +
+					"data: [DONE]\n"
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    req,
+				}, nil
+			})}
+
+			response, err := DoOpenAIRequestStreamWithReasoning(
+				context.Background(),
+				corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "agnes", Protocol: "openai"},
+				[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+				nil,
+				client,
+				nil,
+				func(delta string) { reasoning += delta },
+			)
+			if err != nil {
+				t.Fatalf("DoOpenAIRequestStreamWithReasoning: %v", err)
+			}
+			if got, want := response.Choices[0].Message.ReasoningContent, "Plan first."; got != want {
+				t.Fatalf("response reasoning = %q, want %q", got, want)
+			}
+			if got, want := reasoning, "Plan first."; got != want {
+				t.Fatalf("reasoning callback = %q, want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestOpenAISDKDoesNotSendCodeGenHeaderForDeepSeek(t *testing.T) {
 	client := &http.Client{Transport: openAISDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {

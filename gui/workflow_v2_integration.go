@@ -1646,6 +1646,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 	if state == nil || !state.IsExecutionPhase() {
 		return nil
 	}
+	onProgress = wrapCodingAgentUserProgress(onProgress)
 
 	tasksPhaseOutput := getPhaseOutput(state, "tasks")
 	if tasksPhaseOutput == "" {
@@ -1717,16 +1718,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 		}()
 	}
 
-	reasoningToken := onToken
-	if onToken != nil {
-		reasoningToken = func(delta string) {
-			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
-				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
-				delta = strings.TrimLeft(delta, " ")
-			}
-			onToken("\x01" + delta)
-		}
-	}
+	reasoningToken := wrapCodingAgentReasoningToken(onToken)
 
 	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
@@ -1803,9 +1795,7 @@ func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userI
 
 	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
 	report := formatTaskRunResultsReportEx(allResults, cancelled)
-	if onToken != nil {
-		onToken("\n\n" + report)
-	}
+	emitCodingAgentFinishToken(onToken, report, allResults, cancelled)
 
 	return h.finalizeCodingImplementation(userID, state, tasks, allResults, report, cancelled, false, codingExecCheckpoint{
 		IsRemote:        false,
@@ -1826,6 +1816,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 	if state == nil || !state.IsExecutionPhase() {
 		return nil
 	}
+	onProgress = wrapCodingAgentUserProgress(onProgress)
 
 	tasksPhaseOutput := getPhaseOutput(state, "tasks")
 	if tasksPhaseOutput == "" {
@@ -1929,16 +1920,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 	designCtx := truncateRunesV2(getPhaseOutput(state, "design"), 500)
 	log.Printf("[workflow-v2-remote-exec] starting: %d tasks session=%s workdir=%s", totalTasks, sessionID, remoteWorkDir)
 
-	reasoningToken := onToken
-	if onToken != nil {
-		reasoningToken = func(delta string) {
-			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
-				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
-				delta = strings.TrimLeft(delta, " ")
-			}
-			onToken("\x01" + delta)
-		}
-	}
+	reasoningToken := wrapCodingAgentReasoningToken(onToken)
 
 	cfg := h.getCodingLLMConfig()
 	httpClient := h.client
@@ -1973,16 +1955,19 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 		nestedProgress := progressCB
 		if progressCB != nil {
 			nestedProgress = func(msg string) {
-				msg = strings.TrimSpace(msg)
-				if msg == "" {
+				if isCodingAgentUserProgressText(msg) {
+					progressCB(msg)
 					return
 				}
-				progressCB(fmt.Sprintf("   · T%d %s", ord, msg))
+				msg = strings.TrimSpace(msg)
+				if msg != "" {
+					log.Printf("[workflow-v2-remote-exec] T%d %s", ord, truncateRunesV2(msg, 200))
+				}
 			}
 		}
 
 		agent := NewRemoteCodingSubAgent(h, cfg, httpClient, sessionID, remoteWorkDir, remoteWorkDir, loopCtx)
-		agent.SetCallbacks(tokenCB, nestedProgress)
+		agent.SetCallbacks(wrapCodingAgentReasoningToken(tokenCB), nestedProgress)
 		agent.SetSourcePreviewEnabled(true)
 		if h.app != nil {
 			codingKB := h.app.ensureCodingKnowledgeStore()
@@ -2058,9 +2043,7 @@ func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(user
 		"④ 远程编码阶段结束（%d 个任务），正在汇总…",
 		"④ 遠端編碼階段結束（%d 個任務），正在彙總…",
 	), totalTasks))
-	if onToken != nil {
-		onToken("\n\n" + report)
-	}
+	emitCodingAgentFinishToken(onToken, report, allResults, cancelled)
 
 	cp := codingExecCheckpoint{
 		IsRemote:        true,
@@ -2115,7 +2098,7 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 	// ConversationMemory gets one recovery-facing opaque reference. Neither
 	// surface receives command/tool payloads or an implicit replay plan.
 	h.projectCodingRuntimeProjection(userID, state, results, report, cancelled)
-	passed, failed, skipped := countTaskRunStatuses(results)
+	_, failed, skipped := countTaskRunStatuses(results)
 	// Advance only when every task has a Passed result. A cancel that races
 	// after the last task still advances; empty/partial results never do.
 	allOK := allCodingTasksPassed(tasks, results)
@@ -2190,50 +2173,7 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 				))
 			}
 		}
-		var b strings.Builder
-		if isRemote {
-			fmt.Fprintf(&b, codingExecText(
-				"Remote execution finished %d coding tasks\n",
-				"远程执行完成 %d 个编码任务\n",
-				"遠端執行完成 %d 個編碼任務\n",
-			), len(tasks))
-			if cp.RemoteHost != "" {
-				fmt.Fprintf(&b, codingExecText(
-					"Remote dir: %s@%s:%d %s\n",
-					"远程目录：%s@%s:%d %s\n",
-					"遠端目錄：%s@%s:%d %s\n",
-				), cp.RemoteUser, cp.RemoteHost, cp.RemotePort, cp.RemoteWorkDir)
-			}
-		} else {
-			fmt.Fprintf(&b, codingExecText(
-				"Local execution finished %d coding tasks\n",
-				"本机执行完成 %d 个编码任务\n",
-				"本機執行完成 %d 個編碼任務\n",
-			), len(tasks))
-		}
-		if state != nil {
-			fmt.Fprintf(&b, codingExecText(
-				"Local workflow path: %s\n",
-				"本机工作流路径：%s\n",
-				"本機工作流路徑：%s\n",
-			), state.ProjectPath)
-		}
-		if p := remoteTaskPathFromWorkflowState(state); p != "" {
-			fmt.Fprintf(&b, codingExecText(
-				"Task record: %s\n",
-				"任务管理记录：%s\n",
-				"任務管理記錄：%s\n",
-			), p)
-		}
-		b.WriteString(codingExecText(
-			"\nWorkflow advanced to the next phase or completed.\n\n",
-			"\n工作流已进入下一阶段或已完成。\n\n",
-			"\n工作流已進入下一階段或已完成。\n\n",
-		))
-		b.WriteString(formatTaskListBrief(tasks))
-		b.WriteString("\n\n")
-		b.WriteString(report)
-		return &IMAgentResponse{Text: b.String()}
+		return &IMAgentResponse{Text: formatCodingExecCompletedUserText(report)}
 	}
 
 	// Partial / cancelled: keep phase open and store checkpoint.
@@ -2276,38 +2216,20 @@ func (h *IMMessageHandler) finalizeCodingImplementation(
 			), skipped))
 		}
 	}
-	var b strings.Builder
-	b.WriteString(codingExecResumeGuidance(cp, isRemote))
-	b.WriteString("\n\n")
-	fmt.Fprintf(&b, codingExecText(
-		"Stats: passed %d · failed %d · skipped %d\n\n",
-		"统计：通过 %d · 失败 %d · 跳过 %d\n\n",
-		"統計：通過 %d · 失敗 %d · 跳過 %d\n\n",
-	), passed, failed, skipped)
-	b.WriteString(formatTaskListBrief(tasks))
-	b.WriteString("\n\n")
-	b.WriteString(report)
 	return &IMAgentResponse{
-		Text:    b.String(),
+		Text:    formatCodingExecIncompleteUserText(cp, isRemote, report),
 		Actions: codingExecResumeActions(cp),
 	}
 }
 
 func (h *IMMessageHandler) completedCodingProjectionPendingResponse(tasks []*v2.TaskItem, report string) *IMAgentResponse {
-	var b strings.Builder
-	b.WriteString(codingExecText(
-		"Coding execution completed and was saved safely. The workflow phase update is pending and will be retried as metadata only; no coding task will be run again.\n\n",
-		"编码执行已安全完成并持久化。工作流阶段更新待补齐，将仅重试元数据写入，不会再次执行编码任务。\n\n",
-		"編碼執行已安全完成並持久化。工作流程階段更新待補齊，將僅重試中繼資料寫入，不會再次執行編碼任務。\n\n",
-	))
-	b.WriteString(formatTaskListBrief(tasks))
-	b.WriteString("\n")
-	b.WriteString(report)
-	return &IMAgentResponse{Text: b.String()}
+	_ = tasks
+	return &IMAgentResponse{Text: formatCodingExecProjectionPendingUserText(report)}
 }
 
 // runCodingExecFromCheckpoint re-runs failed or incomplete tasks from a checkpoint.
 func (h *IMMessageHandler) runCodingExecFromCheckpoint(userID, action string, state *v2.WorkflowState, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	onProgress = wrapCodingAgentUserProgress(onProgress)
 	cp, ok := h.loadCodingExecCheckpoint(userID)
 	if !ok || len(cp.Tasks) == 0 {
 		return &IMAgentResponse{Text: codingExecText(
@@ -2562,7 +2484,7 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsRemote(userID string, 
 		agent := NewRemoteCodingSubAgent(h, cfg, h.client, sessionID, workDir, workDir, loopCtx)
 		agent.runtimeExistingTaskID = continuation.Task.TaskID
 		agent.runtimeParentContinuationAttemptID = continuation.ParentAttemptID
-		agent.SetCallbacks(tokenCB, progressCB)
+		agent.SetCallbacks(wrapCodingAgentReasoningToken(tokenCB), progressCB)
 		agent.SetSourcePreviewEnabled(true)
 		if h.app != nil {
 			agent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
@@ -2587,9 +2509,7 @@ func (h *IMMessageHandler) finalizeChildReviewResults(userID string, state *v2.W
 		}
 	}
 	report := formatTaskRunResultsReportEx(merged, cancelled)
-	if onToken != nil {
-		onToken("\n\n" + report)
-	}
+	emitCodingAgentFinishToken(onToken, report, merged, cancelled)
 	cp.Results, cp.Cancelled, cp.IsRemote = merged, cancelled, isRemote
 	return h.finalizeCodingImplementation(userID, state, cp.Tasks, merged, report, cancelled, isRemote, cp, onProgress)
 }
@@ -2645,9 +2565,7 @@ func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.Wo
 	merged := mergeTaskRunResultsByIndex(cp.Results, retryResults)
 	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
 	report := formatTaskRunResultsReportEx(merged, cancelled)
-	if onToken != nil {
-		onToken("\n\n" + report)
-	}
+	emitCodingAgentFinishToken(onToken, report, merged, cancelled)
 	cp.Results = merged
 	cp.Cancelled = cancelled
 	return h.finalizeCodingImplementation(userID, state, cp.Tasks, merged, report, cancelled, false, cp, onProgress)
@@ -2710,7 +2628,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 		}
 		desc, taskContext := buildCodingRemoteTaskPrompt(task, config.RequirementsCtx, config.DesignCtx)
 		agent := NewRemoteCodingSubAgent(h, cfg, httpClient, sessionID, workDir, workDir, loopCtx)
-		agent.SetCallbacks(tokenCB, progressCB)
+		agent.SetCallbacks(wrapCodingAgentReasoningToken(tokenCB), progressCB)
 		agent.SetSourcePreviewEnabled(true)
 		if h.app != nil {
 			codingKB := h.app.ensureCodingKnowledgeStore()
@@ -2733,9 +2651,7 @@ func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.W
 	merged := mergeTaskRunResultsByIndex(cp.Results, retryResults)
 	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
 	report := formatTaskRunResultsReportEx(merged, cancelled)
-	if onToken != nil {
-		onToken("\n\n" + report)
-	}
+	emitCodingAgentFinishToken(onToken, report, merged, cancelled)
 	cp.Results = merged
 	cp.RemoteSessionID = sessionID
 	cp.RemoteWorkDir = workDir
@@ -2918,51 +2834,10 @@ func formatTaskRunResultsReport(results []v2.TaskRunResult) string {
 	return formatTaskRunResultsReportEx(results, false)
 }
 
-// formatTaskRunResultsReportEx builds a summary report; cancelled uses a single title
-// (avoids prepending a second "## …" header).
+// formatTaskRunResultsReportEx writes the user-visible coding finish in engineer
+// prose. Scorecard headings such as "## Execution report" stay out of the chat.
 func formatTaskRunResultsReportEx(results []v2.TaskRunResult, cancelled bool) string {
-	var sb strings.Builder
-	if cancelled {
-		sb.WriteString(codingExecText("## Execution report (cancelled)\n\n", "## 执行报告（已取消）\n\n", "## 執行報告（已取消）\n\n"))
-	} else {
-		sb.WriteString(codingExecText("## Execution report\n\n", "## 执行报告\n\n", "## 執行報告\n\n"))
-	}
-	passed, failed, skipped := 0, 0, 0
-	for _, result := range results {
-		switch result.Status {
-		case v2.TaskPassed:
-			passed++
-		case v2.TaskFailed:
-			failed++
-		case v2.TaskSkipped:
-			skipped++
-		}
-	}
-	sb.WriteString(fmt.Sprintf(codingExecText(
-		"- Passed: %d\n- Failed: %d\n- Skipped: %d\n\n",
-		"- 通过: %d\n- 失败: %d\n- 跳过: %d\n\n",
-		"- 通過: %d\n- 失敗: %d\n- 跳過: %d\n\n",
-	), passed, failed, skipped))
-	for _, result := range results {
-		mark := "·"
-		switch result.Status {
-		case v2.TaskPassed:
-			mark = "✓"
-		case v2.TaskFailed:
-			mark = "✗"
-		case v2.TaskSkipped:
-			mark = "⊘"
-		}
-		line := fmt.Sprintf("%s T%d %s — %s", mark, result.TaskIndex, result.Title, codingExecStatusLabel(result.Status))
-		if result.Error != "" {
-			line += " (" + result.Error + ")"
-		}
-		sb.WriteString(line + "\n")
-		if s := strings.TrimSpace(result.Summary); s != "" {
-			sb.WriteString("  " + truncateRunesV2(s, 200) + "\n")
-		}
-	}
-	return sb.String()
+	return formatCodingAgentUserFinish(results, cancelled)
 }
 
 // codingExecRemoteTaskProgress localizes remote first-run task progress banners.
@@ -3150,6 +3025,7 @@ func workflowEventProjectPath(state *v2.WorkflowState) string {
 // executed sequentially via TaskRunner; simple requests stay single-task.
 // Complex plans pause for confirmation in both adaptive and plan-first modes.
 func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	onProgress = wrapCodingAgentUserProgress(onProgress)
 	ensureLoopCtxUserID(loopCtx, userID)
 	// Register after cancel check, before planning, so guide-launch during plan
 	// LLM uses pendingInjection (not the 30s pre-loop bag). Plan-approve early
@@ -3174,6 +3050,9 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if loopCtx != nil && loopCtx.IsCancelled() {
 		return &IMAgentResponse{Text: "编码任务已取消", TraceEventCount: 0}
 	}
+	if resp := h.tryHostClearCodingWorkspace(userID, userText, projectPath, loopCtx, onProgress, onToken, nil); resp != nil {
+		return resp
+	}
 	cleanupPureCodingRuntime = h.beginPureCodingRuntime(loopCtx, userID, userText)
 
 	// One-shot approved plan from /plan approve.
@@ -3192,12 +3071,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		// Strip approve marker from display text.
 		userText = recordUserText
 		decision = approvedCodingPlanDecision()
-		if onProgress != nil {
-			onProgress(fmt.Sprintf("执行已批准计划（%d 步）…", len(tasks)))
-		}
-		if onToken != nil && planMarkdown != "" {
-			onToken("\n\n## 按已批准计划执行\n\n" + planMarkdown + "\n\n---\n\n")
-		}
+		log.Printf("[workflow-v2] executing approved coding plan: steps=%d", len(tasks))
 		h.persistCodingWorkbenchPlans(userID, planMarkdown, "")
 		h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(tasks, codingStepPending))
 	} else {
@@ -3206,7 +3080,16 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			userText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker))
 			recordUserText = userText
 		}
-		decision = h.resolveCodingRequestDecision(recordUserText)
+		attachCodingWorkRoot(&sessionMem, projectPath)
+		if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
+			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+			attachCodingWorkRoot(&sessionMem, projectPath)
+		}
+		decision = forceWorkspaceClearCodingDecision(recordUserText, h.resolveCodingRequestDecision(recordUserText))
+		if got := h.refineCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision); got != "" {
+			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+			attachCodingWorkRoot(&sessionMem, projectPath)
+		}
 		hooks := loadCodingWorkbenchHooks(projectPath)
 		if prePlan := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_plan"); prePlan.Report != "" {
 			log.Printf("[coding-hooks] pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
@@ -3225,7 +3108,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					onToken("\n\n" + text)
 				}
 				return &IMAgentResponse{
-					Text:    text,
+					Text:    joinCodingUnderstandingAndBody(sessionMem.RequirementRestatement, text),
 					Actions: codingPlanApproveActions(),
 				}
 			}
@@ -3241,6 +3124,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
 	}
+	decision = forceWorkspaceClearCodingDecision(userText, decision)
 	requestKind := decision.Kind
 	inquiry := requestKind == codingRequestInquiry
 	sourcePreview := requestKind == codingRequestImplementation
@@ -3414,10 +3298,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					}
 					if mergeSum != "" {
 						h.rememberCodingWorktree(userID, wt, mergeSum)
-						if onPr != nil {
-							onPr(fmt.Sprintf("T%d %s", t.Index, mergeSum))
-						}
-						result.Summary = strings.TrimSpace(result.Summary + "\n\n" + mergeSum)
+						log.Printf("[coding-worktree] T%d %s", t.Index, mergeSum)
 					}
 					result.FilesModified = remapWorktreePaths(result.FilesModified, wt.ProjectPath, projectPath)
 					result.FilesCreated = remapWorktreePaths(result.FilesCreated, wt.ProjectPath, projectPath)
@@ -3439,7 +3320,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		if wt != nil && runTaskWithSubAgent != nil {
 			if v1Result != nil && v1Result.Status == TaskExecPassed {
 				mergeMu.Lock()
-				mergedOK, mergeSum, mergeErr := wt.mergeBack(projectPath)
+				_, mergeSum, mergeErr := wt.mergeBack(projectPath)
 				mergeMu.Unlock()
 				if mergeErr != nil {
 					log.Printf("[coding-worktree] merge failed T%d: %v", t.Index, mergeErr)
@@ -3447,27 +3328,13 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					h.recordLocalWorktreeConflict(userID, wt, projectPath, mergeErr.Error())
 					// Keep worktree for inspection + /worktree adopt.
 					wt.cleanup(true)
-					hint := mergeErr.Error() + "\n\n可用 `/worktree conflicts` 查看，`/worktree adopt <id>` 强制合并。"
-					if v1Result.Summary != "" {
-						v1Result.Summary = v1Result.Summary + "\n\nworktree merge failed: " + hint
-					} else {
-						v1Result.Summary = "worktree merge failed: " + hint
-					}
+					log.Printf("[coding-worktree] T%d merge failed: %v; use /worktree conflicts or /worktree adopt", t.Index, mergeErr)
 					v1Result.Status = TaskExecFailed
 					v1Result.Error = mergeErr.Error()
 				} else {
 					if mergeSum != "" {
 						h.rememberCodingWorktree(userID, wt, mergeSum)
-						if onPr != nil {
-							onPr(fmt.Sprintf("T%d %s", t.Index, mergeSum))
-						}
-						if mergedOK {
-							if v1Result.Summary != "" {
-								v1Result.Summary = v1Result.Summary + "\n\n" + mergeSum
-							} else {
-								v1Result.Summary = mergeSum
-							}
-						}
+						log.Printf("[coding-worktree] T%d %s", t.Index, mergeSum)
 					}
 					// Remap file paths from worktree → main before sticky merge.
 					v1Result.FilesModified = remapWorktreePaths(v1Result.FilesModified, wt.ProjectPath, projectPath)
@@ -3562,15 +3429,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerify(ctx, projectPath)
 			gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
 			if !skipped {
-				if onProgress != nil {
-					if ok {
-						onProgress(fmt.Sprintf("T%d 步级验证通过: %s", t.Index, vcmd))
-					} else {
-						onProgress(fmt.Sprintf("T%d 步级验证失败: %s", t.Index, vcmd))
-					}
-				}
-				if onTk != nil {
-					onTk("\n\n" + gateSum + "\n")
+				if ok {
+					log.Printf("[workflow-v2] T%d step verify passed: %s", t.Index, vcmd)
+				} else {
+					log.Printf("[workflow-v2] T%d step verify failed: %s", t.Index, vcmd)
 				}
 				postV := runCodingWorkbenchHookPhase(projectPath, hooks, "post_verify")
 				if postV.Report != "" {
@@ -3644,17 +3506,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	}
 
 	// Route SubAgent thinking to reasoning panel (collapsed)
-	reasoningToken := onToken
-	if onToken != nil {
-		reasoningToken = func(delta string) {
-			// Strip Browser: role prefix hallucination from reasoning output
-			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
-				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
-				delta = strings.TrimLeft(delta, " ")
-			}
-			onToken("\x01" + delta)
-		}
-	}
+	reasoningToken := wrapCodingAgentReasoningToken(onToken)
 
 	runCtx := context.Background()
 	var cancelRun context.CancelFunc
@@ -3664,19 +3516,13 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			defer cancelRun()
 		}
 	}
-	// Codex/Claude Code-style checklist once multi-step plan is armed.
 	if planned {
 		memSteps := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
 		if len(memSteps) == 0 {
 			memSteps = codingWorkbenchStepsFromTasks(tasks, codingStepPending)
 		}
 		if checklist := formatCodingStepsChecklist(memSteps); checklist != "" {
-			if onToken != nil {
-				onToken("\n\n" + checklist + "\n\n")
-			}
-			if onProgress != nil {
-				onProgress(checklist)
-			}
+			log.Printf("[workflow-v2] coding plan armed:\n%s", checklist)
 		}
 	}
 	runner := v2.NewTaskRunner(config, subAgentFn)
@@ -3692,7 +3538,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			h.updateStickyCodingStepStatus(userID, rr.TaskIndex, codingStepSkipped, rr.Error)
 		}
 	}
-	report := runner.FinalReport()
+	report := formatCodingWorkbenchUserAnswer(requestKind, runResults, runCtx.Err() != nil)
 	if lastCodingResult != nil {
 		// Aggregate file audit across multi-step runs for sticky memory.
 		lastCodingResult.FilesModified = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesModified, mergedModified...))
@@ -3736,8 +3582,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		log.Printf("[coding-hooks] post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
 
-	// Push final report as visible content
-	if onToken != nil {
+	if onToken != nil && codingAgentFinishNeedsToken(report, lastCodingResult, runResults, runCtx.Err() != nil) {
 		onToken("\n\n" + report)
 	}
 
@@ -3746,11 +3591,10 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 
 	// Populate TraceEventCount so /goal continuation does not false-pause after
 	// two pure-coding turns (no-tool suppression uses TraceEventCount as proxy).
-	header := codingWorkbenchRunHeader(requestKind, planned, len(tasks), runResults)
 	memAfter := h.getStickyCodingWorkbenchMemory(userID)
-	body := fmt.Sprintf("%s\n项目路径：%s\n\n%s", header, projectPath, report)
-	if inquiry {
-		body = fmt.Sprintf("%s\n项目路径：%s\n只读检查：未修改任何文件。\n\n%s", header, projectPath, report)
+	body := report
+	if strings.TrimSpace(body) == "" {
+		body = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}
 	resp := &IMAgentResponse{Text: body}
 	h.applyCodingUsageToResponse(userID, resp, totalInTok, totalOutTok, totalCost)
@@ -3876,6 +3720,7 @@ func buildRemoteCodingPlanStepText(
 }
 
 func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText string, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	onProgress = wrapCodingAgentUserProgress(onProgress)
 	ensureLoopCtxUserID(loopCtx, userID)
 	remoteTaskLabel := func(coding, maintenance string) string {
 		if remoteCtx.Maintenance {
@@ -3930,6 +3775,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		}()
 		ensureLoopCtxUserID(loopCtx, userID)
 	}
+	if resp := h.tryHostClearCodingWorkspace(userID, userText, remoteCtx.ProjectDir, loopCtx, onProgress, onToken, &remoteCtx); resp != nil {
+		return resp
+	}
 	cleanupPureCodingRuntime = h.beginPureCodingRuntime(loopCtx, userID, userText)
 	sessionMem := h.getStickyCodingWorkbenchMemory(userID)
 	// Remote may not have local AGENTS.md; still try project dir if mirrored locally.
@@ -3971,7 +3819,16 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			userText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker))
 			recordUserText = userText
 		}
-		decision = decisionForRecord()
+		attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
+		if got := h.publishCodingRequestUnderstanding(userID, recordUserText, sessionMem, onToken); got != "" {
+			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+			attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
+		}
+		decision = forceWorkspaceClearCodingDecision(userText, decisionForRecord())
+		if got := h.refineCodingRequestUnderstanding(userID, recordUserText, sessionMem, decision); got != "" {
+			sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+			attachCodingWorkRoot(&sessionMem, remoteCtx.ProjectDir)
+		}
 		if prePlan := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_plan"); prePlan.Report != "" {
 			log.Printf("[coding-hooks] remote pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
 		}
@@ -3979,7 +3836,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		if planned {
 			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
 				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
-				return &IMAgentResponse{Text: text, Actions: codingPlanApproveActions()}
+				if onToken != nil {
+					onToken("\n\n" + text)
+				}
+				return &IMAgentResponse{Text: joinCodingUnderstandingAndBody(sessionMem.RequirementRestatement, text), Actions: codingPlanApproveActions()}
 			}
 		}
 	}
@@ -3994,6 +3854,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	// expanded per-step prompt may include a prior session plan, which must not
 	// make a short remote "run it" follow-up look like implementation work.
 	// The normalized root decision is canonical for every remote plan step.
+	decision = forceWorkspaceClearCodingDecision(userText, decision)
 	remoteCtx.RequestKind = decision.Kind
 	remoteCtx.RequestNeedsPlan = decision.NeedsPlan
 
@@ -4014,28 +3875,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 
 	log.Printf("[workflow-v2] pure remote coding: user=%s session=%s project=%s task=%q sticky_turn=%d planned=%v steps=%d",
 		userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80), sessionMem.TurnCount, planned, len(tasks))
-	if onProgress != nil {
-		if planned {
-			onProgress(fmt.Sprintf(remoteTaskLabel("全功能远程编程：按计划执行 %d 步（SSH %s）", "远程维护：按计划执行 %d 步（SSH %s）"), len(tasks), remoteCtx.SessionID))
-		} else if sessionMem.TurnCount > 0 {
-			onProgress(fmt.Sprintf(remoteTaskLabel("全功能远程编程：继续第 %d 轮（SSH %s）", "远程维护：继续第 %d 轮（SSH %s）"), sessionMem.TurnCount+1, remoteCtx.SessionID))
-		} else {
-			onProgress(fmt.Sprintf(remoteTaskLabel("全功能远程编程：使用 SSH 会话 %s 开始执行", "远程维护：使用 SSH 会话 %s 开始执行"), remoteCtx.SessionID))
-		}
-	}
-	// Codex/Claude Code-style checklist banner once the multi-step plan is armed.
 	if planned {
 		memSteps := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
 		if len(memSteps) == 0 {
 			memSteps = codingWorkbenchStepsFromTasks(tasks, codingStepPending)
 		}
 		if checklist := formatCodingStepsChecklist(memSteps); checklist != "" {
-			if onToken != nil {
-				onToken("\n\n" + checklist + "\n\n")
-			}
-			if onProgress != nil {
-				onProgress(checklist)
-			}
+			log.Printf("[workflow-v2] remote coding plan armed:\n%s", checklist)
 		}
 	}
 
@@ -4050,19 +3896,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	totalTools, totalIters := 0, 0
 	totalInTok, totalOutTok := 0, 0
 	totalCost := 0.0
-	var reportParts []string
+	var runResults []v2.TaskRunResult
 	for i, step := range tasks {
 		if step == nil {
 			continue
 		}
 		if loopCtx != nil && loopCtx.IsCancelled() {
 			break
-		}
-		if planned && onProgress != nil {
-			onProgress(fmt.Sprintf("T%d/%d: %s", step.Index, len(tasks), step.Title))
-		}
-		if planned && onToken != nil {
-			onToken(fmt.Sprintf("\n\n---\n### T%d: %s\n\n", step.Index, step.Title))
 		}
 		h.updateStickyCodingStepStatus(userID, step.Index, codingStepRunning, "")
 		if preStepRes := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_step"); preStepRes.Report != "" || preStepRes.Failed {
@@ -4072,8 +3912,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			if codingHookShouldAbort(hooks, preStepRes) {
 				sum := "pre_step hook failed (fail_on_error)\n" + preStepRes.Report
 				h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, sum)
-				reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
 				result = &RemoteCodingSubAgentResult{Status: "failed", Error: "pre_step hook failed", Summary: sum}
+				runResults = append(runResults, remoteCodingStepToRunResult(step, result))
 				h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 				break
 			}
@@ -4100,8 +3940,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 					sum := fmt.Sprintf("remote isolated workspace creation failed; always mode will not write the primary remote workspace: %v", isoErr)
 					log.Printf("[remote-isolate] T%d %s", step.Index, sum)
 					h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, sum)
-					reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
 					result = &RemoteCodingSubAgentResult{Status: "failed", Error: "remote isolated workspace unavailable", Summary: sum}
+					runResults = append(runResults, remoteCodingStepToRunResult(step, result))
 					h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: remote isolation unavailable")
 					break
 				}
@@ -4119,7 +3959,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			}
 		}
 
-		stepResult := runner(h, cfg, httpClient, stepRemoteCtx, loopCtx, taskText, onProgress, onToken)
+		stepResult := runner(h, cfg, httpClient, stepRemoteCtx, loopCtx, taskText, onProgress, wrapCodingAgentReasoningToken(onToken))
 		if isolate != nil {
 			if stepResult != nil && stepResult.Status == "success" {
 				if mergeSum, mergeErr := isolate.mergeBack(h, step.Files); mergeErr != nil {
@@ -4134,25 +3974,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 					})
 					// Local project path (task root) for hooks.json — not remote isolate dir.
 					h.fireCodingOnConflictHook(userID, "")
-					hint := mergeErr.Error() + "\n\n可用 `/worktree conflicts` 查看，`/worktree discard <id>` 丢弃远程隔离目录。"
-					if stepResult.Summary != "" {
-						stepResult.Summary += "\n\nremote isolate merge failed: " + hint
-					} else {
-						stepResult.Summary = "remote isolate merge failed: " + hint
-					}
+					log.Printf("[remote-isolate] T%d merge failed: %v; use /worktree conflicts or /worktree discard", step.Index, mergeErr)
 					stepResult.Status = "failed"
 					stepResult.Error = mergeErr.Error()
 					// keep isolate for inspection
 				} else {
-					if onProgress != nil && mergeSum != "" {
-						onProgress(mergeSum)
-					}
 					if mergeSum != "" {
-						if stepResult.Summary != "" {
-							stepResult.Summary += "\n\n" + mergeSum
-						} else {
-							stepResult.Summary = mergeSum
-						}
+						log.Printf("[remote-isolate] T%d %s", step.Index, mergeSum)
 					}
 					isolate.cleanup(h)
 				}
@@ -4199,9 +4027,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 					} else {
 						sum = gateSum
 					}
+					stepResult.Summary = sum
 					h.updateStickyCodingStepStatus(userID, step.Index, stepStatus, sum)
-					reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
 					setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, "verify_failed", sum)
+					runResults = append(runResults, remoteCodingStepToRunResult(step, stepResult))
 					_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 					h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 					break
@@ -4209,15 +4038,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				ok, vcmd, vout, skipped := runCodingWorkbenchRemoteStepVerify(h, remoteCtx.SessionID, remoteCtx.ProjectDir)
 				gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
 				if !skipped {
-					if onProgress != nil {
-						if ok {
-							onProgress(fmt.Sprintf("T%d 远程步级验证通过: %s", step.Index, vcmd))
-						} else {
-							onProgress(fmt.Sprintf("T%d 远程步级验证失败: %s", step.Index, vcmd))
-						}
-					}
-					if onToken != nil {
-						onToken("\n\n" + gateSum + "\n")
+					if ok {
+						log.Printf("[workflow-v2] T%d remote step verify passed: %s", step.Index, vcmd)
+					} else {
+						log.Printf("[workflow-v2] T%d remote step verify failed: %s", step.Index, vcmd)
 					}
 					if postV := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_verify"); postV.Report != "" {
 						log.Printf("[coding-hooks] remote post_verify T%d: %s", step.Index, truncateRunesV2(postV.Report, 160))
@@ -4230,11 +4054,10 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 						} else {
 							sum = gateSum
 						}
+						stepResult.Summary = sum
 						h.updateStickyCodingStepVerify(userID, step.Index, vcmd, false, gateSum)
-						if sum != "" {
-							reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
-							setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, "verify_failed", sum)
-						}
+						setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, "verify_failed", sum)
+						runResults = append(runResults, remoteCodingStepToRunResult(step, stepResult))
 						_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 						h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 						break
@@ -4252,19 +4075,11 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				h.updateStickyCodingStepStatus(userID, step.Index, stepStatus, sum)
 			}
 			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+			stepResult.Summary = sum
 			if sum != "" {
-				reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: %s\n%s", step.Index, step.Title, stepResult.Status, truncateRunesV2(sum, 800)))
-				// Feed prior step outcome into subsequent steps (sanitized when multi-step).
 				setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, stepResult.Status, sum)
 			}
-			// Stream a one-line checkmark update (Claude Code-style).
-			if planned && onProgress != nil {
-				mark := "✗"
-				if stepResult.Status == "success" {
-					mark = "☑"
-				}
-				onProgress(fmt.Sprintf("%s T%d %s", mark, step.Index, strings.TrimSpace(step.Title)))
-			}
+			runResults = append(runResults, remoteCodingStepToRunResult(step, stepResult))
 			// Sequential plans: stop on first hard failure (matches TaskRunner depends_on skip).
 			if stepResult.Status != "success" {
 				h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
@@ -4272,6 +4087,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			}
 		} else {
 			h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, "nil result")
+			runResults = append(runResults, remoteCodingStepToRunResult(step, nil))
 			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 			h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 			break
@@ -4283,54 +4099,35 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if postTurn := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_turn"); postTurn.Report != "" {
 		log.Printf("[coding-hooks] remote post_turn: %s", truncateRunesV2(postTurn.Report, 200))
 	}
-	if result == nil {
+	memAfter := h.getStickyCodingWorkbenchMemory(userID)
+	runResults = appendCodingWorkbenchSkippedResults(runResults, tasks, memAfter.StepStatuses)
+	cancelled := loopCtx != nil && loopCtx.IsCancelled()
+	if result == nil && len(runResults) == 0 {
+		if cancelled {
+			return &IMAgentResponse{Text: formatCodingAgentUserFinish(nil, true)}
+		}
 		return &IMAgentResponse{Text: remoteTaskLabel("远程编程执行失败：RemoteCodingSubAgent 没有返回结果。", "远程维护执行失败：未收到执行结果。")}
 	}
-
-	memAfter := h.getStickyCodingWorkbenchMemory(userID)
 	passedSteps, failedSteps, skippedSteps := countCodingWorkbenchStepOutcomes(memAfter.StepStatuses)
 	totalSteps := len(tasks)
 	if planned && totalSteps == 0 {
 		totalSteps = len(memAfter.StepStatuses)
 	}
-	statusText := formatRemoteCodingPlanStatusText(planned, result.Status, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
-	summary := strings.TrimSpace(result.Summary)
-	if planned && len(reportParts) > 0 {
-		summary = strings.Join(reportParts, "\n\n")
+	resultStatus := ""
+	if result != nil {
+		resultStatus = result.Status
 	}
-	if summary == "" {
-		summary = strings.TrimSpace(result.Error)
+	statusText := formatRemoteCodingPlanStatusText(planned, resultStatus, totalSteps, passedSteps, failedSteps, skippedSteps, remoteCtx.Maintenance)
+	log.Printf("[workflow-v2] remote coding complete: %s", statusText)
+	report := formatCodingWorkbenchUserAnswer(decision.Kind, runResults, cancelled)
+	if strings.TrimSpace(report) == "" {
+		report = codingExecText("No coding steps ran.", "No coding steps ran.", "No coding steps ran.")
 	}
-	if result.Status != "success" && strings.TrimSpace(result.Error) != "" && !strings.Contains(summary, result.Error) {
-		summary = strings.TrimSpace(summary) + "\n\n失败原因：" + compactSubAgentErrorSummary(result.Error)
+	if onToken != nil && codingAgentFinishNeedsToken(report, nil, runResults, cancelled) {
+		onToken("\n\n" + report)
 	}
-	if summary == "" {
-		summary = fmt.Sprintf("状态：%s", result.Status)
-	}
-	// Always append a final checklist so users are not misled by a step agent
-	// saying "waiting for Tn" when the orchestrator actually stopped.
-	if planned {
-		checklist := formatCodingStepsChecklist(memAfter.StepStatuses)
-		incompleteNote := formatRemoteCodingPlanIncompleteNote(totalSteps, passedSteps, failedSteps, skippedSteps)
-		if checklist != "" {
-			summary = strings.TrimSpace(summary) + "\n\n" + checklist
-		}
-		if incompleteNote != "" {
-			summary = strings.TrimSpace(summary) + "\n\n" + incompleteNote
-		}
-		if onToken != nil {
-			// Stream the final plan outcome so the chat surface is not only the
-			// last subagent "waiting for next step" narrative.
-			streamBody := statusText
-			if checklist != "" {
-				streamBody += "\n\n" + checklist
-			}
-			onToken("\n\n---\n### 计划执行结果\n\n" + streamBody + "\n")
-		}
-	}
-	text := fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary)
 	resp := &IMAgentResponse{
-		Text:            text,
+		Text:            report,
 		TraceEventCount: codingSubAgentActivityTraceCount(totalTools, totalIters),
 	}
 	h.applyCodingUsageToResponse(userID, resp, totalInTok, totalOutTok, totalCost)
@@ -4466,7 +4263,7 @@ func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLL
 		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
 	}
 	// SetCallbacks after approval config: highRiskApprovalExplicit blocks overwrite.
-	subAgent.SetCallbacks(onToken, onProgress)
+	subAgent.SetCallbacks(wrapCodingAgentReasoningToken(onToken), onProgress)
 	return subAgent.ExecuteTask(userText, "")
 }
 

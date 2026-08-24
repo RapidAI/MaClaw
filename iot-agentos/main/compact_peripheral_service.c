@@ -10,6 +10,12 @@ esp_err_t compact_peripheral_service_initialize(void) {
 esp_err_t compact_peripheral_service_stop_background_tasks(uint32_t timeout_ms) {
     return compact_peripheral_adapter_stop_background_tasks(timeout_ms);
 }
+esp_err_t compact_peripheral_service_prepare_system_sleep(uint32_t timeout_ms) {
+    return compact_peripheral_adapter_prepare_system_sleep(timeout_ms);
+}
+void compact_peripheral_service_abort_system_sleep_prepare(void) {
+    compact_peripheral_adapter_abort_system_sleep_prepare();
+}
 bool compact_peripheral_service_get_power_status(unsigned *level_percent, bool *charging) {
     return compact_peripheral_adapter_get_power_status(level_percent, charging);
 }

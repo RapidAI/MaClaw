@@ -11,6 +11,9 @@ importers:
       json5:
         specifier: ^2.2.3
         version: 2.2.3
+      katex:
+        specifier: ^0.16.25
+        version: 0.16.47
       mermaid:
         specifier: ^11.14.0
         version: 11.16.0

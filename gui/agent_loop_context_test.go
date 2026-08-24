@@ -221,6 +221,68 @@ func TestLoopContextCancelCancelsOperationWithoutAdvancingReplan(t *testing.T) {
 	}
 }
 
+func TestLoopContextReplacementCancelsOnlyPriorSemanticTurnWork(t *testing.T) {
+	ctx := NewLoopContext("replacement-op-test", 10, nil)
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	removeOld, current := ctx.RegisterSemanticTurnReplacementCancel(ctx.SemanticTurnGeneration(), oldCancel)
+	if !current {
+		t.Fatal("current turn registration rejected")
+	}
+	defer removeOld()
+
+	ctx.ReplaceSemanticTurn()
+	select {
+	case <-oldCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("replacement did not cancel prior semantic turn work")
+	}
+	if ctx.IsCancelled() {
+		t.Fatal("replacement must not terminally cancel reusable loop")
+	}
+
+	newCtx, newCancel := context.WithCancel(context.Background())
+	removeNew, current := ctx.RegisterSemanticTurnReplacementCancel(ctx.SemanticTurnGeneration(), newCancel)
+	if !current {
+		t.Fatal("replacement generation rejected new work")
+	}
+	defer removeNew()
+	select {
+	case <-newCtx.Done():
+		t.Fatal("replacement cancelled new generation work")
+	default:
+	}
+}
+
+func TestLoopContextSemanticTurnContextComposesReplacementAndLoopCancellation(t *testing.T) {
+	ctx := NewLoopContext("semantic-turn-context", 10, nil)
+	turnCtx, cleanup, current := ctx.SemanticTurnContext(ctx.SemanticTurnGeneration())
+	if !current {
+		t.Fatal("initial semantic turn context rejected")
+	}
+	defer cleanup()
+	ctx.ReplaceSemanticTurn()
+	select {
+	case <-turnCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("replacement did not cancel SemanticTurnContext")
+	}
+	if ctx.IsCancelled() {
+		t.Fatal("replacement must not close terminal loop cancellation")
+	}
+
+	freshCtx, freshCleanup, current := ctx.SemanticTurnContext(ctx.SemanticTurnGeneration())
+	if !current {
+		t.Fatal("fresh replacement generation rejected")
+	}
+	defer freshCleanup()
+	ctx.Cancel()
+	select {
+	case <-freshCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("terminal loop cancellation did not cancel SemanticTurnContext")
+	}
+}
+
 func TestNewBackgroundLoopContext_Defaults(t *testing.T) {
 	statusC := make(chan StatusEvent, 32)
 	ctx := NewBackgroundLoopContext("bg-1", SlotKindCoding, "write snake game", 30, nil, statusC)

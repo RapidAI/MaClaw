@@ -16,51 +16,61 @@ const (
 
 // executeReadFile handles the read_file tool, scoped to the workspace.
 func (c *coreAgentCallbacks) executeReadFile(args map[string]interface{}) string {
+	text, _ := c.readFileDetailed(args)
+	return text
+}
+
+// readFileDetailed is executeReadFile with its verdict left intact.
+//
+// The legacy tool surface can answer only with a string, so every failure here
+// is spelled "Error: ..." and is indistinguishable from a file whose contents
+// happen to start that way. A caller that is able to report a failure must be
+// able to ask about one instead of parsing for it.
+func (c *coreAgentCallbacks) readFileDetailed(args map[string]interface{}) (string, error) {
 	p := stringArg(args, "path")
 	if p == "" {
-		return "Error: missing path parameter"
+		return "Error: missing path parameter", fmt.Errorf("host_file_read_arguments_rejected")
 	}
 	absPath, err := c.resolveWorkspacePath(p)
 	if err != nil {
-		return "Error: " + err.Error()
+		return "Error: " + err.Error(), fmt.Errorf("host_file_read_path_rejected")
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("Error: file not found or inaccessible: %v", err)
+		return fmt.Sprintf("Error: file not found or inaccessible: %v", err), fmt.Errorf("host_file_read_not_found")
 	}
 	if info.IsDir() {
-		return fmt.Sprintf("Error: %s is a directory, use list_directory", absPath)
+		return fmt.Sprintf("Error: %s is a directory, use list_directory", absPath), fmt.Errorf("host_file_read_path_is_directory")
 	}
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return fmt.Sprintf("Error: read failed: %v", err)
+		return fmt.Sprintf("Error: read failed: %v", err), fmt.Errorf("host_file_read_failed")
 	}
 	lines := strings.SplitAfter(string(data), "\n")
 	totalLines := len(lines)
 
 	// offset parameter: read last N lines (like tail -n)
-	if offset, ok := args["offset"].(float64); ok && offset > 0 {
-		tailN := int(offset)
+	if tailN := intArg(args, "offset", 0); tailN > 0 {
 		if tailN >= totalLines {
-			return string(data)
+			return string(data), nil
 		}
 		startIdx := totalLines - tailN
 		tailContent := strings.Join(lines[startIdx:], "")
-		return fmt.Sprintf("... (skipped first %d lines, showing last %d of %d total)\n%s", startIdx, tailN, totalLines, tailContent)
+		return fmt.Sprintf("... (skipped first %d lines, showing last %d of %d total)\n%s", startIdx, tailN, totalLines, tailContent), nil
 	}
 
 	maxLines := srvReadFileMaxLines
-	if n, ok := args["lines"].(float64); ok && n > 0 {
-		maxLines = int(n)
+	if n := intArg(args, "lines", 0); n > 0 {
+		maxLines = n
 	}
 	startLine := 1
-	if n, ok := args["start_line"].(float64); ok && n > 1 {
-		startLine = int(n)
+	if n := intArg(args, "start_line", 1); n > 1 {
+		startLine = n
 	}
 
 	startIdx := startLine - 1
 	if startIdx >= totalLines {
-		return fmt.Sprintf("Error: start_line=%d exceeds total lines %d", startLine, totalLines)
+		return fmt.Sprintf("Error: start_line=%d exceeds total lines %d", startLine, totalLines), fmt.Errorf("host_file_read_range_rejected")
 	}
 	if startIdx < 0 {
 		startIdx = 0
@@ -71,12 +81,12 @@ func (c *coreAgentCallbacks) executeReadFile(args map[string]interface{}) string
 		endLine := startLine + maxLines - 1
 		return strings.Join(chunk, "") + fmt.Sprintf(
 			"\n... (total %d lines, showing %d-%d. Next: start_line=%d)",
-			totalLines, startLine, endLine, endLine+1)
+			totalLines, startLine, endLine, endLine+1), nil
 	}
 	if startIdx > 0 {
-		return fmt.Sprintf("(lines %d-%d of %d)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, ""))
+		return fmt.Sprintf("(lines %d-%d of %d)\n%s", startLine, totalLines, totalLines, strings.Join(remaining, "")), nil
 	}
-	return string(data)
+	return string(data), nil
 }
 
 // executeWriteFile handles the write_file tool, scoped to the workspace.
@@ -123,7 +133,7 @@ func (c *coreAgentCallbacks) executeEditFile(args map[string]interface{}) string
 	if err != nil {
 		return "Error: " + err.Error()
 	}
-	replaceAll, _ := args["replace_all"].(bool)
+	replaceAll := boolArg(args, "replace_all", false)
 	res, err := coretool.EditTextFile(absPath, oldString, newString, replaceAll)
 	if err != nil {
 		return fmt.Sprintf("Error: edit failed: %v", err)
@@ -133,24 +143,33 @@ func (c *coreAgentCallbacks) executeEditFile(args map[string]interface{}) string
 
 // executeListDirectory handles the list_directory tool, scoped to the workspace.
 func (c *coreAgentCallbacks) executeListDirectory(args map[string]interface{}) string {
+	text, _ := c.listDirectoryDetailed(args)
+	return text
+}
+
+// listDirectoryDetailed is executeListDirectory with its verdict left intact,
+// for the same reason readFileDetailed exists: an unreadable directory and an
+// empty one are different answers, and prose cannot be trusted to separate
+// them.
+func (c *coreAgentCallbacks) listDirectoryDetailed(args map[string]interface{}) (string, error) {
 	p := stringArg(args, "path")
 	if p == "" {
 		p = "."
 	}
 	absPath, err := c.resolveWorkspacePath(p)
 	if err != nil {
-		return "Error: " + err.Error()
+		return "Error: " + err.Error(), fmt.Errorf("host_file_read_path_rejected")
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("Error: path not found: %v", err)
+		return fmt.Sprintf("Error: path not found: %v", err), fmt.Errorf("host_file_read_not_found")
 	}
 	if !info.IsDir() {
-		return fmt.Sprintf("Error: %s is not a directory", absPath)
+		return fmt.Sprintf("Error: %s is not a directory", absPath), fmt.Errorf("host_file_read_path_is_not_directory")
 	}
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		return fmt.Sprintf("Error: read directory failed: %v", err)
+		return fmt.Sprintf("Error: read directory failed: %v", err), fmt.Errorf("host_file_read_failed")
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Directory: %s (%d items)\n", absPath, len(entries)))
@@ -170,7 +189,7 @@ func (c *coreAgentCallbacks) executeListDirectory(args map[string]interface{}) s
 		}
 		shown++
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // resolveWorkspacePath resolves a relative path within the workspace.

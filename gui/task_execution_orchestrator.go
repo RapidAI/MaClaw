@@ -132,9 +132,11 @@ type TaskItem struct {
 	RetryCount         int
 	SessionID          string // session used for this task
 	ErrorSummary       string
-	ResultSummary      string            // compact passed SubAgent summary for downstream task context
-	ExecMode           TaskExecMode      // resolved per-task at execution time
-	RequestKind        codingRequestKind // set by the workbench intent classifier for direct coding turns
+	ResultSummary      string                      // user-visible short prose for downstream task context
+	QualityStatus      codingSubAgentQualityStatus // audit outcome; used only on failed retry
+	QualitySummary     string                      // audit reason; used only on failed retry
+	ExecMode           TaskExecMode                // resolved per-task at execution time
+	RequestKind        codingRequestKind           // set by the workbench intent classifier for direct coding turns
 }
 
 type TaskRunHandle struct {
@@ -500,6 +502,14 @@ func updateTaskResultSummary(task *TaskItem, summary string) {
 	task.ResultSummary = compactSubAgentReportSummary(summary)
 }
 
+func updateTaskQuality(task *TaskItem, status codingSubAgentQualityStatus, summary string) {
+	if task == nil {
+		return
+	}
+	task.QualityStatus = status
+	task.QualitySummary = compactSubAgentErrorSummary(summary)
+}
+
 // RecordTaskActualArtifactsForRun records files for a task if the run token is still current.
 func (o *TaskExecutionOrchestrator) RecordTaskActualArtifactsForRun(task *TaskItem, runID int, filesModified, filesCreated []string) bool {
 	o.mu.Lock()
@@ -581,6 +591,16 @@ func (o *TaskExecutionOrchestrator) RecordTaskResultSummaryForRun(task *TaskItem
 		return false
 	}
 	updateTaskResultSummary(task, summary)
+	return true
+}
+
+func (o *TaskExecutionOrchestrator) RecordTaskQualityForRun(task *TaskItem, runID int, status codingSubAgentQualityStatus, summary string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return false
+	}
+	updateTaskQuality(task, status, summary)
 	return true
 }
 
@@ -1273,48 +1293,11 @@ func (o *TaskExecutionOrchestrator) HasPassedTasks() bool {
 	return false
 }
 
-// FinalReport generates the verification report after all tasks are done.
+// FinalReport is the user-visible finish after all tasks are done.
 func (o *TaskExecutionOrchestrator) FinalReport() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	passed, failed, skipped := 0, 0, 0
-	var failedTasks []string
-	for _, t := range o.Tasks {
-		switch t.Status {
-		case TaskExecPassed:
-			passed++
-		case TaskExecFailed:
-			failed++
-			failedTasks = append(failedTasks, fmt.Sprintf("- Task %d %q: %s", t.Index+1, compactSubAgentTaskTitle(t.Title), compactSubAgentErrorSummary(t.ErrorSummary)))
-		case TaskExecSkipped:
-			skipped++
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString("## Coding Task Execution Report\n\n")
-	b.WriteString(fmt.Sprintf("- Total tasks: %d\n", len(o.Tasks)))
-	b.WriteString(fmt.Sprintf("- \u6210\u529f: %d\n", passed))
-	b.WriteString(fmt.Sprintf("- \u5931\u8d25: %d\n", failed))
-	if skipped > 0 {
-		b.WriteString(fmt.Sprintf("- Skipped: %d\n", skipped))
-	}
-	appendFinalReportArtifactSummary(&b, o.Tasks)
-
-	if len(failedTasks) > 0 {
-		b.WriteString("\n### Failed Tasks\n")
-		shownFailed := len(failedTasks)
-		if shownFailed > codingSubAgentTaskListSummaryMax {
-			shownFailed = codingSubAgentTaskListSummaryMax
-		}
-		for _, ft := range failedTasks[:shownFailed] {
-			b.WriteString(ft + "\n")
-		}
-		b.WriteString("\nRecommendation: retry failed tasks individually or inspect the error summary and repair manually.\n")
-	}
-
-	return b.String()
+	return formatCodingAgentUserFinish(taskItemsToCodingAgentResults(o.Tasks), false)
 }
 
 func appendFinalReportArtifactSummary(b *strings.Builder, tasks []*TaskItem) {

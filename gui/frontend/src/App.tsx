@@ -536,19 +536,20 @@ function App() {
             return expertIDs;
         });
     }, []);
-    const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[]) => {
+    const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[]): Promise<boolean> => {
         // Keep the guard: an open task must be closed before its state is deleted.
         if (isProjectTabOpen(projectPath, openProjectTabPaths)) {
-            return;
+            return false;
         }
         const expertID = expertIDFromTaskTags(tags);
         if (expertID && openExpertTabIDs.includes(expertID)) {
-            return;
+            return false;
         }
         await DeleteTask(projectPath);
         purgeDeletedProjectTabLocalCache(projectPath);
         // Expert history is keyed by expert id, not the task workspace path.
         if (expertID) purgeDeletedExpertTabLocalCache(expertID);
+        return true;
     }, [openExpertTabIDs, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
@@ -580,6 +581,10 @@ function App() {
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
     const [weixinQRWaiting, setWeixinQRWaiting] = useState<boolean>(false);
     const [weixinQRError, setWeixinQRError] = useState<string>('');
+    const [qqBotQRCode, setQQBotQRCode] = useState<string>('');
+    const [qqBotQRLoading, setQQBotQRLoading] = useState<boolean>(false);
+    const [qqBotQRWaiting, setQQBotQRWaiting] = useState<boolean>(false);
+    const [qqBotQRError, setQQBotQRError] = useState<string>('');
     const [installLocation, setInstallLocation] = useState<'user' | 'project'>('user');
     const [installProject, setInstallProject] = useState<string>("");
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
@@ -4836,8 +4841,6 @@ ${instruction}`;
         lobsterHalf,
         onOpenIMSettings: () => { setNavTabNow('settings'); selectSettingsTab('im'); },
         onOpenLLMSettings: () => { setNavTabNow('settings'); selectSettingsTab('llm'); },
-        codingAgentProgress,
-        isDark: aiThemeMode === 'dark',
     };
 
     const toolCfg = isToolTab(navTab)
@@ -5141,6 +5144,14 @@ ${instruction}`;
                             setWeixinQRWaiting={setWeixinQRWaiting}
                             weixinQRError={weixinQRError}
                             setWeixinQRError={setWeixinQRError}
+                            qqBotQRCode={qqBotQRCode}
+                            setQQBotQRCode={setQQBotQRCode}
+                            qqBotQRLoading={qqBotQRLoading}
+                            setQQBotQRLoading={setQQBotQRLoading}
+                            qqBotQRWaiting={qqBotQRWaiting}
+                            setQQBotQRWaiting={setQQBotQRWaiting}
+                            qqBotQRError={qqBotQRError}
+                            setQQBotQRError={setQQBotQRError}
                             veNavigationAvailable={veNavigationAvailable}
                             veSettingsAuthorized={veSettingsAuthorized}
                             virtualEmployeeLayoutClassName={virtualEmployeeLayoutClassName}

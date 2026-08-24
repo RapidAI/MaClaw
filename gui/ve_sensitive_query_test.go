@@ -62,21 +62,23 @@ func TestNormalizeDigitalEmployeeSensitivePolicyDefaultsToConfirm(t *testing.T) 
 }
 
 func TestShouldAnnounceSensitivePermissionRequestOnlyForConfirmPolicy(t *testing.T) {
-	app := &App{configCacheValid: true}
-	handler := &VEMessageHandler{app: app}
+	// One app per policy: the first config read promotes the seeded cache into
+	// an immutable snapshot, so a second policy written onto the same app is
+	// never observed and every case would silently assert the first one.
+	announcesUnder := func(policy string) bool {
+		app := &App{configCacheValid: true}
+		app.configCache.GroupDiscussion.SensitiveQueryPolicy = policy
+		handler := &VEMessageHandler{app: app}
+		return handler.shouldAnnounceSensitivePermissionRequest()
+	}
 
-	app.configCache.GroupDiscussion.SensitiveQueryPolicy = digitalEmployeeSensitivePolicyConfirm
-	if !handler.shouldAnnounceSensitivePermissionRequest() {
+	if !announcesUnder(digitalEmployeeSensitivePolicyConfirm) {
 		t.Fatal("confirm policy should announce human permission request")
 	}
-
-	app.configCache.GroupDiscussion.SensitiveQueryPolicy = digitalEmployeeSensitivePolicyDeny
-	if handler.shouldAnnounceSensitivePermissionRequest() {
+	if announcesUnder(digitalEmployeeSensitivePolicyDeny) {
 		t.Fatal("deny policy should not announce human permission request")
 	}
-
-	app.configCache.GroupDiscussion.SensitiveQueryPolicy = digitalEmployeeSensitivePolicyAllow
-	if handler.shouldAnnounceSensitivePermissionRequest() {
+	if announcesUnder(digitalEmployeeSensitivePolicyAllow) {
 		t.Fatal("allow policy should not announce human permission request")
 	}
 }

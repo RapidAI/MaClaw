@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -66,7 +67,18 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
+	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), ctx)
 
 	tools = stripExecutionContractMetadataForLLM(tools)
-	return tools, estimateToolsTokens(tools), directModeToolsFiltered
+	// Recovery is a fresh model request, not permission to restore the raw
+	// BaseTools snapshot. Re-render it as a closed replacement surface so an
+	// old candidate or a policy filter cannot bypass the reviewed catalog.
+	rendered, _, planBacked, err := h.renderClosedLegacyReplacementSurface(strings.Join(agentLoopToolNamesForLog(tools), ","), ctx, tools)
+	if err != nil || !planBacked {
+		if err != nil {
+			log.Printf("[legacy-adapter] recovery replacement rejected user=%q reason=%v", userID, err)
+		}
+		return nil, 0, directModeToolsFiltered
+	}
+	return rendered, estimateToolsTokens(rendered), directModeToolsFiltered
 }

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef } from "react";
+import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/App";
 import { BufferEntry, AttachmentInfo, getTextPreview } from "./useBufferQueue";
 import { AssistantInputIcon } from "./aiAssistantPanelTheme";
 import { insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
@@ -107,6 +108,72 @@ const fileTypeLabelStyle: React.CSSProperties = {
     letterSpacing: "0",
     boxSizing: "border-box",
 };
+
+/**
+ * Queue entries can outlive the composer that created them. In particular,
+ * pasted-image previews begin as blob URLs, and the composer correctly revokes
+ * those URLs as soon as it clears. Resolve the saved attachment instead of
+ * letting a queued row retain a URL whose lifetime belongs to another surface.
+ */
+function QueueAttachmentImage({ attachment, size }: { attachment: AttachmentInfo; size: number }) {
+    const initialPreview = attachment.thumbnailDataUrl && !attachment.thumbnailDataUrl.startsWith("blob:")
+        ? attachment.thumbnailDataUrl
+        : "";
+    const [preview, setPreview] = useState(initialPreview);
+    const [previewFailed, setPreviewFailed] = useState(false);
+
+    React.useEffect(() => {
+        if (!attachment.isImage) {
+            setPreview("");
+            setPreviewFailed(false);
+            return;
+        }
+        const stablePreview = attachment.thumbnailDataUrl && !attachment.thumbnailDataUrl.startsWith("blob:")
+            ? attachment.thumbnailDataUrl
+            : "";
+        if (stablePreview) {
+            setPreview(stablePreview);
+            setPreviewFailed(false);
+            return;
+        }
+
+        let active = true;
+        setPreview("");
+        setPreviewFailed(false);
+        void AIAssistantAttachmentPreviewDataURL(attachment.filePath)
+            .then(dataUrl => {
+                if (!active) return;
+                const resolved = String(dataUrl || "");
+                setPreview(resolved);
+                setPreviewFailed(!resolved);
+            })
+            .catch(() => {
+                if (!active) return;
+                setPreview("");
+                setPreviewFailed(true);
+            });
+        return () => { active = false; };
+    }, [attachment.filePath, attachment.isImage, attachment.thumbnailDataUrl]);
+
+    if (preview) {
+        return (
+            <img
+                src={preview}
+                alt={attachment.fileName}
+                style={{
+                    width: `${size}px`,
+                    height: `${size}px`,
+                    objectFit: "cover",
+                    borderRadius: "2px",
+                }}
+            />
+        );
+    }
+    if (!previewFailed) {
+        return <span aria-label={attachment.fileName} style={{ display: "inline-block", width: `${size}px`, height: `${size}px` }} />;
+    }
+    return <span style={fileTypeLabelStyle}>IMG</span>;
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -515,19 +582,8 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                     color: t.textMuted,
                                 }}
                             >
-                                {att.isImage && att.thumbnailDataUrl ? (
-                                    <img
-                                        src={att.thumbnailDataUrl}
-                                        alt={att.fileName}
-                                        style={{
-                                            width: "20px",
-                                            height: "20px",
-                                            objectFit: "cover",
-                                            borderRadius: "2px",
-                                        }}
-                                    />
-                                ) : att.isImage ? (
-                                    <span style={fileTypeLabelStyle}>IMG</span>
+                                {att.isImage ? (
+                                    <QueueAttachmentImage attachment={att} size={20} />
                                 ) : (
                                     <span style={fileTypeLabelStyle}>{getFileTypeIcon(att.extension)}</span>
                                 )}
@@ -700,19 +756,8 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                             alignItems: "center",
                         }}
                     >
-                        {att.isImage && att.thumbnailDataUrl ? (
-                            <img
-                                src={att.thumbnailDataUrl}
-                                alt={att.fileName}
-                                style={{
-                                    width: "18px",
-                                    height: "18px",
-                                    objectFit: "cover",
-                                    borderRadius: "2px",
-                                }}
-                            />
-                        ) : att.isImage ? (
-                            <span style={fileTypeLabelStyle}>IMG</span>
+                        {att.isImage ? (
+                            <QueueAttachmentImage attachment={att} size={18} />
                         ) : (
                             <span style={fileTypeLabelStyle}>
                                 {getFileTypeIcon(att.extension)}

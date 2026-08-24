@@ -23,8 +23,15 @@ device_status_t platform_display_set_brightness(uint8_t percent);
 /* Physical visibility transitions are submitted by Display Service. Power
  * Service owns eligibility, leases and deadlines; this port performs only the
  * selected board renderer's already-authorized panel/backlight transaction. */
-bool platform_display_enter_display_off(void);
-bool platform_display_wake_display(void);
+device_status_t platform_display_enter_display_off(void);
+device_status_t platform_display_wake_display(void);
+/* Private System Sleep physical safe point.  The Display Service has already
+ * fenced semantic submissions before calling this; the selected profile only
+ * proves that a pending scan-out/DMA source is no longer borrowed. */
+device_status_t platform_display_prepare_system_sleep(uint32_t timeout_ms);
+/* Reverses only the selected profile's private Display PREPARE fence. It
+ * remains value-only: no panel, DMA or RTOS object crosses this boundary. */
+void platform_display_abort_system_sleep_prepare(void);
 bool platform_display_is_off(void);
 void platform_display_show_startup(void);
 void platform_display_set_pet_state(const char *state);

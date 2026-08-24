@@ -456,7 +456,10 @@ func TestLocalMCPHelperProcess(t *testing.T) {
 					"tools": []map[string]any{{
 						"name":        "ping",
 						"description": "Ping test tool",
-						"inputSchema": map[string]any{"type": "object"},
+						// Semantic dynamic providers require a closed invocation
+						// contract. The helper represents a no-argument tool, so it
+						// must still declare an explicit empty properties object.
+						"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 					}},
 				},
 			}

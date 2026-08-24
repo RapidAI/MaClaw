@@ -2058,6 +2058,14 @@ func (s *IdentityService) createApprovedUser(ctx context.Context, email string) 
 }
 
 func (s *IdentityService) createApprovedUserForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
+	return s.createApprovedUserForTenantWithOptions(ctx, tenantID, email, true)
+}
+
+func (s *IdentityService) createApprovedReferralUserForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
+	return s.createApprovedUserForTenantWithOptions(ctx, tenantID, email, false)
+}
+
+func (s *IdentityService) createApprovedUserForTenantWithOptions(ctx context.Context, tenantID, email string, applyInvitationCodeGrant bool) (*store.User, error) {
 	if err := s.ensureTenantEmailDomainAllowed(ctx, tenantID, email); err != nil {
 		return nil, err
 	}
@@ -2079,8 +2087,10 @@ func (s *IdentityService) createApprovedUserForTenant(ctx context.Context, tenan
 	if err := s.ensureDefaultLLMServiceForUser(ctx, user.ID, email); err != nil {
 		return nil, err
 	}
-	if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, user.ID, email); err != nil {
-		return nil, err
+	if applyInvitationCodeGrant {
+		if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, user.ID, email); err != nil {
+			return nil, err
+		}
 	}
 	s.syncUserRoute(ctx, email)
 	return user, nil
@@ -2168,7 +2178,7 @@ func (s *IdentityService) RegisterReferralUser(ctx context.Context, email string
 	if !s.allowSelfEnroll {
 		return nil, ErrRegistrationDisabled
 	}
-	user, err := s.createApprovedUserForTenant(ctx, tenantID, account)
+	user, err := s.createApprovedReferralUserForTenant(ctx, tenantID, account)
 	if err != nil || user == nil {
 		return user, err
 	}
@@ -2257,9 +2267,9 @@ func (s *IdentityService) RegisterReferralUserWithAttribution(ctx context.Contex
 	if err := s.ensureDefaultLLMServiceForUser(ctx, user.ID, user.Email); err != nil {
 		log.Printf("[identity] referral registration default benefit for %s: %v", user.ID, err)
 	}
-	if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, user.ID, user.Email); err != nil {
-		log.Printf("[identity] referral registration invitation-code benefit for %s: %v", user.ID, err)
-	}
+	// User-referral registration has its own metered credit reward. Do not also
+	// apply invitation-code LLM grants here: those can bind the invitee to a
+	// free/unlimited group such as system-free.
 	if phoneNumber != "" && phoneVerified {
 		_ = s.grantPhoneVerifiedBenefitForUser(ctx, user.ID, user.Email)
 	} else if email != "" {

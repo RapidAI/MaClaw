@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,104 +66,39 @@ type knowledgeImageAssetBaseDirProvider interface {
 }
 
 // SetKnowledgeStore wires the knowledge store into the executor.
-// Must be called before Execute() to enable knowledge tools and auto-recall.
+// Must be called before Execute() to enable knowledge tools.
 func (e *CoreAgentExecutor) SetKnowledgeStore(store KnowledgeStore) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.knowledgeStore = store
 }
 
-// appendKnowledgeAutoRecall searches the knowledge base and injects relevant
-// results into the system prompt. Uses shared constants from corelib/agent/prompt_blocks.go
-// to stay in sync with GUI and TUI implementations.
+// SetReviewedHostAuditReader installs the principal-scoped audit reader used
+// by security.audit.read. The reader is host-owned; model args never choose
+// tenant or user.
+func (e *CoreAgentExecutor) SetReviewedHostAuditReader(reader reviewedHostAuditReader) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.auditReader = reader
+	e.mu.Unlock()
+}
+
+func (e *CoreAgentExecutor) getReviewedHostAuditReader() reviewedHostAuditReader {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.auditReader
+}
+
 func (c *coreAgentCallbacks) parentContext() context.Context {
 	if c != nil && c.ctx != nil {
 		return c.ctx
 	}
 	return context.Background()
-}
-func (c *coreAgentCallbacks) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string) {
-	if userMsg == "" {
-		return
-	}
-	if !c.appCfg.IsKnowledgeAutoRecallEnabled() {
-		return
-	}
-	minScore := c.appCfg.EffectiveKnowledgeAutoRecallMinScore()
-	prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
-
-	// Personal / multi-tenant knowledge store (optional).
-	if c.knowledgeStore != nil {
-		query := agent.ExpandKnowledgeAutoRecallQuery(userMsg, prior)
-
-		ctx, cancel := context.WithTimeout(c.parentContext(), 3*time.Second)
-		results, err := c.knowledgeStore.Search(ctx, knowledge.SearchOptions{
-			Query:    query,
-			OwnerID:  c.principal.UserID,
-			TenantID: c.principal.TenantID,
-			Limit:    agent.KnowledgeAutoRecallSearchLimit,
-		})
-		cancel()
-		if err != nil {
-			log.Printf("[knowledge_auto_recall] search error: %v", err)
-		} else if len(results) == 0 {
-			// FTS returned nothing. Stay silent for empty personal KB.
-		} else {
-			topScore := results[0].Score
-			maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
-			if maxInject == 0 {
-				// Results exist but scores are below injection threshold.
-				b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
-			} else {
-				b.WriteString(agent.KnowledgeAutoRecallHeader)
-				injected := 0
-				for _, r := range results {
-					if injected >= maxInject {
-						break
-					}
-					if r.Score < minScore {
-						break
-					}
-					text := knowledgeSnippet(r)
-					if text == "" {
-						continue
-					}
-					if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
-						text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
-					}
-					b.WriteString(fmt.Sprintf("- Source: %s; Citation: %s; Evidence: %s\n", knowledgeSourceLabel(r), knowledgeCitationLabel(r), text))
-					injected++
-				}
-			}
-		}
-	}
-
-	// Enterprise digital assets (Hub→local cache under user dataDir).
-	// Runs even when personal knowledge store is not configured.
-	c.appendEnterpriseKnowledgeAutoRecall(b, userMsg, prior, minScore)
-}
-
-// appendEnterpriseKnowledgeAutoRecall injects Hub-synced enterprise libraries
-// from the principal's local dataDir (enterprise_knowledge.db).
-func (c *coreAgentCallbacks) appendEnterpriseKnowledgeAutoRecall(b *strings.Builder, userMsg string, prior []string, minScore float64) {
-	if c == nil || b == nil || strings.TrimSpace(c.dataDir) == "" {
-		return
-	}
-	enterpriseknowledge.AppendAutoRecallFromDataDir(c.dataDir, b, userMsg, prior, minScore)
-}
-
-func knowledgeSourceLabel(r knowledge.SearchResult) string {
-	return knowledge.FormatSourceLabel(r)
-}
-
-func knowledgeCitationLabel(r knowledge.SearchResult) string {
-	return knowledge.FormatCitationLabel(r)
-}
-
-// knowledgeSnippet extracts the best display text from a search result.
-// Delegates to the shared knowledge.BestContentText for consistent priority across all platforms.
-func knowledgeSnippet(r knowledge.SearchResult) string {
-	return knowledge.BestContentText(r)
 }
 
 // --- Knowledge tool execution ---
@@ -673,8 +609,27 @@ func firstStringArg(args map[string]interface{}, keys ...string) string {
 
 func boolArg(args map[string]interface{}, key string, defaultVal bool) bool {
 	if v, ok := args[key]; ok {
-		if b, ok2 := v.(bool); ok2 {
-			return b
+		switch n := v.(type) {
+		case bool:
+			return n
+		case float64:
+			return n != 0
+		case int:
+			return n != 0
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				return i != 0
+			}
+			if f, err := n.Float64(); err == nil {
+				return f != 0
+			}
+		case string:
+			switch strings.ToLower(strings.TrimSpace(n)) {
+			case "true", "1", "yes":
+				return true
+			case "false", "0", "no":
+				return false
+			}
 		}
 	}
 	return defaultVal
@@ -690,6 +645,14 @@ func intArg(args map[string]interface{}, key string, defaultVal int) int {
 		case json.Number:
 			if i, err := n.Int64(); err == nil {
 				return int(i)
+			}
+		case string:
+			raw := strings.TrimSpace(n)
+			if i, err := strconv.Atoi(raw); err == nil {
+				return i
+			}
+			if f, err := strconv.ParseFloat(raw, 64); err == nil {
+				return int(f)
 			}
 		}
 	}

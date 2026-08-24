@@ -917,6 +917,31 @@ func (r *MCPRegistry) GetServerTools(serverID string) []MCPToolView {
 	return views
 }
 
+// CachedServerTools returns the last successful tools/list observation without
+// performing network I/O. Semantic routing uses this to publish one lifecycle
+// snapshot; discovery/connection belongs to the MCP lifecycle worker, not to
+// an individual user request. Callers receive a copy so a catalog projection
+// cannot mutate registry state.
+func (r *MCPRegistry) CachedServerTools(serverID string) ([]MCPToolView, bool) {
+	if r == nil {
+		return nil, false
+	}
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return nil, false
+	}
+	r.mu.RLock()
+	tools, ok := r.toolsCache[serverID]
+	r.mu.RUnlock()
+	// An observed server is allowed to expose zero tools. Presence of the cache
+	// entry, not a non-zero length, distinguishes that complete observation from
+	// an unobserved server whose lifecycle discovery is still pending.
+	if !ok {
+		return nil, false
+	}
+	return append([]MCPToolView(nil), tools...), true
+}
+
 func (r *MCPRegistry) warmServerTools(serverID string, wait time.Duration, onDone func(error)) error {
 	done := make(chan error, 1)
 	go func() {

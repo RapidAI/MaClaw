@@ -73,7 +73,7 @@ func resolveMoAPresetForRequest(appCfg corelib.AppConfig, primary corelib.Maclaw
 	if len(appCfg.ModelRoutes) > 0 {
 		routes := make(map[string]llm.ModelRoute, len(appCfg.ModelRoutes))
 		for k, v := range appCfg.ModelRoutes {
-			routes[k] = llm.ModelRoute{Model: v.Model, URL: v.URL, Key: v.Key, Protocol: v.Protocol, Provider: v.Provider}
+			routes[k] = llm.ModelRoute{Model: v.Model, URL: v.URL, Key: v.Key, Protocol: v.Protocol, Provider: v.Provider, ContextLength: v.ContextLength}
 		}
 		router = llm.NewModelRouter(routes)
 	}

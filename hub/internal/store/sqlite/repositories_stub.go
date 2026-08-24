@@ -88,6 +88,9 @@ type llmPromptCacheRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
 }
+type llmBillingLedgerRepo struct {
+	db, readDB *sql.DB
+}
 type knowledgeShareRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -95,25 +98,27 @@ type knowledgeShareRepo struct {
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
-		Tenants:         &tenantRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Admins:          &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		System:          &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		AdminAudit:      &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		FailureLogs:     &failureEventLogRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Users:           &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Enrollments:     &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		EmailBlocks:     &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		InvitationCodes: &invitationCodeRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Machines:        &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
-		ViewerTokens:    &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		LoginTokens:     &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		Sessions:        &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
-		EmailInvites:    &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		UserReferrals:   &userReferralRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		WorkflowRepo:    &workflowRepo{db: p.Write, readDB: p.Read},
-		LLMPromptCache:  &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		KnowledgeShares: &knowledgeShareRepo{db: p.Write, readDB: p.Read, batch: p.batch},
-		DigitalAssets:   &digitalAssetRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Tenants:          &tenantRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Admins:           &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		System:           &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		AdminAudit:       &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		FailureLogs:      &failureEventLogRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Users:            &userRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Enrollments:      &enrollmentRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		EmailBlocks:      &emailBlockRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		InvitationCodes:  &invitationCodeRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Machines:         &machineRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
+		ViewerTokens:     &viewerTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		LoginTokens:      &loginTokenRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		Sessions:         &sessionRepo{db: p.Write, readDB: p.Read, batch: p.batch, coalesce: p.coalesce},
+		EmailInvites:     &emailInviteRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		UserReferrals:    &userReferralRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		WorkflowRepo:     &workflowRepo{db: p.Write, readDB: p.Read},
+		LLMPromptCache:   &llmPromptCacheRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		LLMUsage:         NewLLMUsageRepository(p.Write, p.Read),
+		LLMBillingLedger: NewLLMBillingLedgerRepository(p.Write, p.Read),
+		KnowledgeShares:  &knowledgeShareRepo{db: p.Write, readDB: p.Read, batch: p.batch},
+		DigitalAssets:    &digitalAssetRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 	}
 }
 
@@ -1378,6 +1383,12 @@ func (r *userReferralRepo) GetCodeByHash(ctx context.Context, tenantID, codeHash
 	return scanUserReferralCode(row)
 }
 
+func (r *userReferralRepo) GetCodeByID(ctx context.Context, tenantID, codeID string) (*store.UserReferralCode, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at
+		FROM user_referral_codes WHERE tenant_id = ? AND id = ? LIMIT 1`, normalizeTenantID(tenantID), strings.TrimSpace(codeID))
+	return scanUserReferralCode(row)
+}
+
 func (r *userReferralRepo) ListActiveCodes(ctx context.Context, tenantID string) ([]*store.UserReferralCode, error) {
 	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, inviter_user_id, code_hash, encrypted_code, status, created_at, rotated_at
 		FROM user_referral_codes WHERE tenant_id = ? AND status = 'active'`, normalizeTenantID(tenantID))
@@ -1728,9 +1739,9 @@ func (r *userReferralRepo) CreateHandoff(ctx context.Context, item *store.UserRe
 	if item == nil || strings.TrimSpace(item.TokenHash) == "" || strings.TrimSpace(item.TenantID) == "" || strings.TrimSpace(item.CodeHash) == "" || strings.TrimSpace(item.ReferralCodeID) == "" || strings.TrimSpace(item.InviterUserID) == "" {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_handoffs (token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, service_group_id, inviter_credits, invitee_credits, duration_days, expires_at, used_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-		strings.TrimSpace(item.TokenHash), normalizeTenantID(item.TenantID), strings.TrimSpace(item.CodeHash), strings.TrimSpace(item.ReferralCodeID), strings.TrimSpace(item.InviterUserID), strings.TrimSpace(item.ConfigEpoch), strings.TrimSpace(item.ServiceGroupID), item.InviterCredits, item.InviteeCredits, item.DurationDays, item.ExpiresAt.UTC().Format(time.RFC3339), item.CreatedAt.UTC().Format(time.RFC3339))
+	_, err := r.db.ExecContext(ctx, `INSERT INTO user_referral_handoffs (token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, invitee_user_id, config_epoch, service_group_id, inviter_credits, invitee_credits, duration_days, expires_at, used_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+		strings.TrimSpace(item.TokenHash), normalizeTenantID(item.TenantID), strings.TrimSpace(item.CodeHash), strings.TrimSpace(item.ReferralCodeID), strings.TrimSpace(item.InviterUserID), strings.TrimSpace(item.InviteeUserID), strings.TrimSpace(item.ConfigEpoch), strings.TrimSpace(item.ServiceGroupID), item.InviterCredits, item.InviteeCredits, item.DurationDays, item.ExpiresAt.UTC().Format(time.RFC3339), item.CreatedAt.UTC().Format(time.RFC3339))
 	return err
 }
 
@@ -1739,12 +1750,12 @@ func (r *userReferralRepo) GetHandoff(ctx context.Context, tokenHash string, now
 	if tokenHash == "" {
 		return nil, nil
 	}
-	row := r.readDB.QueryRowContext(ctx, `SELECT token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, config_epoch, service_group_id, inviter_credits, invitee_credits, duration_days, expires_at, used_at, created_at
+	row := r.readDB.QueryRowContext(ctx, `SELECT token_hash, tenant_id, code_hash, referral_code_id, inviter_user_id, invitee_user_id, config_epoch, service_group_id, inviter_credits, invitee_credits, duration_days, expires_at, used_at, created_at
 		FROM user_referral_handoffs WHERE token_hash = ? AND expires_at > ? AND used_at IS NULL LIMIT 1`, tokenHash, now.UTC().Format(time.RFC3339))
 	var item store.UserReferralHandoff
 	var expiresAt, createdAt string
 	var usedAt sql.NullString
-	if err := row.Scan(&item.TokenHash, &item.TenantID, &item.CodeHash, &item.ReferralCodeID, &item.InviterUserID, &item.ConfigEpoch, &item.ServiceGroupID, &item.InviterCredits, &item.InviteeCredits, &item.DurationDays, &expiresAt, &usedAt, &createdAt); err != nil {
+	if err := row.Scan(&item.TokenHash, &item.TenantID, &item.CodeHash, &item.ReferralCodeID, &item.InviterUserID, &item.InviteeUserID, &item.ConfigEpoch, &item.ServiceGroupID, &item.InviterCredits, &item.InviteeCredits, &item.DurationDays, &expiresAt, &usedAt, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}

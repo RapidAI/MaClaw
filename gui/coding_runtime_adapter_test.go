@@ -69,6 +69,32 @@ func TestLoopContextCancellationHookRunsOnceAndCanBeUnregistered(t *testing.T) {
 	}
 }
 
+func TestLoopContextUnregisterAfterCancellationDoesNotBlock(t *testing.T) {
+	loop := NewLoopContext("cancel-unregister", 1, nil)
+	remove := loop.RegisterCancelHook(func() {})
+	loop.Cancel()
+	done := make(chan struct{})
+	go func() {
+		remove()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("unregister blocked after cancellation")
+	}
+}
+
+func TestLoopContextCancellationInitializesMissingSignal(t *testing.T) {
+	loop := &LoopContext{}
+	remove := loop.RegisterCancelHook(func() {})
+	loop.Cancel()
+	remove()
+	if !loop.IsCancelled() {
+		t.Fatal("missing cancellation signal was not initialized and closed")
+	}
+}
+
 func TestRunGUICodingTaskWithLedger_WaitsForScopeApprovalBeforeExecutor(t *testing.T) {
 	store := codingruntime.NewMemoryStore()
 	calls := 0
@@ -144,7 +170,15 @@ func TestRunGUIRemoteCodingTaskWithLedgerAcceptsVerifiedNoChangeEvidence(t *test
 			return &codingruntime.WorkspaceProbe{ProjectRef: "/srv/repo", Head: "abc", HostKey: "remote-target", WorkDir: "/srv/repo"}, nil
 		}),
 		func() *RemoteCodingSubAgentResult {
-			return &RemoteCodingSubAgentResult{Status: "success", Summary: "checked remote target\n[verified no-change acceptance] remote acceptance command and clean workspace inspection confirm the requested behavior already exists."}
+			return &RemoteCodingSubAgentResult{
+				Status:              "success",
+				Summary:             "checked remote target",
+				VerifiedNoChange:    true,
+				QualityStatus:       codingSubAgentQualityPassed,
+				QualitySummary:      "verified no-change acceptance",
+				ExplorationSummary:  "inspected remote target",
+				VerificationSummary: "acceptance command passed",
+			}
 		},
 	)
 	if err != nil || result == nil || attempt == nil || proberCalls != 2 || attempt.Status != codingruntime.TaskCompleted || result.RuntimeTaskID == "" {

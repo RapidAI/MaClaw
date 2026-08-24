@@ -7,10 +7,140 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSML(t *testing.T) {
+	content := "好的，先查杭州最新天气，然后生成 PDF 报告给你。\n" +
+		"<｜DSML｜tool_calls>\n" +
+		"<｜DSML｜invoke name=\"web_search\">\n" +
+		"<｜DSML｜parameter name=\"query\" string=\"true\">杭州天气预报 一周 8月20日 到 8月26日</｜DSML｜parameter>\n" +
+		"</｜DSML｜invoke>\n" +
+		"</｜DSML｜tool_calls>\n\n" +
+		"<｜DSML｜tool_calls>\n" +
+		"<｜DSML｜invoke name=\"web_search\">\n" +
+		"<｜DSML｜parameter name=\"max_results\" string=\"false\">6</｜DSML｜parameter>\n" +
+		"<｜DSML｜parameter name=\"query\" string=\"true\">杭州天气预报 未来一周 8月下旬</｜DSML｜parameter>\n" +
+		"</｜DSML｜invoke>\n" +
+		"</｜DSML｜tool_calls>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed {
+		t.Fatal("expected DeepSeek DSML tool calls to parse cleanly")
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(calls))
+	}
+	if calls[0].Function.Name != "web_search" || calls[1].Function.Name != "web_search" {
+		t.Fatalf("unexpected names: %#v", calls)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"query":"杭州天气预报 一周 8月20日 到 8月26日"`) {
+		t.Fatalf("first arguments = %q", calls[0].Function.Arguments)
+	}
+	if strings.Contains(calls[1].Function.Arguments, "max_results") {
+		t.Fatalf("DSML pagination must not reach web_search args: %q", calls[1].Function.Arguments)
+	}
+	if !strings.Contains(calls[1].Function.Arguments, `"query":"杭州天气预报 未来一周 8月下旬"`) {
+		t.Fatalf("second arguments = %q", calls[1].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLDropsSearchPagination(t *testing.T) {
+	content := `<｜DSML｜tool_calls>
+<｜DSML｜invoke name="web_search">
+<｜DSML｜parameter name="query" string="true">杭州天气</｜DSML｜parameter>
+<｜DSML｜parameter name="count" string="false">5</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("calls=%#v malformed=%v", calls, malformed)
+	}
+	if got := calls[0].Function.Arguments; got != `{"query":"杭州天气"}` {
+		t.Fatalf("arguments = %q, want query only", got)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLSpacedASCII(t *testing.T) {
+	content := `< | DSML | tool_calls>
+< | DSML | invoke name="web_search">
+< | DSML | parameter name="query" string="true">杭州天气</ | DSML | parameter>
+</ | DSML | invoke>
+</ | DSML | tool_calls>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("spaced DSML = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"query":"杭州天气"`) {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLBareInvoke(t *testing.T) {
+	content := `<｜DSML｜invoke name="web_search"><｜DSML｜parameter name="query" string="true">杭州天气</｜DSML｜parameter></｜DSML｜invoke>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("bare invoke = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLUnclosedIsMalformed(t *testing.T) {
+	content := "先查天气\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("unclosed DSML = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestParseContentToolCallsDetailed_WebSearchDropsForgedDestination(t *testing.T) {
+	content := `<tool_call>{"name":"web_search","arguments":{"query":"杭州天气","channel":"lansenger"}}</tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("calls=%#v malformed=%v", calls, malformed)
+	}
+	if got := calls[0].Function.Arguments; got != `{"query":"杭州天气"}` {
+		t.Fatalf("destination must not survive content parse: %q", got)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLDoesNotStealXMLToolCall(t *testing.T) {
+	content := "Do not emit | DSML | by hand.\n<tool_call>{\"name\":\"web_search\",\"arguments\":{\"query\":\"杭州天气\"}}</tool_call>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("prose DSML mention stole XML tool call: calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLLeftoverInvokeAfterBlock(t *testing.T) {
+	content := `<｜DSML｜tool_calls>
+<｜DSML｜invoke name="web_search">
+<｜DSML｜parameter name="query" string="true">杭州天气</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>
+<｜DSML｜invoke name="web_search">
+<｜DSML｜parameter name="query" string="true">杭州一周天气</｜DSML｜parameter>
+</｜DSML｜invoke>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 2 {
+		t.Fatalf("leftover invoke = calls=%d malformed=%v", len(calls), malformed)
+	}
+}
+
+func TestParseContentToolCallsDetailed_DeepSeekDSMLFunctionCallsAlias(t *testing.T) {
+	content := `<|DSML|function_calls><|DSML|invoke name="web_search"><|DSML|parameter name="query" string="true">杭州天气</|DSML|parameter></|DSML|invoke></|DSML|function_calls>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("function_calls alias = calls=%#v malformed=%v", calls, malformed)
+	}
+}
 
 func TestParseContentToolCallsDetailed_CodexInvoke(t *testing.T) {
 	content := `<turn: tool_call>
@@ -32,6 +162,24 @@ func TestParseContentToolCallsDetailed_CodexInvoke(t *testing.T) {
 	}
 	if calls[0].Function.Arguments != `{"command":"if exist D:\\gametest\\15\\ (dir /B D:\\gametest\\15\\) else (echo DIRECTORY_NOT_EXIST)","description":"Check existing project directory","timeout":5000}` {
 		t.Fatalf("unexpected arguments JSON: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_CodexTurnFunctionEqIsNotDropped(t *testing.T) {
+	content := `<turn: tool_call>
+<function=bash>
+<parameter=command>python gen_poster_v4.py</parameter>
+</function>
+</turn>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("codex-wrapped function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("tool name = %q, want bash", calls[0].Function.Name)
+	}
+	if got := calls[0].Function.Arguments; got != `{"command":"python gen_poster_v4.py"}` {
+		t.Fatalf("arguments = %q", got)
 	}
 }
 
@@ -140,6 +288,153 @@ func TestParseContentToolCallsDetailed_AngleArrayToolCallWithoutClose(t *testing
 	}
 	if !strings.Contains(calls[0].Function.Arguments, `"file_path"`) {
 		t.Fatalf("arguments missing file_path: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_GLMArgKeyToolCall(t *testing.T) {
+	content := `<tool_call>write_file
+<arg_key>path</arg_key>
+<arg_value>C:\Users\ma139\.maclaw\workspace\gen_poster_v4.py</arg_value>
+<arg_key>content</arg_key>
+<arg_value>from PIL import Image
+print("ok")</arg_value>
+</tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("GLM arg_key = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "write_file" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"C:\\Users\\ma139\\.maclaw\\workspace\\gen_poster_v4.py"`) {
+		t.Fatalf("path missing: %q", calls[0].Function.Arguments)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, "from PIL import Image") {
+		t.Fatalf("content missing: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_QwenFunctionEq(t *testing.T) {
+	content := `<function=bash>
+<parameter=command>python gen_poster_v4.py</parameter>
+</function>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	if got := calls[0].Function.Arguments; got != `{"command":"python gen_poster_v4.py"}` {
+		t.Fatalf("arguments = %q", got)
+	}
+}
+
+func TestParseContentToolCallsDetailed_ToolCallNamedInvoke(t *testing.T) {
+	content := `<tool_call name="write_file"><invoke name="write_file"><parameter name="path">poster.py</parameter><parameter name="content">print(1)</parameter></invoke></tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("named invoke = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "write_file" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"poster.py"`) {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_FunctionEqInsideToolCallIsNotDuplicated(t *testing.T) {
+	content := `<tool_call>{"name":"write_file","arguments":{"path":"notes.md","content":"<function=bash>\n<parameter=command>dir</parameter>\n</function>"}}</tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("nested function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "write_file" {
+		t.Fatalf("tool name = %q, want write_file only", calls[0].Function.Name)
+	}
+}
+
+func TestParseContentToolCallsDetailed_FunctionEqInsideGLMArgsIsNotStolen(t *testing.T) {
+	content := `<tool_call>write_file
+<arg_key>path</arg_key>
+<arg_value>notes.md</arg_value>
+<arg_key>content</arg_key>
+<arg_value>
+<function=bash>
+<parameter=command>dir</parameter>
+</function>
+</arg_value>
+</tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("GLM nested function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "write_file" {
+		t.Fatalf("tool name = %q, want write_file not inner bash", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"notes.md"`) {
+		t.Fatalf("path missing: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_MultipleFunctionEqInsideToolCall(t *testing.T) {
+	content := `<tool_call>
+<function=write_file>
+<parameter=path>gen_poster.py</parameter>
+<parameter=content>print(1)</parameter>
+</function>
+<function=bash>
+<parameter=command>python gen_poster.py</parameter>
+</function>
+</tool_call>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 2 {
+		t.Fatalf("paired function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "write_file" || calls[1].Function.Name != "bash" {
+		t.Fatalf("tool names = %q %q", calls[0].Function.Name, calls[1].Function.Name)
+	}
+}
+
+func TestParseContentToolCallsDetailed_CodexWrappedXMLFunctionEqIsNotDuplicated(t *testing.T) {
+	content := `<turn: tool_call>
+<tool_call>
+<function=bash>
+<parameter=command>python gen_poster.py</parameter>
+</function>
+</tool_call>
+</turn>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("codex+xml function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("tool name = %q, want one bash call", calls[0].Function.Name)
+	}
+}
+
+func TestParseContentToolCallsDetailed_UnclosedToolCallFunctionEqIsNotDuplicated(t *testing.T) {
+	content := `<tool_call>
+<function=bash>
+<parameter=command>python gen_poster_v4.py</parameter>
+</function>`
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("unclosed tool_call + function= = calls=%#v malformed=%v", calls, malformed)
+	}
+	if calls[0].Function.Name != "bash" {
+		t.Fatalf("tool name = %q, want one bash call", calls[0].Function.Name)
+	}
+	if got := calls[0].Function.Arguments; got != `{"command":"python gen_poster_v4.py"}` {
+		t.Fatalf("arguments = %q", got)
+	}
+}
+
+func TestParseContentToolCallsDetailed_UnclosedNameOnlyIsMalformed(t *testing.T) {
+	calls, malformed := ParseContentToolCallsDetailed(`<tool_call>write_file`)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("name-only unclosed tool call = calls=%#v malformed=%v", calls, malformed)
 	}
 }
 
@@ -396,6 +691,67 @@ func TestOpenAISDKChatRawPreservesToolSchemaBody(t *testing.T) {
 	}
 }
 
+func TestOpenAISDKRawBodyTransportDoesNotRestoreRequestReplayForOwnerBoundRequest(t *testing.T) {
+	body := []byte(`{"model":"test-model","tools":[]}`)
+	base := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.GetBody != nil {
+			t.Fatal("raw-body SDK transport restored a replayable request body")
+		}
+		got, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(body) {
+			t.Fatalf("wire body = %s, want %s", got, body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})
+	request, err := http.NewRequest(http.MethodPost, "https://example.test/v1/chat/completions", strings.NewReader(`caller body`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the normal bytes.Reader setup used by SDK callers. The wrapper
+	// must not leave this replay hook in place after replacing the exact body.
+	request.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("caller body")), nil
+	}
+	request = request.WithContext(WithTransparentRequestRetriesDisabled(request.Context()))
+	response, err := (openAISDKRawBodyTransport{base: base, body: body}).RoundTrip(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+}
+
+func TestOpenAISDKUnusedStreamPathDoesNotFollowOwnerBoundRedirect(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected.Add(1)
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/redirected", http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	ctx := WithTransparentRequestRetriesDisabled(context.Background())
+	_, _, _, err := openAISDKChatStreamUnused(ctx, corelib.MaclawLLMConfig{
+		URL:   source.URL + "/v1",
+		Model: "test-model",
+	}, []byte(`{"model":"test-model","stream":true,"tools":[]}`), source.Client(), nil, nil)
+	if err == nil {
+		t.Fatal("owner-bound redirect unexpectedly completed")
+	}
+	if got := redirected.Load(); got != 0 {
+		t.Fatalf("owner-bound SDK stream followed redirect %d times", got)
+	}
+}
+
 func TestParseAnthropicResponseBody_ConvertsPlainToolCall(t *testing.T) {
 	body := []byte(`{"content":[{"type":"text","text":"TOOL_CALL\n{\"function\":\"ssh_execute_command\",\"args\":{\"host\":\"example.com\",\"username\":\"root\",\"command\":\"df -h\"}}"}],"stop_reason":"end_turn"}`)
 	resp, err := parseAnthropicResponseBody(body)
@@ -473,6 +829,23 @@ func TestParseAnthropicSSEStream_SuppressesDetailsAndConvertsAngleArrayToolCall(
 	}
 }
 
+func TestParseNonStreamOpenAIResponseBody_ConvertsDeepSeekDSML(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"查一下\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">\n<｜DSML｜parameter name=\"query\" string=\"true\">杭州天气</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"},"finish_reason":"stop"}]}`)
+	resp, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody: %v", err)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected one converted tool call, got %#v", resp)
+	}
+	if got := resp.Choices[0].FinishReason; got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got)
+	}
+	if got := resp.Choices[0].Message.ToolCalls[0].Function.Name; got != "web_search" {
+		t.Fatalf("tool name = %q", got)
+	}
+}
+
 func TestParseNonStreamOpenAIResponseBody_ConvertsContentCodexToolCall(t *testing.T) {
 	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"<turn: tool_call><invoke name=\"bash\"><parameter name=\"command\" string=\"true\">echo hi</parameter></invoke></turn>"},"finish_reason":"stop"}]}`)
 	resp, err := ParseNonStreamOpenAIResponseBody(body)
@@ -498,6 +871,34 @@ func TestParseNonStreamOpenAIResponseBody_MalformedContentToolCall(t *testing.T)
 	}
 	if got := resp.Choices[0].Message.Content; got != MalformedContentToolCallErrorMsg {
 		t.Fatalf("content = %q, want malformed message", got)
+	}
+}
+
+func TestParseSSEStream_ConvertsDeepSeekDSML(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"查一下\n"},"finish_reason":null}]}` + "\n\n" +
+			`data: {"choices":[{"delta":{"content":"<｜DSML｜tool_calls><｜DSML｜invoke name=\"web_search\"><｜DSML｜parameter name=\"query\" string=\"true\">杭州天气</｜DSML｜parameter><｜DSML｜parameter name=\"count\" string=\"false\">5</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"},"finish_reason":null}]}` + "\n\n" +
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+	)
+	var streamed strings.Builder
+	resp, err := parseSSEStream(body, func(delta string) {
+		streamed.WriteString(delta)
+	})
+	if err != nil {
+		t.Fatalf("parseSSEStream: %v", err)
+	}
+	if got := streamed.String(); got != "查一下\n" {
+		t.Fatalf("streamed DSML markup: %q", got)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected one converted tool call, got %#v", resp)
+	}
+	if got := resp.Choices[0].FinishReason; got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got)
+	}
+	call := resp.Choices[0].Message.ToolCalls[0]
+	if call.Function.Name != "web_search" || call.Function.Arguments != `{"query":"杭州天气"}` {
+		t.Fatalf("converted call = %#v", call)
 	}
 }
 

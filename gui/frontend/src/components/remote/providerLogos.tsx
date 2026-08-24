@@ -18,6 +18,21 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M4 16.8h16V20H4v-3.2z" fill="currentColor"/>
         </svg>
     ),
+    Codex: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934A4.1 4.1 0 0 0 8.423.2 4.15 4.15 0 0 0 6.305.086a4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679A4 4 0 0 0 .554 4.72a3.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716"/>
+        </svg>
+    ),
+    "Claude Code": (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 20 10.1 4h3.8L20 20h-3.4l-1.4-3.8H8.8L7.4 20H4Zm5.8-6.7h4.4L12 7.1l-2.2 6.2Z" fill="currentColor"/>
+        </svg>
+    ),
+    OpenCode: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M8 7 3 12l5 5M16 7l5 5-5 5M13 5l-2 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+    ),
     Anthropic: (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M4 20 10.1 4h3.8L20 20h-3.4l-1.4-3.8H8.8L7.4 20H4Zm5.8-6.7h4.4L12 7.1l-2.2 6.2Z" fill="currentColor"/>

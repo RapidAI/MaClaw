@@ -202,6 +202,37 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 	}
 }
 
+// checkTaskModeGuard asks before running a command that a task-mode guardrail
+// turned down. Unlike checkHighRisk it neither consults nor grants the sticky
+// high-risk allowance: answering "allow risky commands" is a statement about
+// danger, not about widening what a run/build turn is, so each widening stays
+// an explicit per-command decision the user actually sees.
+func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, workingDir, rejection string) string {
+	if s == nil {
+		return rejection
+	}
+	s.mu.Lock()
+	callback := s.onScopeApproval
+	s.mu.Unlock()
+	if callback == nil {
+		return rejection
+	}
+	switch callback(ScopeApprovalRequest{
+		ToolName:    toolName,
+		Path:        command,
+		ProjectPath: projectPath,
+		Directory:   workingDir,
+		Kind:        localHighRiskApprovalKind,
+		Message:     rejection,
+		AutoAllow:   false,
+	}) {
+	case ScopeApprovalAllowOnce, ScopeApprovalFullAccess:
+		return ""
+	default:
+		return rejection
+	}
+}
+
 func (s *scopeApprovalState) setAuditCallback(callback func(ScopeApprovalRequest, ScopeApprovalDecision, string)) {
 	if s == nil {
 		return

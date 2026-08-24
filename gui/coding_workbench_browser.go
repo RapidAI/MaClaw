@@ -61,6 +61,7 @@ type codingWorkbenchRemoteDirectoryRecord struct {
 }
 
 const codingWorkbenchBrowserMaxEntries = 500
+const codingWorkbenchBrowserMaxScanEntries = codingWorkbenchBrowserMaxEntries * 4
 const codingWorkbenchBrowserMaxRunes = 400000
 const codingWorkbenchBrowserMaxReadBytes = codingWorkbenchBrowserMaxRunes * utf8.UTFMax
 
@@ -89,7 +90,14 @@ func cleanCodingWorkbenchBrowserPath(value string) (string, error) {
 }
 
 func codingWorkbenchBrowserLocalRoot(a *App, projectPath string) (string, error) {
-	root := strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath))
+	root := ""
+	if a != nil && a.projectPathIsLocalCodingWorkbench(projectPath) {
+		// Local coding preview lists the live current working directory, never
+		// the managed task identity folder or its workspace/ sandbox.
+		root = strings.TrimSpace(a.codingWorkbenchLocalExecDirOrDesktop(projectPath))
+	} else if a != nil {
+		root = strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath))
+	}
 	if root == "" {
 		return "", fmt.Errorf("working directory is unavailable")
 	}
@@ -147,7 +155,11 @@ func parseCodingWorkbenchRemoteDirectoryRecords(raw, relativePath string) ([]Cod
 			truncated = *item.Truncated
 			continue
 		}
-		if item.Name == "" {
+		if item.Name == "" || isCodingWorkbenchHiddenBrowserName(item.Name) {
+			continue
+		}
+		if len(entries) >= codingWorkbenchBrowserMaxEntries {
+			truncated = true
 			continue
 		}
 		entries = append(entries, CodingWorkbenchDirectoryEntry{
@@ -169,23 +181,51 @@ func codingWorkbenchDirectoryEntryLess(left, right CodingWorkbenchDirectoryEntry
 	return left.Name < right.Name
 }
 
-// collectCodingWorkbenchDirectoryEntries intentionally reads one small page
-// only. Scanning every entry merely to select a globally sorted first page can
-// make a network share or generated directory take seconds to open.
+func isCodingWorkbenchHiddenBrowserName(name string) bool {
+	return strings.HasPrefix(strings.TrimSpace(name), ".")
+}
+
+// collectCodingWorkbenchDirectoryEntries reads one small page of visible
+// entries. Dot-prefixed names are skipped so they do not consume the page or
+// appear in the explorer. A scan budget keeps a directory of only hidden
+// entries from walking the whole tree on a network share.
 func collectCodingWorkbenchDirectoryEntries(dir *os.File, relativePath string) ([]CodingWorkbenchDirectoryEntry, bool, error) {
-	items, err := dir.ReadDir(codingWorkbenchBrowserMaxEntries + 1)
-	if err != nil && err != io.EOF {
-		return nil, false, err
+	entries := make([]CodingWorkbenchDirectoryEntry, 0, codingWorkbenchBrowserMaxEntries)
+	truncated := false
+	scanned := 0
+	more := false
+	for scanned < codingWorkbenchBrowserMaxScanEntries {
+		want := codingWorkbenchBrowserMaxEntries - len(entries) + 1
+		if remain := codingWorkbenchBrowserMaxScanEntries - scanned; want > remain {
+			want = remain
+		}
+		if want < 1 {
+			break
+		}
+		items, err := dir.ReadDir(want)
+		if err != nil && err != io.EOF {
+			return nil, false, err
+		}
+		scanned += len(items)
+		more = err != io.EOF && len(items) == want
+		for _, item := range items {
+			if isCodingWorkbenchHiddenBrowserName(item.Name()) {
+				continue
+			}
+			if len(entries) >= codingWorkbenchBrowserMaxEntries {
+				truncated = true
+				break
+			}
+			entries = append(entries, CodingWorkbenchDirectoryEntry{
+				Name: item.Name(), Path: path.Join(relativePath, item.Name()), IsDir: item.IsDir(),
+			})
+		}
+		if truncated || !more {
+			break
+		}
 	}
-	truncated := len(items) > codingWorkbenchBrowserMaxEntries
-	if truncated {
-		items = items[:codingWorkbenchBrowserMaxEntries]
-	}
-	entries := make([]CodingWorkbenchDirectoryEntry, 0, len(items))
-	for _, item := range items {
-		entries = append(entries, CodingWorkbenchDirectoryEntry{
-			Name: item.Name(), Path: path.Join(relativePath, item.Name()), IsDir: item.IsDir(),
-		})
+	if !truncated && more && len(entries) >= codingWorkbenchBrowserMaxEntries {
+		truncated = true
 	}
 	sortCodingWorkbenchDirectoryEntries(entries)
 	return entries, truncated, nil
@@ -280,15 +320,16 @@ func (a *App) getRemoteCodingWorkbenchDirectory(projectPath, relativePath string
 	// Resolve the requested directory remotely before listing it. The lexical
 	// client-side check above is not sufficient for a symlink inside work_dir
 	// pointing outside it.
-	script := `import json,os,sys; root=os.path.realpath(sys.argv[1]); target=os.path.realpath(sys.argv[2]); ok=(root==os.sep or target==root or target.startswith(root+os.sep));
+	script := fmt.Sprintf(`import json,os,sys; root=os.path.realpath(sys.argv[1]); target=os.path.realpath(sys.argv[2]); ok=(root==os.sep or target==root or target.startswith(root+os.sep));
 if not ok: raise SystemExit("path outside remote work_dir")
 if not os.path.isdir(target): raise SystemExit("path is not a directory")
-limit=500; xs=[]
+limit=%d; xs=[]
 with os.scandir(target) as scan:
  for e in scan:
+  if e.name.strip().startswith('.'): continue
   xs.append(e)
   if len(xs)>limit: break
-truncated=len(xs)>limit; xs=xs[:limit]; print(json.dumps({"truncated":truncated})); [print(json.dumps({"name":e.name,"is_dir":e.is_dir(follow_symlinks=False)})) for e in xs]`
+truncated=len(xs)>limit; xs=xs[:limit]; print(json.dumps({"truncated":truncated})); [print(json.dumps({"name":e.name,"is_dir":e.is_dir(follow_symlinks=False)})) for e in xs]`, codingWorkbenchBrowserMaxEntries)
 	raw := hub.ensureIMHandler().sshExec(map[string]interface{}{
 		"session_id": sessionID,
 		// Use the shared base64-backed launcher: raw multi-line `python -c`

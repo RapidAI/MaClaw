@@ -50,6 +50,10 @@ func matchElement(el *accessibility.Element, role, name string) bool {
 
 func (b *fakeBridge) ClickElement(el *accessibility.Element) error                { return nil }
 func (b *fakeBridge) TypeInElement(el *accessibility.Element, text string) error   { return nil }
+func (b *fakeBridge) SelectElement(el *accessibility.Element) error                { return nil }
+func (b *fakeBridge) ExpandElement(el *accessibility.Element) error                { return nil }
+func (b *fakeBridge) ScrollElementIntoView(el *accessibility.Element) error        { return nil }
+func (b *fakeBridge) FocusElement(el *accessibility.Element) error                 { return nil }
 func (b *fakeBridge) GetValue(el *accessibility.Element) (string, error) {
 	key := el.Role + "::" + el.Name
 	if v, ok := b.values[key]; ok {
@@ -412,6 +416,17 @@ func TestWaitForStable_NoScreenshot(t *testing.T) {
 	err := obs.WaitForStable(100 * time.Millisecond)
 	if err != nil {
 		t.Errorf("expected nil error, got: %v", err)
+	}
+}
+
+func TestWaitForIdle_BestEffort(t *testing.T) {
+	obs := NewGUIStateObserver(nil, nil, fakeScreenshot, nil)
+	if err := obs.WaitForIdle(200*time.Millisecond, 50*time.Millisecond); err != nil {
+		t.Fatalf("WaitForIdle: %v", err)
+	}
+	nilObs := NewGUIStateObserver(nil, nil, nil, nil)
+	if err := nilObs.WaitForIdle(50*time.Millisecond, 10*time.Millisecond); err != nil {
+		t.Fatalf("nil screenshot: %v", err)
 	}
 }
 

@@ -1,0 +1,39 @@
+{
+  "category": "lifecycle_no_injection",
+  "category_id": 22,
+  "title": "lifecycle manager isolation",
+  "design_ref": "10.1 item 22",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "complete-empty-need-set",
+      "title": "A catalog refresh with no needs creates no selections",
+      "needs": [],
+      "catalog": {
+        "coverage": {
+          "state": "complete"
+        },
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "Lifecycle manager must not create ArtifactRef."
+    }
+  ]
+}

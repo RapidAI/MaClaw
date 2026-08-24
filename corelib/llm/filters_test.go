@@ -5,6 +5,135 @@ import (
 	"testing"
 )
 
+func TestStripXMLToolCalls_RemovesDeepSeekDSML(t *testing.T) {
+	input := "好的，先查杭州最新天气。\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">\n<｜DSML｜parameter name=\"query\" string=\"true\">杭州天气</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+	got := StripXMLToolCalls(input)
+	if strings.Contains(got, "DSML") || strings.Contains(got, "web_search") || strings.Contains(got, "杭州天气") {
+		t.Fatalf("StripXMLToolCalls leaked DSML: %q", got)
+	}
+	if got != "好的，先查杭州最新天气。" {
+		t.Fatalf("StripXMLToolCalls() = %q", got)
+	}
+}
+
+func TestStripXMLToolCalls_RemovesLeftoverDSMLParameter(t *testing.T) {
+	input := "先查天气\n<｜DSML｜parameter name=\"query\" string=\"true\">杭州天气"
+	got := StripXMLToolCalls(input)
+	if strings.Contains(got, "DSML") || strings.Contains(got, "杭州天气") {
+		t.Fatalf("leftover DSML parameter leaked: %q", got)
+	}
+	if got != "先查天气" {
+		t.Fatalf("StripXMLToolCalls() = %q", got)
+	}
+}
+
+func TestStripXMLToolCalls_RemovesUnclosedDeepSeekDSML(t *testing.T) {
+	input := "先查天气\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">"
+	got := StripXMLToolCalls(input)
+	if strings.Contains(got, "DSML") || strings.Contains(got, "web_search") {
+		t.Fatalf("unclosed DSML leaked: %q", got)
+	}
+	if got != "先查天气" {
+		t.Fatalf("StripXMLToolCalls() = %q", got)
+	}
+}
+
+func TestStripXMLToolCalls_RemovesQwenFunctionEq(t *testing.T) {
+	input := "先改海报\n<function=write_file>\n<parameter=path>poster.py</parameter>\n</function>"
+	got := StripXMLToolCalls(input)
+	if strings.Contains(got, "write_file") || strings.Contains(got, "poster.py") {
+		t.Fatalf("function= leaked: %q", got)
+	}
+	if got != "先改海报" {
+		t.Fatalf("StripXMLToolCalls() = %q", got)
+	}
+}
+
+func TestFirstContentToolCallMarkerIndex_DeepSeekDSML(t *testing.T) {
+	s := "好的\n<｜DSML｜tool_calls>"
+	idx := FirstContentToolCallMarkerIndex(s)
+	if idx < 0 || !strings.HasPrefix(s[idx:], "<") {
+		t.Fatalf("marker index = %d, want DSML start", idx)
+	}
+	if ContentToolCallMarkerSuffixLen("好的\n<｜DS") == 0 {
+		t.Fatal("partial DSML suffix must be held")
+	}
+}
+
+func TestHoldContentToolCallStream_FlushDropsPartialDSMLKeepsLoneAngle(t *testing.T) {
+	visible, hold, suppress := HoldContentToolCallStream("好的，先查杭州最新天气。\n<｜DSML｜", true)
+	if visible != "好的，先查杭州最新天气。\n" || hold != "" || !suppress {
+		t.Fatalf("partial DSML flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("2 <", true)
+	if visible != "2 <" || hold != "" || suppress {
+		t.Fatalf("lone angle flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	visible, hold, suppress = HoldContentToolCallStream("Use a tool_call", true)
+	if visible != "Use a tool_call" || hold != "" || suppress {
+		t.Fatalf("prose tool_call flush = visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+}
+
+func TestContentToolCallDeltaFilterDropsPartialDSMLOnFlush(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("好的，先查杭州最新天气。\n<｜DSML｜")
+	filter.Flush()
+	if got := out.String(); got != "好的，先查杭州最新天气。\n" {
+		t.Fatalf("partial DSML leaked on flush: %q", got)
+	}
+}
+
+func TestContentToolCallDeltaFilterEmitsLoneAngleOnFlush(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("2 <")
+	filter.Flush()
+	if got := out.String(); got != "2 <" {
+		t.Fatalf("lone angle dropped on flush: %q", got)
+	}
+}
+
+func TestContentToolCallDeltaFilterHoldsMultiSpaceDSMLPrefix(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气\n<   |   DS")
+	if got := out.String(); got != "先查天气\n" {
+		t.Fatalf("multi-space DSML prefix leaked: %q", got)
+	}
+	filter.Write("ML   |   parameter name=\"query\"")
+	filter.Flush()
+	if got := out.String(); got != "先查天气\n" {
+		t.Fatalf("multi-space DSML parameter leaked: %q", got)
+	}
+}
+
+func TestContentToolCallDeltaFilterHoldsSpacedDSMLPrefix(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("先查天气\n< | DS")
+	if got := out.String(); got != "先查天气\n" {
+		t.Fatalf("spaced DSML prefix leaked: %q", got)
+	}
+	filter.Write("ML | tool_calls>< | DSML | invoke name=\"web_search\">")
+	filter.Flush()
+	if got := out.String(); got != "先查天气\n" {
+		t.Fatalf("filtered output = %q", got)
+	}
+}
+
+func TestContentToolCallDeltaFilterSuppressesDeepSeekDSML(t *testing.T) {
+	var out strings.Builder
+	filter := newContentToolCallDeltaFilter(func(delta string) { out.WriteString(delta) })
+	filter.Write("好的，先查杭州最新天气，然后生成 PDF 报告给你。\n<")
+	filter.Write("｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">")
+	filter.Flush()
+	if got := out.String(); got != "好的，先查杭州最新天气，然后生成 PDF 报告给你。\n" {
+		t.Fatalf("filtered output = %q", got)
+	}
+}
+
 func TestStripXMLToolCalls_RemovesCodexToolCallBlocks(t *testing.T) {
 	input := "before\n<turn: tool_call><invoke name=\"bash\"><parameter name=\"command\" string=\"true\">dir</parameter></invoke></turn>\nafter"
 	got := StripXMLToolCalls(input)

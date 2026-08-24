@@ -21,6 +21,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
@@ -516,19 +517,23 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 		m.enqueueError(p, req, maclawID, "third-party channel is not ready: "+err.Error())
 		return
 	}
+	extra := map[string]string{
+		"runtime":           "maclawsrv",
+		"client_id":         req.ClientID,
+		"conversation_id":   req.ConversationID,
+		"event_id":          req.EventID,
+		"maclaw_id":         maclawID,
+		"message_type":      req.Message.Type,
+		"device_binding_id": binding.DeviceID,
+		"attachment_count":  strconv.Itoa(len(req.Message.Attachments)),
+	}
+	if dest := agentservice.TrustedChannelDestinationID(extra, map[string]string{"contact_id": req.ClientID + ":" + req.ConversationID}); dest != "" {
+		extra["destination_id"] = dest
+	}
 	metadata := agentservice.IMMessageMetadata(agentservice.IMMessageMetadataInput{
 		Platform:  "thirdparty",
 		ContactID: req.ClientID + ":" + req.ConversationID,
-		Extra: map[string]string{
-			"runtime":           "maclawsrv",
-			"client_id":         req.ClientID,
-			"conversation_id":   req.ConversationID,
-			"event_id":          req.EventID,
-			"maclaw_id":         maclawID,
-			"message_type":      req.Message.Type,
-			"device_binding_id": binding.DeviceID,
-			"attachment_count":  strconv.Itoa(len(req.Message.Attachments)),
-		},
+		Extra:     extra,
 	})
 	voiceTranscript, voiceOK := m.transcribeThirdPartyVoice(ctx, p, req)
 	instance, instanceErr := m.svc.GetInstance(ctx, p, instanceID)
@@ -592,7 +597,7 @@ func (m *srvThirdPartyGatewayManager) processIncoming(parent context.Context, p 
 // preference. A TTS/model/media failure always degrades to useful text when the
 // client supports it.
 func (m *srvThirdPartyGatewayManager) enqueueAssistantReply(ctx context.Context, p agentservice.Principal, req srvThirdPartyIncomingRequest, replyTo, assistantID, text string, createdAt time.Time, bindings ...srvDeviceAgentBinding) {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(textutil.SanitizeVisibleChatText(text))
 	if m == nil || text == "" {
 		return
 	}
@@ -767,7 +772,20 @@ func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Princi
 	var notes []string
 	for _, ref := range req.Message.Attachments {
 		data, ok := m.thirdPartyAttachmentBytes(p, ref)
-		if ok && len(data) <= coreim.ThirdPartyMaxDirectBytes {
+		if !ok {
+			continue
+		}
+		if att, ok := thirdPartyTrustedHostAttachment(ref, data); ok {
+			attachments = append(attachments, att)
+			notes = append(notes, fmt.Sprintf("- %s %s attached as trusted host input (%d bytes)", att.Type, firstNonEmptyThirdParty(att.FileName, ref.ID, "attachment"), len(data)))
+			if len(data) <= coreim.ThirdPartyMaxDirectBytes {
+				if text, ok := thirdPartyReadableTextAttachment(ref, data); ok {
+					notes = append(notes, fmt.Sprintf("  content:\n%s", indentThirdPartyAttachmentText(text)))
+				}
+			}
+			continue
+		}
+		if len(data) <= coreim.ThirdPartyMaxDirectBytes {
 			attachments = append(attachments, agent.MessageAttachment{
 				Type:     ref.Type,
 				FileName: ref.FileName,
@@ -781,17 +799,14 @@ func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Princi
 			}
 			continue
 		}
-		if ok && len(data) > coreim.ThirdPartyMaxDirectBytes {
-			if path, err := storeThirdPartyAttachmentInWorkspace(workspace, ref, data); err == nil {
-				notes = append(notes, fmt.Sprintf("- %s %s saved to %s for agent document reading (%d bytes)", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), path, len(data)))
-				continue
-			}
-			if strings.TrimSpace(ref.URL) != "" {
-				notes = append(notes, fmt.Sprintf("- %s %s available at server media URL; size=%d bytes; url=%s", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), len(data), ref.URL))
-			} else {
-				notes = append(notes, fmt.Sprintf("- %s %s available as server media id %s; size=%d bytes", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), ref.ID, len(data)))
-			}
+		if path, err := storeThirdPartyAttachmentInWorkspace(workspace, ref, data); err == nil {
+			notes = append(notes, fmt.Sprintf("- %s %s saved to %s for agent document reading (%d bytes)", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), path, len(data)))
 			continue
+		}
+		if strings.TrimSpace(ref.URL) != "" {
+			notes = append(notes, fmt.Sprintf("- %s %s available at server media URL; size=%d bytes; url=%s", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), len(data), ref.URL))
+		} else {
+			notes = append(notes, fmt.Sprintf("- %s %s available as server media id %s; size=%d bytes", ref.Type, firstNonEmptyThirdParty(ref.FileName, ref.ID, "attachment"), ref.ID, len(data)))
 		}
 	}
 	if len(notes) > 0 {
@@ -804,6 +819,26 @@ func (m *srvThirdPartyGatewayManager) thirdPartyAgentInput(p agentservice.Princi
 		}
 	}
 	return content, attachments
+}
+
+func thirdPartyTrustedHostAttachment(ref coreim.ThirdPartyMediaReference, data []byte) (agent.MessageAttachment, bool) {
+	if len(data) == 0 {
+		return agent.MessageAttachment{}, false
+	}
+	return agentservice.ReviewedHostCanonicalizeTrustedAttachment(agent.MessageAttachment{
+		Type:          ref.Type,
+		FileName:      ref.FileName,
+		MimeType:      ref.MimeType,
+		Data:          base64.StdEncoding.EncodeToString(data),
+		SourceMediaID: thirdPartyTrustedSourceMediaID(ref),
+	})
+}
+
+func thirdPartyTrustedSourceMediaID(ref coreim.ThirdPartyMediaReference) string {
+	if id := strings.TrimSpace(ref.ID); id != "" {
+		return "thirdparty-media:" + id
+	}
+	return ""
 }
 
 // storeThirdPartyAttachmentInWorkspace keeps server-media attachments inside

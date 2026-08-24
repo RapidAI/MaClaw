@@ -146,6 +146,27 @@ func TestProjectTabWorkDir_InvalidDirectoryFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProjectTabWorkDir_CodingWorkbenchUsesCurrentWorkingDir(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	workingDir := filepath.Join(t.TempDir(), "prog-test")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", workingDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	created := app.CreateTaskWithMode("新建本地编程任务", "", "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	h := &IMMessageHandler{app: app}
+	got := h.projectTabWorkDirForOwner(projectSessionOwnerID(created.ProjectPath))
+	want := filepath.Clean(workingDir)
+	if got != want {
+		t.Fatalf("projectTabWorkDirForOwner() = %q, want current working dir %q, not task sandbox %q", got, want, created.ProjectPath)
+	}
+}
+
 func TestProjectTabWorkDir_RepairsManagedRecentTaskWorkspace(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {

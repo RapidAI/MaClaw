@@ -37,6 +37,15 @@ func NewExtractorWithOptions(llm LLMClient, store SkillStore, opts Options) *Ext
 	return &Extractor{llm: llm, store: store, now: time.Now, opts: normalizeOptions(opts)}
 }
 
+// experienceDomain is the pool extracted skills belong to. A zero Extractor
+// yields universal, matching the rest of evaluatePattern's nil tolerance.
+func (e *Extractor) experienceDomain() string {
+	if e == nil {
+		return corelib.SkillDomainUniversal
+	}
+	return corelib.NormalizeSkillExperienceDomain(e.opts.ExperienceDomain)
+}
+
 type DecisionAction string
 
 const (
@@ -326,16 +335,17 @@ func (e *Extractor) evaluatePattern(p Pattern, projectPath string) (corelib.NLSk
 
 	requiredArgs := ExtractRequiredArgs(p)
 	return corelib.NLSkillEntry{
-		Name:          name,
-		Description:   description,
-		Triggers:      normalizeTriggers(p.Triggers),
-		Steps:         steps,
-		Status:        "active",
-		CreatedAt:     createdAt,
-		Source:        "learned",
-		SourceProject: projectPath,
-		RequiredArgs:  requiredArgs,
-		Params:        synthesizeSkillParams(steps, requiredArgs),
+		Name:             name,
+		Description:      description,
+		Triggers:         normalizeTriggers(p.Triggers),
+		Steps:            steps,
+		Status:           "active",
+		CreatedAt:        createdAt,
+		Source:           "learned",
+		SourceProject:    projectPath,
+		ExperienceDomain: e.experienceDomain(),
+		RequiredArgs:     requiredArgs,
+		Params:           synthesizeSkillParams(steps, requiredArgs),
 	}, quality, "", true
 }
 func ParsePatterns(content string) ([]Pattern, error) {

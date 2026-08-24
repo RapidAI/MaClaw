@@ -8,8 +8,8 @@
 
 #include "sdkconfig.h"
 
-#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
-#error "Bread connectivity adapter may only be included by the Bread Compact profile"
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD && !CONFIG_MACLAW_BOARD_REFERENCE_FAKE
+#error "Bread connectivity adapter may only be included by Bread Compact or the CI reference profile"
 #endif
 
 #ifndef MACLAW_COMPACT_CONNECTIVITY_ADAPTER_IMPLEMENTATION
@@ -37,6 +37,15 @@ static inline esp_err_t compact_connectivity_adapter_quiesce_cellular_transport(
     uint32_t timeout_ms) {
     (void)timeout_ms;
     return ESP_ERR_NOT_SUPPORTED;
+}
+
+static inline esp_err_t compact_connectivity_adapter_prepare_system_sleep(
+    uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_OK;
+}
+
+static inline void compact_connectivity_adapter_abort_system_sleep_prepare(void) {
 }
 
 static inline esp_err_t compact_connectivity_adapter_cellular_http_request(

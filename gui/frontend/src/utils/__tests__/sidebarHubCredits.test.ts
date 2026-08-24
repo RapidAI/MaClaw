@@ -58,6 +58,117 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.remaining).toBe(90);
     });
 
+    it('preserves new-user limit-card windows for the system-status display', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [{
+                source: 'new_user_limit_card', status: 'active', active: true, permanent: true,
+                period_limits: { five_hour: 10, daily: 25 },
+                period_usage: {
+                    five_hour: { credits_used: 3, window_end: '2026-08-22T15:00:00Z', rolling: true },
+                    daily: { credits_used: 7, window_end: '2026-08-23T00:00:00Z' },
+                },
+            }],
+        });
+
+        expect(credits?.unlimited).toBe(true);
+        expect(credits?.expiresAt).toBe('');
+        expect(credits?.newUserLimitCards).toEqual([expect.objectContaining({
+            serviceGroupID: '-',
+            fiveHourLimit: 10, fiveHourUsed: 3, fiveHourRolling: true,
+            dailyLimit: 25, dailyUsed: 7, permanent: true,
+        })]);
+    });
+
+    it('does not render an empty benefit row for a validity-only new-user limit card', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [{
+                source: 'new_user_limit_card', status: 'active', active: true, permanent: true,
+                period_limits: { five_hour: 0, daily: 0 },
+            }],
+        });
+
+        expect(credits?.unlimited).toBe(true);
+        expect(credits?.newUserLimitCards).toBeUndefined();
+    });
+
+    it('treats a validity-only new-user limit card as unlimited access, not a zero-credit wallet', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [{
+                source: 'new_user_limit_card', status: 'active', active: true, permanent: true,
+                period_limits: { five_hour: 0, daily: 0 },
+            }],
+        });
+
+        expect(credits?.unlimited).toBe(true);
+        expect(credits?.total).toBe(0);
+        expect(credits?.remaining).toBe(0);
+        expect(credits?.newUserLimitCards).toBeUndefined();
+    });
+
+    it('aggregates active limit-card windows and preserves finite benefit validity', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [
+                {
+                    source: 'new_user_limit_card', status: 'active', active: true,
+                    expires_at: '2026-09-01T00:00:00Z',
+                    period_limits: { five_hour: 10 },
+                    period_usage: { five_hour: { credits_used: 3, window_end: '2026-08-23T10:00:00Z', rolling: true } },
+                },
+                {
+                    source: 'new_user_limit_card', status: 'period_limited', active: false,
+                    expires_at: '2026-09-10T00:00:00Z', retry_after_seconds: 3600,
+                    period_limits: { daily: 25 },
+                    period_usage: { daily: { credits_used: 25, window_end: '2026-08-24T00:00:00Z' } },
+                },
+            ],
+        });
+
+        expect(credits?.newUserLimitCards).toEqual([expect.objectContaining({
+            serviceGroupID: '-',
+            fiveHourLimit: 10, fiveHourUsed: 3, fiveHourRolling: true,
+            dailyLimit: 25, dailyUsed: 25,
+            permanent: false, expiresAt: '2026-09-10T00:00:00Z',
+            status: 'period_limited', retryAfterSeconds: 3600,
+        })]);
+    });
+
+    it('keeps independent new-user allowances separate by service group', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [
+                {
+                    source: 'new_user_limit_card', service_group_id: 'welcome-a', status: 'active', active: true, permanent: true,
+                    period_limits: { five_hour: 10 }, period_usage: { five_hour: { credits_used: 3, rolling: true } },
+                },
+                {
+                    source: 'new_user_limit_card', service_group_id: 'welcome-b', status: 'active', active: true, permanent: true,
+                    period_limits: { five_hour: 20 }, period_usage: { five_hour: { credits_used: 5, rolling: true } },
+                },
+            ],
+        });
+
+        expect(credits?.newUserLimitCards).toEqual([
+            expect.objectContaining({ serviceGroupID: 'welcome-a', fiveHourLimit: 10, fiveHourUsed: 3 }),
+            expect.objectContaining({ serviceGroupID: 'welcome-b', fiveHourLimit: 20, fiveHourUsed: 5 }),
+        ]);
+    });
+
+    it('keeps benefit-group order stable when Hub returns grants in a different order', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credit_grants: [
+                { source: 'new_user_limit_card', service_group_id: 'welcome-b', status: 'active', active: true, period_limits: { five_hour: 20 } },
+                { source: 'new_user_limit_card', service_group_id: 'welcome-a', status: 'active', active: true, period_limits: { five_hour: 10 } },
+            ],
+        });
+
+        expect(credits?.newUserLimitCards?.map((card) => card.serviceGroupID)).toEqual(['welcome-a', 'welcome-b']);
+    });
+
     it('falls back to legacy active grants when credit_grants is present but empty', () => {
         const credits = normalizeSidebarHubCredits({
             active: true,

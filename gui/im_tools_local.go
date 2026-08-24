@@ -371,6 +371,17 @@ func projectPathFromUserID(userID string) string {
 	return projectPathFromSessionOwnerID(userID)
 }
 
+// trustedPrincipalBoundWorkspace returns the explicit tab bind or
+// desktop-user:<project> path. It does not fall back to ~/.maclaw/workspace.
+func trustedPrincipalBoundWorkspace(h *IMMessageHandler, principalID string) string {
+	if h != nil && h.app != nil {
+		if dir := strings.TrimSpace(h.app.BoundWorkingDirForOwner(principalID)); dir != "" {
+			return dir
+		}
+	}
+	return strings.TrimSpace(projectPathFromUserID(principalID))
+}
+
 func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {
 	// Only project-tab owners have an execution project path. Local sessions
 	// return "" here so callers do not confuse desktop workspace with a project.
@@ -409,9 +420,15 @@ func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
 		return rawProjectPath
 	}
 
-	// Managed tasks (…/data/tasks/<slug>-<id>): tools must run in workspace/ (or
-	// a custom working_dir tag), never the metadata root that only holds task.md.
+	// Managed tasks (…/data/tasks/<slug>-<id>): ordinary-agent tools run in
+	// workspace/ (or a custom working_dir tag), never the metadata root that
+	// only holds task.md. A coding workbench is not a sandbox: its work root
+	// is the current working directory.
 	if h.app != nil && h.app.isManagedRecentTaskWorkspacePath(rawProjectPath) {
+		if h.app.projectPathIsLocalCodingWorkbench(rawProjectPath) {
+			// Local coding never falls through to taskDir/workspace.
+			return strings.TrimSpace(h.app.codingWorkbenchLocalExecDirOrDesktop(rawProjectPath))
+		}
 		if info, err := os.Stat(rawProjectPath); err != nil || !info.IsDir() {
 			_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
 		}

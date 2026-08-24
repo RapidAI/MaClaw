@@ -89,8 +89,6 @@ func runRPCMode() {
 		log.Printf("[rpc] config load warning: %v", err)
 	}
 
-	installTUIOfficeReadConfigProvider(dataDir)
-
 	llmCfg := buildLLMConfigFromAppConfig(appCfg)
 	if !tuiConfigLLMReady(appCfg) {
 		emitRPCEvent(RPCEvent{Type: "error", Message: "LLM not configured. Run setup or configure via GUI first."})
@@ -150,10 +148,37 @@ func runRPCMode() {
 		}),
 		SSHHandler: sshHandler,
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
-			return agent.ToolWebSearchWithStrategyCtx(ctx, tuiWebSearchStrategy(app.appConfig), args)
+			var provider corelib.WebSearchProvider
+			if len(app.appConfig.WebSearchProviders) > 0 {
+				for _, p := range app.appConfig.WebSearchProviders {
+					if p.Name == app.appConfig.WebSearchCurrentProvider {
+						provider = p
+						break
+					}
+				}
+				if provider.Name == "" {
+					provider = app.appConfig.WebSearchProviders[0]
+				}
+			}
+			if provider.Type == "" {
+				provider.Type = "duckduckgo"
+			}
+			return agent.ToolWebSearchCtx(ctx, provider, args)
 		},
 		WebFetchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
-			return agent.ToolWebFetchWithProviderCtx(ctx, args, tuiWebFetchProvider(app.appConfig))
+			var provider corelib.WebSearchProvider
+			if len(app.appConfig.WebSearchProviders) > 0 {
+				for _, p := range app.appConfig.WebSearchProviders {
+					if p.Name == app.appConfig.WebSearchCurrentProvider {
+						provider = p
+						break
+					}
+				}
+				if provider.Name == "" {
+					provider = app.appConfig.WebSearchProviders[0]
+				}
+			}
+			return agent.ToolWebFetchWithProviderCtx(ctx, args, provider)
 		},
 	})
 
@@ -323,7 +348,7 @@ func (c *rpcCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agen
 	}
 	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
 	if ok {
-		c.activeLLM.set(cfg)
+		c.activeLLM.setRoute(cfg, d)
 	}
 	return cfg, d, ok
 }
@@ -373,6 +398,10 @@ func (c *rpcCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.app.toolRegistry.Execute(name, args)
 }
 
+func (c *rpcCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return projectTUIToolResult(name, result, c.GetLLMConfig())
+}
+
 func (c *rpcCallbacks) IsToolAllowed(name string) bool {
 	return true // RPC mode trusts the caller.
 }
@@ -398,6 +427,18 @@ func (c *rpcCallbacks) OnToolCall(name string) {
 
 func (c *rpcCallbacks) OnToolResult(name string) {
 	emitRPCEvent(RPCEvent{Type: "tool_result", RequestID: c.requestID, Name: name})
+}
+
+func (c *rpcCallbacks) EscalateAfterToolExecution(name string) {
+	_ = name
+	if c != nil {
+		escalateTUIActiveLLMAfterTool(c.app, &c.activeLLM)
+	}
+}
+
+func (c *rpcCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	return c != nil && c.activeLLM.consumeSurfaceRefresh()
 }
 
 func (c *rpcCallbacks) ShouldStop() bool {

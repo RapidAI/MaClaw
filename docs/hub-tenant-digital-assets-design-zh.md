@@ -5,7 +5,7 @@
 | 文档标题 | Hub 租户企业数字资产管理（Digital Assets）设计 |
 | 作者 | （待填） |
 | 日期 | 2026-08-08 |
-| 状态 | Implemented（v1 已落地：Hub Admin 数字资产、ACL、GUI 企业知识库 Tab + 用户同步开关、MaClawSrv/agentservice 同步与自动召回/检索合并、OpenAPI 路由） |
+| 状态 | Implemented（v1 已落地：Hub Admin 数字资产、ACL、GUI 企业知识库 Tab + 用户同步开关、MaClawSrv/agentservice 同步与自动召回/检索合并、OpenAPI 路由；v1.1 个人业务/技术经验投稿+审批已接通；**v1.2 设计修订**见 `docs/digital-assets-experience-contribution-design-zh.md`：审阅预览、配额限流、PII/信任分级） |
 | 范围 | Hub 租户侧企业知识库管理、ACL、Admin UI、maclaw GUI / 数字员工（VE）企业知识库本地存储、Hub→客户端单向增量同步 |
 | 关联文档 | `docs/maclaw-knowledge-brain-design-zh.md`、`docs/knowledge-export-share-and-hub-import-design-zh.md`、`docs/maclaw-hub-multitenancy-design-zh.md`、`docs/maclaw-hub-enterprise-management-design-zh.md`、`docs/knowledge-auto-recall-design.md`、`docs/iworker/iworker-memory-sync-and-offline-architecture-v1.md` |
 
@@ -99,7 +99,7 @@
 - 跨 Hub / HubCenter 联邦（跨 Hub 分享不可解析则拒绝）。
 - 单条 card/fact ACL。
 - **替代或合并** Knowledge Share / Knowledge Sync 产品形态。
-- **普通用户** 自助投稿 / 浏览器目录导入 / 备份导入导出（**全部仅管理员**）。
+- **普通用户** 浏览器目录导入 / 备份导入导出（**仅管理员**）。用户可将个人业务/技术经验 **投稿** 到企业库，但 **入库须租户管理员审批**（见 `docs/digital-assets-experience-contribution-design-zh.md`）；客户端仍不能写回企业真源。
 - 实时目录 watch（浏览器目录为一次性选择上传，非持续监听）。
 - 独立向量库服务。
 - 撤销时自动 purge 本地。
@@ -1391,7 +1391,8 @@ EnterprisePurgeRevokedLibrary(libraryID string) error // 用户手动清除 keep
 | ACL 形状 | 两模式 + grants 并集；空 restricted = 全拒 |
 | 包格式 | jsonl snapshot v1；禁止 ReplaceAll；upsert 先 DeleteSource |
 | Admin 角色 | tenant_owner / tenant_admin |
-| Share→企业库导入 | **允许且仅管理员**；同租户快照拷贝；默认 merge_namespace；无用户投稿/审批；无自动双向更新 |
+| Share→企业库导入 | **允许且仅管理员**；同租户快照拷贝；默认 merge_namespace；无自动双向更新 |
+| 个人经验投稿 | **允许人类 Viewer 投稿、仅管理员审阅后入库**；业务/技术分 `library_kind`；批准 ≠ 编码 `verified`；同步标签不含投稿人邮箱；真源仍只由管理员写入 |
 | 压缩包导入 | **允许且仅管理员**；v1=zip；包内文档 → 安全解压 + DirectoryImport |
 | 浏览器本机目录 | **允许且仅管理员**；webkitdirectory；与服务器 local_dir 分离 |
 | 库合并 | **支持**；同租户；ACL 跟目标；源归档 + 客户端 tombstone |
@@ -1408,6 +1409,9 @@ EnterprisePurgeRevokedLibrary(libraryID string) error // 用户手动清除 keep
 | knowledge_host 泄漏连接 | 中 | LRU + CloseAll 测试 |
 | Windows DB 锁 | 中 | 重试打开；短事务 apply |
 | 大目录导入 CPU | 中 | 每租户 1 job |
+| 投稿盲批 / 灌包 | 高 | 批准前审阅预览；包 `0600` + SHA-256；每用户 pending/日配额与 429；去重 |
+| 批准被当成技术鉴定 | 中 | 入库编码经验 status=`active`，`verified` 另走治理 |
+| 投稿人邮箱进企业库 | 中 | 同步标签只用 `submitted_by_user`；邮箱留 Hub 投稿行 |
 
 ---
 
@@ -1420,7 +1424,8 @@ EnterprisePurgeRevokedLibrary(libraryID string) error // 用户手动清除 keep
 | 企业 KB vs 个人 KB | 独立 `enterprise_knowledge.db` | 对齐 coding 隔离；防误导出 |
 | 同步方向 | Hub → **GUI/VE** 单向 | 企业真源；无写回 |
 | 三产品边界 | Share / Sync / Assets **表与 API 分离**；Assets **可消费** Share 包作导入源 | 避免混用 handler，又允许「用户分享 → 企业沉淀」 |
-| Share→Assets | **仅管理员**粘贴链接/ID 导入快照；默认 `merge_namespace`；同租户；不双向联动；无用户投稿 | 复用 `knowledge_shares` 包存储；企业真源由治理方把关 |
+| Share→Assets | **仅管理员**粘贴链接/ID 导入快照；默认 `merge_namespace`；同租户；不双向联动 | 复用 `knowledge_shares` 包存储；企业真源由治理方把关 |
+| 个人经验→Assets | 人类 Viewer 投稿 + 租户管理员**审阅预览后**批准；`library_kind=business\|technical`；包格式仍为 `maclaw.knowledge.package`；批准后编码经验为 `active`；同步用 `submitted_by_user` | 组织沉淀个人经验，但不盲批、不把批准当技术鉴定、不把邮箱同步给全员 |
 | 压缩包导入 | **仅管理员**；v1=`.zip`；包内文档；安全解压 + `ImportDirectory` | 对齐 GUI 目录导入 |
 | 浏览器目录 | **仅管理员**；`webkitdirectory` 本机文件夹；非服务器盘 | 现代浏览器均支持；与 local_dir 文案分离 |
 | 库合并 | 同租户多源→一目标；ACL 跟目标；源归档 tombstone | 便于统一库级 ACL/策略 |

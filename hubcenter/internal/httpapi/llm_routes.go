@@ -29,20 +29,30 @@ func RegisterLLMRoutes(
 	// --- LLM Proxy (called by Hubs) ---
 	if proxyCfg != nil {
 		mux.HandleFunc("POST /api/llm/v1/chat/completions", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyHandler(proxyCfg)))
+		mux.HandleFunc("POST /api/llm/v1/quotes", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyQuoteHandler(proxyCfg)))
+		mux.HandleFunc("GET /api/llm/v1/billing-attempts/{request_id}", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyBillingAttemptHandler(proxyCfg)))
 	}
 
 	// --- Authorization query (called by Hubs) ---
 	if authChecker != nil {
 		mux.HandleFunc("GET /api/llm/v1/authorization", RequireHubMachine(hubService, hubIDFromAuthorizationQuery, llmservice.AuthorizationQueryHandler(authChecker)))
 		mux.HandleFunc("POST /api/llm/v1/authorization/batch", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.AuthorizationBatchQueryHandler(authChecker)))
+		mux.HandleFunc("GET /api/llm/v1/official-class-head", RequireHubMachine(hubService, hubIDFromAuthorizationQuery, officialClassHeadPublishHandler(llmSvc)))
 	}
 
 	// --- Admin: LLM Providers ---
 	mux.HandleFunc("GET /api/admin/llm/providers", RequireAdmin(adminService, adminListLLMProviders(llmSvc)))
+	if statsSvc != nil {
+		mux.HandleFunc("GET /api/admin/llm/providers/traffic", RequireAdmin(adminService, adminLLMProviderTrafficHandler(statsSvc)))
+		mux.HandleFunc("GET /api/admin/llm/service-groups/traffic", RequireAdmin(adminService, adminLLMServiceGroupTrafficHandler(statsSvc)))
+	}
 	mux.HandleFunc("POST /api/admin/llm/providers", RequireAdmin(adminService, adminAddLLMProvider(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/providers/probe-models", RequireAdmin(adminService, adminProbeLLMProviderModels(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/providers/test-chat", RequireAdmin(adminService, adminTestLLMProviderChat(llmSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/providers/sequences", RequireAdmin(adminService, adminSetLLMProviderSequences(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminUpdateLLMProvider(llmSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/paused", RequireAdmin(adminService, adminSetLLMProviderPaused(llmSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/sequence", RequireAdmin(adminService, adminSetLLMProviderSequence(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminDeleteLLMProvider(llmSvc)))
 
 	// --- Admin: Compute Agents ---
@@ -55,6 +65,7 @@ func RegisterLLMRoutes(
 	mux.HandleFunc("GET /api/admin/llm/service-groups", RequireAdmin(adminService, adminListLLMServiceGroups(llmSvc)))
 	mux.HandleFunc("POST /api/admin/llm/service-groups", RequireAdmin(adminService, adminAddLLMServiceGroup(llmSvc, cardStoreSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminUpdateLLMServiceGroup(llmSvc, cardStoreSvc)))
+	mux.HandleFunc("PUT /api/admin/llm/service-groups/{id}/default", RequireAdmin(adminService, adminSetDefaultLLMServiceGroup(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/service-groups/{id}", RequireAdmin(adminService, adminDeleteLLMServiceGroup(llmSvc, authChecker, cardStoreSvc)))
 
 	// --- Admin: Tenant Authorizations ---
@@ -66,7 +77,21 @@ func RegisterLLMRoutes(
 	// --- Admin: Usage Statistics ---
 	if statsSvc != nil {
 		mux.HandleFunc("GET /api/admin/llm/usage", RequireAdmin(adminService, adminLLMUsageHandler(statsSvc)))
+		mux.HandleFunc("GET /api/admin/llm/class-traffic", RequireAdmin(adminService, adminLLMClassTrafficHandler(statsSvc)))
 	}
+	mux.HandleFunc("POST /api/admin/llm/classify-preview", RequireAdmin(adminService, adminLLMClassifyPreviewHandler(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/class-head", RequireAdmin(adminService, adminLLMClassHeadHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/train", RequireAdmin(adminService, adminLLMClassHeadTrainHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/pipeline", RequireAdmin(adminService, adminLLMClassHeadPipelineHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/review", RequireAdmin(adminService, adminLLMClassHeadReviewHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/sample/delete", RequireAdmin(adminService, adminLLMClassHeadSampleDeleteHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/rollback", RequireAdmin(adminService, adminLLMClassHeadRollbackHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/pull-official", RequireAdmin(adminService, adminLLMClassHeadPullOfficialHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/trainer", RequireAdmin(adminService, adminLLMClassHeadTrainerHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/score", RequireAdmin(adminService, adminLLMClassHeadScoreHandler(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/distribute", RequireAdmin(adminService, adminLLMClassHeadDistributeHandler(llmSvc)))
+	mux.HandleFunc("GET /api/admin/model_download/status", RequireAdmin(adminService, adminEmbeddingModelStatus))
+	mux.HandleFunc("POST /api/admin/model_download/trigger", RequireAdmin(adminService, adminEmbeddingModelTrigger))
 
 	// --- Card Store (public, for Hub tenant admins) ---
 	if cardStoreSvc != nil {
@@ -89,6 +114,7 @@ func RegisterLLMRoutes(
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/confirm", RequireAdmin(adminService, cardstore.AdminConfirmOrderHandler(cardStoreSvc, adminEmailFromRequest)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/archive", RequireAdmin(adminService, cardstore.AdminArchiveOrderHandler(cardStoreSvc)))
 		mux.HandleFunc("POST /api/admin/cardstore/orders/{orderNo}/restore", RequireAdmin(adminService, cardstore.AdminRestoreArchivedOrderHandler(cardStoreSvc)))
+		mux.HandleFunc("PUT /api/admin/cardstore/orders/{orderNo}/service-group", RequireAdmin(adminService, cardstore.AdminRebindOrderServiceGroupHandler(cardStoreSvc)))
 
 		// Admin: Payment config
 		mux.HandleFunc("GET /api/admin/llm/payment-config", RequireAdmin(adminService, adminGetPaymentConfig(llmSvc)))

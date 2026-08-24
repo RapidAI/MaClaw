@@ -204,7 +204,7 @@ func (s *Store) StaticMemorySectionForPrompt(opts StaticMemoryPromptOptions) str
 // DefaultRecallHintForPrompt returns the shared instruction for explicit memory
 // recall when automatically injected memory is not enough.
 func DefaultRecallHintForPrompt() string {
-	return "\u5982\u9700\u66f4\u591a\u8bb0\u5fc6\uff0c\u53ef\u901a\u8fc7 " + PromptActionRecallColon + ", query: \"\u5173\u952e\u8bcd\") \u53ec\u56de\u3002"
+	return "\u5f53\u524d\u4efb\u52a1\u4e0d\u9884\u88c5\u8bb0\u5fc6\u6216\u77e5\u8bc6\u5e93\u6b63\u6587\u3002\u5982\u9700\u76f8\u5173\u7ecf\u9a8c\u6216\u8d44\u6599\uff0c\u8c03\u7528\u5f53\u524d\u5de5\u5177\u5217\u8868\u4e2d\u7684\u8bb0\u5fc6\u68c0\u7d22\uff08" + PromptActionRecallColon + ", query: \"\u5173\u952e\u8bcd\")\uff09\u6216\u77e5\u8bc6\u5e93\u68c0\u7d22\uff1b\u4e0d\u8981\u628a\u8bb0\u5fc6\u7d22\u5f15\u5f53\u4f5c\u5df2\u786e\u8ba4\u4e8b\u5b9e\u3002"
 }
 
 func writeMemoryPromptLine(b *strings.Builder, value string) {

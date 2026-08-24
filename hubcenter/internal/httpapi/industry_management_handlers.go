@@ -369,7 +369,7 @@ func (h *IndustryManagementHandlers) listEligibleAssets(w http.ResponseWriter, r
 	out := []any{}
 	if h.market != nil {
 		h.market.ensureExpertMarketSchema()
-		rows, err := h.db.QueryContext(r.Context(), `SELECT `+expertMarketListingColumns+` FROM sm_expert_market_listings WHERE visibility='public' AND status='listed' AND platform_distribution=1 ORDER BY updated_at DESC`)
+		rows, err := h.db.QueryContext(r.Context(), `SELECT `+expertMarketListingSelectColumns+` FROM sm_expert_market_listings WHERE visibility='public' AND status='listed' AND platform_distribution=1 ORDER BY updated_at DESC`)
 		if err != nil {
 			writeError(w, 500, "INDUSTRY_ASSET_LIST_FAILED", "internal error")
 			return
@@ -381,7 +381,6 @@ func (h *IndustryManagementHandlers) listEligibleAssets(w http.ResponseWriter, r
 				writeError(w, 500, "INDUSTRY_ASSET_LIST_FAILED", "internal error")
 				return
 			}
-			item.PlatformDistribution = true
 			out = append(out, map[string]any{"listing_id": item.ID, "source_expert_id": item.SourceExpertID, "name": item.Name, "description": item.Description, "icon": item.Icon, "version": item.Version, "price": item.Price})
 		}
 		if err := rows.Err(); err != nil {
@@ -425,12 +424,11 @@ func (h *IndustryManagementHandlers) acquireAsset(w http.ResponseWriter, r *http
 		writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 		return
 	}
-	item, err := scanExpertMarketListing(h.db.QueryRowContext(r.Context(), `SELECT `+expertMarketListingColumns+` FROM sm_expert_market_listings WHERE id=? AND visibility='public' AND status='listed' AND platform_distribution=1`, strings.TrimSpace(in.ListingID)))
+	item, err := scanExpertMarketListing(h.db.QueryRowContext(r.Context(), `SELECT `+expertMarketListingSelectColumns+` FROM sm_expert_market_listings WHERE id=? AND visibility='public' AND status='listed' AND platform_distribution=1`, strings.TrimSpace(in.ListingID)))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, 400, "INELIGIBLE_LISTING", "listing is not available for platform distribution")
 		return
 	}
-	item.PlatformDistribution = true
 	if err != nil {
 		writeError(w, 500, "INDUSTRY_ASSET_ACQUIRE_FAILED", "internal error")
 		return

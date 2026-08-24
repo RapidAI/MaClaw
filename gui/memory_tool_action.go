@@ -16,6 +16,7 @@ const (
 	memoryToolActionSave           = corememory.MemoryToolActionSave
 	memoryToolActionList           = corememory.MemoryToolActionList
 	memoryToolActionDelete         = corememory.MemoryToolActionDelete
+	memoryToolActionSummary        = corememory.MemoryToolActionSummary
 )
 
 func normalizeMemoryToolAction(action string) memoryToolAction {

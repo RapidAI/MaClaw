@@ -941,6 +941,44 @@ func TestSQLiteStoreImportFiles(t *testing.T) {
 	}
 }
 
+func TestListSourcesIncludeEmptyOwner(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveSource(ctx, Source{ID: "s-own", Kind: SourceKindText, URI: "memory://own", OwnerID: "desktop-user", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSource(ctx, Source{ID: "s-local", Kind: SourceKindText, URI: "memory://local", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSource(ctx, Source{ID: "s-other", Kind: SourceKindText, URI: "memory://other", OwnerID: "user-2", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+
+	ownedOnly, err := store.ListSources(ctx, ListSourcesOptions{OwnerID: "desktop-user", IncludeDisabled: true, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ownedOnly) != 1 || ownedOnly[0].ID != "s-own" {
+		t.Fatalf("exact owner=%#v", ownedOnly)
+	}
+	withEmpty, err := store.ListSources(ctx, ListSourcesOptions{OwnerID: "desktop-user", IncludeEmptyOwner: true, IncludeDisabled: true, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withEmpty) != 2 {
+		t.Fatalf("include empty owner=%#v", withEmpty)
+	}
+	for _, source := range withEmpty {
+		if source.ID == "s-other" {
+			t.Fatalf("foreign source leaked: %#v", withEmpty)
+		}
+	}
+}
+
 func TestListSourcesIncludeDisabledOption(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

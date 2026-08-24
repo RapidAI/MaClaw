@@ -105,6 +105,23 @@ func (c *ConcurrencyController) Acquire(ctx context.Context, providerID string, 
 	}
 }
 
+// TryAcquire takes a concurrency slot immediately. maxConcurrency <= 0 means
+// unlimited. If the provider is already at its limit, it returns a
+// ConcurrencyError without waiting so the caller can fail over.
+func (c *ConcurrencyController) TryAcquire(providerID string, maxConcurrency int) (func(), error) {
+	if c == nil || maxConcurrency <= 0 {
+		return func() {}, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.stateFor(providerID, maxConcurrency)
+	if state.active >= maxConcurrency {
+		return nil, &ConcurrencyError{ProviderID: providerID, Reason: "busy", QueueFull: true}
+	}
+	state.active++
+	return c.releaseFunc(state), nil
+}
+
 // Snapshot returns the current concurrency state for a provider.
 func (c *ConcurrencyController) Snapshot(providerID string, maxConcurrency, maxQueueWaiters, queueTimeoutMS int) ConcurrencySnapshot {
 	c.mu.Lock()
@@ -168,11 +185,11 @@ func (e *ResilienceError) Error() string {
 
 // ResilienceSnapshot captures the circuit breaker state.
 type ResilienceSnapshot struct {
-	State           string    `json:"state"` // "closed" / "open" / "half_open"
-	ConsecFailures  int       `json:"consec_failures"`
-	Threshold       int       `json:"threshold"`
-	LastFailureAt   time.Time `json:"last_failure_at,omitempty"`
-	CooldownEndsAt  time.Time `json:"cooldown_ends_at,omitempty"`
+	State          string    `json:"state"` // "closed" / "open" / "half_open"
+	ConsecFailures int       `json:"consec_failures"`
+	Threshold      int       `json:"threshold"`
+	LastFailureAt  time.Time `json:"last_failure_at,omitempty"`
+	CooldownEndsAt time.Time `json:"cooldown_ends_at,omitempty"`
 }
 
 // ResilienceController implements a per-provider circuit breaker with
@@ -187,7 +204,14 @@ type resilienceState struct {
 	lastFailureAt  time.Time
 	cooldownEndsAt time.Time
 	halfOpen       bool
+	probeInFlight  bool
 }
+
+const (
+	defaultResilienceCooldown   = 10 * time.Second
+	defaultResilienceMaxBackoff = 5 * time.Minute
+	maxResilienceBackoffShift   = 8
+)
 
 // NewResilienceController creates a new circuit breaker controller.
 func NewResilienceController() *ResilienceController {
@@ -195,9 +219,10 @@ func NewResilienceController() *ResilienceController {
 }
 
 // BeforeAttempt checks if a provider is available. Returns ResilienceError
-// if the circuit is open and the cooldown hasn't expired.
+// if the circuit is open and the cooldown hasn't expired. After cooldown, only
+// one in-flight probe is allowed so a recovering provider is not stampeded.
 func (c *ResilienceController) BeforeAttempt(providerID string, threshold, cooldownMS int) error {
-	if threshold <= 0 {
+	if c == nil || threshold <= 0 {
 		return nil
 	}
 	c.mu.Lock()
@@ -217,13 +242,37 @@ func (c *ResilienceController) BeforeAttempt(providerID string, threshold, coold
 			CooldownLeft: state.cooldownEndsAt.Sub(now),
 		}
 	}
-	// Cooldown expired → half-open: allow one attempt
+	if state.probeInFlight {
+		return &ResilienceError{
+			ProviderID: providerID,
+			State:      "probe",
+		}
+	}
 	state.halfOpen = true
+	state.probeInFlight = true
 	return nil
+}
+
+// AbortProbe releases a half-open probe slot without counting a failure.
+// Use when the attempt never reached the provider (for example concurrency skip).
+func (c *ResilienceController) AbortProbe(providerID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.states[providerID]
+	if state == nil || !state.probeInFlight {
+		return
+	}
+	state.probeInFlight = false
 }
 
 // RecordSuccess resets the circuit breaker for a provider.
 func (c *ResilienceController) RecordSuccess(providerID string) {
+	if c == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.states[providerID]
@@ -232,12 +281,18 @@ func (c *ResilienceController) RecordSuccess(providerID string) {
 	}
 	state.consecFailures = 0
 	state.halfOpen = false
+	state.probeInFlight = false
 	state.cooldownEndsAt = time.Time{}
 }
 
 // RecordFailure increments the failure counter and potentially opens the circuit.
 func (c *ResilienceController) RecordFailure(providerID string, threshold, cooldownMS int) {
-	if threshold <= 0 {
+	c.RecordFailureBackoff(providerID, threshold, cooldownMS, 0)
+}
+
+// RecordFailureBackoff is RecordFailure with an explicit exponential cooldown cap.
+func (c *ResilienceController) RecordFailureBackoff(providerID string, threshold, baseMS, maxMS int) {
+	if c == nil || threshold <= 0 {
 		return
 	}
 	c.mu.Lock()
@@ -249,17 +304,46 @@ func (c *ResilienceController) RecordFailure(providerID string, threshold, coold
 	}
 	state.consecFailures++
 	state.lastFailureAt = time.Now()
-	if state.consecFailures >= threshold {
-		cooldown := time.Duration(cooldownMS) * time.Millisecond
-		if cooldown <= 0 {
-			cooldown = 10 * time.Second
-		}
-		state.cooldownEndsAt = state.lastFailureAt.Add(cooldown)
+	state.halfOpen = false
+	state.probeInFlight = false
+	if state.consecFailures < threshold {
+		return
 	}
+	opens := state.consecFailures - threshold + 1
+	state.cooldownEndsAt = state.lastFailureAt.Add(resilienceCooldown(opens, baseMS, maxMS))
+}
+
+func resilienceCooldown(opens, baseMS, maxMS int) time.Duration {
+	base := time.Duration(baseMS) * time.Millisecond
+	if base <= 0 {
+		base = defaultResilienceCooldown
+	}
+	max := time.Duration(maxMS) * time.Millisecond
+	if max <= 0 {
+		max = defaultResilienceMaxBackoff
+	}
+	if max < base {
+		max = base
+	}
+	shift := opens - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > maxResilienceBackoffShift {
+		shift = maxResilienceBackoffShift
+	}
+	cooldown := base << shift
+	if cooldown > max || cooldown < base {
+		return max
+	}
+	return cooldown
 }
 
 // Snapshot returns the current resilience state.
 func (c *ResilienceController) Snapshot(providerID string, threshold int) ResilienceSnapshot {
+	if c == nil {
+		return ResilienceSnapshot{Threshold: threshold, State: "closed"}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state := c.states[providerID]
@@ -271,12 +355,16 @@ func (c *ResilienceController) Snapshot(providerID string, threshold int) Resili
 	snap.ConsecFailures = state.consecFailures
 	snap.LastFailureAt = state.lastFailureAt
 	snap.CooldownEndsAt = state.cooldownEndsAt
-	if state.consecFailures < threshold {
+	if threshold > 0 && state.consecFailures < threshold {
 		snap.State = "closed"
-	} else if state.halfOpen {
+	} else if !state.cooldownEndsAt.IsZero() && time.Now().Before(state.cooldownEndsAt) {
+		snap.State = "open"
+	} else if state.probeInFlight || state.halfOpen {
+		snap.State = "half_open"
+	} else if threshold > 0 && state.consecFailures >= threshold {
 		snap.State = "half_open"
 	} else {
-		snap.State = "open"
+		snap.State = "closed"
 	}
 	return snap
 }

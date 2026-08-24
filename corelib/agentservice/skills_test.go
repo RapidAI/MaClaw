@@ -404,6 +404,8 @@ func TestInstallSkillFromSkillMarketMachineLoginAddsBearerToken(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/auth/machine-login":
 			var req struct {
+				HubID       string `json:"hub_id"`
+				UserID      string `json:"user_id"`
 				Email       string `json:"email"`
 				MachineID   string `json:"machine_id"`
 				ViewerToken string `json:"viewer_token"`
@@ -411,7 +413,7 @@ func TestInstallSkillFromSkillMarketMachineLoginAddsBearerToken(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode machine-login: %v", err)
 			}
-			if req.Email != user.Email || req.MachineID != "machine-1" || req.ViewerToken != "viewer-token-123456" {
+			if req.HubID != "hub-1" || req.UserID != user.ID || req.Email != user.Email || req.MachineID != "machine-1" || req.ViewerToken != "viewer-token-123456" {
 				t.Fatalf("unexpected machine-login request: %#v", req)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"session_token": "market-session-token", "email": req.Email, "user_id": "market-user"})
@@ -427,7 +429,7 @@ func TestInstallSkillFromSkillMarketMachineLoginAddsBearerToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteEmail: user.Email, RemoteMachineID: "machine-1", RemoteViewerToken: "viewer-token-123456"}); err != nil {
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubID: "hub-1", RemoteEmail: user.Email, RemoteMachineID: "machine-1", RemoteViewerToken: "viewer-token-123456"}); err != nil {
 		t.Fatalf("UpdateUserConfig: %v", err)
 	}
 	items, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "skillmarket", SkillMarketURL: server.URL, SkillID: "demo"})

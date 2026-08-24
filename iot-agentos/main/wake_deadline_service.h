@@ -24,6 +24,12 @@ device_status_t wake_deadline_service_init(void);
  * It never deletes a running task: timeout leaves the service intact for
  * diagnostics and caller-side isolation. */
 device_status_t wake_deadline_service_deinit(uint32_t timeout_ms);
+/* Reversible System Sleep boundary for the shared wall-clock dispatcher.
+ * PREPARE stops timer delivery and drains callbacks already selected by the
+ * dispatcher, while retaining every client slot and epoch. ABORT recomputes
+ * the earliest deadline for the same service generation. */
+device_status_t wake_deadline_service_prepare_system_sleep(uint32_t timeout_ms);
+void wake_deadline_service_abort_system_sleep_prepare(void);
 device_status_t wake_deadline_service_register(wake_deadline_callback_t callback, void *arg,
                                                wake_deadline_handle_t *out_handle);
 /*

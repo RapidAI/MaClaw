@@ -1,0 +1,49 @@
+{
+  "category": "host_protocol",
+  "category_id": 33,
+  "title": "host protocol",
+  "design_ref": "10.1 item 33",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "one-search-selection",
+      "title": "Host protocol anomalies are executor tests",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "search",
+            "capability": "information.search.web"
+          }
+        ]
+      },
+      "notes": "Host protocol tests cover reconnect and duplicate keys."
+    }
+  ]
+}

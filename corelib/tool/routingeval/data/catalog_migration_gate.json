@@ -1,0 +1,41 @@
+{
+  "category": "catalog_migration_gate",
+  "category_id": 30,
+  "title": "catalog migration gate",
+  "design_ref": "10.1 item 30",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "unclassified-ignored",
+      "title": "A provider without the need capability is not selected",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "bash_soup",
+            "effects": [
+              "sensitive"
+            ],
+            "capabilities": [
+              {
+                "capability": "shell.execute.local"
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "Phase C is in gui/semantic_remaining_families_test.go."
+    }
+  ]
+}

@@ -201,6 +201,110 @@ func TestResolveLLMConfigAppliesGlobalThinkingMode(t *testing.T) {
 	}
 }
 
+func TestResolveLLMConfigMigratesZhipuCodingDefault(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic",
+		}},
+	}
+	llmCfg, err := ResolveLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("ResolveLLMConfig() error = %v", err)
+	}
+	if llmCfg.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("Model = %q, want migrated %q", llmCfg.Model, corelib.ZhipuCodingDefaultModel)
+	}
+
+	flat := effectiveLLMFlatConfig(cfg)
+	if flat.MaclawLLMModel != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("effective flat model = %q, want migrated %q", flat.MaclawLLMModel, corelib.ZhipuCodingDefaultModel)
+	}
+	if cfg.MaclawLLMProviders[0].Model != "GLM-5.2" {
+		t.Fatalf("ResolveLLMConfig mutated stored provider model: %q", cfg.MaclawLLMProviders[0].Model)
+	}
+
+	alias := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "Zhipu GLM Coding",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic",
+		}},
+	}
+	llmCfg, err = ResolveLLMConfig(alias)
+	if err != nil {
+		t.Fatalf("TUI alias ResolveLLMConfig() error = %v", err)
+	}
+	if llmCfg.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("TUI alias Model = %q, want migrated %q", llmCfg.Model, corelib.ZhipuCodingDefaultModel)
+	}
+}
+
+func TestNormalizeLLMConfigForSaveMigratesZhipuCodingDefault(t *testing.T) {
+	providers := []corelib.MaclawLLMProvider{{
+		Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic",
+	}}
+	current := corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMUrl:             "https://open.bigmodel.cn/api/anthropic",
+		MaclawLLMKey:             "zhipu-key",
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders:       append([]corelib.MaclawLLMProvider(nil), providers...),
+	}
+	next := normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMUrl:             "https://open.bigmodel.cn/api/anthropic",
+		MaclawLLMKey:             "zhipu-key",
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders:       append([]corelib.MaclawLLMProvider(nil), providers...),
+	})
+	if next.MaclawLLMModel != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("saved flat model = %q, want %q", next.MaclawLLMModel, corelib.ZhipuCodingDefaultModel)
+	}
+	if next.MaclawLLMProviders[0].Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("saved provider model = %q, want %q", next.MaclawLLMProviders[0].Model, corelib.ZhipuCodingDefaultModel)
+	}
+}
+
+func TestNormalizeLLMConfigForSaveKeepsCustomZhipuFlatModel(t *testing.T) {
+	providers := []corelib.MaclawLLMProvider{{
+		Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "zhipu-key", Model: "GLM-5.2", Protocol: "anthropic",
+	}}
+	current := corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMUrl:             "https://open.bigmodel.cn/api/anthropic",
+		MaclawLLMKey:             "zhipu-key",
+		MaclawLLMModel:           "GLM-5.2",
+		MaclawLLMProviders:       append([]corelib.MaclawLLMProvider(nil), providers...),
+	}
+	next := normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMUrl:             "https://open.bigmodel.cn/api/anthropic",
+		MaclawLLMKey:             "zhipu-key",
+		MaclawLLMModel:           "glm-5-turbo",
+		MaclawLLMProviders:       append([]corelib.MaclawLLMProvider(nil), providers...),
+	})
+	if next.MaclawLLMModel != "glm-5-turbo" {
+		t.Fatalf("custom flat model overwritten: %q", next.MaclawLLMModel)
+	}
+	if next.MaclawLLMProviders[0].Model != "glm-5-turbo" {
+		t.Fatalf("custom model not synced to provider: %q", next.MaclawLLMProviders[0].Model)
+	}
+
+	aliased := normalizeLLMConfigForSave(current, corelib.AppConfig{
+		MaclawLLMCurrentProvider: "Zhipu GLM Coding",
+		MaclawLLMUrl:             "https://open.bigmodel.cn/api/anthropic",
+		MaclawLLMKey:             "zhipu-key",
+		MaclawLLMModel:           "glm-5-turbo",
+		MaclawLLMProviders:       append([]corelib.MaclawLLMProvider(nil), providers...),
+	})
+	if aliased.MaclawLLMModel != "glm-5-turbo" {
+		t.Fatalf("TUI alias save overwrote custom model: %q", aliased.MaclawLLMModel)
+	}
+	if aliased.MaclawLLMProviders[0].Model != "glm-5-turbo" {
+		t.Fatalf("TUI alias save did not sync custom model: %q", aliased.MaclawLLMProviders[0].Model)
+	}
+}
+
 func TestNormalizeLLMFlatConfigFillsSelectedProvider(t *testing.T) {
 	cfg := normalizeLLMFlatConfig(corelib.AppConfig{
 		MaclawLLMCurrentProvider: "hub",

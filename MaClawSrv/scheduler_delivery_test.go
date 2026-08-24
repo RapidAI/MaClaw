@@ -81,6 +81,37 @@ func TestSendWeixinRequiresProactiveHook(t *testing.T) {
 	}
 }
 
+func TestDeliverSrvIMFileToWeixinUsesExactPeerAndNotLastActive(t *testing.T) {
+	setSrvWeixinExactFileSender(nil)
+	err := deliverSrvIMFileToTarget(context.Background(), nil, agentservice.Principal{TenantID: "t", UserID: "u"}, scheduler.DeliveryChannelWeixin, scheduler.DeliveryTarget{Kind: scheduler.DeliveryKindUser, UserID: "wx-1"}, []byte("xlsx"), "sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "")
+	if err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("unwired weixin file send must stay unavailable, err=%v", err)
+	}
+
+	sentPeer := ""
+	setSrvWeixinExactFileSender(func(_ context.Context, peer string, data []byte, fileName, mimeType string) error {
+		if peer != "wx-1" || string(data) != "xlsx" || fileName != "sheet.xlsx" {
+			t.Fatalf("peer=%q name=%q data=%q mime=%q", peer, fileName, data, mimeType)
+		}
+		sentPeer = peer
+		return nil
+	})
+	t.Cleanup(func() { setSrvWeixinExactFileSender(nil) })
+
+	if err := deliverSrvIMFileToTarget(context.Background(), nil, agentservice.Principal{TenantID: "t", UserID: "u"}, scheduler.DeliveryChannelWeixin, scheduler.DeliveryTarget{Kind: scheduler.DeliveryKindUser, UserID: "wx-1"}, []byte("xlsx"), "sheet.xlsx", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if sentPeer != "wx-1" {
+		t.Fatalf("sentPeer=%q", sentPeer)
+	}
+	if err := deliverSrvIMFileToTarget(context.Background(), nil, agentservice.Principal{TenantID: "t", UserID: "u"}, scheduler.DeliveryChannelWeixin, scheduler.DeliveryTarget{Kind: scheduler.DeliveryKindGroup, GroupID: "ops"}, []byte("xlsx"), "sheet.xlsx", "", ""); err == nil {
+		t.Fatal("weixin group file send must fail closed")
+	}
+	if err := deliverSrvIMFileToTarget(context.Background(), nil, agentservice.Principal{TenantID: "t", UserID: "u"}, scheduler.DeliveryChannelWeixin, scheduler.DeliveryTarget{Kind: scheduler.DeliveryKindUser, UserID: "self"}, []byte("xlsx"), "sheet.xlsx", "", ""); err == nil {
+		t.Fatal("weixin self file send must fail closed")
+	}
+}
+
 func TestSendWeixinRejectsNonSelf(t *testing.T) {
 	_, err := sendWeixinTarget(context.Background(), nil, scheduler.DeliveryTarget{
 		Kind:   scheduler.DeliveryKindUser,
@@ -88,6 +119,18 @@ func TestSendWeixinRejectsNonSelf(t *testing.T) {
 	}, "x")
 	if err == nil || !strings.Contains(err.Error(), "self") {
 		t.Fatalf("want self-only err, got %v", err)
+	}
+}
+
+func TestSrvIMOutgoingMediaKindUsesImageMIME(t *testing.T) {
+	if got := srvIMOutgoingMediaKind("image/png"); got != "image" {
+		t.Fatalf("png=%q", got)
+	}
+	if got := srvIMOutgoingMediaKind("audio/wav"); got != "voice" {
+		t.Fatalf("wav=%q", got)
+	}
+	if got := srvIMOutgoingMediaKind("application/pdf"); got != "file" {
+		t.Fatalf("pdf=%q", got)
 	}
 }
 

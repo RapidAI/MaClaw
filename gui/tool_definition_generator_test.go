@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // --- helpers for building test fixtures ---
@@ -76,6 +78,31 @@ func TestToolDefinitionGenerator_NoRegistry(t *testing.T) {
 	want := len(filterAgentVisibleBuiltinToolDefs(builtins))
 	if len(result) != want {
 		t.Errorf("expected %d tools, got %d", want, len(result))
+	}
+}
+
+func TestToolDefinitionGeneratorDoesNotRenderDynamicMCPDefinitions(t *testing.T) {
+	gen := NewToolDefinitionGenerator(nil, []map[string]interface{}{toolDef("read_file", "read", nil, nil)})
+	// The generator may still be connected to lifecycle inventory for non-model
+	// diagnostics, but its legacy model output has no dynamic MCP binding.
+	gen.localMCPManager = &LocalMCPManager{}
+	for _, definition := range gen.Generate() {
+		if name := extractToolName(definition); name != "read_file" {
+			t.Fatalf("legacy generator rendered unexpected dynamic definition %q", name)
+		}
+	}
+}
+
+func TestToolDefinitionGeneratorDoesNotRenderDynamicGatewayDefinitions(t *testing.T) {
+	gen := NewToolDefinitionGenerator(nil, []map[string]interface{}{
+		toolDef("read_file", "read", nil, nil),
+		toolDef("call_mcp_tool", "dynamic MCP gateway", nil, nil),
+		toolDef("manage_skill", "dynamic Skill gateway", nil, nil),
+	})
+	for _, definition := range append(gen.Generate(), gen.GenerateDeferred()...) {
+		if coretool.IsLegacyModelDynamicGateway(extractToolName(definition)) {
+			t.Fatalf("legacy generator rendered dynamic gateway %q", extractToolName(definition))
+		}
 	}
 }
 

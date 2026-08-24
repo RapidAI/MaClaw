@@ -195,3 +195,12 @@ func TestIntegration_SystemPrompt_HasKnowledgeBase(t *testing.T) {
 		t.Error("system prompt should NOT contain '知识库外脑规则' when HasKnowledgeBase=false")
 	}
 }
+
+func TestTUISystemPromptDoesNotInjectAutoRecall(t *testing.T) {
+	app := &TUIApp{knowledgeStore: &knowledge.SQLiteStore{}}
+	deps := app.buildSystemPromptDeps()
+	prompt := agent.BuildSystemPrompt(deps, "公司报销政策是什么", true)
+	if strings.Contains(prompt, "知识库参考（自动检索）") {
+		t.Fatalf("TUI first prompt dumped auto-recall: %s", prompt)
+	}
+}

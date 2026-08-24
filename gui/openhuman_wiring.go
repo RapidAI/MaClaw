@@ -127,11 +127,14 @@ func (h *IMMessageHandler) routeCodingLLMConfig(task cllm.TaskType, primary core
 }
 
 func (h *IMMessageHandler) routeLLMConfigFromBase(task cllm.TaskType, primary corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if isHubManagedTurnConfig(h, primary) {
+		return primary
+	}
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return primary
 	}
 	routed := h.app.ohModules.modelRouter.RouteWithAux(task, primary, h.app.ohModules.cachedAuxLLM)
-	if routed.Model == primary.Model && routed.URL == primary.URL && routed.Key == primary.Key && routed.Protocol == primary.Protocol && routed.ProviderName == primary.ProviderName {
+	if routed.Model == primary.Model && routed.URL == primary.URL && routed.Key == primary.Key && routed.Protocol == primary.Protocol && routed.ProviderName == primary.ProviderName && routed.ContextLength == primary.ContextLength {
 		return primary
 	}
 	// Routes only replace request-level details. Preserve profile attribution
@@ -157,11 +160,12 @@ func (a *App) reloadModelRouterFromConfig(cfg corelib.AppConfig) {
 		routes := make(map[string]cllm.ModelRoute, len(cfg.ModelRoutes))
 		for k, v := range cfg.ModelRoutes {
 			routes[k] = cllm.ModelRoute{
-				Model:    v.Model,
-				URL:      v.URL,
-				Key:      v.Key,
-				Protocol: v.Protocol,
-				Provider: v.Provider,
+				Model:         v.Model,
+				URL:           v.URL,
+				Key:           v.Key,
+				Protocol:      v.Protocol,
+				Provider:      v.Provider,
+				ContextLength: v.ContextLength,
 			}
 		}
 		if a.ohModules.modelRouter == nil {
@@ -184,6 +188,21 @@ func (a *App) reloadModelRouterFromConfig(cfg corelib.AppConfig) {
 
 // modelRouteDecision is the observable outcome of turn/model routing for one
 // agent loop (and optional mid-loop escalations).
+func agentRouteFromModelRoute(d modelRouteDecision, cfg corelib.MaclawLLMConfig) agent.RouteDecision {
+	return agent.RouteDecision{
+		TaskType:         d.Task,
+		Model:            cfg.Model,
+		Provider:         cfg.ProviderName,
+		Source:           d.Source,
+		Reason:           d.Reason,
+		Applied:          true,
+		CostTier:         d.CostTier,
+		CostRouteMode:    d.CostRouteMode,
+		CostRouteApplied: d.CostRouteApplied,
+		ThinkingPolicy:   d.ThinkingPolicy,
+	}
+}
+
 type modelRouteDecision struct {
 	Task      string `json:"task"`
 	Source    string `json:"source"` // route | aux | primary | escalate
@@ -220,9 +239,8 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 		router = h.app.ohModules.modelRouter
 		aux = h.app.ohModules.cachedAuxLLM
 	}
-	hints := cllm.ClassifyHints{
-		HasAttachments: len(attachments) > 0,
-	}
+	hasImage := semanticTurnHasImageAttachment(attachments) || (ctx != nil && ctx.Runtime.VisionFallthrough)
+	hints := cllm.ClassifyHints{HasAttachments: hasImage}
 	if ctx != nil {
 		if ctx.WorkflowAgentLoop || ctx.Kind == LoopKindBackground {
 			hints.ToolHeavy = true
@@ -235,9 +253,34 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 			}
 		}
 	}
-	// Classify once; Phase 2 (on) maps tier→model + thinking, else classic DecideTurn.
-	classified := cllm.ClassifyTurn(userText, hints)
+	// Tightening HasAttachments to image bytes must not send a PDF/zip/voice
+	// turn to the fast model. ToolHeavy is checked before HasAttachments, so
+	// only set it when this turn has no image to see.
+	if !hasImage && len(attachments) > 0 {
+		hints.ToolHeavy = true
+	}
+	// Classify the user's request, not host staging/OCR/failure notes. The
+	// English word "image" in "[Host note: selected image …]" would otherwise
+	// force TaskVision after a failed picker load.
+	routeText := semanticUserIntentText(userText)
+	classified := cllm.ClassifyTurn(routeText, hints)
 	cost := cllm.DecideCostRoute(classified.Task, hints, classified.Reason)
+	if isHubManagedTurnConfig(h, primary) {
+		decision.Task = string(classified.Task)
+		decision.Reason = classified.Reason + "; hub-managed skip desktop cost-route"
+		decision.CostTier = string(cost.Tier)
+		decision.CostRouteMode = string(cost.Mode)
+		decision.CostRouteApplied = false
+		decision.ThinkingPolicy = string(cost.Thinking)
+		if cllm.CostRouteSurfaces(cost.Mode) {
+			log.Printf("[cost-route] mode=%s tier=%s task=%s model=%s applied=false reason=hub-managed",
+				cost.Mode, cost.Tier, classified.Task, primary.Model)
+		}
+		if h.app != nil {
+			h.app.recordLastModelRoute(decision)
+		}
+		return attachHubWorkloadHints(primary, classified.Task, ctx), decision
+	}
 
 	var cfg corelib.MaclawLLMConfig
 	var source, reason string
@@ -249,7 +292,7 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 		cost.Reason = detail + "; think=" + string(cost.Thinking)
 		reason = classified.Reason + "; " + cost.Reason
 	} else {
-		cfg, _, source, reason = cllm.DecideTurn(router, primary, aux, userText, hints)
+		cfg, _, source, reason = cllm.DecideTurn(router, primary, aux, routeText, hints)
 		if cllm.CostRouteSurfaces(cost.Mode) {
 			reason = reason + "; " + cost.Reason
 		}
@@ -315,10 +358,43 @@ func (h *IMMessageHandler) routedConfigSupportsVision(primary, cfg corelib.Macla
 	return cfg.SupportsVision && cfg.Model == primary.Model && cfg.URL == primary.URL
 }
 
+func attachHubWorkloadHints(cfg corelib.MaclawLLMConfig, task cllm.TaskType, ctx *LoopContext) corelib.MaclawLLMConfig {
+	workflowType, phaseKind := "", ""
+	if ctx != nil && ctx.WorkflowAgentLoop {
+		workflowType = strings.TrimSpace(ctx.WorkflowType)
+		phaseKind = strings.TrimSpace(ctx.WorkflowPhaseKind)
+		if phaseKind == "" {
+			phaseKind = strings.TrimSpace(ctx.WorkflowPhaseID)
+		}
+	}
+	return cfg.WithHubWorkloadHints(string(task), workflowType, phaseKind)
+}
+
+func isHubManagedTurnConfig(h *IMMessageHandler, cfg corelib.MaclawLLMConfig) bool {
+	if corelib.IsHubManagedLLMEndpoint(cfg.URL, cfg.Model) {
+		return true
+	}
+	if h == nil || h.app == nil {
+		return false
+	}
+	for _, provider := range h.app.GetMaclawLLMProviders().Providers {
+		if !provider.IsHubService {
+			continue
+		}
+		if strings.EqualFold(strings.TrimRight(strings.TrimSpace(provider.URL), "/"), strings.TrimRight(strings.TrimSpace(cfg.URL), "/")) {
+			return true
+		}
+	}
+	return false
+}
+
 // escalateRunStateToReasoning upgrades a light turn to the reasoning model after
 // tools appear. No-op when already on reasoning/primary-strong config.
 func (h *IMMessageHandler) escalateRunStateToReasoning(run *agentLoopRunState, why string) {
 	if h == nil || run == nil || run.RouteEscalated {
+		return
+	}
+	if isHubManagedTurnConfig(h, run.ActiveConfig) {
 		return
 	}
 	// Already on a non-light path — skip.
@@ -344,7 +420,12 @@ func (h *IMMessageHandler) escalateRunStateToReasoning(run *agentLoopRunState, w
 	if upgraded.Model == "" {
 		return
 	}
-	if upgraded.Model == before && upgraded.URL == run.ActiveConfig.URL {
+	if upgraded.Model == before &&
+		upgraded.URL == run.ActiveConfig.URL &&
+		upgraded.Key == run.ActiveConfig.Key &&
+		upgraded.Protocol == run.ActiveConfig.Protocol &&
+		upgraded.ProviderName == run.ActiveConfig.ProviderName &&
+		upgraded.ContextLength == run.ActiveConfig.ContextLength {
 		// No stronger model available — keep light path.
 		return
 	}

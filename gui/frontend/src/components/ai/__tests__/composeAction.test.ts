@@ -20,13 +20,14 @@ describe("applyComposeActionToText", () => {
         expect(applyComposeActionToText("hello", null)).toBe("hello");
     });
 
-    it("prefixes free-form text in goal, btw, and moa modes", () => {
+    it("prefixes free-form text in goal, btw, moa, and Computer Use modes", () => {
         expect(applyComposeActionToText("实现用户登录", "goal")).toBe("/goal 实现用户登录");
         expect(applyComposeActionToText("  ship the API  ", "goal")).toBe("/goal ship the API");
         expect(applyComposeActionToText("这个项目用什么框架", "btw")).toBe("/btw 这个项目用什么框架");
         expect(applyComposeActionToText("React 19 changes", "btw")).toBe("/btw React 19 changes");
         expect(applyComposeActionToText("评审迁移方案", "moa")).toBe("/moa 评审迁移方案");
         expect(applyComposeActionToText("  design a migration plan  ", "moa")).toBe("/moa design a migration plan");
+        expect(applyComposeActionToText("打开记事本并写简历", "computer")).toBe("@computer 打开记事本并写简历");
     });
 
     it("does not double-prefix existing commands", () => {
@@ -37,6 +38,16 @@ describe("applyComposeActionToText", () => {
         expect(applyComposeActionToText("/moa", "moa")).toBe("/moa");
         expect(applyComposeActionToText("/moa already", "moa")).toBe("/moa already");
         expect(applyComposeActionToText("/MOA already", "moa")).toBe("/MOA already");
+        expect(applyComposeActionToText("@computer already active", "computer")).toBe("@computer already active");
+        expect(applyComposeActionToText("@COMPUTER\nopen the report", "computer")).toBe("@COMPUTER\nopen the report");
+        expect(applyComposeActionToText("@computer\topen the report", "computer")).toBe("@computer\topen the report");
+        expect(applyComposeActionToText("@computerized report", "computer")).toBe("@computerized report");
+        expect(applyComposeActionToText("@computerx", "computer")).toBe("@computerx");
+        expect(applyComposeActionToText("/goalkeeper review", "goal")).toBe("/goalkeeper review");
+        expect(applyComposeActionToText("@browser open the report", "computer")).toBe("@browser open the report");
+        expect(applyComposeActionToText("@浏览器 打开报告", "computer")).toBe("@浏览器 打开报告");
+        expect(applyComposeActionToText("@teammate review this", "goal")).toBe("/goal @teammate review this");
+        expect(applyComposeActionToText("@teammate review this", "btw")).toBe("/btw @teammate review this");
     });
 
     it("does not wrap install slash commands under compose modes", () => {
@@ -82,6 +93,7 @@ describe("PLUS_MENU_ITEMS", () => {
         expect(PLUS_MENU_ITEMS.find((i) => i.id === "goal")?.icon).toBe("target");
         expect(PLUS_MENU_ITEMS.find((i) => i.id === "btw")?.icon).toBe("search");
         expect(PLUS_MENU_ITEMS.find((i) => i.id === "moa")?.icon).toBe("layers");
+        expect(PLUS_MENU_ITEMS.find((i) => i.id === "computer")?.icon).toBe("monitor");
         expect(PLUS_MENU_ITEMS.find((i) => i.id === "loop")?.icon).toBe("repeat");
         expect(PLUS_MENU_ITEMS.find((i) => i.id === "memory")?.icon).toBe("brain");
         expect(PLUS_MENU_ITEMS.find((i) => i.id === "compress")?.icon).toBe("compress");
@@ -110,12 +122,16 @@ describe("compose action labels and placeholders", () => {
         expect(getComposeActionLabel("btw", true)).toBe("旁路查询");
         expect(getComposeActionLabel("moa", true)).toBe("多模型会诊");
         expect(getComposeActionLabel("moa", false)).toBe("MoA council");
+        expect(getComposeActionLabel("computer", true)).toBe("桌面操控");
+        expect(getComposeActionLabel("computer", false)).toBe("Computer Use");
         expect(getComposeActionIcon("goal")).toBe("target");
         expect(getComposeActionIcon("btw")).toBe("search");
         expect(getComposeActionIcon("moa")).toBe("layers");
+        expect(getComposeActionIcon("computer")).toBe("monitor");
         expect(getComposeActionPlaceholder("goal", true)).toContain("目标");
         expect(getComposeActionPlaceholder("btw", true)).toContain("旁路");
         expect(getComposeActionPlaceholder("moa", true)).toContain("多模型会诊");
+        expect(getComposeActionPlaceholder("computer", true)).toContain("桌面");
         expect(getComposeActionPlaceholder(null, true)).toBeNull();
     });
 });

@@ -624,13 +624,20 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 				}
 			}
 			current := maclawMod.Client.CurrentHubCenterURL()
-			ordered := remote.SelectBestCenter(context.Background(), &http.Client{Timeout: 4 * time.Second}, urls, current)
+			probeClient := &http.Client{Timeout: 4 * time.Second}
+			ordered := remote.SelectBestCenter(context.Background(), probeClient, urls, current)
 			if len(ordered) == 0 {
 				return
 			}
 			maclawMod.Client.SetHubCenterCandidates(ordered)
+			if view, err := remote.FetchHubCenterDiscovery(context.Background(), probeClient, ordered[0]); err == nil && view != nil {
+				for _, node := range view.Nodes {
+					maclawMod.Client.RememberNodeURL(node.NodeID, node.BaseURL)
+				}
+			}
 			if ordered[0] != current {
 				log.Printf("[maclaw-provider] HubCenter health probe selected %s (previous=%s)", ordered[0], current)
+				// Preferred URL only. Per-tenant official pins stay on the lease owner.
 				maclawMod.Client.SetBoundURL(ordered[0])
 			}
 		}
@@ -650,8 +657,22 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 			return hubID, loadCenterHubSecret(context.Background(), st.System)
 		})
 		httpapi.SetMaClawModule(maclawMod)
+		centerService.SetAuthorizationPayloadListener(func(payloads map[string]json.RawMessage) {
+			if maclawMod.AccessCtrl == nil || len(payloads) == 0 {
+				return
+			}
+			maclawMod.AccessCtrl.ApplyLLMComputePayload(payloads["llm_compute"])
+		})
+		if state, err := centerService.Status(context.Background()); err == nil && state != nil && maclawMod.AccessCtrl != nil {
+			maclawMod.AccessCtrl.SeedOfficialBillingIfEmpty(state.Authorizations["llm_compute"])
+		}
 		// Attach official client so IM system-free can forward when no local provider.
 		systemLLMResolver.MaClawClient = maclawMod.Client
+		// A request can leave Hub successfully while its response or stream trailer
+		// is lost. Reconcile those sent holds independently of future user traffic,
+		// so users who do not make another request are still settled from
+		// HubCenter's authenticated, final usage snapshot.
+		go runOfficialBillingReconciliationLoop(st.System, st.Tenants)
 	}
 	ensureLLMRegistryBuiltinsForAllTenants(context.Background(), st.System, st.Tenants)
 	if cleaned, err := httpapi.CleanupExpiredUserReferrals(context.Background(), st.UserReferrals, st.Tenants, time.Now().UTC()); err != nil {
@@ -912,6 +933,48 @@ func ensureLLMRegistryBuiltinsForAllTenants(ctx context.Context, system store.Sy
 			continue
 		}
 		llmservice.EnsureRegistryBuiltins(ctx, scopedSystemSettingsForTenant(tenantID, system))
+	}
+}
+
+func runOfficialBillingReconciliationLoop(system store.SystemSettingsRepository, tenants store.TenantRepository) {
+	runOnce := func() {
+		tenantIDs := []string{store.DefaultTenantID}
+		if tenants != nil {
+			items, err := tenants.List(context.Background())
+			if err != nil {
+				log.Printf("[llm-billing] official reconciliation tenant list failed: %v", err)
+				return
+			}
+			for _, tenant := range items {
+				if tenant == nil || tenant.DeletedAt != nil || !strings.EqualFold(strings.TrimSpace(tenant.Status), "active") {
+					continue
+				}
+				tenantID := strings.TrimSpace(tenant.ID)
+				if tenantID == "" || tenantID == store.DefaultTenantID {
+					continue
+				}
+				tenantIDs = append(tenantIDs, tenantID)
+			}
+		}
+		for _, tenantID := range tenantIDs {
+			ctx, cancel := context.WithTimeout(store.WithTenant(context.Background(), tenantID), 20*time.Second)
+			result, err := httpapi.ReconcileSentOfficialBillingReservations(ctx, scopedSystemSettingsForTenant(tenantID, system))
+			cancel()
+			if err != nil {
+				log.Printf("[llm-billing] official reconciliation failed: tenant=%s err=%v", tenantID, err)
+				continue
+			}
+			if result.Scanned > 0 {
+				log.Printf("[llm-billing] official reconciliation: tenant=%s scanned=%d settled=%d pending=%d failed=%d", tenantID, result.Scanned, result.Settled, result.Pending, result.Failed)
+			}
+		}
+	}
+
+	runOnce()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		runOnce()
 	}
 }
 
@@ -1207,9 +1270,9 @@ func startVerifiedPhoneRouteBackfillLoop(identity *auth.IdentityService) {
 }
 
 // startTenantAdminRouteReconciliationLoop repairs routes from tenant
-// administrators created before their email routes were synced to HubCenter.
-// SyncUserRoute is idempotent, so periodically replaying all active tenant
-// admin routes also closes any gap caused by temporary HubCenter outages.
+// administrators created before their identities were synced to HubCenter.
+// SyncTenantAdminRoute is idempotent, so periodically replaying all active
+// tenant-admin records also closes gaps caused by temporary HubCenter outages.
 func startTenantAdminRouteReconciliationLoop(admins *auth.AdminService, centerSvc *center.Service) {
 	if admins == nil || centerSvc == nil {
 		return
@@ -1279,7 +1342,7 @@ func tenantAdminRouteSyncReady(ctx context.Context, centerSvc *center.Service) b
 }
 
 func reconcileTenantAdminRoutes(ctx context.Context, admins *auth.AdminService, centerSvc interface {
-	SyncUserRoute(context.Context, string, ...string) error
+	SyncTenantAdminRoute(context.Context, string, string, ...string) error
 }) (synced, failed int, err error) {
 	if admins == nil || centerSvc == nil {
 		return 0, 0, nil
@@ -1312,7 +1375,7 @@ func reconcileTenantAdminRoutes(ctx context.Context, admins *auth.AdminService, 
 		go func(tenantID, email string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if syncErr := centerSvc.SyncUserRoute(ctx, email, tenantID); syncErr != nil {
+			if syncErr := centerSvc.SyncTenantAdminRoute(ctx, email, tenantID); syncErr != nil {
 				resultMu.Lock()
 				failed++
 				resultMu.Unlock()

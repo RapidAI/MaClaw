@@ -1,6 +1,8 @@
 package corelib
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
 	"net/http"
 	"net/url"
@@ -336,8 +338,12 @@ type NLSkillEntry struct {
 	CreatedAt     string        `json:"created_at"`
 	Source        string        `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import" | "github" | "clawhub" | "auto_hub" | "auto_github" | "auto_clawhub"
 	SourceProject string        `json:"source_project"`
-	HubSkillID    string        `json:"hub_skill_id,omitempty"`
-	HubVersion    string        `json:"hub_version,omitempty"`
+	// ExperienceDomain scopes a self-learned skill to the kind of work it was
+	// distilled from ("coding" or "general"). Empty means universal: every
+	// deliberately installed skill stays visible to every agent.
+	ExperienceDomain string `json:"experience_domain,omitempty"`
+	HubSkillID       string `json:"hub_skill_id,omitempty"`
+	HubVersion       string `json:"hub_version,omitempty"`
 	// Version is the semantic version from skill.yaml (e.g. "1.3.0").
 	// Used for dependency constraint checking. Distinct from HubVersion which
 	// may be a Hub-internal integer version counter.
@@ -877,6 +883,48 @@ func IsLearnedSource(source string) bool {
 	return learnedSources[strings.ToLower(strings.TrimSpace(source))]
 }
 
+// Experience domains partition self-learned skills by the kind of work they
+// were distilled from. Coding sessions and general assistant sessions build up
+// separate pools so a chat about the weather never surfaces as a capability in
+// a coding turn, while every coding task still shares what other coding tasks
+// learned.
+const (
+	SkillDomainCoding  = "coding"
+	SkillDomainGeneral = "general"
+	// SkillDomainUniversal is the empty domain carried by deliberately
+	// installed skills (manual, hub, market, github). The user chose to install
+	// them, so they stay visible everywhere.
+	SkillDomainUniversal = ""
+)
+
+// NormalizeSkillExperienceDomain maps a raw domain value onto a known domain,
+// falling back to universal for anything unrecognized so an unknown value can
+// never hide a skill.
+func NormalizeSkillExperienceDomain(domain string) string {
+	switch strings.ToLower(strings.TrimSpace(domain)) {
+	case SkillDomainCoding:
+		return SkillDomainCoding
+	case SkillDomainGeneral:
+		return SkillDomainGeneral
+	default:
+		return SkillDomainUniversal
+	}
+}
+
+// SkillVisibleInExperienceDomain reports whether a skill carrying skillDomain
+// may be offered to an agent working in agentDomain. Universal skills are
+// always visible; a domain-scoped skill is visible only within its own domain.
+// An agent with no resolved domain sees everything, so a new call site cannot
+// silently hide installed capabilities by forgetting to pass a domain.
+func SkillVisibleInExperienceDomain(skillDomain, agentDomain string) bool {
+	skillDomain = NormalizeSkillExperienceDomain(skillDomain)
+	agentDomain = NormalizeSkillExperienceDomain(agentDomain)
+	if skillDomain == SkillDomainUniversal || agentDomain == SkillDomainUniversal {
+		return true
+	}
+	return skillDomain == agentDomain
+}
+
 // MaclawLLMProvider 描述一个 MaClaw LLM 提供商配置。
 type MaclawLLMProvider struct {
 	// ID is a stable opaque provider identifier. Name remains a user-editable
@@ -891,18 +939,22 @@ type MaclawLLMProvider struct {
 	TimeoutSec      int      `json:"timeout_sec,omitempty"`
 	MaxOutputTokens int      `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
 	Models          []string `json:"models,omitempty"`            // provider-specific model IDs, when discovered from the service
+	// ImportSource marks a provider created by scanning another local agent.
+	// Values: "codex", "claude_code", "opencode". The settings UI treats these
+	// as model-select-only (URL/key/protocol stay hidden).
+	ImportSource string `json:"import_source,omitempty"`
 	// ConnectionTestPassed is set only after the provider's current connection
 	// configuration has completed a successful test. Model assignment surfaces
 	// use it to avoid offering unverified providers for execution.
 	ConnectionTestPassed bool `json:"connection_test_passed,omitempty"`
-	IsCustom        bool     `json:"is_custom,omitempty"`
-	IsHubService    bool     `json:"is_hub_service,omitempty"`
+	IsCustom             bool `json:"is_custom,omitempty"`
+	IsHubService         bool `json:"is_hub_service,omitempty"`
 	// VisionModels records the provider model IDs whose image-input capability
 	// has been confirmed. SupportsVision remains the compatibility projection
 	// for Model, so older configuration files keep their existing behaviour.
-	VisionModels    []string `json:"vision_models,omitempty"`
-	SupportsVision  bool     `json:"supports_vision"`
-	AgentType       string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+	VisionModels   []string `json:"vision_models,omitempty"`
+	SupportsVision bool     `json:"supports_vision"`
+	AgentType      string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType                 string  `json:"auth_type,omitempty"`
 	RefreshToken             string  `json:"refresh_token,omitempty"`
@@ -977,6 +1029,15 @@ type MaclawLLMConfig struct {
 	// "" = auto (existing IsDeepSeekThinkingModeModel default),
 	// "enabled" | "disabled" for explicit override (cost-route Phase 3).
 	ThinkingMode string `json:"thinking_mode,omitempty"`
+
+	// HubManaged and the *Hint fields are request-only L1 signals for Hub /
+	// HubCenter. They are never persisted in config files. Desktop and TUI
+	// populate them when the endpoint already owns routing (model=auto).
+	HubManaged        bool   `json:"-"`
+	WorkloadClassHint string `json:"-"`
+	WorkflowTypeHint  string `json:"-"`
+	PhaseKindHint     string `json:"-"`
+	TaskTypeHint      string `json:"-"`
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.
@@ -1099,6 +1160,35 @@ func IsMaclawOfficialHubLLMURL(rawURL string) bool {
 	return strings.Contains(text, "hub.mypapers.top/api/llm/v1")
 }
 
+// WithHubWorkloadHints marks this snapshot as Hub-managed and attaches
+// classifier hints. Desktop never remaps these onto a local model_routes pick.
+func (c MaclawLLMConfig) WithHubWorkloadHints(taskType, workflowType, phaseKind string) MaclawLLMConfig {
+	c.HubManaged = true
+	c.TaskTypeHint = strings.TrimSpace(taskType)
+	c.WorkflowTypeHint = strings.TrimSpace(workflowType)
+	c.PhaseKindHint = strings.TrimSpace(phaseKind)
+	return c
+}
+
+// ShouldSendWorkloadHints reports whether L1 hint headers may leave this client.
+func (c MaclawLLMConfig) ShouldSendWorkloadHints() bool {
+	return c.HubManaged || IsHubManagedLLMEndpoint(c.URL, c.Model)
+}
+
+// IsHubManagedLLMEndpoint reports desktop/TUI configs that must not apply
+// local model_routes after Hub or HubCenter already owns L1.
+func IsHubManagedLLMEndpoint(rawURL, model string) bool {
+	if IsMaclawOfficialHubLLMURL(rawURL) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(rawURL))
+	if !strings.Contains(text, "/api/llm/v1") {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(model))
+	return name == "" || name == "auto" || name == "default" || strings.HasPrefix(name, "official-")
+}
+
 func IsQwenOpenAICompat(cfg MaclawLLMConfig) bool {
 	text := strings.ToLower(strings.Join([]string{
 		cfg.Model,
@@ -1217,6 +1307,177 @@ func IsDeepSeekThinkingModeModel(cfg MaclawLLMConfig) bool {
 	}
 }
 
+const (
+	ZhipuCodingProviderName      = "智谱编程"
+	ZhipuCodingDefaultModel      = "glm-5.3"
+	zhipuCodingTUIProviderName   = "智谱 GLM (Coding)"
+	zhipuCodingTUIProviderNameEn = "Zhipu GLM Coding"
+)
+
+// IsZhipuCodingProviderName reports whether name is the GUI or TUI preset for
+// Zhipu's Anthropic coding endpoint. The two surfaces historically used
+// different display names for the same provider.
+func IsZhipuCodingProviderName(name string) bool {
+	name = strings.TrimSpace(name)
+	return strings.EqualFold(name, ZhipuCodingProviderName) ||
+		strings.EqualFold(name, zhipuCodingTUIProviderName) ||
+		strings.EqualFold(name, zhipuCodingTUIProviderNameEn)
+}
+
+// MaclawLLMProviderNameEqual reports whether two provider names refer to the
+// same saved entry. GUI and TUI historically used different display names for
+// the Zhipu coding preset.
+func MaclawLLMProviderNameEqual(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	return IsZhipuCodingProviderName(a) && IsZhipuCodingProviderName(b)
+}
+
+// MaclawLLMLegacyProviderID is the stable in-memory ID for a name-only
+// provider. The GUI uses it so settings can reference a legacy entry without
+// writing config; the next controlled save persists a real ID.
+func MaclawLLMLegacyProviderID(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	sum := sha256.Sum256([]byte(name))
+	return "legacy_llmp_" + hex.EncodeToString(sum[:8])
+}
+
+func isLegacyZhipuCodingDefaultModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "", "glm-5.2", "glm-5.1", "glm-5", "glm-5.0":
+		return true
+	default:
+		return false
+	}
+}
+
+// MigrateZhipuCodingModel upgrades former built-in Zhipu coding defaults to
+// glm-5.3. Explicit custom model IDs and unrelated providers are left unchanged.
+func MigrateZhipuCodingModel(providerName, model string) string {
+	model = strings.TrimSpace(model)
+	if !IsZhipuCodingProviderName(providerName) {
+		return model
+	}
+	if isLegacyZhipuCodingDefaultModel(model) {
+		return ZhipuCodingDefaultModel
+	}
+	base, suffix := model, ""
+	if i := strings.IndexByte(model, '['); i > 0 {
+		base, suffix = model[:i], model[i:]
+	}
+	if strings.EqualFold(base, ZhipuCodingDefaultModel) {
+		return ZhipuCodingDefaultModel + suffix
+	}
+	return model
+}
+
+// ApplyZhipuCodingDefaultMigration upgrades former built-in models on Zhipu
+// coding preset providers. Custom selections are preserved.
+func ApplyZhipuCodingDefaultMigration(providers []MaclawLLMProvider) {
+	for i := range providers {
+		if IsZhipuCodingProviderName(providers[i].Name) {
+			providers[i].Model = MigrateZhipuCodingModel(providers[i].Name, providers[i].Model)
+		}
+	}
+}
+
+// ApplyZhipuCodingConfigMigration upgrades former built-in Zhipu coding
+// defaults on the provider list, legacy flat model, and dual-profile models.
+func ApplyZhipuCodingConfigMigration(cfg *AppConfig) {
+	if cfg == nil {
+		return
+	}
+	// Callers often pass a by-value AppConfig that still shares the provider
+	// slice and profile pointer. Clone before mutating so a save cannot leave
+	// the caller with upgraded providers and a stale flat model (or vice versa).
+	detachSharedMaclawLLMConfig(cfg)
+	ApplyZhipuCodingDefaultMigration(cfg.MaclawLLMProviders)
+	cfg.MaclawLLMModel = MigrateZhipuCodingModel(zhipuCodingMigrationProviderName(cfg), cfg.MaclawLLMModel)
+	migrateZhipuCodingProfiles(cfg)
+}
+
+func detachSharedMaclawLLMConfig(cfg *AppConfig) {
+	if cfg == nil {
+		return
+	}
+	if n := len(cfg.MaclawLLMProviders); n > 0 {
+		cfg.MaclawLLMProviders = append([]MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	}
+	if cfg.MaclawLLMProfiles != nil {
+		profiles := *cfg.MaclawLLMProfiles
+		cfg.MaclawLLMProfiles = &profiles
+	}
+}
+
+func zhipuCodingMigrationProviderName(cfg *AppConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	if current != "" {
+		for _, provider := range cfg.MaclawLLMProviders {
+			if MaclawLLMProviderNameEqual(provider.Name, current) {
+				return provider.Name
+			}
+		}
+		return current
+	}
+	if len(cfg.MaclawLLMProviders) == 1 {
+		return cfg.MaclawLLMProviders[0].Name
+	}
+	return ""
+}
+
+func migrateZhipuCodingProfiles(cfg *AppConfig) {
+	if cfg == nil || cfg.MaclawLLMProfiles == nil {
+		return
+	}
+	migrate := func(profile *MaclawLLMProfile) {
+		if profile == nil {
+			return
+		}
+		name := zhipuCodingProviderNameForID(cfg.MaclawLLMProviders, profile.ProviderID)
+		if name == "" {
+			return
+		}
+		profile.Model = MigrateZhipuCodingModel(name, profile.Model)
+	}
+	migrate(&cfg.MaclawLLMProfiles.Assistant)
+	migrate(&cfg.MaclawLLMProfiles.Coding)
+	if strings.TrimSpace(cfg.MaclawLLMProfiles.Caption.ProviderID) != "" || strings.TrimSpace(cfg.MaclawLLMProfiles.Caption.Model) != "" {
+		migrate(&cfg.MaclawLLMProfiles.Caption)
+	}
+}
+
+func zhipuCodingProviderNameForID(providers []MaclawLLMProvider, providerID string) string {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return ""
+	}
+	for _, provider := range providers {
+		id := strings.TrimSpace(provider.ID)
+		if id == providerID || MaclawLLMProviderNameEqual(provider.Name, providerID) {
+			return provider.Name
+		}
+		if MaclawLLMLegacyProviderID(provider.Name) == providerID {
+			return provider.Name
+		}
+	}
+	return ""
+}
+
+// IsAlwaysOnThinkingModel reports whether the selected model rejects
+// thinking.type=disabled. GLM-5.3 always thinks; sending disabled fails.
+func IsAlwaysOnThinkingModel(cfg MaclawLLMConfig) bool {
+	model := strings.ToLower(strings.TrimSpace(cfg.Model))
+	if i := strings.IndexByte(model, '['); i > 0 {
+		model = strings.TrimSpace(model[:i])
+	}
+	return model == strings.ToLower(ZhipuCodingDefaultModel)
+}
+
 func IsDeepSeekFlashOpenAICompat(cfg MaclawLLMConfig) bool {
 	text := strings.ToLower(strings.Join([]string{
 		cfg.Model,
@@ -1232,6 +1493,7 @@ func IsGLMCodingPlanUserAgent(agent string) bool {
 		"claude code",
 		"cline",
 		"opencode",
+		"codex",
 		"roo code",
 		"kilo code",
 		"cursor",

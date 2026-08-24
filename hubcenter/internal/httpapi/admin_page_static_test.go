@@ -369,11 +369,12 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
 
 	assertContainsAll(t, html, "expert market cache version", []string{
-		`/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260804-3`,
+		`/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260815-5`,
 	})
 	if strings.Contains(html, `<option value="approved">`) {
 		t.Fatal("expert market filter must not expose the retired approved state")
 	}
+	assertContainsAll(t, html, "expert market terminal status filter", []string{`<option value="purged">Purged</option>`, `admin-shell.css?v=service-group-traffic-20260823-8`})
 	assertContainsAll(t, js, "expert market compact review actions", []string{
 		`class="expert-market-card"`,
 		`data-expert-reason`,
@@ -406,6 +407,13 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 		`void loadExpertMarketAdmin()`,
 		`await loadExpertMarketAdmin(undefined, true);`,
 		`expertMarketSetStatus('success', expertMarketText(successKey), 3200)`,
+		`renderExpertMarketOwnerSearchRequired()`,
+		`if ([...keyword].length < 2)`,
+		`reasonInput?.reportValidity();`,
+		`body: JSON.stringify({ target_user_id: state.selected.id, expected_owner_id: state.ownerID, reason })`,
+		`expertMarketOwnerDialogOpener`,
+		`event.key !== 'Tab'`,
+		`ownerSearchAction`,
 	})
 	assertContainsAll(t, css, "expert market compact card styles", []string{
 		`#expertMarketAdminGrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}`,
@@ -413,6 +421,7 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 		`.expert-market-note input:focus`,
 		`content-visibility:auto`,
 		`.sm-status.success`,
+		`.expert-market-status-purged`,
 	})
 	assertContainsAll(t, core, "expert market tab loader", []string{
 		`expertmarket:['expertMarketTabTitle','expertMarketTabSubtitle']`,
@@ -422,7 +431,7 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 	if strings.Contains(js, `window.prompt(`) || strings.Contains(js, `onclick="expertMarket`) {
 		t.Fatal("expert market moderation must use an inline reason field and delegated card actions")
 	}
-	if strings.Contains(js, `action === 'approve' || action === 'reject'`) || strings.Contains(js, `reasonRequired`) || strings.Contains(js, `if (!reason)`) {
+	if strings.Contains(js, `action === 'approve' || action === 'reject'`) || strings.Contains(js, `reasonRequired`) || strings.Contains(js, `if (!reasonInput?.value.trim())`) {
 		t.Fatal("expert market approval and rejection review notes must remain optional")
 	}
 	if strings.Contains(js, `status === 'approved'`) || strings.Contains(js, `data-expert-action="list"`) {
@@ -435,6 +444,173 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 		if strings.Contains(js, retired) {
 			t.Fatalf("expert market Chinese UI must not expose the retired separate listing state: %s", retired)
 		}
+	}
+}
+
+func TestIndustryManagementAdminI18n(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/industry-management-admin.js")
+	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
+
+	assertContainsAll(t, html, "industry management nav and panel i18n", []string{
+		`data-tab="industrymanagement"`,
+		`data-i18n="navIndustryManagement"`,
+		`data-i18n="navIndustryManagementDesc"`,
+		`data-i18n="industryManagementTitle"`,
+		`data-i18n="industryCreateTitle"`,
+		`data-i18n="industryAssetsTitle"`,
+		`/admin/assets/js/industry-management-admin.js?v=industry-management-i18n-20260819-5`,
+	})
+	assertContainsAll(t, core, "industry management i18n keys", []string{
+		`navIndustryManagement:'行业管理'`,
+		`industryManagementTitle:'行业管理'`,
+		`industryCreateTitle:'创建行业'`,
+		`industryAssetsTitle:'已获取的不可变资产'`,
+		`if(typeof applyIndustryManagementI18n==='function')applyIndustryManagementI18n()`,
+	})
+	assertContainsAll(t, js, "industry management i18n apply path", []string{
+		`(function () {`,
+		`function applyIndustryManagementStaticI18n()`,
+		`function applyIndustryManagementI18n()`,
+		`window.applyIndustryManagementI18n = applyIndustryManagementI18n`,
+		`data-i18n="navIndustryManagement"`,
+		`imCaptureBindingDrafts()`,
+		`imRestoreOpenIndustries(openIDs)`,
+		`if (industryManagementLoading) return industryManagementLoading`,
+		`Date.now() - industryManagementLoadedAt < IM_CACHE_MS`,
+		`renderIndustryManagement({ resetBindings: true })`,
+		`function scheduleTenantIndustrySettings()`,
+		`imIsTenantSettingsMutation`,
+		`if (industryManagementLoaded) renderIndustryManagement()`,
+		`overlay.contains(mutation.target)`,
+		`if (seq !== imTenantRenderSeq || !document.contains(root)) return`,
+	})
+	if strings.Contains(js, `window.applyIndustryManagementI18n = () => { applyIndustryManagementI18n();`) {
+		t.Fatal("industry management must not wrap applyIndustryManagementI18n in a recursive global assignment")
+	}
+	if strings.Contains(js, `window.applyI18n`) {
+		t.Fatal("industry management must not re-run the full admin applyI18n pass")
+	}
+}
+
+func TestLLMServiceAdminTitleI18n(t *testing.T) {
+	html := readAdminPageHTML(t)
+	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+
+	assertContainsAll(t, html, "llm service title cache", []string{
+		`data-tab="llmservice"`,
+		`data-i18n="navLLMService"`,
+		`data-i18n="llmServiceTitle"`,
+		`/admin/assets/js/admin-core.js?v=nav-llm-20260819-5`,
+		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+	})
+	assertContainsAll(t, core, "llm service title keys", []string{
+		`llmservice:['llmServiceTitle','llmServiceDesc']`,
+		`computemarket:['computeMarketTitle','computeMarketDesc']`,
+		`ha:['haTabTitle','haTabSubtitle']`,
+		`TAB_ICONS.llmservice=`,
+		`TAB_ICONS.computemarket=`,
+		`TAB_ICONS.ha=`,
+		`navLLMService: '\u6a21\u578b\u63a5\u5165'`,
+		`llmServiceTitle: '\u6a21\u578b\u63a5\u5165'`,
+		`llmServiceClassHead: '\u5206\u7c7b\u5934'`,
+		`function applyPageChrome(){`,
+	})
+	if strings.Contains(js, `llmServiceTitle:`) || strings.Contains(js, `llmServiceGroupsDesc:`) || strings.Contains(js, `llmServiceAgents:`) {
+		t.Fatal("llm service tab must not re-assign admin-core chrome keys")
+	}
+	if strings.Contains(js, `typeof applyI18n === 'function') applyI18n()`) {
+		t.Fatal("llm service init must not re-run the full admin applyI18n pass")
+	}
+	for _, body := range []string{core, js} {
+		if strings.Contains(body, `llmServiceTitle:'\u6a21\u578b\u63a5\u5165\u70b9'`) ||
+			strings.Contains(body, `llmServiceTitle: '\u6a21\u578b\u63a5\u5165\u70b9'`) {
+			t.Fatal("llm service titles must not keep the old 模型接入点 wording")
+		}
+	}
+	if !strings.Contains(core, "applyPageChrome();}") {
+		t.Fatal("applyI18n must refresh pageTitle after late llmServiceTitle keys")
+	}
+	idxTitle := strings.LastIndex(core, "llmServiceTitle:")
+	idxApply := strings.LastIndex(core, "applyI18n();")
+	if idxTitle < 0 || idxApply < 0 || idxApply < idxTitle {
+		t.Fatalf("late llmServiceTitle keys must be followed by applyI18n(); title=%d apply=%d", idxTitle, idxApply)
+	}
+}
+
+func TestAdminPageEmbeddingModelRuntimeCard(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+
+	assertContainsAll(t, html, "embedding model card cache", []string{
+		`id="llmSubViewClassHead"`,
+		`id="llmEmbeddingModelCard"`,
+		`id="sgClassHead"`,
+		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+	})
+	classHead := strings.Index(html, `id="llmSubViewClassHead"`)
+	embedCard := strings.Index(html, `id="llmEmbeddingModelCard"`)
+	sgHead := strings.Index(html, `id="sgClassHead"`)
+	providers := strings.Index(html, `id="llmSubViewProviders"`)
+	if classHead < 0 || embedCard < 0 || sgHead < 0 || providers < 0 {
+		t.Fatal("embedding card and class-head markers must exist")
+	}
+	if !(providers < classHead && classHead < embedCard && embedCard < sgHead) {
+		t.Fatal("embedding card must sit on 分类头, above the head dashboard")
+	}
+	assertContainsAll(t, js, "embedding model runtime", []string{
+		`/api/admin/model_download/status`,
+		`/api/admin/model_download/trigger`,
+		`loadLLMEmbeddingModelRuntime`,
+		`triggerLLMEmbeddingModelDownload`,
+		`maybeAutoSyncEmbeddingModel`,
+		`if (data.ready)`,
+		`HubCenter syncs the GGUF on start`,
+		`runtimeTitle: 'Embedding model'`,
+		`runtimeTitle: 'Embedding \u6a21\u578b'`,
+		`embedder_ready`,
+		`runtimePartial`,
+		`data.ready && data.embedder_ready`,
+		`runtimeAlreadyRunning`,
+		`llm-embed-meta`,
+		`llm-embed-title`,
+		`if (tab === 'classHead' && typeof window.sgReloadClassHeadPage === 'function')`,
+		`sgReloadClassHeadPage`,
+		`llmClassHeadViewVisible`,
+		`llmEmbeddingLoadSeq`,
+		`embeddingRuntimeNeedsPoll`,
+		`st.downloading || st.warming`,
+		`waitEmbedder`,
+		`llmClassHeadViewVisible() && !!(data.ready) && !data.embedder_ready`,
+		`loadLLMEmbeddingModelRuntime({ silent: true })`,
+		`Sync it above before scoring`,
+	})
+	if strings.Contains(js, `if(!id||!out)return;`) {
+		t.Fatal("class-head score must not require a leftover group id")
+	}
+}
+
+func TestAdminPageStaticNavHasPageChrome(t *testing.T) {
+	html := readAdminPageHTML(t)
+	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
+	re := regexp.MustCompile(`data-tab="([a-z]+)"`)
+	seen := map[string]struct{}{}
+	for _, match := range re.FindAllStringSubmatch(html, -1) {
+		tab := match[1]
+		if _, ok := seen[tab]; ok {
+			continue
+		}
+		seen[tab] = struct{}{}
+		if !strings.Contains(core, tab+":['") && !strings.Contains(core, "tabMeta."+tab+"=") {
+			t.Errorf("static nav tab %q missing tabMeta in admin-core; page title falls back to overview", tab)
+		}
+		if !strings.Contains(core, tab+":'<svg") && !strings.Contains(core, "TAB_ICONS."+tab+"=") {
+			t.Errorf("static nav tab %q missing TAB_ICONS in admin-core; page icon falls back to overview", tab)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("admin page has no data-tab nav buttons")
 	}
 }
 
@@ -470,22 +646,22 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
-		`/admin/assets/css/admin-shell.css?v=pet-store-preview-toggle-20260731-1`,
-		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2`,
+		`/admin/assets/css/admin-shell.css?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/compute-market-tab.js?v=sold-card-compact-20260821-5`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
 		"computeMarketDeleteArchivedOrder",
 		"deleteArchivedComputeOrder",
-		"cmOrdersArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0",
+		"isArchived && CONFIRMABLE_STATUSES.indexOf(status) >= 0",
 		"computeMarketRestoreOrder",
 		"cmRestoringOrders",
 		"restoreArchivedComputeOrder",
-		"cmOrdersArchived && status === 'activated'",
+		"isArchived && status === 'activated'",
 		"this)",
 		"/restore",
 		"/api/admin/cardstore/orders/",
 		"method: 'DELETE'",
-		"\\u00b7 \\u00a5",
+		"'\\u00a5' + esc(order.amount)",
 	})
 	restoreFn := regexp.MustCompile(`async function restoreArchivedComputeOrder[\s\S]*?async function deleteArchivedComputeOrder`).FindString(js)
 	if restoreFn == "" {
@@ -519,12 +695,61 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 		"window.changeComputeOrdersPage = changeComputeOrdersPage",
 	})
 	assertContainsAll(t, css, "compute market compact order grid", []string{
-		"#cmOrdersList.list{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px",
-		".cm-order-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px",
+		"#cmOrdersList.list{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px",
+		".cm-order-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px",
+		".cm-order-main .cm-order-metric strong{display:block;margin:0",
+		".cm-order-head-actions{display:flex;flex-wrap:nowrap;gap:4px",
 		".cm-orders-pager.is-visible{display:flex}",
 	})
 	if strings.HasPrefix(js, "\ufeff") {
 		t.Fatal("compute-market-tab.js must not start with UTF-8 BOM")
+	}
+}
+
+func TestAdminPageComputeMarketRebindSoldCardContract(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/compute-market-tab.js")
+
+	assertContainsAll(t, html, "compute market active-card filter", []string{
+		`id="cmActiveCardsBtn"`,
+		`onclick="toggleComputeActiveCards()"`,
+		`data-i18n="computeMarketActiveCardsFilter"`,
+	})
+	assertContainsAll(t, js, "compute market rebind sold card contract", []string{
+		"computeMarketActiveCardsFilter",
+		"toggleComputeActiveCards",
+		"cmActiveCardsOnly",
+		"active_cards=1",
+		"can_rebind_service_group",
+		"showComputeOrderGroupEditor",
+		"saveComputeOrderGroup",
+		"/service-group",
+		"use_default",
+		"__default__",
+		"computeMarketDefaultGroup",
+		"esc(tr('computeMarketDefaultGroup')) + '</option>'",
+		"window.toggleComputeActiveCards = toggleComputeActiveCards",
+		"window.saveComputeOrderGroup = saveComputeOrderGroup",
+		"cmRebindBusy",
+		"defaultInList",
+		"computeMarketCardGroupRequired",
+		"if (cmActiveCardsOnly) cmOrdersArchived = false",
+		"if (cmOrdersArchived) cmActiveCardsOnly = false",
+		"var isArchived = !!String(o.archived_at || '').trim()",
+		"__external_compute_permission__",
+		"selected.toLowerCase() === '__default__'",
+		"access_policy",
+		"policy === 'grant_required'",
+		"renderComputeOrderIdentity",
+		"computeMarketOrderHub",
+		"computeMarketOrderTenant",
+		"hub_name",
+		"tenant_name",
+		"cm-order-head-actions",
+		"renderComputeOrderMeta",
+	})
+	if strings.Contains(js, "esc(defaultID) + ')</option>'") || strings.Contains(js, "' (' + esc(defaultID)") {
+		t.Fatal("default service group option must not append the current default group name")
 	}
 }
 
@@ -584,6 +809,531 @@ func TestAdminPageRoutePreviewStaticContract(t *testing.T) {
 		`function changeHubRoutePage(delta)`,
 		`id="hubRoutePreviewPageInfo"`,
 	})
+}
+
+func TestAdminPageLLMProviderSequenceCards(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, html, "llm provider sequence cache", []string{
+		`/admin/assets/css/admin-shell.css?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+	})
+	assertContainsAll(t, js, "llm provider sequence cards", []string{
+		`function sortedProviders()`,
+		`function applyProviderSequenceTargets()`,
+		`var providersLoadSeq = 0`,
+		`provider-seq' + (seq > 0 ? '' : ' is-unset')`,
+		`Object.keys(providerSequenceInFlight).length`,
+		`providerSequenceInFlight[p.id] = seq`,
+		`/api/admin/llm/providers/sequences`,
+		`id="llmPrvSequence"`,
+		`p.lb_group && Number(p.lb_group_size||0) >= 2 ? '<span class="badge info">'`,
+		`t('lbGroup')`,
+		`p.lb_group`,
+	})
+	if strings.Contains(js, `style="order:`) || strings.Contains(js, "style='order:") {
+		t.Fatal("provider cards must sort in the DOM, not with CSS order")
+	}
+	moveFn := regexp.MustCompile(`window\.moveLLMProvider = async function[\s\S]*?window\.toggleLLMProviderPaused`)
+	move := moveFn.FindString(js)
+	if move == "" {
+		t.Fatal("moveLLMProvider is missing")
+	}
+	if strings.Count(move, "loadProviders({ traffic: false })") != 1 {
+		t.Fatalf("moveLLMProvider should reload providers only on error, got %d loadProviders calls", strings.Count(move, "loadProviders({ traffic: false })"))
+	}
+	if strings.Count(move, "providersLoadSeq += 1") < 2 {
+		t.Fatal("moveLLMProvider should drop in-flight provider lists when a move starts and when it succeeds")
+	}
+	toggleFn := regexp.MustCompile(`window\.toggleLLMProviderPaused = async function[\s\S]*?async function loadAgents`)
+	toggle := toggleFn.FindString(js)
+	if toggle == "" {
+		t.Fatal("toggleLLMProviderPaused is missing")
+	}
+	if strings.Contains(toggle, "loadProviders()") {
+		t.Fatal("toggleLLMProviderPaused should not reload providers or traffic")
+	}
+	if !strings.Contains(toggle, "providersLoadSeq += 1") {
+		t.Fatal("toggleLLMProviderPaused should drop in-flight provider lists")
+	}
+	assertContainsAll(t, css, "llm provider sequence badge", []string{
+		`.data-row>.provider-seq`,
+		`font-variant-numeric:tabular-nums`,
+		`#llmProvidersList.llm-card-grid{grid-template-columns:1fr}`,
+		`#llmProvidersList .data-row{min-height:0;align-items:center;display:grid`,
+		`#llmProvidersList .data-row-actions{grid-area:actions;max-width:420px;align-items:center;flex-wrap:wrap;justify-content:flex-end}`,
+		`#llmProvidersList .data-row-meta{display:block;white-space:nowrap`,
+		`.provider-seq.is-unset`,
+	})
+}
+
+func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, html, "llm provider traffic switch", []string{
+		`id="llmProviderTrafficSwitch" class="provider-traffic-switch" hidden`,
+	})
+
+	assertContainsAll(t, js, "llm provider traffic cards", []string{
+		`/api/admin/llm/providers/traffic`,
+		`function renderProviderTraffic(id)`,
+		`function formatTrafficTokens(value)`,
+		`function formatTrafficExact(value)`,
+		`function patchProviderTraffic()`,
+		`Array.isArray(data.traffic)`,
+		`providerTrafficReady`,
+		`providerTrafficLoadSeq`,
+		`providerTrafficInFlight`,
+		`loadProviders({ traffic: false })`,
+		`setProviderTrafficPeriod`,
+		`syncProviderTrafficSwitch`,
+		`applyProviderTrafficNode`,
+		`onProviderTrafficSwitchKeydown`,
+		`llmProvidersList .provider-traffic[data-provider-id]`,
+		`llmProviderTrafficSwitch`,
+		`is-pending`,
+		`data-provider-id=`,
+		`trafficDay`,
+		`trafficWeek`,
+		`trafficMonth`,
+		`trafficIn`,
+		`trafficOut`,
+		`trafficTotal`,
+		`function providerTrafficWindow(row)`,
+		`function providerTrafficRow(id)`,
+		`providerTrafficPeriodLabel(providerTrafficPeriod) + ' \u00b7 '`,
+		`var hasData = !!(row && (row.day || row.week || row.month))`,
+		`if (!providerTrafficReady) patchProviderTraffic()`,
+		`aria-pressed`,
+		`class="provider-traffic'`,
+	})
+	assertContainsAll(t, css, "llm provider traffic layout", []string{
+		`#llmProvidersList .provider-traffic`,
+		`.provider-traffic-switch{display:inline-flex`,
+		`height:36px`,
+		`.provider-traffic-col`,
+		`.provider-traffic-line`,
+		`grid-template-areas:"seq main traffic actions"`,
+		`.provider-traffic.is-pending`,
+		`minmax(228px,280px)`,
+		`grid-template-columns:repeat(3,minmax(0,1fr))`,
+		`font-variant-numeric:tabular-nums`,
+	})
+}
+
+func TestAdminPageLLMServiceGroupTrafficCards(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	responsiveCSS := readAdminAsset(t, "admin/assets/css/admin-responsive.css")
+
+	assertContainsAll(t, html, "llm service group traffic switch", []string{
+		`id="llmServiceGroupTrafficSwitch" class="provider-traffic-switch" hidden`,
+		`admin-shell.css?v=service-group-traffic-20260823-8`,
+		`admin-responsive.css?v=service-group-traffic-20260823-8`,
+		`llm-service-tab.js?v=service-group-traffic-20260823-8`,
+	})
+	assertContainsAll(t, html, "llm service subtabs accessibility", []string{
+		`class="filter-group llm-subtabs" role="tablist"`,
+		`id="llmSubTabProviders" type="button" role="tab" aria-selected="true"`,
+		`aria-controls="llmSubViewGroups"`,
+		`id="llmSubViewClassHead" class="hidden-view" role="tabpanel" aria-labelledby="llmSubTabClassHead"`,
+	})
+	assertContainsAll(t, js, "llm service group traffic cards", []string{
+		`function loadServiceGroupTraffic()`,
+		`var serviceGroupsLoadSeq = 0;`,
+		`if (seq !== serviceGroupsLoadSeq) return;`,
+		`var seq = ++serviceGroupsLoadSeq;`,
+		`function setServiceGroupTrafficPeriod(period)`,
+		`function syncServiceGroupTrafficSwitch()`,
+		`function applyServiceGroupTrafficNode(node, id)`,
+		`function serviceGroupTrafficTotals(data)`,
+		`if (data && !Array.isArray(data.rows))`,
+		`Array.isArray(traffic)`,
+		`item.service_group_id || item.group_id || item.id`,
+		`String(keys[i]).trim().toLowerCase() === lower`,
+		`Object.keys(traffic).reduce(function(rows, id)`,
+		`if (tab === 'groups' && serviceGroups.length && !serviceGroupTrafficInFlight) loadServiceGroupTraffic();`,
+		`/api/admin/llm/service-groups/traffic`,
+		`data-service-group-id=`,
+		`serviceGroupTrafficPeriod`,
+		`window.setServiceGroupTrafficPeriod = setServiceGroupTrafficPeriod;`,
+		`window.onLLMSubTabKeydown = function(event)`,
+		`btn.setAttribute('aria-selected', String(active));`,
+		`btn.tabIndex = active ? 0 : -1;`,
+		`['ArrowLeft', 'ArrowRight', 'Home', 'End']`,
+	})
+	assertContainsAll(t, css, "llm service group traffic layout", []string{
+		`#llmServiceGroupsList .service-group-traffic`,
+		`#llmServiceGroupsList .service-group-traffic-col`,
+		`#llmServiceGroupsList .llm-service-group-row`,
+	})
+	assertContainsAll(t, responsiveCSS, "llm service subtab final selection", []string{
+		`#tab-llmservice .llm-subtabs [role="tab"][aria-selected="true"]`,
+		`background:#2563eb!important`,
+		`#tab-llmservice .llm-subtabs [role="tab"][aria-selected="false"]`,
+	})
+}
+
+func TestAdminPageLLMProviderDialogI18n(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+
+	assertContainsAll(t, html, "llm provider dialog i18n cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+	})
+	assertContainsAll(t, js, "llm provider dialog local i18n", []string{
+		`t('providerProbeModels')`,
+		`t('providerProbing')`,
+		`t('providerProbeEmpty')`,
+		`t('providerProbeFailed')`,
+		`t('providerCapabilityPreset')`,
+		`providerProbeModels: 'Probe'`,
+		`providerProbeModels: '\u63a2\u6d4b'`,
+		`providerProbing: 'Probing models...'`,
+		`providerProbing: '\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...'`,
+		`providerCapabilityPreset: 'Preset capabilities'`,
+		`providerCapabilityPreset: '\u9884\u7f6e\u80fd\u529b'`,
+		`trafficLoading: 'Loading'`,
+		`trafficLoading: '\u52a0\u8f7d\u4e2d'`,
+		`t('trafficLoading')`,
+		`typeof I18N_ZH !== 'undefined'`,
+		`typeof I18N_EN !== 'undefined'`,
+	})
+}
+
+func TestAdminPageLLMProviderAvailabilityTestUsesConfiguredModel(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+
+	assertContainsAll(t, js, "llm provider availability test", []string{
+		`/api/admin/llm/providers/test-chat`,
+		`var model = (provider.models && provider.models[0]) || '';`,
+		`providerTestStates[id] = { status: 'error', message: 'No model configured' }`,
+		`if (!data.success) throw new Error(data.error || 'unknown');`,
+		`routeModel = pconfigs[0].model || '';`,
+		`model: routeModel || ((provider.models && provider.models.length === 1) ? provider.models[0] : firstModel.name) || ''`,
+		`wire_api: provider.wire_api || 'chat'`,
+	})
+	providerTest := regexp.MustCompile(`window\.testLLMProvider = async function[\s\S]*?function uniqueProviderBillingDays`).FindString(js)
+	if providerTest == "" {
+		t.Fatal("testLLMProvider is missing")
+	}
+	if strings.Contains(providerTest, "/probe-models") {
+		t.Fatal("provider availability test must send a chat request rather than only probe /models")
+	}
+}
+
+func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, html, "llm provider billing cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+	})
+	assertContainsAll(t, js, "llm provider billing editor", []string{
+		`id="llmPrvTimezone"`,
+		`id="llmPrvMultiplier"`,
+		`id="llmPrvBillingWindows"`,
+		`id="llmPrvBillStart' + index + '"`,
+		`credit_multiplier_schedule`,
+		`function providerBillingSection(`,
+		`function readProviderBilling()`,
+		`function normalizeProviderBillingWindow(`,
+		`function copyProviderExtraFields(`,
+		`function providerBillingBadge(`,
+		`function resolveProviderBillingMultiplier(`,
+		`hour12: false`,
+		`if (hadDays && !days.length) return null`,
+		`startProviderBillingNowClock()`,
+		`stopProviderBillingNowClock()`,
+		`item.days = normalizeProviderBillingDays(days) || []`,
+		`window.refreshProviderBillingNow`,
+		`window.addProviderBillingWindow`,
+		`window.toggleProviderBillingDay`,
+		`keepBilling:true`,
+		`t('billingAddWindow')`,
+		`t('billingSchedule')`,
+		`t('billingEmpty')`,
+		`t('billingOvernight')`,
+		`t('billingDroppedWindows')`,
+		`billingAddWindow: 'Add window'`,
+		`billingAddWindow: '\u6dfb\u52a0\u65f6\u6bb5'`,
+		`billingEveryday: '\u6bcf\u5929'`,
+		`billingWeekdays: '\u5de5\u4f5c\u65e5'`,
+		`billingEmpty: '\u6682\u65e0\u5206\u65f6\u65f6\u6bb5`,
+		`.map(normalizeProviderBillingWindow).filter(function(w)`,
+		`payload.credit_multiplier_schedule = billing.credit_multiplier_schedule`,
+		`copyProviderExtraFields(existing)`,
+		`providerBillingBadge(p)`,
+	})
+	saveFn := regexp.MustCompile(`window\.saveProvider = async function[\s\S]*?window\.deleteLLMProvider`)
+	save := saveFn.FindString(js)
+	if save == "" {
+		t.Fatal("saveProvider is missing")
+	}
+	if !strings.Contains(save, `payload.timezone = billing.timezone`) || !strings.Contains(save, `payload.credit_multiplier = billing.credit_multiplier`) {
+		t.Fatal("saveProvider must persist vendor timezone and multiplier")
+	}
+	if !strings.Contains(save, `toast(t('billingDroppedWindows'), 'error')`) || !strings.Contains(save, `return;`) {
+		t.Fatal("saveProvider must block when a time window is empty or has identical start/end")
+	}
+	openFn := regexp.MustCompile(`function openDialog\([\s\S]*?function closeDialog`)
+	open := openFn.FindString(js)
+	if open == "" {
+		t.Fatal("openDialog is missing")
+	}
+	if !strings.Contains(open, `stopProviderBillingNowClock()`) {
+		t.Fatal("openDialog must stop the billing clock so agent/group dialogs do not keep a stale interval")
+	}
+	assertContainsAll(t, css, "llm provider billing layout", []string{
+		`.provider-billing{`,
+		`.provider-billing-window{`,
+		`.provider-billing-fields{`,
+		`.provider-billing-empty{`,
+		`.provider-billing-window.is-invalid{`,
+		`.provider-billing-title{`,
+		`.provider-day-chip`,
+		`.provider-preset-chip`,
+		`.provider-billing-times{`,
+		`.provider-billing-fields,.provider-billing-times{grid-template-columns:1fr}`,
+	})
+}
+
+func TestAdminPageLLMServiceGroupOfficialBandCopy(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+
+	assertContainsAll(t, html, "official band cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/css/admin-shell.css?v=service-group-traffic-20260823-8`,
+		`id="llmSubTabClassHead"`,
+		`id="llmSubViewClassHead"`,
+		`switchLLMSubTab('classHead')`,
+	})
+	assertContainsAll(t, js, "official band helpers", []string{
+		`function sgOfficialBandName(n)`,
+		`function sgCanonicalModelName(n)`,
+		`function sgOfficialBandQuality(n)`,
+		`function sgCapLabel(tag)`,
+		`function sgEnsureModel(d,name)`,
+		`function sgEnsureModelsForRoutes(d)`,
+		`function sgPrepareDynamicDraft(d,opts)`,
+		`if(opts&&opts.fillEmptyOfficial)sgFillEmptyOfficialBandsFromAuto(d)`,
+		`sgPrepareDynamicDraft(sgDraft,{fillEmptyOfficial:true})`,
+		`function sgFillEmptyOfficialBandsFromAuto(d)`,
+		`function sgDedupeModels(d)`,
+		`function sgIsLockedModelName(name)`,
+		`function sgModelsNeedingProvider(d)`,
+		`function sgWorkloadModelChoices(d,selected,cls)`,
+		`sgEnsureModel(sgDraft,v)`,
+		`sgPrepareDynamicDraft(sgDraft)`,
+		`sgPlanDesignNoLow`,
+		`sgProtectedModel`,
+		`sgTierHigh: 'Official high (official-high)'`,
+		`sgTierHigh: '\u5b98\u65b9\u9ad8\u6863\uff08official-high\uff09'`,
+		`sgCapabilityHint: 'Capabilities of this upstream model`,
+		`sgCapLabel(f)`,
+		`sgFormatCaps(cfg&&cfg.capability_tags)`,
+		`(locked?' disabled':'')`,
+		`function sgRenderTrafficDialog(opts)`,
+		`function sgDialogAlive(kind,id)`,
+		`sgOpenKind='traffic'`,
+		`window.editLLMClassTraffic=function(id)`,
+		`switchLLMSubTab('classHead')`,
+		`sgClassHeadQS()`,
+		`function sgHeadPageAlive()`,
+		`sgClassTraffic: 'Downstream traffic'`,
+		`sg-form-dialog sg-traffic-dialog`,
+		`function sgFmtHead(data)`,
+		`function sgFmtHeadVersions(data)`,
+		`sgHeadNeedShadow`,
+		`sgHeadNeedServing`,
+		`sgHeadAdoptReady`,
+		`sgHeadNeedDistribute`,
+		`sgHeadDistributing`,
+		`function sgFmtHeadTest(data)`,
+		`/api/admin/llm/class-head/score`,
+		`sgScoreClassHead(true)`,
+		`window.sgReloadClassHeadPage=function()`,
+		`if(!out)return;`,
+		`sgHeadTestCompare`,
+		`sgHeadEmbedderOff`,
+		`sgHeadScoreGroup`,
+		`sgHeadScoreGroupAuto`,
+		`sgHeadTestGroup`,
+		`function sgSyncHeadScoreGroupSelect()`,
+		`if (!serviceGroups.length) {`,
+		`if (!providers.length) renderProviders()`,
+		`if (!agents.length) renderAgents()`,
+		`var snap=el.querySelector('.sg-head-dash')?sgSnapHead():null`,
+		`if(hasDash){ toast(e.message||t('sgFailed'),'error'); return; }`,
+		`button.sg-traffic-win[data-win]`,
+		`if(!hasBoard) el.textContent=t('trafficLoading')`,
+		`group_id:groupId`,
+		`data.group_id`,
+		`sgHeadVersions: 'Head versions'`,
+		`sg-head-dash`,
+		`sg-pipe-steps`,
+		`window.sgReviewClassHead=async function(sampleId,goldPrefill)`,
+		`window.sgDeleteClassHeadSample=async function(sampleId)`,
+		`/api/admin/llm/class-head/sample/delete`,
+		`function sgParseGoldClass(raw)`,
+		`function sgGoldSelect(sample)`,
+		`function sgSampleActions(sample)`,
+		`function sgFmtSamplePager(data)`,
+		`window.setDefaultLLMServiceGroup = async function(id)`,
+		`/api/admin/llm/service-groups/`,
+		`sgSetDefault`,
+		`sgDefaultBadge`,
+		`sgOfficialNoDelete`,
+		`sgSystemBadge`,
+		`(isOfficial?'':'<button class="btn-danger-ghost"`,
+		`default_service_group_id`,
+		`sg-traffic-sample-body`,
+		`sg-traffic-sample-time`,
+		`window.sgHeadSamplePageTo=function(delta)`,
+		`?page=`,
+		`sample_page`,
+		`sample_total`,
+		`function sgHeadSamplePages(data)`,
+		`function sgHeadIsOfficial(data)`,
+		`function sgSnapHead()`,
+		`sgSampleDeleteConfirm`,
+		`sgGoldClear`,
+		`sgSampleDelete`,
+		`function sgFmtTryResult(data)`,
+		`function sgSourceLabel(src)`,
+		`sgGoldInvalid`,
+		`sgGoldPick`,
+		`sgTrainBusy`,
+		`sgSrc_hint`,
+		`sgAck_acked`,
+		`function sgWinButtons(id)`,
+		`_sgTrafficDataWin`,
+		`sgWin_24h`,
+		`is-locked`,
+		`function sgShowPromoteForm(mode)`,
+		`event.ctrlKey||event.metaKey`,
+		`function sgHeadIsUnused(data)`,
+		`sgTrainNeedDataOfficial`,
+		`sgHeadHasSamples`,
+		`sgHeadUnusedOfficial`,
+		`sgPromoteForm`,
+		`onsubmit="sgConfirmPromote(`,
+		`sgPipe_off: 'Rules'`,
+		`sgGate_review_coverage: 'Review coverage'`,
+		`function sgIsOfficialGroup(id)`,
+		`function sgHeadCallout(data)`,
+		`function sgTrainerNodes(data)`,
+		`function sgHeadStatusLabel(status, data)`,
+		`function sgHeadLiveLabel(data)`,
+		`function sgHeadJobLabel(status)`,
+		`function sgHeadStatusHint(data)`,
+		`function sgHeadNeedsPoll(data)`,
+		`function sgHeadPollKey(data)`,
+		`function sgHeadSamplesKey(data)`,
+		`promoteMode:promote?String(promote.getAttribute('data-mode')||''):''`,
+		`box.setAttribute('data-mode', mode)`,
+		`if (choices && snap.choices) choices.innerHTML = snap.choices`,
+		`function sgHeadPollBlocked()`,
+		`function scheduleClassHeadPoll()`,
+		`window.sgLoadClassHead({quiet:true})`,
+		`var training=status==='training'`,
+		`String(data&&data.pipeline||'off')==='off'`,
+		`data.artifact_ready&&String(data.status||'')!=='training'`,
+		`sgHeadSt_unused: 'Live: rules only'`,
+		`sgHeadSt_unused: '\u7ebf\u4e0a\uff1a\u4ec5\u89c4\u5219'`,
+		`sgHeadSt_unused_trained`,
+		`sgHeadStHint_unused`,
+		`sgHeadPipeline: 'Live path'`,
+		`sgHeadPipeline: '\u7ebf\u4e0a\u5206\u6d41'`,
+		`sgTrainerLocalTag`,
+		`sgTrainerHint`,
+		`sg-sample-action`,
+		`sgConfirmLive`,
+		`canPromote`,
+		`tryOpen:!!(tryBox&&tryBox.open)`,
+		`var showEval=`,
+		`editLLMClassTraffic('+jsArg(g.id)+')`,
+		`editLLMServiceGroup('+jsArg(g.id)+')`,
+		`function sgHeadIsOfficial(data)`,
+		`window.sgRerenderOpenDialog = sgRerenderOpenDialog`,
+		`if (typeof renderAgents === 'function') renderAgents()`,
+		`window.sgLoadClassHead({quiet:true, relabel:true})`,
+		`function sgRelabelProviderDialog()`,
+		`function sgRelabelAgentDialog()`,
+		`function sgSnapFocus(root)`,
+		`board:board?board.innerHTML:''`,
+		`if(sgHeadActing()){ scheduleClassHeadPoll(); return; }`,
+		`add(t('sgHeadTestSlot'), data.slot||'')`,
+		`id="sgFieldName"`,
+		`window._sgHeadPollKey`,
+	})
+	if strings.Contains(js, `>shadow</button>`) || strings.Contains(js, `>canary</button>`) {
+		t.Fatal("class-head pipeline buttons must use labels, not raw mode names")
+	}
+	if strings.Contains(js, `sgPrompt(t('sgGoldPrompt')`) {
+		t.Fatal("gold review must use a class select, not a free-text prompt")
+	}
+	if strings.Contains(js, `sgPrompt(t('sgPromptReason')`) || strings.Contains(js, `sgPrompt(t('sgPromptOverride')`) {
+		t.Fatal("pipeline override must use an inline form, not stacked prompts")
+	}
+	if strings.Contains(js, `function sgEnsureOfficialBandModels`) {
+		t.Fatal("dead sgEnsureOfficialBandModels should not remain")
+	}
+	if strings.Contains(js, `function sgRenderClassTrainSection`) || strings.Contains(js, `{focus:'traffic'}`) {
+		t.Fatal("group traffic must open its own dialog, not the group editor")
+	}
+	if strings.Contains(js, `t('sgCap_'+f)||f`) {
+		t.Fatal("capability checkboxes must use sgCapLabel, not t()||raw fallback")
+	}
+	if !utf8.ValidString(js) {
+		t.Fatal("llm-service-tab.js must stay UTF-8")
+	}
+	for _, stale := range []string{
+		"未启用", "头未接入", "Head idle", `sgHeadSt_unused: 'Unused'`,
+		`sgHeadPipeline: 'Pipeline'`, `Wait for serving ACK`,
+		`\u6d41\u6c34\u7ebf`, `function sgHeadStatusHint(status)`,
+		`setTimeout(function(){sgTrainBusy=false;if(sgHeadPageAlive())window.sgLoadClassHead();},800)`,
+	} {
+		if strings.Contains(js, stale) {
+			t.Fatalf("class-head unused badge must name the live path, not %q", stale)
+		}
+	}
+	assertContainsAll(t, css, "class-head dashboard", []string{
+		`.sg-head-dash{`,
+		`grid-template-columns:minmax(0,1fr)`,
+		`.sg-pipe-steps{`,
+		`.sg-head-metrics{`,
+		`.sg-callout.is-ok{`,
+		`.sg-gold-sel{`,
+		`.sg-sample-action{display:grid`,
+		`.sg-sample-preview{`,
+		`overflow-wrap:break-word`,
+		`grid-template-columns:minmax(0,1fr) auto`,
+		`.sg-traffic-sample{display:grid;grid-template-columns:auto minmax(0,1fr)`,
+		`.sg-traffic-sample-body{`,
+		`.sg-traffic-dialog .sg-train-block{`,
+		`.sg-sample-pager{`,
+		`.sg-head-versions,.sg-head-test{`,
+		`.sg-version-table{`,
+		`.sg-try-result{`,
+		`.sg-pipe-btn.is-locked{`,
+		`.sg-promote-form{`,
+		`.sg-field{`,
+	})
+	if strings.Contains(css, `.sg-sample,.sg-traffic-sample{display:grid;grid-template-columns:minmax(0,1fr) auto`) {
+		t.Fatal("traffic samples must not reuse the sample/action grid (squeezes CJK class labels vertical)")
+	}
+	if strings.Contains(css, `.sg-sample-preview{color:#3b414d;font-size:12px;line-height:1.45;overflow-wrap:anywhere}`) {
+		t.Fatal("sample preview must not use overflow-wrap:anywhere (collapses CJK to one glyph per line)")
+	}
 }
 
 func TestAdminPageLLMServiceDoesNotExposeComputeGrant(t *testing.T) {

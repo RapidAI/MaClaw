@@ -38,6 +38,7 @@ type fakeSrvWeixinGateway struct {
 	stopCallback func()
 	sent         []weixin.OutgoingText
 	sentMedia    []weixin.OutgoingMedia
+	tokens       map[string]string
 }
 
 func (g *fakeSrvWeixinGateway) Start(context.Context) error {
@@ -73,7 +74,12 @@ func (g *fakeSrvWeixinGateway) SendMedia(_ context.Context, out weixin.OutgoingM
 	return nil
 }
 
-func (g *fakeSrvWeixinGateway) GetContextToken(string) string { return "ctx-token" }
+func (g *fakeSrvWeixinGateway) GetContextToken(uid string) string {
+	if g.tokens != nil {
+		return g.tokens[uid]
+	}
+	return "ctx-token"
+}
 
 func (g *fakeSrvWeixinGateway) LastActiveUserID() string { return "" }
 
@@ -225,7 +231,7 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if _, ok := doc.Paths["/api/v1/knowledge/import/url"]; !ok {
 		t.Fatalf("expected knowledge single URL import path in openapi doc")
 	}
-	for _, path := range []string{"/api/v1/im/weixin/qr/start", "/api/v1/im/weixin/qr/image", "/api/v1/im/weixin/qr/poll", "/api/v1/im/weixin/status", "/api/v1/im/weixin/restart"} {
+	for _, path := range []string{"/api/v1/im/weixin/qr/start", "/api/v1/im/weixin/qr/image", "/api/v1/im/weixin/qr/poll", "/api/v1/im/weixin/status", "/api/v1/im/weixin/restart", "/api/v1/im/qqbot/qr/start", "/api/v1/im/qqbot/qr/image", "/api/v1/im/qqbot/qr/poll"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Fatalf("expected WeChat QR binding path %s in openapi doc", path)
 		}
@@ -4749,6 +4755,12 @@ func TestWeixinRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
 	if len(messages) == 0 || messages[0].Content != "微信语音转写" || messages[0].Metadata["asr_transcript"] != "微信语音转写" || messages[0].Metadata["asr_source"] != "maclawsrv" {
 		t.Fatalf("WeChat voice transcript was not sent to agent with metadata: %#v", messages)
 	}
+	if len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Type != "audio" || messages[0].Attachments[0].MimeType != "audio/wav" || messages[0].Attachments[0].SourceMediaID != "weixin-media:ctx-token-voice" {
+		t.Fatalf("WeChat voice bytes were not published as a trusted audio attachment: %#v", messages[0].Attachments)
+	}
+	if strings.Contains(messages[0].Content, "[voice_base64") || strings.Contains(messages[0].Content, "workspace") {
+		t.Fatalf("WeChat voice content leaked a bypass marker: %q", messages[0].Content)
+	}
 }
 
 func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
@@ -5740,6 +5752,12 @@ func TestConfiguredIMRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
 	}
 	if len(messages) == 0 || messages[0].Content != "转写后的语音内容" || messages[0].Metadata["asr_transcript"] != "转写后的语音内容" || messages[0].Metadata["mime_type"] != "audio/wav" {
 		t.Fatalf("voice transcript was not sent to agent with metadata: %#v", messages)
+	}
+	if len(messages[0].Attachments) != 1 || messages[0].Attachments[0].Type != "audio" || messages[0].Attachments[0].MimeType != "audio/wav" || messages[0].Attachments[0].SourceMediaID != "telegram-media:voice-event-1" {
+		t.Fatalf("IM voice bytes were not published as a trusted audio attachment: %#v", messages[0].Attachments)
+	}
+	if strings.Contains(messages[0].Content, "[voice_base64") || strings.Contains(messages[0].Content, "workspace") {
+		t.Fatalf("IM voice content leaked a bypass marker: %q", messages[0].Content)
 	}
 }
 
@@ -7267,12 +7285,12 @@ func TestThirdPartyGatewayBuildsAgentAttachmentsForSmallDirectMedia(t *testing.T
 	if attachments[0].FileName != "note.txt" || attachments[0].Data == "" {
 		t.Fatalf("unexpected attachment: %#v", attachments[0])
 	}
-	if !strings.Contains(content, "attached inline") || !strings.Contains(content, "hello agent") {
+	if !strings.Contains(content, "trusted host input") || !strings.Contains(content, "hello agent") {
 		t.Fatalf("content should explain and inline text attachment: %q", content)
 	}
 }
 
-func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
+func TestThirdPartyGatewayKeepsLargeUnrecognizedMediaAsURLForAgent(t *testing.T) {
 	manager := newSrvThirdPartyGatewayManager(nil)
 	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
 	large := bytes.Repeat([]byte("x"), coreim.ThirdPartyMaxDirectBytes+1)
@@ -7282,8 +7300,8 @@ func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
 		ID:        "media-large",
 		Token:     "token",
 		Type:      "file",
-		FileName:  "large.txt",
-		MimeType:  "text/plain",
+		FileName:  "blob.bin",
+		MimeType:  "application/octet-stream",
 		Data:      large,
 		Uploaded:  true,
 	}
@@ -7296,7 +7314,8 @@ func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
 			Attachments: []srvThirdPartyMessageMediaRef{{
 				ID:       "media-large",
 				Type:     "file",
-				MimeType: "text/plain",
+				MimeType: "application/octet-stream",
+				FileName: "blob.bin",
 			}},
 		},
 	}
@@ -7305,14 +7324,14 @@ func TestThirdPartyGatewayKeepsLargeServerMediaAsURLForAgent(t *testing.T) {
 	}
 	content, attachments := manager.thirdPartyAgentInput(p, req, "")
 	if len(attachments) != 0 {
-		t.Fatalf("large media should not be inlined: %#v", attachments)
+		t.Fatalf("unrecognized large media should not be inlined: %#v", attachments)
 	}
 	if !strings.Contains(content, "available as server media id media-large") {
 		t.Fatalf("content should expose server media id: %q", content)
 	}
 }
 
-func TestThirdPartyGatewayStagesLargeOfficeMediaInInstanceWorkspace(t *testing.T) {
+func TestThirdPartyGatewayPublishesLargeOfficeAsTrustedDocument(t *testing.T) {
 	manager := newSrvThirdPartyGatewayManager(nil)
 	principal := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
 	data := bytes.Repeat([]byte("office-document"), coreim.ThirdPartyMaxDirectBytes/len("office-document")+1)
@@ -7336,20 +7355,53 @@ func TestThirdPartyGatewayStagesLargeOfficeMediaInInstanceWorkspace(t *testing.T
 	}
 	workspace := t.TempDir()
 	content, attachments := manager.thirdPartyAgentInput(principal, req, workspace)
-	if len(attachments) != 0 {
-		t.Fatalf("large Office media must be workspace-staged, not base64 attached: %#v", attachments)
+	if len(attachments) != 1 || attachments[0].MimeType == "" || attachments[0].Data == "" {
+		t.Fatalf("large Office media must publish as a trusted host attachment: %#v", attachments)
 	}
-	entries, err := os.ReadDir(filepath.Join(workspace, ".attachments"))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("workspace staging entries=%#v err=%v", entries, err)
+	if strings.Contains(content, workspace) || strings.Contains(attachments[0].FileName, "\\") {
+		t.Fatalf("trusted office attachment leaked a path: content=%q att=%#v", content, attachments[0])
 	}
-	stagedPath := filepath.Join(workspace, ".attachments", entries[0].Name())
-	staged, err := os.ReadFile(stagedPath)
-	if err != nil || !bytes.Equal(staged, data) {
-		t.Fatalf("staged Office media mismatch err=%v", err)
+	if !strings.Contains(content, "trusted host input") {
+		t.Fatalf("content=%q", content)
 	}
-	if filepath.Ext(stagedPath) != ".docx" || !strings.Contains(content, stagedPath) {
-		t.Fatalf("agent input must expose the workspace Office path: content=%q path=%q", content, stagedPath)
+	decoded, err := base64.StdEncoding.DecodeString(attachments[0].Data)
+	if err != nil || !bytes.Equal(decoded, data) {
+		t.Fatalf("trusted office payload mismatch err=%v", err)
+	}
+}
+
+func TestThirdPartyGatewayPublishesLargeVoiceAsTrustedAudio(t *testing.T) {
+	manager := newSrvThirdPartyGatewayManager(nil)
+	principal := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
+	data := bytes.Repeat([]byte("RIFF"), coreim.ThirdPartyMaxDirectBytes/4+1)
+	manager.media["voice-large"] = &srvThirdPartyMediaObject{
+		Principal: principal,
+		ClientID:  "client-a",
+		ID:        "voice-large",
+		Token:     "token",
+		Type:      "voice",
+		FileName:  "note.ogg",
+		MimeType:  "audio/ogg",
+		Data:      data,
+		Uploaded:  true,
+	}
+	req := srvThirdPartyIncomingRequest{ClientID: "client-a", EventID: "evt-voice-large", ConversationID: "room-a", Message: srvThirdPartyMessageBody{Type: "voice", Attachments: []srvThirdPartyMessageMediaRef{{ID: "voice-large", Type: "voice"}}}}
+	if err := normalizeThirdPartyIncomingRequest(&req); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := manager.validateIncomingMediaReferences(principal, &req); err != nil {
+		t.Fatalf("validate server media: %v", err)
+	}
+	content, attachments := manager.thirdPartyAgentInput(principal, req, t.TempDir())
+	if len(attachments) != 1 || attachments[0].Type != "audio" || attachments[0].MimeType != "audio/ogg" {
+		t.Fatalf("large voice must publish as trusted audio: %#v", attachments)
+	}
+	if strings.Contains(content, ".attachments") || strings.Contains(content, "saved to") {
+		t.Fatalf("trusted audio must not leak a workspace path: %q", content)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(attachments[0].Data)
+	if err != nil || !bytes.Equal(decoded, data) {
+		t.Fatalf("trusted audio payload mismatch err=%v", err)
 	}
 }
 func TestThirdPartyGatewayRejectsExternalIncomingMediaURL(t *testing.T) {
@@ -7462,7 +7514,7 @@ func TestThirdPartyGatewayAcceptsServerMediaURLOnlyReference(t *testing.T) {
 		t.Fatalf("server media URL should be normalized to id and metadata: %#v", req.Message.Attachments[0])
 	}
 	content, attachments := manager.thirdPartyAgentInput(p, req, "")
-	if len(attachments) != 1 || !strings.Contains(content, "attached inline") {
+	if len(attachments) != 1 || !strings.Contains(content, "trusted host input") {
 		t.Fatalf("server media should be passed to agent: attachments=%#v content=%q", attachments, content)
 	}
 }
@@ -9565,6 +9617,47 @@ func TestArchiveSessionLifecycle(t *testing.T) {
 	}
 	if restored.Archived || restored.ArchivedAt != nil {
 		t.Fatalf("expected restored session, got %#v", restored)
+	}
+}
+
+func TestMessageAPIForwardsContinuationHandleToServiceResolver(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, agentservice.CreateSessionInput{Title: "Demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	t.Cleanup(server.Close)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/messages", bytes.NewBufferString(`{"content":"continue","continuation_handle":"tch_unverified"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code == http.StatusOK || !strings.Contains(w.Body.String(), "task continuation unavailable") {
+		t.Fatalf("continuation handle was ignored by API: status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

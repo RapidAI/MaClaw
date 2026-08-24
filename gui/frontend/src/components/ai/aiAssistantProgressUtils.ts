@@ -83,7 +83,7 @@ export function stripLeadingEmojiCluster(text: string): string {
 
 /** Markdown structural prefixes that may sit before a decorative line-start pictograph. */
 const MD_LINE_PREFIX = /^(#{1,6}[ \t]+|[-*+][ \t]+|\d+\.[ \t]+|>[ \t]+)/;
-const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})/;
+const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})([^\r\n]*)/;
 
 /**
  * Strip decorative pictograph clusters on a single line (leading + mid-sentence),
@@ -155,14 +155,24 @@ export function stripLineDecorativePictographs(line: string): string {
  * blocks; semantic status/star marks are preserved for SVG rendering.
  */
 export function prepareChatBodyLines(lines: string[]): string[] {
-    let inFence = false;
+    let fenceMarker = "";
     let changed = false;
     const out = lines.map((line) => {
-        if (FENCE_LINE.test(line)) {
-            inFence = !inFence;
+        const fenceMatch = line.match(FENCE_LINE);
+        if (fenceMatch) {
+            const marker = fenceMatch[1];
+            if (!fenceMarker) {
+                fenceMarker = marker;
+            } else if (
+                marker[0] === fenceMarker[0]
+                && marker.length >= fenceMarker.length
+                && !fenceMatch[2].trim()
+            ) {
+                fenceMarker = "";
+            }
             return line;
         }
-        if (inFence) return line;
+        if (fenceMarker) return line;
         const cleaned = stripLineDecorativePictographs(line);
         if (cleaned !== line) changed = true;
         return cleaned;

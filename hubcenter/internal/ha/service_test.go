@@ -47,6 +47,26 @@ func TestNewServiceSkipsSelfPeer(t *testing.T) {
 	}
 }
 
+func TestLookupNodeURLReturnsSelfAndPeerAddresses(t *testing.T) {
+	svc := NewService("hc-1", "HubCenter 1", "https://hubs.mypapers.top", "secret", []StaticPeer{
+		{NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: "https://hubs.maclaw.top"},
+		{NodeID: "hc-3", NodeName: "HubCenter 3", BaseURL: "https://internal-hc-3", PublicURL: "https://hubs2.maclaw.top"},
+	})
+
+	if got := svc.LookupNodeURL("hc-1"); got != "https://hubs.mypapers.top" {
+		t.Fatalf("self URL = %q", got)
+	}
+	if got := svc.LookupNodeURL("hc-2"); got != "https://hubs.maclaw.top" {
+		t.Fatalf("peer base URL = %q", got)
+	}
+	if got := svc.LookupNodeURL("hc-3"); got != "https://hubs2.maclaw.top" {
+		t.Fatalf("peer public URL = %q", got)
+	}
+	if got := svc.LookupNodeURL("missing"); got != "" {
+		t.Fatalf("unknown node URL = %q", got)
+	}
+}
+
 func TestForceBroadcastSkillHubSnapshotBypassesHashDedup(t *testing.T) {
 	skillStore := skill.NewSkillStore(t.TempDir())
 	opsRepo := &fakeHASyncOpRepo{}

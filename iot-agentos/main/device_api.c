@@ -1,4 +1,6 @@
 #include "device_api.h"
+
+#include "device_profile_validation.h"
 #include <limits.h>
 #include "esp_timer.h"
 #include "board_profile.h"
@@ -13,6 +15,7 @@
 #include "power_lease_service.h"
 #include "resource_pressure_service.h"
 #include "storage_service.h"
+#include "wake_service.h"
 
 /* A public shutdown budget is owned by the composition root.  Child services
  * must consume the same deadline rather than each starting an independent
@@ -77,34 +80,6 @@ bool device_profile_get(device_profile_t *out_profile) {
         return false;
     }
     *out_profile = candidate;
-    return true;
-}
-
-bool device_profile_is_valid(const device_profile_t *profile) {
-    if (!profile || profile->struct_size != sizeof(*profile) ||
-        profile->abi_version != DEVICE_PROFILE_ABI_VERSION ||
-        !profile->id || !profile->id[0] ||
-        !profile->primary_interaction_label ||
-        !profile->primary_interaction_label[0] ||
-        profile->display_width == 0 || profile->display_height == 0 ||
-        (profile->capabilities & ~DEVICE_CAPABILITY_KNOWN_MASK) != 0 ||
-        (profile->capabilities & DEVICE_CAPABILITY_REQUIRED_BASELINE) !=
-            DEVICE_CAPABILITY_REQUIRED_BASELINE) {
-        return false;
-    }
-
-    if (profile->primary_interaction_source == DEVICE_INPUT_SOURCE_TOUCH) {
-        if ((profile->capabilities & DEVICE_CAPABILITY_TOUCH_INPUT) == 0) return false;
-    } else if (profile->primary_interaction_source != DEVICE_INPUT_SOURCE_PRIMARY_CONTROL) {
-        return false;
-    }
-
-    /* The public viewport is what shared scenes target.  A round renderer
-     * cannot describe a rectangular logical safe area as an ordinary panel. */
-    if ((profile->capabilities & DEVICE_CAPABILITY_ROUND_DISPLAY) != 0 &&
-        profile->display_width != profile->display_height) {
-        return false;
-    }
     return true;
 }
 
@@ -201,13 +176,27 @@ void device_wake_word_pause(bool paused) {
 device_status_t device_power_init(void) {
     device_status_t lease_status = power_lease_service_init();
     if (lease_status != DEVICE_STATUS_OK) return lease_status;
+    device_status_t wake_status = wake_service_init();
+    if (wake_status != DEVICE_STATUS_OK) {
+        (void)power_lease_service_deinit(100);
+        return wake_status;
+    }
     device_status_t power_status = power_service_init();
-    if (power_status == DEVICE_STATUS_OK) return DEVICE_STATUS_OK;
+    if (power_status == DEVICE_STATUS_OK) {
+        /* The test-only lease proof runs before normal UI scheduling starts
+         * and restores an empty generation before this API reports ready.
+         * Production configurations compile the hook to a no-op. */
+        device_status_t test_status =
+            power_lease_service_run_display_off_commit_lifecycle_test();
+        if (test_status != DEVICE_STATUS_OK) return test_status;
+        return power_service_run_display_off_retry_hil_test();
+    }
 
     /* Power Lease has no worker and no valid lease owner can exist before the
      * Power scheduler has published readiness. Do not leave its admission
      * open if timer creation/initialization rejects this generation; otherwise
      * a later startup retry could inherit a lease domain without a scheduler. */
+    wake_service_deinit();
     device_status_t rollback_status = power_lease_service_deinit(100);
     if (rollback_status != DEVICE_STATUS_OK) return rollback_status;
     return power_status;
@@ -227,7 +216,23 @@ device_status_t device_power_deinit(uint32_t timeout_ms) {
     device_status_t lease_status = remaining_ms
                                        ? power_lease_service_deinit(remaining_ms)
                                        : DEVICE_STATUS_TIMEOUT;
+    /* Wake Service owns no driver resources, but it describes the same active
+     * Power generation. If a bounded stop leaves that generation alive for a
+     * retry/diagnostic pass, retain the query service too rather than exposing
+     * a false "wake unavailable" state while Power is still running. */
+    if (power_status == DEVICE_STATUS_OK && lease_status == DEVICE_STATUS_OK) {
+        wake_service_deinit();
+    }
     return power_status != DEVICE_STATUS_OK ? power_status : lease_status;
+}
+
+device_status_t device_power_request_state(device_power_state_t target_state) {
+    return power_service_request_verified_sleep(target_state);
+}
+
+bool device_power_get_transition_snapshot(
+    device_power_transition_snapshot_t *out_snapshot) {
+    return power_service_get_transition_snapshot(out_snapshot);
 }
 
 device_status_t device_power_lease_acquire(device_power_lease_owner_t owner,
@@ -243,23 +248,29 @@ bool device_power_lease_get_snapshot(device_power_lease_snapshot_t *out_snapshot
     return power_lease_service_get_snapshot(out_snapshot);
 }
 
+device_status_t device_wake_get_depth_capability(
+    device_power_state_t target_state,
+    device_wake_depth_capability_t *out_capability) {
+    return wake_service_get_depth_capability(target_state, out_capability);
+}
+
 device_status_t device_power_schedule_display_off(uint32_t idle_after_ms) {
     return power_service_schedule_display_off(idle_after_ms);
 }
 
-void device_power_cancel_display_off(void) {
-    power_service_cancel_display_off();
+device_status_t device_power_cancel_display_off(void) {
+    return power_service_cancel_display_off();
 }
 
-bool device_power_wake_display_from_user(void) {
+device_status_t device_power_wake_display_from_user(void) {
     return power_service_wake_display_from_user();
 }
 
-bool device_power_wake_display_from_schedule(void) {
+device_status_t device_power_wake_display_from_schedule(void) {
     return power_service_wake_display_from_schedule();
 }
 
-bool device_power_wake_display_from_remote_control(void) {
+device_status_t device_power_wake_display_from_remote_control(void) {
     return power_service_wake_display_from_remote_control();
 }
 
@@ -292,19 +303,12 @@ bool device_connectivity_is_active_cellular(void) {
     return connectivity_service_is_active_cellular();
 }
 
-bool device_connectivity_initialize(void) {
+device_status_t device_connectivity_initialize(void) {
     return connectivity_service_initialize();
 }
 
 device_status_t device_connectivity_deinit(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    switch (connectivity_service_deinit(timeout_ms)) {
-        case ESP_OK: return DEVICE_STATUS_OK;
-        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
-        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
-        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-        default: return DEVICE_STATUS_INTERNAL_ERROR;
-    }
+    return connectivity_service_deinit(timeout_ms);
 }
 
 uint32_t device_connectivity_begin_wifi_attempt(const char *network_id) {
@@ -390,6 +394,14 @@ device_status_t device_connectivity_quiesce_cellular_transport(uint32_t timeout_
         return DEVICE_STATUS_UNAVAILABLE;
     }
     return connectivity_service_quiesce_cellular_transport(timeout_ms);
+}
+
+device_status_t device_connectivity_begin_network_request(void) {
+    return connectivity_service_begin_network_request();
+}
+
+void device_connectivity_end_network_request(void) {
+    connectivity_service_end_network_request();
 }
 
 device_status_t device_connectivity_cellular_http_request(
@@ -584,6 +596,13 @@ bool device_input_is_primary_interaction_source(device_input_source_t source) {
            source == profile.primary_interaction_source;
 }
 
+bool device_input_is_display_wake_source(device_input_source_t source) {
+    device_profile_t profile;
+    return device_profile_input_source_is_wake_eligible(source) &&
+           device_profile_get(&profile) &&
+           (profile.display_wake_sources & DEVICE_INPUT_SOURCE_FLAG(source)) != 0;
+}
+
 const char *device_input_primary_interaction_label(void) {
     device_profile_t profile;
     if (!device_profile_get(&profile) || !profile.primary_interaction_label ||
@@ -591,4 +610,13 @@ const char *device_input_primary_interaction_label(void) {
         return "本机控件";
     }
     return profile.primary_interaction_label;
+}
+
+const char *device_input_volume_interaction_hint(void) {
+    device_profile_t profile;
+    if (!device_profile_get(&profile) || !profile.volume_interaction_hint ||
+        !profile.volume_interaction_hint[0]) {
+        return "本机控件调节音量";
+    }
+    return profile.volume_interaction_hint;
 }

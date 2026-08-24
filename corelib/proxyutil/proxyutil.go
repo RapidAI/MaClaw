@@ -22,9 +22,37 @@ type Config struct {
 	Bypass   string // semicolon-separated bypass list
 }
 
+// Normalized lowercases the scheme, trims host/port, and maps socks5h → socks5.
+// Disabled configs keep their fields so callers can persist a draft.
+func (c Config) Normalized() Config {
+	c.Protocol = strings.ToLower(strings.TrimSpace(c.Protocol))
+	switch c.Protocol {
+	case "https":
+	case "socks5", "socks5h":
+		c.Protocol = "socks5"
+	default:
+		c.Protocol = "http"
+	}
+	c.Host = strings.TrimSpace(c.Host)
+	c.Port = strings.TrimSpace(c.Port)
+	c.Username = strings.TrimSpace(c.Username)
+	c.Bypass = strings.TrimSpace(c.Bypass)
+	return c
+}
+
+// EnabledNormalized returns a zero Config when disabled so identical
+// "off" settings compare equal.
+func EnabledNormalized(c Config) Config {
+	if !c.Enabled {
+		return Config{}
+	}
+	return c.Normalized()
+}
+
 // ProxyURL builds the full proxy URL string, e.g. "socks5://user:pass@host:port".
 // Returns "" if Host or Port is empty.
 func (c Config) ProxyURL() string {
+	c = c.Normalized()
 	if c.Host == "" || c.Port == "" {
 		return ""
 	}
@@ -32,10 +60,14 @@ func (c Config) ProxyURL() string {
 	if scheme == "" {
 		scheme = "http"
 	}
-	if c.Username != "" && c.Password != "" {
-		return fmt.Sprintf("%s://%s:%s@%s:%s", scheme,
-			url.QueryEscape(c.Username), url.QueryEscape(c.Password),
-			c.Host, c.Port)
+	if c.Username != "" || c.Password != "" {
+		var user *url.Userinfo
+		if c.Password != "" {
+			user = url.UserPassword(c.Username, c.Password)
+		} else {
+			user = url.User(c.Username)
+		}
+		return fmt.Sprintf("%s://%s@%s:%s", scheme, user.String(), c.Host, c.Port)
 	}
 	return fmt.Sprintf("%s://%s:%s", scheme, c.Host, c.Port)
 }
@@ -99,41 +131,43 @@ func (c Config) ProxyFunc() func(*http.Request) (*url.URL, error) {
 }
 
 // WrapTransport sets the Proxy field on an existing *http.Transport.
-// For SOCKS5, it also sets DialContext via golang.org/x/net/proxy for full compatibility.
+// For SOCKS5, it also sets Dial via golang.org/x/net/proxy for full compatibility.
 func WrapTransport(t *http.Transport, c Config) {
+	_ = ApplyToTransport(t, c)
+}
+
+// ApplyToTransport is WrapTransport with a setup error (empty host/port or SOCKS5 dialer).
+func ApplyToTransport(t *http.Transport, c Config) error {
+	if t == nil {
+		return fmt.Errorf("nil transport")
+	}
 	if !c.Enabled {
-		return
+		return nil
 	}
-	rawURL := c.ProxyURL()
-	if rawURL == "" {
-		return
-	}
-
-	scheme := c.Protocol
-	if scheme == "" {
-		scheme = "http"
+	c = c.Normalized()
+	if c.ProxyURL() == "" {
+		return fmt.Errorf("proxy host and port are required")
 	}
 
-	if scheme == "socks5" {
-		// Use golang.org/x/net/proxy for SOCKS5 dial
+	if c.Protocol == "socks5" {
 		var auth *proxy.Auth
 		if c.Username != "" {
 			auth = &proxy.Auth{User: c.Username, Password: c.Password}
 		}
 		dialer, err := proxy.SOCKS5("tcp", net.JoinHostPort(c.Host, c.Port), auth, proxy.Direct)
-		if err == nil {
-			// proxy.Dialer doesn't implement DialContext, so wrap with Dial.
-			t.Dial = func(network, addr string) (net.Conn, error) {
-				if c.ShouldBypass(addr) {
-					return net.Dial(network, addr)
-				}
-				return dialer.Dial(network, addr)
-			}
-			t.Proxy = nil // ensure no double-proxy
+		if err != nil {
+			return err
 		}
-		return
+		t.Dial = func(network, addr string) (net.Conn, error) {
+			if c.ShouldBypass(addr) {
+				return net.Dial(network, addr)
+			}
+			return dialer.Dial(network, addr)
+		}
+		t.Proxy = nil
+		return nil
 	}
 
-	// HTTP / HTTPS proxy
 	t.Proxy = c.ProxyFunc()
+	return nil
 }

@@ -303,9 +303,6 @@ func (s *srvDeviceUpdateBindingStore) bind(_ context.Context, principal srvThird
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, found := s.data[identity.DeviceID]
-	if found && (current.TenantID != principal.Principal.TenantID || current.UserID != principal.Principal.UserID) {
-		return fmt.Errorf("device identity is already paired to another owner")
-	}
 	if found && !paired && current.BoardID != "" && (current.BoardID != identity.BoardID || current.HardwareRev != identity.HardwareRev || current.LayoutID != identity.LayoutID || current.CompatibilityID != identity.CompatibilityID) {
 		return fmt.Errorf("device firmware identity conflicts with its pairing binding")
 	}
@@ -315,6 +312,11 @@ func (s *srvDeviceUpdateBindingStore) bind(_ context.Context, principal srvThird
 	epoch := current.CredentialEpoch
 	if epoch <= 0 {
 		epoch = 1
+	} else if paired {
+		// A fresh pairing code is explicit authority to move a physical device.
+		// Advance the credential epoch even when it changes owners so subsequent
+		// identity-bearing handshakes cannot retain the old pairing state.
+		epoch++
 	}
 	binding := srvDeviceFirmwareBinding{DeviceID: identity.DeviceID, TenantID: principal.Principal.TenantID, UserID: principal.Principal.UserID, CredentialEpoch: epoch, BoardID: identity.BoardID, HardwareRev: identity.HardwareRev, LayoutID: identity.LayoutID, CompatibilityID: identity.CompatibilityID, PairedAt: current.PairedAt, LastSeenAt: now}
 	if binding.PairedAt == 0 {
@@ -347,9 +349,6 @@ func (s *srvDeviceUpdateBindingStore) reserve(principal srvThirdPartyPrincipal, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, found := s.data[deviceID]
-	if found && (current.TenantID != principal.Principal.TenantID || current.UserID != principal.Principal.UserID) {
-		return fmt.Errorf("device identity is already paired to another owner")
-	}
 	epoch := current.CredentialEpoch + 1
 	if epoch <= 0 {
 		epoch = 1

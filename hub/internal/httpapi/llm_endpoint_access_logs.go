@@ -41,6 +41,9 @@ type llmEndpointAccessLogEntry struct {
 	InputCostRMB      float64        `json:"input_cost_rmb,omitempty"`
 	OutputCostRMB     float64        `json:"output_cost_rmb,omitempty"`
 	TotalCostRMB      float64        `json:"total_cost_rmb,omitempty"`
+	CreditMultiplier  float64        `json:"credit_multiplier,omitempty"`
+	Credits           float64        `json:"credits,omitempty"`
+	BillingRecorded   bool           `json:"billing_recorded,omitempty"`
 	RequestBytes      int            `json:"request_bytes,omitempty"`
 	RequestBody       string         `json:"request_body,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`
@@ -77,6 +80,9 @@ type llmEndpointAccessLogView struct {
 	InputCostRMB      float64        `json:"input_cost_rmb,omitempty"`
 	OutputCostRMB     float64        `json:"output_cost_rmb,omitempty"`
 	TotalCostRMB      float64        `json:"total_cost_rmb,omitempty"`
+	CreditMultiplier  float64        `json:"credit_multiplier,omitempty"`
+	Credits           float64        `json:"credits,omitempty"`
+	BillingRecorded   bool           `json:"billing_recorded,omitempty"`
 	RequestBytes      int            `json:"request_bytes,omitempty"`
 	RequestBody       string         `json:"request_body,omitempty"`
 	CreatedAt         string         `json:"created_at"`
@@ -578,6 +584,9 @@ func GetLLMEndpointAccessLogsHandler(system store.SystemSettingsRepository) http
 				InputCostRMB:      item.InputCostRMB,
 				OutputCostRMB:     item.OutputCostRMB,
 				TotalCostRMB:      item.TotalCostRMB,
+				CreditMultiplier:  item.CreditMultiplier,
+				Credits:           item.Credits,
+				BillingRecorded:   item.BillingRecorded,
 				RequestBytes:      item.RequestBytes,
 				RequestBody:       item.RequestBody,
 				CreatedAt:         item.CreatedAt.UTC().Format(time.RFC3339),

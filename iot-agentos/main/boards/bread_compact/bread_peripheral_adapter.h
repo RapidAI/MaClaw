@@ -7,8 +7,8 @@
 
 #include "sdkconfig.h"
 
-#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
-#error "Bread peripheral adapter may only be included by the Bread Compact profile"
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD && !CONFIG_MACLAW_BOARD_REFERENCE_FAKE
+#error "Bread peripheral adapter may only be included by Bread Compact or the CI reference profile"
 #endif
 
 #ifndef MACLAW_COMPACT_PERIPHERAL_ADAPTER_IMPLEMENTATION
@@ -31,6 +31,13 @@ static inline esp_err_t compact_peripheral_adapter_stop_background_tasks(
     uint32_t timeout_ms) {
     return timeout_ms ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
+
+static inline esp_err_t compact_peripheral_adapter_prepare_system_sleep(
+    uint32_t timeout_ms) {
+    return timeout_ms ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+static inline void compact_peripheral_adapter_abort_system_sleep_prepare(void) {}
 
 /* Bread has no profile-owned power monitor.  Keep startup orchestration
  * uniform: the shared compact renderer asks every selected profile to bring

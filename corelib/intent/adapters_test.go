@@ -71,7 +71,7 @@ func TestToTaskIntent_LowConfidenceExecutableLabelsBecomeAmbiguous(t *testing.T)
 }
 
 func TestToTaskIntent_NonCodingLabels(t *testing.T) {
-	for _, label := range []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelCurrentTime, LabelLiveData} {
+	for _, label := range []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelDocumentGenerate, LabelDocumentOpen, LabelOffice, LabelCurrentTime, LabelLiveData} {
 		r := &ClassificationResult{
 			Primary:    label,
 			Confidence: 0.88,
@@ -169,7 +169,7 @@ func TestToGateIntent_Maintenance(t *testing.T) {
 }
 
 func TestToGateIntent_NonCodingLabels(t *testing.T) {
-	for _, label := range []IntentLabel{LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelBrowser, LabelCurrentTime, LabelLiveData} {
+	for _, label := range []IntentLabel{LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelDocumentGenerate, LabelDocumentOpen, LabelOffice, LabelBrowser, LabelCurrentTime, LabelLiveData} {
 		r := &ClassificationResult{
 			Primary:    label,
 			Confidence: 0.80,
@@ -220,7 +220,7 @@ func TestIsCodingLike(t *testing.T) {
 		}
 	}
 
-	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelCurrentTime, LabelLiveData, LabelSSH, LabelContinuation, LabelAmbiguous, LabelUnknown}
+	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelDocumentGenerate, LabelDocumentOpen, LabelOffice, LabelCurrentTime, LabelLiveData, LabelSSH, LabelContinuation, LabelAmbiguous, LabelUnknown}
 	for _, label := range nonCodingLabels {
 		r := &ClassificationResult{Primary: label}
 		if r.IsCodingLike() {
@@ -230,7 +230,7 @@ func TestIsCodingLike(t *testing.T) {
 }
 
 func TestIsNonCodingLike(t *testing.T) {
-	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelCurrentTime, LabelLiveData}
+	nonCodingLabels := []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelDocumentGenerate, LabelDocumentOpen, LabelOffice, LabelCurrentTime, LabelLiveData}
 	for _, label := range nonCodingLabels {
 		r := &ClassificationResult{Primary: label}
 		if !r.IsNonCodingLike() {
@@ -297,5 +297,32 @@ func TestHasCreationSignals_SecondaryHasMaintenance(t *testing.T) {
 	intent, _, _, _, _ := r.ToGateIntent()
 	if intent != "maintenance" {
 		t.Errorf("got intent=%q, want %q (maintenance in secondary)", intent, "maintenance")
+	}
+}
+
+func TestIsNonCapabilityLabel(t *testing.T) {
+	generic := []IntentLabel{"", LabelNonCoding, LabelContinuation, LabelAmbiguous, LabelUnknown}
+	for _, label := range generic {
+		if !label.IsNonCapabilityLabel() {
+			t.Errorf("%q: want generic non-capability label", label)
+		}
+	}
+	for _, label := range []IntentLabel{LabelSearch, LabelLiveData, LabelCoding, LabelDocumentDelivery, LabelScreenshot} {
+		if label.IsNonCapabilityLabel() {
+			t.Errorf("%q: capability family must not be treated as generic", label)
+		}
+	}
+}
+
+func TestClassificationResultLabels(t *testing.T) {
+	if got := (ClassificationResult{}).Labels(); len(got) != 0 {
+		t.Fatalf("empty result labels=%v", got)
+	}
+	if got := (ClassificationResult{Primary: LabelNonCoding}).Labels(); len(got) != 1 || got[0] != LabelNonCoding {
+		t.Fatalf("primary-only labels=%v", got)
+	}
+	got := (ClassificationResult{Primary: LabelNonCoding, Secondary: []IntentLabel{LabelSearch, LabelLiveData}}).Labels()
+	if len(got) != 3 || got[0] != LabelNonCoding || got[1] != LabelSearch || got[2] != LabelLiveData {
+		t.Fatalf("primary+secondary labels=%v", got)
 	}
 }

@@ -80,12 +80,14 @@ const maxImportJobStaleAge = 2 * time.Hour
 
 // CreateLibraryInput is admin create request.
 type CreateLibraryInput struct {
-	TenantID    string
-	Name        string
-	Description string
-	ACL         ACL
-	SyncEnabled *bool
-	Actor       string
+	TenantID           string
+	Name               string
+	Description        string
+	ACL                ACL
+	SyncEnabled        *bool
+	LibraryKind        string
+	AcceptsSubmissions *bool
+	Actor              string
 }
 
 // CreateLibrary creates an empty library.
@@ -136,6 +138,14 @@ func (s *Service) CreateLibrary(ctx context.Context, in CreateLibraryInput) (*st
 		_ = os.MkdirAll(storePath, 0o755)
 		_ = os.MkdirAll(s.Host.PackagesDir(tenantID, id), 0o755)
 	}
+	kind, err := normalizeLibraryKind(in.LibraryKind)
+	if err != nil {
+		return nil, err
+	}
+	accepts := true
+	if in.AcceptsSubmissions != nil {
+		accepts = *in.AcceptsSubmissions
+	}
 	lib := &store.DigitalAssetLibrary{
 		ID:                 id,
 		TenantID:           tenantID,
@@ -147,6 +157,8 @@ func (s *Service) CreateLibrary(ctx context.Context, in CreateLibraryInput) (*st
 		ACLDepartmentsJSON: depts,
 		ACLUsersJSON:       users,
 		StorePath:          storePath,
+		LibraryKind:        kind,
+		AcceptsSubmissions: accepts,
 		CreatedBy:          strings.TrimSpace(in.Actor),
 		UpdatedBy:          strings.TrimSpace(in.Actor),
 		CreatedAt:          now,
@@ -158,8 +170,8 @@ func (s *Service) CreateLibrary(ctx context.Context, in CreateLibraryInput) (*st
 	return lib, nil
 }
 
-// UpdateLibraryMeta updates name/description/acl/sync_enabled.
-func (s *Service) UpdateLibraryMeta(ctx context.Context, tenantID, libraryID string, name, description *string, acl *ACL, syncEnabled *bool, actor string) (*store.DigitalAssetLibrary, error) {
+// UpdateLibraryMeta updates name/description/acl/sync_enabled/kind/accepts_submissions.
+func (s *Service) UpdateLibraryMeta(ctx context.Context, tenantID, libraryID string, name, description *string, acl *ACL, syncEnabled *bool, actor string, libraryKind *string, acceptsSubmissions *bool) (*store.DigitalAssetLibrary, error) {
 	if err := s.requireEnabled(ctx, tenantID); err != nil {
 		return nil, err
 	}
@@ -191,6 +203,16 @@ func (s *Service) UpdateLibraryMeta(ctx context.Context, tenantID, libraryID str
 	}
 	if syncEnabled != nil {
 		lib.SyncEnabled = *syncEnabled
+	}
+	if libraryKind != nil {
+		kind, kerr := normalizeLibraryKind(*libraryKind)
+		if kerr != nil {
+			return nil, kerr
+		}
+		lib.LibraryKind = kind
+	}
+	if acceptsSubmissions != nil {
+		lib.AcceptsSubmissions = *acceptsSubmissions
 	}
 	lib.UpdatedBy = strings.TrimSpace(actor)
 	lib.UpdatedAt = time.Now().UTC()
@@ -1170,6 +1192,17 @@ func fileSHA256(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+func normalizeLibraryKind(kind string) (string, error) {
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "" {
+		return LibraryKindBusiness, nil
+	}
+	if kind != LibraryKindBusiness && kind != LibraryKindTechnical {
+		return "", fmt.Errorf("%w: library_kind must be business or technical", ErrInvalid)
+	}
+	return kind, nil
+}
+
 func (s *Service) requireEnabled(ctx context.Context, tenantID string) error {
 	if s == nil {
 		return ErrFeatureDisabled
@@ -1186,12 +1219,17 @@ func LibraryToView(lib *store.DigitalAssetLibrary) LibraryView {
 		return LibraryView{}
 	}
 	acl := ParseACL(lib.ACLMode, lib.ACLDepartmentsJSON, lib.ACLUsersJSON)
+	kind := strings.TrimSpace(lib.LibraryKind)
+	if kind == "" {
+		kind = LibraryKindBusiness
+	}
 	return LibraryView{
 		ID: lib.ID, TenantID: lib.TenantID, Name: lib.Name, Description: lib.Description,
 		Status: lib.Status, SyncEnabled: lib.SyncEnabled, ACLMode: acl.Mode,
 		Departments: acl.Departments, ACLFingerprint: acl.Fingerprint(),
 		ContentRev: lib.ContentRev, ContentHash: lib.ContentHash,
 		SourceCount: lib.SourceCount, CardCount: lib.CardCount, ByteSize: lib.ByteSize,
+		LibraryKind: kind, AcceptsSubmissions: lib.AcceptsSubmissions,
 		CreatedBy: lib.CreatedBy, UpdatedBy: lib.UpdatedBy,
 		CreatedAt: FormatTime(lib.CreatedAt), UpdatedAt: FormatTime(lib.UpdatedAt),
 	}

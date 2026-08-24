@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -396,35 +397,5 @@ func specializeCodingWorkflowDelegateTool(def map[string]interface{}) {
 }
 
 func cloneToolDefinitionMap(in map[string]interface{}) map[string]interface{} {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]interface{}, len(in))
-	for k, v := range in {
-		out[k] = cloneToolDefinitionValue(v)
-	}
-	return out
-}
-
-func cloneToolDefinitionValue(v interface{}) interface{} {
-	switch typed := v.(type) {
-	case map[string]interface{}:
-		return cloneToolDefinitionMap(typed)
-	case map[string]string:
-		out := make(map[string]string, len(typed))
-		for k, value := range typed {
-			out[k] = value
-		}
-		return out
-	case []string:
-		return append([]string(nil), typed...)
-	case []interface{}:
-		out := make([]interface{}, len(typed))
-		for i, value := range typed {
-			out[i] = cloneToolDefinitionValue(value)
-		}
-		return out
-	default:
-		return v
-	}
+	return agent.CloneToolDefinitionMap(in)
 }

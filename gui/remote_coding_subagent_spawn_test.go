@@ -199,6 +199,148 @@ func TestRemoteRuntimeSpawnRejectsClosedParentAttempt(t *testing.T) {
 	if !strings.Contains(result, "runtime parent attempt is no longer running") {
 		t.Fatalf("closed Runtime attempt must reject spawn, got %q", result)
 	}
+	if remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, result) != "failed" {
+		t.Fatalf("closed Runtime attempt must be a failed tool outcome, got %q from %q", remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, result), result)
+	}
+}
+
+func TestExecuteRemoteWorkerSpawnRejected(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{nestDepth: 0, role: codingRoleWorker}}
+	got := cb.executeSpawnRemoteCodingAgent(map[string]interface{}{
+		"role":  "worker",
+		"task":  "implement helper",
+		"files": []interface{}{"src/helper.go"},
+	})
+	if !strings.Contains(got, "remote worker requires an active SSH session and project directory") {
+		t.Fatalf("remote worker without session = %q", got)
+	}
+	if remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, got) != "failed" {
+		t.Fatalf("remote worker without session must be a failed tool outcome, got %q from %q", remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, got), got)
+	}
+	got = cb.executeSpawnRemoteCodingAgent(map[string]interface{}{
+		"role": "worker",
+		"task": "implement helper",
+	})
+	if !strings.Contains(got, "worker requires files") {
+		t.Fatalf("remote worker without files = %q", got)
+	}
+	if remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, got) != "failed" {
+		t.Fatalf("remote worker without files must be a failed tool outcome, got %q from %q", remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, got), got)
+	}
+}
+
+func TestRemoteSpawnAdmissionFailuresAreFailedToolOutcomes(t *testing.T) {
+	closed := "spawn_coding_agent: runtime parent attempt is no longer running"
+	if remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, codingSpawnRemoteFailure(closed)) != "failed" {
+		t.Fatal("closed parent attempt must classify as a failed remote tool")
+	}
+	success := "spawn_coding_agent(remote) completed: 1 agent(s) mode=sequential\n\n### agent[0] role=worker\nsummary:\nfixed the error: off-by-one\npassed=1 failed=0\n"
+	if remoteCodingToolOutcome(success) != "failed" {
+		t.Fatal("sanity: SSH-log heuristic still trips on error: in a child summary")
+	}
+	if remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, success) != "success" {
+		t.Fatal("successful remote spawn report must stay a successful tool outcome even if a child summary mentions error:")
+	}
+	if remoteCodingExecutionOutcome(codingSubAgentSpawnToolName, "spawn_coding_agent admitted read-only child task(s); parent attempt released its lease:") != "success" {
+		t.Fatal("ledger admission report must stay a successful tool outcome")
+	}
+}
+
+func TestExecuteLedgerReadOnlyRemoteSpawnRejectsWorker(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{
+		runtimeStore:   codingruntime.NewMemoryStore(),
+		runtimeAttempt: &codingruntime.Attempt{AttemptID: "att-1"},
+	}}
+	got := cb.executeLedgerReadOnlyRemoteSpawn([]codingSpawnSpec{{
+		Role: codingRoleWorker, Task: "write", Files: []string{"src/helper.go"},
+	}})
+	if !strings.Contains(got, "inspection ledger admission cannot run worker children") {
+		t.Fatalf("ledger remote spawn = %q", got)
+	}
+}
+
+func TestIsolatedRemoteWorkerShouldKeepIsolate(t *testing.T) {
+	if !isolatedRemoteWorkerShouldKeepIsolate(nil, nil, &RemoteCodingSubAgentResult{FilesModified: []string{"a.go"}}) {
+		t.Fatal("audit files should keep the isolate")
+	}
+	if !isolatedRemoteWorkerShouldKeepIsolate(&remoteCodingIsolate{created: true, IsolateDir: "/tmp/maclaw-wt-1"}, nil, nil) {
+		t.Fatal("unprobed isolate must be kept")
+	}
+}
+
+func TestRemapRemoteIsolatePaths(t *testing.T) {
+	got := remapRemoteIsolatePaths(
+		[]string{"/tmp/maclaw-wt-1/src/a.go", "/tmp/maclaw-wt-1", "/home/u/app/keep.go"},
+		"/tmp/maclaw-wt-1",
+		"/home/u/app",
+	)
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "/home/u/app/src/a.go") || !strings.Contains(joined, "/home/u/app") {
+		t.Fatalf("remap = %#v", got)
+	}
+	if strings.Contains(joined, "/tmp/maclaw-wt-1/src") {
+		t.Fatalf("isolate prefix leaked: %#v", got)
+	}
+	escaped := remapRemoteIsolatePaths(
+		[]string{"/tmp/maclaw-wt-1/../etc/passwd"},
+		"/tmp/maclaw-wt-1",
+		"/home/u/app",
+	)
+	for _, p := range escaped {
+		if strings.Contains(p, "/home/u/app") {
+			t.Fatalf("traversal must not remap onto the source tree: %#v", escaped)
+		}
+	}
+}
+
+func TestValidateRemoteIsolatedWorkerSpecs(t *testing.T) {
+	if err := validateRemoteIsolatedWorkerSpecs("/home/u/app", []codingSpawnSpec{{
+		Role: codingRoleWorker, Task: "w", Files: []string{"./src/a.go"},
+	}}); err == nil {
+		t.Fatal("dot-relative remote write-set must fail at admission")
+	}
+	if err := validateRemoteIsolatedWorkerSpecs("/home/u/app", []codingSpawnSpec{{
+		Role: codingRoleWorker, Task: "w", Files: []string{"src/a.go"},
+	}}); err != nil {
+		t.Fatalf("plain relative path should pass: %v", err)
+	}
+}
+
+func TestCodingSpawnBatchHeaderMarksFailure(t *testing.T) {
+	ok := codingSpawnBatchHeader("spawn_coding_agent", 2, 2, 0, "parallel")
+	if !strings.Contains(ok, "completed") || strings.Contains(ok, "错误") {
+		t.Fatalf("success header=%q", ok)
+	}
+	bad := codingSpawnBatchHeader("spawn_coding_agent", 2, 1, 1, "sequential")
+	if !strings.Contains(bad, "错误") || strings.Contains(bad, "completed") {
+		t.Fatalf("failure header=%q", bad)
+	}
+}
+
+func TestRemoteIsolatedWorkerUsesIsolateProjectDir(t *testing.T) {
+	parent := &RemoteCodingSubAgent{projectDir: "/home/u/app", workDir: "/home/u/work"}
+	workDir, projectDir, err := codingSpawnRemoteChildDirs(parent, codingSpawnSpec{
+		Role: codingRoleWorker, Task: "write", Files: []string{"src/a.go"}, projectPath: "/tmp/maclaw-wt-1",
+	})
+	if err != nil || projectDir != "/tmp/maclaw-wt-1" || workDir != "/tmp/maclaw-wt-1" {
+		t.Fatalf("worker must bind isolate dirs, got project=%s work=%s err=%v", projectDir, workDir, err)
+	}
+	if _, _, err := codingSpawnRemoteChildDirs(parent, codingSpawnSpec{
+		Role: codingRoleWorker, Task: "write", Files: []string{"src/a.go"},
+	}); err == nil {
+		t.Fatal("worker without isolate path must fail closed")
+	}
+	if _, _, err := codingSpawnRemoteChildDirs(parent, codingSpawnSpec{
+		Role: codingRoleWorker, Task: "write", Files: []string{"src/a.go"}, projectPath: "/home/u/app",
+	}); err == nil {
+		t.Fatal("worker isolate equal to primary must fail closed")
+	}
+	workDir, projectDir, err = codingSpawnRemoteChildDirs(parent, codingSpawnSpec{
+		Role: codingRoleExplorer, Task: "inspect", projectPath: "/tmp/maclaw-wt-1",
+	})
+	if err != nil || projectDir != "/home/u/app" || workDir != "/home/u/work" {
+		t.Fatalf("explorer must stay on primary, got project=%s work=%s err=%v", projectDir, workDir, err)
+	}
 }
 
 func TestRemoteReadOnlyChildDoesNotInheritPreviewLifecycle(t *testing.T) {
@@ -259,6 +401,13 @@ func TestRemoteOriginalRequestKindSurvivesExpandedPlanStep(t *testing.T) {
 	readOnly, operational := resolveRemoteCodingRequestFlags(codingRequestOperational, "[Plan step T1/3] implement and verify everything")
 	if readOnly || !operational {
 		t.Fatal("original operational kind must survive plan-step expansion")
+	}
+}
+
+func TestResolveRemoteCodingRequestFlagsWorkspaceClearIsImplementation(t *testing.T) {
+	readOnly, operational := resolveRemoteCodingRequestFlags(codingRequestOperational, "清空当前目录")
+	if readOnly || operational {
+		t.Fatalf("workspace clear must not stay operational remotely, readOnly=%v operational=%v", readOnly, operational)
 	}
 }
 

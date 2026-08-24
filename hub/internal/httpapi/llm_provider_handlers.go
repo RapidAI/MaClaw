@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"reflect"
 	"sort"
@@ -21,6 +22,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -66,6 +69,8 @@ type llmServiceAdminResponse struct {
 	DefaultNewUserServiceGroups []string                       `json:"default_new_user_service_groups,omitempty"`
 	DefaultNewUserDurationDays  int                            `json:"default_new_user_duration_days,omitempty"`
 	DefaultNewUserCredits       float64                        `json:"default_new_user_credits,omitempty"`
+	DefaultNewUserBenefitMode   string                         `json:"default_new_user_benefit_mode"`
+	DefaultNewUserLimitCard     llmservice.NewUserLimitCard    `json:"default_new_user_limit_card,omitempty"`
 	TokensPerCredit             int                            `json:"tokens_per_credit,omitempty"`
 	ExposeAPIBaseURL            string                         `json:"expose_api_base_url,omitempty"`
 	ExposeBaseURL               string                         `json:"expose_base_url,omitempty"`
@@ -178,6 +183,14 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 			}
 			if p.FailureBackoffMaxMS < p.FailureBackoffBaseMS {
 				p.FailureBackoffMaxMS = p.FailureBackoffBaseMS
+			}
+			// Token pricing is provider-owned configuration. Reject malformed
+			// directional or time-of-use prices instead of silently dropping them
+			// during registry normalization, so an administrator can correct the
+			// exact setting that failed to save.
+			if err := llmpool.ValidateRouteBilling(llmpool.BillingModeFree, p.TokenPricing); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_LLM_TOKEN_PRICING", err.Error())
+				return
 			}
 			if p.ID == "" {
 				writeError(w, http.StatusBadRequest, "LLM_PROVIDER_ID_REQUIRED", "Provider id is required")
@@ -460,6 +473,7 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		_ = json.Unmarshal(body, &raw)
 		_, cardsProvided := raw["cards"]
 		_, grantsProvided := raw["grants"]
+		_, newUserBenefitModeProvided := raw["default_new_user_benefit_mode"]
 
 		var req llmservice.Registry
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -481,6 +495,12 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		}
 		if !grantsProvided && oldReg != nil {
 			req.Grants = append([]llmservice.Grant(nil), oldReg.Grants...)
+		}
+		// Older admin clients send a complete registry without the new benefit
+		// mode field. Preserve the tenant's active programme in that case rather
+		// than silently reverting a limit-card tenant to Credits.
+		if !newUserBenefitModeProvided && oldReg != nil {
+			req.DefaultNewUserBenefitMode = oldReg.NewUserBenefitMode()
 		}
 		// system-free is reserved: cannot delete; access_policy forced free;
 		// SystemDefaultServiceGroupID always pinned to system-free.
@@ -504,6 +524,14 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		}
 		if issues := validateLLMServiceGroupReferences(&req); len(issues) > 0 {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_NOT_FOUND", strings.Join(issues, "; "))
+			return
+		}
+		if issues := validateNewUserLimitCardServiceGroups(&req); len(issues) > 0 {
+			writeError(w, http.StatusBadRequest, "LLM_NEW_USER_LIMIT_CARD_GROUP_INVALID", strings.Join(issues, "; "))
+			return
+		}
+		if err := req.ValidateDynamicGroups(); err != nil {
+			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GROUP_INVALID", err.Error())
 			return
 		}
 		knownSecurityGroups, err := collectSecurityGroupIDs(security.WithTenant(r.Context(), RequestTenantID(r)), securitySvc)
@@ -538,6 +566,7 @@ type llmServiceBindingAuditSnapshot struct {
 	GlobalServiceGroupIDs       []string                      `json:"global_service_group_ids"`
 	SystemDefaultServiceGroupID string                        `json:"system_default_service_group_id,omitempty"`
 	DefaultNewUserServiceGroups []string                      `json:"default_new_user_service_groups"`
+	DefaultNewUserBenefitMode   string                        `json:"default_new_user_benefit_mode"`
 	GroupBindings               []llmServiceBindingAuditGroup `json:"group_bindings"`
 	UserBindings                []llmServiceBindingAuditUser  `json:"user_bindings"`
 }
@@ -574,6 +603,7 @@ func buildLLMServiceBindingAuditSnapshot(reg *llmservice.Registry) llmServiceBin
 		GlobalServiceGroupIDs:       append([]string(nil), clone.GlobalServiceGroupIDs...),
 		SystemDefaultServiceGroupID: clone.SystemDefaultServiceGroupID,
 		DefaultNewUserServiceGroups: append([]string(nil), clone.DefaultNewUserServiceGroups...),
+		DefaultNewUserBenefitMode:   clone.NewUserBenefitMode(),
 		GroupBindings:               make([]llmServiceBindingAuditGroup, 0, len(clone.GroupBindings)),
 		UserBindings:                make([]llmServiceBindingAuditUser, 0, len(clone.UserBindings)),
 	}
@@ -1027,7 +1057,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
 		r = r.WithContext(ctx)
 		// Use cached registry reads to avoid hitting the DB on every poll.
@@ -1063,7 +1093,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
 		serviceReg, err := loadCachedLLMServiceRegistry(ctx, system)
 		if err != nil {
@@ -1096,7 +1126,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 func GetLLMServiceEntitlementDiagnosticHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := RequestTenantID(r)
-		system = scopedSystemSettingsForRequest(r, system)
+		system := scopedSystemSettingsForRequest(r, system)
 		ctx := security.WithTenant(r.Context(), tenantID)
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
 		if email == "" {
@@ -1124,7 +1154,7 @@ func RedeemLLMServiceCardHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
 		status, err := llmservice.RedeemCardForUserID(ctx, system, securitySvc, principal.UserID, principal.Email, req.Code, externalLLMBaseURL(r))
 		if err != nil {
@@ -1152,15 +1182,15 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		status, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
+		status, models, _, serviceReg, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
 		items := make([]map[string]any, 0, len(models))
-		for _, m := range models {
+		for _, m := range llmservice.PublicAuthorizedModels(models, serviceReg) {
 			items = append(items, llmV1ModelObject(m))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": items, "service_status": status})
@@ -1174,7 +1204,7 @@ func LLMV1ModelHandler(identity *auth.IdentityService, system store.SystemSettin
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
 		_, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
@@ -1221,8 +1251,8 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email))
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1257,6 +1287,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		logUsage := corelib.TokenUsageStat{}
 		logFailureStage := ""
 		logUpstreamStatus := 0
+		logCreditMultiplier := 0.0
+		logCredits := 0.0
+		logBillingRecorded := false
 		defer func() {
 			metadata := map[string]any{
 				"request_id": requestID,
@@ -1291,6 +1324,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				InputCostRMB:      logUsage.InputCostRMB,
 				OutputCostRMB:     logUsage.OutputCostRMB,
 				TotalCostRMB:      logUsage.TotalCostRMB,
+				CreditMultiplier:  logCreditMultiplier,
+				Credits:           logCredits,
+				BillingRecorded:   logBillingRecorded,
 				RequestBytes:      len(bodyBytes),
 				RequestBody:       requestBody,
 				CreatedAt:         time.Now().UTC(),
@@ -1330,6 +1366,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		logRequestedModel = llmEndpointRequestedModel(body)
+		// Reconcile any earlier official request that was sent but lost its final
+		// response before evaluating this user's new balance.
+		reconcilePendingOfficialBillingReservations(ctx, system, principal.UserID, principal.Email)
 		var (
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
@@ -1339,15 +1378,17 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, body, models)
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, body, models)
 		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
 			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
 				providerReg, models, serviceReg = freshProviderReg, freshModels, freshServiceReg
-				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, body, models)
+				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, body, models)
 			}
 		}
-		authorizedModel, requestedModel, err := resolveAuthorizedModel(body, billableModels)
-		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel)
+		authorizedModel, requestedModel, workloadDecision, err := resolveAuthorizedModel(r, body, billableModels, serviceReg)
+		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel, workloadDecision, requestedModel)
+		r = withOfficialRequestID(applyHubWorkloadSelection(w, r, body, authorizedModel, serviceReg, workloadDecision), requestID)
+		ctx = r.Context()
 		logRequestedModel = strings.TrimSpace(requestedModel)
 		if authorizedModel != nil {
 			logAuthorizedModel = strings.TrimSpace(authorizedModel.Name)
@@ -1362,6 +1403,22 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				return
 			}
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
+			return
+		}
+		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, body); err != nil {
+			writeLoggedError(http.StatusServiceUnavailable, "LLM_PRICING_QUOTE_INVALID", err.Error())
+			return
+		}
+		if denial, reserveErr := reserveLLMRequestPricing(ctx, system, principal.UserID, principal.Email, authorizedModel); reserveErr != nil {
+			writeLoggedBillingDenied(llmBillingDenialHTTPStatus(denial), denial)
+			return
+		}
+		// A successful upstream path marks settlement before returning. Every
+		// other path (including provider failures and client cancellation before
+		// a response) releases its conservative admission hold here.
+		defer releaseUnsettledLLMBillingReservation(ctx, system)
+		if err := markLLMBillingReservationSent(ctx, system); err != nil {
+			writeLoggedError(http.StatusServiceUnavailable, "LLM_BILLING_RESERVATION_FAILED", "unable to record request billing dispatch")
 			return
 		}
 		cacheCfg := loadCachedHubLLMPromptCacheConfig(ctx, system)
@@ -1379,22 +1436,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 					// Without this, users could disconnect mid-stream to avoid payment
 					// while having received partial (but useful) LLM output.
 					if usedProviderID != "" {
-						tokensPerCredit := 0
-						if serviceReg != nil {
-							tokensPerCredit = serviceReg.TokensPerCredit
-						}
-						credits := llmservice.EstimateCreditsWithFloor(
-							usageStat.TotalTokens,
-							llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
-							tokensPerCredit,
-						)
-						userGroupIDs := []string(nil)
-						if securitySvc != nil {
-							if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
-								userGroupIDs = resolved
-							}
-						}
-						enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+						logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
+						logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
+						logBillingRecorded = true
 					}
 					return
 				}
@@ -1420,26 +1464,13 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 					writeLoggedErrorWithDiag(status, code, detail, "upstream_provider", statusCode)
 					return
 				}
-				writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
+				writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", llmUpstreamFailedMessage(err), "hub_to_upstream", statusCode)
 				return
 			}
 			if statusCode < 400 && usedProviderID != "" {
-				tokensPerCredit := 0
-				if serviceReg != nil {
-					tokensPerCredit = serviceReg.TokensPerCredit
-				}
-				credits := llmservice.EstimateCreditsWithFloor(
-					usageStat.TotalTokens,
-					llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
-					tokensPerCredit,
-				)
-				userGroupIDs := []string(nil)
-				if securitySvc != nil {
-					if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
-						userGroupIDs = resolved
-					}
-				}
-				enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+				logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
+				logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
+				logBillingRecorded = true
 			}
 			return
 		}
@@ -1449,9 +1480,15 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		logUpstreamStatus = statusCode
 		logUsage = usageStat
 		if localCacheHit {
+			releaseKnownUnbilledLLMBillingReservation(ctx, system)
 			logUsage.InputCostRMB = 0
 			logUsage.OutputCostRMB = 0
 			logUsage.TotalCostRMB = 0
+			if usedProviderID != "" {
+				logCreditMultiplier = resolveBillableCreditMultiplier(ctx, authorizedModel, usedProviderID, providerReg)
+				logCredits = 0
+				logBillingRecorded = true
+			}
 		}
 		if err != nil {
 			if queueErr, ok := err.(*providerConcurrencyError); ok {
@@ -1479,26 +1516,13 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 					return
 				}
 			}
-			writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
+			writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", llmUpstreamFailedMessage(err), "hub_to_upstream", statusCode)
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
-			tokensPerCredit := 0
-			if serviceReg != nil {
-				tokensPerCredit = serviceReg.TokensPerCredit
-			}
-			credits := llmservice.EstimateCreditsWithFloor(
-				usageStat.TotalTokens,
-				llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
-				tokensPerCredit,
-			)
-			userGroupIDs := []string(nil)
-			if securitySvc != nil {
-				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
-					userGroupIDs = resolved
-				}
-			}
-			enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+			logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
+			logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
+			logBillingRecorded = true
 		}
 		if statusCode >= 400 {
 			bodySnippet := string(respBody)
@@ -1524,6 +1548,10 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		if authorizedModel != nil {
 			w.Header().Set("X-MaClaw-Authorized-Model", authorizedModel.Name)
 		}
+		if usedProviderID != "" {
+			attachResolvedProvider(selectedModelDebug, usedProviderID, authorizedModel)
+			w.Header().Set("X-MaClaw-Upstream-Provider", usedProviderID)
+		}
 		if selectedModelDebug != nil {
 			if selectedModelDebug.SelectionReason != "" {
 				w.Header().Set("X-MaClaw-Model-Selection", selectedModelDebug.SelectionReason)
@@ -1531,9 +1559,6 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			if len(selectedModelDebug.CapabilityNeeds) > 0 {
 				w.Header().Set("X-MaClaw-Model-Needs", strings.Join(selectedModelDebug.CapabilityNeeds, ","))
 			}
-		}
-		if usedProviderID != "" {
-			w.Header().Set("X-MaClaw-Upstream-Provider", usedProviderID)
 		}
 		if localCacheHit {
 			w.Header().Set("X-MaClaw-Local-Cache", "hit")
@@ -1557,8 +1582,8 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
 			return
 		}
-		system = scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID)
+		system := scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email))
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1591,6 +1616,9 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		logUsage := corelib.TokenUsageStat{}
 		logFailureStage := ""
 		logUpstreamStatus := 0
+		logCreditMultiplier := 0.0
+		logCredits := 0.0
+		logBillingRecorded := false
 		defer func() {
 			metadata := map[string]any{
 				"wire_api":   "responses",
@@ -1626,6 +1654,9 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				InputCostRMB:      logUsage.InputCostRMB,
 				OutputCostRMB:     logUsage.OutputCostRMB,
 				TotalCostRMB:      logUsage.TotalCostRMB,
+				CreditMultiplier:  logCreditMultiplier,
+				Credits:           logCredits,
+				BillingRecorded:   logBillingRecorded,
 				RequestBytes:      len(bodyBytes),
 				RequestBody:       requestBody,
 				CreatedAt:         time.Now().UTC(),
@@ -1659,6 +1690,9 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusBadRequest, "INVALID_RESPONSES_REQUEST", err.Error())
 			return
 		}
+		// Do this before entitlement filtering so a recovered prior debit is
+		// reflected in the current request's admission decision.
+		reconcilePendingOfficialBillingReservations(ctx, system, principal.UserID, principal.Email)
 		var (
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
@@ -1668,15 +1702,22 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, chatBody, models)
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, chatBody, models)
 		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
 			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
 				providerReg, models, serviceReg = freshProviderReg, freshModels, freshServiceReg
-				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(serviceReg, principal.UserID, principal.Email, chatBody, models)
+				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, chatBody, models)
 			}
 		}
-		authorizedModel, requestedModel, err := resolveAuthorizedModel(chatBody, billableModels)
-		selectedModelDebug := explainModelSelection(chatBody, billableModels, authorizedModel)
+		authorizedModel, requestedModel, workloadDecision, err := resolveAuthorizedModel(r, chatBody, billableModels, serviceReg)
+		selectedModelDebug := explainModelSelection(chatBody, billableModels, authorizedModel, workloadDecision, requestedModel)
+		r = withOfficialRequestID(applyHubWorkloadSelection(w, r, chatBody, authorizedModel, serviceReg, workloadDecision), requestID)
+		if body != nil && chatBody != nil {
+			if model, ok := chatBody["model"].(string); ok && strings.TrimSpace(model) != "" {
+				body["model"] = model
+			}
+		}
+		ctx = r.Context()
 		logRequestedModel = strings.TrimSpace(requestedModel)
 		if authorizedModel != nil {
 			logAuthorizedModel = strings.TrimSpace(authorizedModel.Name)
@@ -1697,6 +1738,21 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
+		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, chatBody); err != nil {
+			writeLoggedError(http.StatusServiceUnavailable, "LLM_PRICING_QUOTE_INVALID", err.Error())
+			return
+		}
+		if denial, reserveErr := reserveLLMRequestPricing(ctx, system, principal.UserID, principal.Email, authorizedModel); reserveErr != nil {
+			logStatusCode = llmBillingDenialHTTPStatus(denial)
+			logErrorCode = denial.Code
+			writeLLMBillingDenied(w, denial)
+			return
+		}
+		defer releaseUnsettledLLMBillingReservation(ctx, system)
+		if err := markLLMBillingReservationSent(ctx, system); err != nil {
+			writeLoggedError(http.StatusServiceUnavailable, "LLM_BILLING_RESERVATION_FAILED", "unable to record request billing dispatch")
+			return
+		}
 		if llmEndpointStreamRequested(body) {
 			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedResponsesRequest(w, r, providerReg, authorizedModel, body, chatBody, requestedModel, responseModel, selectedModelDebug)
 			logStatusCode = statusCode
@@ -1707,22 +1763,9 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				if usedProviderID == "" {
 					return
 				}
-				tokensPerCredit := 0
-				if serviceReg != nil {
-					tokensPerCredit = serviceReg.TokensPerCredit
-				}
-				credits := llmservice.EstimateCreditsWithFloor(
-					usageStat.TotalTokens,
-					llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
-					tokensPerCredit,
-				)
-				userGroupIDs := []string(nil)
-				if securitySvc != nil {
-					if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
-						userGroupIDs = resolved
-					}
-				}
-				enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+				logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
+				logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
+				logBillingRecorded = true
 			}
 			if err != nil {
 				if wroteStream {
@@ -1752,7 +1795,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 					writeLoggedErrorWithDiag(status, code, detail, "upstream_provider", statusCode)
 					return
 				}
-				writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
+				writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", llmUpstreamFailedMessage(err), "hub_to_upstream", statusCode)
 				return
 			}
 			if statusCode < 400 && usedProviderID != "" {
@@ -1768,9 +1811,15 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		logUpstreamStatus = statusCode
 		logUsage = usageStat
 		if localCacheHit {
+			releaseKnownUnbilledLLMBillingReservation(ctx, system)
 			logUsage.InputCostRMB = 0
 			logUsage.OutputCostRMB = 0
 			logUsage.TotalCostRMB = 0
+			if usedProviderID != "" {
+				logCreditMultiplier = resolveBillableCreditMultiplier(ctx, authorizedModel, usedProviderID, providerReg)
+				logCredits = 0
+				logBillingRecorded = true
+			}
 		}
 		if err != nil {
 			if queueErr, ok := err.(*providerConcurrencyError); ok {
@@ -1798,26 +1847,13 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 					return
 				}
 			}
-			writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", err.Error(), "hub_to_upstream", statusCode)
+			writeLoggedErrorWithDiag(http.StatusBadGateway, "LLM_UPSTREAM_FAILED", llmUpstreamFailedMessage(err), "hub_to_upstream", statusCode)
 			return
 		}
 		if statusCode < 400 && usedProviderID != "" && !localCacheHit {
-			tokensPerCredit := 0
-			if serviceReg != nil {
-				tokensPerCredit = serviceReg.TokensPerCredit
-			}
-			credits := llmservice.EstimateCreditsWithFloor(
-				usageStat.TotalTokens,
-				llmservice.CreditMultiplierForProvider(authorizedModel, usedProviderID),
-				tokensPerCredit,
-			)
-			userGroupIDs := []string(nil)
-			if securitySvc != nil {
-				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
-					userGroupIDs = resolved
-				}
-			}
-			enqueueLLMUsageForUserID(system, usedProviderID, usageStat, principal.UserID, principal.Email, chargedServiceGroupIDs, userGroupIDs, credits)
+			logCredits, logCreditMultiplier = chargeLoggedLLMEndpointUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, authorizedModel, providerReg, serviceReg, usageStat, chargedServiceGroupIDs)
+			logUsage = authoritativeLLMUsageForAccessLog(ctx, usedProviderID, logUsage)
+			logBillingRecorded = true
 		}
 		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
 			hubStatus, hubCode, detail := providerAuthOrRateError(statusCode, usedProviderID, respBody)
@@ -1840,6 +1876,10 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		if authorizedModel != nil {
 			w.Header().Set("X-MaClaw-Authorized-Model", authorizedModel.Name)
 		}
+		if usedProviderID != "" {
+			attachResolvedProvider(selectedModelDebug, usedProviderID, authorizedModel)
+			w.Header().Set("X-MaClaw-Upstream-Provider", usedProviderID)
+		}
 		if selectedModelDebug != nil {
 			if selectedModelDebug.SelectionReason != "" {
 				w.Header().Set("X-MaClaw-Model-Selection", selectedModelDebug.SelectionReason)
@@ -1847,9 +1887,6 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			if len(selectedModelDebug.CapabilityNeeds) > 0 {
 				w.Header().Set("X-MaClaw-Model-Needs", strings.Join(selectedModelDebug.CapabilityNeeds, ","))
 			}
-		}
-		if usedProviderID != "" {
-			w.Header().Set("X-MaClaw-Upstream-Provider", usedProviderID)
 		}
 		if localCacheHit {
 			w.Header().Set("X-MaClaw-Local-Cache", "hit")
@@ -1888,11 +1925,18 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 	var lastStatus int
 	var lastProviderID string
 	request := r.Clone(r.Context())
-	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
+	orderedProviders := orderAuthorizedProviders(chatBody, model, reg)
+	for i, item := range orderedProviders {
+		providerID := item.Route.ProviderID
+		if shouldSkipFullAuthorizedProvider(orderedProviders, i, reg) {
+			lastErr = fmt.Errorf("provider %q is at concurrency limit", providerID)
+			lastProviderID = providerID
+			continue
+		}
 		if IsMaClawProviderRequest(providerID) {
-			singleProviderModel := *model
+			singleProviderModel := llmservice.CloneAuthorizedModel(model)
 			singleProviderModel.ProviderIDs = []string{providerID}
-			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, &singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
+			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
 			if err != nil {
 				lastErr = err
 				lastBody = respBody
@@ -1915,9 +1959,9 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 			continue
 		}
 		if normalizeProviderProtocol(provider.Protocol) != "openai" || normalizeProviderWireAPI(provider.WireAPI) != "responses" {
-			singleProviderModel := *model
+			singleProviderModel := llmservice.CloneAuthorizedModel(model)
 			singleProviderModel.ProviderIDs = []string{providerID}
-			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, &singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
+			respBody, statusCode, usedProviderID, serviceGroupIDs, usageStat, localCacheHit, err := forwardAuthorizedModelRequestWithCache(r, reg, singleProviderModel, chatBody, externalModel, promptCacheSource, cacheCfg)
 			if err != nil {
 				lastErr = err
 				lastBody = respBody
@@ -1963,7 +2007,7 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 			continue
 		}
 		usageStat := applyProviderUsageCost(parseUsageStats(respBody), provider)
-		serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, provider.ID)
+		serviceGroupIDs := llmservice.ChargedServiceGroupIDs(model, provider.ID)
 		return respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, false, true, nil
 	}
 	if lastBody != nil && lastStatus > 0 {
@@ -1986,10 +2030,18 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 	var lastErr error
 	var lastProviderID string
 	var lastStatus int
-	for _, providerID := range llmservice.OrderProvidersForRequest(chatBody, model) {
+	orderedProviders := orderAuthorizedResponsesStreamProviders(chatBody, model, reg)
+	for i, item := range orderedProviders {
+		providerID := item.Route.ProviderID
+		if shouldSkipFullAuthorizedProvider(orderedProviders, i, reg) {
+			lastErr = fmt.Errorf("provider %q is at concurrency limit", providerID)
+			lastProviderID = providerID
+			continue
+		}
 		if IsMaClawProviderRequest(providerID) {
-			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
-			resp, err := openMaClawOfficialStreamRequest(request, chatBody, serviceGroupIDs)
+			serviceGroupIDs := officialForwardServiceGroupIDs(model, providerID)
+			chargedIDs := llmservice.ChargedServiceGroupIDs(model, providerID)
+			resp, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(chatBody, model, providerID), serviceGroupIDs)
 			if err != nil {
 				lastErr = err
 				lastProviderID = providerID
@@ -2018,9 +2070,9 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 			usageStat, wroteStream, copyErr := writeOpenAIChatAsResponsesStreamResponse(w, resp, provider, model, streamModel, selectedModelDebug)
 			_ = resp.Body.Close()
 			if copyErr != nil {
-				return statusCode, providerID, serviceGroupIDs, usageStat, wroteStream, copyErr
+				return statusCode, providerID, chargedIDs, usageStat, wroteStream, copyErr
 			}
-			return statusCode, providerID, serviceGroupIDs, usageStat, wroteStream, nil
+			return statusCode, providerID, chargedIDs, usageStat, wroteStream, nil
 		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
@@ -2085,9 +2137,9 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 		_ = resp.Body.Close()
 		release()
 		if copyErr != nil {
-			return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, copyErr
+			return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, copyErr
 		}
-		return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, nil
+		return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
@@ -2181,15 +2233,31 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 	var lastErr error
 	var lastProviderID string
 	var lastStatus int
-	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
+	// See the non-streaming path: sent billing reservations are releasable only
+	// if every route failed before an HTTP dispatch could begin.
+	allProviderDispatchesProvenAbsent := true
+	orderedProviders := orderAuthorizedChatStreamProviders(body, model, reg)
+	for i, item := range orderedProviders {
+		providerID := item.Route.ProviderID
+		if shouldSkipFullAuthorizedProvider(orderedProviders, i, reg) {
+			lastErr = fmt.Errorf("provider %q is at concurrency limit", providerID)
+			lastProviderID = providerID
+			continue
+		}
 		if IsMaClawProviderRequest(providerID) {
-			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
-			resp, err := openMaClawOfficialStreamRequest(request, body, serviceGroupIDs)
+			serviceGroupIDs := officialForwardServiceGroupIDs(model, providerID)
+			chargedIDs := llmservice.ChargedServiceGroupIDs(model, providerID)
+			resp, err := openMaClawOfficialStreamRequest(request, rewriteOfficialForwardBody(body, model, providerID), serviceGroupIDs)
 			if err != nil {
+				if !snapshotOfficialNoUpstreamDispatch(r.Context()) {
+					allProviderDispatchesProvenAbsent = false
+				}
 				lastErr = err
 				lastProviderID = providerID
 				continue
 			}
+			// Receiving any HTTP response means the request reached HubCenter.
+			allProviderDispatchesProvenAbsent = false
 			statusCode := resp.StatusCode
 			lastStatus = statusCode
 			lastProviderID = providerID
@@ -2209,9 +2277,9 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 			usageStat, wroteStream, copyErr := writeOpenAIStreamResponse(w, resp, provider, model, externalModel, selectedModelDebug)
 			_ = resp.Body.Close()
 			if copyErr != nil {
-				return statusCode, providerID, llmservice.ServiceGroupIDsForProvider(model, providerID), usageStat, wroteStream, copyErr
+				return statusCode, providerID, chargedIDs, usageStat, wroteStream, copyErr
 			}
-			return statusCode, providerID, serviceGroupIDs, usageStat, wroteStream, nil
+			return statusCode, providerID, chargedIDs, usageStat, wroteStream, nil
 		}
 		provider := reg.FindProvider(providerID)
 		if provider == nil {
@@ -2228,6 +2296,7 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 			lastProviderID = provider.ID
 			continue
 		}
+		allProviderDispatchesProvenAbsent = false
 		resp, release, err := openLLMStreamRequest(request, provider, body)
 		if err != nil {
 			globalProviderResilience.recordFailure(provider)
@@ -2257,12 +2326,15 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 		_ = resp.Body.Close()
 		release()
 		if copyErr != nil {
-			return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, copyErr
+			return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, copyErr
 		}
-		return statusCode, provider.ID, llmservice.ServiceGroupIDsForProvider(model, provider.ID), usageStat, wroteStream, nil
+		return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
+	}
+	if allProviderDispatchesProvenAbsent {
+		noteOfficialNoUpstreamDispatch(r.Context(), true)
 	}
 	return lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, lastErr
 }
@@ -2272,8 +2344,24 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 	if err != nil {
 		return nil, fmt.Errorf("marshal maclaw official stream request: %w", err)
 	}
-	resp, err := ForwardStreamViaMaClaw(r.Context(), payload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+	forwardStream := func(candidate []byte, useAdmissionQuote bool) (*http.Response, error) {
+		if quote, ok := snapshotOfficialForwardQuote(r.Context()); ok && useAdmissionQuote {
+			return ForwardStreamViaMaClawWithExistingQuote(r.Context(), quote, candidate, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+		}
+		if _, quotedAtAdmission := snapshotOfficialForwardQuote(r.Context()); !quotedAtAdmission {
+			return ForwardStreamViaMaClaw(r.Context(), candidate, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+		}
+		return ForwardStreamViaMaClawWithQuote(r.Context(), candidate, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+	}
+	resp, err := forwardStream(payload, true)
 	if err != nil {
+		if _, ok := snapshotOfficialForwardQuote(r.Context()); ok {
+			// ForwardStreamWithQuote only fails before dispatch for local quote or
+			// credentials validation. Its transport errors remain ambiguous.
+			if strings.Contains(err.Error(), "invalid or expired pricing quote") || strings.Contains(err.Error(), "hub not registered") {
+				noteOfficialNoUpstreamDispatch(r.Context(), true)
+			}
+		}
 		return nil, err
 	}
 	if resp.Body == nil {
@@ -2291,7 +2379,7 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 			return resp, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying with sanitized OpenAI-compatible body")
-		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+		retryResp, retryErr := forwardStream(retryPayload, false)
 		if retryErr != nil {
 			return nil, retryErr
 		}
@@ -2312,7 +2400,7 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 			return resp, nil
 		}
 		log.Printf("[LLM-V1] maclaw official returned 400 for stream; retrying without tool schemas")
-		retryResp, retryErr := ForwardStreamViaMaClaw(r.Context(), retryPayload, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
+		retryResp, retryErr := forwardStream(retryPayload, false)
 		if retryErr != nil {
 			return nil, retryErr
 		}
@@ -3238,6 +3326,10 @@ func setOpenAIStreamResponseHeaders(w http.ResponseWriter, provider *im.LLMProvi
 	if model != nil {
 		w.Header().Set("X-MaClaw-Authorized-Model", model.Name)
 	}
+	if provider != nil && provider.ID != "" {
+		attachResolvedProvider(selectedModelDebug, provider.ID, model)
+		w.Header().Set("X-MaClaw-Upstream-Provider", provider.ID)
+	}
 	if selectedModelDebug != nil {
 		if selectedModelDebug.SelectionReason != "" {
 			w.Header().Set("X-MaClaw-Model-Selection", selectedModelDebug.SelectionReason)
@@ -3245,9 +3337,6 @@ func setOpenAIStreamResponseHeaders(w http.ResponseWriter, provider *im.LLMProvi
 		if len(selectedModelDebug.CapabilityNeeds) > 0 {
 			w.Header().Set("X-MaClaw-Model-Needs", strings.Join(selectedModelDebug.CapabilityNeeds, ","))
 		}
-	}
-	if provider != nil && provider.ID != "" {
-		w.Header().Set("X-MaClaw-Upstream-Provider", provider.ID)
 	}
 }
 
@@ -3476,18 +3565,25 @@ func llmEndpointUpstreamAuthOrRateError(upstreamStatus int, providerID string, e
 }
 
 type authorizedModelForwardResult struct {
-	respBody        []byte
-	statusCode      int
-	providerID      string
-	serviceGroupIDs []string
-	usageStat       corelib.TokenUsageStat
-	localCacheHit   bool
+	respBody           []byte
+	statusCode         int
+	providerID         string
+	serviceGroupIDs    []string
+	usageStat          corelib.TokenUsageStat
+	localCacheHit      bool
+	creditMultiplier   float64
+	officialProviderID string
+	officialPricing    *llmpool.TokenPricingSnapshot
+	// officialNoUpstreamDispatch is propagated through singleflight so each
+	// waiter can safely release only a reservation for work Hub never sent.
+	officialNoUpstreamDispatch bool
 }
 
 type authorizedModelRequestFlight struct {
-	done   chan struct{}
-	result authorizedModelForwardResult
-	err    error
+	done    chan struct{}
+	waiters atomic.Int32
+	result  authorizedModelForwardResult
+	err     error
 }
 
 type authorizedModelRequestFlightGroup struct {
@@ -3497,13 +3593,14 @@ type authorizedModelRequestFlightGroup struct {
 
 var globalAuthorizedModelRequestFlights authorizedModelRequestFlightGroup
 
-func (g *authorizedModelRequestFlightGroup) do(ctx context.Context, key string, waitTimeout time.Duration, fn func(context.Context) (authorizedModelForwardResult, error)) (authorizedModelForwardResult, error) {
+func (g *authorizedModelRequestFlightGroup) do(ctx context.Context, key string, waitTimeout time.Duration, fn func(context.Context) (authorizedModelForwardResult, error)) (result authorizedModelForwardResult, err error) {
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = map[string]*authorizedModelRequestFlight{}
 	}
 	if call := g.calls[key]; call != nil {
 		recordLLMPromptCacheSingleflightShared(ctx)
+		call.waiters.Add(1)
 		g.mu.Unlock()
 		waitCtx := ctx
 		var cancel context.CancelFunc
@@ -3515,6 +3612,9 @@ func (g *authorizedModelRequestFlightGroup) do(ctx context.Context, key string, 
 		case <-waitCtx.Done():
 			return authorizedModelForwardResult{}, waitCtx.Err()
 		case <-call.done:
+			noteOfficialBilling(ctx, call.result.creditMultiplier, call.result.officialProviderID)
+			noteOfficialTokenPricing(ctx, call.result.officialPricing)
+			noteOfficialNoUpstreamDispatch(ctx, call.result.officialNoUpstreamDispatch)
 			return call.result, call.err
 		}
 	}
@@ -3522,14 +3622,24 @@ func (g *authorizedModelRequestFlightGroup) do(ctx context.Context, key string, 
 	g.calls[key] = call
 	g.mu.Unlock()
 
-	result, err := fn(ctx)
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("authorized model request panic: %v", rec)
+			call.err = err
+			call.result = authorizedModelForwardResult{}
+		}
+		close(call.done)
+		g.mu.Lock()
+		delete(g.calls, key)
+		g.mu.Unlock()
+	}()
+
+	result, err = fn(ctx)
+	result.creditMultiplier, result.officialProviderID = snapshotOfficialBilling(ctx)
+	result.officialPricing = snapshotOfficialTokenPricing(ctx)
+	result.officialNoUpstreamDispatch = snapshotOfficialNoUpstreamDispatch(ctx)
 	call.result = result
 	call.err = err
-	close(call.done)
-
-	g.mu.Lock()
-	delete(g.calls, key)
-	g.mu.Unlock()
 	return result, err
 }
 
@@ -3580,11 +3690,27 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 	var lastBody []byte
 	var lastStatus int
 	var lastProviderID string
+	// A sent reservation can be released only if every candidate was rejected
+	// locally. As soon as any provider request may have been sent, later local
+	// failures must not erase that ambiguity.
+	allProviderDispatchesProvenAbsent := true
 	request := r.Clone(ctx)
-	for _, providerID := range llmservice.OrderProvidersForRequest(body, model) {
+	orderedProviders := orderAuthorizedProviders(body, model, reg)
+	for i, item := range orderedProviders {
+		providerID := item.Route.ProviderID
+		if shouldSkipFullAuthorizedProvider(orderedProviders, i, reg) {
+			lastErr = fmt.Errorf("provider %q is at concurrency limit", providerID)
+			lastProviderID = providerID
+			continue
+		}
 		if IsMaClawProviderRequest(providerID) {
-			serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, providerID)
-			respBody, statusCode, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, body, store.TenantIDFromContext(ctx), serviceGroupIDs)
+			serviceGroupIDs := officialForwardServiceGroupIDs(model, providerID)
+			chargedIDs := llmservice.ChargedServiceGroupIDs(model, providerID)
+			fwdBody := rewriteOfficialForwardBody(body, model, providerID)
+			respBody, statusCode, noUpstreamDispatch, fwdErr := forwardMaClawOfficialRequestWithCompatRetry(ctx, fwdBody, store.TenantIDFromContext(ctx), serviceGroupIDs)
+			if !noUpstreamDispatch {
+				allProviderDispatchesProvenAbsent = false
+			}
 			if fwdErr != nil {
 				lastErr = fwdErr
 				lastBody = respBody
@@ -3606,17 +3732,17 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 					respBody:        respBody,
 					statusCode:      statusCode,
 					providerID:      providerID,
-					serviceGroupIDs: serviceGroupIDs,
+					serviceGroupIDs: chargedIDs,
 					usageStat:       usageStat,
 					localCacheHit:   false,
 				}, nil
 			}
-			_ = putCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, respBody, statusCode, providerID, serviceGroupIDs, usageStat, cacheCfg)
+			_ = putCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, respBody, statusCode, providerID, chargedIDs, usageStat, cacheCfg)
 			return authorizedModelForwardResult{
 				respBody:        respBody,
 				statusCode:      statusCode,
 				providerID:      providerID,
-				serviceGroupIDs: serviceGroupIDs,
+				serviceGroupIDs: chargedIDs,
 				usageStat:       usageStat,
 				localCacheHit:   false,
 			}, nil
@@ -3631,6 +3757,9 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 			lastProviderID = provider.ID
 			continue
 		}
+		// The generic provider path has no local no-dispatch acknowledgement;
+		// once it reaches forwardLLMRequest its network result is ambiguous.
+		allProviderDispatchesProvenAbsent = false
 		respBody, statusCode, err := forwardLLMRequest(request, provider, body, externalModel)
 		if shouldCountProviderFailure(statusCode, err) {
 			globalProviderResilience.recordFailure(provider)
@@ -3655,7 +3784,7 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 			continue
 		}
 		usageStat := applyProviderUsageCost(parseUsageStats(respBody), provider)
-		serviceGroupIDs := llmservice.ServiceGroupIDsForProvider(model, provider.ID)
+		serviceGroupIDs := llmservice.ChargedServiceGroupIDs(model, provider.ID)
 		_ = putCachedAuthorizedModelResponse(ctx, promptCache, model, body, externalModel, respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, cacheCfg)
 		return authorizedModelForwardResult{
 			respBody:        respBody,
@@ -3667,58 +3796,94 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 		}, nil
 	}
 	if lastBody != nil && lastStatus > 0 {
+		// An HTTP response (including a 4xx validation error) proves that the
+		// request crossed Hub's dispatch boundary. Do not later classify it as a
+		// local no-dispatch failure merely because no provider was successful.
+		if allProviderDispatchesProvenAbsent {
+			allProviderDispatchesProvenAbsent = false
+		}
 		return authorizedModelForwardResult{respBody: lastBody, statusCode: lastStatus, providerID: lastProviderID}, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
+	if allProviderDispatchesProvenAbsent {
+		noteOfficialNoUpstreamDispatch(ctx, true)
+	}
 	return authorizedModelForwardResult{respBody: lastBody, statusCode: lastStatus, providerID: lastProviderID}, lastErr
 }
 
-func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[string]any, tenantID string, serviceGroupIDs []string) ([]byte, int, error) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, 0, fmt.Errorf("marshal maclaw official request: %w", err)
+func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[string]any, tenantID string, serviceGroupIDs []string) ([]byte, int, bool, error) {
+	// Compatibility retries may make more than one official request. Preserve
+	// the strongest safety fact across them: a later local rejection cannot
+	// erase an earlier HTTP dispatch that returned 400.
+	anyPotentialDispatch := false
+	forwardQuoted := func(candidate map[string]any) ([]byte, int, bool, error) {
+		payload, err := json.Marshal(candidate)
+		if err != nil {
+			return nil, 0, true, fmt.Errorf("marshal maclaw official request: %w", err)
+		}
+		if quote, ok := snapshotOfficialForwardQuote(ctx); ok && reflect.DeepEqual(candidate, body) {
+			result, err := ForwardViaMaClawDetailedWithQuote(ctx, quote, payload, tenantID, serviceGroupIDs...)
+			return result.Body, result.StatusCode, result.NoUpstreamDispatch, err
+		}
+		if _, quotedAtAdmission := snapshotOfficialForwardQuote(ctx); !quotedAtAdmission {
+			respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
+			return respBody, statusCode, false, err
+		}
+		quote, err := QuoteViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
+		if err != nil {
+			// Rolling deployment compatibility: a HubCenter without the quote
+			// endpoint cannot honor a route lock yet, so retain the historical
+			// forward path instead of turning every existing official route into a
+			// 502. New HubCenters always take the locked path above.
+			if strings.Contains(err.Error(), "quote HTTP 404") {
+				respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
+				return respBody, statusCode, false, err
+			}
+			return nil, 0, true, err
+		}
+		result, err := ForwardViaMaClawDetailedWithQuote(ctx, quote, payload, tenantID, serviceGroupIDs...)
+		return result.Body, result.StatusCode, result.NoUpstreamDispatch, err
 	}
-	respBody, statusCode, err := ForwardViaMaClaw(ctx, payload, tenantID, serviceGroupIDs...)
+	forwardAttempt := func(candidate map[string]any) ([]byte, int, bool, error) {
+		respBody, statusCode, noUpstreamDispatch, err := forwardQuoted(candidate)
+		if !noUpstreamDispatch {
+			anyPotentialDispatch = true
+		}
+		return respBody, statusCode, noUpstreamDispatch, err
+	}
+	respBody, statusCode, noUpstreamDispatch, err := forwardAttempt(body)
 	if err != nil || statusCode != http.StatusBadRequest {
-		return respBody, statusCode, err
+		return respBody, statusCode, noUpstreamDispatch && !anyPotentialDispatch, err
 	}
 	if retryBody, ok := maclawOfficialSanitizedRetryBody(body); ok {
-		retryPayload, marshalErr := json.Marshal(retryBody)
-		if marshalErr != nil {
-			return respBody, statusCode, nil
-		}
 		log.Printf("[LLM-V1] maclaw official returned 400; retrying with sanitized OpenAI-compatible body")
-		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID, serviceGroupIDs...)
+		retryRespBody, retryStatusCode, retryNoUpstreamDispatch, retryErr := forwardAttempt(retryBody)
 		if retryErr == nil && retryStatusCode != http.StatusBadRequest {
-			return retryRespBody, retryStatusCode, nil
+			return retryRespBody, retryStatusCode, retryNoUpstreamDispatch && !anyPotentialDispatch, nil
 		}
 		if retryErr != nil {
-			return retryRespBody, retryStatusCode, retryErr
+			return retryRespBody, retryStatusCode, retryNoUpstreamDispatch && !anyPotentialDispatch, retryErr
 		}
-		respBody, statusCode = retryRespBody, retryStatusCode
+		respBody, statusCode, noUpstreamDispatch = retryRespBody, retryStatusCode, retryNoUpstreamDispatch
 	}
 	if retryBody, ok := maclawOfficialToollessRetryBody(body); ok {
-		retryPayload, marshalErr := json.Marshal(retryBody)
-		if marshalErr != nil {
-			return respBody, statusCode, nil
-		}
 		log.Printf("[LLM-V1] maclaw official returned 400; retrying without tool schemas")
-		retryRespBody, retryStatusCode, retryErr := ForwardViaMaClaw(ctx, retryPayload, tenantID, serviceGroupIDs...)
+		retryRespBody, retryStatusCode, retryNoUpstreamDispatch, retryErr := forwardAttempt(retryBody)
 		if retryErr == nil && retryStatusCode != http.StatusBadRequest {
-			return retryRespBody, retryStatusCode, nil
+			return retryRespBody, retryStatusCode, retryNoUpstreamDispatch && !anyPotentialDispatch, nil
 		}
 		if retryErr != nil {
-			return retryRespBody, retryStatusCode, retryErr
+			return retryRespBody, retryStatusCode, retryNoUpstreamDispatch && !anyPotentialDispatch, retryErr
 		}
-		respBody, statusCode = retryRespBody, retryStatusCode
+		respBody, statusCode, noUpstreamDispatch = retryRespBody, retryStatusCode, retryNoUpstreamDispatch
 	}
-	return respBody, statusCode, nil
+	return respBody, statusCode, noUpstreamDispatch && !anyPotentialDispatch, nil
 }
 
 func maclawOfficialSanitizedRetryBody(body map[string]any) (map[string]any, bool) {
-	if !maclawOfficialBodyHasCompatRisk(body) {
+	if !maclawOfficialBodyHasCompatRisk(body) || maclawOfficialBodyHasSemanticContract(body) {
 		return nil, false
 	}
 	retry := cloneLLMEndpointBody(body)
@@ -3727,7 +3892,7 @@ func maclawOfficialSanitizedRetryBody(body map[string]any) (map[string]any, bool
 }
 
 func maclawOfficialToollessRetryBody(body map[string]any) (map[string]any, bool) {
-	if !maclawOfficialBodyHasCompatRisk(body) || maclawOfficialBodyHasToolHistory(body) {
+	if !maclawOfficialBodyHasCompatRisk(body) || maclawOfficialBodyHasSemanticContract(body) || maclawOfficialBodyHasToolHistory(body) {
 		return nil, false
 	}
 	retry := cloneLLMEndpointBody(body)
@@ -3743,6 +3908,34 @@ func maclawOfficialToollessRetryBody(body map[string]any) (map[string]any, bool)
 		delete(retry, key)
 	}
 	return retry, true
+}
+
+// maclawOfficialBodyHasSemanticContract reports whether retrying with a
+// rewritten payload would change the meaning of the request.  Tool schemas
+// and structured output schemas are not optional transport decorations: they
+// are the contract between the caller and the model.  In particular, falling
+// back to a request without them can turn an authorized tool turn into a
+// tool-less turn, or make an intent-classifier result unparseable while still
+// returning HTTP 200.
+//
+// Compatibility retries may only remove ancillary OpenAI extensions.  If the
+// selected upstream cannot accept a semantic contract, surface that capability
+// error (or allow the normal provider selection to choose another provider)
+// instead of silently sending a different request.
+func maclawOfficialBodyHasSemanticContract(body map[string]any) bool {
+	for _, key := range []string{
+		"tools",
+		"tool_choice",
+		"functions",
+		"function_call",
+		"parallel_tool_calls",
+		"response_format",
+	} {
+		if _, ok := body[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func maclawOfficialBodyHasCompatRisk(body map[string]any) bool {
@@ -3834,6 +4027,16 @@ func isTerminalProviderStatus(providerID string, statusCode int) bool {
 		statusCode == http.StatusTooManyRequests
 }
 
+func llmUpstreamFailedMessage(err error) string {
+	if err == nil {
+		return "upstream request failed"
+	}
+	if msg := corellm.UserFacingError(err); msg != "" {
+		return msg
+	}
+	return err.Error()
+}
+
 func providerAuthOrRateError(statusCode int, providerID string, respBody []byte) (int, string, string) {
 	providerName := strings.TrimSpace(providerID)
 	if providerName == "" {
@@ -3884,6 +4087,194 @@ func firstPromptCacheSource(sources []any) llmPromptCacheStore {
 	return nil
 }
 
+func hubProviderDispatchMetas(reg *im.LLMProviderRegistry) map[string]llmpool.ProviderDispatchMeta {
+	if reg == nil {
+		return nil
+	}
+	metas := make(map[string]llmpool.ProviderDispatchMeta, len(reg.Providers))
+	for i, provider := range reg.Providers {
+		id := strings.TrimSpace(provider.ID)
+		if id == "" {
+			continue
+		}
+		metas[strings.ToLower(id)] = llmpool.ProviderDispatchMeta{
+			ID:             id,
+			Sequence:       i + 1,
+			MaxConcurrency: provider.MaxConcurrency,
+			Billing:        provider.BillingPolicy(),
+			SkipWRR:        hubProviderSkipWRR(&provider),
+		}
+	}
+	return metas
+}
+
+func orderAuthorizedProviders(body map[string]any, model *llmservice.AuthorizedModel, reg *im.LLMProviderRegistry) []llmpool.BalancedRoute {
+	return orderAuthorizedProvidersInPool(body, model, hubProviderDispatchMetas(reg), "")
+}
+
+func orderAuthorizedChatStreamProviders(body map[string]any, model *llmservice.AuthorizedModel, reg *im.LLMProviderRegistry) []llmpool.BalancedRoute {
+	return orderAuthorizedProvidersInPool(body, model, hubStreamDispatchMetas(reg, hubProviderSupportsChatStream), "stream")
+}
+
+func orderAuthorizedResponsesStreamProviders(body map[string]any, model *llmservice.AuthorizedModel, reg *im.LLMProviderRegistry) []llmpool.BalancedRoute {
+	return orderAuthorizedProvidersInPool(body, model, hubStreamDispatchMetas(reg, hubProviderSupportsResponsesStream), "responses-stream")
+}
+
+func orderAuthorizedProvidersInPool(body map[string]any, model *llmservice.AuthorizedModel, metas map[string]llmpool.ProviderDispatchMeta, poolSuffix string) []llmpool.BalancedRoute {
+	return llmservice.OrderProvidersForRequestWithMetaInPool(body, model, ensureHubDispatchMetas(model, metas), time.Now(), hubDispatchPool(model, poolSuffix))
+}
+
+func ensureHubDispatchMetas(model *llmservice.AuthorizedModel, metas map[string]llmpool.ProviderDispatchMeta) map[string]llmpool.ProviderDispatchMeta {
+	if model == nil || len(model.ProviderIDs) == 0 {
+		return metas
+	}
+	if metas == nil {
+		metas = make(map[string]llmpool.ProviderDispatchMeta, len(model.ProviderIDs))
+	}
+	for i, providerID := range model.ProviderIDs {
+		id := strings.TrimSpace(providerID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, ok := metas[key]; ok {
+			continue
+		}
+		// Unknown IDs stay in failover order but must not take WRR slots.
+		// MaClaw official is virtual and is often absent from the local registry.
+		metas[key] = llmpool.ProviderDispatchMeta{
+			ID:       id,
+			Sequence: i + 1,
+			SkipWRR:  !IsMaClawProviderRequest(id),
+		}
+	}
+	return metas
+}
+
+func hubDispatchPool(model *llmservice.AuthorizedModel, suffix string) string {
+	pool := ""
+	if model != nil {
+		pool = strings.TrimSpace(model.Name)
+	}
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" {
+		return pool
+	}
+	if pool == "" {
+		return suffix
+	}
+	return pool + "\x1e" + suffix
+}
+
+func hubStreamDispatchMetas(reg *im.LLMProviderRegistry, accept func(*im.LLMProvider) bool) map[string]llmpool.ProviderDispatchMeta {
+	metas := hubProviderDispatchMetas(reg)
+	if accept == nil {
+		return metas
+	}
+	for key, meta := range metas {
+		if IsMaClawProviderRequest(meta.ID) {
+			continue
+		}
+		if !accept(reg.FindProvider(meta.ID)) {
+			meta.SkipWRR = true
+			metas[key] = meta
+		}
+	}
+	return metas
+}
+
+func hubProviderSupportsChatStream(provider *im.LLMProvider) bool {
+	return provider != nil && normalizeProviderProtocol(provider.Protocol) == "openai" && normalizeProviderWireAPI(provider.WireAPI) == "chat"
+}
+
+func hubProviderSupportsResponsesStream(provider *im.LLMProvider) bool {
+	if provider == nil || normalizeProviderProtocol(provider.Protocol) != "openai" {
+		return false
+	}
+	wire := normalizeProviderWireAPI(provider.WireAPI)
+	return wire == "chat" || wire == "responses"
+}
+
+func hubProviderAtCapacity(provider *im.LLMProvider) bool {
+	if provider == nil {
+		return false
+	}
+	return globalProviderConcurrency.atCapacity(provider.ID, provider.MaxConcurrency)
+}
+
+func lbAnnotationAt(annotations []llmpool.ProviderLBAnnotation, index int) llmpool.ProviderLBAnnotation {
+	if index < 0 || index >= len(annotations) {
+		return llmpool.ProviderLBAnnotation{}
+	}
+	return annotations[index]
+}
+
+func hubProviderSkipWRR(provider *im.LLMProvider) bool {
+	if provider == nil {
+		return false
+	}
+	return globalProviderResilience.snapshot(provider).CircuitOpen
+}
+
+func hubProviderBackingOff(provider *im.LLMProvider) bool {
+	if provider == nil {
+		return false
+	}
+	snap := globalProviderResilience.snapshot(provider)
+	return !snap.BackoffUntil.IsZero() && time.Now().Before(snap.BackoffUntil)
+}
+
+func hubProviderCannotAccept(provider *im.LLMProvider) bool {
+	if provider == nil {
+		return true
+	}
+	return hubProviderAtCapacity(provider) || hubProviderSkipWRR(provider) || hubProviderBackingOff(provider)
+}
+
+func applyLiveHubSkipWRR(routes []llmpool.BalancedRoute, reg *im.LLMProviderRegistry) {
+	if reg == nil {
+		return
+	}
+	for i := range routes {
+		if routes[i].SkipWRR {
+			continue
+		}
+		id := strings.TrimSpace(routes[i].Route.ProviderID)
+		if id == "" || IsMaClawProviderRequest(id) {
+			continue
+		}
+		if hubProviderSkipWRR(reg.FindProvider(id)) {
+			routes[i].SkipWRR = true
+		}
+	}
+}
+
+func shouldSkipFullAuthorizedProvider(routes []llmpool.BalancedRoute, index int, reg *im.LLMProviderRegistry) bool {
+	if index < 0 || index >= len(routes) {
+		return false
+	}
+	applyLiveHubSkipWRR(routes, reg)
+	id := strings.TrimSpace(routes[index].Route.ProviderID)
+	var provider *im.LLMProvider
+	if reg != nil && id != "" && !IsMaClawProviderRequest(id) {
+		provider = reg.FindProvider(id)
+	}
+	if llmpool.ShouldSkipFullBandMember(routes, index, func(pid string) bool {
+		if IsMaClawProviderRequest(pid) {
+			return false
+		}
+		if reg == nil {
+			return false
+		}
+		return hubProviderCannotAccept(reg.FindProvider(pid))
+	}) {
+		return true
+	}
+	// Circuit-open / ineligible members may reach BeforeAttempt, but they
+	// must not block on acquire. Only the WRR winner may queue.
+	return routes[index].SkipWRR && hubProviderAtCapacity(provider)
+}
+
 func applyProviderUsageCost(usage corelib.TokenUsageStat, provider *im.LLMProvider) corelib.TokenUsageStat {
 	inputPrice := corelib.DefaultLLMInputPricePerMTokensRMB
 	outputPrice := corelib.DefaultLLMOutputPricePerMTokensRMB
@@ -3899,10 +4290,15 @@ func applyProviderUsageCost(usage corelib.TokenUsageStat, provider *im.LLMProvid
 
 func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *llmservice.Registry, warnings []string) llmProviderRegistryResponse {
 	usageByProvider := filterRemoteCodingToolTokenUsage(reg.TokenUsage)
+	lbInputs := make([]llmpool.ProviderLBInput, len(reg.Providers))
+	for i, p := range reg.Providers {
+		lbInputs[i] = llmpool.ProviderLBInput{ID: p.ID, Billing: p.BillingPolicy()}
+	}
+	lbAnnotations := llmpool.AnnotateProviderLBGroups(lbInputs, time.Now())
 	providers := make([]any, 0, len(reg.Providers))
 	availableModels := make([]string, 0, len(reg.Providers))
 	seenModels := map[string]struct{}{}
-	for _, p := range reg.Providers {
+	for i, p := range reg.Providers {
 		usage := corelib.TokenUsageStat{}
 		if stat := usageByProvider[p.ID]; stat != nil {
 			usage = *stat
@@ -3910,6 +4306,7 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *
 		wireAPI := normalizeProviderWireAPI(p.WireAPI)
 		snapshot := globalProviderConcurrency.snapshot(p.ID, p.MaxConcurrency, p.MaxQueueWaiters, p.QueueTimeoutMS)
 		resilience := globalProviderResilience.snapshot(&p)
+		ann := lbAnnotationAt(lbAnnotations, i)
 		providers = append(providers, map[string]any{
 			"id":                            p.ID,
 			"name":                          p.Name,
@@ -3922,6 +4319,14 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *
 			"agent_type":                    strings.TrimSpace(p.AgentType),
 			"input_price_per_m_tokens_rmb":  p.InputPricePerMTokensRMB,
 			"output_price_per_m_tokens_rmb": p.OutputPricePerMTokensRMB,
+			"token_pricing":                 p.TokenPricing,
+			"timezone":                      p.Timezone,
+			"credit_multiplier":             p.CreditMultiplier,
+			"credit_multiplier_schedule":    p.CreditMultiplierSchedule,
+			"current_multiplier":            ann.CurrentMultiplier,
+			"lb_group":                      ann.LBGroup,
+			"lb_group_size":                 ann.LBGroupSize,
+			"lb_eligible":                   ann.LBEligible,
 			"max_concurrency":               p.MaxConcurrency,
 			"max_queue_waiters":             p.MaxQueueWaiters,
 			"queue_timeout_ms":              p.QueueTimeoutMS,
@@ -4033,6 +4438,8 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, provid
 		DefaultNewUserServiceGroups: append([]string(nil), reg.DefaultNewUserServiceGroups...),
 		DefaultNewUserDurationDays:  reg.DefaultNewUserDurationDays,
 		DefaultNewUserCredits:       reg.DefaultNewUserCredits,
+		DefaultNewUserBenefitMode:   reg.NewUserBenefitMode(),
+		DefaultNewUserLimitCard:     reg.DefaultNewUserLimitCard,
 		TokensPerCredit:             reg.TokensPerCredit,
 		ExposeAPIBaseURL:            baseURL,
 		ExposeBaseURL:               strings.TrimRight(baseURL, "/") + "/chat/completions",
@@ -4075,6 +4482,7 @@ func validateLLMServiceGroupReferences(reg *llmservice.Registry) []string {
 	check("global service groups", reg.GlobalServiceGroupIDs)
 	check("system default service group", []string{reg.SystemDefaultServiceGroupID})
 	check("new-user default grants", reg.DefaultNewUserServiceGroups)
+	check("new-user limit card", reg.DefaultNewUserLimitCard.ServiceGroupIDs)
 	for _, binding := range reg.GroupBindings {
 		label := strings.TrimSpace(binding.GroupID)
 		if label == "" {
@@ -4113,6 +4521,28 @@ func validateLLMServiceGroupReferences(reg *llmservice.Registry) []string {
 				label = "<empty>"
 			}
 			issues = append(issues, fmt.Sprintf("grant %q references unknown service group: %s", label, id))
+		}
+	}
+	return issues
+}
+
+// validateNewUserLimitCardServiceGroups keeps the welcome limit card as an
+// entitlement overlay on binding-active groups. Recharge groups are already
+// grant-gated and must retain their own card/top-up behavior.
+func validateNewUserLimitCardServiceGroups(reg *llmservice.Registry) []string {
+	if reg == nil {
+		return nil
+	}
+	issues := make([]string, 0)
+	for _, id := range reg.DefaultNewUserLimitCard.ServiceGroupIDs {
+		group := reg.FindModelServiceGroup(id)
+		if group == nil {
+			// The general reference validator reports missing groups with its
+			// established error code.
+			continue
+		}
+		if llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyFree {
+			issues = append(issues, fmt.Sprintf("new-user limit card only supports binding-active service groups: %s", strings.TrimSpace(group.ID)))
 		}
 	}
 	return issues
@@ -4239,16 +4669,17 @@ type llmBillingDenial struct {
 	RetryAfterAt      string
 }
 
-func filterAuthorizedModelsByBillingEligibility(reg *llmservice.Registry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
+func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmservice.Registry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
 	filtered := make([]llmservice.AuthorizedModel, 0, len(models))
 	denied := map[string]llmBillingDenial{}
 	firstDenial := llmBillingDenial{}
 	for i := range models {
-		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(reg, userID, email, body, &models[i])
+		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(ctx, reg, userID, email, body, &models[i])
 		if err != nil {
 			if denial.Message == "" {
 				denial.Message = err.Error()
 			}
+			denial = enrichLLMBillingDenialRetry(reg, userID, email, body, &models[i], denial)
 			denied[strings.ToLower(strings.TrimSpace(models[i].Name))] = denial
 			if firstDenial.Code == "" || llmBillingDenialRank(denial.Code) < llmBillingDenialRank(firstDenial.Code) {
 				firstDenial = denial
@@ -4260,11 +4691,11 @@ func filterAuthorizedModelsByBillingEligibility(reg *llmservice.Registry, userID
 	return filtered, denied, firstDenial
 }
 
-func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, userID string, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, llmBillingDenial, error) {
+func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmservice.Registry, userID string, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, llmBillingDenial, error) {
 	if model == nil || reg == nil {
 		return model, llmBillingDenial{}, nil
 	}
-	orderedProviders := llmservice.OrderProvidersForRequest(body, model)
+	orderedProviders := llmservice.PeekProvidersForRequest(body, model)
 	if len(orderedProviders) == 0 {
 		orderedProviders = append([]string(nil), model.ProviderIDs...)
 	}
@@ -4272,8 +4703,8 @@ func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, userID 
 	firstDenial := llmBillingDenial{}
 	now := time.Now().UTC()
 	for _, providerID := range orderedProviders {
-		allowed, denial := billingEligibilityForProvider(reg, userID, email, llmservice.ServiceGroupIDsForProvider(model, providerID), now)
-		if allowed {
+		denial, err := prepareLLMPricingQuote(ctx, reg, userID, email, model, providerID, body, now)
+		if err == nil {
 			eligibleProviderIDs = append(eligibleProviderIDs, providerID)
 			continue
 		}
@@ -4287,9 +4718,12 @@ func filterAuthorizedModelByBillingEligibility(reg *llmservice.Registry, userID 
 		}
 		return nil, firstDenial, errors.New(firstDenial.Message)
 	}
-	clone := *model
+	clone := llmservice.CloneAuthorizedModel(model)
+	if clone == nil {
+		return nil, llmBillingDenial{}, errors.New("authorized model is required")
+	}
 	clone.ProviderIDs = eligibleProviderIDs
-	return &clone, llmBillingDenial{}, nil
+	return clone, llmBillingDenial{}, nil
 }
 
 func llmBillingDenialRank(code string) int {
@@ -4307,6 +4741,38 @@ func llmBillingDenialRank(code string) int {
 	default:
 		return 5
 	}
+}
+
+func enrichLLMBillingDenialRetry(reg *llmservice.Registry, userID, email string, body map[string]any, model *llmservice.AuthorizedModel, denial llmBillingDenial) llmBillingDenial {
+	if denial.RetryAfterSeconds > 0 || denial.RetryAfterAt != "" || reg == nil || model == nil {
+		return denial
+	}
+	providerIDs := llmservice.PeekProvidersForRequest(body, model)
+	if len(providerIDs) == 0 {
+		providerIDs = model.ProviderIDs
+	}
+	now := time.Now().UTC()
+	for _, providerID := range providerIDs {
+		groups := llmservice.ChargedServiceGroupIDs(model, providerID)
+		retryAt := llmservice.PeriodLimitRetryAtForServiceGroupsForUserID(reg, userID, email, groups, now)
+		if retryAt != nil && !retryAt.IsZero() {
+			denial.RetryAfterAt = retryAt.UTC().Format(time.RFC3339)
+			denial.RetryAfterSeconds = int64(math.Ceil(time.Until(*retryAt).Seconds()))
+			if denial.RetryAfterSeconds < 1 {
+				denial.RetryAfterSeconds = 1
+			}
+			return denial
+		}
+		if startsAt := llmservice.GrantStartAtForServiceGroupsForUserID(reg, userID, email, groups, now); startsAt != nil && !startsAt.IsZero() {
+			denial.RetryAfterAt = startsAt.UTC().Format(time.RFC3339)
+			denial.RetryAfterSeconds = int64(math.Ceil(time.Until(*startsAt).Seconds()))
+			if denial.RetryAfterSeconds < 1 {
+				denial.RetryAfterSeconds = 1
+			}
+			return denial
+		}
+	}
+	return denial
 }
 
 func llmBillingDenialHTTPStatus(denial llmBillingDenial) int {
@@ -4333,36 +4799,37 @@ func billingEligibilityForProvider(reg *llmservice.Registry, userID string, emai
 	return allowed, denial
 }
 
-func resolveAuthorizedModel(body map[string]any, models []llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, string, error) {
-	requestedModel, _ := body["model"].(string)
-	requestedModel = strings.TrimSpace(requestedModel)
-	if len(models) == 0 {
-		return nil, requestedModel, fmt.Errorf("no active model service entitlement")
+func resolveAuthorizedModel(r *http.Request, body map[string]any, models []llmservice.AuthorizedModel, serviceReg *llmservice.Registry) (*llmservice.AuthorizedModel, string, *llmpool.WorkloadDecision, error) {
+	requestedGroupID := ""
+	if r != nil {
+		requestedGroupID = strings.TrimSpace(r.Header.Get(llmpool.ServiceGroupIDHeader))
 	}
-	if requestedModel == "" || strings.EqualFold(requestedModel, "auto") || strings.EqualFold(requestedModel, "default") {
-		selected := llmservice.SelectBestModelForRequest(body, models)
-		if selected == nil {
-			selected = &models[0]
+	var header http.Header
+	if r != nil {
+		header = r.Header
+	}
+	var runtime *llmpool.HeadRuntime
+	if r != nil && classHeadSettingsBase != nil {
+		groupID := requestedGroupID
+		if serviceReg != nil {
+			ids := make([]string, 0)
+			for _, model := range models {
+				ids = append(ids, model.ServiceGroupIDs...)
+			}
+			if group := llmservice.SelectDynamicGroup(serviceReg, ids, requestedGroupID); group != nil {
+				groupID = group.ID
+			}
 		}
-		return selected, selected.Name, nil
+		runtime = classHeadRuntime(scopedSystemSettingsForTenant(classHeadTenantID(r), classHeadSettingsBase), classHeadUserID(r), groupID)
 	}
-	for i := range models {
-		if strings.EqualFold(strings.TrimSpace(models[i].Name), requestedModel) {
-			return &models[i], requestedModel, nil
-		}
-	}
-	return nil, requestedModel, fmt.Errorf("model %q is not authorized for this account", requestedModel)
+	return llmservice.ResolveDynamicAuthorizedModelWithHead(header, body, models, serviceReg, requestedGroupID, runtime)
 }
 
-func explainModelSelection(body map[string]any, models []llmservice.AuthorizedModel, selected *llmservice.AuthorizedModel) *llmservice.ModelSelectionDebug {
+func explainModelSelection(body map[string]any, models []llmservice.AuthorizedModel, selected *llmservice.AuthorizedModel, decision *llmpool.WorkloadDecision, requestedModel string) *llmservice.ModelSelectionDebug {
 	if selected == nil {
 		return nil
 	}
-	_, debug := llmservice.SelectBestModelForRequestWithDebug(body, models)
-	if debug != nil && strings.EqualFold(strings.TrimSpace(debug.SelectedModel), strings.TrimSpace(selected.Name)) {
-		return debug
-	}
-	return &llmservice.ModelSelectionDebug{
+	debug := &llmservice.ModelSelectionDebug{
 		SelectedModel:    selected.Name,
 		MatchedTags:      append([]string(nil), selected.CapabilityTags...),
 		Priority:         selected.Priority,
@@ -4370,7 +4837,127 @@ func explainModelSelection(body map[string]any, models []llmservice.AuthorizedMo
 		CreditMultiplier: selected.CreditMultiplier,
 		SelectionReason:  "manual model selection",
 	}
+	if decision != nil && !decision.Passthrough {
+		debug.SelectionReason = "dynamic workload route"
+	} else if _, scored := llmservice.SelectBestModelForRequestWithDebug(body, models); scored != nil && strings.EqualFold(strings.TrimSpace(scored.SelectedModel), strings.TrimSpace(selected.Name)) {
+		debug = scored
+	}
+	requested := strings.TrimSpace(requestedModel)
+	if requested == "" && body != nil {
+		requested, _ = body["model"].(string)
+		requested = strings.TrimSpace(requested)
+	}
+	groupID := ""
+	if decision != nil {
+		groupID = decision.Attribution.RequestedGroup
+		debug.WorkloadClass = decision.Class
+		debug.ClassSource = decision.Source
+		debug.ResolvedModel = decision.ResolvedModel
+		if debug.ResolvedModel == "" {
+			debug.ResolvedModel = selected.Name
+		}
+		if strings.TrimSpace(decision.Attribution.RequestedModel) != "" {
+			requested = decision.Attribution.RequestedModel
+		}
+		debug.ApplyAttribution(llmpool.AttributionFrom(*decision, groupID, requested))
+	} else {
+		debug.RequestedModel = requested
+		debug.ResolvedModel = selected.Name
+	}
+	return debug
 }
+
+func attachResolvedProvider(debug *llmservice.ModelSelectionDebug, providerID string, model *llmservice.AuthorizedModel) {
+	if debug == nil {
+		return
+	}
+	upstream := llmservice.OfficialUpstreamModel(model, providerID)
+	if upstream == "" && model != nil {
+		upstream = model.Name
+	}
+	pool := ""
+	if llmservice.OfficialUpstreamModel(model, providerID) != "" || (model != nil && llmpool.IsOfficialTierName(model.Name)) {
+		pool = llmpool.OfficialGroupID
+	}
+	debug.ApplyResolvedProvider(providerID, upstream, pool)
+}
+
+func applyHubWorkloadSelection(w http.ResponseWriter, r *http.Request, body map[string]any, model *llmservice.AuthorizedModel, serviceReg *llmservice.Registry, decision *llmpool.WorkloadDecision) *http.Request {
+	if model != nil && body != nil && !llmservice.ShouldPassthroughOfficialAuto(model, serviceReg) && !llmpool.IsAutoModel(model.Name) {
+		body["model"] = model.Name
+	}
+	if r != nil {
+		meta := llmservice.OfficialForwardMeta{
+			Preview:      llmpool.RequestTextPreview(body, 200),
+			WorkflowType: r.Header.Get(llmpool.WorkflowTypeHeader),
+			PhaseKind:    r.Header.Get(llmpool.PhaseKindHeader),
+			TaskType:     r.Header.Get(llmpool.TaskTypeHeader),
+		}
+		if decision != nil {
+			if class := strings.TrimSpace(decision.Class); class != "" && class != llmpool.WorkloadUnclassified {
+				w.Header().Set(llmpool.WorkloadClassHeader, class)
+			}
+			resolved := strings.TrimSpace(decision.ResolvedModel)
+			if resolved == "" && model != nil {
+				resolved = model.Name
+			}
+			if resolved != "" {
+				w.Header().Set(llmpool.ResolvedModelHeader, resolved)
+			}
+			meta.WorkloadClass = decision.Class
+			meta.ClassSource = decision.Source
+			meta.ResolvedModel = decision.ResolvedModel
+			meta.RuleClass = decision.RuleClass
+			meta.RuleSource = decision.RuleSource
+			if meta.RuleClass == "" {
+				meta.RuleClass = decision.Class
+			}
+			if meta.RuleSource == "" {
+				meta.RuleSource = decision.Source
+			}
+			meta.HeadClass = decision.HeadClass
+			meta.HeadMaxP = decision.HeadMaxP
+			meta.HeadUsed = decision.HeadUsed
+			meta.Passthrough = decision.Passthrough
+		}
+		r = r.WithContext(llmservice.WithOfficialForwardMeta(r.Context(), meta))
+	}
+	return r
+}
+
+func withOfficialRequestID(r *http.Request, requestID string) *http.Request {
+	if r == nil || strings.TrimSpace(requestID) == "" {
+		return r
+	}
+	meta := llmservice.OfficialForwardMetaFrom(r.Context())
+	meta.RequestID = strings.TrimSpace(requestID)
+	return r.WithContext(llmservice.WithOfficialForwardMeta(r.Context(), meta))
+}
+
+func rewriteOfficialForwardBody(body map[string]any, model *llmservice.AuthorizedModel, providerID string) map[string]any {
+	fwd := cloneLLMEndpointBody(body)
+	if fwd == nil {
+		fwd = map[string]any{}
+	}
+	if tier := llmservice.OfficialUpstreamModel(model, providerID); tier != "" {
+		fwd["model"] = tier
+		return fwd
+	}
+	if model != nil && !llmpool.IsAutoModel(model.Name) {
+		fwd["model"] = model.Name
+	}
+	return fwd
+}
+
+func officialForwardServiceGroupIDs(model *llmservice.AuthorizedModel, providerID string) []string {
+	if llmservice.OfficialUpstreamModel(model, providerID) != "" || (model != nil && llmpool.IsOfficialTierName(model.Name)) {
+		return []string{llmpool.OfficialGroupID}
+	}
+	// Keep Hub's undeletable official entry ID. HubCenter treats it as a Hub
+	// entry, not a local catalog group, and bills the tenant compute card.
+	return llmservice.ServiceGroupIDsForProvider(model, providerID)
+}
+
 func writeLLMServiceCardsExport(w http.ResponseWriter, cards []llmservice.RechargeCard, format, filenamePrefix string) {
 	nowName := time.Now().Format("20060102_150405")
 	switch format {

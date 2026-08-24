@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/lansengerwatch"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func TestLansengerStatusNeedsWatchdogRestart(t *testing.T) {
@@ -77,7 +78,7 @@ func TestSendLansengerScreenshotUsesImageAttachment(t *testing.T) {
 	defer api.Close()
 
 	gw := lansenger.NewGateway(lansenger.Config{AppID: "app", AppSecret: "secret", ApiGatewayURL: api.URL}, nil)
-	if err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, testOnePixelPNGBase64); err != nil {
+	if _, err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, testOnePixelPNGBase64); err != nil {
 		t.Fatalf("sendLansengerScreenshot: %v", err)
 	}
 	if message.MsgType != "text" || message.MsgData.Text.Content != "screenshot.png" || message.MsgData.Text.MediaType != 2 || len(message.MsgData.Text.MediaIDs) != 1 || message.MsgData.Text.MediaIDs[0] != "image-1" {
@@ -87,7 +88,7 @@ func TestSendLansengerScreenshotUsesImageAttachment(t *testing.T) {
 
 func TestSendLansengerScreenshotRejectsMalformedPayload(t *testing.T) {
 	gw := lansenger.NewGateway(lansenger.Config{}, nil)
-	if err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, "not-base64"); err == nil || !strings.Contains(err.Error(), "decode screenshot") {
+	if _, err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, "not-base64"); err == nil || !strings.Contains(err.Error(), "decode screenshot") {
 		t.Fatalf("malformed screenshot error = %v", err)
 	}
 }
@@ -95,8 +96,34 @@ func TestSendLansengerScreenshotRejectsMalformedPayload(t *testing.T) {
 func TestSendLansengerScreenshotRejectsNonPNGPayload(t *testing.T) {
 	gw := lansenger.NewGateway(lansenger.Config{}, nil)
 	payload := base64.StdEncoding.EncodeToString([]byte("not a png"))
-	if err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, payload); err == nil || !strings.Contains(err.Error(), "not a PNG") {
+	if _, err := sendLansengerScreenshot(context.Background(), gw, lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user"}, payload); err == nil || !strings.Contains(err.Error(), "not a PNG") {
 		t.Fatalf("non-PNG screenshot error = %v", err)
+	}
+}
+
+func TestLansengerSemanticDeliveryOutcomePreservesAmbiguity(t *testing.T) {
+	for name, test := range map[string]struct {
+		err  error
+		want tool.DeliveryState
+	}{
+		"invalid base64 is definite failure": {err: fmt.Errorf("decode screenshot: invalid base64"), want: tool.DeliveryFailed},
+		"bad image is definite failure":      {err: fmt.Errorf("screenshot is not a PNG image"), want: tool.DeliveryFailed},
+		"gateway send may be ambiguous":      {err: fmt.Errorf("send screenshot: media upload failed: timeout"), want: tool.DeliveryUnknown},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := lansengerSemanticDeliveryOutcome(test.err); got != test.want {
+				t.Fatalf("outcome=%q want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestLansengerDeliveryDestinationUsesTrustedTypedReplyTarget(t *testing.T) {
+	if got := lansengerDeliveryDestination(lansenger.IncomingMessage{ChatType: "group", GroupID: "group-1", FromUserID: "user-1"}); got != "group:group-1" {
+		t.Fatalf("group destination=%q", got)
+	}
+	if got := lansengerDeliveryDestination(lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "user-1"}); got != "user:user-1" {
+		t.Fatalf("direct destination=%q", got)
 	}
 }
 
@@ -739,6 +766,10 @@ func TestHubReplyDecorUsesCachedDisplayName(t *testing.T) {
 		Text:       d.question,
 	}
 	out := buildLansengerOutgoingText(inbound, "今天晴。", lansenger.GroupChatOptions{RequireMention: true})
+	tofu := buildLansengerOutgoingText(lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "u1", Text: "hi"}, "\x01I am \uEB90Kate", lansenger.GroupChatOptions{})
+	if tofu.Text != "I am Kate" {
+		t.Fatalf("outbound tofu = %q, want sanitized answer", tofu.Text)
+	}
 	if !strings.HasPrefix(out.Text, "王占一问：帮我查天气") {
 		t.Fatalf("hub reconstructed quote must use display name, got %q", out.Text)
 	}

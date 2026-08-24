@@ -370,7 +370,7 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 	llm := corelib.MaclawLLMConfig{
 		URL:           cfg.MaclawLLMUrl,
 		Key:           cfg.MaclawLLMKey,
-		Model:         cfg.MaclawLLMModel,
+		Model:         corelib.MigrateZhipuCodingModel(currentProvider, cfg.MaclawLLMModel),
 		Protocol:      cfg.MaclawLLMProtocol,
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
@@ -379,21 +379,28 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 	}
 	// Resolve provider-specific fields from the current provider entry.
 	for _, p := range cfg.MaclawLLMProviders {
-		if tuiCanonicalHubServiceProviderName(p.Name) == currentProvider {
-			if token := p.CodexSubscriptionOAuthToken(); token != "" {
-				llm.Key = token
-			} else if strings.TrimSpace(llm.Key) == "" {
-				llm.Key = strings.TrimSpace(p.Key)
-			}
-			if p.TimeoutSec > 0 {
-				llm.TimeoutSec = p.TimeoutSec
-			}
-			llm.AgentType = p.AgentType
-			llm.SupportsVision = p.SupportsVision
-			llm.WireAPI = p.WireAPI
-			llm.MaxOutputTokens = p.MaxOutputTokens
-			break
+		if tuiCanonicalHubServiceProviderName(p.Name) != currentProvider &&
+			!corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) {
+			continue
 		}
+		if token := p.CodexSubscriptionOAuthToken(); token != "" {
+			llm.Key = token
+		} else if strings.TrimSpace(llm.Key) == "" {
+			llm.Key = strings.TrimSpace(p.Key)
+		}
+		if p.TimeoutSec > 0 {
+			llm.TimeoutSec = p.TimeoutSec
+		}
+		llm.AgentType = p.AgentType
+		llm.SupportsVision = p.SupportsVision
+		llm.WireAPI = p.WireAPI
+		llm.MaxOutputTokens = p.MaxOutputTokens
+		if strings.TrimSpace(cfg.MaclawLLMModel) == "" {
+			llm.Model = corelib.MigrateZhipuCodingModel(p.Name, p.Model)
+		} else {
+			llm.Model = corelib.MigrateZhipuCodingModel(p.Name, cfg.MaclawLLMModel)
+		}
+		break
 	}
 	if strings.TrimSpace(llm.Key) == "" && tuiAppConfigUsesHubLLMService(cfg) {
 		llm.Key = strings.TrimSpace(cfg.RemoteViewerToken)
@@ -469,6 +476,8 @@ type TUIApp struct {
 	workflowMu           sync.Mutex
 	pendingPhasePrompt   string // stashed phase prompt for the next agent loop
 	workflowAgentLoop    bool   // true when the agent loop runs on behalf of the workflow
+	hubHintWorkflowType  string
+	hubHintPhaseKind     string
 	pendingWorkflowStart *tuiPendingWorkflowStart
 	needleRuntime        *needleruntime.Runtime
 
@@ -543,12 +552,7 @@ func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
 		HasKnowledgeBase: app.knowledgeStore != nil,
 	}
 
-	// Knowledge auto-recall hook (prior turns supplied by BuildSystemPrompt override when history is set)
-	if app.knowledgeStore != nil {
-		deps.KnowledgeAutoRecall = func(b *strings.Builder, userMsg string) {
-			app.appendKnowledgeAutoRecall(b, userMsg, nil)
-		}
-	}
+	// Warehouse text is retrieved with tools. Do not BM25-inject at iteration 0.
 
 	if len(cfg.SSHHosts) > 0 {
 		deps.SSHHostLister = func() []corelib.SSHHostEntry {
@@ -1081,6 +1085,31 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.root.Tools.FocusMCP()
 		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenTools"))
 		return m, nil
+
+	case views.ConfigQQBotScanMsg:
+		if !m.root.Config.QQBotQRScanRequested() {
+			return m, nil
+		}
+		return m, startQQBotQRLoginCmd(m.uiLang())
+
+	case views.ConfigQQBotPollMsg:
+		if !m.root.Config.QQBotQRPollTokenMatches(msg.Token) {
+			return m, nil
+		}
+		return m, pollQQBotQRLoginCmd(m.uiLang(), msg.Token)
+
+	case views.ConfigQQBotCancelMsg:
+		tuiQQBotQRClient().CancelBindTask(msg.Token)
+		return m, nil
+
+	case views.ConfigQQBotQRMsg, views.ConfigQQBotPollResultMsg:
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		if result, ok := msg.(views.ConfigQQBotPollResultMsg); ok && result.Success {
+			m.reloadConfigBackedViews()
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "qqbotBound"))
+		}
+		return m, cmd
 
 	case views.ServiceRedeemOpenSetupMsg:
 		m.root.SetTab(views.TabOnboarding)
@@ -1795,9 +1824,11 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 				workflowState = wf.machine.GetActive("tui-user")
 				if workflowState != nil {
 					workflowPhase = workflowState.ActivePhase()
+					app.setHubWorkflowHints(workflowState)
 				}
 			}
 		}
+		defer app.clearHubWorkflowHints()
 		if tuiWorkflowPhaseUsesCodingRuntime(workflowState, workflowPhase) {
 			// The V2 phase remains the orchestration source of truth, while the
 			// runtime owns the durable attempt/lease fact. Mark it before calling
@@ -3472,13 +3503,7 @@ func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 		return tuiReadOnlyChildSystemPrompt(userText)
 	}
 	deps := c.app.buildSystemPromptDeps()
-	// Multi-turn knowledge auto-recall: blend prior user turns when history is available.
-	if c.app != nil && c.app.knowledgeStore != nil {
-		prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
-		deps.KnowledgeAutoRecall = func(b *strings.Builder, userMsg string) {
-			c.app.appendKnowledgeAutoRecall(b, userMsg, prior)
-		}
-	}
+	// Warehouse text is retrieved with tools. Do not inject auto-recall bodies.
 	// Adaptive system prompt: light turns skip coding/SSH/MCP bulk.
 	// Workflow phase generation always needs the full policy surface.
 	profile, classified := c.resolvePromptProfile(userText)
@@ -3766,6 +3791,22 @@ func (c *tuiCallbacks) OnToolResult(name string) {
 	// ChatStreamMsg here would overwrite the elapsed time display.
 }
 
+func (c *tuiCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return projectTUIToolResult(name, result, c.GetLLMConfig())
+}
+
+func (c *tuiCallbacks) EscalateAfterToolExecution(name string) {
+	_ = name
+	if c != nil {
+		escalateTUIActiveLLMAfterTool(c.app, &c.activeLLM)
+	}
+}
+
+func (c *tuiCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	return c != nil && c.activeLLM.consumeSurfaceRefresh()
+}
+
 func (c *tuiCallbacks) ShouldStop() bool {
 	if c != nil && c.executionCtx != nil && c.executionCtx.Err() != nil {
 		return true
@@ -3877,8 +3918,6 @@ type tuiBtwCallbacks struct {
 	stopped   bool
 	cancelCh  chan struct{}
 	activeLLM tuiActiveLLM
-
-	cachedTools []map[string]interface{}
 }
 
 func newTuiBtwCallbacks(app *TUIApp, prog *tea.Program) *tuiBtwCallbacks {
@@ -3926,7 +3965,7 @@ func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) s
 	return buildTuiBtwSystemPrompt(c.app, userText)
 }
 
-func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
+func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 	cfg := app.appConfig
 	lang := tuiConfigLang(cfg)
 	roleName := cfg.MaclawRoleName
@@ -3967,21 +4006,15 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(memory.UserFactTemplatePromptOptions(tuiBtwSectionFormat(lang, "userInfo"))))
 	}
 
-	// Proactive memory recall (read-only, no side effects).
-	if app.memoryStore != nil && userText != "" {
-		// Compact auto-extracted document bodies so recall embeds intent+paths only.
-		promptContext, _ := app.memoryStore.ProactiveContextForPrompt(agent.CompactQueryForEmbedding(userText), memory.BtwProactivePromptOptions("", tuiBtwSectionHeader(lang, "relevantMemory")))
-		b.WriteString(promptContext)
-	}
-
 	return b.String()
 }
 
 func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
-	if c.cachedTools == nil {
-		c.cachedTools = buildTuiBtwToolDefinitions(c.app)
-	}
-	return c.cachedTools
+	_ = userText
+	// Definitions are request-owned, including for a minimal /btw query. A
+	// retry or later model round must rebuild its complete replacement from the
+	// current registry instead of reusing an in-memory predecessor slice.
+	return buildTuiBtwToolDefinitions(c.app)
 }
 
 func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
@@ -4038,6 +4071,22 @@ func (c *tuiBtwCallbacks) OnToolCall(name string) {
 }
 
 func (c *tuiBtwCallbacks) OnToolResult(name string) {}
+
+func (c *tuiBtwCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return projectTUIToolResult(name, result, c.GetLLMConfig())
+}
+
+func (c *tuiBtwCallbacks) EscalateAfterToolExecution(name string) {
+	_ = name
+	if c != nil {
+		escalateTUIActiveLLMAfterTool(c.app, &c.activeLLM)
+	}
+}
+
+func (c *tuiBtwCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	return c != nil && c.activeLLM.consumeSurfaceRefresh()
+}
 
 func (c *tuiBtwCallbacks) ShouldStop() bool {
 	select {

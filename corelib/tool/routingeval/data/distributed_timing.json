@@ -1,0 +1,64 @@
+{
+  "category": "distributed_timing",
+  "category_id": 39,
+  "title": "distributed timing and fencing",
+  "design_ref": "10.1 item 39",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "one-of-two-search",
+      "title": "Duplicate search providers do not create two selections",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          },
+          {
+            "adapter": "search_adapter_b",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ],
+            "schema_salt": "b"
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "search",
+            "capability": "information.search.web"
+          }
+        ]
+      },
+      "notes": "Multi-replica fencing is in semantic_outbox_fencing_test.go."
+    }
+  ]
+}

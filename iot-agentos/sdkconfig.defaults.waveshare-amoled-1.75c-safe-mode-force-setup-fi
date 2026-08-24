@@ -1,0 +1,5 @@
+# Dedicated non-release C7 artifact: fail only the durable force-setup
+# consume transaction. The hook is after the read and before any clear/write,
+# so COM6 HIL cannot alter persisted credentials or pairing state.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_SAFE_MODE_TEST_FORCE_SETUP_TAKE_FAILURE=y

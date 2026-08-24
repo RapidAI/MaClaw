@@ -57,7 +57,7 @@ func boostStrength(e *Entry, now time.Time) {
 func batchDecayAndMark(entries []Entry, now time.Time) int {
 	count := 0
 	for i := range entries {
-		if entries[i].Category.IsProtected() {
+		if entries[i].Category.IsProtected() || IsDurableTaskManagementEntry(&entries[i]) {
 			continue
 		}
 		if entries[i].Status == StatusSuperseded {
@@ -76,7 +76,7 @@ func batchDecayAndMark(entries []Entry, now time.Time) int {
 func dormantDecayUpdates(entries []Entry, now time.Time) []Entry {
 	updates := make([]Entry, 0)
 	for i := range entries {
-		if entries[i].Category.IsProtected() || entries[i].Status == StatusSuperseded {
+		if entries[i].Category.IsProtected() || IsDurableTaskManagementEntry(&entries[i]) || entries[i].Status == StatusSuperseded {
 			continue
 		}
 		cur := decayStrength(entries[i], now)

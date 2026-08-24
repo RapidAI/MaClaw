@@ -64,10 +64,24 @@ func DoOpenAIRequestStreamWithReasoning(
 	onToken TokenCallback,
 	onReasoning TokenCallback,
 ) (*Response, error) {
-	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{
-		Stream: true,
-		Tools:  tools,
-	})
+	return DoOpenAIRequestStreamWithOptions(ctx, cfg, messages, tools, client, onToken, onReasoning, OpenAIChatRequestOptions{Stream: true, Tools: tools})
+}
+
+// DoOpenAIRequestStreamWithOptions preserves the caller's explicit
+// invocation policy through request serialization.
+func DoOpenAIRequestStreamWithOptions(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	onToken TokenCallback,
+	onReasoning TokenCallback,
+	opts OpenAIChatRequestOptions,
+) (*Response, error) {
+	opts.Stream = true
+	opts.Tools = tools
+	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +91,7 @@ func DoOpenAIRequestStreamWithReasoning(
 
 	startedAt := time.Now()
 	result, statusCode, body, err := openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
-	if err != nil {
+	if err != nil && !TransparentRequestRetriesDisabled(ctx) {
 		// Handle "unsupported parameter" — the endpoint doesn't accept max_tokens at all.
 		// Retry once without the parameter and cache so subsequent requests skip it.
 		if (statusCode == 400 || statusCode == 422) && looksLikeUnsupportedMaxTokensParam(string(body), err.Error()) {
@@ -152,47 +166,7 @@ func DoOpenAIRequestStreamWithReasoning(
 			return nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}
 		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-		compactRetryAttempted := false
-		if ShouldRetryOpenAIWithoutTools(cfg, statusCode, messages, tools) {
-			log.Printf("[LLM-stream] retry_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 tools=%d %s", endpoint, upstreamModel, cfg.Model, len(tools), traceFields)
-			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{Stream: true})
-			if err != nil {
-				return nil, err
-			}
-			retryStartedAt := time.Now()
-			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
-			if err != nil {
-				if statusCode == 0 {
-					log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(retryStartedAt).Round(time.Millisecond), err, traceFields)
-					return nil, fmt.Errorf("[%s] %w", endpoint, err)
-				}
-				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-				compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
-				if len(compactMessages) == 0 {
-					return nil, streamHTTPStatusError(statusCode, body)
-				}
-				compactRetryAttempted = true
-				log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400 %s", endpoint, upstreamModel, cfg.Model, traceFields)
-				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: true})
-				if err != nil {
-					return nil, err
-				}
-				compactStartedAt := time.Now()
-				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
-				if err != nil {
-					if statusCode == 0 {
-						log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
-						return nil, fmt.Errorf("[%s] %w", endpoint, err)
-					}
-					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-					return nil, streamHTTPStatusError(statusCode, body)
-				}
-				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
-			} else {
-				log.Printf("[LLM-stream] retry_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(retryStartedAt).Round(time.Millisecond), traceFields)
-			}
-		}
-		if statusCode != http.StatusOK && !compactRetryAttempted && ShouldRetryOpenAIWithCompact(cfg, statusCode, messages) {
+		if !TransparentRequestRetriesDisabled(ctx) && statusCode != http.StatusOK && ShouldRetryOpenAIWithCompact(cfg, statusCode, messages, tools) {
 			compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
 			log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
 			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: true})
@@ -234,7 +208,24 @@ func DoAnthropicRequestStream(
 	client *http.Client,
 	onToken TokenCallback,
 ) (*Response, error) {
-	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{Stream: true, Tools: tools})
+	return DoAnthropicRequestStreamWithReasoning(ctx, cfg, messages, tools, client, onToken, nil)
+}
+
+// DoAnthropicRequestStreamWithReasoning sends a streaming Anthropic request and
+// forwards thinking_delta events through onReasoning so hosts can keep the
+// thinking panel open while the model is still working.
+func DoAnthropicRequestStreamWithReasoning(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	onToken TokenCallback,
+	onReasoning TokenCallback,
+) (*Response, error) {
+	endpoint, data, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{
+		Stream: true, Tools: tools, ExplicitToolReplacement: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -242,14 +233,20 @@ func DoAnthropicRequestStream(
 	upstreamModel := cfg.UpstreamModel()
 	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s protocol=anthropic sdk=anthropic-sdk-go %s", endpoint, upstreamModel, cfg.Model, traceFields)
 	startedAt := time.Now()
-	result, statusCode, body, err := anthropicSDKMessageStream(ctx, cfg, data, client, onToken)
+	result, statusCode, body, err := anthropicSDKMessageStream(ctx, cfg, data, client, onToken, onReasoning)
 	// statusCode==0: no HTTP response (network/cancel). newHTTPStatusError is nil then.
 	if se := streamHTTPStatusError(statusCode, body); se != nil {
 		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
+		if result != nil {
+			return result, se
+		}
 		return nil, se
 	}
 	if err != nil {
 		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
+		if result != nil {
+			return result, fmt.Errorf("[%s] %w", endpoint, err)
+		}
 		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), traceFields)
@@ -266,6 +263,107 @@ func parseSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
 	return parseSSEStreamWithReasoning(body, onToken, nil)
 }
 
+// openAIThinkTagStreamFilter separates a provider's inline <think>...</think>
+// content while it is still streaming. Compatible providers may split either
+// tag across deltas, so this keeps the possible tag suffix buffered until the
+// following delta confirms whether it is visible text or reasoning.
+type openAIThinkTagStreamFilter struct {
+	onVisible   TokenCallback
+	onReasoning TokenCallback
+	inside      bool
+	pending     strings.Builder
+}
+
+func newOpenAIThinkTagStreamFilter(onVisible, onReasoning TokenCallback) *openAIThinkTagStreamFilter {
+	return &openAIThinkTagStreamFilter{onVisible: onVisible, onReasoning: onReasoning}
+}
+
+func (f *openAIThinkTagStreamFilter) Write(delta string) {
+	if f == nil || delta == "" {
+		return
+	}
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *openAIThinkTagStreamFilter) Flush() {
+	if f != nil {
+		f.drain(true)
+	}
+}
+
+func (f *openAIThinkTagStreamFilter) drain(force bool) {
+	const openTag = "<think>"
+	const closeTag = "</think>"
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+		lower := strings.ToLower(s)
+		if !f.inside {
+			if idx := strings.Index(lower, openTag); idx >= 0 {
+				if idx > 0 && f.onVisible != nil {
+					f.onVisible(s[:idx])
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(s[idx+len(openTag):])
+				continue
+			}
+			if suffixLen := partialThinkTagSuffixLen(lower, openTag); suffixLen > 0 && !force {
+				if len(s) > suffixLen && f.onVisible != nil {
+					f.onVisible(s[:len(s)-suffixLen])
+				}
+				f.pending.Reset()
+				f.pending.WriteString(s[len(s)-suffixLen:])
+				return
+			}
+			if f.onVisible != nil {
+				f.onVisible(s)
+			}
+			f.pending.Reset()
+			return
+		}
+
+		if idx := strings.Index(lower, closeTag); idx >= 0 {
+			if idx > 0 && f.onReasoning != nil {
+				f.onReasoning(s[:idx])
+			}
+			f.inside = false
+			f.pending.Reset()
+			f.pending.WriteString(s[idx+len(closeTag):])
+			continue
+		}
+		if suffixLen := partialThinkTagSuffixLen(lower, closeTag); suffixLen > 0 && !force {
+			if len(s) > suffixLen && f.onReasoning != nil {
+				f.onReasoning(s[:len(s)-suffixLen])
+			}
+			f.pending.Reset()
+			f.pending.WriteString(s[len(s)-suffixLen:])
+			return
+		}
+		if f.onReasoning != nil {
+			f.onReasoning(s)
+		}
+		f.pending.Reset()
+		return
+	}
+}
+
+func partialThinkTagSuffixLen(s, tag string) int {
+	max := len(tag) - 1
+	if len(s) < max {
+		max = len(s)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(s, tag[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
 // parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
 // forwards text and reasoning_content deltas as they arrive.  Reasoning must
 // not wait for the final [DONE] event: hosts use the live callback to keep the
@@ -274,7 +372,15 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
+	var responseID string
 	contentFilter := newContentToolCallDeltaFilter(onToken)
+	var taggedReasoningBuf strings.Builder
+	thinkFilter := newOpenAIThinkTagStreamFilter(contentFilter.Write, func(delta string) {
+		taggedReasoningBuf.WriteString(delta)
+		if onReasoning != nil {
+			onReasoning(delta)
+		}
+	})
 
 	type toolCallAcc struct {
 		ID      string
@@ -303,6 +409,13 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
+		if id := strings.TrimSpace(chunk.ID); id != "" {
+			if responseID == "" {
+				responseID = id
+			} else if responseID != id {
+				return nil, fmt.Errorf("OpenAI SSE stream response ID changed: %q -> %q", responseID, id)
+			}
+		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 		}
@@ -315,12 +428,12 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		// Stream text deltas to the callback.
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)
-			contentFilter.Write(delta.Content)
+			thinkFilter.Write(delta.Content)
 		}
-		if delta.ReasoningContent != "" {
-			reasoningBuf.WriteString(delta.ReasoningContent)
+		if reasoning := openAISSEReasoningText(delta); reasoning != "" {
+			reasoningBuf.WriteString(reasoning)
 			if onReasoning != nil {
-				onReasoning(delta.ReasoningContent)
+				onReasoning(reasoning)
 			}
 		}
 
@@ -380,12 +493,22 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 && !legacyFunctionCallSeen {
 		return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 	}
+	thinkFilter.Flush()
 	contentFilter.Flush()
+	rawStreamContent := contentBuf.String()
+	visibleContent, trailingTaggedReasoning := splitOpenAIThinkingTags(rawStreamContent)
+	// Preserve the legacy StripThinkTags behavior for a historical provider
+	// payload that emitted one literal backslash after </think>. Limit this to
+	// an actual think-tag response so normal answers beginning with '\\' remain
+	// untouched.
+	if strings.Contains(strings.ToLower(rawStreamContent), "<think>") {
+		visibleContent = strings.TrimPrefix(visibleContent, "\\")
+	}
 
 	msg := Message{
 		Role:             "assistant",
-		Content:          StripAllExtra(contentBuf.String()),
-		ReasoningContent: reasoningBuf.String(),
+		Content:          StripAllExtra(visibleContent),
+		ReasoningContent: mergeOpenAIReasoningText(reasoningBuf.String(), mergeOpenAIReasoningText(taggedReasoningBuf.String(), trailingTaggedReasoning)),
 	}
 
 	// Assemble tool calls in index order.
@@ -422,7 +545,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		}
 	}
 	if len(msg.ToolCalls) == 0 {
-		rawContent := contentBuf.String()
+		rawContent := visibleContent
 		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
 			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
 			msg.Content = ""
@@ -435,8 +558,9 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	response := &Response{
-		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
-		Usage:   usage,
+		ResponseID: responseID,
+		Choices:    []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
+		Usage:      usage,
 	}
 	if streamErr != nil {
 		// Preserve a partial response after any visible delta. Retrying it in
@@ -449,9 +573,17 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 // parseAnthropicSSEStream reads an Anthropic SSE stream, calling onToken for
 // each text delta, and returns the fully assembled Response.
 func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, error) {
-	var contentBuf strings.Builder
+	return parseAnthropicSSEStreamWithReasoning(body, onToken, nil)
+}
+
+// parseAnthropicSSEStreamWithReasoning reads an Anthropic SSE stream and
+// forwards text_delta plus thinking_delta events. Reasoning must not wait for
+// message_stop: hosts use the live callback to keep the thinking panel open.
+func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReasoning TokenCallback) (*Response, error) {
+	var contentBuf, reasoningBuf strings.Builder
 	var finishReason string
 	var usage *Usage
+	var responseID string
 	contentFilter := newContentToolCallDeltaFilter(onToken)
 
 	type toolCallAcc struct {
@@ -481,16 +613,19 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 			Delta struct {
 				Type        string `json:"type,omitempty"`
 				Text        string `json:"text,omitempty"`
+				Thinking    string `json:"thinking,omitempty"`
 				PartialJSON string `json:"partial_json,omitempty"`
 				StopReason  string `json:"stop_reason,omitempty"`
 			} `json:"delta,omitempty"`
 			ContentBlock *struct {
-				Type string `json:"type"`
-				ID   string `json:"id,omitempty"`
-				Name string `json:"name,omitempty"`
-				Text string `json:"text,omitempty"`
+				Type     string `json:"type"`
+				ID       string `json:"id,omitempty"`
+				Name     string `json:"name,omitempty"`
+				Text     string `json:"text,omitempty"`
+				Thinking string `json:"thinking,omitempty"`
 			} `json:"content_block,omitempty"`
 			Message *struct {
+				ID         string `json:"id,omitempty"`
 				StopReason string `json:"stop_reason,omitempty"`
 				Usage      *Usage `json:"usage,omitempty"`
 			} `json:"message,omitempty"`
@@ -506,6 +641,8 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 				switch event.ContentBlock.Type {
 				case "text":
 					// Text block started, nothing to accumulate yet.
+				case "thinking":
+					appendAnthropicThinking(&reasoningBuf, onReasoning, anthropicThinkingBlockText(event.ContentBlock.Type, event.ContentBlock.Thinking, event.ContentBlock.Text))
 				case "tool_use":
 					toolCalls = append(toolCalls, toolCallAcc{
 						ID:   event.ContentBlock.ID,
@@ -519,6 +656,7 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 				contentBuf.WriteString(event.Delta.Text)
 				contentFilter.Write(event.Delta.Text)
 			}
+			appendAnthropicThinking(&reasoningBuf, onReasoning, anthropicDeltaThinkingText(event.Delta.Type, event.Delta.Thinking, event.Delta.Text))
 			if event.Delta.Type == "input_json_delta" && event.Delta.PartialJSON != "" {
 				if currentToolIdx >= 0 && currentToolIdx < len(toolCalls) {
 					toolCalls[currentToolIdx].ArgsBuf.WriteString(event.Delta.PartialJSON)
@@ -536,8 +674,17 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 				}
 			}
 		case "message_start":
-			if event.Message != nil && event.Message.Usage != nil {
-				usage = event.Message.Usage
+			if event.Message != nil {
+				if id := strings.TrimSpace(event.Message.ID); id != "" {
+					if responseID == "" {
+						responseID = id
+					} else if responseID != id {
+						return nil, fmt.Errorf("Anthropic SSE stream response ID changed: %q -> %q", responseID, id)
+					}
+				}
+				if event.Message.Usage != nil {
+					usage = event.Message.Usage
+				}
 			}
 		case "message_stop":
 			// Stream complete.
@@ -553,14 +700,16 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("Anthropic SSE stream read: %w", err)
+	streamErr := scanner.Err()
+	if streamErr != nil && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 && len(toolCalls) == 0 {
+		return nil, fmt.Errorf("Anthropic SSE stream read: %w", streamErr)
 	}
 	contentFilter.Flush()
 
 	msg := Message{
-		Role:    "assistant",
-		Content: StripAllExtra(contentBuf.String()),
+		Role:             "assistant",
+		Content:          StripAllExtra(contentBuf.String()),
+		ReasoningContent: reasoningBuf.String(),
 	}
 
 	for _, tc := range toolCalls {
@@ -593,10 +742,15 @@ func parseAnthropicSSEStream(body io.Reader, onToken TokenCallback) (*Response, 
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
-	return &Response{
-		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
-		Usage:   usage,
-	}, nil
+	response := &Response{
+		ResponseID: responseID,
+		Choices:    []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
+		Usage:      usage,
+	}
+	if streamErr != nil {
+		return response, fmt.Errorf("Anthropic SSE stream read: %w", streamErr)
+	}
+	return response, nil
 }
 
 func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, []string, map[string]string) {

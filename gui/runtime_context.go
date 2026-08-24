@@ -66,6 +66,18 @@ type RuntimeContext struct {
 	WorkflowOwnerID string
 	Execution       ExecutionProfile
 	SemanticIntent  *intent.ClassificationResult `json:"-"`
+	// VisionFallthrough is set when a host-staged image suppressed a lookup or
+	// file_read grant. The image bytes stay in user content; the name router
+	// must not reintroduce web_search, and the prompt must not describe a
+	// closed grant surface whose list is empty.
+	VisionFallthrough bool `json:"-"`
+	// RoutingMissFallback is a leftover turn after a precise semantic surface
+	// missed. Privilege-expanding core tools stay stripped for the whole loop,
+	// including injection and skill-recover rebuilds.
+	RoutingMissFallback bool `json:"-"`
+	// HostAdapterLeftover pins generate_pdf on a published channel when the
+	// missed family was a generate primary.
+	HostAdapterLeftover bool `json:"-"`
 	// Adaptive prompt dual-build estimates (set when light profile is chosen).
 	PromptFullTokens  int `json:"-"`
 	PromptLightTokens int `json:"-"`

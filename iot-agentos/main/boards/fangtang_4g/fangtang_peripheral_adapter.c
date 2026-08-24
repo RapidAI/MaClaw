@@ -19,6 +19,15 @@
 
 static TaskHandle_t s_fangtang_power_task;
 static SemaphoreHandle_t s_fangtang_power_task_stopped;
+/* System Sleep retains the monitor task and its ADC/GPIO ownership, but parks
+ * it at a verified no-sample boundary. Once PREPARE closes sampling admission,
+ * including an ACK timeout, only the owning Power transaction's ABORT reuses
+ * that same generation; this is intentionally separate from permanent
+ * startup-rollback stop. */
+static SemaphoreHandle_t s_fangtang_power_task_system_sleep_quiesced;
+static bool s_fangtang_power_task_system_sleep_preparing;
+static uint32_t s_fangtang_power_task_samples_inflight;
+static portMUX_TYPE s_fangtang_power_task_lock = portMUX_INITIALIZER_UNLOCKED;
 /* The lifecycle owner, not the task itself, clears this handle after it has
  * consumed the completion semaphore. This preserves a safe identity across
  * a timed-out join. */
@@ -59,6 +68,39 @@ static void fangtang_power_task(void *arg) {
     unsigned sample_next = 0;
     unsigned ticks = 0;
     while (true) {
+        taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+        const bool stop_requested = s_fangtang_power_task_stop_requested;
+        const bool system_sleep_preparing = s_fangtang_power_task_system_sleep_preparing;
+        taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+        if (stop_requested) break;
+        if (system_sleep_preparing) {
+            /* PREPARE sets the marker before notifying us.  Acknowledgement
+             * here proves no ADC/GPIO sample is in progress and keeps this
+             * retained task dormant until ABORT or terminal lifecycle stop. */
+            if (s_fangtang_power_task_system_sleep_quiesced) {
+                xSemaphoreGive(s_fangtang_power_task_system_sleep_quiesced);
+            }
+            for (;;) {
+                (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+                const bool stop_after_wait = s_fangtang_power_task_stop_requested;
+                const bool still_preparing = s_fangtang_power_task_system_sleep_preparing;
+                taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+                if (stop_after_wait) goto stopped;
+                if (!still_preparing) break;
+            }
+            continue;
+        }
+
+        taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+        /* Recheck beside the admission increment, so PREPARE cannot observe a
+         * zero count while this task is about to touch the peripheral. */
+        if (s_fangtang_power_task_system_sleep_preparing) {
+            taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+            continue;
+        }
+        ++s_fangtang_power_task_samples_inflight;
+        taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
         const bool charging = gpio_get_level(FANGTANG_CHARGE_STATUS_GPIO) != 0;
         const bool sample_due = sample_count < 3 || (++ticks % 60) == 0;
         if (sample_due && s_fangtang_battery_adc) {
@@ -86,8 +128,14 @@ static void fangtang_power_task(void *arg) {
             s_fangtang_battery_charging = charging;
             taskEXIT_CRITICAL(&s_fangtang_power_status_lock);
         }
+        taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+        if (s_fangtang_power_task_samples_inflight) {
+            --s_fangtang_power_task_samples_inflight;
+        }
+        taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)) != 0) break;
     }
+stopped:
     if (s_fangtang_power_task_stopped) xSemaphoreGive(s_fangtang_power_task_stopped);
     vTaskDelete(NULL);
 }
@@ -115,12 +163,25 @@ esp_err_t compact_peripheral_adapter_init(void) {
                             &channel_cfg),
                         "fangtang_power", "battery ADC channel");
     s_fangtang_power_task_stopped = xSemaphoreCreateBinary();
-    if (!s_fangtang_power_task_stopped) return ESP_ERR_NO_MEM;
+    s_fangtang_power_task_system_sleep_quiesced = xSemaphoreCreateBinary();
+    if (!s_fangtang_power_task_stopped || !s_fangtang_power_task_system_sleep_quiesced) {
+        if (s_fangtang_power_task_stopped) vSemaphoreDelete(s_fangtang_power_task_stopped);
+        if (s_fangtang_power_task_system_sleep_quiesced) {
+            vSemaphoreDelete(s_fangtang_power_task_system_sleep_quiesced);
+        }
+        s_fangtang_power_task_stopped = NULL;
+        s_fangtang_power_task_system_sleep_quiesced = NULL;
+        return ESP_ERR_NO_MEM;
+    }
     s_fangtang_power_task_stop_requested = false;
+    s_fangtang_power_task_system_sleep_preparing = false;
+    s_fangtang_power_task_samples_inflight = 0;
     if (xTaskCreate(fangtang_power_task, "fangtang_power", 3072,
                     NULL, 1, &s_fangtang_power_task) != pdPASS) {
         vSemaphoreDelete(s_fangtang_power_task_stopped);
+        vSemaphoreDelete(s_fangtang_power_task_system_sleep_quiesced);
         s_fangtang_power_task_stopped = NULL;
+        s_fangtang_power_task_system_sleep_quiesced = NULL;
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -128,22 +189,68 @@ esp_err_t compact_peripheral_adapter_init(void) {
 
 esp_err_t compact_peripheral_adapter_stop_background_tasks(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_fangtang_power_task) return ESP_OK;
-    if (xTaskGetCurrentTaskHandle() == s_fangtang_power_task) return ESP_ERR_INVALID_STATE;
-    if (!s_fangtang_power_task_stop_requested) {
-        s_fangtang_power_task_stop_requested = true;
-        xTaskNotifyGive(s_fangtang_power_task);
+    taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+    TaskHandle_t task = s_fangtang_power_task;
+    if (!task) {
+        taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+        return ESP_OK;
     }
+    if (xTaskGetCurrentTaskHandle() == task) {
+        taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_fangtang_power_task_stop_requested) {
+        s_fangtang_power_task_system_sleep_preparing = false;
+        s_fangtang_power_task_stop_requested = true;
+    }
+    taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+    xTaskNotifyGive(task);
     if (!s_fangtang_power_task_stopped ||
         xSemaphoreTake(s_fangtang_power_task_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     vSemaphoreDelete(s_fangtang_power_task_stopped);
+    vSemaphoreDelete(s_fangtang_power_task_system_sleep_quiesced);
     s_fangtang_power_task_stopped = NULL;
+    s_fangtang_power_task_system_sleep_quiesced = NULL;
     s_fangtang_power_task = NULL;
     s_fangtang_power_task_stop_requested = false;
     ESP_LOGI("fangtang_power", "battery monitor stopped");
     return ESP_OK;
+}
+
+esp_err_t compact_peripheral_adapter_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+    if (!s_fangtang_power_task || s_fangtang_power_task_stop_requested ||
+        s_fangtang_power_task_system_sleep_preparing) {
+        taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_fangtang_power_task_system_sleep_preparing = true;
+    task = s_fangtang_power_task;
+    taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+    while (xSemaphoreTake(s_fangtang_power_task_system_sleep_quiesced, 0) == pdTRUE) {}
+    xTaskNotifyGive(task);
+    if (xSemaphoreTake(s_fangtang_power_task_system_sleep_quiesced,
+                       pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return ESP_OK;
+    }
+    /* Keep ADC/GPIO sampling closed after a timed-out acknowledgement. The
+     * parent Power transaction owns reverse-order rollback; reopening this
+     * monitor here could overlap its next sample with a later profile
+     * participant that is still parked or diagnosing failed PREPARE. */
+    return ESP_ERR_TIMEOUT;
+}
+
+void compact_peripheral_adapter_abort_system_sleep_prepare(void) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_fangtang_power_task_lock);
+    s_fangtang_power_task_system_sleep_preparing = false;
+    task = s_fangtang_power_task;
+    taskEXIT_CRITICAL(&s_fangtang_power_task_lock);
+    if (task) xTaskNotifyGive(task);
 }
 
 bool compact_peripheral_adapter_get_power_status(unsigned *level_percent, bool *charging) {

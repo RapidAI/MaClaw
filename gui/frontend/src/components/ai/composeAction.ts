@@ -6,8 +6,8 @@ import {
     normalizeInstallCommand,
 } from "./installCommandAllowlist";
 
-/** Compose-mode actions: free-form input is wrapped as a slash command on send. */
-export type ComposeAction = "goal" | "btw" | "moa";
+/** Compose-mode actions: free-form input is prefixed with the selected command on send. */
+export type ComposeAction = "goal" | "btw" | "moa" | "computer";
 
 /** One-shot slash commands fired immediately from the + menu (no input needed). */
 export type FireSlashCommand = "/memory" | "/compress" | "/help";
@@ -47,6 +47,7 @@ const COMPOSE_PREFIX: Record<ComposeAction, string> = {
     goal: "/goal",
     btw: "/btw",
     moa: "/moa",
+    computer: "@computer",
 };
 
 /** Ordered + menu entries (actions first, then compose/template, then fire-and-forget). */
@@ -95,6 +96,17 @@ export const PLUS_MENU_ITEMS: PlusMenuItemDef[] = [
         hintZh: "/moa 多视角综合（单次）",
         hintEn: "/moa multi-model synthesis (one-shot)",
         composeAction: "moa",
+    },
+    {
+        id: "computer",
+        kind: "compose",
+        icon: "monitor",
+        testId: "ai-plus-menu-computer",
+        labelZh: "桌面操控",
+        labelEn: "Computer Use",
+        hintZh: "让助手操作本机桌面",
+        hintEn: "Let the assistant operate the local desktop",
+        composeAction: "computer",
     },
     {
         id: "loop",
@@ -288,18 +300,24 @@ export function btwQueryFromText(text: string): string {
 function hasComposePrefix(text: string, prefix: string): boolean {
     const lower = text.toLowerCase();
     const prefixLower = prefix.toLowerCase();
-    return lower === prefixLower || lower.startsWith(`${prefixLower} `);
+    return lower === prefixLower || (lower.startsWith(prefixLower) && /^\s/u.test(text.slice(prefix.length)));
+}
+
+function hasOtherAtMention(text: string): boolean {
+    const match = /^@([\p{L}][\p{L}\p{N}_-]*)(?:\s|$)/u.exec(text);
+    return !!match && match[1].toLowerCase() !== "computer";
 }
 
 /**
  * When the user is in a compose mode, free-form input becomes the argument of
- * the corresponding slash command.
+ * the corresponding command or explicit Computer Use mention.
  *
  * - empty input stays empty (caller should not send)
  * - text that already starts with the matching prefix is left unchanged
  * - install/CLI commands and other leading-slash commands are never wrapped
  *   (avoids `/goal /skill list` when goal compose mode is active)
- * - otherwise the text is prefixed as `/cmd <body>`
+ * - other explicit @mentions are never overwritten by Computer Use mode
+ * - otherwise the text is prefixed as `/cmd <body>` or `@computer <body>`
  */
 export function applyComposeActionToText(text: string, action: ComposeAction | null | undefined): string {
     // Strip BOM so paste from IM clients matches backend splitInstallCommand.
@@ -312,6 +330,10 @@ export function applyComposeActionToText(text: string, action: ComposeAction | n
     const prefix = COMPOSE_PREFIX[action];
     if (!prefix) return trimmed;
     if (hasComposePrefix(trimmed, prefix)) return trimmed;
+    // Keep an explicit destination intact only in Computer Use mode. Other
+    // compose modes still need to wrap their input (for example, `/goal
+    // @teammate review this`) so this mode cannot silently bypass them.
+    if (action === "computer" && hasOtherAtMention(trimmed)) return trimmed;
     // Do not wrap other slash commands (/help, /memory, mistyped /skill, …).
     // Fullwidth slash (／) is treated the same as ASCII "/" (Chinese IM keyboards).
     if (trimmed.startsWith("/") || trimmed.startsWith("／")) return trimmed;
@@ -330,6 +352,10 @@ const COMPOSE_PLACEHOLDER: Record<ComposeAction, { zh: string; en: string }> = {
     moa: {
         zh: "描述需要多模型会诊的问题或方案...",
         en: "Describe a hard problem for multi-model council review...",
+    },
+    computer: {
+        zh: "描述需要在桌面上完成的操作...",
+        en: "Describe the task to perform on the desktop...",
     },
 };
 

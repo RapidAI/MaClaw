@@ -471,6 +471,22 @@ func TestUserServiceEnsureAccountWithIDCreatesStableClusterUser(t *testing.T) {
 	}
 }
 
+func TestUserServiceEnsureAccountWithIDRejectsAnEmailBoundToAnotherUser(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	svc := NewUserService(store, nil)
+	if _, err := svc.EnsureAccountWithID(ctx, "user-one", "shared@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnsureAccountWithID(ctx, "user-two", "shared@example.com"); err == nil {
+		t.Fatal("expected a conflicting email to be rejected")
+	}
+	user, err := store.GetUserByEmail(ctx, "shared@example.com")
+	if err != nil || user.ID != "user-one" {
+		t.Fatalf("email binding changed to %+v, err=%v", user, err)
+	}
+}
+
 func TestStoreEmitSyncCoalescesConcurrentSnapshots(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

@@ -1001,8 +1001,14 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 		args = append(args, opts.TenantID)
 	}
 	if opts.OwnerID != "" {
-		where = append(where, "owner_id = ?")
+		if opts.IncludeEmptyOwner {
+			where = append(where, "(owner_id = ? OR COALESCE(owner_id, '') = '')")
+		} else {
+			where = append(where, "owner_id = ?")
+		}
 		args = append(args, opts.OwnerID)
+	} else if opts.IncludeEmptyOwner {
+		where = append(where, "COALESCE(owner_id, '') = ''")
 	}
 	if opts.BatchID != "" {
 		where = append(where, "batch_id = ?")

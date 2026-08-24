@@ -1,6 +1,9 @@
 import type { CSSProperties } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 
+/** Shared with the floating chat card and the welcome workbench field. */
+export const ASSISTANT_COMPOSER_RADIUS = "14px";
+
 interface ComposerStyleOptions {
     cancelPending: boolean;
     hasInputOverlay: boolean;
@@ -33,11 +36,12 @@ export function getAssistantInputComposerStyles({
     toolbarLeftStyle: CSSProperties;
     toolbarRightStyle: CSSProperties;
 } {
-    // Safe-area belongs on the true bottom chrome. With a footer bar below the
-    // composer, only keep a fixed inner pad so we don't double-count insets.
-    const paddingBottom = flushBottom
+    // Safe-area belongs on window-bottom chrome. Welcome (inline, mid-page)
+    // and flushBottom (footer owns the inset) keep a fixed inner pad only.
+    const paddingBottom = (flushBottom || inline)
         ? "6px"
         : "max(6px, env(safe-area-inset-bottom))";
+    const fieldBorder = `1.5px solid ${t.inputBarBorder}`;
 
     return {
         inputBarStyle: {
@@ -47,7 +51,6 @@ export function getAssistantInputComposerStyles({
             padding: "8px 12px",
             paddingBottom,
             background: t.inputBarBg,
-            borderTop: inline ? `1px solid ${t.inputBarBorder}` : "none",
             flex: isExpandedInput ? "1 1 auto" : undefined,
             flexShrink: 0,
             minWidth: 0,
@@ -55,16 +58,16 @@ export function getAssistantInputComposerStyles({
             boxSizing: "border-box",
             overflow: hasInputOverlay ? "visible" : "hidden",
             ["--wails-draggable" as any]: "no-drag",
-            // Floating card: side inset always; bottom inset only when nothing
-            // sits under the composer (standalone, no footer chrome). Main chat
-            // and VE/group tabs use flushBottom so the quick-settings bar is
-            // flush to the window. When flush, square the bottom corners and
-            // drop the bottom border so it docks into the footer without a
-            // double hairline.
-            ...(inline ? {} : {
+            ...(inline ? {
+                width: "100%",
+                borderRadius: ASSISTANT_COMPOSER_RADIUS,
+                border: fieldBorder,
+            } : {
                 margin: flushBottom ? "0 10px 0 10px" : "0 10px 10px 10px",
-                borderRadius: flushBottom ? "14px 14px 0 0" : "14px",
-                border: `1.5px solid ${t.inputBarBorder}`,
+                borderRadius: flushBottom
+                    ? `${ASSISTANT_COMPOSER_RADIUS} ${ASSISTANT_COMPOSER_RADIUS} 0 0`
+                    : ASSISTANT_COMPOSER_RADIUS,
+                border: fieldBorder,
                 borderBottom: flushBottom ? "none" : undefined,
                 boxShadow: t.bg.startsWith("#0")
                     ? "0 2px 12px rgba(0, 0, 0, 0.32), 0 1px 4px rgba(0, 0, 0, 0.18)"

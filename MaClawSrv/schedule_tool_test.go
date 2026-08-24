@@ -64,6 +64,82 @@ func TestSrvManageScheduleCreateListDelete(t *testing.T) {
 	}
 }
 
+func TestSrvManageScheduleUpdateParsesStringHour(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := scheduler.NewManager(filepath.Join(dir, "update-hour.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newSrvManageScheduleHandler(nil, mgr)
+	created := h(map[string]interface{}{
+		"action": "create", "name": "clock", "task_action": "ping", "hour": 7, "minute": 0,
+	})
+	if !strings.Contains(created, "已创建") {
+		t.Fatalf("create: %s", created)
+	}
+	id := mgr.List()[0].ID
+	updated := h(map[string]interface{}{"action": "update", "id": id, "hour": "11", "interval_minutes": "20"})
+	if !strings.Contains(updated, "已更新") {
+		t.Fatalf("update: %s", updated)
+	}
+	got := mgr.Get(id)
+	if got == nil || got.Hour != 11 || got.IntervalMinutes != 20 {
+		t.Fatalf("string update = %#v", got)
+	}
+}
+
+func TestSrvManageScheduleCreateParsesStringNumbers(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := scheduler.NewManager(filepath.Join(dir, "string-hour.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newSrvManageScheduleHandler(nil, mgr)
+	out := h(map[string]interface{}{
+		"action":           "create",
+		"name":             "string-args",
+		"task_action":      "ping",
+		"hour":             "8",
+		"minute":           "15",
+		"interval_minutes": "45",
+		"fail_on_error":    "true",
+		"user_id":          "self",
+		"channel":          "telegram",
+	})
+	if !strings.Contains(out, "已创建") {
+		t.Fatalf("string hour/interval create: %s", out)
+	}
+	tasks := mgr.List()
+	if len(tasks) != 1 || tasks[0].Hour != 8 || tasks[0].Minute != 15 || tasks[0].IntervalMinutes != 45 {
+		t.Fatalf("parsed clock/interval = %#v", tasks)
+	}
+	if tasks[0].Delivery == nil || !tasks[0].Delivery.FailOnError {
+		t.Fatalf("fail_on_error string not applied: %#v", tasks[0].Delivery)
+	}
+}
+
+func TestSrvManageScheduleCreateIntervalWithoutHour(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := scheduler.NewManager(filepath.Join(dir, "interval.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newSrvManageScheduleHandler(nil, mgr)
+	out := h(map[string]interface{}{
+		"action":           "create",
+		"name":             "every-30",
+		"task_action":      "poll inbox",
+		"interval_minutes": 30,
+	})
+	if !strings.Contains(out, "已创建") {
+		t.Fatalf("interval create without hour: %s", out)
+	}
+	tasks := mgr.List()
+	if len(tasks) != 1 || tasks[0].IntervalMinutes != 30 {
+		t.Fatalf("interval task = %#v", tasks)
+	}
+}
+
 func TestNormalizeSrvScheduleAction(t *testing.T) {
 	if normalizeSrvScheduleAction("list_groups") != "list_targets" {
 		t.Fatal("alias")
@@ -75,8 +151,8 @@ func TestNormalizeSrvScheduleAction(t *testing.T) {
 
 func TestParseSrvScheduleDeliveryShorthand(t *testing.T) {
 	d, err := parseSrvScheduleDelivery(map[string]interface{}{
-		"group_id": "g1",
-		"group_name": "研发",
+		"group_id":      "g1",
+		"group_name":    "研发",
 		"fail_on_error": true,
 	})
 	if err != nil || d == nil {

@@ -23,25 +23,24 @@ var programLogger = &ProgramLogger{}
 // Init creates or opens <MaclawBaseDir>/logs/program.log for append.
 // If the file exceeds 10 MB it is rotated to program.log.1.
 func (l *ProgramLogger) Init() {
+	l.initAt(corelib.MaclawLogsDir())
+}
+
+func (l *ProgramLogger) initAt(dir string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.writer != nil {
 		l.writer.Close()
 		l.writer = nil
 	}
-
-	dir := corelib.MaclawLogsDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := prepareLogDir(dir); err != nil {
 		return
 	}
 	logPath := filepath.Join(dir, "program.log")
-
-	// Rotate if existing log exceeds 10 MB.
-	if info, err := os.Stat(logPath); err == nil && info.Size() > 10*1024*1024 {
-		prev := logPath + ".1"
-		_ = os.Remove(prev)
-		_ = os.Rename(logPath, prev)
+	if err := rejectSymlinkFile(logPath); err != nil {
+		return
 	}
+	rotateLogIfLarge(logPath)
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {

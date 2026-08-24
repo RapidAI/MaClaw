@@ -522,6 +522,29 @@ export const SidebarSystemStatus = ({
     const showPeriodAvailable = !!sidebarHubCredits?.authorized
         && !sidebarHubCredits.unlimited
         && !!sidebarHubCredits.showPeriodAvailable;
+    const newUserLimitCards = sidebarHubCredits?.newUserLimitCards || [];
+    // The sidebar is a status readout, not an entitlement statement. Keep the
+    // visible line to the two numbers users need right now.
+    const newUserLimitCardCompactDetails = (() => {
+        return newUserLimitCards.map((card) => {
+            if (card.fiveHourLimit <= 0 && card.dailyLimit <= 0) return '';
+            const items: string[] = [];
+            if (newUserLimitCards.length > 1) items.push(card.serviceGroupID);
+            if (card.fiveHourLimit > 0) {
+                const label = card.fiveHourRolling
+                    ? textForLang(lang, '5h', '近5小时', '近5小時')
+                    : textForLang(lang, '5h', '5小时', '5小時');
+                const available = Math.max(0, card.fiveHourLimit - card.fiveHourUsed);
+                items.push(`${label} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.fiveHourLimit)}`);
+            }
+            if (card.dailyLimit > 0) {
+                const available = Math.max(0, card.dailyLimit - card.dailyUsed);
+                items.push(`${textForLang(lang, 'Today', '今日', '今日')} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.dailyLimit)}`);
+            }
+            return items.join(CREDIT_SEPARATOR);
+        }).filter(Boolean).join(CREDIT_SEPARATOR);
+    })();
+    const showNewUserBenefit = !!newUserLimitCardCompactDetails;
     const creditTitle = sidebarHubCredits
         ? textForLang(lang, 'Expires', '\u6709\u6548\u671f', '\u6709\u6548\u671f') + ': ' + formatSidebarHubExpiry(sidebarHubCredits)
             + CREDIT_SEPARATOR + textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf') + ' ' + formatSidebarHubTotalCredits(sidebarHubCredits)
@@ -815,36 +838,45 @@ export const SidebarSystemStatus = ({
                 </div>
 
                 {sidebarCurrentProviderTokenUsage.isHubService && (
-                    <div className="sidebar-system-status__credits" title={creditTitle}>
+                    <div className="sidebar-system-status__credits" title={showNewUserBenefit ? undefined : creditTitle}>
                         <div className="sidebar-system-status__credit-grid">
-                            <span className="sidebar-system-status__metric sidebar-system-status__metric--expiry">
-                                <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Valid', '\u6709\u6548\u671f', '\u6709\u6548\u671f')}</span>
-                                <span className="sidebar-system-status__metric-value">{formatSidebarHubExpiry(sidebarHubCredits)}</span>
-                            </span>
-                            <span className="sidebar-system-status__metric sidebar-system-status__metric--total">
-                                <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf')}</span>
-                                <span className="sidebar-system-status__metric-value">{formatSidebarHubTotalCredits(sidebarHubCredits)}</span>
-                            </span>
-                            <span className="sidebar-system-status__metric sidebar-system-status__metric--used">
-                                <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Used', '\u5df2\u7528', '\u5df2\u7528')}</span>
-                                <span className="sidebar-system-status__metric-value">{formatSidebarHubUsedCredits(sidebarHubCredits)}</span>
-                            </span>
-                            <span className="sidebar-system-status__metric sidebar-system-status__metric--remaining">
-                                <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Left', '\u5269\u4f59', '\u5269\u9918')}</span>
-                                <span className="sidebar-system-status__metric-value">{remainingCredit}</span>
-                                {showPeriodAvailable && (
-                                    <span
-                                        className="sidebar-system-status__metric-sub"
-                                        title={textForLang(lang, 'Currently spendable in this period/route window', '\u5f53\u524d\u5468\u671f/\u901a\u9053\u53ef\u7528\u989d\u5ea6', '\u7576\u524d\u9031\u671f/\u901a\u9053\u53ef\u7528\u984d\u5ea6')}
-                                    >
-                                        {textForLang(lang, 'Avail', '\u53ef\u7528', '\u53ef\u7528')} {periodAvailableText}
-                                        {hubCreditStateText ? `${CREDIT_SEPARATOR}${hubCreditStateText}` : ''}
+                            {showNewUserBenefit ? (
+                                <span className="sidebar-system-status__metric sidebar-system-status__metric--benefit">
+                                    <span className="sidebar-system-status__metric-label">{textForLang(lang, 'New-user benefit', '\u65b0\u7528\u6237\u798f\u5229', '\u65b0\u7528\u6236\u798f\u5229')}</span>
+                                    <span className="sidebar-system-status__metric-value">{newUserLimitCardCompactDetails}</span>
+                                </span>
+                            ) : (
+                                <>
+                                    <span className="sidebar-system-status__metric sidebar-system-status__metric--expiry">
+                                        <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Valid', '\u6709\u6548\u671f', '\u6709\u6548\u671f')}</span>
+                                        <span className="sidebar-system-status__metric-value">{formatSidebarHubExpiry(sidebarHubCredits)}</span>
                                     </span>
-                                )}
-                                {!showPeriodAvailable && hubCreditStateText ? (
-                                    <span className="sidebar-system-status__metric-sub">{hubCreditStateText}</span>
-                                ) : null}
-                            </span>
+                                    <span className="sidebar-system-status__metric sidebar-system-status__metric--total">
+                                        <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf')}</span>
+                                        <span className="sidebar-system-status__metric-value">{formatSidebarHubTotalCredits(sidebarHubCredits)}</span>
+                                    </span>
+                                    <span className="sidebar-system-status__metric sidebar-system-status__metric--used">
+                                        <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Used', '\u5df2\u7528', '\u5df2\u7528')}</span>
+                                        <span className="sidebar-system-status__metric-value">{formatSidebarHubUsedCredits(sidebarHubCredits)}</span>
+                                    </span>
+                                    <span className="sidebar-system-status__metric sidebar-system-status__metric--remaining">
+                                        <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Left', '\u5269\u4f59', '\u5269\u9918')}</span>
+                                        <span className="sidebar-system-status__metric-value">{remainingCredit}</span>
+                                        {showPeriodAvailable && (
+                                            <span
+                                                className="sidebar-system-status__metric-sub"
+                                                title={textForLang(lang, 'Currently spendable in this period/route window', '\u5f53\u524d\u5468\u671f/\u901a\u9053\u53ef\u7528\u989d\u5ea6', '\u7576\u524d\u9031\u671f/\u901a\u9053\u53ef\u7528\u984d\u5ea6')}
+                                            >
+                                                {textForLang(lang, 'Avail', '\u53ef\u7528', '\u53ef\u7528')} {periodAvailableText}
+                                                {hubCreditStateText ? `${CREDIT_SEPARATOR}${hubCreditStateText}` : ''}
+                                            </span>
+                                        )}
+                                        {!showPeriodAvailable && hubCreditStateText ? (
+                                            <span className="sidebar-system-status__metric-sub">{hubCreditStateText}</span>
+                                        ) : null}
+                                    </span>
+                                </>
+                            )}
                         </div>
                         {showHubCreditAction && (
                             <button type="button" onClick={openHubCardStorePage ?? openHubCreditAction} className="sidebar-system-status__buy" title={cardStoreTitle}>

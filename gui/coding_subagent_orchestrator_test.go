@@ -176,7 +176,7 @@ func TestCollectPreviousOutputsCapsButPreservesRecentSummaries(t *testing.T) {
 	for i, task := range o.Tasks {
 		task.Status = TaskExecPassed
 		task.ActualFiles = []string{fmt.Sprintf("src/file_%02d.go", i)}
-		task.ResultSummary = fmt.Sprintf("implementation %02d\n\n## 质量审计\n\nWARNING: verification note %02d", i, i)
+		task.ResultSummary = fmt.Sprintf("implementation %02d with verification note %02d", i, i)
 	}
 
 	runner := &SubAgentTaskRunner{orchestrator: o}
@@ -541,7 +541,7 @@ func TestRunCurrentTaskRecordsFailedResultSummaryForRetryContext(t *testing.T) {
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		return &CodingSubAgentResult{
 			Status:            TaskExecFailed,
-			Summary:           "attempt changed parser\n\n## 质量审计\n\nFAILED: verification not run",
+			Summary:           "attempt changed parser",
 			Error:             "verification not run",
 			QualityStatus:     codingSubAgentQualityFailed,
 			QualitySummary:    "verification not run",
@@ -557,18 +557,19 @@ func TestRunCurrentTaskRecordsFailedResultSummaryForRetryContext(t *testing.T) {
 	if got.RetryCount != 0 || got.Status != TaskExecFailed {
 		t.Fatalf("expected failed task to remain terminal until recovery, got %#v", got)
 	}
-	if !strings.Contains(got.ResultSummary, "## 质量审计") || !strings.Contains(got.ResultSummary, "verification not run") {
-		t.Fatalf("failed result summary should be recorded for retry, got %q", got.ResultSummary)
+	if got.ResultSummary != "attempt changed parser" || got.QualityStatus != codingSubAgentQualityFailed || !strings.Contains(got.QualitySummary, "verification not run") {
+		t.Fatalf("failed user summary and quality fields should stay split, got %#v", got)
 	}
 }
 
 func TestCurrentTaskRetryOutputsIncludesFailedResultSummary(t *testing.T) {
 	task := &TaskItem{
-		Index:         2,
-		Title:         "Fix parser",
-		RetryCount:    1,
-		ErrorSummary:  "quality audit evidence: FAILED: verification not run",
-		ResultSummary: "changed parser\n\n## 质量审计\n\nFAILED: verification not run\n\n## 验证状态\n\nmissing: no fresh verification",
+		Index:          2,
+		Title:          "Fix parser",
+		RetryCount:     1,
+		ErrorSummary:   "quality audit evidence: FAILED: verification not run",
+		QualitySummary: "verification not run",
+		ResultSummary:  "changed parser",
 	}
 
 	outputs := currentTaskRetryOutputs(task)
@@ -576,18 +577,19 @@ func TestCurrentTaskRetryOutputsIncludesFailedResultSummary(t *testing.T) {
 	if !strings.Contains(joined, "Retry context for T2") || !strings.Contains(joined, "Recovery hint") {
 		t.Fatalf("expected retry context and recovery hint, got %#v", outputs)
 	}
-	if !strings.Contains(joined, "Previous failed attempt summary for T2") || !strings.Contains(joined, "## 质量审计") || !strings.Contains(joined, "verification not run") {
-		t.Fatalf("retry outputs should include failed attempt summary, got %#v", outputs)
+	if !strings.Contains(joined, "Previous failed attempt summary for T2") || !strings.Contains(joined, "verification not run") || strings.Contains(joined, "## 质量审计") {
+		t.Fatalf("retry outputs should use error/quality prose, got %#v", outputs)
 	}
 }
 
 func TestCurrentTaskRetryOutputsUsesSummaryWhenErrorSummaryMissing(t *testing.T) {
 	task := &TaskItem{
-		Index:         3,
-		Title:         "Fix retry context",
-		RetryCount:    1,
-		ResultSummary: "attempt touched retry flow\n\n## 质量审计\n\nFAILED: diff not checked",
-		ActualFiles:   []string{"gui/coding_subagent_orchestrator.go"},
+		Index:          3,
+		Title:          "Fix retry context",
+		RetryCount:     1,
+		QualitySummary: "diff not checked",
+		ResultSummary:  "attempt touched retry flow",
+		ActualFiles:    []string{"gui/coding_subagent_orchestrator.go"},
 	}
 
 	outputs := currentTaskRetryOutputs(task)
@@ -596,7 +598,6 @@ func TestCurrentTaskRetryOutputsUsesSummaryWhenErrorSummaryMissing(t *testing.T)
 		"Retry context for T3",
 		"did not provide an error summary",
 		"Previous failed attempt summary for T3",
-		"## 质量审计",
 		"diff not checked",
 		"Retry artifact from previous attempt: gui/coding_subagent_orchestrator.go",
 	} {
@@ -754,8 +755,8 @@ func TestRunCurrentTaskRecordsPassedResultSummaryForDownstreamContext(t *testing
 		t.Fatalf("task should pass, summary=%q", summary)
 	}
 	got := orch.Tasks[0]
-	if got.ResultSummary == "" || !strings.Contains(got.ResultSummary, "## 质量审计") || !strings.Contains(got.ResultSummary, "WARNING") {
-		t.Fatalf("passed result summary should preserve quality warning for downstream context, got %#v", got)
+	if got.ResultSummary != "implementation complete" || got.QualityStatus != codingSubAgentQualityWarning || !strings.Contains(got.QualitySummary, "dynamic tool failed") {
+		t.Fatalf("passed user summary should stay prose; quality warning lives on quality fields, got %#v", got)
 	}
 }
 
@@ -767,15 +768,18 @@ func TestCollectPreviousOutputsIncludesPassedQualityWarningSummary(t *testing.T)
 	}, "", "", "/project", "")
 	orch.Tasks[0].Status = TaskExecPassed
 	orch.Tasks[0].ActualFiles = []string{"src/a.go"}
-	orch.Tasks[0].ResultSummary = "implementation complete\n\n## 质量审计\n\nWARNING: dynamic tool failed"
+	orch.Tasks[0].ResultSummary = "implementation complete"
+	orch.Tasks[0].QualityStatus = codingSubAgentQualityWarning
+	orch.Tasks[0].QualitySummary = "WARNING: dynamic tool failed"
 	runner := &SubAgentTaskRunner{orchestrator: orch}
 
 	outputs := runner.collectPreviousOutputs()
 	joined := strings.Join(outputs, "\n")
 	if !strings.Contains(joined, "src/a.go") ||
 		!strings.Contains(joined, "Previous passed task summary for T1") ||
-		!strings.Contains(joined, "WARNING: dynamic tool failed") {
-		t.Fatalf("previous outputs should include file and quality warning summary, got %#v", outputs)
+		!strings.Contains(joined, "implementation complete") ||
+		strings.Contains(joined, "## 质量审计") {
+		t.Fatalf("previous outputs should pass user prose only, got %#v", outputs)
 	}
 }
 func TestCollectPreviousOutputsPrioritizesQualitySummarySection(t *testing.T) {
@@ -783,16 +787,15 @@ func TestCollectPreviousOutputsPrioritizesQualitySummarySection(t *testing.T) {
 	orch.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
 	orch.Tasks[0].Status = TaskExecPassed
 	orch.Tasks[0].ActualFiles = []string{"src/a.go"}
-	orch.Tasks[0].ResultSummary = strings.Repeat("implementation detail sentence. ", 80) + "\n\n## 命令验证\n\n- PASS: `go test ./gui`\n\n## 质量审计\n\nWARNING: acceptance criteria verification not summarized (1 issue(s))"
+	orch.Tasks[0].ResultSummary = "implementation complete"
+	orch.Tasks[0].QualityStatus = codingSubAgentQualityWarning
+	orch.Tasks[0].QualitySummary = "WARNING: acceptance criteria verification not summarized (1 issue(s))"
 	runner := &SubAgentTaskRunner{orchestrator: orch}
 
 	outputs := runner.collectPreviousOutputs()
 	joined := strings.Join(outputs, "\n")
-	if !strings.Contains(joined, "Previous passed task summary for T1") || !strings.Contains(joined, "## 质量审计 WARNING") {
-		t.Fatalf("previous outputs should prioritize quality section, got %#v", outputs)
-	}
-	if strings.Contains(joined, "implementation detail sentence") {
-		t.Fatalf("previous output summary should not spend the compact context budget on long model prose, got %#v", outputs)
+	if !strings.Contains(joined, "Previous passed task summary for T1") || !strings.Contains(joined, "implementation complete") || strings.Contains(joined, "## 质量审计") {
+		t.Fatalf("previous outputs should use user prose, got %#v", outputs)
 	}
 }
 
@@ -842,11 +845,11 @@ func TestRunCurrentTaskIncludesQualityWarningInPassedSummary(t *testing.T) {
 	if !passed {
 		t.Fatalf("quality warning should not fail an otherwise passed task, summary=%q", summary)
 	}
-	if !strings.Contains(summary, "implementation complete") || !strings.Contains(summary, "## 质量审计") || !strings.Contains(summary, "WARNING") || !strings.Contains(summary, "1 issue") {
-		t.Fatalf("passed summary should include quality warning audit, got %q", summary)
+	if !strings.Contains(summary, "implementation complete") || strings.Contains(summary, "## 质量审计") {
+		t.Fatalf("passed user-facing summary should stay engineer prose, got %q", summary)
 	}
-	if got := orch.Tasks[0]; got.Status != TaskExecPassed || got.ErrorSummary != "" {
-		t.Fatalf("quality warning should keep task passed without error summary, got %#v", got)
+	if got := orch.Tasks[0]; got.Status != TaskExecPassed || got.ErrorSummary != "" || got.QualityStatus != codingSubAgentQualityWarning || !strings.Contains(got.QualitySummary, "dynamic tool failed") {
+		t.Fatalf("quality warning should stay on task quality fields, got %#v", got)
 	}
 }
 func TestRunCurrentTaskDoesNotRetryNonRetryableGitDiffFailure(t *testing.T) {
@@ -1187,6 +1190,7 @@ func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
 		{err: "failed command evidence: swift test -> swift: command not found", want: "environment/tooling blocker"},
 		{err: `failed command evidence: npm test -> exec: "npm": executable file not found in %PATH%`, want: "project toolchain"},
 		{err: "failed command evidence: go test ./gui -> 'go' is not recognized as an internal or external command", want: "available package-manager wrapper"},
+		{err: `failed command evidence: cmd /c call vcvars64.bat && cl /utf-8 hello.cpp -> 'vcvars64.bat' is not recognized as an internal or external command`, want: "already on PATH"},
 		{err: "quality gate failed; failed command evidence: go test ./gui -> compile failed", want: "failing command output"},
 		{err: `Error: call_mcp_tool target "Wiki/get_page_children" is missing required MCP argument "parent_id" in arguments.`, want: "arguments.parent_id"},
 		{err: `Error: manage_skill target "ui-ux-pro-max" is missing required skill argument "input" in args.`, want: "args.input"},

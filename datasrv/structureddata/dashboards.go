@@ -14,7 +14,8 @@ var dashboardDefinitions = []DashboardDefinition{
 	{ID: "legal.overview", Domain: "legal", Title: "Legal overview", Description: "Contract status and amount summary.", ReportIDs: []string{"legal.contract_value_by_status"}},
 	{ID: "procurement.overview", Domain: "procurement", Title: "Procurement overview", Description: "Supplier directory, purchase order status, and supplier spend summary.", ReportIDs: []string{"procurement.supplier_by_status", "procurement.supplier_by_category", "procurement.po_status_summary", "procurement.po_amount_by_supplier"}},
 	{ID: "inventory.overview", Domain: "inventory", Title: "Inventory overview", Description: "Warehouse status, warehouse quantity, low-stock, and movement summary.", ReportIDs: []string{"inventory.warehouse_by_status", "inventory.quantity_by_warehouse", "inventory.low_stock_summary", "inventory.movement_by_type", "inventory.movement_by_warehouse"}},
-	{ID: "assets.overview", Domain: "assets", Title: "Assets overview", Description: "Fixed asset status and value summary.", ReportIDs: []string{"assets.status_summary", "assets.value_by_department"}},
+	{ID: "assets.overview", Domain: "assets", Title: "Assets overview", Description: "Fixed asset status, value, and maintenance work-order summary.", ReportIDs: []string{"assets.status_summary", "assets.value_by_department", "assets.maintenance_by_status"}},
+	{ID: "manufacturing.overview", Domain: "manufacturing", Title: "Manufacturing overview", Description: "BOM and production work-order status summary.", ReportIDs: []string{"manufacturing.bom_by_status", "manufacturing.production_by_status"}},
 }
 
 func (s *Service) ListDashboards(ctx context.Context, p Principal, query ...QueryDashboardsInput) ([]DashboardDefinition, error) {

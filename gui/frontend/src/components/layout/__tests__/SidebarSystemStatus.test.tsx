@@ -224,6 +224,40 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(screen.getByText(/\u7ea6 1 \u5c0f\u65f6\u540e\u6062\u590d/)).toBeTruthy();
     });
 
+    it('shows the active new-user benefit credit limits in system status', () => {
+        renderStatus({
+            ...baseCredits,
+            unlimited: true,
+            newUserLimitCards: [{
+                serviceGroupID: 'welcome', fiveHourLimit: 10, fiveHourUsed: 3, fiveHourRolling: true, fiveHourResetAt: '2026-05-06T10:00:00Z',
+                dailyLimit: 25, dailyUsed: 7, dailyResetAt: '2026-05-07T00:00:00Z',
+                permanent: true, expiresAt: '', status: 'active', retryAfterSeconds: 0, retryAfterAt: '',
+            }],
+        });
+
+        const benefit = screen.getByText('新用户福利').closest('.sidebar-system-status__credits');
+        expect(benefit?.textContent).toContain('近5小时 7/10 · 今日 18/25');
+        expect(benefit?.textContent).not.toContain('不是总点数');
+        expect(benefit?.textContent).not.toContain('长期有效');
+        expect(benefit?.getAttribute('title')).toBeNull();
+    });
+
+    it('labels independent new-user allowances by service group instead of adding them together', () => {
+        renderStatus({
+            ...baseCredits,
+            unlimited: true,
+            newUserLimitCards: [
+                { serviceGroupID: 'welcome-a', fiveHourLimit: 10, fiveHourUsed: 3, fiveHourRolling: true, fiveHourResetAt: '', dailyLimit: 0, dailyUsed: 0, dailyResetAt: '', permanent: true, expiresAt: '', status: 'active', retryAfterSeconds: 0, retryAfterAt: '' },
+                { serviceGroupID: 'welcome-b', fiveHourLimit: 20, fiveHourUsed: 5, fiveHourRolling: true, fiveHourResetAt: '', dailyLimit: 0, dailyUsed: 0, dailyResetAt: '', permanent: true, expiresAt: '', status: 'active', retryAfterSeconds: 0, retryAfterAt: '' },
+            ],
+        });
+
+        const benefit = screen.getByText('新用户福利').closest('.sidebar-system-status__credits');
+        expect(benefit?.textContent).toContain('welcome-a · 近5小时 7/10');
+        expect(benefit?.textContent).toContain('welcome-b · 近5小时 15/20');
+        expect(benefit?.textContent).not.toContain('22/30');
+    });
+
     it('shows a stopped quota badge that opens service redeem for period-limited official service', () => {
         const { openServiceRedeemPage } = renderStatus({ ...baseCredits, serviceActive: false, status: 'period_limited', retryAfterSeconds: 3600 });
 

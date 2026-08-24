@@ -36,9 +36,11 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -50,6 +52,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
 )
 
 // CodingSubAgent executes a single coding task in a clean context.
@@ -105,6 +108,62 @@ type CodingSubAgent struct {
 	// from loopCtx: normal parent handoff must not cancel the child, while an
 	// explicit Runtime cancellation must interrupt its current model/tool wait.
 	executionCtx context.Context
+	// nestedLoopRelease belongs to a fresh, restricted child LoopContext. It
+	// never releases or mutates the parent LoopContext.
+	nestedLoopRelease func()
+	// dynamicLifecycleOwner is an inert D2 bridge until a qualified callback
+	// installs a relay. It carries only host terminal facts to that relay.
+	dynamicLifecycleOwner codingDynamicLifecycleOwner
+
+	// dynamicInvocationIdentity is populated only by a future verified task
+	// ingress. It intentionally has no public "best effort" constructor: a
+	// loop ID, code session, project path, or user ID is not a RootTaskID and
+	// must never make a dynamic Skill/MCP alias executable.
+	dynamicInvocationIdentity *trustedCodingInvocationIdentity
+	// staticWorkspaceBinding is the host-issued local workspace binding carried
+	// by the same authenticated ingress as verifiedInvocationIdentity. It is
+	// used only to prepare an S1-A shadow catalog today; no static tool alias,
+	// grant or name dispatcher reads it yet.
+	staticWorkspaceBinding codingStaticWorkspaceBinding
+	staticShadowPlan       *codingStaticPlanPreparation
+	// verifiedInvocationIdentity is injected only by a host boundary that has
+	// already authenticated tenant/principal/session and resolved a semantic
+	// task relation. It is registered against the fresh runtime Attempt in
+	// onStart, then discarded; the durable anchor is the later source of truth.
+	verifiedInvocationIdentity *trustedCodingInvocationIdentity
+	// R1b accepts only an opaque relation handle plus independently verified
+	// subject. onStart binds it to the fresh runtime attempt; it never derives
+	// a semantic identity from loop/user/path/runtime fields.
+	verifiedTaskRelationService *codingTaskRelationService
+	verifiedTaskSubject         verifiedCodingSubject
+	verifiedTaskHandle          *verifiedCodingTaskHandle
+
+	// horizonPosture freezes a LongHorizon CLI episode: no knowledge recall,
+	// no MCP/skills/spawn, and ExecuteTool is limited to horizonToolSurface.
+	horizonPosture      bool
+	horizonToolSurface  []string
+	horizonRole         string
+	horizonSystemPrompt string
+}
+
+func (s *CodingSubAgent) SetHorizonPosture(surface []string) {
+	if s == nil {
+		return
+	}
+	s.horizonPosture = true
+	s.horizonToolSurface = append([]string(nil), surface...)
+	s.fullEnvironment = false
+	s.codingKB = nil
+	s.generalKB = nil
+}
+
+func (s *CodingSubAgent) SetHorizonEpisode(ep longhorizon.EpisodeContext) {
+	if s == nil {
+		return
+	}
+	s.SetHorizonPosture(ep.ToolSurface)
+	s.horizonRole = ep.Role
+	s.horizonSystemPrompt = ep.SystemPrompt
 }
 
 // ExecuteReadOnlyChild implements codingruntime.ReadOnlyChildExecutor. The
@@ -121,11 +180,13 @@ func (s *CodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request codin
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskCancelled, Summary: "read-only child cancelled before execution"}
 	}
 	child := *s
+	defer child.releaseNestedLoopContext()
 	// RunReadOnlyChild owns a fresh child Attempt. Binding it here gives the
 	// local callback the same durable cancellation/lease boundary as remote
 	// children, without ever reusing the parent's released Attempt.
 	child.runtimeAttempt = &request.Attempt
 	child.executionCtx = ctx
+	child.prepareAdmittedReadOnlyChildSemanticState(request)
 	result := child.ExecuteTask(&TaskItem{Index: 1, Title: request.Task.RequestedWork, Description: request.Task.RequestedWork, Status: TaskExecPending}, codingSpawnRolePromptHint(child.role), "", nil)
 	if result == nil {
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "GUI read-only child returned no result"}
@@ -139,6 +200,52 @@ func (s *CodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request codin
 	}
 	digest := codingRuntimeDigest(result.Summary + "\n" + result.Error + "\n" + strings.Join(result.FilesRead, "\n"))
 	return codingruntime.ChildTaskResult{TaskID: request.Task.TaskID, AttemptID: request.Attempt.AttemptID, Status: status, Summary: result.Summary, EvidenceDigest: digest}
+}
+
+// prepareAdmittedReadOnlyChildSemanticState consumes parent relation material
+// only inside the admission boundary, then clears every parent semantic carrier
+// before the child can render a prompt or surface. The remaining identity, if
+// any, was issued/resolved for request.Attempt alone.
+func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codingruntime.ExecutionRequest) {
+	if s == nil {
+		return
+	}
+	service, subject, handle := s.verifiedTaskRelationService, s.verifiedTaskSubject, s.verifiedTaskHandle
+	s.dynamicInvocationIdentity = nil
+	s.verifiedInvocationIdentity = nil
+	s.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
+	s.staticShadowPlan = nil
+	s.verifiedTaskRelationService = nil
+	s.verifiedTaskSubject = verifiedCodingSubject{}
+	s.verifiedTaskHandle = nil
+	if service != nil && handle != nil {
+		if childHandle, issueErr := service.IssueChildCodingTurn(subject, *handle, time.Now().UTC(), time.Hour); issueErr == nil {
+			if identity, ok := bindVerifiedCodingTaskHandle(service, subject, &childHandle, s.runtimeStore, request); ok {
+				s.dynamicInvocationIdentity = identity
+			}
+		}
+	}
+	if s.dynamicInvocationIdentity == nil {
+		s.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(s.runtimeStore, request)
+	}
+	if s.dynamicInvocationIdentity != nil && s.dynamicInvocationIdentity.complete() {
+		s.staticShadowPlan = prepareAdmittedLocalChildStaticShadowPlan(s, request)
+	}
+}
+
+// prepareAdmittedLocalChildStaticShadowPlan permits only a fresh child-owned
+// read-only plan. It never reuses a parent workspace binding: this S1-A
+// compatibility plan is intentionally incomplete until a future child
+// admission contract issues an independent host-owned workspace binding.
+func prepareAdmittedLocalChildStaticShadowPlan(s *CodingSubAgent, request codingruntime.ExecutionRequest) *codingStaticPlanPreparation {
+	if s == nil || s.dynamicInvocationIdentity == nil || !s.dynamicInvocationIdentity.complete() || !request.Attempt.Policy.ReadOnly {
+		return nil
+	}
+	prepared, err := prepareCodingStaticShadowPlanForSubagent(s, codingRequestInquiry, time.Now().UTC())
+	if err != nil {
+		return nil
+	}
+	return prepared
 }
 
 // CodingSubAgentResult is the outcome of a single task execution.
@@ -166,6 +273,13 @@ type CodingSubAgentResult struct {
 	RouteSource string
 	RouteTask   string
 	RouteReason string
+
+	// HorizonOwned marks a LongHorizon inner episode. Knowledge write paths
+	// must treat this result as ineligible.
+	HorizonOwned bool
+	// AskQuestion is set when the inner loop paused for the user (captcha,
+	// ask_user, browser status=ask). It is not a successful completion.
+	AskQuestion string
 
 	// FilesModified lists files that were written/edited during execution.
 	// Extracted from tool call history for context preservation.
@@ -195,7 +309,9 @@ type CodingSubAgentResult struct {
 	// GuardrailViolations records safety/scope rejections encountered during tool execution.
 	GuardrailViolations []CodingSubAgentGuardrailViolation
 
-	// DynamicToolsRun records manage_skill/call_mcp_tool host executions.
+	// DynamicToolsRun records explicit host-maintenance dynamic executions. Model
+	// dynamic calls use the durable selection journal instead of these legacy
+	// gateway names.
 	DynamicToolsRun []CodingSubAgentDynamicToolResult
 
 	// ExplorationStatus summarizes whether the agent explored before editing:
@@ -302,6 +418,29 @@ func NewCodingSubAgent(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, h
 	}
 }
 
+// setVerifiedCodingInvocationIdentity is intentionally package-private: GUI
+// ingress code may hand in a verified host object, but public/model-facing
+// callers cannot construct an execution scope from strings. It does not make
+// a dynamic alias executable; G2-G5 remain mandatory.
+func (s *CodingSubAgent) setVerifiedCodingInvocationIdentity(identity *trustedCodingInvocationIdentity) {
+	if s == nil || identity == nil || !identity.complete() {
+		return
+	}
+	copy := *identity
+	s.verifiedInvocationIdentity = &copy
+}
+
+// setVerifiedCodingTaskRelation is the authenticated-host R1b ingress. It is
+// deliberately package-private and receives no model/transport selector. The
+// runtime callback resolves the resulting durable anchor after binding.
+func (s *CodingSubAgent) setVerifiedCodingTaskRelation(service *codingTaskRelationService, subject verifiedCodingSubject, handle verifiedCodingTaskHandle) {
+	if s == nil || service == nil || !validVerifiedCodingSubject(subject) || !handle.complete() {
+		return
+	}
+	copy := handle
+	s.verifiedTaskRelationService, s.verifiedTaskSubject, s.verifiedTaskHandle = service, subject, &copy
+}
+
 // SetCallbacks configures optional streaming and progress callbacks.
 func (s *CodingSubAgent) SetCallbacks(onToken func(string), onProgress func(string)) {
 	s.onToken = onToken
@@ -356,6 +495,18 @@ func (s *CodingSubAgent) SetScopeApprovalCallback(callback ScopeApprovalCallback
 	s.scopeApproval = newScopeApprovalState(callback, fullAccess)
 }
 
+// setNestedWorkerScopeApproval installs a child-owned approval state only for
+// an isolated worker. It deliberately never copies the parent's mutable
+// approvals; the isolate root is the only pre-approved directory and all
+// further widening must be explicitly approved for this child execution.
+func (s *CodingSubAgent) setNestedWorkerScopeApproval(callback ScopeApprovalCallback) {
+	if s == nil || s.nestDepth == 0 || s.role != codingRoleWorker {
+		return
+	}
+	s.scopeApproval = newScopeApprovalState(callback, false)
+	s.scopeApproval.approveDir(s.projectPath)
+}
+
 // prepareTaskScopeApproval resolves declared absolute paths before model
 // execution. Tool-level checks remain in place for paths discovered later.
 func (s *CodingSubAgent) prepareTaskScopeApproval(task *TaskItem) string {
@@ -402,7 +553,6 @@ func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
 		QualityIssueCount: 1,
 		Localization:      nil,
 	}
-	result.Summary = appendSubAgentQualityReportSummary(result.Summary, result)
 	return result
 }
 
@@ -425,13 +575,13 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		emitCodingAgentEvent(s.onProgress, newCodingAgentTaskEvent(codingAgentEventPhaseRunning, task, taskTitle, ""))
 	}
 
-	cb := &codingSubAgentCallbacks{
-		subagent:    s,
-		task:        task,
-		reqCtx:      reqCtx,
-		designCtx:   designCtx,
-		prevOutputs: prevOutputs,
+	cb := newCodingSubAgentCallbacks(s, task, reqCtx, designCtx, prevOutputs)
+	cb.registerDynamicLifecycleOwner()
+	terminalReason := codingBoundDynamicRequestRuntimeClosed
+	if s.nestDepth > 0 {
+		terminalReason = codingBoundDynamicRequestNestedExit
 	}
+	defer cb.closeDynamicLifecycleOwner(terminalReason)
 
 	userText := cb.buildTaskUserMessage()
 	userContent := codingSubAgentUserContent(s, userText)
@@ -452,7 +602,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		parentSessionID,
 		s.cfg,
 		cb.BuildSystemPrompt(userText, true),
-		cb.BuildTools(userText),
+		// This is a trajectory snapshot, not an executable surface. Record the
+		// same constrained request rendering that RunLoop will publish so replay
+		// and prompt/tool audits cannot see ghost direct-host capabilities.
+		cb.trajectoryToolSurfaceSnapshot(userText),
 	)
 	if traj != nil {
 		defer flushSubAgentTrajectory(traj)
@@ -478,9 +631,18 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	inquiry := codingTaskLooksInquiry(task)
 
 	// Codex-inspired post-loop verification: if the model completed without
-	// errors but didn't run verification itself, automatically verify + fix.
-	if !operational && !inquiry && result.Error == "" && !result.HardExit && !cb.ShouldStop() {
-		if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
+	// errors but didn't produce auditable verification, automatically obtain a
+	// clean proof. Both local and remote agents use the same recovery classifier
+	// so a model's display-oriented `2>&1; echo $?` does not become a terminal
+	// quality failure after the underlying compiler already succeeded.
+	if !s.horizonPosture && !operational && !inquiry && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
+		if verifyCmd, verifyWorkingDir := cb.recoverableVerification(); verifyCmd != "" {
+			// The original wrapper already ran successfully.  Recovery exists to
+			// obtain an auditable exit status, not to let an automatic retry alter
+			// the implementation after a transient/environmental verification
+			// failure. A failed direct rerun remains a genuine audit failure.
+			s.runPostLoopVerification(cb, &result, verifyCmd, verifyWorkingDir, traj)
+		} else if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
 				s.runPostLoopVerifyFixCycle(cb, &result, verifyCmd, traj)
@@ -491,6 +653,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// Accumulate after post-loop so fix-loop token usage is not dropped.
 	if s.handler != nil {
 		accumulateLoopResultUsage(s.handler.app, s.cfg, result)
+	}
+	if result.AskUser != nil {
+		return finishCodingSubAgentAsk(s, result)
 	}
 
 	status := TaskExecPassed
@@ -537,7 +702,16 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		qualityIssueCount                       int
 	)
 
-	if inquiry {
+	if s.horizonPosture {
+		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "horizon episode: outer auditor decides"
+		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "horizon episode: outer auditor decides"
+		qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "horizon episode: skipped coding quality gates", 0
+		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
+		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		if modelSummary == "" {
+			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+		}
+	} else if inquiry {
 		// Repository questions are evidence-gathering turns. They must never be
 		// forced through TDD, edit verification, or diff gates just because the
 		// conversation happens to be inside a coding workbench.
@@ -547,9 +721,6 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		diffSummary = ""
 		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
 		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
-		if len(allCommandsRun) > 0 {
-			summary = appendSubAgentCommandSummary(summary, allCommandsRun)
-		}
 		cb.emitCommandSummaryEvent(allCommandsRun)
 		if result.ToolCalls == 0 || (len(allFilesRead) == 0 && len(allSearchesRun) == 0 && len(allCommandsRun) == 0) {
 			status = TaskExecFailed
@@ -571,13 +742,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
 		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
 		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
-		if len(unresolvedGuardrailViolations) > 0 {
-			summary = appendSubAgentGuardrailSummary(summary, unresolvedGuardrailViolations)
-		}
 		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
-		if len(allCommandsRun) > 0 {
-			summary = appendSubAgentCommandSummary(summary, allCommandsRun)
-		}
 		cb.emitCommandSummaryEvent(allCommandsRun)
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
@@ -586,7 +751,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		if result.HardExit && result.ToolCalls == 0 && status == TaskExecFailed {
 			errMsg = "模型未调用工具就结束了；运行/演示类任务需要 bash 启动或构建程序"
 		}
-		qualityStatus, qualitySummary, qualityIssueCount = summarizeOperationalSubAgentQuality(audit, result)
+		qualityStatus, qualitySummary, qualityIssueCount = summarizeOperationalSubAgentQualityForTask(task, audit, result)
 		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
 	} else {
 		existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
@@ -601,44 +766,20 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
 		status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
 		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
-		summary = appendSubAgentFileChangeSummary(summary, filesModified, filesCreated)
 		cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
-		if len(unresolvedGuardrailViolations) > 0 {
-			summary = appendSubAgentGuardrailSummary(summary, unresolvedGuardrailViolations)
-		}
 		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
-		if explorationSummary != "" {
-			summary = appendSubAgentExplorationSummary(summary, explorationStatus, explorationSummary)
-		}
 		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
-		if len(allCommandsRun) > 0 {
-			summary = appendSubAgentCommandSummary(summary, allCommandsRun)
-		}
-		if len(allDynamicToolsRun) > 0 {
-			summary = appendSubAgentDynamicToolSummary(summary, allDynamicToolsRun)
-		}
 		cb.emitCommandSummaryEvent(allCommandsRun)
-		if verificationSummary != "" {
-			summary = appendSubAgentVerificationSummary(summary, verificationStatus, verificationSummary)
-		}
 		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, countFreshSubAgentVerificationAttempts(allCommandsRun, audit.LastEditSeq))
 		diffChecked, diffSummary = cb.ensureFinalGitDiff(allFilesModified, allFilesCreated)
 		status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 		}
-		if diffSummary != "" {
-			summary = appendSubAgentDiffSummary(summary, diffSummary)
-		}
 		qualityStatus, qualitySummary, qualityIssueCount = summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations, allDynamicToolsRun)
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentNoChangeEvidence(allFilesModified, allFilesCreated, allFilesRead, allSearchesRun, allCommandsRun, allDynamicToolsRun))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentCreatedFileContextEvidence(allFilesCreated, allFilesRead, allSearchesRun, allDynamicToolsRun))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentAcceptanceCriteriaEvidence(task, modelSummary, allFilesModified, allFilesCreated))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentCreatedFileContextEvidence(allFilesCreated, allFilesRead, allSearchesRun, allDynamicToolsRun, cb.workspaceWasEmptyAtStart))
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentScopeEvidence(task, modelSummary, allFilesModified, allFilesCreated))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentChangedFileSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentRiskSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq))
-		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationEvidence(modelSummary, allCommandsRun))
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeLocalizationQuality(task.Title+"\n"+task.Description, existingFilesModified, cb.localization.snapshot(), allSearchesRun))
 		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
@@ -646,8 +787,6 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 	}
-	summary = appendSubAgentQualityReportSummary(summary, &CodingSubAgentResult{QualityStatus: qualityStatus, QualitySummary: qualitySummary, QualityIssueCount: qualityIssueCount})
-	summary = appendCodingAgentTodoTurnNote(summary, cb.todos.snapshot())
 	cb.emitDiffCheckEvent(diffChecked, diffSummary, len(allFilesModified))
 	cb.emitQualitySummaryEventWithAudit(qualityStatus, qualitySummary, qualityIssueCount)
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
@@ -692,6 +831,44 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		QualitySummary:      qualitySummary,
 		QualityIssueCount:   qualityIssueCount,
 		Localization:        cb.localization.snapshot(),
+		HorizonOwned:        s.horizonPosture,
+	}
+}
+
+func finishCodingSubAgentAsk(s *CodingSubAgent, result agent.LoopResult) *CodingSubAgentResult {
+	question := ""
+	if result.AskUser != nil {
+		question = strings.TrimSpace(result.AskUser.Question)
+		if question == "" {
+			question = strings.TrimSpace(agent.FormatAskUserForDisplay(result.AskUser))
+		}
+	}
+	if question == "" {
+		question = "Need more information."
+	}
+	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
+	horizonOwned := false
+	if s != nil {
+		horizonOwned = s.horizonPosture
+	}
+	return &CodingSubAgentResult{
+		Status:             TaskExecSkipped,
+		Summary:            question,
+		AskQuestion:        question,
+		Iterations:         result.Iterations,
+		ToolCalls:          result.ToolCalls,
+		InputTokens:        inTok,
+		OutputTokens:       outTok,
+		EstCostRMB:         cost,
+		RouteModel:         result.Route.Model,
+		RouteSource:        result.Route.Source,
+		RouteTask:          result.Route.TaskType,
+		RouteReason:        result.Route.Reason,
+		ExplorationStatus:  codingSubAgentQualityNotNeeded,
+		VerificationStatus: codingSubAgentQualityNotNeeded,
+		QualityStatus:      codingSubAgentQualityNotNeeded,
+		QualitySummary:     "inner loop paused for user input",
+		HorizonOwned:       horizonOwned,
 	}
 }
 
@@ -751,12 +928,15 @@ type codingSubAgentCallbacks struct {
 	designCtx   string
 	prevOutputs []string
 
+	// workspaceWasEmptyAtStart freezes the project inventory before the model
+	// can create files. Checking it during final audit would turn a genuine
+	// greenfield task into a non-empty workspace because its own output is
+	// already present.
+	workspaceWasEmptyAtStart bool
+
 	// cachedSystemPrompt is built once per task to avoid repeated knowledge and
 	// dynamic-tool prompt assembly on every LLM turn.
 	cachedSystemPrompt string
-
-	// cachedTools is built once on first call to BuildTools.
-	cachedTools []map[string]interface{}
 
 	// matchedSkills holds skills selected for this task via BM25 matching.
 	matchedSkills         []codingSubAgentSkillMatch
@@ -765,6 +945,41 @@ type codingSubAgentCallbacks struct {
 	// matchedMCPTools holds MCP tools selected for this task.
 	matchedMCPTools         []codingSubAgentMCPToolMatch
 	matchedMCPToolsSelected bool
+
+	// dynamicSurface contains request-local opaque aliases for selected Skill/MCP
+	// invocations. It intentionally is not part of the static tool template:
+	// selected provider
+	// identities may not survive a model request boundary.
+	dynamicSurface *codingDynamicSurface
+	// dynamicLifecycleRelay is deliberately absent while production
+	// qualification is disabled. Keeping the field on the callback makes the
+	// future S1-C ownership boundary explicit without allowing the legacy S0.5
+	// renderer/dispatcher to construct an adapter on its own.
+	dynamicLifecycleRelay *codingBoundDynamicRequestLifecycleRelay
+	// llmReplanRevision is the host-owned revision of the newest steering that
+	// TransformConversation has already incorporated. RunLoop uses it to cancel
+	// a stale request and emit the unique steered disposition for its surface.
+	llmReplanRevision atomic.Int64
+
+	// staticCompatibilitySurface is the exact, complete legacy static surface
+	// rendered for the current model request. It is an S0 fence only: names in
+	// this set still use the compatibility dispatcher until S1-C. Keeping it
+	// request-local stops a late/invented name from reaching that dispatcher.
+	staticCompatibilitySurfaceMu sync.RWMutex
+	staticCompatibilitySurface   map[string]struct{}
+	staticCompatibilityRevision  uint64
+	staticCompatibilityLast      codingStaticCompatibilitySurfaceObservation
+	// staticCompatibilityQuarantined is the S0.5 containment terminal state for
+	// this callback. It is set only when a model request was already started but
+	// its delivery became ambiguous. It clears the model-visible compatibility
+	// belt; it is not a response ID, grant, or durable cancellation record.
+	staticCompatibilityQuarantined bool
+	// staticCompatibilityEpoch is an in-process request-instance fence for the
+	// legacy static belt. It is intentionally not a provider response identity
+	// and must never be used to publish aliases, grants, or journal entries.
+	// Its only job is to reject an execution context retained from a prior local
+	// request after this callback has rendered a replacement surface.
+	staticCompatibilityEpoch string
 
 	// cachedDynamicSelectionText is the stable task text used to select dynamic
 	// skills and MCP tools once per task.
@@ -794,6 +1009,40 @@ type codingSubAgentCallbacks struct {
 
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
+
+	noteMu     sync.Mutex
+	noteBuf    strings.Builder
+	lastNoteAt time.Time
+}
+
+func newCodingSubAgentCallbacks(s *CodingSubAgent, task *TaskItem, reqCtx, designCtx string, prevOutputs []string) *codingSubAgentCallbacks {
+	projectPath := ""
+	if s != nil {
+		projectPath = s.projectPath
+	}
+	callback := &codingSubAgentCallbacks{
+		subagent:                 s,
+		task:                     task,
+		reqCtx:                   reqCtx,
+		designCtx:                designCtx,
+		prevOutputs:              prevOutputs,
+		workspaceWasEmptyAtStart: projectWorkspaceWasEmpty(projectPath),
+		dynamicSurface:           &codingDynamicSurface{},
+	}
+	callback.tryAttachQualifiedDynamicLifecycleRelay()
+	return callback
+}
+
+// tryAttachQualifiedDynamicLifecycleRelay is the single local callback
+// construction boundary for the future S1-C owner. It uses only the verified
+// identity already installed by authenticated ingress and the app-owned
+// qualification registry. A missing/disabled qualification is an intentional
+// no-op: static S0.5 behavior remains unchanged.
+func (c *codingSubAgentCallbacks) tryAttachQualifiedDynamicLifecycleRelay() {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil || c.subagent.dynamicInvocationIdentity == nil {
+		return
+	}
+	c.dynamicLifecycleRelay = newQualifiedCodingBoundDynamicRequestLifecycleRelay(c.subagent.handler, c.subagent.dynamicInvocationIdentity, c.subagent.cfg)
 }
 
 type codingFileSnapshot struct {
@@ -826,6 +1075,18 @@ func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMC
 		return cfg, decision, true
 	}
 	h := c.subagent.handler
+	if isHubManagedTurnConfig(h, cfg) {
+		var loopCtx *LoopContext
+		if c.subagent != nil {
+			loopCtx = c.subagent.loopCtx
+		}
+		cfg = attachHubWorkloadHints(cfg, llm.TaskReasoning, loopCtx)
+		decision.Model = cfg.Model
+		decision.Provider = cfg.ProviderName
+		decision.Reason = "coding subagent; hub-managed skip desktop cost-route"
+		c.subagent.cfg = cfg
+		return cfg, decision, true
+	}
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return cfg, decision, true
 	}
@@ -840,6 +1101,7 @@ func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMC
 			decision.Reason = "coding subagent → reasoning route"
 		}
 	}
+	c.subagent.cfg = cfg
 	return cfg, decision, true
 }
 
@@ -850,7 +1112,11 @@ func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Cont
 		loopCtx = c.subagent.loopCtx
 		executionCtx = c.subagent.executionCtx
 	}
-	return codingLoopLLMRequestContext(executionCtx, loopCtx, "coding-subagent", iteration)
+	ctx, finish, err := codingLoopLLMRequestContext(executionCtx, loopCtx, "coding-subagent", iteration)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ctx, finish, nil
 }
 
 // codingLoopLLMRequestContext builds a per-round LLM context with cancel linkage,
@@ -859,6 +1125,7 @@ func codingLoopLLMRequestContext(executionCtx context.Context, loopCtx *LoopCont
 	baseCtx := executionCtx
 	baseCancel := func() {}
 	trace := llm.RequestTrace{Caller: caller, Iteration: iteration}
+	endReplannableOperation := func() {}
 	if loopCtx != nil {
 		if loopCtx.IsCancelled() || (baseCtx != nil && baseCtx.Err() != nil) {
 			return nil, nil, fmt.Errorf("cancelled")
@@ -876,12 +1143,27 @@ func codingLoopLLMRequestContext(executionCtx context.Context, loopCtx *LoopCont
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
+	if loopCtx != nil {
+		// Install the operation before scheduler acquisition. A steer may arrive
+		// while a request waits for capacity; treating that steer as already
+		// consumed would let an old conversation begin a fresh provider request.
+		baseCtx, endReplannableOperation, _ = loopCtx.BeginReplannableOperation(baseCtx)
+	}
+	// Coding's S0.5 compatibility belt has no provider-correlated durable
+	// lifecycle. An SDK-local "retry without tools" or compact retry would be a
+	// second model request outside RunLoop's request surface/attempt telemetry
+	// and quarantine fence. Keep the raw provider error visible to RunLoop so it
+	// can apply the conservative, request-owned containment policy instead.
+	baseCtx = llm.WithTransparentRequestRetriesDisabled(baseCtx)
 	if err := baseCtx.Err(); err != nil {
+		endReplannableOperation()
+		baseCancel()
 		return nil, nil, err
 	}
 	ctx := llm.WithRequestTrace(baseCtx, trace)
 	lease, scheduledTrace, err := acquireLLMSchedulerLease(ctx)
 	if err != nil {
+		endReplannableOperation()
 		baseCancel()
 		return nil, nil, err
 	}
@@ -891,8 +1173,21 @@ func codingLoopLLMRequestContext(executionCtx context.Context, loopCtx *LoopCont
 		globalLLMScheduler.ObserveResult(scheduledTrace, err)
 		scheduledCancel()
 		lease.Release()
+		endReplannableOperation()
 		baseCancel()
 	}, nil
+}
+
+// LLMReplanRequested implements agent.LLMReplanAware. RunLoop remains the
+// sole owner of the steered disposition and durable surface retirement.
+func (c *codingSubAgentCallbacks) LLMReplanRequested() bool {
+	return c != nil && c.subagent != nil && c.subagent.loopCtx != nil && c.subagent.loopCtx.ReplanRequestedSince(c.llmReplanRevision.Load())
+}
+
+// TryFinalizeLLMResponse implements agent.LLMFinalizationGuard so final text
+// cannot win a race against an accepted steering request.
+func (c *codingSubAgentCallbacks) TryFinalizeLLMResponse() bool {
+	return c == nil || c.subagent == nil || c.subagent.loopCtx == nil || c.subagent.loopCtx.TrySealReplans(c.llmReplanRevision.Load())
 }
 
 func (c *codingSubAgentCallbacks) toolContext() (context.Context, context.CancelFunc) {
@@ -906,16 +1201,31 @@ func (c *codingSubAgentCallbacks) toolContext() (context.Context, context.Cancel
 }
 
 func (c *codingSubAgentCallbacks) GetMaxIterations() int {
+	if c != nil && c.subagent != nil && c.subagent.horizonPosture {
+		n := 0
+		if c.subagent.loopCtx != nil {
+			n = c.subagent.loopCtx.MaxIterations()
+		}
+		if n <= 0 {
+			n = horizonRoleMaxIterations(c.subagent.horizonRole)
+		}
+		if n > config.MaxAgentIterationsCap {
+			return config.MaxAgentIterationsCap
+		}
+		return n
+	}
 	if c != nil && c.subagent != nil {
+		// Nested children share the parent LoopContext for cancel/owner, but they
+		// must not inherit the root turn's large iteration budget.
+		if c.subagent.nestDepth > 0 {
+			role := c.subagent.role
+			if role == "" {
+				role = codingRoleWorker
+			}
+			return config.EffectiveMaxIterations(codingSpawnRoleMaxIterations(role))
+		}
 		if c.subagent.loopCtx != nil && c.subagent.loopCtx.MaxIterations() > 0 {
 			return config.EffectiveMaxIterations(c.subagent.loopCtx.MaxIterations())
-		}
-		// Nested spawn roles use tighter budgets than the pure-coding root turn.
-		if c.subagent.nestDepth > 0 && c.subagent.role != "" && c.subagent.role != codingRoleWorker {
-			return codingSpawnRoleMaxIterations(c.subagent.role)
-		}
-		if c.subagent.nestDepth > 0 {
-			return codingSpawnRoleMaxIterations(codingRoleWorker)
 		}
 		if c.subagent.isFullEnvironment() {
 			return codingSubAgentFullEnvMaxIterations
@@ -935,6 +1245,49 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	if c.cachedSystemPrompt != "" {
 		c.logCacheEvent("system_prompt", "hit", "prompt_chars", len(c.cachedSystemPrompt))
 		return c.cachedSystemPrompt
+	}
+	if c != nil && c.subagent != nil && c.subagent.horizonPosture {
+		prompt := horizonDefaultSystemPrompt(c.subagent.horizonRole)
+		if strings.TrimSpace(c.subagent.horizonSystemPrompt) != "" {
+			prompt = c.subagent.horizonSystemPrompt
+		}
+		if c.task != nil {
+			prompt += "\n\n# Goal\n" + strings.TrimSpace(c.task.Title)
+			if desc := strings.TrimSpace(c.task.Description); desc != "" && desc != c.task.Title {
+				prompt += "\n" + desc
+			}
+		}
+		if acc := strings.TrimSpace(c.designCtx); acc != "" {
+			prompt += "\n\n# Acceptance\n" + acc
+		}
+		if related := strings.TrimSpace(strings.Join(c.prevOutputs, "\n")); related != "" {
+			prompt += "\n\n# Related\n" + related
+		}
+		if path := strings.TrimSpace(c.subagent.projectPath); path != "" {
+			prompt += "\n\n# ProjectRoot\n" + path
+		}
+		c.cachedSystemPrompt = prompt
+		c.logCacheEvent("system_prompt", "build-horizon", "prompt_chars", len(prompt))
+		return prompt
+	}
+	// The current Coding HTTP/SSE path has no transport-owned response and
+	// tool-call correlation. BuildToolsForModelRequest therefore deliberately
+	// publishes only the uncorrelated compatibility subset. Keep the prompt on
+	// that same subset: describing the richer direct-host BuildTools surface
+	// here would create ghost capabilities and a deterministic failed-call loop.
+	// A future S1-C adapter may select the full prompt only after it has bound
+	// the rendered surface to a real response/call identity and admission
+	// journal; it must not infer that eligibility from task text or callback IDs.
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		prompt := buildUncorrelatedLocalCodingCompatibilityPrompt(c)
+		appendCodingWorkspaceProbe(&prompt, c)
+		if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
+			prompt += knowledgeSections
+		}
+		prompt += codingDynamicCapabilityUnavailableNotice()
+		c.cachedSystemPrompt = prompt
+		c.logCacheEvent("system_prompt", "build-uncorrelated-compatibility", "prompt_chars", len(prompt))
+		return prompt
 	}
 	fullEnv := c != nil && c.subagent != nil && c.subagent.isFullEnvironment()
 	operational := c != nil && codingTaskLooksOperational(c.task)
@@ -960,39 +1313,100 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 		} else {
 			prompt = buildFullCodingEnvironmentPromptPreamble() + prompt
 		}
-		if probe := probeCodingWorkspace(c.subagent.projectPath); probe != "" {
-			prompt += "\n## 工作区概览（进门自动探查）\n" + probe + "\n"
-		}
 	}
-	if inspectionRole && c.subagent != nil {
-		if probe := probeCodingWorkspace(c.subagent.projectPath); probe != "" {
-			prompt += "\n## 工作区概览（进门自动探查）\n" + probe + "\n"
-		}
-	}
+	// Host os.ReadDir is the inventory source of truth. Inject for every
+	// coding posture (not only fullEnv) so T1 never has to spawn python/ls
+	// just to learn whether the work root is empty.
+	appendCodingWorkspaceProbe(&prompt, c)
 
 	// Inject knowledge from coding experience store + general knowledge store.
-	if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
-		prompt += knowledgeSections
+	if c == nil || c.subagent == nil || !c.subagent.horizonPosture {
+		if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
+			prompt += knowledgeSections
+		}
 	}
 
-	// Skills/MCP for root + nested workers only (inspection roles stay lean).
-	if !inspectionRole && !operational {
-		// Eagerly select relevant skills so both BuildSystemPrompt and BuildTools
-		// have access to the same matchedSkills list.
-		c.ensureMatchedSkillsSelected()
-
-		if section := buildCodingSubAgentSkillSection(c.matchedSkills); section != "" {
-			prompt += section
+	// Dynamic matching remains planning evidence until the durable request
+	// surface can be published. Do not advertise candidates as callable tools:
+	// that turns an intentional catalog_incomplete result into an avoidable
+	// model retry loop.
+	if !inspectionRole && !operational && (c == nil || c.subagent == nil || !c.subagent.horizonPosture) {
+		if c.codingDynamicCapabilityPromptAvailable() {
+			// Eagerly select relevant skills so the request renderer sees the
+			// same immutable candidate evidence as this prompt.
+			c.ensureMatchedSkillsSelected()
+			if section := buildCodingSubAgentSkillSection(c.matchedSkills); section != "" {
+				prompt += section
+			}
+			if section := c.buildCodingSubAgentMCPSection(); section != "" {
+				prompt += section
+			}
+		} else {
+			prompt += codingDynamicCapabilityUnavailableNotice()
 		}
+	}
 
-		if section := c.buildCodingSubAgentMCPSection(); section != "" {
-			prompt += section
-		}
+	if c != nil && c.subagent != nil && c.subagent.scopeApproval != nil && c.subagent.scopeApproval.highRiskApproved() {
+		prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
 	}
 
 	c.cachedSystemPrompt = prompt
 	c.logCacheEvent("system_prompt", "build", "prompt_chars", len(prompt), "full_env", fullEnv, "operational", operational)
 	return prompt
+}
+
+// usesUncorrelatedStaticCompatibilityModelSurface is intentionally transport
+// policy, not an intent classifier. All non-horizon Coding model requests
+// currently use the legacy static belt and therefore require its constrained
+// prompt. Horizon owns a separate frozen episode surface.
+func (c *codingSubAgentCallbacks) usesUncorrelatedStaticCompatibilityModelSurface() bool {
+	return c != nil && c.subagent != nil && !c.subagent.horizonPosture
+}
+
+// trajectoryToolSurfaceSnapshot does not mint an execution epoch or mutate the
+// callback's rendered-name fence. RunLoop owns that lifecycle at the actual
+// provider request boundary. The snapshot simply applies the same static
+// compatibility policy to trajectory metadata.
+func (c *codingSubAgentCallbacks) trajectoryToolSurfaceSnapshot(userText string) []map[string]interface{} {
+	tools := c.BuildTools(userText)
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		return filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostLocal, tools)
+	}
+	return tools
+}
+
+func buildUncorrelatedLocalCodingCompatibilityPrompt(c *codingSubAgentCallbacks) string {
+	projectPath := ""
+	inspectionRole := false
+	includeTodo := true
+	if c != nil && c.subagent != nil {
+		projectPath = c.subagent.projectPath
+		inspectionRole = c.subagent.nestDepth > 0 &&
+			(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
+	}
+	if c == nil || c.task == nil || codingTaskLooksInquiry(c.task) || inspectionRole {
+		includeTodo = false
+	}
+
+	var b strings.Builder
+	b.WriteString(`# Coding compatibility mode
+
+This request is running on the temporary uncorrelated Coding compatibility surface. Use only the tool definitions actually included with this request.
+
+## Available posture
+- Gather repository evidence with the read-only definitions that are present (for example Glob, ripgrep, list_directory, read_file, git_diff, code_navigation, and approved knowledge/research lookups).
+- If the project has .codegraph/, prefer code_navigation / CodeGraph before broad searching.
+- Do not claim that a file was changed, a command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
+- For an implementation or operational request, inspect the code, explain the blocker imposed by this temporary safe mode, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
+`)
+	if includeTodo {
+		b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+`)
+	}
+	if strings.TrimSpace(projectPath) != "" {
+		b.WriteString(fmt.Sprintf("\n## Project path\n%s\n", projectPath))
+	}
+	return b.String()
 }
 
 func (c *codingSubAgentCallbacks) ensureMatchedSkillsSelected() {
@@ -1032,90 +1446,249 @@ func (c *codingSubAgentCallbacks) dynamicSelectionText() string {
 }
 
 func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
-	if c.cachedTools == nil {
-		tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
-		tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
-		if c.task != nil && codingTaskLooksInquiry(c.task) {
-			c.cachedTools = filterCodingInquiryTools(tools)
-			c.logCacheEvent("tools", "build-read-only", "tool_count", len(c.cachedTools))
-			return cloneCodingSubAgentToolDefinitions(c.cachedTools)
-		}
-		if c.task != nil && codingTaskLooksOperational(c.task) {
-			c.cachedTools = filterCodingOperationalTools(tools)
-			c.logCacheEvent("tools", "build-operational", "tool_count", len(c.cachedTools))
-			return cloneCodingSubAgentToolDefinitions(c.cachedTools)
-		}
-
-		// Full workbench extras (web research / clock) — always on for full env.
-		if c.subagent != nil && c.subagent.isFullEnvironment() {
-			tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
-		}
-		// Nested explorer/reviewer still need research helpers even without full env.
-		if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth > 0 {
-			tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
-		}
-		// A lean local CodingSubAgent normally omits network helpers. Bug tasks keep
-		// the research pair available even when the original report looks purely
-		// local: code navigation may discover a third-party/version-sensitive cause
-		// after this tool list has been cached. Without this, the localization gate
-		// could require research that the current agent can no longer perform.
-		if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth == 0 &&
-			(codingTaskNeedsLocalization(c.dynamicSelectionText()) || codingTaskNeedsExternalResearch(c.dynamicSelectionText())) {
-			tools = append(tools, buildCodingExternalResearchToolDefinitions()...)
-		}
-
-		inspectionRole := c.subagent != nil && c.subagent.nestDepth > 0 &&
-			(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
-		// /goal long-running objective tool — root pure-coding workbench only.
-		// Nested explorers/reviewers stay lean; workers inherit via root continuation.
-		if c.subagent != nil && c.subagent.isFullEnvironment() && c.subagent.nestDepth == 0 {
-			tools = append(tools, buildCodingGoalToolDefinition())
-		}
-		// Skills/MCP are for root + nested workers; keep inspection agents lean.
-		if !inspectionRole {
-			// Append manage_skill if relevant skills were found for this task.
-			// matchedSkills may already be populated by BuildSystemPrompt.
-			c.ensureMatchedSkillsSelected()
-			if len(c.matchedSkills) > 0 {
-				tools = append(tools, buildManageSkillToolDefinition())
-			}
-
-			// Append call_mcp_tool if relevant MCP tools were found for this task.
-			c.ensureMatchedMCPToolsSelected()
-			if len(c.matchedMCPTools) > 0 {
-				tools = append(tools, buildCallMCPToolDefinition())
-			}
-		}
-
-		// Append knowledge search tools (read-only) when stores are available.
-		if c.subagent.codingKB != nil {
-			tools = append(tools, codingKnowledgeSearchToolDef())
-		}
-		if c.subagent.generalKB != nil {
-			tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
-		}
-
-		// Codex-style nested subagents (pure coding workbench root only).
-		if c.subagent != nil && c.subagent.canSpawnCodingAgent() {
-			tools = append(tools, buildSpawnCodingAgentToolDefinition())
-		}
-
-		// In-agent requirement breakdown + step checklist (workers only).
-		if !inspectionRole {
-			tools = append(tools, buildCodingAgentTodoToolDefinition())
-		}
-
-		// Role-based tool surface for nested explorer/reviewer agents.
-		if c.subagent != nil {
-			tools = filterCodingToolsForRole(tools, c.subagent)
-		}
-
-		c.cachedTools = tools
-		c.logCacheEvent("tools", "build", "tool_count", len(tools))
-	} else {
-		c.logCacheEvent("tools", "hit", "tool_count", len(c.cachedTools))
+	_ = userText
+	// BuildTools is called both at loop initialization and immediately before
+	// each actual model request. It must construct a complete replacement list
+	// every time, rather than cache a rendered definition list from an earlier
+	// request. Catalog metadata may eventually be cached behind a snapshot
+	// revision, but definitions are model-facing authority and must reflect the
+	// current host posture/registry when sent.
+	horizon := c.subagent != nil && c.subagent.horizonPosture
+	if horizon {
+		tools := buildHorizonEpisodeTools(c.subagent.handler, c.subagent.horizonToolSurface)
+		c.logCacheEvent("tools", "build-horizon", "tool_count", len(tools))
+		return cloneCodingSubAgentToolDefinitions(tools)
 	}
-	return cloneCodingSubAgentToolDefinitions(c.cachedTools)
+	tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
+	tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
+	if c.task != nil && codingTaskLooksInquiry(c.task) {
+		tools = filterCodingInquiryTools(tools)
+		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
+		c.logCacheEvent("tools", "build-read-only", "tool_count", len(tools))
+		return cloneCodingSubAgentToolDefinitions(tools)
+	}
+	if c.task != nil && codingTaskLooksOperational(c.task) {
+		tools = filterCodingOperationalTools(tools)
+		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
+		c.logCacheEvent("tools", "build-operational", "tool_count", len(tools))
+		return cloneCodingSubAgentToolDefinitions(tools)
+	}
+
+	// Full workbench extras (web research / clock) — always on for full env.
+	if c.subagent != nil && c.subagent.isFullEnvironment() {
+		tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+	}
+	// Nested explorer/reviewer still need research helpers even without full env.
+	if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth > 0 {
+		tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+	}
+	// Do not let task wording add network tools to a lean CodingSubAgent.
+	// codingTaskNeedsLocalization and codingTaskNeedsExternalResearch remain
+	// quality/evidence checks, but they are lexical diagnostics rather than a
+	// capability authority. Turning words such as "unknown", "SDK", or
+	// "version" directly into web_search/web_fetch definitions created a
+	// second, task-text-controlled planner beside the semantic route. A
+	// full-environment posture may have the reviewed static research family;
+	// otherwise an indispensable research need must be surfaced as a capability
+	// gap/replan, never silently added to this static belt.
+
+	inspectionRole := c.subagent != nil && c.subagent.nestDepth > 0 &&
+		(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
+	// Goal lifecycle remains host/orchestrator-owned until it has a durable
+	// expected-version CAS contract. Do not render a model-writable goal tool
+	// from the legacy Coding compatibility belt; direct host workflows retain
+	// their existing goal APIs outside this callback surface.
+	// Skills/MCP are rendered as request-local opaque aliases by
+	// BuildToolsForModelRequest. Do not append generic gateway definitions
+	// to the static cross-iteration surface.
+
+	// Append knowledge search tools (read-only) when stores are available.
+	if c.subagent.codingKB != nil {
+		tools = append(tools, codingKnowledgeSearchToolDef())
+	}
+	if c.subagent.generalKB != nil {
+		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
+	}
+
+	// Codex-style nested subagents (pure coding workbench root only).
+	if c.subagent != nil && c.subagent.canSpawnCodingAgent() {
+		tools = append(tools, buildSpawnCodingAgentToolDefinition())
+	}
+
+	// In-agent requirement breakdown + step checklist (workers only).
+	if !inspectionRole {
+		tools = append(tools, buildCodingAgentTodoToolDefinition())
+	}
+
+	// Role-based tool surface for nested explorer/reviewer agents.
+	if c.subagent != nil {
+		tools = filterCodingToolsForRole(tools, c.subagent)
+	}
+	tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
+	c.logCacheEvent("tools", "build-replacement", "tool_count", len(tools))
+	return cloneCodingSubAgentToolDefinitions(tools)
+}
+
+func (c *codingSubAgentCallbacks) setStaticCompatibilitySurface(definitions []map[string]interface{}) uint64 {
+	if c == nil {
+		return 0
+	}
+	c.staticCompatibilitySurfaceMu.Lock()
+	// Horizon definitions are already selected by a frozen host-issued episode
+	// policy. The recorded set must nevertheless come from the definitions that
+	// were actually rendered: adding the whole policy list here would let an
+	// absent registry definition reach the host dispatcher.
+	c.staticCompatibilitySurface = codingStaticCompatibilitySurfaceNames(definitions)
+	// RunLoop creates this request's epoch before it invokes the request-bound
+	// renderer. Do not clear it while installing the exact definitions that the
+	// same request will send: doing so turns every correctly correlated response
+	// into a stale one before it can reach execution. The next real outbound
+	// request advances the epoch before rendering its own replacement, which
+	// invalidates the predecessor without creating an epoch-less admission gap.
+	c.staticCompatibilityRevision++
+	revision := c.staticCompatibilityRevision
+	c.staticCompatibilitySurfaceMu.Unlock()
+	// Control-plane checklist mutations are revision/version CAS-protected.
+	// This local fence neither publishes authority nor identifies a provider
+	// response; it just makes a replacement reject stale model todo payloads.
+	c.todos.bindControlPlaneRevision(revision)
+	return revision
+}
+
+func (c *codingSubAgentCallbacks) recordStaticCompatibilitySurface(definitions []map[string]interface{}, revision uint64) {
+	if c == nil {
+		return
+	}
+	posture := codingTaskRequestKind(c.task)
+	var identity *trustedCodingInvocationIdentity
+	var prepared *codingStaticPlanPreparation
+	var handler *IMMessageHandler
+	userID := ""
+	if c.subagent != nil {
+		identity, prepared, handler = c.subagent.dynamicInvocationIdentity, c.subagent.staticShadowPlan, c.subagent.handler
+		if c.subagent.loopCtx != nil {
+			userID = c.subagent.loopCtx.UserID
+		}
+	}
+	observation := newCodingStaticCompatibilitySurfaceObservation(codingStaticCompatibilityHostLocal, revision, posture, definitions, identity, prepared)
+	c.staticCompatibilitySurfaceMu.Lock()
+	c.staticCompatibilityLast = observation
+	c.staticCompatibilitySurfaceMu.Unlock()
+	recordCodingStaticCompatibilitySurfaceObservation(handler, userID, observation)
+}
+
+func (c *codingSubAgentCallbacks) lastStaticCompatibilitySurfaceObservation() codingStaticCompatibilitySurfaceObservation {
+	if c == nil {
+		return codingStaticCompatibilitySurfaceObservation{}
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	observation := c.staticCompatibilityLast
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	observation.RenderedToolNames = append([]string(nil), observation.RenderedToolNames...)
+	observation.OmittedReasons = append([]string(nil), observation.OmittedReasons...)
+	observation.UnmetReasons = append([]string(nil), observation.UnmetReasons...)
+	observation.LegacyOnlyCapabilities = append([]string(nil), observation.LegacyOnlyCapabilities...)
+	observation.ShadowOnlyCapabilities = append([]string(nil), observation.ShadowOnlyCapabilities...)
+	return observation
+}
+
+func (c *codingSubAgentCallbacks) staticCompatibilityToolAllowed(name string) bool {
+	if c == nil {
+		return false
+	}
+	name = canonicalCodingSubAgentToolName(name)
+	return c.staticCompatibilityCanonicalToolAllowed(name)
+}
+
+func (c *codingSubAgentCallbacks) staticCompatibilityCanonicalToolAllowed(name string) bool {
+	if c == nil {
+		return false
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	if c.staticCompatibilityQuarantined {
+		c.staticCompatibilitySurfaceMu.RUnlock()
+		return false
+	}
+	if c.staticCompatibilitySurface == nil {
+		// Direct host-maintenance/test calls predate ModelRequest rendering. They
+		// are not a model request and retain their existing guarded dispatcher;
+		// RunLoop always installs a non-nil request surface before model dispatch.
+		c.staticCompatibilitySurfaceMu.RUnlock()
+		return true
+	}
+	_, allowed := c.staticCompatibilitySurface[name]
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	return allowed
+}
+
+// beginStaticCompatibilitySurfaceEpoch creates a callback-local request fence
+// at the real model-request boundary, before its renderer installs the
+// complete replacement surface. It is deliberately separate from semantic
+// correlation: the nonce says nothing about a provider response, transport
+// connection, replay, or durable authority.
+func (c *codingSubAgentCallbacks) beginStaticCompatibilitySurfaceEpoch() string {
+	if c == nil {
+		return ""
+	}
+	nonce := codingDynamicSurfaceNonce()
+	if nonce == "random_unavailable" {
+		return ""
+	}
+	epoch := "coding-static:" + nonce
+	c.staticCompatibilitySurfaceMu.Lock()
+	defer c.staticCompatibilitySurfaceMu.Unlock()
+	// RunLoop deliberately advances the successor epoch before it calls the
+	// renderer, including the first request where no previous surface exists.
+	// Requiring a pre-render surface here silently returned an empty epoch for
+	// that first request and weakened the exact request→response fence. A
+	// quarantined compatibility belt remains terminal and must not issue one.
+	if c.staticCompatibilityQuarantined {
+		return ""
+	}
+	c.staticCompatibilityEpoch = epoch
+	return epoch
+}
+
+// staticCompatibilityExecutionEpochAllowed is defense-in-depth for the
+// context-aware model callback. Empty contexts retain the guarded direct-host
+// compatibility path; real RunLoop model dispatch always carries the epoch
+// returned by BeginToolSurfaceEpoch. This is not a durable response bind.
+func (c *codingSubAgentCallbacks) staticCompatibilityExecutionEpochAllowed(epoch string) bool {
+	if c == nil {
+		return false
+	}
+	epoch = strings.TrimSpace(epoch)
+	if epoch == "" {
+		return true
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	allowed := !c.staticCompatibilityQuarantined && c.staticCompatibilityEpoch != "" && epoch == c.staticCompatibilityEpoch
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	return allowed
+}
+
+func (c *codingSubAgentCallbacks) staticCompatibilitySurfaceQuarantined() bool {
+	if c == nil {
+		return true
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	quarantined := c.staticCompatibilityQuarantined
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	return quarantined
+}
+
+func (c *codingSubAgentCallbacks) quarantineStaticCompatibilitySurface() {
+	if c == nil {
+		return
+	}
+	c.staticCompatibilitySurfaceMu.Lock()
+	// The operation is idempotent because transport code may report a terminal
+	// error and a caller may subsequently observe cancellation of the same
+	// attempt. Never recreate a request surface from this callback afterwards.
+	c.staticCompatibilityQuarantined = true
+	c.staticCompatibilitySurface = map[string]struct{}{}
+	c.staticCompatibilityEpoch = ""
+	c.staticCompatibilitySurfaceMu.Unlock()
 }
 
 func filterCodingToolsForRole(tools []map[string]interface{}, sa *CodingSubAgent) []map[string]interface{} {
@@ -1141,58 +1714,80 @@ func filterCodingToolsForRole(tools []map[string]interface{}, sa *CodingSubAgent
 	return (codingagent.ToolPolicy{Role: role, Allowed: codingSubAgentSpawnRoleTools[role], Normalize: canonicalCodingSubAgentToolName}).FilterToolDefinitions(tools)
 }
 
+func filterToolsByHorizonSurface(tools []map[string]interface{}, surface []string) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	seen := map[string]bool{}
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		name = canonicalCodingSubAgentToolName(name)
+		if name == "" || seen[name] || !longhorizon.ToolAllowed(surface, name) {
+			continue
+		}
+		seen[name] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+func buildHorizonEpisodeTools(handler *IMMessageHandler, surface []string) []map[string]interface{} {
+	if len(surface) == 0 {
+		return nil
+	}
+	needCoding := false
+	for _, name := range surface {
+		n := canonicalCodingSubAgentToolName(longhorizon.NormalizeToolName(name))
+		if codingSubAgentToolNames[n] || n == codeNavigationToolName || n == reportLocalizationToolName || n == codingAgentTodoToolName {
+			needCoding = true
+			break
+		}
+	}
+	var tools []map[string]interface{}
+	if needCoding {
+		tools = buildCodingToolDefinitionsFromRegistry(handler)
+		tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition(), buildCodingAgentTodoToolDefinition())
+	}
+	tools = append(tools, horizonHostToolDefs(handler, surface)...)
+	return filterToolsByHorizonSurface(tools, surface)
+}
+
+func horizonHostToolDefs(handler *IMMessageHandler, surface []string) []map[string]interface{} {
+	if handler == nil || handler.registry == nil || len(surface) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(surface))
+	seen := map[string]bool{}
+	for _, name := range surface {
+		name = longhorizon.NormalizeToolName(name)
+		if name == "" || seen[name] || codingSubAgentToolNames[name] {
+			continue
+		}
+		registered, ok := handler.registry.Get(name)
+		if !ok || registered == nil {
+			continue
+		}
+		seen[name] = true
+		def := *registered
+		if strings.TrimSpace(def.Description) == "" {
+			def.Description = horizonFallbackHostToolDescription(name)
+		}
+		out = append(out, registeredToolToDef(def))
+	}
+	return out
+}
+
 func cloneCodingSubAgentToolDefinitions(tools []map[string]interface{}) []map[string]interface{} {
 	if len(tools) == 0 {
 		return nil
 	}
 	out := make([]map[string]interface{}, len(tools))
 	for i, tool := range tools {
-		out[i], _ = cloneCodingSubAgentToolValue(tool).(map[string]interface{})
+		out[i] = agent.CloneToolDefinitionMap(tool)
 	}
 	return out
-}
-
-func cloneCodingSubAgentToolValue(value interface{}) interface{} {
-	switch v := value.(type) {
-	case map[string]interface{}:
-		out := make(map[string]interface{}, len(v))
-		for key, item := range v {
-			out[key] = cloneCodingSubAgentToolValue(item)
-		}
-		return out
-	case []interface{}:
-		out := make([]interface{}, len(v))
-		for i, item := range v {
-			out[i] = cloneCodingSubAgentToolValue(item)
-		}
-		return out
-	case []string:
-		out := make([]string, len(v))
-		copy(out, v)
-		return out
-	case []map[string]interface{}:
-		out := make([]map[string]interface{}, len(v))
-		for i, item := range v {
-			out[i], _ = cloneCodingSubAgentToolValue(item).(map[string]interface{})
-		}
-		return out
-	case map[string]string:
-		out := make(map[string]string, len(v))
-		for key, item := range v {
-			out[key] = item
-		}
-		return out
-	case map[string][]string:
-		out := make(map[string][]string, len(v))
-		for key, items := range v {
-			copied := make([]string, len(items))
-			copy(copied, items)
-			out[key] = copied
-		}
-		return out
-	default:
-		return v
-	}
 }
 
 func (c *codingSubAgentCallbacks) logCacheEvent(cacheName, event string, kv ...interface{}) {
@@ -1227,10 +1822,35 @@ func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 }
 
 func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
-	if c != nil && codingTaskLooksInquiry(c.task) && !isCodingInquiryTool(name) {
+	// This epoch-less entry is retained for host-owned maintenance, post-loop
+	// verification, and compatibility tests. RunLoop model dispatch must use
+	// ExecuteToolCallWithContext, which admits the exact request surface epoch
+	// before it reaches executeToolStructuredCanonical. Reject legacy dynamic
+	// gateways before generic argument validation so no diagnostic or future
+	// normalization path can revive their selector semantics outside the durable
+	// coordinator.
+	if isLegacyCodingDynamicGateway(name) {
+		return rejectedCodingDynamicModelGateway()
+	}
+	if !c.staticCompatibilityCanonicalToolAllowed(name) {
+		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	return c.executeToolStructuredCanonical(name, argsJSON)
+}
+
+// executeToolStructuredCanonical is shared by the direct structured callback
+// and the context-aware model callback after the exact rendered-name fence.
+// It preserves legacy name canonicalization inside executeToolWithOutcome only
+// after the model-visible transport key has been admitted.
+func (c *codingSubAgentCallbacks) executeToolStructuredCanonical(name, argsJSON string) agent.ToolExecutionResult {
+	if name == "" {
+		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	horizon := c != nil && c.subagent != nil && c.subagent.horizonPosture
+	if !horizon && c != nil && codingTaskLooksInquiry(c.task) && !isCodingInquiryTool(name) {
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("tool %s is unavailable for a read-only repository inquiry", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
-	if c != nil && codingTaskLooksOperational(c.task) && !isCodingOperationalTool(name) {
+	if !horizon && c != nil && codingTaskLooksOperational(c.task) && !isCodingOperationalTool(name) {
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("tool %s is unavailable for a run/build/demo request", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	result := c.executeToolWithOutcome(name, argsJSON)
@@ -1254,6 +1874,28 @@ func (c *codingSubAgentCallbacks) ProjectToolResult(name string, result agent.To
 		return result.Result
 	}
 	toolName := canonicalCodingSubAgentToolName(name)
+	// Document readers have their own offset-based paging contract. Preserve a
+	// larger context-aware page instead of applying the code-oriented line
+	// reducer used for ordinary read_file results.
+	if toolName == "read_document" || toolName == "office" {
+		sessionKey := ""
+		if c != nil && c.subagent != nil && c.subagent.handler != nil {
+			sessionKey = c.subagent.handler.currentRuntimeOrLegacyPolicyOwnerID()
+		}
+		contextTokens := 0
+		if c != nil && c.subagent != nil {
+			contextTokens = c.subagent.cfg.EffectiveContextTokens()
+		}
+		proj, err := agent.ProjectToolResultWithContext(toolName, sessionKey, result.Result, contextTokens)
+		if err == nil || proj.Preview != "" {
+			return proj.Preview
+		}
+	}
+	if toolName == "computer_observe" {
+		// Horizon GUI has no read_tool_result. Keep eN refs in the preview;
+		// FoldComputerUseObserves fingerprints older observes.
+		return agent.PreviewToolResultForTool(toolName, result.Result)
+	}
 	preview := truncateToolResultForSubAgent(toolName, result.Result)
 	sessionKey := ""
 	if c != nil && c.subagent != nil && c.subagent.handler != nil {
@@ -1262,8 +1904,59 @@ func (c *codingSubAgentCallbacks) ProjectToolResult(name string, result agent.To
 	return projectToolResultHandle(toolName, sessionKey, result.Result, preview, maxToolResultLen)
 }
 
+func (c *codingSubAgentCallbacks) executeHorizonHostTool(name, argsJSON string) codingToolExecutionResult {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return codingToolExecutionResult{Text: "horizon host tools unavailable", Outcome: codingToolOutcomeFailed}
+	}
+	ctx, cancel := c.toolContext()
+	defer cancel()
+	ctx = withHorizonHostExecution(ctx)
+	owner := ""
+	role := ""
+	policyUser := ""
+	if loop := c.subagent.loopCtx; loop != nil {
+		role = loop.HorizonRole
+		owner = strings.TrimSpace(loop.ComputerUseOwner)
+		if owner == "" {
+			owner = computerUseOwnerFromLoop(loop, loop.UserID)
+		}
+		policyUser = strings.TrimSpace(loop.UserID)
+		if policyUser == "" {
+			policyUser = owner
+		}
+	}
+	if owner != "" && (role == longhorizon.RoleGUIExecutor || strings.HasPrefix(name, "computer_")) {
+		setComputerUseOwner(owner)
+	}
+	beforeBrowserIDs := map[string]bool{}
+	if name == "browser_session_start" {
+		beforeBrowserIDs = horizonBrowserSessionIDsForOwner(policyUser)
+	}
+	result := c.subagent.handler.executeToolDetailedWithRuntimeContext(ctx, policyUser, policyUser != "", "", name, argsJSON, "", nil)
+	if name == "browser_session_start" {
+		if id := parseHorizonBrowserSessionID(result.Text); id != "" {
+			if sess := c.subagent.handler.loadHorizonSessionOrRunning(policyUser); sess != nil {
+				sess.rememberBrowserSession(id, !beforeBrowserIDs[id])
+			}
+		}
+	}
+	outcome := codingToolOutcomeSuccess
+	if result.IsFailure() {
+		outcome = codingToolOutcomeFailed
+	}
+	return codingToolExecutionResult{Text: result.Text, Outcome: outcome}
+}
+
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
 	name = canonicalCodingSubAgentToolName(name)
+	if c != nil && c.subagent != nil && c.subagent.horizonPosture {
+		if !longhorizon.ToolAllowed(c.subagent.horizonToolSurface, name) {
+			return codingToolExecutionResult{
+				Text:    fmt.Sprintf("tool %s is not in the frozen Horizon tool surface", name),
+				Outcome: codingToolOutcomeBlocked,
+			}
+		}
+	}
 	dynamicToolInitialCount := -1
 	if c != nil && codingSubAgentDynamicToolNames[name] {
 		dynamicToolInitialCount = c.dynamicToolResultCount()
@@ -1274,7 +1967,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return toolResult
 	}
 	toolStartedAt := time.Now()
-	c.emitToolStartedEvent(name)
+	c.emitToolStartedEvent(name, argsJSON)
 	defer func() {
 		duration := time.Since(toolStartedAt)
 		c.emitToolFinishedEvent(name, argsJSON, toolResult.Text, toolResult.Outcome, duration)
@@ -1287,6 +1980,9 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	}()
 
 	if !codingSubAgentToolNames[name] && !codingSubAgentDynamicToolNames[name] {
+		if c != nil && c.subagent != nil && c.subagent.horizonPosture && longhorizon.ToolAllowed(c.subagent.horizonToolSurface, name) {
+			return c.executeHorizonHostTool(name, argsJSON)
+		}
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s (coding SubAgent supports %v)", name, codingSubAgentToolNameList()), Outcome: codingToolOutcomeFailed}
 	}
 
@@ -1442,34 +2138,17 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case "bash":
 		bashArgs := c.withDefaultWorkingDir(args)
 		if command, _ := bashArgs["command"].(string); command != "" {
-			if codingTaskLooksInquiry(c.task) {
-				if msg := rejectCodingInquiryShellCommand(command); msg != "" {
-					c.trackCommandResult(bashArgs, msg, false)
-					return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
-				}
-			}
-			if codingTaskLooksOperational(c.task) {
-				if msg := rejectCodingOperationalShellCommand(command); msg != "" {
-					c.trackCommandResult(bashArgs, msg, false)
-					return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
-				}
-			}
-			// Hard block: never offer high-risk approval for silenced git self-checks.
-			if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
+			// Keep the model-visible request intact, but normalize the executable
+			// command before both policy checks and execution. This makes Windows
+			// compile→run semantics fail-closed instead of relying on a later
+			// transport-only rewrite that the quality audit cannot see.
+			bashArgs["command"] = normalizeSubAgentVerificationCommandForExecution(command)
+		}
+		if command, _ := bashArgs["command"].(string); command != "" {
+			workingDir, _ := bashArgs["working_dir"].(string)
+			if msg := c.guardCodingShellCommand(command, workingDir); msg != "" {
 				c.trackCommandResult(bashArgs, msg, false)
 				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
-			}
-			if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
-				workingDir, _ := bashArgs["working_dir"].(string)
-				if c.subagent != nil && c.subagent.scopeApproval != nil {
-					msg = c.subagent.scopeApproval.checkHighRisk("bash", command, c.projectPath(), workingDir, msg)
-				}
-				if msg == "" {
-					// The user approved this guarded command; continue to the executor.
-				} else {
-					c.trackCommandResult(bashArgs, msg, false)
-					return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
-				}
 			}
 		}
 		if wd, _ := bashArgs["working_dir"].(string); wd != "" {
@@ -1517,9 +2196,13 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	case reportLocalizationToolName:
 		return c.executeReportLocalization(args)
 	case "manage_skill":
-		return c.executeManageSkill(args)
+		// Dynamic Skill/MCP execution is model-reachable only through the
+		// durable semantic grant/journal bridge. This legacy selector is kept
+		// for explicit host maintenance helpers, but regular agent-loop dispatch
+		// must not turn a matched set into an execution authority.
+		return codingToolExecutionResult{Text: "[system rejected] catalog_incomplete", Outcome: codingToolOutcomeBlocked}
 	case "call_mcp_tool":
-		return c.executeCallMCPTool(args)
+		return codingToolExecutionResult{Text: "[system rejected] catalog_incomplete", Outcome: codingToolOutcomeBlocked}
 	case "coding_knowledge_search":
 		return c.executeCodingKnowledgeSearch(argsJSON)
 	case "knowledge_search":
@@ -1580,11 +2263,12 @@ func (c *codingSubAgentCallbacks) executeTodoWrite(argsJSON string) codingToolEx
 	if c.subagent != nil {
 		handler = c.subagent.handler
 	}
-	text, outcome := executeCodingAgentTodoWrite(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
+	revision := c.currentControlPlaneRevision()
+	text, outcome := executeCodingAgentTodoWriteForControlPlane(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
 		if handler != nil && userID != "" {
 			publishCodingAgentTodosToUI(handler, userID, items)
 		}
-	})
+	}, revision, revision != 0)
 	if outcome == codingToolOutcomeSuccess {
 		text = annotateTodoChecklistForOrchestratedPlan(handler, userID, text)
 	}
@@ -4163,6 +4847,65 @@ func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}
 	}
 }
 
+// guardCodingShellCommand runs the bash guardrails for one command and returns
+// the rejection the caller must surface, or "" when the command may execute.
+// The order is deliberate: hard blocks come before anything the user can wave
+// through, and a command the user already allowed is not queued up for a second
+// prompt from a later guardrail.
+func (c *codingSubAgentCallbacks) guardCodingShellCommand(command, workingDir string) string {
+	// A repository inquiry stays a hard block. Its run report states
+	// "只读检查：未修改任何文件" purely from the request kind, so approving a command
+	// past this guardrail would make the report claim something untrue.
+	// Widening this needs the report to become evidence-based first.
+	if codingTaskLooksInquiry(c.task) {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			return msg
+		}
+	}
+	// A run/build/demo guardrail decides what runs without asking, not what may
+	// run at all, so the user gets the final say instead of the agent
+	// dead-ending and inventing a reason for the refusal.
+	approved := false
+	if codingTaskLooksOperational(c.task) {
+		if guarded := rejectCodingOperationalShellCommand(command); guarded != "" {
+			if msg := c.approveGuardedShellCommand(command, workingDir, guarded); msg != "" {
+				return msg
+			}
+			approved = true
+		}
+	}
+	// Hard block: never offer high-risk approval for silenced git self-checks.
+	if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
+		return msg
+	}
+	if msg := rejectDisallowedCodingBashCommand(command); msg != "" && !approved {
+		if c != nil && c.subagent != nil && c.subagent.scopeApproval != nil {
+			msg = c.subagent.scopeApproval.checkHighRisk("bash", command, c.projectPath(), workingDir, msg)
+		}
+		if msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+// approveGuardedShellCommand gives the user the final say over a command that a
+// task-mode guardrail turned down.  The guardrail decides what may run without
+// asking rather than what may run at all, so an agent that needs a wider
+// command surfaces the request instead of dead-ending and inventing a reason
+// for the refusal.  It returns "" once the user allows the call, and the
+// original rejection otherwise, so a missing approval channel keeps the
+// guardrail intact.
+func (c *codingSubAgentCallbacks) approveGuardedShellCommand(command, workingDir, rejection string) string {
+	if rejection == "" {
+		return ""
+	}
+	if c == nil || c.subagent == nil || c.subagent.scopeApproval == nil {
+		return rejection
+	}
+	return c.subagent.scopeApproval.checkTaskModeGuard("bash", command, c.projectPath(), workingDir, rejection)
+}
+
 func (c *codingSubAgentCallbacks) rejectToolCall(toolName string, args map[string]interface{}, result string) string {
 	c.trackGuardrailViolation(toolName, args, result)
 	return result
@@ -5230,18 +5973,15 @@ func filterResolvedSubAgentCommandSummaryEntries(commands []CodingSubAgentComman
 	reversed := make([]CodingSubAgentCommandResult, 0, len(commands))
 	for i := len(commands) - 1; i >= 0; i-- {
 		cmd := commands[i]
-		key := subAgentCommandFailureResolutionKey(cmd)
 		if cmd.Succeeded && !subAgentCommandSuccessLooksEmpty(cmd) {
-			if key != "" {
-				laterSucceeded[key] = true
-			}
+			recordSubAgentCommandSuccessResolutionKeys(laterSucceeded, cmd)
 			if isSubAgentVerificationCommand(cmd.Command) {
 				laterVerificationSucceeded = true
 			}
 			reversed = append(reversed, cmd)
 			continue
 		}
-		if !cmd.Succeeded && key != "" && laterSucceeded[key] {
+		if !cmd.Succeeded && subAgentCommandFailureResolvedByLaterSuccess(cmd, laterSucceeded) {
 			continue
 		}
 		if !cmd.Succeeded && laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd) {
@@ -5549,7 +6289,7 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(unresolvedGuardrails)))
 	}
 	postEditCommands := filterGuardrailBlockedSubAgentCommands(postEditCommandsWithBlocked, guardrails)
-	failedCommands := unresolvedFailedSubAgentCommands(postEditCommands)
+	failedCommands := dropInspectOnlyInventoryFailures(unresolvedFailedSubAgentCommands(postEditCommands))
 	failedCommandSummary := ""
 	if len(failedCommands) > 0 {
 		failedCommandSummary = summarizeFailedSubAgentCommandWarning(failedCommands)
@@ -5603,6 +6343,28 @@ func summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead []
 		return ""
 	}
 	return "no file changes and no inspection or verification evidence"
+}
+
+func hostWorkspaceInventoryEvidence(projectPath string) bool {
+	return strings.TrimSpace(probeCodingWorkspace(projectPath)) != ""
+}
+
+func dropInspectOnlyInventoryFailures(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	if len(commands) == 0 {
+		return nil
+	}
+	out := make([]CodingSubAgentCommandResult, 0, len(commands))
+	for _, cmd := range commands {
+		if subAgentInspectOnlyInventoryCommand(cmd.Command) {
+			continue
+		}
+		out = append(out, cmd)
+	}
+	return out
+}
+
+func subAgentInspectOnlyInventoryCommand(command string) bool {
+	return subAgentUnixInspectOnlyCommand(command) || subAgentWindowsPythonInspectOnlyCommand(command)
 }
 
 // countSubAgentInspectionProbeEvidence counts shell probes that prove the agent
@@ -5673,6 +6435,9 @@ func subAgentInspectionProbeCommandSegment(segment []string) bool {
 		"hostname", "nproc", "getconf", "arch", "tree", "du",
 		"true", "false", "printf", "echo":
 		return true
+	case "python", "python.exe", "python3", "python3.exe", "py", "py.exe":
+		script, ok := pythonInspectDashCScript(segment)
+		return ok && pythonInspectScriptIsListDirOnly(script)
 	case "command":
 		// `command -v g++` / `command -V cmake`
 		for _, arg := range segment[1:] {
@@ -5696,6 +6461,12 @@ var subAgentMissingPathProbeMarkers = []string{
 	"cannot open",
 	"can't cd to",
 	"cannot cd",
+	"cannot find the path",
+	"找不到路径",
+	"找不到文件",
+	"文件不存在",
+	"路径不存在",
+	"不是目录",
 }
 
 // subAgentCommandIsSoftInspectionProbeFailure treats missing-path probe failures
@@ -5781,6 +6552,12 @@ func subAgentCommandIsSoftInspectionProbeFailure(cmd CodingSubAgentCommandResult
 	// otherwise useful verification. Treat only this exact missing-command case
 	// as soft; failures from find/ls/cmake/the compiler remain actionable.
 	if subAgentOptionalTreeDisplayCommandMissing(cmd.Command, summary) {
+		return true
+	}
+	// Inventory-only probes (ls/file/stat, python -c os.listdir) cannot fail
+	// the product task. Guest-interpreter and Unix-tool errors are not
+	// "implementation dependency not met".
+	if subAgentInspectOnlyInventoryCommand(cmd.Command) {
 		return true
 	}
 	return false
@@ -5887,6 +6664,73 @@ func subAgentOptionalTreeDisplayCommandMissing(command, summary string) bool {
 	return len(first) > 0 && commandNameBase(first[0]) == "tree"
 }
 
+func subAgentOptionalUnixInspectCommandMissing(command, summary string) bool {
+	if !subAgentWindowsInspectShellNoise(summary) {
+		return false
+	}
+	return subAgentUnixInspectOnlyCommand(command)
+}
+
+// subAgentWindowsInspectShellNoise is a PowerShell/cmd rejection of a Unix
+// inspect tool, not a missing product artifact. `ls -lh` fails as an unknown
+// parameter (ls is a Get-ChildItem alias); `file` fails as command-not-found.
+func subAgentWindowsInspectShellNoise(summary string) bool {
+	if subAgentSummaryLooksLikeCommandNotFound(summary) {
+		return true
+	}
+	lower := strings.ToLower(summary)
+	return strings.Contains(summary, "找不到与参数名称") ||
+		strings.Contains(summary, "找不到接受实际参数") ||
+		strings.Contains(lower, "cannot find a parameter") ||
+		strings.Contains(lower, "a parameter cannot be found") ||
+		strings.Contains(lower, "a positional parameter cannot be found") ||
+		strings.Contains(lower, "a parameter name is missing")
+}
+
+func subAgentUnixInspectOnlyCommand(command string) bool {
+	segments := shellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	sawInspect := false
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "file", "file.exe", "stat", "stat.exe", "ls", "ls.exe", "dir", "dir.exe":
+			if !subAgentUnixInspectProbeArgsOK(segment[1:]) {
+				return false
+			}
+			sawInspect = true
+		case "echo":
+			if !subAgentDiagnosticEchoSeparator(segment[1:]) {
+				return false
+			}
+		case "cd", "pushd", "popd", "pwd", "pwd.exe", "head", "tail", "more":
+			continue
+		default:
+			return false
+		}
+	}
+	return sawInspect
+}
+
+func subAgentUnixInspectProbeArgsOK(args []string) bool {
+	for _, arg := range args {
+		token := strings.TrimSpace(normalizeShellCommandToken(arg))
+		if token == "" || token == "2>&1" {
+			continue
+		}
+		if isShellVerificationOutputRedirectionToken(token) || strings.HasPrefix(token, ">") || strings.HasPrefix(token, ">>") {
+			return false
+		}
+	}
+	return true
+}
+
 // subAgentPartialWhichInventorySoftFailure reports multi-name which/type/
 // command -v inventories where required build tools appear as found paths and
 // only optional tools are missing (exit non-zero with no hard-error markers).
@@ -5962,8 +6806,12 @@ func subAgentToolchainInventoryOnlyCommand(command string) bool {
 			return false
 		case "true", "head", "tail",
 			"uname", "nproc", "arch", "hostname", "id", "whoami", "pwd",
-			"getconf", "free", "df", "ls", "stat", "file":
+			"getconf", "free", "df", "ls", "stat", "file",
+			"select-string", "select-object":
 			// Viewers / env facts allowed only alongside real inventory segments.
+			continue
+		}
+		if subAgentWindowsPathInventorySegment(segment) {
 			continue
 		}
 		if subAgentDiagnosticProbeCommandSegment(segment) {
@@ -6038,7 +6886,7 @@ func subAgentWhichInventoryToolsInCommand(command string) []string {
 		}
 		for _, a := range args {
 			tok := strings.TrimSpace(normalizeShellCommandToken(a))
-			if tok == "" || strings.HasPrefix(tok, "-") {
+			if tok == "" || strings.HasPrefix(tok, "-") || isShellVerificationOutputRedirectionToken(tok) {
 				continue
 			}
 			name := commandNameBase(tok)
@@ -6094,6 +6942,7 @@ func subAgentSummaryLooksLikeCommandNotFound(summary string) bool {
 		"is not recognized",
 		"不是内部或外部命令",
 		"无法将", // PowerShell: 无法将“xxx”项识别为…
+		"could not find files for the given pattern",
 	} {
 		if strings.Contains(summary, marker) {
 			return true
@@ -6363,10 +7212,11 @@ func subAgentPathExistenceProbeCommand(command string) bool {
 		}
 		cmd := commandNameBase(segment[0])
 		switch cmd {
-		case "ls", "find", "stat", "test", "realpath", "readlink", "file":
+		case "ls", "find", "stat", "test", "realpath", "readlink", "file", "dir":
 			hasPathProbe = true
-		case "echo", "printf", "true", "false":
-			// Allowed as separators in compound probes.
+		case "echo", "printf", "true", "false", "cd", "pushd", "popd", "pwd", "head", "tail", "more":
+			// Allowed as separators / location changes / output viewers.
+			// `cd missing && file snake.exe` is still a missing-path inspect.
 		default:
 			return false
 		}
@@ -6384,9 +7234,16 @@ func normalizeShellCommandSegments(command string) (string, [][]string) {
 	return normalized, shellCommandSegments(normalized)
 }
 
-func summarizeSubAgentCreatedFileContextEvidence(filesCreated, filesRead []string, searches []CodingSubAgentSearchResult, dynamicTools []CodingSubAgentDynamicToolResult) string {
+func summarizeSubAgentCreatedFileContextEvidence(filesCreated, filesRead []string, searches []CodingSubAgentSearchResult, dynamicTools []CodingSubAgentDynamicToolResult, workspaceWasEmpty bool) string {
 	filesCreated = uniqueSortedSubAgentStrings(filesCreated)
 	if len(filesCreated) == 0 {
+		return ""
+	}
+	// New projects genuinely have no adjacent source files to inspect. The host
+	// inventory is collected before the model starts and is the authoritative
+	// evidence that this is a greenfield workspace, so do not manufacture a
+	// redundant tool call merely to satisfy the audit.
+	if workspaceWasEmpty {
 		return ""
 	}
 	contextReads := existingSubAgentModifiedFiles(filesRead, filesCreated)
@@ -6394,6 +7251,15 @@ func summarizeSubAgentCreatedFileContextEvidence(filesCreated, filesRead []strin
 		return ""
 	}
 	return "created files without inspection or project-context evidence"
+}
+
+func projectWorkspaceWasEmpty(projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return false
+	}
+	entries, err := os.ReadDir(projectPath)
+	return err == nil && len(entries) == 0
 }
 func countSuccessfulSubAgentInspectionDynamicTools(tools []CodingSubAgentDynamicToolResult) int {
 	count := 0
@@ -6674,10 +7540,10 @@ func summarizeSubAgentScopeEvidence(task *TaskItem, modelSummary string, filesMo
 		return ""
 	}
 	outside := subAgentFilesOutsidePlannedScope(changedFiles, task.Files)
-	if len(outside) == 0 || subAgentSummaryExplainsScopeExpansion(modelSummary, outside) {
+	if len(outside) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("changed files outside listed task scope without summary rationale: %s", compactSubAgentFileList(outside, 5))
+	return fmt.Sprintf("changed files outside listed task scope: %s", compactSubAgentFileList(outside, 5))
 }
 
 func subAgentFilesOutsidePlannedScope(changedFiles, plannedFiles []string) []string {
@@ -8139,7 +9005,21 @@ func subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd CodingSubAgentComman
 func subAgentCommandIsSoftFailure(cmd CodingSubAgentCommandResult) bool {
 	return subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) ||
 		subAgentCommandIsSoftInspectionProbeFailure(cmd) ||
-		subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd)
+		subAgentCommandIsSoftSilencedGitSelfCheckRejection(cmd) ||
+		subAgentWindowsMSVCQuotingSoftFailure(cmd)
+}
+
+// subAgentWindowsMSVCQuotingSoftFailure is a PowerShell-eaten vcvars path,
+// not a missing compiler or a failed compile. Later g++/cl success is the
+// real verification; this line must not keep the task failed.
+func subAgentWindowsMSVCQuotingSoftFailure(cmd CodingSubAgentCommandResult) bool {
+	if cmd.Succeeded || !isWindowsMSVCShellRecipe(cmd.Command) {
+		return false
+	}
+	if subAgentDiagnosticProbeFailureResultLooksHard(cmd.Summary) {
+		return false
+	}
+	return subAgentSummaryLooksLikeCommandNotFound(cmd.Summary)
 }
 
 func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
@@ -8159,7 +9039,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 			continue
 		}
 		if cmd.Succeeded && !subAgentCommandSuccessLooksEmpty(cmd) {
-			laterSucceeded[key] = true
+			recordSubAgentCommandSuccessResolutionKeys(laterSucceeded, cmd)
 			if isSubAgentVerificationCommand(cmd.Command) {
 				laterVerificationSucceeded = true
 			}
@@ -8168,7 +9048,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 		if !cmd.Succeeded && laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd) {
 			continue
 		}
-		if !laterSucceeded[key] && !subAgentCommandIsSoftFailure(cmd) {
+		if !subAgentCommandFailureResolvedByLaterSuccess(cmd, laterSucceeded) && !subAgentCommandIsSoftFailure(cmd) {
 			unresolvedReversed = append(unresolvedReversed, cmd)
 		}
 	}
@@ -8191,8 +9071,85 @@ func subAgentCommandFailureResolutionKey(cmd CodingSubAgentCommandResult) string
 	return key + "\x00" + workingDir
 }
 
+func recordSubAgentCommandSuccessResolutionKeys(keys map[string]bool, cmd CodingSubAgentCommandResult) {
+	if key := subAgentCommandFailureResolutionKey(cmd); key != "" {
+		keys[key] = true
+	}
+	if retryKey := subAgentCommandRetryResolutionKey(cmd); retryKey != "" {
+		keys[retryKey] = true
+	}
+}
+
+// subAgentCommandRetryResolutionKey recognizes retries of the same deletion
+// request when force/quiet switches are added. Those switches change
+// interaction behavior, not the file set targeted by del/erase. Keeping them
+// in the ordinary command key caused a successfully completed retry to leave
+// its interactive predecessor as an unresolved task failure.
+func subAgentCommandRetryResolutionKey(cmd CodingSubAgentCommandResult) string {
+	commandKey := normalizeSubAgentCommandForFailureResolution(cmd.Command)
+	if commandKey == "" {
+		return ""
+	}
+	fields := strings.Fields(commandKey)
+	deleteIndex := -1
+	for i, field := range fields {
+		if field == "del" || field == "erase" {
+			deleteIndex = i
+			break
+		}
+	}
+	if deleteIndex < 0 {
+		return ""
+	}
+	canonical := make([]string, 0, len(fields))
+	canonical = append(canonical, fields[:deleteIndex+1]...)
+	for _, field := range fields[deleteIndex+1:] {
+		if subAgentDeleteForceQuietSwitch(field) {
+			continue
+		}
+		canonical = append(canonical, field)
+	}
+	if len(canonical) == len(fields) {
+		return ""
+	}
+	canonicalKey := strings.Join(canonical, " ")
+	workingDir := normalizeSubAgentWorkingDirForEvidence(cmd.WorkingDir)
+	if workingDir != "" {
+		return canonicalKey + "\x00" + workingDir
+	}
+	return canonicalKey
+}
+
+func subAgentDeleteForceQuietSwitch(field string) bool {
+	field = strings.TrimSpace(strings.ToLower(field))
+	if field == "/f" || field == "/q" {
+		return true
+	}
+	if len(field) < 2 || field[0] != '/' {
+		return false
+	}
+	for _, flag := range field[1:] {
+		if flag != 'f' && flag != 'q' {
+			return false
+		}
+	}
+	return true
+}
+
+func subAgentCommandFailureResolvedByLaterSuccess(cmd CodingSubAgentCommandResult, laterSucceeded map[string]bool) bool {
+	key := subAgentCommandFailureResolutionKey(cmd)
+	if key == "" {
+		return false
+	}
+	if laterSucceeded[key] {
+		return true
+	}
+	retryKey := subAgentCommandRetryResolutionKey(cmd)
+	return retryKey != "" && laterSucceeded[retryKey]
+}
+
 func subAgentCommandFailureCanBeResolvedByLaterVerification(cmd CodingSubAgentCommandResult) bool {
-	if cmd.Succeeded || isSubAgentVerificationCommand(cmd.Command) {
+	if cmd.Succeeded {
 		return false
 	}
 	if subAgentDiagnosticProbeFailureResultLooksHard(cmd.Summary) {
@@ -8202,7 +9159,17 @@ func subAgentCommandFailureCanBeResolvedByLaterVerification(cmd CodingSubAgentCo
 	if command == "" {
 		return false
 	}
-	return subAgentDiagnosticProbeCommand(command)
+	// A later clean compile/test wins over shell-setup failures (vcvars
+	// quotes eaten, where.exe missing clang++). Real FAIL/LNK output stays.
+	if isSubAgentVerificationCommand(cmd.Command) {
+		return subAgentSummaryLooksLikeCommandNotFound(cmd.Summary)
+	}
+	// Unix ls/file/stat inventory is not the product check. A later cmake/go
+	// pass must win over PowerShell rejecting those tools.
+	return subAgentDiagnosticProbeCommand(command) ||
+		subAgentUnixInspectOnlyCommand(cmd.Command) ||
+		subAgentWindowsPythonInspectOnlyCommand(cmd.Command) ||
+		commandContainsSubAgentVerificationSegment(command)
 }
 
 func subAgentDiagnosticProbeFailureResultLooksHard(result string) bool {
@@ -8270,10 +9237,21 @@ func subAgentDiagnosticProbeCommandSegment(segment []string) bool {
 		return subAgentDiagnosticProbeArgsContain(args, "/s") && subAgentDiagnosticProbeArgsContain(args, "/b")
 	}
 	switch cmd {
-	case "get-command", "where", "where.exe", "vswhere", "get-childitem", "test-path", "select-object":
+	case "get-command", "where", "where.exe", "vswhere", "get-childitem", "test-path", "select-object", "select-string":
+		return true
+	}
+	if subAgentWindowsPathInventorySegment(segment) {
 		return true
 	}
 	return subAgentDiagnosticVersionProbeArgs(args)
+}
+
+func subAgentWindowsPathInventorySegment(segment []string) bool {
+	if len(segment) == 0 {
+		return false
+	}
+	joined := strings.ToLower(strings.Join(segment, " "))
+	return strings.Contains(joined, "env:path") && strings.Contains(joined, "-split")
 }
 
 func subAgentDiagnosticVersionProbeArgs(args []string) bool {
@@ -8344,7 +9322,7 @@ func subAgentDiagnosticProbeSecretArgConsumesValue(arg string) int {
 
 func subAgentDiagnosticBareProbeTool(cmd string) bool {
 	switch cmd {
-	case "cc", "gcc", "g++", "c++", "clang", "clang++", "cl":
+	case "cc", "gcc", "g++", "c++", "clang", "clang++", "cl", "cl.exe":
 		return true
 	}
 	return false
@@ -8882,8 +9860,16 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 	unsafeVerificationCommands := filterUnsafeSubAgentVerificationCommands(commands)
 	freshUnsafeVerificationCommands := filterFreshUnsafeSubAgentVerificationCommands(commands, lastEditSeq)
 	verificationCommands := filterFreshSubAgentVerificationCommands(commands, lastEditSeq)
-	if len(freshUnsafeVerificationCommands) > 0 {
-		return codingSubAgentQualityMissing, fmt.Sprintf("verification command used failure-suppressing shell syntax (%d command(s)); rerun test/build/lint/typecheck without || fallback, pipe filters, output redirection, or extra commands after the verifier", len(freshUnsafeVerificationCommands))
+	// Only a *successful* unsafe verifier poisons the gate (redirected/||/piped
+	// "pass"). A failed quoting/probe attempt must not hide a later clean compile.
+	successfulFreshUnsafe := make([]CodingSubAgentCommandResult, 0, len(freshUnsafeVerificationCommands))
+	for _, cmd := range freshUnsafeVerificationCommands {
+		if cmd.Succeeded && !subAgentUnsafeVerificationWasRecovered(cmd, commands, lastEditSeq) {
+			successfulFreshUnsafe = append(successfulFreshUnsafe, cmd)
+		}
+	}
+	if len(successfulFreshUnsafe) > 0 {
+		return codingSubAgentQualityMissing, fmt.Sprintf("verification command used failure-suppressing shell syntax (%d command(s)); rerun test/build/lint/typecheck without || fallback, pipe filters, output redirection, or extra commands after the verifier", len(successfulFreshUnsafe))
 	}
 	if len(verificationCommands) == 0 {
 		if len(commands) == 0 {
@@ -8937,6 +9923,22 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 		}
 	}
 	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条有效 bash 验证命令，未检测到未解决错误：%s", len(successful), compactSubAgentVerificationCommandList(successful))
+}
+
+func subAgentUnsafeVerificationWasRecovered(unsafe CodingSubAgentCommandResult, commands []CodingSubAgentCommandResult, lastEditSeq uint64) bool {
+	recovered := recoverSubAgentVerificationCommand(unsafe.Command)
+	if recovered == "" || unsafe.seq == 0 {
+		return false
+	}
+	for _, command := range commands {
+		if command.seq <= unsafe.seq || (lastEditSeq > 0 && command.seq < lastEditSeq) || !command.Succeeded {
+			continue
+		}
+		if strings.EqualFold(strings.Join(strings.Fields(command.Command), " "), strings.Join(strings.Fields(recovered), " ")) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSuccessfulSubAgentVerificationCommand(commands []CodingSubAgentCommandResult) bool {
@@ -9036,6 +10038,122 @@ func filterUnsafeSubAgentVerificationCommands(commands []CodingSubAgentCommandRe
 	return filtered
 }
 
+// recoverableSubAgentVerificationCommand turns a successful but non-auditable
+// display wrapper such as `g++ main.cpp 2>&1; echo "Exit code: $?"` into the
+// exact verifier that the host should rerun. It intentionally accepts only an
+// echo-style tail and only stderr-to-stdout merging; pipes, fallbacks, file
+// redirection, and arbitrary follow-up commands remain ineligible.
+func recoverableSubAgentVerificationCommand(commands []CodingSubAgentCommandResult, lastEditSeq uint64) string {
+	command, _ := recoverableSubAgentVerification(commands, lastEditSeq)
+	return command
+}
+
+// recoverableSubAgentVerification returns both the clean verifier and the
+// working directory in which the unsafe wrapper actually ran. Replaying from
+// the project root can change relative paths (for example `go test ./...` in
+// a package subdirectory), turning a successful verification into an unrelated
+// false failure.
+func recoverableSubAgentVerification(commands []CodingSubAgentCommandResult, lastEditSeq uint64) (command, workingDir string) {
+	for i := len(commands) - 1; i >= 0; i-- {
+		command := commands[i]
+		// seq==0 is retained for legacy callers/tests that do not have an
+		// event ledger. In a live ledger, however, an unsequenced command cannot
+		// prove that it ran after the last edit and must not be replayed.
+		if !command.Succeeded ||
+			(lastEditSeq > 0 && (command.seq == 0 || command.seq < lastEditSeq)) ||
+			!isUnsafeSubAgentVerificationCommand(command.Command) {
+			continue
+		}
+		if recovered := recoverSubAgentVerificationCommand(command.Command); recovered != "" {
+			return recovered, command.WorkingDir
+		}
+	}
+	return "", ""
+}
+
+func recoverSubAgentVerificationCommand(command string) string {
+	fields := shellCommandFields(command)
+	segment := make([]string, 0, len(fields))
+	for i, field := range fields {
+		token := normalizeShellCommandToken(field)
+		if token == "" {
+			continue
+		}
+		if isShellVerificationOutputRedirectionToken(token) {
+			return ""
+		}
+		if shellCommandStartsAfterToken(token, segment) {
+			if token != ";" && token != "&&" || !isSubAgentVerificationCommandSegment(segment) || !subAgentVerificationRecoveryTailIsHarmless(fields[i+1:]) {
+				return ""
+			}
+			candidate := strings.Join(stripShellRedirectionOnlyArgs(segment), " ")
+			if candidate != "" && !isUnsafeSubAgentVerificationCommand(candidate) && isSubAgentVerificationCommand(candidate) {
+				return candidate
+			}
+			return ""
+		}
+		segment = append(segment, token)
+	}
+	return ""
+}
+
+func subAgentVerificationRecoveryTailIsHarmless(segment []string) bool {
+	// A recovery candidate must have exactly one display-only command after
+	// the verifier.  Looking at only the first post-verifier segment would
+	// incorrectly bless `build; echo $?; rm -rf ...`: the clean rerun itself
+	// is safe, but the original command contains an independently unsafe
+	// follow-up and must remain an audit failure.
+	for _, field := range segment {
+		token := normalizeShellCommandToken(field)
+		if isShellCommandBoundary(token) || isShellVerificationOutputRedirectionToken(token) {
+			return false
+		}
+		// A quoted argument still permits command substitution. Recovery is only
+		// for inert status display, so reject shell metasyntax rather than trying
+		// to prove a display string has no side effects.
+		if strings.ContainsAny(token, "`|;&<>") || strings.Contains(token, "$(") || strings.Contains(token, "${") {
+			return false
+		}
+	}
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 {
+		return false
+	}
+	switch commandNameBase(segment[0]) {
+	case "echo", "write-output", "printf":
+		// Recovery is deliberately narrow: it is for wrappers added only to
+		// display the prior command's exit status, not arbitrary logging after
+		// a verifier. The extracted verifier is always rerun directly.
+		tail := strings.ToLower(strings.Join(segment[1:], " "))
+		return strings.Contains(tail, "$?") ||
+			strings.Contains(tail, "$lastexitcode") ||
+			strings.Contains(tail, "exit code") ||
+			strings.Contains(tail, "exit_code") ||
+			strings.Contains(tail, "exit status")
+	default:
+		return false
+	}
+}
+
+func (c *codingSubAgentCallbacks) recoverableVerification() (command, workingDir string) {
+	if c == nil {
+		return "", ""
+	}
+	return recoverableSubAgentVerification(c.getCommandsRun(), c.lastEditSequence())
+}
+
+// normalizeSubAgentVerificationCommandForExecution mirrors the host's
+// Windows compile→run repair before the command reaches PowerShell/cmd. The
+// command ledger can therefore distinguish the model's text from the command
+// whose exit status we actually observed, preventing false quality failures
+// caused by a safe host-side normalization.
+func normalizeSubAgentVerificationCommandForExecution(command string) string {
+	if runtime.GOOS != "windows" {
+		return command
+	}
+	return rewriteWindowsCompileThenRunSemicolon(command)
+}
+
 func isUnsafeSubAgentVerificationCommand(command string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
 	// Shell safety rules apply to actual build/test/lint/typecheck (or project
@@ -9071,11 +10189,18 @@ func suppressesVerificationFailure(normalizedCommand string) bool {
 	fields := shellCommandFields(normalizedCommand)
 	var segment []string
 	sawVerification := false
+	lastCompilerOutput := ""
 	flushSegment := func() {
 		if isSubAgentVerificationCommandSegment(segment) {
 			sawVerification = true
+			if out := cCompilerOutputBinary(segment); out != "" {
+				lastCompilerOutput = out
+			}
 		}
 		segment = nil
+	}
+	compileThenRunOK := func(next []string) bool {
+		return verificationChainMayContinue(lastCompilerOutput, next)
 	}
 	for i := 0; i < len(fields); i++ {
 		token := normalizeShellCommandToken(fields[i])
@@ -9091,8 +10216,7 @@ func suppressesVerificationFailure(normalizedCommand string) bool {
 				return true
 			}
 			if sawVerification && token == "&&" && i+1 < len(fields) {
-				nextSegment := commandSegmentFields(fields[i+1:])
-				if !isSubAgentVerificationCommandSegment(nextSegment) {
+				if !compileThenRunOK(commandSegmentFields(fields[i+1:])) {
 					return true
 				}
 			}
@@ -9100,7 +10224,9 @@ func suppressesVerificationFailure(normalizedCommand string) bool {
 				return true
 			}
 			if sawVerification && token == ";" && i+1 < len(fields) {
-				return true
+				if !compileThenRunOK(commandSegmentFields(fields[i+1:])) {
+					return true
+				}
 			}
 			continue
 		}
@@ -9922,6 +11048,260 @@ func isRakeVerificationTask(task string) bool {
 
 func swiftRunsVerification(args []string) bool {
 	return firstArgIn(args, "test", "build")
+}
+
+func verificationChainMayContinue(lastCompilerOutput string, next []string) bool {
+	return isSubAgentVerificationCommandSegment(next) || segmentRunsNamedBinary(next, lastCompilerOutput)
+}
+
+// rewriteWindowsCompileThenRunSemicolon turns `cl ... ; .\hello.exe` into
+// `cl ... && .\hello.exe` so PowerShell 5.1 / cmd.exe cannot hide a failed
+// compile behind a leftover binary. Independent probes (`where a ; where b`)
+// and unsafe tails (`go test ; echo done`) stay on `;`.
+func rewriteWindowsCompileThenRunSemicolon(command string) string {
+	if prefix, inner, suffix, ok := splitWindowsShellWrapperPayload(command); ok {
+		rewritten := rewriteWindowsCompileThenRunSemicolon(inner)
+		if rewritten == inner {
+			return command
+		}
+		return prefix + rewritten + suffix
+	}
+	indexes := unquotedSemicolonIndexes(command)
+	if len(indexes) == 0 {
+		return command
+	}
+	var b strings.Builder
+	last := 0
+	changed := false
+	for _, idx := range indexes {
+		leftSegs := shellCommandSegments(command[last:idx])
+		right := commandSegmentFields(shellCommandFields(command[idx+1:]))
+		replace := false
+		if len(leftSegs) > 0 {
+			left := leftSegs[len(leftSegs)-1]
+			if isSubAgentVerificationCommandSegment(left) {
+				replace = verificationChainMayContinue(cCompilerOutputBinary(left), right)
+			}
+		}
+		b.WriteString(command[last:idx])
+		if replace {
+			b.WriteString("&&")
+			changed = true
+		} else {
+			b.WriteByte(';')
+		}
+		last = idx + 1
+	}
+	if !changed {
+		return command
+	}
+	b.WriteString(command[last:])
+	return b.String()
+}
+
+func splitWindowsShellWrapperPayload(command string) (prefix, inner, suffix string, ok bool) {
+	if prefix, inner, suffix, ok = splitPrefixedWindowsPayload(command, []string{
+		"cmd.exe /d /s /c",
+		"cmd /d /s /c",
+		"cmd.exe /c",
+		"cmd /c",
+	}); ok {
+		return prefix, inner, suffix, true
+	}
+	return splitPowerShellCommandPayload(command)
+}
+
+func splitPrefixedWindowsPayload(command string, prefixes []string) (prefix, inner, suffix string, ok bool) {
+	left := strings.TrimLeft(command, " \t")
+	if left == "" {
+		return "", "", "", false
+	}
+	pad := command[:len(command)-len(left)]
+	lower := strings.ToLower(left)
+	for _, p := range prefixes {
+		if !strings.HasPrefix(lower, p) {
+			continue
+		}
+		rest := left[len(p):]
+		if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
+			continue
+		}
+		inner = strings.TrimLeft(rest, " \t")
+		prefix = pad + left[:len(left)-len(inner)]
+		if q, body, endq, quoted := unquoteWindowsPayloadOnce(inner); quoted {
+			return prefix + q, body, endq, true
+		}
+		return prefix, inner, "", true
+	}
+	return "", "", "", false
+}
+
+func splitPowerShellCommandPayload(command string) (prefix, inner, suffix string, ok bool) {
+	left := strings.TrimLeft(command, " \t")
+	lower := strings.ToLower(left)
+	if !strings.HasPrefix(lower, "powershell") && !strings.HasPrefix(lower, "pwsh") {
+		return "", "", "", false
+	}
+	idx, flagLen := indexPowerShellCommandFlag(left)
+	if idx < 0 {
+		return "", "", "", false
+	}
+	pad := command[:len(command)-len(left)]
+	rest := strings.TrimLeft(left[idx+flagLen:], " \t")
+	prefix = pad + left[:len(left)-len(rest)]
+	if q, body, endq, quoted := unquoteWindowsPayloadOnce(rest); quoted {
+		return prefix + q, body, endq, true
+	}
+	return prefix, rest, "", true
+}
+
+func indexPowerShellCommandFlag(s string) (int, int) {
+	lower := strings.ToLower(s)
+	var quote rune
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			i += size
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			i += size
+			continue
+		}
+		if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' {
+			rest := lower[i:]
+			for _, flag := range []string{"-command", "/command", "-c", "/c"} {
+				if !strings.HasPrefix(rest, flag) {
+					continue
+				}
+				after := i + len(flag)
+				if after == len(s) || s[after] == ' ' || s[after] == '\t' || s[after] == '"' || s[after] == '\'' {
+					return i, len(flag)
+				}
+			}
+		}
+		i += size
+	}
+	return -1, 0
+}
+
+func unquoteWindowsPayloadOnce(s string) (q, body, endq string, ok bool) {
+	if len(s) < 2 {
+		return "", s, "", false
+	}
+	if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+		return s[:1], s[1 : len(s)-1], s[len(s)-1:], true
+	}
+	return "", s, "", false
+}
+
+func unquotedSemicolonIndexes(command string) []int {
+	var out []int
+	var quote rune
+	for i := 0; i < len(command); {
+		r, size := utf8.DecodeRuneInString(command[i:])
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			i += size
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			i += size
+			continue
+		}
+		if r == ';' {
+			out = append(out, i)
+		}
+		i += size
+	}
+	return out
+}
+
+func cCompilerOutputBinary(segment []string) string {
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 {
+		return ""
+	}
+	cmd := commandNameBase(segment[0])
+	switch cmd {
+	case "cc", "gcc", "g++", "c++", "clang", "clang++", "cl", "cl.exe":
+	default:
+		return ""
+	}
+	args := stripShellRedirectionOnlyArgs(segment[1:])
+	out := ""
+	sawSource := false
+	for i, arg := range args {
+		a := strings.Trim(strings.TrimSpace(normalizeShellCommandToken(arg)), `"'`)
+		if cCompilerArgLooksLikeSourceFile(a) {
+			sawSource = true
+		}
+		lower := strings.ToLower(a)
+		if strings.HasPrefix(lower, "/fe:") {
+			out = filepath.Base(a[4:])
+			continue
+		}
+		if strings.HasPrefix(lower, "/fe") && len(a) > 3 && a[3] != ':' && !strings.HasPrefix(a[3:], "/") {
+			out = filepath.Base(a[3:])
+			continue
+		}
+		if a == "-o" && i+1 < len(args) {
+			next := strings.Trim(strings.TrimSpace(normalizeShellCommandToken(args[i+1])), `"'`)
+			if next != "" && !strings.HasPrefix(next, "-") && !strings.HasPrefix(next, "/") {
+				out = filepath.Base(next)
+			}
+			continue
+		}
+		// Last -o wins, so -og / -ofast before -o hello.exe do not stick.
+		if strings.HasPrefix(a, "-o") && len(a) > 2 {
+			out = filepath.Base(a[2:])
+		}
+	}
+	if out != "" {
+		return out
+	}
+	if cmd == "cl" || cmd == "cl.exe" {
+		for _, arg := range args {
+			a := strings.Trim(strings.TrimSpace(normalizeShellCommandToken(arg)), `"'`)
+			if cCompilerArgLooksLikeSourceFile(a) {
+				base := filepath.Base(a)
+				return strings.TrimSuffix(base, filepath.Ext(base)) + ".exe"
+			}
+		}
+		return ""
+	}
+	if sawSource {
+		if runtime.GOOS == "windows" {
+			return "a.exe"
+		}
+		return "a.out"
+	}
+	return ""
+}
+
+func segmentRunsNamedBinary(segment []string, binary string) bool {
+	binary = strings.TrimSpace(binary)
+	segment = stripVerificationCommandPrefixes(segment)
+	if binary == "" || len(segment) == 0 {
+		return false
+	}
+	tok := strings.Trim(strings.TrimSpace(normalizeShellCommandToken(segment[0])), `"'`)
+	if tok == "" {
+		return false
+	}
+	got := strings.ToLower(filepath.Base(tok))
+	want := strings.ToLower(filepath.Base(binary))
+	if got == want {
+		return true
+	}
+	return strings.TrimSuffix(got, ".exe") == strings.TrimSuffix(want, ".exe")
 }
 
 func cCompilerRunsVerification(args []string) bool {
@@ -11868,9 +13248,10 @@ func subAgentVerificationOutcomeStatus(status codingSubAgentQualityStatus) codin
 }
 
 func (c *codingSubAgentCallbacks) OnToken(delta string) {
-	if c.subagent.onToken != nil {
+	if c != nil && c.subagent != nil && c.subagent.onToken != nil {
 		c.subagent.onToken(delta)
 	}
+	c.emitAssistantNoteDelta(delta)
 }
 
 func (c *codingSubAgentCallbacks) OnProgress(text string) {
@@ -11884,7 +13265,107 @@ func (c *codingSubAgentCallbacks) OnToolCall(name string) {
 	// executeToolWithOutcome, which the UI can compact into one live status row.
 }
 
-func (c *codingSubAgentCallbacks) emitToolStartedEvent(name string) {
+func (c *codingSubAgentCallbacks) emitAssistantNoteDelta(delta string) {
+	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
+		return
+	}
+	if strings.TrimSpace(delta) == "" {
+		return
+	}
+	c.noteMu.Lock()
+	c.noteBuf.WriteString(delta)
+	text := strings.TrimSpace(c.noteBuf.String())
+	ready := codingAssistantNoteReady(text, delta)
+	if !ready || (!c.lastNoteAt.IsZero() && time.Since(c.lastNoteAt) < 800*time.Millisecond) {
+		c.noteMu.Unlock()
+		return
+	}
+	text = compactCodingAssistantNote(text)
+	if text == "" {
+		c.noteBuf.Reset()
+		c.noteMu.Unlock()
+		return
+	}
+	c.noteBuf.Reset()
+	c.lastNoteAt = time.Now()
+	title := ""
+	if c.task != nil {
+		title = compactSubAgentTaskTitle(c.task.Title)
+	}
+	c.noteMu.Unlock()
+	c.emitAssistantNoteEvent(title, text)
+}
+
+func (c *codingSubAgentCallbacks) emitAssistantNoteEvent(title, text string) {
+	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
+		return
+	}
+	text = compactCodingAssistantNote(text)
+	if text == "" {
+		return
+	}
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
+	event.Event = codingAgentEventKindAssistantNote.String()
+	event.Detail = text
+	event.Summary = text
+	emitCodingAgentEvent(c.subagent.onProgress, event)
+}
+
+func codingAssistantNoteReady(text, delta string) bool {
+	if utf8.RuneCountInString(text) >= 80 {
+		return true
+	}
+	if utf8.RuneCountInString(text) < 12 {
+		return false
+	}
+	return strings.ContainsAny(delta, "\n。.!?")
+}
+
+func compactCodingAssistantNote(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if codingAssistantNoteLooksInternal(text) {
+		return ""
+	}
+	return truncateRunesForSubAgent(text, 160)
+}
+
+func codingAssistantNoteLooksInternal(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	if strings.HasPrefix(text, "##") || strings.Contains(text, "## ") {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, needle := range []string{
+		"质量审计",
+		"执行报告",
+		"验证结果",
+		"涉及文件",
+		"验证状态",
+		"探索状态",
+		"diff 自检",
+		"quality audit",
+		"execution report",
+		"计划执行结果",
+		"执行步骤",
+		"tool_call",
+		"<think>",
+		"</think>",
+	} {
+		if strings.Contains(text, needle) || strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "{") && (strings.Contains(lower, `"name"`) || strings.Contains(lower, "tool")) {
+		return true
+	}
+	return false
+}
+
+func (c *codingSubAgentCallbacks) emitToolStartedEvent(name, argsJSON string) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -11895,6 +13376,8 @@ func (c *codingSubAgentCallbacks) emitToolStartedEvent(name string) {
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
 	event.Event = codingAgentEventKindToolStarted.String()
 	event.Detail = strings.TrimSpace(name)
+	event.Command = codingToolEventCommand(name, argsJSON)
+	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
@@ -11975,6 +13458,8 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	event.Event = codingAgentEventKindToolFinished.String()
 	event.Detail = strings.TrimSpace(name)
 	event.Command = codingToolEventCommand(name, argsJSON)
+	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
+	attachCodingToolFileChanges(&event, name, argsJSON, c.getDiffStat())
 	event.Outcome = string(outcome)
 	if outcome != codingToolOutcomeSuccess {
 		event.Summary = compactCodingToolResultSummary(result)
@@ -12001,6 +13486,145 @@ func codingToolEventCommand(name, argsJSON string) string {
 	}
 	command, _ := args["command"].(string)
 	return strings.TrimSpace(redactCodingSubAgentFreeformLogText(command))
+}
+
+func codingToolEventFiles(name, argsJSON, projectRoot string) []string {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return nil
+	}
+	path := firstNonEmptySubAgentString(
+		codingToolEventArgString(args, "path"),
+		codingToolEventArgString(args, "file"),
+		codingToolEventArgString(args, "file_path"),
+		codingToolEventArgString(args, "filename"),
+		codingToolEventArgString(args, "target_path"),
+	)
+	if path == "" {
+		return nil
+	}
+	return []string{codingAgentDisplayPath(path, projectRoot)}
+}
+
+// codingAgentDisplayPath is the trail/preview path: repo-relative slashes when
+// the file is inside projectRoot. Absolute leftovers stay intact so preview
+// and diff matching can still resolve them; the GUI shortens those for display.
+func codingAgentDisplayPath(path, projectRoot string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	display := codingAgentNormalizeSlashPath(path)
+	root := codingAgentNormalizeSlashPath(projectRoot)
+	if rel, ok := codingAgentRelativizeSlash(display, root); ok {
+		display = rel
+	}
+	display = strings.TrimPrefix(display, "./")
+	if display == "" || display == "." {
+		display = strings.ReplaceAll(filepath.Base(strings.ReplaceAll(path, "/", string(filepath.Separator))), "\\", "/")
+	}
+	return compactSubAgentPathText(display)
+}
+
+func codingAgentNormalizeSlashPath(path string) string {
+	path = strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	if path == "" {
+		return ""
+	}
+	drive := ""
+	abs := strings.HasPrefix(path, "/")
+	if len(path) >= 2 && path[1] == ':' {
+		drive = strings.ToUpper(path[:2])
+		path = path[2:]
+		if strings.HasPrefix(path, "/") {
+			abs = true
+			path = path[1:]
+		} else {
+			abs = false
+		}
+	} else if abs {
+		path = strings.TrimPrefix(path, "/")
+	}
+	parts := strings.Split(path, "/")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+				continue
+			}
+			if !abs && drive == "" {
+				out = append(out, "..")
+			}
+		default:
+			out = append(out, part)
+		}
+	}
+	joined := strings.Join(out, "/")
+	switch {
+	case drive != "" && abs && joined == "":
+		return drive + "/"
+	case drive != "" && abs:
+		return drive + "/" + joined
+	case drive != "" && joined == "":
+		return drive
+	case drive != "":
+		return drive + "/" + joined
+	case abs:
+		return "/" + joined
+	default:
+		return joined
+	}
+}
+
+func codingAgentHasDriveLetter(path string) bool {
+	return len(path) >= 2 && path[1] == ':' && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
+}
+
+func codingAgentRelativizeSlash(path, root string) (string, bool) {
+	if path == "" || root == "" || root == "." {
+		return "", false
+	}
+	// Windows paths are case-insensitive. Remote Linux paths are not —
+	// folding /opt/App onto /opt/app would invent a file that is not there.
+	ignoreCase := codingAgentHasDriveLetter(path) || codingAgentHasDriveLetter(root)
+	equal := path == root
+	if ignoreCase {
+		equal = strings.EqualFold(path, root)
+	}
+	if equal {
+		base := filepath.Base(strings.ReplaceAll(path, "/", string(filepath.Separator)))
+		if base == "" || base == "." || base == string(filepath.Separator) {
+			return path, true
+		}
+		return strings.ReplaceAll(base, "\\", "/"), true
+	}
+	prefix := root
+	if !strings.HasSuffix(root, "/") {
+		prefix += "/"
+	}
+	if ignoreCase {
+		if !strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix)) {
+			return "", false
+		}
+	} else if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	if len(path) <= len(prefix) {
+		return "", false
+	}
+	return path[len(prefix):], true
+}
+
+func codingToolEventArgString(args map[string]interface{}, key string) string {
+	if args == nil {
+		return ""
+	}
+	value, _ := args[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func compactCodingToolResultSummary(result string) string {
@@ -12199,12 +13823,48 @@ func (c *codingSubAgentCallbacks) emitDiffUpdatedEvent(path string, count int) {
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
 	event.Event = codingAgentEventKindDiffUpdated.String()
 	path = strings.TrimSpace(path)
-	if path != "" {
-		event.Detail = fmt.Sprintf("%s (%d)", compactSubAgentPathText(path), count)
-	} else {
+	display := compactSubAgentPathText(path)
+	if display == "" {
 		event.Detail = fmt.Sprintf("%d files", count)
+	} else {
+		added, removed := c.fileDiffStat(display)
+		event.Detail = formatCodingAgentEditedFileCard(display, added, removed)
+		event.Files = []string{display}
+		event.Added = added
+		event.Removed = removed
+		if added > 0 || removed > 0 {
+			event.FileChanges = []CodingAgentFileChange{{Path: display, Added: added, Removed: removed}}
+		}
 	}
+	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)
+}
+
+func (c *codingSubAgentCallbacks) fileDiffStat(path string) (added, removed int) {
+	stat := c.getDiffStat()
+	if stat == nil {
+		return 0, 0
+	}
+	want := strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	base := filepath.Base(want)
+	for _, file := range stat.FileStats {
+		got := strings.ReplaceAll(strings.TrimSpace(file.Path), "\\", "/")
+		if got == want || filepath.Base(got) == base {
+			return file.Insertions, file.Deletions
+		}
+	}
+	return 0, 0
+}
+
+func formatCodingAgentEditedFileCard(path string, added, removed int) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "Edited file"
+	}
+	if added > 0 || removed > 0 {
+		return fmt.Sprintf("Edited %s (+%d -%d)", path, added, removed)
+	}
+	return "Edited " + path
 }
 
 func (c *codingSubAgentCallbacks) emitDiffSummaryEvent(filesModified, filesCreated []string, diffSummary string) {
@@ -12219,7 +13879,7 @@ func (c *codingSubAgentCallbacks) emitDiffSummaryEvent(filesModified, filesCreat
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	emitCodingAgentEvent(c.subagent.onProgress, newCodingAgentDiffSummaryEvent(c.task, title, snapshot))
+	emitCodingAgentEvent(c.subagent.onProgress, newCodingAgentDiffSummaryEventWithStat(c.task, title, snapshot, c.getDiffStat()))
 }
 
 func (c *codingSubAgentCallbacks) emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated []string) {
@@ -12434,7 +14094,11 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 			b.WriteString(compactSubAgentTaskDescription(c.task.Description))
 			b.WriteString("\n\n")
 		}
-		appendCodingSubAgentOperationalChecklist(&b)
+		if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+			appendCodingSubAgentCompatibilityChecklist(&b)
+		} else {
+			appendCodingSubAgentOperationalChecklist(&b)
+		}
 		if len(c.prevOutputs) > 0 {
 			b.WriteString("**前置任务上下文**（可用来定位已生成的可执行文件）：\n")
 			appendSubAgentBulletList(&b, c.prevOutputs, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
@@ -12447,14 +14111,18 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		b.WriteString(compactSubAgentTaskDescription(c.task.Description))
 		b.WriteString("\n\n")
 	}
-	appendCodingSubAgentPreflightChecklist(&b)
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		appendCodingSubAgentCompatibilityChecklist(&b)
+	} else {
+		appendCodingSubAgentPreflightChecklist(&b)
+	}
 	if len(c.prevOutputs) > 0 {
 		b.WriteString("**前置任务上下文**：\n")
 		appendSubAgentBulletList(&b, c.prevOutputs, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
 		b.WriteString("\n")
 	}
 	if len(c.task.Files) > 0 {
-		b.WriteString("**涉及文件**：\n")
+		b.WriteString("**Files in scope**:\n")
 		appendSubAgentBulletList(&b, c.task.Files, codingSubAgentTaskFilesMax, codingSubAgentPromptBulletMaxRunes)
 		b.WriteString("\n")
 	}
@@ -12464,6 +14132,21 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 		b.WriteString("\n**验收验证要求**：将最终验证命令或检查结果对应到上述验收标准；无法自动验证的标准必须说明原因，不要只笼统声称完成。\n")
 	}
 	return compactCodingSubAgentTaskUserMessage(b.String())
+}
+
+// appendCodingSubAgentCompatibilityChecklist mirrors the only currently
+// renderable model surface. Keep effectful legacy names out of this user
+// message too; system-prompt alignment alone cannot prevent ghost calls when a
+// later user-message checklist asks the model to perform unavailable work.
+func appendCodingSubAgentCompatibilityChecklist(b *strings.Builder) {
+	if b == nil {
+		return
+	}
+	b.WriteString("**当前安全兼容模式**：\n")
+	b.WriteString("1. 先做只读检索并给出可核查的路径、符号和结论；存在 .codegraph/ 时优先 code_navigation / CodeGraph。\n")
+	b.WriteString("2. 本轮不能直接执行实现、运行验证、派生子任务或提交结构化定位结果；不要尝试猜测未列出的工具。\n")
+	b.WriteString("3. 若任务需要这些操作，说明已收集的证据，并给出可由后续相关执行工作流完成的最小步骤。\n")
+	b.WriteString("4. 若本轮列出了 todo_write，只能携带定义中的 expected_revision 和 expected_version 更新清单；过期结果必须重新读取状态。\n\n")
 }
 
 func compactCodingSubAgentTaskUserMessage(message string) string {
@@ -12483,7 +14166,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
 	b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code.\n")
 	b.WriteString("\n**Before finalizing**:\n")
 	b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
-	b.WriteString("2. Make the final summary match audit evidence: name actual modified/created file paths, list only verification commands you really ran after editing, map acceptance criteria when present, explain any scope expansion, and include remaining risk or say no known remaining risk.\n\n")
+	b.WriteString("2. Write the final answer as an engineer: lead with the result, name real files and verification commands in prose, and mention remaining risk only when it is real. Do not emit audit headings.\n\n")
 }
 
 func appendCodingSubAgentOperationalChecklist(b *strings.Builder) {
@@ -12510,6 +14193,12 @@ func codingTaskRequestKind(task *TaskItem) codingRequestKind {
 }
 
 func codingTaskLooksOperational(task *TaskItem) bool {
+	// Operational means run/build/demo without changing files. A workspace
+	// wipe is file mutation; treating it as operational sends the model to
+	// launch leftover binaries and lets launch/build quality pass the wrong job.
+	if codingTaskLooksWorkspaceClear(task) {
+		return false
+	}
 	return codingTaskRequestKind(task) == codingRequestOperational
 }
 
@@ -12522,6 +14211,13 @@ func codingTaskLooksInquiry(task *TaskItem) bool {
 // carried with the task; subagents never re-infer intent from task wording.
 func codingTaskShouldEnableSourcePreview(task *TaskItem) bool {
 	return codingTaskRequestKind(task) == codingRequestImplementation
+}
+
+func summarizeOperationalSubAgentQualityForTask(task *TaskItem, audit codingSubAgentAudit, result agent.LoopResult) (codingSubAgentQualityStatus, string, int) {
+	if codingTaskLooksWorkspaceClear(task) {
+		return codingSubAgentQualityFailed, "workspace clear must not pass as operational launch/build", 1
+	}
+	return summarizeOperationalSubAgentQuality(audit, result)
 }
 
 // summarizeOperationalSubAgentQuality requires a successful launch/build-style
@@ -12874,6 +14570,7 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 		QualityStatus:  codingSubAgentQualityPassed,
 		QualitySummary: "inspection-only nested role",
 		Localization:   cb.localization.snapshot(),
+		HorizonOwned:   s.horizonPosture,
 	}
 }
 
@@ -12896,7 +14593,27 @@ func codingSubAgentUserContent(s *CodingSubAgent, userText string) interface{} {
 	if protocol == "" {
 		protocol = "openai"
 	}
-	return agent.BuildUserContent(userText, s.attachments, protocol, cfg.SupportsVision, imageTextFromAttachment, nil)
+	return agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(
+		userText,
+		s.attachments,
+		protocol,
+		cfg.SupportsVision,
+		imageTextFromAttachment,
+		nil,
+		"",
+		codingSubAgentOfficeReadConfig(s),
+		cfg.EffectiveContextTokens(),
+	)
+}
+
+// codingSubAgentOfficeReadConfig snapshots the host policy for the one
+// attachment payload. The primary GUI agent already does this through its
+// request path; coding subagents need the same explicit, routed-model budget.
+func codingSubAgentOfficeReadConfig(s *CodingSubAgent) agent.OfficeReadConfig {
+	if s != nil && s.handler != nil && s.handler.app != nil {
+		return guiOfficeReadConfig(s.handler.app.peekConfigOrEmpty())
+	}
+	return agent.OfficeReadConfig{}
 }
 
 func hasCodingImageAttachment(atts []agent.MessageAttachment) bool {
@@ -12952,18 +14669,21 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 func buildFullCodingEnvironmentPromptPreamble() string {
 	return `## 全功能编程环境（Full Coding Workbench）
 你运行在与 Claude Code / Codex 同级目标的完整编程工作台中（同一模型下追求同等工程能力）：
-- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime、goal（长时目标 complete/fail/get），以及任务相关的 Skill（manage_skill）与 MCP（call_mcp_tool）。
-- 工作区根目录已绑定；下方「工作区概览」是进门自动探查结果，请先消化再深入探索。
-- 默认自主探索与实现：不要等待用户再发「去了解项目」；需要时主动 list/Glob/ripgrep/read。
+- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime、goal（长时目标 complete/fail/get），以及本轮工具列表中实际出现的受管扩展函数。
+- 不得猜测或调用 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。若未出现扩展函数，继续使用静态工具或说明需要重新规划。
+- 工作区根目录已绑定；下方「工作区概览」是宿主 os.ReadDir 的权威顶层清单，请先消化再深入探索。
+- 禁止仅用 python/python3/os.listdir/ls/dir 复核顶层是否为空；失败的列目录命令不能当成「目录为空」。深入文件用 list_directory / read_file / glob。
+- 默认自主探索与实现：不要等待用户再发「去了解项目」；需要时主动 list_directory/Glob/ripgrep/read。
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
 - 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。纯仓内逻辑问题可以不联网，但必须在 report_localization 中说明理由。
 - 子代理（Codex 风格）：复杂/可并行工作时用 spawn_coding_agent 派生子代理。
   - explorer：只读探查（搜索/阅读），返回结构化发现
-  - worker：干净上下文实现/修复（不可再嵌套 spawn）
-  - reviewer：只读+shell+git_diff 审查验证，不写文件
-  - 可 agents[] 最多 3 路：仅全部为 explorer 时并行；含 worker/reviewer 时顺序执行（避免并发写冲突）
+  - worker：隔离 git worktree / 远程 isolate 实现/修复；必须声明 files 写集合；不可再嵌套 spawn
+  - reviewer：只读审查（含 git_diff），不写文件
+  - 可 agents[] 最多 3 路：全部为 explorer/reviewer 时可并行
+  - 本地恰好 2 个 worker 且 files 不重叠时可并行执行，合并仍顺序；远程 worker 一律顺序；写集合重叠或与 explorer 混发则顺序执行
 - 保持工程师纪律：最小必要改动、验证优先、完成后 diff 与风险说明。
 
 `
@@ -12974,9 +14694,9 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 func buildNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套实现子代理（Nested Worker）
 你是全功能编程工作台派发的实现子代理（干净上下文）：
-- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime，以及任务相关的 Skill / MCP。
+- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
 - 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
-- 最小必要改动；工具失败时换策略；完成后说明改动与验证结果。
+- 最小必要改动；工具失败时换策略；完成后用工程师短文说明改了什么以及实际跑过的验证，不要写审计标题。
 
 `
 }
@@ -13034,6 +14754,9 @@ func probeCodingWorkspace(projectPath string) string {
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("- 根路径: %s\n", projectPath))
+	if len(dirs)+len(files) == 0 {
+		b.WriteString("- 顶层: 空（宿主 os.ReadDir）\n")
+	}
 	if len(stackHints) > 0 {
 		// de-dup hints
 		seen := map[string]bool{}
@@ -13059,7 +14782,22 @@ func probeCodingWorkspace(projectPath string) string {
 	if len(dirs)+len(files) >= maxEntries {
 		b.WriteString("- （条目已截断；需要时用 list_directory / Glob 继续探查）\n")
 	}
+	b.WriteString("- 顶层清单以本概览为准；深入用 list_directory / read_file / glob，不要用 python3/os.listdir 复核。失败的列目录不能当成目录为空。\n")
 	return strings.TrimSpace(b.String())
+}
+
+func appendCodingWorkspaceProbe(prompt *string, c *codingSubAgentCallbacks) {
+	if prompt == nil || c == nil || c.subagent == nil {
+		return
+	}
+	if strings.Contains(*prompt, "## 工作区概览") {
+		return
+	}
+	probe := probeCodingWorkspace(c.subagent.projectPath)
+	if probe == "" {
+		return
+	}
+	*prompt += "\n## 工作区概览（宿主 ReadDir，权威）\n" + probe + "\n"
 }
 
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
@@ -13079,7 +14817,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 
 ## 禁止
 - 为通过审计而伪造文件改动或添加无关测试。
-- 破坏性删除/Git 改写命令（reset --hard、clean -f、rm -rf 等）。
+- 擅自执行破坏性删除/Git 改写命令（reset --hard、clean -f、rm -rf 等）。运行/演示任务不得清空或改写项目文件。
 - 只回复文字而不调用工具。
 
 ## 完成标准
@@ -13088,7 +14826,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 		b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
 		if normalizedRemotePlatform() == "windows" {
 			b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
-			b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；普通命令用 `;` 分隔；需要 cmd 语义时用 `cmd /c \"...\"`，并用 working_dir 指定目录。\n")
+			b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；互相独立的命令用 `;` 分隔；编译/测试后立刻运行必须用 `&&`（宿主会保留失败短路）；需要 cmd 语义时用 `cmd /c \"...\"`，并用 working_dir 指定目录。\n")
 			b.WriteString(formatWindowsMSVCToolchainHint(detectWindowsMSVCToolchain()))
 			b.WriteString("\n")
 		} else {
@@ -13111,6 +14849,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(`你是一个专注的编码执行器。目标是像资深工程师一样：先定位和理解，再做最小改动，最后验证并说明风险。
 `)
 	b.WriteString(codingAgentTodoPromptSection)
+	b.WriteString(codingAgentTodoControlPlanePromptSection)
 	b.WriteString(`
 ## 工作流
 - 如果项目根目录存在 .codegraph/，先用 bash 运行 codegraph explore / codegraph node 定位相关符号、调用链和文件；如果没有索引，再用 Glob / ripgrep 定位相关代码，并用 read_file 阅读当前内容。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
@@ -13118,33 +14857,37 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
 - write_file 只用于创建新文件，或在用户/仓库流程明确要求时追加 TEST_REPORT.md。
 - bash 用于测试、构建、lint、typecheck、调试命令；长命令必须设置 timeout，working_dir 必须在项目路径内。
-- 需要辅助能力时使用 manage_skill / call_mcp_tool（若已提供）；不要假设用户会手动再安装工具。
+- 需要辅助能力时使用本轮提供的受限 Skill/MCP 函数别名（若已提供）；不要假设用户会手动再安装工具。
 
 ## 验证优先流程
 1. 能自动化覆盖的行为变更，应添加或更新聚焦测试；无法合理自动化时，在总结中说明原因。
-2. 修改后运行匹配的验证命令（test/build/lint/typecheck），失败时分析错误后再修复。
+2. 修改后运行匹配的验证命令（test/build/lint/typecheck），失败时分析错误后再修复。编译/链接失败必须在本回合改命令或改代码后重跑。
 3. 完成前调用 git_diff 自检，确认改动范围符合任务要求。若项目不是 Git 仓库，说明该情况并依赖文件审计列表，不要用 bash 反复跑 git status/diff/log，也不要对 git 自检加 2>/dev/null。
 4. 只在用户明确要求或仓库已有流程要求时，才追加 TEST_REPORT.md；不要默认制造报告文件。
 
 ## 禁止行为
-- 禁止执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。
+- 禁止擅自执行破坏性删除、清理或 Git 工作区/索引/历史改写命令，例如 git reset --hard、git checkout --、git checkout .、git restore、git switch、git merge/rebase/stash、git add/commit/apply/cherry-pick/revert/rm/mv/update-index/read-tree、git clean -f、rm -rf、Remove-Item -Recurse、rmdir /s、del /s。若当前任务原文明确要求清空或删除项目路径内的文件，或明确要求改写 Git 工作区，必须调用 bash（working_dir 设为项目路径）；宿主会弹出确认，或在「完全控制」下自动放行。禁止只回复文字拒绝而不调用工具。
 - 禁止对 git status/diff/log 自检使用 2>/dev/null 或 >/dev/null 掩盖错误输出。
 - 禁止不读文件就直接修改；禁止无关重构、无关格式化、依赖 churn 或 speculative feature work。
-- 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。
+- 遇到无法解决的问题，说明具体原因，不要反复重试相同的失败操作。编译失败先改命令再重跑。
 `)
 
 	b.WriteString(fmt.Sprintf(`
 ## Single-task contract
 - Work only on the assigned task. Avoid broad refactors, unrelated formatting, dependency churn, or speculative feature work; keep edits small and reviewable.
 - If verification fails because of unrelated pre-existing errors, report the exact blocker with file/line when available.
-- Before the final answer, inspect the diff, summarize created/modified files, list verification commands, and call out remaining risk.
+
+## Final answer
+- Lead with the result in 1-3 sentences.
+- Mention created or modified paths in prose or a short list; do not use audit headings such as 文件变更 / 质量审计 / 探索状态 / 验证状态 / 验证结果 / 涉及文件 / 执行报告.
+- State verification as a fact when you ran it, for example go test ./pkg passed. Do not invent EXPLORED / PASS / FAILED banners.
+- Call out remaining risk only when there is a real residual risk. Do not pad with "no known remaining risk".
 
 ## Quality audit gates
 - Enforced hard gates: explore before existing-file edits, verify changed tasks, run git_diff, and give inspection/verification evidence for no-change tasks or project-context evidence for new files.
+	- The host already supplies an authoritative workspace inventory, including an explicit empty-directory result. For a greenfield task in an empty workspace, that inventory is sufficient project-context evidence; do not run a redundant search solely to satisfy an audit gate.
 	- Bug fixes: localize with code_navigation, reproduction and alternatives, make an explicit research decision, then report_localization before editing. Unknown/current/third-party facts require web_search (exact error + component/version) and authoritative sources.
-- Verification evidence must be fresh after the final edit, include real execution output, and be named in the final summary with pass/fail outcome.
-- Empty/weak evidence does not count: blank, "(无输出)", "no tests found", "no tests collected", "[no test files]", "0 tests", "0 examples", list/help/collect-only/dry-run.
-- Final summary: actual modified/created file paths, only verification commands really run/passed, map every acceptance criterion, scope expansion, remaining risk/no known remaining risk.
+- Verification evidence must be fresh after the final edit and include real execution output. Empty/weak evidence does not count: blank, "(无输出)", "no tests found", "no tests collected", "[no test files]", "0 tests", "0 examples", list/help/collect-only/dry-run.
 
 ## Tool-call JSON reliability
 - Keep every tool_call arguments JSON complete and valid. If write_file content exceeds about 6000 chars, split it into chunks: first mode="overwrite", then mode="append".
@@ -13152,8 +14895,8 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - If write_file JSON was invalid/incomplete, retry smaller chunks. Treat tool error text as authoritative recovery guidance; do not repeat an identical failed tool call or command. If the same target fails, change the approach before retrying.
 
 ## Command guardrails
-- Do not run Git commands that rewrite or move worktree/index/history state: reset, checkout, restore, switch, merge, rebase, stash, add, commit, apply, am, cherry-pick, revert, rm, mv, update-index, read-tree, or clean -f. Read-only status/diff/log are allowed.
-- Do not run recursive or forceful delete commands such as rm -r/-rf, Remove-Item -Recurse/-r/-rf, ri -r, rd/rmdir /s, del /s, or erase /s. Use edit_file/edit_lines/write_file for scoped file changes.
+- Do not unilaterally run Git commands that rewrite or move worktree/index/history state: reset, checkout, restore, switch, merge, rebase, stash, add, commit, apply, am, cherry-pick, revert, rm, mv, update-index, read-tree, or clean -f. Read-only status/diff/log are allowed.
+- Do not unilaterally run recursive or forceful delete commands such as rm -r/-rf, Remove-Item -Recurse/-r/-rf, ri -r, rd/rmdir /s, del /s, or erase /s. Use edit_file/edit_lines/write_file for scoped file changes. If the current task text explicitly asks to clear or delete files inside the project path, or to rewrite the Git worktree, call bash with working_dir set to the project path so the host can prompt or honor Full Control. Do not refuse in prose without a tool call. Never target /, a drive root, the user home directory, or a path outside the project.
 - Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, Node fs write/copy/rename/rm/mkdir APIs, Python open(..., "w")/Path write/touch/rename/remove APIs, or dd of=. Use the file editing tools instead.
 - Verification wrappers timeout/gtimeout, env/cross-env/time, cmd /c, powershell -Command, bash -lc are OK only when the wrapped command runs tests/build/lint/typecheck.
 - Do not use failure-suppressing or non-auditable verification shells: no || true, pipes, output redirection, help/list/collect-only flags, watch/UI modes, mutating flags such as --fix/--write, or chained post-verification commands.
@@ -13164,7 +14907,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	// Platform hint so the LLM generates correct shell commands.
 	b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
 	if normalizedRemotePlatform() == "windows" {
-		b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；普通命令用 `;` 分隔，避免 bash-only 语法如 `mkdir -p`；需要 cmd 语义（vcvars+cl、`||`、`2>nul`）时用 `cmd /c \"...\"`，并用 working_dir 指定目录；不要在既有 build 目录中切换 CMake generators。\n")
+		b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；互相独立的命令用 `;` 分隔，避免 bash-only 语法如 `mkdir -p`；编译/测试后立刻运行必须用 `&&`（宿主会保留失败短路）；需要 cmd 语义（`||`、`2>nul`）时用 `cmd /c \"...\"`，并用 working_dir 指定目录；不要在既有 build 目录中切换 CMake generators。不要再包一层 vcvars。仅含 ls/file/stat 或 python -c os.listdir 的探活由宿主改写成 Get-ChildItem；不要用 python3 列目录，也不要把 Unix file(1) 或坏掉的 pythoncore 当成验收。\n")
 		// Host-side vswhere detection — stop the agent from claiming VS is missing
 		// when only cl.exe is absent from the default PATH (normal for MSVC).
 		b.WriteString(formatWindowsMSVCToolchainHint(detectWindowsMSVCToolchain()))
@@ -13330,7 +15073,9 @@ var (
 
 // codingSubAgentDynamicToolNames lists tools that are conditionally available
 // in the SubAgent (injected based on task context, not always present).
-// These bypass the static tool name check in executeToolWithOutcome.
+// Legacy Skill/MCP names remain only so direct host-maintenance helpers can
+// produce a controlled rejection; BuildTools never exposes them and model
+// callbacks reject them before this allowlist is reached.
 var codingSubAgentDynamicToolNames = map[string]bool{
 	"manage_skill":              true,
 	"call_mcp_tool":             true,
@@ -13477,19 +15222,6 @@ func buildCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
 			},
 		},
 	}
-}
-
-func buildCodingExternalResearchToolDefinitions() []map[string]interface{} {
-	all := buildCodingFullEnvExtraToolDefinitions()
-	out := make([]map[string]interface{}, 0, 2)
-	for _, def := range all {
-		fn, _ := def["function"].(map[string]interface{})
-		name, _ := fn["name"].(string)
-		if name == "web_search" || name == "web_fetch" {
-			out = append(out, def)
-		}
-	}
-	return out
 }
 
 // buildCodingGoalToolDefinition exposes persistent /goal lifecycle actions to
@@ -13793,7 +15525,16 @@ func runTaskWithSubAgentRuntimeOptions(
 		cfg = handler.applyCodingRoutePreference(userID, cfg, hasImages)
 	}
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
-	sa.SetCallbacks(onToken, onProgress)
+	// Production desktop R1 ingress: only the Wails host can mint the opaque
+	// request token. The agent receives a verified relation handle, never an
+	// identity assembled from LoopContext/UserID/project path.
+	if handler != nil && handler.app != nil && loopCtx != nil {
+		if service, subject, handle, workspace, ok := handler.app.nextDesktopCodingTaskRelationWithWorkspace(loopCtx.CodingTaskIngressToken, loopCtx.UserID); ok {
+			sa.setVerifiedCodingTaskRelation(service, subject, handle)
+			sa.staticWorkspaceBinding = workspace
+		}
+	}
+	sa.SetCallbacks(wrapCodingAgentReasoningToken(onToken), onProgress)
 	if loopCtx != nil && len(loopCtx.CodingAttachments) > 0 {
 		// Only the first root step of a turn should consume attachments (avoid
 		// re-sending images on every multi-step plan task). Caller clears after turn.
@@ -13870,17 +15611,51 @@ func runTaskWithSubAgentRuntimeOptions(
 	}
 	approvalGate := codingRuntimeApprovalGate(func() string { return sa.prepareTaskScopeApproval(task) })
 	var unregisterRuntimeCancellation func()
-	result, attempt, ledgerErr := runGUICodingTaskWithLedgerWithOptions(ctx, store, ownerID, workflowID, phaseID, projectPath, task.Title+"\n"+task.Description, approvalGate, func(request codingruntime.ExecutionRequest) {
+	result, _, ledgerErr := runGUICodingTaskWithLedgerWithOptions(ctx, store, ownerID, workflowID, phaseID, projectPath, task.Title+"\n"+task.Description, approvalGate, func(request codingruntime.ExecutionRequest) {
 		sa.runtimeStore = store
 		attempt := request.Attempt
 		sa.runtimeAttempt = &attempt
+		// Runtime task/attempt IDs are only resolver keys. Register only the
+		// identity supplied by a verified host ingress, then read it back from
+		// durable storage. Do not derive identity from loop/user/path/runtime
+		// diagnostics: absent registration leaves dynamic capabilities closed.
+		if identity, ok := bindVerifiedCodingTaskHandle(sa.verifiedTaskRelationService, sa.verifiedTaskSubject, sa.verifiedTaskHandle, store, request); ok {
+			sa.dynamicInvocationIdentity = identity
+		} else {
+			_ = registerTrustedCodingInvocationIdentity(store, request, sa.verifiedInvocationIdentity)
+			sa.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
+		}
+		// S1-A only: prepare a project-bound, read-only shadow plan whenever the
+		// durable semantic identity exists, including when the host workspace
+		// binding is absent. The incomplete envelope must become a plan with
+		// catalog_incomplete unmet needs; skipping planning entirely made an
+		// ingress/binding failure indistinguishable from “shadow not attempted”.
+		// It does not render aliases, issue grants, or affect the legacy static
+		// belt, and it never reconstructs a binding from projectPath/runtime/task
+		// text.
+		if sa.dynamicInvocationIdentity != nil {
+			prepared, planErr := prepareCodingStaticShadowPlanForSubagent(sa, codingTaskRequestKind(task), time.Now().UTC())
+			if planErr != nil {
+				log.Printf("[coding-static-shadow] plan unavailable reason=catalog_incomplete")
+			} else {
+				sa.staticShadowPlan = prepared
+				log.Printf("[coding-static-shadow] root=%s turn=%s plan=%s selections=%d omitted=%d unmet=%d", sa.dynamicInvocationIdentity.RootTaskID, sa.dynamicInvocationIdentity.TurnID, prepared.Plan.ID, len(prepared.Plan.Selections), len(prepared.Plan.Omitted), len(prepared.Plan.Unmet))
+			}
+		}
 		if loopCtx != nil {
 			unregisterRuntimeCancellation = loopCtx.RegisterCancelHookForContext(ctx, func() {
+				// The dynamic relay, when a future qualified callback installed
+				// one, shares this exact host cancellation boundary. This is a
+				// terminal fact, never a replacement identity or transport tuple.
+				sa.dynamicLifecycleOwner.close(codingBoundDynamicRequestRuntimeClosed)
 				// LoopContext already stops the in-process agent. This second,
 				// durable boundary prevents admitted children or a late callback
 				// from continuing after the user has cancelled the parent turn.
 				_, _ = store.CancelTask(request.Task.TaskID, time.Now().UTC())
 				cancelGUIAdmittedChildExecutions(request.Task.TaskID)
+				if handler != nil && handler.app != nil && sa.verifiedTaskHandle != nil {
+					handler.app.revokeDesktopCodingTaskRelation(loopCtx.UserID)
+				}
 			})
 		}
 	}, runtimeOptions, func() *CodingSubAgentResult {
@@ -13889,15 +15664,15 @@ func runTaskWithSubAgentRuntimeOptions(
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
 	}
-	sa.runtimeStore, sa.runtimeAttempt = nil, nil
+	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity, sa.verifiedInvocationIdentity = nil, nil, nil, nil
+	sa.staticWorkspaceBinding, sa.staticShadowPlan = codingStaticWorkspaceBinding{}, nil
+	sa.verifiedTaskRelationService, sa.verifiedTaskHandle = nil, nil
+	sa.verifiedTaskSubject = verifiedCodingSubject{}
 	if ledgerErr != nil {
 		return failedCodingSubAgentStartResult("coding execution ledger failed: " + ledgerErr.Error())
 	}
 	if result != nil && result.Status == TaskExecWaitingChild {
 		result.RuntimeHandoff = true
-	}
-	if result != nil && attempt != nil {
-		result.Summary = strings.TrimSpace(result.Summary + "\n\nExecution attempt: " + attempt.AttemptID)
 	}
 	if result != nil && result.Status == TaskExecPassed && handler != nil {
 		persistLocalizationExperience(handler.app, sa.codingKB, projectPath, task.Title, result.Localization, result.CommandsRun, result.RuntimeTaskID)

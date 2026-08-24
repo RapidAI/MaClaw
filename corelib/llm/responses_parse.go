@@ -154,8 +154,9 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
 	return &Response{
-		Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
-		Usage:   wire.Usage,
+		ResponseID: strings.TrimSpace(wire.ID),
+		Choices:    []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
+		Usage:      wire.Usage,
 	}, nil
 }
 

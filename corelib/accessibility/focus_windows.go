@@ -18,6 +18,7 @@ var (
 	procSetForegroundWindow      = user32Enum.NewProc("SetForegroundWindow")
 	procShowWindow               = user32Enum.NewProc("ShowWindow")
 	procGetForegroundWindow      = user32Enum.NewProc("GetForegroundWindow")
+	procGetWindowRect            = user32Enum.NewProc("GetWindowRect")
 	procWindowFromPoint          = user32Enum.NewProc("WindowFromPoint")
 	procGetAncestor              = user32Enum.NewProc("GetAncestor")
 	procAttachThreadInput        = user32Enum.NewProc("AttachThreadInput")
@@ -100,6 +101,66 @@ func foregroundWindowTitle() string {
 		return ""
 	}
 	return windowText(hwnd)
+}
+
+type winRect struct {
+	Left, Top, Right, Bottom int32
+}
+
+func hwndWindowBounds(hwnd uintptr) (WindowBounds, bool) {
+	if hwnd == 0 {
+		return WindowBounds{}, false
+	}
+	var r winRect
+	ok, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ok == 0 {
+		return WindowBounds{}, false
+	}
+	w := int(r.Right - r.Left)
+	h := int(r.Bottom - r.Top)
+	if w < 64 || h < 64 {
+		return WindowBounds{}, false
+	}
+	return WindowBounds{
+		X:      int(r.Left),
+		Y:      int(r.Top),
+		Width:  w,
+		Height: h,
+		Title:  windowText(hwnd),
+	}, true
+}
+
+func foregroundWindowBounds() (WindowBounds, bool) {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	return hwndWindowBounds(hwnd)
+}
+
+func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
+	titleSubstring = strings.TrimSpace(titleSubstring)
+	if titleSubstring == "" {
+		return WindowBounds{}, false
+	}
+	want := strings.ToLower(titleSubstring)
+	var found WindowBounds
+	var okFound bool
+	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
+		vis, _, _ := procIsWindowVisible.Call(hwnd)
+		if vis == 0 {
+			return 1
+		}
+		title := strings.ToLower(windowText(hwnd))
+		if title == "" || !strings.Contains(title, want) {
+			return 1
+		}
+		if b, ok := hwndWindowBounds(hwnd); ok {
+			found = b
+			okFound = true
+			return 0
+		}
+		return 1
+	})
+	procEnumWindows.Call(cb, 0)
+	return found, okFound
 }
 
 // windowTitleAtPoint resolves the top-level window owning screen point (x,y)

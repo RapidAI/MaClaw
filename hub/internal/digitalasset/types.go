@@ -22,6 +22,18 @@ const (
 	MaxACLDepartments = 512
 )
 
+// LibraryKind values.
+const (
+	LibraryKindBusiness  = "business"
+	LibraryKindTechnical = "technical"
+
+	SubmissionKindBusiness = "business_knowledge"
+	SubmissionKindCoding   = "coding_experience"
+
+	MaxSubmissionItems        = 200
+	MaxSubmissionPackageBytes = 20 << 20
+)
+
 // PackageFormat for sync packages.
 const PackageFormatJSONL = "knowledge_snapshot_jsonl_v1"
 
@@ -157,10 +169,33 @@ type LibraryView struct {
 	SourceCount    int64    `json:"source_count"`
 	CardCount      int64    `json:"card_count"`
 	ByteSize       int64    `json:"byte_size"`
-	CreatedBy      string   `json:"created_by"`
-	UpdatedBy      string   `json:"updated_by"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
+	LibraryKind        string   `json:"library_kind"`
+	AcceptsSubmissions bool     `json:"accepts_submissions"`
+	CreatedBy          string   `json:"created_by"`
+	UpdatedBy          string   `json:"updated_by"`
+	CreatedAt          string   `json:"created_at"`
+	UpdatedAt          string   `json:"updated_at"`
+}
+
+// SubmissionView is the admin/user API shape for a contribution.
+type SubmissionView struct {
+	ID              string `json:"id"`
+	TenantID        string `json:"tenant_id"`
+	LibraryID       string `json:"library_id"`
+	SubmitterUserID string `json:"submitter_user_id"`
+	SubmitterEmail  string `json:"submitter_email"`
+	Kind            string `json:"kind"`
+	Status          string `json:"status"`
+	Title           string `json:"title"`
+	Summary         string `json:"summary"`
+	ItemCount       int    `json:"item_count"`
+	PackageBytes    int64  `json:"package_bytes"`
+	ReviewNote      string `json:"review_note,omitempty"`
+	ReviewedAt      string `json:"reviewed_at,omitempty"`
+	ImportJobID     string `json:"import_job_id,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+	PreviewTitles   []string `json:"preview_titles,omitempty"`
 }
 
 // FormatTime formats a time for API JSON.

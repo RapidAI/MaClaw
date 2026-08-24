@@ -105,6 +105,9 @@ func multiDot4DualB(out *[8]float32, a, b0, b1 []float32, K int) {
 			case 560: // SenseVoice entry (feats_dim)
 				multiDot4DualBAVX512K560(out, &a[0], &b0[0], &b1[0])
 				return
+			case 768: // Gemma embedding GEMM
+				multiDot4DualBAVX512K768(out, &a[0], &b0[0], &b1[0])
+				return
 			}
 		}
 		if hasAVX2andFMA {
@@ -117,6 +120,9 @@ func multiDot4DualB(out *[8]float32, a, b0, b1 []float32, K int) {
 				return
 			case 560: // SenseVoice entry QKV (F32, 560-dim)
 				multiDot4DualBAVX2K560(out, &a[0], &b0[0], &b1[0])
+				return
+			case 768:
+				multiDot4DualBAVX2K768(out, &a[0], &b0[0], &b1[0])
 				return
 			case 2048: // FFN down-proj after dequant-once of dual B
 				multiDot4DualBAVX2K2048(out, &a[0], &b0[0], &b1[0])
@@ -147,6 +153,10 @@ func multiDot8DualB(out0, out1 *[8]float32, a, b0, b1 []float32, K int) {
 			case 560:
 				multiDot8DualBAVX512K560(out0, out1, &a[0], &b0[0], &b1[0])
 				return
+			case 768:
+				multiDot4DualBAVX512K768(out0, &a[0], &b0[0], &b1[0])
+				multiDot4DualBAVX512K768(out1, &a[4*768], &b0[0], &b1[0])
+				return
 			}
 		}
 		if hasAVX2andFMA {
@@ -162,6 +172,10 @@ func multiDot8DualB(out0, out1 *[8]float32, a, b0, b1 []float32, K int) {
 			case 560:
 				multiDot4DualBAVX2K560(out0, &a[0], &b0[0], &b1[0])
 				multiDot4DualBAVX2K560(out1, &a[4*560], &b0[0], &b1[0])
+				return
+			case 768:
+				multiDot4DualBAVX2K768(out0, &a[0], &b0[0], &b1[0])
+				multiDot4DualBAVX2K768(out1, &a[4*768], &b0[0], &b1[0])
 				return
 			case 2048:
 				multiDot4DualBAVX2K2048(out0, &a[0], &b0[0], &b1[0])
@@ -288,6 +302,9 @@ func multiDot4DualBAVX2K128(out *[8]float32, a, b0, b1 *float32)
 
 //go:noescape
 func multiDot4DualBAVX2K512(out *[8]float32, a, b0, b1 *float32)
+
+//go:noescape
+func multiDot4DualBAVX2K768(out *[8]float32, a, b0, b1 *float32)
 
 //go:noescape
 func multiDot4DualBAVX2K560(out *[8]float32, a, b0, b1 *float32)
@@ -417,6 +434,16 @@ func multiDot8DualReLU(out, a, b0, b1 []float32, m, n, N, K int, bn0, bn1 float3
 
 //go:noescape
 func multiDot4DualBAVX512K512(out *[8]float32, a, b0, b1 *float32)
+
+//go:noescape
+func multiDot4DualBAVX512K768(out *[8]float32, a, b0, b1 *float32)
+
+// multiDot4DualBAVX512Generic16 is the PP-OCR pointwise-projection kernel
+// (K a positive multiple of 16). Not yet wired to a Go caller; the
+// declaration keeps the assembly's contract documented and vetted.
+//
+//go:noescape
+func multiDot4DualBAVX512Generic16(out *[8]float32, a, b0, b1 *float32, K int)
 
 //go:noescape
 func multiDot4DualBAVX512K560(out *[8]float32, a, b0, b1 *float32)

@@ -674,6 +674,37 @@ func TestFuncCallFilter_NoMarkers(t *testing.T) {
 	}
 }
 
+func TestToolCallFilter_DeepSeekDSMLDropsPartialOnFlush(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("好的，先查杭州最新天气。\n<｜DSML｜")
+	f.Flush()
+	if got := out.String(); got != "好的，先查杭州最新天气。\n" {
+		t.Fatalf("partial DSML leaked on flush: %q", got)
+	}
+}
+
+func TestToolCallFilter_LoneAngleStillEmitsOnFlush(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("2 <")
+	f.Flush()
+	if got := out.String(); got != "2 <" {
+		t.Fatalf("lone angle dropped on flush: %q", got)
+	}
+}
+
+func TestToolCallFilter_DeepSeekDSMLSuppressesMarkup(t *testing.T) {
+	var out strings.Builder
+	f := newToolCallFilter(func(s string) { out.WriteString(s) })
+	f.Write("好的，先查杭州最新天气，然后生成 PDF 报告给你。\n<")
+	f.Write("｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"web_search\">")
+	f.Flush()
+	if got := out.String(); got != "好的，先查杭州最新天气，然后生成 PDF 报告给你。\n" {
+		t.Fatalf("DSML leaked into the chat stream: %q", got)
+	}
+}
+
 func TestToolCallFilter_CodexBlockSplitAcrossChunks(t *testing.T) {
 	var out strings.Builder
 	f := newToolCallFilter(func(s string) { out.WriteString(s) })
@@ -840,5 +871,138 @@ func TestThinkAndFuncCallFilterChained(t *testing.T) {
 	fcf.Flush()
 	if got := out.String(); got != "beforeafter" {
 		t.Errorf("expected %q, got %q", "beforeafter", got)
+	}
+}
+
+func TestDoAnthropicLLMRequestStreamKeepsThinkingAndSanitizesReasoning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"glm-5.3\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"thinking kept\\nBrowser: hidden\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer.\"}}\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	h := &IMMessageHandler{}
+	resp, err := h.doAnthropicLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "glm-5.3", Protocol: "anthropic", Key: "test-key"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doAnthropicLLMRequestStream: %v", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking kept" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got, want := resp.Choices[0].Message.Content, "Answer."; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if !strings.Contains(streamed.String(), "\x01thinking kept") {
+		t.Fatalf("streamed = %q, want reasoning sentinel", streamed.String())
+	}
+}
+
+func TestDoOpenAILLMRequestStreamKeepsThinkingAndSanitizesReasoning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"choices":[{"delta":{"reasoning_content":"thinking kept\nBrowser: hidden"}}]}`,
+			`data: {"choices":[{"delta":{"content":"Answer."},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n\n")))
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	h := &IMMessageHandler{}
+	resp, err := h.doOpenAILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "deepseek-v4-flash", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doOpenAILLMRequestStream: %v", err)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking kept" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got, want := resp.Choices[0].Message.Content, "Answer."; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if !strings.Contains(streamed.String(), "\x01thinking kept") {
+		t.Fatalf("streamed = %q, want reasoning sentinel", streamed.String())
+	}
+}
+
+type guiStreamReadErrorBody struct {
+	data []byte
+	err  error
+}
+
+func (r *guiStreamReadErrorBody) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, r.err
+	}
+	return n, nil
+}
+
+func (r *guiStreamReadErrorBody) Close() error { return nil }
+
+func TestDoOpenAILLMRequestStreamKeepsPartialThinkingOnStreamError(t *testing.T) {
+	readErr := errors.New("connection reset")
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: &guiStreamReadErrorBody{
+				data: []byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"partial thinking\\nBrowser: hidden\"}}]}\n\n"),
+				err:  readErr,
+			},
+			Request: req,
+		}, nil
+	})}
+
+	var streamed strings.Builder
+	h := &IMMessageHandler{}
+	resp, err := h.doOpenAILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: "https://example.test", Model: "deepseek-v4-flash", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		client,
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("error = %v, want wrapped %v", err, readErr)
+	}
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "partial thinking" {
+		t.Fatalf("partial response = %#v", resp)
+	}
+	if !strings.Contains(streamed.String(), "\x01partial thinking") {
+		t.Fatalf("streamed = %q, want reasoning sentinel", streamed.String())
 	}
 }

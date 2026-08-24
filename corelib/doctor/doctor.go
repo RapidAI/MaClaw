@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
@@ -249,6 +250,7 @@ func Run(in Input) Report {
 	add(SharedLoopCheck(cfg))
 	// --- adaptive system prompt hit rate / est. token savings ---
 	add(AdaptivePromptCheck())
+	add(WorkingStateCheck())
 	// --- cost-route tier stats + fleet daily $ ---
 	add(CostRouteCheck())
 	add(MoACheck(cfg))
@@ -453,6 +455,21 @@ func Run(in Input) Report {
 			"daily_budget_usd": cfg.DailyLLMBudgetUSD,
 			"computer_use":     cuFlag,
 			"screen_parsing":   spFlag,
+		},
+	})
+
+	// --- embedding accel detect (info; Backend is not the About badge SoT) ---
+	ai := embedding.CurrentAccelInfo()
+	add(Check{
+		ID:      "embedding.accel",
+		Status:  StatusInfo,
+		Message: "embedding accel: " + ai.Reason,
+		Detail: map[string]any{
+			"backend":     ai.Backend,
+			"device":      ai.Device,
+			"npu_present": ai.NPUPresent,
+			"reason":      ai.Reason,
+			"prefer_npu":  cfg.EmbedHWAccelEnabled(),
 		},
 	})
 

@@ -233,7 +233,7 @@ func ConvertToAnthropicTools(tools []map[string]interface{}) []map[string]interf
 			at["description"] = desc
 		}
 		if params, ok := fn["parameters"]; ok {
-			at["input_schema"] = params
+			at["input_schema"] = cloneToolDefinitionValue(params)
 		}
 		anthropicTools = append(anthropicTools, at)
 	}

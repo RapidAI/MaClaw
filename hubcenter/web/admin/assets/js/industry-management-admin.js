@@ -1,9 +1,15 @@
 // Industry management is intentionally separate from the consumer expert
 // market: it turns author-authorized listings into immutable platform assets
 // and controls tenant visibility without granting a user purchase entitlement.
+(function () {
+'use strict';
+
 let industryManagementState = { industries: [], assets: [], acquired: [], audit: [], bindings: new Map() };
 let industryManagementLoading = null;
+let industryManagementLoaded = false;
+let industryManagementLoadedAt = 0;
 const industryBindingLoads = new Map();
+const IM_CACHE_MS = 2000;
 
 const IM_TEXT = {
   en: {
@@ -30,24 +36,55 @@ function ensureIndustryManagementNav() {
   const anchor = document.querySelector('.nav button[data-tab="expertmarket"]') || document.querySelector('.nav button[data-tab="skillmarket"]');
   if (!anchor?.parentElement) return;
   const button = document.createElement('button'); button.type = 'button'; button.dataset.tab = 'industrymanagement';
-  button.innerHTML = '<span class="nav-icon" aria-hidden="true">⌘</span><span></span><small></small>';
+  button.innerHTML = '<span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h16"></path><path d="M6 20V9l6-5 6 5v11"></path><path d="M9 20v-5h6v5"></path><path d="M9 10h.01M12 10h.01M15 10h.01"></path></svg></span><span data-i18n="navIndustryManagement"></span><small data-i18n="navIndustryManagementDesc"></small>';
   button.addEventListener('click', () => window.openTab('industrymanagement'));
   anchor.parentElement.insertBefore(button, anchor.nextSibling);
-  applyIndustryManagementI18n();
+  applyIndustryManagementStaticI18n();
+}
+function imFillIfEmpty(el, text) {
+  if (el && !String(el.textContent || '').trim()) el.textContent = text;
+}
+function applyIndustryManagementStaticI18n() {
+  const nav = document.querySelector('.nav button[data-tab="industrymanagement"]');
+  if (nav) {
+    imFillIfEmpty(nav.querySelector('span:not(.nav-icon)'), imT('nav'));
+    imFillIfEmpty(nav.querySelector('small'), imT('navDesc'));
+  }
+  [['industryCreateCode', 'codePlaceholder'], ['industryCreateName', 'namePlaceholder']].forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (el) el.placeholder = imT(key);
+  });
 }
 function applyIndustryManagementI18n() {
-  const nav = document.querySelector('.nav button[data-tab="industrymanagement"]');
-  if (nav) { const title = nav.querySelector('span:not(.nav-icon)'), desc = nav.querySelector('small'); if (title) title.textContent = imT('nav'); if (desc) desc.textContent = imT('navDesc'); }
-  const labels = [['industryManagementTitle','title'],['industryManagementDesc','desc'],['industryManagementRefresh','refresh'],['industryCreateTitle','create'],['industryCreateCodeLabel','code'],['industryCreateNameLabel','name'],['industryCreateIconLabel','icon'],['industryCreateSortLabel','order'],['industryCreateDescriptionLabel','description'],['industryCreateSave','create'],['industryEligibleTitle','eligibleTitle'],['industryEligibleDesc','eligibleDesc'],['industryListTitle','industriesTitle'],['industryListDesc','industriesDesc'],['industryAssetsTitle','assetsTitle'],['industryAssetsDesc','assetsDesc'],['industryAuditTitle','auditTitle']];
-  labels.forEach(([id,key]) => { const el = document.getElementById(id); if (el) el.textContent = imT(key); });
-  const placeholders = [['industryCreateCode','codePlaceholder'],['industryCreateName','namePlaceholder']];
-  placeholders.forEach(([id,key]) => { const el = document.getElementById(id); if (el) el.placeholder = imT(key); });
+  applyIndustryManagementStaticI18n();
+  if (industryManagementLoaded) renderIndustryManagement();
+  scheduleTenantIndustrySettings();
+}
+function imOpenIndustryIDs() {
+  return Array.from(document.querySelectorAll('[data-im-industry] details[open]')).map(el => String(el.closest('[data-im-industry]')?.dataset.imIndustry || '')).filter(Boolean);
+}
+function imCaptureBindingDrafts() {
+  document.querySelectorAll('[data-im-industry]').forEach(card => {
+    const id = String(card.dataset.imIndustry || '');
+    const list = card.querySelector('[data-im-binding-list]');
+    const save = card.querySelector('[data-im-save-bindings]');
+    if (!id || !list || save?.disabled) return;
+    industryManagementState.bindings.set(id, new Set(Array.from(list.querySelectorAll('[data-im-binding]:checked')).map(box => String(box.dataset.imBinding || ''))));
+  });
+}
+function imRestoreOpenIndustries(ids) {
+  ids.forEach(id => {
+    const details = document.querySelector(`[data-im-industry="${CSS.escape(id)}"] details`);
+    if (details) details.open = true;
+  });
 }
 
 function imAssetLine(asset, controls = '') {
   return `<div class="item"><div class="head meta-spaced"><div><strong>${imEsc(asset.icon || '🤖')} ${imEsc(asset.name || asset.id)}</strong><div class="item-meta mono">${imEsc(asset.id || asset.listing_id || '')}</div></div><span class="badge ${String(asset.status || '').toLowerCase() === 'revoked' ? 'danger' : 'ok'}">${imEsc(imStatus(asset.status || 'ready'))}</span></div><div class="item-meta">${imEsc(asset.description || imT('noDescription'))}</div><div class="item-meta">${imEsc(imT('version'))}: ${imEsc(asset.version || '—')} · ${imEsc(imT('price'))}: ${imNumber(asset.price)}</div>${controls ? `<div class="actions section-gap">${controls}</div>` : ''}</div>`;
 }
-function renderIndustryManagement() {
+function renderIndustryManagement(opts = {}) {
+  const openIDs = imOpenIndustryIDs();
+  if (!opts.resetBindings) imCaptureBindingDrafts();
   const eligible = document.getElementById('industryEligibleAssets'), industries = document.getElementById('industryManagementIndustries'), acquired = document.getElementById('industryAcquiredAssets');
   if (eligible) eligible.innerHTML = industryManagementState.assets.length ? industryManagementState.assets.map(item => imAssetLine(item, `<button class="btn-secondary" type="button" data-im-acquire="${imEsc(item.listing_id)}">${imEsc(imT('acquire'))}</button>`)).join('') : `<div class="hint">${imEsc(imT('noEligible'))}</div>`;
   if (acquired) acquired.innerHTML = industryManagementState.acquired.length ? industryManagementState.acquired.map(item => imAssetLine(item, String(item.status) === 'revoked' ? '' : `<button class="btn-danger" type="button" data-im-revoke="${imEsc(item.id)}">${imEsc(imT('revoke'))}</button>`)).join('') : `<div class="hint">${imEsc(imT('noAssets'))}</div>`;
@@ -62,6 +99,7 @@ function renderIndustryManagement() {
   }).join('') : `<div class="hint">${imEsc(imT('noIndustries'))}</div>`;
   const audit = document.getElementById('industryAuditEvents');
   if (audit) audit.innerHTML = industryManagementState.audit.length ? industryManagementState.audit.map(event => `<div class="data-row"><div class="data-row-main"><div>${imEsc(imAuditAction(event.action))}</div><div class="data-row-meta">${imEsc(imAuditTarget(event.target_type))}: ${imEsc(event.target_id || '—')}${event.reason ? ` · ${imEsc(event.reason)}` : ''}</div></div><div class="data-row-value"><small>${imEsc(event.actor_id || '')}</small>${imEsc(imFormatDate(event.created_at))}</div></div>`).join('') : `<div class="hint">${imEsc(imT('none'))}</div>`;
+  imRestoreOpenIndustries(openIDs);
   industryManagementState.industries.filter(industry => !(industryManagementState.bindings.get(String(industry.id)) instanceof Set)).forEach(industry => void loadIndustryBindings(industry.id));
 }
 
@@ -71,11 +109,18 @@ function imHubConfigContext() {
   const hubID = String(overlay?.querySelector('.hub-config-head .item-meta')?.textContent || '').trim();
   return { overlay, select, hubID, tenantID: String(select?.value || '').trim() };
 }
+function imCaptureTenantIndustryDrafts(root) {
+  if (!root || !root.querySelector('[data-im-tenant-industry]')) return null;
+  return Array.from(root.querySelectorAll('[data-im-tenant-industry]:checked')).map(box => String(box.dataset.imTenantIndustry || ''));
+}
+let imTenantRenderSeq = 0;
 async function renderTenantIndustrySettings() {
   const { overlay, select, hubID, tenantID } = imHubConfigContext();
   if (!overlay || !select || !hubID || !tenantID) return;
   const tenantPanel = select.closest('.hub-tenant-panel'); if (!tenantPanel) return;
+  const seq = ++imTenantRenderSeq;
   let root = tenantPanel.querySelector('[data-im-tenant-settings]');
+  const draft = imCaptureTenantIndustryDrafts(root);
   if (!root) { root = document.createElement('div'); root.dataset.imTenantSettings = 'true'; root.className = 'item section-gap-sm'; tenantPanel.appendChild(root); }
   root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="item-meta">${imEsc(imT('tenantSettingsLoadingDesc'))}</div><div class="hint section-gap">${imEsc(imT('loading'))}</div>`;
   try {
@@ -84,28 +129,50 @@ async function renderTenantIndustrySettings() {
       imAPI(`/api/admin/hubs/${encodeURIComponent(hubID)}/tenants/${encodeURIComponent(tenantID)}/industries`),
     ]);
     // The modal may have been re-rendered while its requests were in flight.
-    const live = imHubConfigContext(); if (live.overlay !== overlay || live.hubID !== hubID || live.tenantID !== tenantID || !document.contains(root)) return;
-    const assigned = new Set((assignment?.industry_ids || []).map(String));
+    const live = imHubConfigContext(); if (seq !== imTenantRenderSeq || live.overlay !== overlay || live.hubID !== hubID || live.tenantID !== tenantID || !document.contains(root)) return;
+    const assigned = new Set(draft || (assignment?.industry_ids || []).map(String));
     // General is a system fallback, not a selectable tenant industry. It is
     // shown by the hint above when no explicit industries are configured.
     const items = (industryData?.industries || []).filter(item => String(item.status) === 'active' && String(item.code) !== 'general');
     const status = await imAPI(`/api/admin/hubs/${encodeURIComponent(hubID)}/tenants/${encodeURIComponent(tenantID)}/industry-expert-status`);
-    const defaultHint = assignment?.using_default ? `<div class="hint section-gap-sm">${imEsc(imT('tenantDefaultHint'))}</div>` : '';
+    if (seq !== imTenantRenderSeq || !document.contains(root)) return;
+    const defaultHint = assignment?.using_default && !(draft && draft.length) ? `<div class="hint section-gap-sm">${imEsc(imT('tenantDefaultHint'))}</div>` : '';
     root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="item-meta">${imEsc(imT('tenantSettingsDesc'))}</div>${defaultHint}<div class="item-meta section-gap-sm">${imEsc(imT('catalogueRevision'))}: ${imNumber(status?.revision)} · ${imEsc(imT('experts'))}: ${imNumber(status?.expert_count)}</div><div class="stack-gap-sm section-gap">${items.length ? items.map(item => `<label class="inline-check"><input type="checkbox" data-im-tenant-industry="${imEsc(item.id)}"${assigned.has(String(item.id)) ? ' checked' : ''}> <span>${imEsc(item.icon || '🏷️')} ${imEsc(item.name)}</span></label>`).join('') : `<div class="hint">${imEsc(imT('noIndustries'))}</div>`}</div><div class="actions section-gap"><button class="btn-primary" type="button" data-im-save-tenant-industries>${imEsc(imT('saveTenantSettings'))}</button></div>`;
-  } catch (error) { root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="hint">${imEsc(imT('failed', { error: imError(error) }))}</div>`; }
+  } catch (error) {
+    if (seq !== imTenantRenderSeq || !document.contains(root)) return;
+    root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="hint">${imEsc(imT('failed', { error: imError(error) }))}</div>`;
+  }
 }
 async function saveTenantIndustrySettings(button) {
   const root = button.closest('[data-im-tenant-settings]'); const { hubID, tenantID } = imHubConfigContext();
   if (!root || !hubID || !tenantID) return;
   const industryIDs = Array.from(root.querySelectorAll('[data-im-tenant-industry]:checked')).map(box => String(box.dataset.imTenantIndustry || ''));
   button.disabled = true;
-  try { const result = await imAPI(`/api/admin/hubs/${encodeURIComponent(hubID)}/tenants/${encodeURIComponent(tenantID)}/industries`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ industry_ids: industryIDs }) }); imSetStatus('success', imT('tenantSettingsSaved', { revision: imNumber(result?.revision) })); }
+  try { const result = await imAPI(`/api/admin/hubs/${encodeURIComponent(hubID)}/tenants/${encodeURIComponent(tenantID)}/industries`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ industry_ids: industryIDs }) }); imSetStatus('success', imT('tenantSettingsSaved', { revision: imNumber(result?.revision) })); scheduleTenantIndustrySettings(); }
   catch (error) { imSetStatus('error', imT('failed', { error: imError(error) })); }
   finally { button.disabled = false; }
 }
 let imHubConfigTimer = null;
+function scheduleTenantIndustrySettings() {
+  if (!document.getElementById('hubConfigModalOverlay')) return;
+  if (imHubConfigTimer) window.clearTimeout(imHubConfigTimer);
+  imHubConfigTimer = window.setTimeout(() => { imHubConfigTimer = null; void renderTenantIndustrySettings(); }, 80);
+}
+function imIsTenantSettingsMutation(mutation) {
+  const el = mutation.target && mutation.target.nodeType === 1 ? mutation.target : mutation.target && mutation.target.parentElement;
+  return !!(el && el.closest && el.closest('[data-im-tenant-settings]'));
+}
 function watchTenantIndustrySettings() {
-  const observer = new MutationObserver(() => { if (imHubConfigTimer) window.clearTimeout(imHubConfigTimer); imHubConfigTimer = window.setTimeout(() => { void renderTenantIndustrySettings(); }, 80); });
+  const observer = new MutationObserver(mutations => {
+    const overlay = document.getElementById('hubConfigModalOverlay');
+    if (!overlay) return;
+    const relevant = mutations.some(mutation => {
+      if (imIsTenantSettingsMutation(mutation)) return false;
+      if (overlay === mutation.target || overlay.contains(mutation.target)) return true;
+      return Array.from(mutation.addedNodes).some(node => node === overlay || (node.nodeType === 1 && node.contains && node.contains(overlay)));
+    });
+    if (relevant) scheduleTenantIndustrySettings();
+  });
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
@@ -122,14 +189,17 @@ async function loadIndustryBindings(industryID) {
 }
 
 async function loadIndustryManagement(force = false) {
-  if (!force && industryManagementLoading) return industryManagementLoading;
-  imSetStatus('loading', imT('refresh'));
+  if (industryManagementLoading) return industryManagementLoading;
+  if (!force && industryManagementLoaded && Date.now() - industryManagementLoadedAt < IM_CACHE_MS) return;
+  imSetStatus('loading', imT('loading'));
   industryManagementLoading = (async () => {
     try {
       const [industries, assetData, auditData] = await Promise.all([imAPI('/api/admin/industry-management/industries'), imAPI('/api/admin/industry-management/assets'), imAPI('/api/admin/industry-management/audit-events?limit=20')]);
       industryBindingLoads.clear();
       industryManagementState = { industries: Array.isArray(industries?.industries) ? industries.industries : [], assets: Array.isArray(assetData?.assets) ? assetData.assets : [], acquired: Array.isArray(assetData?.acquired_assets) ? assetData.acquired_assets : [], audit: Array.isArray(auditData?.events) ? auditData.events : [], bindings: new Map() };
-      renderIndustryManagement(); imSetStatus();
+      industryManagementLoaded = true;
+      industryManagementLoadedAt = Date.now();
+      renderIndustryManagement({ resetBindings: true }); imSetStatus();
     } catch (error) { imSetStatus('error', imT('failed', { error: imError(error) })); }
     finally { industryManagementLoading = null; }
   })();
@@ -156,4 +226,5 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 window.loadIndustryManagement = loadIndustryManagement;
 window.createIndustryManagementIndustry = createIndustryManagementIndustry;
-window.applyIndustryManagementI18n = () => { applyIndustryManagementI18n(); renderIndustryManagement(); void renderTenantIndustrySettings(); };
+window.applyIndustryManagementI18n = applyIndustryManagementI18n;
+})();

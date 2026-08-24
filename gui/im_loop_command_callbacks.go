@@ -132,6 +132,15 @@ func (c *loopCycleCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.parent.llmCfg
 }
 
+func (c *loopCycleCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.parent == nil || c.parent.handler == nil {
+		return c.GetLLMConfig(), agent.RouteDecision{}, false
+	}
+	cfg, d := c.parent.handler.applyTurnModelRoute(c.parent.llmCfg, userText, &LoopContext{Kind: LoopKindBackground}, nil)
+	c.parent.llmCfg = cfg
+	return cfg, agentRouteFromModelRoute(d, cfg), true
+}
+
 func (c *loopCycleCallbacks) GetMaxIterations() int {
 	maxIter := c.parent.handler.getLoopMaxLLMIterations()
 	if maxIter <= 0 {
@@ -251,7 +260,7 @@ func (c *loopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	ctx, cancel := c.toolContext()
 	defer cancel()
 	toolProgress := filteredToolProgressCallback(lang, name, c.parent.onProgress, false)
-	return c.parent.handler.executeToolDetailedWithRuntimeContext(ctx, policyUserID, strings.TrimSpace(policyUserID) != "", "", name, argsJSON, "", toolProgress).Text
+	return c.parent.handler.executeToolDetailedWithRuntimeContextAndContextTokens(withTrustedAuditPrincipal(ctx, c.parent.userID), policyUserID, strings.TrimSpace(policyUserID) != "", "", c.parent.llmCfg.EffectiveContextTokens(), name, argsJSON, "", toolProgress).Text
 }
 
 func (c *loopCycleCallbacks) toolContext() (context.Context, context.CancelFunc) {

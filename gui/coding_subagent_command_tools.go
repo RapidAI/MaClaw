@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,26 +189,7 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	var shellName string
 	var shellArgs []string
 	if runtime.GOOS == "windows" {
-		if hasUnquotedWindowsCmdSyntax(command) {
-			// Commands using cmd.exe control operators (for example `||` or
-			// `2>nul`) must not be parsed by Windows PowerShell 5.1.
-			shellName = passthroughRuntimeProgram("cmd.exe")
-			shellArgs = []string{"/d", "/s", "/c", command}
-		} else {
-			// Auto-convert unquoted bash-style && to PowerShell-compatible ;.
-			// LLMs frequently generate && despite being told to use PowerShell syntax.
-			// PowerShell 5.1 doesn't support && (only 7+ does), but quoted text must
-			// remain untouched because it can be data passed to tests or scripts.
-			psCommand := convertUnquotedAndAndForPowerShell(command)
-			shellName = passthroughRuntimeProgram("powershell.exe")
-			// Wrap the command so Go observes the real command result. Native
-			// tools often write progress to stderr even when they exit 0, while
-			// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
-			// keeps stderr visible but classifies success primarily by $LASTEXITCODE.
-			wrappedPS := wrapCodingPowerShellCommand(psCommand)
-			shellArgs = []string{"-NoProfile", "-NonInteractive", "-Command",
-				"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
-		}
+		shellName, shellArgs = windowsCodingBashInvocation(command)
 	} else {
 		shellName = "bash"
 		shellArgs = []string{"-c", command}
@@ -278,6 +260,48 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
 }
 
+func windowsCodingBashInvocation(command string) (string, []string) {
+	if adapted, ok := adaptWindowsUnixInspectCommand(command); ok {
+		log.Printf("[coding-bash] adapted unix inspect for Windows: %s", truncateRunesV2(command, 160))
+		// Stay on PowerShell. The generated script already has no && / ||,
+		// and must not be re-parsed as cmd.exe or an MSVC recipe.
+		wrappedPS := wrapCodingPowerShellCommand(adapted)
+		return passthroughRuntimeProgram("powershell.exe"), []string{"-NoProfile", "-NonInteractive", "-Command",
+			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
+	}
+	if adapted, ok := adaptWindowsPythonInspectCommand(command); ok {
+		log.Printf("[coding-bash] adapted python inspect for Windows: %s", truncateRunesV2(command, 160))
+		wrappedPS := wrapCodingPowerShellCommand(adapted)
+		return passthroughRuntimeProgram("powershell.exe"), []string{"-NoProfile", "-NonInteractive", "-Command",
+			"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
+	}
+	command = mapPython3ToWindows(command)
+	if repaired, ok := normalizeWindowsMSVCCompileCommand(command); ok {
+		// vcvars+cl must share a cmd.exe environment. Nested
+		// `cmd /c "call \"...\" && cl"` loses quotes in PowerShell.
+		// Rewrite after unwrap so `; .\hello.exe` inside cmd /c '...' still
+		// short-circuits a failed compile.
+		repaired = rewriteWindowsCompileThenRunSemicolon(repaired)
+		return passthroughRuntimeProgram("cmd.exe"), []string{"/d", "/s", "/c", repaired}
+	}
+	command = rewriteWindowsCompileThenRunSemicolon(command)
+	if hasUnquotedWindowsCmdSyntax(command) {
+		// Commands using cmd.exe control operators (for example `||` or
+		// `2>nul`) must not be parsed by Windows PowerShell 5.1.
+		return passthroughRuntimeProgram("cmd.exe"), []string{"/d", "/s", "/c", command}
+	}
+	// PowerShell 5.1 has no &&. Translating it to bare `;` would let a failed
+	// compile plus a leftover hello.exe look like success. Keep short-circuit.
+	psCommand := convertUnquotedAndAndForPowerShell(command)
+	// Wrap the command so Go observes the real command result. Native
+	// tools often write progress to stderr even when they exit 0, while
+	// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
+	// keeps stderr visible but classifies success primarily by $LASTEXITCODE.
+	wrappedPS := wrapCodingPowerShellCommand(psCommand)
+	return passthroughRuntimeProgram("powershell.exe"), []string{"-NoProfile", "-NonInteractive", "-Command",
+		"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + wrappedPS}
+}
+
 func hasUnquotedWindowsCmdSyntax(command string) bool {
 	var b strings.Builder
 	var quote rune
@@ -312,6 +336,10 @@ func codingCommandEnv() []string {
 	gitDir := ""
 	if gitPath := passthroughRuntimeProgram("git"); filepath.IsAbs(gitPath) {
 		gitDir = filepath.Dir(gitPath)
+	}
+	env = mergeWindowsToolchainEnviron(env, windowsMSVCInjectedEnviron())
+	if mingw := detectWindowsMinGWBin(); mingw != "" {
+		env = appendWindowsPathEntries(env, mingw)
 	}
 	return appendWindowsPathEntries(env,
 		filepath.Join(systemRoot, "System32"),
@@ -360,6 +388,9 @@ func appendWindowsPathEntries(env []string, entries ...string) []string {
 	return append(env, newPath)
 }
 
+// windowsPowerShellAndAndStop is the PowerShell 5.1 stand-in for &&.
+const windowsPowerShellAndAndStop = `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE };`
+
 func convertUnquotedAndAndForPowerShell(command string) string {
 	if !strings.Contains(command, "&&") {
 		return command
@@ -387,7 +418,7 @@ func convertUnquotedAndAndForPowerShell(command string) string {
 			continue
 		}
 		if ch == '&' && i+1 < len(runes) && runes[i+1] == '&' {
-			b.WriteByte(';')
+			b.WriteString(windowsPowerShellAndAndStop)
 			i++
 			continue
 		}
@@ -395,6 +426,7 @@ func convertUnquotedAndAndForPowerShell(command string) string {
 	}
 	return b.String()
 }
+
 func wrapCodingPowerShellCommand(psCommand string) string {
 	return fmt.Sprintf(`$Error.Clear()
 $ErrorActionPreference='Continue'

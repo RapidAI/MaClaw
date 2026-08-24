@@ -18,8 +18,10 @@ const (
 )
 
 // ApplyReasoningControls translates an explicit global thinking setting into
-// the native request shape of the selected provider. It deliberately does
-// nothing in auto mode, leaving the provider/model default intact.
+// the native request shape of the selected provider. Auto leaves ordinary
+// provider defaults intact, except always-on thinking models (GLM-5.3): those
+// reject disabled and only return thinking blocks when the request states
+// thinking.type=enabled.
 //
 // An explicit user choice always wins over a caller-supplied reasoning field.
 // This is important for forwarded OpenAI-compatible requests: otherwise a
@@ -30,6 +32,15 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	}
 
 	mode := normalizeReasoningMode(cfg.ThinkingMode)
+	if IsAlwaysOnThinkingModel(cfg) {
+		// GLM-5.3 rejects thinking.type=disabled, including leftover pass-through
+		// bodies in auto mode. Anthropic-compatible gateways also omit
+		// thinking_delta unless the thinking block is present, so auto must
+		// still request enabled.
+		if mode == "disabled" || mode == "" || thinkingTypeDisabled(body) {
+			mode = "enabled"
+		}
+	}
 	if mode == "" {
 		return
 	}
@@ -82,6 +93,24 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	// reasoning gateways use this object. In particular, this preserves an
 	// explicit disabled state for DeepSeek instead of later re-enabling it.
 	body["thinking"] = map[string]interface{}{"type": mode}
+}
+
+func thinkingTypeDisabled(body map[string]interface{}) bool {
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking == nil {
+		return false
+	}
+	typ, _ := thinking["type"].(string)
+	return strings.EqualFold(strings.TrimSpace(typ), "disabled")
+}
+
+// CoerceAlwaysOnThinkingMode upgrades ThinkingMode=disabled to enabled when
+// the selected model rejects thinking.type=disabled.
+func CoerceAlwaysOnThinkingMode(cfg MaclawLLMConfig) MaclawLLMConfig {
+	if IsAlwaysOnThinkingModel(cfg) && normalizeReasoningMode(cfg.ThinkingMode) == "disabled" {
+		cfg.ThinkingMode = "enabled"
+	}
+	return cfg
 }
 
 func normalizeReasoningMode(raw string) string {

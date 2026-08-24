@@ -18,6 +18,7 @@ const cacheDirectories = 64;
 const noticeAutoDismissMs = 8_000;
 
 export function __resetWorkspaceDirectoryCacheForTests() { cache.clear(); }
+function dropProjectCache(projectPath?: string) { if (projectPath) cache.delete(projectPath); }
 
 function boundedPages(source: Map<string, DirectoryResponse>) {
     const next = new Map(source);
@@ -75,6 +76,24 @@ export function workspaceFileIconKind(name: string): { badge: string; kind: "cod
     return { badge: "FILE", kind: "file" };
 }
 
+function isHiddenBrowserName(name?: string) { return Boolean(name?.trim().startsWith(".")); }
+function visibleDirectoryResponse(data?: DirectoryResponse | null): DirectoryResponse {
+    const entries = (data?.entries || []).filter(entry => !isHiddenBrowserName(entry.name));
+    return { ...(data || {}), entries };
+}
+function visiblePages(source: Map<string, DirectoryResponse>) {
+    const next = new Map<string, DirectoryResponse>();
+    for (const [key, value] of source) next.set(key, visibleDirectoryResponse(value));
+    return next;
+}
+function sameWorkspaceRoot(left?: string, right?: string) {
+    const normalize = (value?: string) => {
+        const cleaned = (value || "").trim().replace(/[\\/]+$/, "").replace(/\\/g, "/");
+        return /^[a-zA-Z]:/.test(cleaned) ? cleaned.toLowerCase() : cleaned;
+    };
+    const a = normalize(left);
+    return a !== "" && a === normalize(right);
+}
 function isVSCodeSourceFile(entry: DirectoryEntry) { return !entry.is_dir && ["code", "markup"].includes(workspaceFileIconKind(entry.name).kind); }
 
 function FileIcon({ entry, theme, open }: { entry: DirectoryEntry; theme: CodePreviewTheme; open: boolean }) {
@@ -83,7 +102,7 @@ function FileIcon({ entry, theme, open }: { entry: DirectoryEntry; theme: CodePr
     return <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16" style={{ flexShrink: 0 }}><path d={entry.is_dir ? "M2.5 5.5c0-1.1.9-2 2-2h3l1.4 1.7h6.6c1.1 0 2 .9 2 2v6.3c0 1.1-.9 2-2 2h-11c-1.1 0-2-.9-2-2V5.5Z" : "M4.25 2.5h7l4.5 4.5v9.25c0 .69-.56 1.25-1.25 1.25H5.5c-.69 0-1.25-.56-1.25-1.25V3.75c0-.69.56-1.25 1.25-1.25Z"} fill={color} opacity=".22" stroke={color} strokeWidth="1.2" /><text x="10" y="14" textAnchor="middle" fill={color} fontSize="5.5" fontWeight="700">{icon.badge}</text></svg>;
 }
 
-export function CodePreviewWorkspace({ projectPath, refreshToken = 0, lang, theme, onOpenFile }: { projectPath?: string; refreshToken?: number; lang: string; theme: CodePreviewTheme; onOpenFile: (file: CodeFile) => void }) {
+export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRefresh = false, lang, theme, onOpenFile }: { projectPath?: string; refreshToken?: number; resetOnRefresh?: boolean; lang: string; theme: CodePreviewTheme; onOpenFile: (file: CodeFile) => void }) {
     const [, setDirectories] = useState<Map<string, DirectoryResponse>>(new Map());
     const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
     const [loading, setLoading] = useState<Set<string>>(new Set());
@@ -123,15 +142,28 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, lang, them
         try {
             const data = await GetCodingWorkbenchDirectory(projectPath, path) as DirectoryResponse;
             if (version !== versionRef.current) return;
-            const next = new Map(pagesRef.current);
+            const incomingRoot = path ? rootRef.current : String(data?.root || "");
+            const rootChanged = !path && Boolean(rootRef.current) && Boolean(incomingRoot) && !sameWorkspaceRoot(rootRef.current, incomingRoot);
+            const next = rootChanged ? new Map<string, DirectoryResponse>() : new Map(pagesRef.current);
             next.delete(path);
-            next.set(path, data || {});
+            next.set(path, visibleDirectoryResponse(data));
             pagesRef.current = boundedPages(next);
-            refreshedRef.current.set(path, Date.now());
+            if (rootChanged) {
+                refreshedRef.current = new Map([["", Date.now()]]);
+                setExpanded(new Set([""]));
+                setErrors(new Map());
+                setMenu(null);
+                setPropertiesEntry(null);
+            } else {
+                refreshedRef.current.set(path, Date.now());
+            }
             setDirectories(pagesRef.current);
-            const nextRoot = path ? rootRef.current : String(data?.root || "");
-            if (!path) { rootRef.current = nextRoot; setRoot(nextRoot); setRootResolved(true); }
-            saveCache(projectPath, pagesRef.current, nextRoot, refreshedRef.current);
+            if (!path) {
+                rootRef.current = incomingRoot;
+                setRoot(incomingRoot);
+                setRootResolved(true);
+            }
+            saveCache(projectPath, pagesRef.current, incomingRoot, refreshedRef.current);
         } catch (error) {
             if (version === versionRef.current) setErrors(prev => new Map(prev).set(path, error instanceof Error ? error.message : String(error)));
         } finally {
@@ -142,7 +174,7 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, lang, them
 
     useEffect(() => {
         const saved = projectPath ? takeCache(projectPath) : undefined;
-        const pages = saved ? boundedPages(saved.directories) : new Map<string, DirectoryResponse>();
+        const pages = saved ? boundedPages(visiblePages(saved.directories)) : new Map<string, DirectoryResponse>();
         pagesRef.current = pages;
         refreshedRef.current = saved ? new Map(saved.refreshedAt) : new Map();
         rootRef.current = saved?.root || "";
@@ -172,22 +204,44 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, lang, them
         lastRefreshTokenRef.current = refreshToken;
         versionRef.current++;
         inFlightRef.current.clear();
+        // Local directory changes must not keep the previous project's files on
+        // screen while the new listing is in flight. SSH reconnects keep the
+        // cached tree so a dropped session does not flash an empty explorer.
+        if (resetOnRefresh) {
+            dropProjectCache(projectPath);
+            pagesRef.current = new Map();
+            refreshedRef.current = new Map();
+            rootRef.current = "";
+            setDirectories(pagesRef.current);
+            setRoot("");
+            setRootResolved(false);
+            setExpanded(new Set([""]));
+            setErrors(new Map());
+            setMenu(null);
+            setPropertiesEntry(null);
+        }
         setLoading(new Set());
         const refreshVersion = versionRef.current;
         // The root is the user-visible confirmation of a successful reconnect,
         // so wait for it before issuing any background child refreshes. A fully
         // expanded tree must not compete with the first useful SSH response.
-        const visiblePaths = Array.from(expanded).filter(path => path && pagesRef.current.has(path));
+        const previousRoot = rootRef.current;
+        const visiblePaths = resetOnRefresh ? [] : Array.from(expanded).filter(path => path && pagesRef.current.has(path));
         void (async () => {
             await load("", true);
             if (versionRef.current !== refreshVersion) return;
+            // load() already replaced the tree when the live root changed.
+            // Do not refresh child paths that belonged to the previous directory.
+            if (resetOnRefresh || (previousRoot && !sameWorkspaceRoot(previousRoot, rootRef.current))) {
+                return;
+            }
             const batchSize = 3;
             for (let index = 0; index < visiblePaths.length; index += batchSize) {
                 if (versionRef.current !== refreshVersion) return;
                 await Promise.all(visiblePaths.slice(index, index + batchSize).map(path => load(path, true)));
             }
         })();
-    }, [projectPath, refreshToken, load]);
+    }, [projectPath, refreshToken, resetOnRefresh, load]);
 
     // A manual refresh is an explicit request for newer data. Give it a new
     // generation so it can supersede a slow or stuck remote directory request

@@ -1,6 +1,8 @@
 package intent
 
-import "strings"
+import (
+	"strings"
+)
 
 // BrowserPublicationAffordance detects tasks whose primary work may be search,
 // writing, or analysis, but whose delivery step requires operating a web UI.
@@ -38,13 +40,81 @@ func BrowserPublicationAffordance(text string) bool {
 }
 
 func applyExecutionAffordances(text string, result *ClassificationResult) {
-	if result == nil || result.Primary == LabelBrowser || !BrowserPublicationAffordance(text) {
+	// Classifier output is the sole source of capability labels. Text heuristics
+	// may serve non-authorizing UX decisions, but cannot add executable intent.
+	_ = text
+	_ = result
+}
+
+// declaredCompositeIntentPair is the only 0.20-gap exception: lookup labels
+// may keep document_generate/live_data_visual (and vice versa) even when the
+// score gap is wide.
+func declaredCompositeIntentPair(left, right IntentLabel) bool {
+	return (isLookupIntentLabel(left) && right == LabelDocumentGenerate) ||
+		(isLookupIntentLabel(right) && left == LabelDocumentGenerate) ||
+		(isLookupIntentLabel(left) && right == LabelLiveDataVisual) ||
+		(isLookupIntentLabel(right) && left == LabelLiveDataVisual)
+}
+
+// locallyVerifiedEmbeddingCompositePair limits the L2 fast path to capability
+// chains whose prerequisite has a distinct semantic boundary in the installed
+// embedding model. Search is intentionally excluded: supplied material can be
+// close to a search request in embedding space, so search + document_generate
+// remains a tree decision. This preserves the taxonomy's broader composite
+// relation without turning a weak retrieval resemblance into a network grant.
+func locallyVerifiedEmbeddingCompositePair(left, right IntentLabel) bool {
+	return (left == LabelLiveData && right == LabelDocumentGenerate) ||
+		(right == LabelLiveData && left == LabelDocumentGenerate)
+}
+
+// NormalizeDeclaredComposite gives an approved lookup+document composite a
+// canonical direction. Classification candidates are sorted by confidence, but
+// a document_generate candidate can occasionally score above its lookup
+// prerequisite. The execution graph is directional regardless: facts must be
+// acquired before they are rendered. Keeping the lookup as Primary makes that
+// dependency explicit to every consumer without deriving a capability from
+// surface wording.
+func NormalizeDeclaredComposite(result *ClassificationResult) {
+	if result == nil || result.Primary != LabelDocumentGenerate {
 		return
 	}
+	var lookupLabel IntentLabel
+	lookupCount := 0
 	for _, label := range result.Secondary {
-		if label == LabelBrowser {
+		// Generic classifier states carry no capability obligation. Any other
+		// capability family makes the result multi-purpose rather than the
+		// narrowly reviewed live-data-to-document chain.
+		if label.IsNonCapabilityLabel() {
+			continue
+		}
+		if !isLookupIntentLabel(label) && label != LabelDocumentGenerate {
 			return
 		}
+		if isLookupIntentLabel(label) {
+			lookupCount++
+			if lookupLabel == "" {
+				lookupLabel = label
+			}
+		}
 	}
-	result.Secondary = append(result.Secondary, LabelBrowser)
+	if lookupLabel == "" || lookupCount != 1 {
+		return
+	}
+	secondary := make([]IntentLabel, 0, len(result.Secondary))
+	secondary = append(secondary, LabelDocumentGenerate)
+	for _, label := range result.Secondary {
+		if label == lookupLabel || label == LabelDocumentGenerate {
+			continue
+		}
+		if isLookupIntentLabel(label) {
+			continue
+		}
+		secondary = append(secondary, label)
+	}
+	result.Primary = lookupLabel
+	result.Secondary = secondary
+}
+
+func isLookupIntentLabel(label IntentLabel) bool {
+	return label == LabelSearch || label == LabelLiveData || label == LabelWebFetch
 }

@@ -61,6 +61,13 @@ type ConnContext struct {
 	// closeSend is closed when the connection is torn down to stop the
 	// writer goroutine.
 	closeSend chan struct{}
+	// writerDone closes after the dedicated writer has stopped, so connection
+	// teardown can safely discard its write lock.
+	writerDone chan struct{}
+	// sendMu makes Send and closeWriter atomic with respect to one another.
+	// Without it, a broadcaster can pass the close check just before teardown
+	// and leave a message stranded after the writer has exited.
+	sendMu sync.Mutex
 }
 
 const machineHeartbeatLogMinInterval = time.Minute
@@ -93,16 +100,48 @@ const (
 	batchFlushInterval = 50 * time.Millisecond
 )
 
+// websocketWriteLocks serializes synchronous request responses with the
+// per-connection writer goroutine used by pushed events. gorilla/websocket
+// allows one concurrent data writer per connection; keeping the guard at this
+// boundary covers every current and future response path.
+var websocketWriteLocks sync.Map // *websocket.Conn -> *sync.Mutex
+
+func websocketWriteLock(conn *websocket.Conn) *sync.Mutex {
+	lock, _ := websocketWriteLocks.LoadOrStore(conn, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func releaseWebsocketWriteLock(conn *websocket.Conn) {
+	websocketWriteLocks.Delete(conn)
+}
+
 // initSendCh initialises the async send channel and starts the writer goroutine.
 func (c *ConnContext) initSendCh() {
 	c.sendCh = make(chan any, sendChSize)
 	c.closeSend = make(chan struct{})
+	c.writerDone = make(chan struct{})
 	go c.writeLoop()
 }
 
 // Send enqueues a message for async delivery. Returns false if the buffer is
 // full (slow client), in which case the connection is closed.
 func (c *ConnContext) Send(msg any) bool {
+	if c == nil {
+		return false
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendCh == nil || c.closeSend == nil {
+		return false
+	}
+	select {
+	case <-c.closeSend:
+		return false
+	default:
+	}
+	// sendMu prevents closeWriter from closing closeSend after the check above,
+	// so a late broadcaster cannot win a select against an already-closed
+	// connection and strand work after the writer exits.
 	select {
 	case c.sendCh <- msg:
 		return true
@@ -110,8 +149,10 @@ func (c *ConnContext) Send(msg any) bool {
 		// Buffer full - slow client. Close the writer and the underlying
 		// WebSocket so the read loop also terminates.
 		log.Printf("[ws] Send: buffer full for role=%s machine_id=%s, dropping connection", c.Role, c.MachineID)
-		c.closeWriter()
-		_ = c.Conn.Close()
+		c.closeWriterLocked()
+		if c.Conn != nil {
+			_ = c.Conn.Close()
+		}
 		return false
 	}
 }
@@ -123,6 +164,19 @@ func (c *ConnContext) SendChDiag() chan any {
 
 // closeWriter signals the writer goroutine to stop. Safe to call multiple times.
 func (c *ConnContext) closeWriter() {
+	if c == nil {
+		return
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.closeSend == nil {
+		return
+	}
+	c.closeWriterLocked()
+}
+
+// closeWriterLocked signals the writer loop while sendMu is held.
+func (c *ConnContext) closeWriterLocked() {
 	select {
 	case <-c.closeSend:
 	default:
@@ -134,14 +188,21 @@ func (c *ConnContext) closeWriter() {
 // messages that arrive within batchFlushInterval into a single write cycle
 // to reduce syscall overhead for viewers receiving many events.
 func (c *ConnContext) writeLoop() {
+	// If a write fails, there is no remaining consumer for sendCh. Marking the
+	// connection closed stops later broadcasts from being accepted and stranded.
+	defer close(c.writerDone)
+	defer c.closeWriter()
 	batch := make([]any, 0, 16)
 	timer := time.NewTimer(batchFlushInterval)
 	defer timer.Stop()
 
 	flush := func() bool {
+		if c.Conn == nil {
+			return false
+		}
 		n := len(batch)
 		for _, msg := range batch {
-			if err := c.Conn.WriteJSON(msg); err != nil {
+			if err := writeWSJSON(c.Conn, msg); err != nil {
 				log.Printf("[ws] writeLoop: write error role=%s machine_id=%s: %v", c.Role, c.MachineID, err)
 				batch = batch[:0]
 				return false // connection broken
@@ -467,6 +528,10 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		close(pingDone)
 		ctx.closeWriter()
+		if ctx.writerDone != nil {
+			<-ctx.writerDone
+		}
+		releaseWebsocketWriteLock(conn)
 		g.cleanupConnection(ctx)
 	}()
 
@@ -1673,7 +1738,7 @@ func (g *Gateway) handleDeviceGatewayDevicesList(ctx *ConnContext, msg Envelope)
 			payload[key] = value
 		}
 	}
-	return ctx.Conn.WriteJSON(map[string]any{"type": "im.device_gateway_devices", "request_id": msg.RequestID, "payload": payload})
+	return writeWSJSON(ctx.Conn, map[string]any{"type": "im.device_gateway_devices", "request_id": msg.RequestID, "payload": payload})
 }
 
 func (g *Gateway) handleDeviceGatewayDeviceDelete(ctx *ConnContext, msg Envelope) error {
@@ -2041,14 +2106,22 @@ func cloneProjects(items []map[string]any) []map[string]any {
 	return out
 }
 
-func writeWSJSON(conn *websocket.Conn, v any) error { return conn.WriteJSON(v) }
+func writeWSJSON(conn *websocket.Conn, v any) error {
+	if conn == nil {
+		return errors.New("WebSocket connection is unavailable")
+	}
+	lock := websocketWriteLock(conn)
+	lock.Lock()
+	defer lock.Unlock()
+	return conn.WriteJSON(v)
+}
 
 func writeWSError(conn *websocket.Conn, code, message string) error {
-	return conn.WriteJSON(map[string]any{"type": "error", "payload": map[string]any{"code": code, "message": message, "ts": time.Now().Unix()}})
+	return writeWSJSON(conn, map[string]any{"type": "error", "payload": map[string]any{"code": code, "message": message, "ts": time.Now().Unix()}})
 }
 
 func writeWSRequestError(conn *websocket.Conn, requestID, code, message string) error {
-	return conn.WriteJSON(map[string]any{"type": "error", "request_id": requestID, "payload": map[string]any{"code": code, "message": message, "ts": time.Now().Unix()}})
+	return writeWSJSON(conn, map[string]any{"type": "error", "request_id": requestID, "payload": map[string]any{"code": code, "message": message, "ts": time.Now().Unix()}})
 }
 
 func writeAck(conn *websocket.Conn, requestID string) error {
@@ -2062,7 +2135,7 @@ func writeAckPayload(conn *websocket.Conn, requestID string, payload map[string]
 	if _, ok := payload["ok"]; !ok {
 		payload["ok"] = true
 	}
-	return conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": payload})
+	return writeWSJSON(conn, map[string]any{"type": "ack", "request_id": requestID, "payload": payload})
 }
 
 // injectHubConfig adds hub_config (including digital_employee_authorization) to

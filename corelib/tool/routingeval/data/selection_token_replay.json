@@ -1,0 +1,49 @@
+{
+  "category": "selection_token_replay",
+  "category_id": 10,
+  "title": "selection token and host-call replay",
+  "design_ref": "10.1 item 10",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "stable-search-plan",
+      "title": "Search plan identity is deterministic",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "search",
+            "capability": "information.search.web"
+          }
+        ]
+      },
+      "notes": "Grant replay is in semantic_execution_coordinator_test.go."
+    }
+  ]
+}

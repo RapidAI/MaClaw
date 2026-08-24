@@ -63,6 +63,39 @@ func (s *Session) SetMode(mode ObserveMode) {
 	}
 }
 
+// SetAllowPixelClick enables raw x,y clicks (required for vision models that
+// see the screenshot and click in image pixel space).
+func (s *Session) SetAllowPixelClick(allow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.AllowPixelClick = allow
+	if s.policy != nil {
+		s.policy.SetAllowPixelClick(allow)
+	}
+}
+
+// ApplyPerceptionMode switches between LLM-vision and OmniParser/OCR observe.
+func (s *Session) ApplyPerceptionMode(vision bool) {
+	if vision {
+		s.SetMode(ObserveVisionAssist)
+		s.SetAllowPixelClick(true)
+		return
+	}
+	s.SetMode(ObserveTextPrimary)
+	s.SetAllowPixelClick(false)
+}
+
+// MapVisionClick maps coordinates from the screenshot sent to a vision model
+// into capture/screen space used by InputSimulator.
+func (s *Session) MapVisionClick(x, y int) (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return x, y
+	}
+	return MapVisionClick(s.last.Meta, x, y)
+}
+
 // SetTargetApps updates the allowlist (empty = all non-blocked).
 func (s *Session) SetTargetApps(apps []string) {
 	s.mu.Lock()
@@ -176,7 +209,8 @@ func (s *Session) CommitObserve(
 	marks := BuildMarks(elements, ocr)
 	if s.windowResolver != nil {
 		for i := range marks {
-			marks[i].Window = s.windowResolver(marks[i].CenterX, marks[i].CenterY)
+			sx, sy := MapCaptureToScreen(meta, marks[i].CenterX, marks[i].CenterY)
+			marks[i].Window = s.windowResolver(sx, sy)
 		}
 	}
 	excerpt := FormatOCRExcerpt(ocr, s.cfg.OCRMaxChars)
@@ -190,7 +224,11 @@ func (s *Session) CommitObserve(
 		OCRLines:      append([]taskengine.OCRResult(nil), ocr...),
 		ObservedAt:    time.Now(),
 	}
-	res.TextForModel = RenderTextObserve(res, s.cfg.ElementsMaxInText)
+	if s.cfg.Mode == ObserveVisionAssist {
+		res.TextForModel = RenderVisionObserve(res)
+	} else {
+		res.TextForModel = RenderTextObserve(res, s.cfg.ElementsMaxInText)
+	}
 	s.last = res
 	s.refsValid = true
 	s.screenshotN++
@@ -201,6 +239,26 @@ func (s *Session) CommitObserve(
 		OK:     true,
 	})
 	return res
+}
+
+// ReplaceLastElements swaps SoM marks on the last observe and refreshes
+// TextForModel. Captioning must copy the slice first so HTTP work does not
+// mutate session state without the lock.
+func (s *Session) ReplaceLastElements(els []MarkedElement) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return
+	}
+	s.last.Elements = els
+	if s.cfg.Mode == ObserveVisionAssist {
+		s.last.TextForModel = RenderVisionObserve(s.last)
+	} else {
+		s.last.TextForModel = RenderTextObserve(s.last, s.cfg.ElementsMaxInText)
+	}
 }
 
 // InvalidateRefs marks the last SoM table stale (call after successful actions).
@@ -221,7 +279,19 @@ func (s *Session) ResolveClickRef(ref string) (x, y int, el *MarkedElement, err 
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	return m.CenterX, m.CenterY, m, nil
+	sx, sy := MapCaptureToScreen(s.last.Meta, m.CenterX, m.CenterY)
+	return sx, sy, m, nil
+}
+
+// MapCaptureClick converts capture/image pixels (after any vision resize
+// mapping) into virtual-desktop coordinates for InputSimulator.
+func (s *Session) MapCaptureClick(x, y int) (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return x, y
+	}
+	return MapCaptureToScreen(s.last.Meta, x, y)
 }
 
 // AppendElements adds synthesized elements (e.g. OCR text hits from
@@ -299,6 +369,30 @@ func (s *Session) LastObserve() *ObserveResult {
 	return s.last
 }
 
+// LastValidObserve returns a snapshot of the last observe while refs are still
+// valid. A concurrent click cannot sneak between RefsValid and LastObserve.
+func (s *Session) LastValidObserve() *ObserveResult {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.refsValid || s.last == nil {
+		return nil
+	}
+	cp := *s.last
+	if len(s.last.Elements) > 0 {
+		cp.Elements = append([]MarkedElement(nil), s.last.Elements...)
+	}
+	if len(s.last.Windows) > 0 {
+		cp.Windows = append([]string(nil), s.last.Windows...)
+	}
+	if len(s.last.OCRLines) > 0 {
+		cp.OCRLines = append([]taskengine.OCRResult(nil), s.last.OCRLines...)
+	}
+	return &cp
+}
+
 // RefsValid reports whether click(ref) can be used.
 func (s *Session) RefsValid() bool {
 	s.mu.Lock()
@@ -317,16 +411,37 @@ func (s *Session) Audit() []ActionRecord {
 
 // Playbook returns the system/tool guidance for text-primary Computer Use.
 func Playbook() string {
+	return PlaybookFor(ObserveTextPrimary)
+}
+
+// PlaybookVision returns operating rules when the chat model can see screenshots.
+func PlaybookVision() string {
+	return PlaybookFor(ObserveVisionAssist)
+}
+
+// PlaybookFor returns Computer Use rules for the active perception mode.
+func PlaybookFor(mode ObserveMode) string {
+	if mode == ObserveVisionAssist {
+		return `Computer Use (vision):
+- The current model supports images. computer_observe attaches a screenshot with numbered SoM marks (a11y boxes). Look at the image.
+- Click with computer_click x=<image_x> y=<image_y> in the attached screenshot's pixel space, or ref=eN for a drawn mark.
+- After every click/type/key/scroll/focus/select/drag, call computer_observe again so you see the new screen.
+- Use computer_focus with a window title substring before interacting with a specific app.
+- To reach a person/chat in an IM or any long list: use the app's own search box (click the search field, computer_type the name, re-observe).
+- Prefer computer_key for shortcuts (enter, ctrl+c, alt+tab). Use computer_select for list/tab items and computer_scroll_into_view before clicking off-screen chrome.
+- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.`
+	}
 	return `Computer Use (text-primary):
-- You may be a text-only model. Screenshots are NOT sent to you.
+- You may be a text-only model. Screenshots are NOT sent to you. Local OmniParser/OCR provide eN refs.
 - Always call computer_observe first. It returns windows, eN elements (from local OmniParser/OCR/a11y), and ocr_excerpt.
-- Pass the window parameter (app title substring) to computer_observe to get accessibility elements (list items, text nodes) for that app — without it only YOLO boxes and OCR are available.
-- To locate a specific person, button, or text, call computer_find query=... first. It searches element labels AND raw screen text, and returns clickable eN refs even for text that no element covers.
+- Pass the window parameter (app title substring) to computer_observe to focus a specific app's accessibility tree. If omitted, the foreground window is enumerated automatically.
+- To locate a specific person, button, or text, call computer_find query=... first. It searches element labels AND raw OCR text, and returns clickable eN refs even for text that no element covers.
 - To reach a person/chat in an IM or any long list: prefer the app's own search box (focus window → find/click the search field → computer_type the name → computer_find the result). Otherwise computer_scroll and re-observe/re-find to page through the list.
 - Use computer_focus with a window title substring before interacting with a specific app.
-- Click with computer_click ref=eN. Do NOT invent pixel coordinates unless explicitly allowed.
+- Click with computer_click ref=eN. Use computer_select for list/tab items and computer_scroll_into_view to reveal off-screen chrome. computer_drag moves from_ref to to_ref.
+- Do NOT invent pixel coordinates unless explicitly allowed.
 - After every click/type/key/scroll/focus, call computer_observe again (refs become stale).
 - Prefer computer_key / computer_scroll for navigation when labels are missing.
 - If elements are empty, report that local detection failed; do not guess clicks.
-- Web pages: prefer browser_* tools when available. Computer Use is for native desktop GUIs.`
+- Web pages: prefer browser_* tools when available. Office documents: prefer office_read. Computer Use is for native desktop GUIs.`
 }

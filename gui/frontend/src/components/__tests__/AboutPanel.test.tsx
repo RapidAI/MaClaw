@@ -21,10 +21,12 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
         qr_payload: '{"v":2,"type":"maclaw_mobile_desktop_authorization","session_id":"maqr_test","hub_url":"https://hub.example"}',
         expires_at: '2026-07-05T12:00:00Z',
     }),
+    GetEmbedAccelInfo: vi.fn().mockResolvedValue({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' }),
+    SetEmbedHWAccel: vi.fn().mockResolvedValue({}),
 }));
 
 import { AboutPanel } from '../AboutPanel';
-import { CreateMobileAuthDesktopQRSession, GetHubUserRanking, GetRemoteRegistrationProfile, PatchConfigFields, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
+import { CreateMobileAuthDesktopQRSession, GetEmbedAccelInfo, GetHubUserRanking, GetRemoteRegistrationProfile, PatchConfigFields, ProbeRemoteHub, SendRemoteRegistrationContactCode, VerifyRemoteRegistrationContactCode } from '../../../wailsjs/go/main/App';
 
 const baseProps = {
     currentIcon: '/logo.png',
@@ -194,6 +196,47 @@ describe('AboutPanel', () => {
         const versionMark = screen.getByLabelText('7');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
         expect(screen.getByRole('heading', { name: '码卡龙 7 万变' })).toBeTruthy();
+    });
+
+    it('does not show a hardware-accel badge when instance backend is cpu-simd', async () => {
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' });
+        render(
+            <AboutPanel
+                {...baseProps}
+                t={(key) => key === 'aboutHwAccelBadge' ? 'NPU' : baseProps.t(key)}
+            />,
+        );
+        await waitFor(() => expect(GetEmbedAccelInfo).toHaveBeenCalled());
+        expect(screen.queryByText('NPU')).toBeNull();
+    });
+
+    it('shows a hardware-accel badge after the product title when backend is amd-npu', async () => {
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'amd-npu', npu_present: true, device: 'AMD IPU', reason: 'NPU/XDNA present' });
+        render(
+            <AboutPanel
+                {...baseProps}
+                t={(key) => {
+                    if (key === 'aboutProductName') return 'MaClaw Bedrock';
+                    if (key === 'aboutHwAccelBadge') return 'NPU';
+                    return baseProps.t(key);
+                }}
+            />,
+        );
+        await waitFor(() => expect(screen.getByText('NPU')).toBeTruthy());
+        const heading = screen.getByRole('heading');
+        expect(heading.textContent).toContain('NPU');
+    });
+
+    it('hides the badge when NPU is present but instance backend is cpu-simd (switch off)', async () => {
+        vi.mocked(GetEmbedAccelInfo).mockResolvedValue({ backend: 'cpu-simd', npu_present: true, device: 'AMD IPU', reason: 'hw accel switch off' });
+        render(
+            <AboutPanel
+                {...baseProps}
+                t={(key) => key === 'aboutHwAccelBadge' ? 'NPU' : baseProps.t(key)}
+            />,
+        );
+        await waitFor(() => expect(GetEmbedAccelInfo).toHaveBeenCalled());
+        expect(screen.queryByText('NPU')).toBeNull();
     });
 
     it('renders the TigerClaw product name with the version 7 display treatment', () => {

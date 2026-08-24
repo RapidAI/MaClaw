@@ -1,0 +1,5 @@
+# Dedicated non-release HIL for the profile-neutral Sleep Schedule handoff.
+# Fangtang is the physical carrier only; no production runtime control is added.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_TEST=y
+CONFIG_MACLAW_SLEEP_SCHEDULE_END_HANDOFF_HIL_TEST=y

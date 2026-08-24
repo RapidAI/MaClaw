@@ -112,3 +112,26 @@ func TestDeviceBindingStoreDoesNotRetainFailedPersistence(t *testing.T) {
 		t.Fatal("failed binding became authorized")
 	}
 }
+
+func TestDeviceBindingStoreTransfersDeviceToNewPairingOwner(t *testing.T) {
+	store := newSrvDeviceUpdateBindingStore(t.TempDir())
+	identity := testFirmwareIdentity("esp32s3-transfer-owner")
+	ownerA := srvThirdPartyPrincipal{Principal: agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}}
+	ownerB := srvThirdPartyPrincipal{Principal: agentservice.Principal{TenantID: "tenant-b", UserID: "user-b"}}
+	if err := store.bind(context.Background(), ownerA, identity, true); err != nil {
+		t.Fatal(err)
+	}
+	firstEpoch := store.data[identity.DeviceID].CredentialEpoch
+	if err := store.bind(context.Background(), ownerB, identity, true); err != nil {
+		t.Fatalf("pairing transfer failed: %v", err)
+	}
+	if store.lookup(ownerA, identity) {
+		t.Fatal("previous owner retained transferred device identity")
+	}
+	if !store.lookup(ownerB, identity) {
+		t.Fatal("new owner did not receive transferred device identity")
+	}
+	if got := store.data[identity.DeviceID].CredentialEpoch; got <= firstEpoch {
+		t.Fatalf("credential epoch did not advance: before=%d after=%d", firstEpoch, got)
+	}
+}

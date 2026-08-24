@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,9 +27,12 @@ type AuditLog struct {
 }
 
 const (
-	auditMaxFileSize   = 50 * 1024 * 1024 // 50 MB
-	auditRetentionDays = 30
+	auditMaxFileSize     = 50 * 1024 * 1024 // 50 MB
+	auditRetentionDays   = 30
+	auditNewestLineLimit = 1024 * 1024
 )
+
+var auditNewestReadChunk = 256 * 1024
 
 // NewAuditLog creates an AuditLog that writes to the given directory.
 // The directory is created if it does not exist.
@@ -117,6 +122,177 @@ func (l *AuditLog) Query(filter security.AuditFilter) ([]security.AuditEntry, er
 	})
 
 	return results, nil
+}
+
+// QueryNewestMatching returns the newest matching entries in chronological
+// order, walking log files from newest date/seq toward oldest and stopping
+// once limit matches are collected.
+func (l *AuditLog) QueryNewestMatching(match func(security.AuditEntry) bool, limit int) ([]security.AuditEntry, error) {
+	if l == nil || match == nil || limit <= 0 {
+		return nil, nil
+	}
+	l.mu.Lock()
+	if l.current != nil {
+		_ = l.current.Sync()
+	}
+	l.mu.Unlock()
+
+	files, err := l.logFilesNewestFirst()
+	if err != nil {
+		return nil, fmt.Errorf("audit log: list files: %w", err)
+	}
+	newest := make([]security.AuditEntry, 0, limit)
+	for _, f := range files {
+		entries, err := l.collectNewestFromFile(f, match, limit-len(newest))
+		if len(entries) > 0 {
+			newest = append(newest, entries...)
+			if len(newest) >= limit {
+				newest = newest[:limit]
+				reverseAuditEntries(newest)
+				return newest, nil
+			}
+		}
+		if err != nil {
+			continue
+		}
+	}
+	reverseAuditEntries(newest)
+	return newest, nil
+}
+
+func (l *AuditLog) logFilesNewestFirst() ([]string, error) {
+	files, err := l.logFiles()
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(files, func(i, j int) bool {
+		left, right := filepath.Base(files[i]), filepath.Base(files[j])
+		leftDate, rightDate := extractDateFromFilename(left), extractDateFromFilename(right)
+		if leftDate != rightDate {
+			return leftDate > rightDate
+		}
+		return auditLogFileSeq(left) > auditLogFileSeq(right)
+	})
+	return files, nil
+}
+
+func auditLogFileSeq(name string) int {
+	name = strings.TrimPrefix(name, "audit-")
+	name = strings.TrimSuffix(name, ".jsonl")
+	if len(name) <= 10 {
+		return 0
+	}
+	rest := strings.TrimPrefix(name[10:], ".")
+	n := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func reverseAuditEntries(entries []security.AuditEntry) {
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+}
+
+func (l *AuditLog) collectNewestFromFile(path string, match func(security.AuditEntry) bool, need int) ([]security.AuditEntry, error) {
+	if need <= 0 {
+		return nil, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	chunk := auditNewestReadChunk
+	if chunk <= 0 || info.Size() <= int64(chunk) {
+		entries, err := l.readFile(path)
+		if err != nil {
+			return nil, err
+		}
+		hits := make([]security.AuditEntry, 0, need)
+		for i := len(entries) - 1; i >= 0 && len(hits) < need; i-- {
+			if match(entries[i]) {
+				hits = append(hits, entries[i])
+			}
+		}
+		return hits, nil
+	}
+	return l.collectNewestFromFileTail(path, info.Size(), match, need)
+}
+
+func (l *AuditLog) collectNewestFromFileTail(path string, size int64, match func(security.AuditEntry) bool, need int) ([]security.AuditEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	hits := make([]security.AuditEntry, 0, need)
+	leftover := []byte(nil)
+	offset := size
+	buf := make([]byte, auditNewestReadChunk)
+	for offset > 0 && len(hits) < need {
+		readSize := int64(auditNewestReadChunk)
+		if offset < readSize {
+			readSize = offset
+		}
+		readAt := offset - readSize
+		n, err := f.ReadAt(buf[:readSize], readAt)
+		if n == 0 {
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return hits, err
+			}
+			break
+		}
+		offset = readAt
+		chunk := append([]byte{}, buf[:n]...)
+		if n == int(readSize) {
+			if len(leftover) > 0 {
+				chunk = append(chunk, leftover...)
+			}
+		} else {
+			hits = appendAuditMatch(hits, leftover, match, need)
+		}
+		lines := bytes.Split(chunk, []byte{'\n'})
+		if offset > 0 {
+			leftover = lines[0]
+			if len(leftover) > auditNewestLineLimit {
+				leftover = nil
+			}
+			lines = lines[1:]
+		} else {
+			leftover = nil
+		}
+		for i := len(lines) - 1; i >= 0 && len(hits) < need; i-- {
+			hits = appendAuditMatch(hits, lines[i], match, need)
+		}
+	}
+	return hits, nil
+}
+
+func appendAuditMatch(hits []security.AuditEntry, line []byte, match func(security.AuditEntry) bool, need int) []security.AuditEntry {
+	if len(hits) >= need {
+		return hits
+	}
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return hits
+	}
+	var entry security.AuditEntry
+	if json.Unmarshal(line, &entry) != nil {
+		return hits
+	}
+	if match(entry) {
+		return append(hits, entry)
+	}
+	return hits
 }
 
 // CleanOldLogs removes log files older than 30 days.

@@ -5,7 +5,9 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -46,13 +48,14 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 		refreshedAuthorization := false
 		if currentAccessCtrl != nil {
 			if shouldRefreshMaClawComputeStatus(r) {
-				if refreshed, err := currentAccessCtrl.RefreshAuthorizationStatus(r.Context(), tenantID); err == nil {
-					authStatus = refreshed
-					refreshedAuthorization = true
-					log.Printf("[maclaw-compute-status] refresh OK tenant=%s allow=%v auths=%d", tenantID, refreshed != nil && refreshed.AllowExternalProviders, len(refreshedAuthsSafe(refreshed)))
-				} else if err != nil {
+				refreshed, err := currentAccessCtrl.RefreshAuthorizationStatus(r.Context(), tenantID)
+				if err != nil {
 					result["authorization_error"] = err.Error()
 					log.Printf("[maclaw-compute-status] refresh ERROR tenant=%s err=%v", tenantID, err)
+				} else if refreshed != nil {
+					authStatus = refreshed
+					refreshedAuthorization = true
+					log.Printf("[maclaw-compute-status] refresh OK tenant=%s allow=%v auths=%d", tenantID, refreshed.AllowExternalProviders, len(refreshedAuthsSafe(refreshed)))
 				}
 			}
 			if authStatus == nil {
@@ -73,9 +76,9 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 				if status.AllowExternalProviders {
 					result["allow_external_providers"] = true
 				}
-				if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(status, tenantID); heartbeatStatus != nil {
+				if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(status, tenantID, currentAccessCtrl); heartbeatStatus != nil {
 					if currentAccessCtrl != nil && !refreshedAuthorization {
-						currentAccessCtrl.UpdateFromHeartbeat(tenantID, heartbeatStatus)
+						currentAccessCtrl.CacheTenantAuthorization(tenantID, heartbeatStatus)
 					}
 					if !refreshedAuthorization {
 						authStatus = heartbeatStatus
@@ -124,13 +127,16 @@ func MaClawComputeStatusHandler(centerSvc *center.Service, accessCtrl *llmservic
 		if adminUser := AdminFromContext(r.Context()); adminUser != nil && adminUser.Email != "" {
 			result["admin_email"] = adminUser.Email
 		}
+		if billing := officialProviderBillingViews(currentAccessCtrl, authStatus); len(billing) > 0 {
+			result["provider_billing"] = billing
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)
 	}
 }
 
-func llmComputeStatusFromCenterAuthorizationPayload(status *center.RegistrationState, tenantID string) *llmservice.TenantAuthorizationStatus {
+func llmComputeStatusFromCenterAuthorizationPayload(status *center.RegistrationState, tenantID string, ac *llmservice.TenantLLMAccessControl) *llmservice.TenantAuthorizationStatus {
 	if status == nil || len(status.Authorizations) == 0 {
 		return nil
 	}
@@ -139,14 +145,21 @@ func llmComputeStatusFromCenterAuthorizationPayload(status *center.RegistrationS
 		return nil
 	}
 	var payload struct {
-		Tenants map[string]*llmservice.TenantAuthorizationStatus `json:"tenants"`
+		Tenants         map[string]*llmservice.TenantAuthorizationStatus `json:"tenants"`
+		ProviderBilling []llmpool.ProviderBillingPolicy                  `json:"provider_billing"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil
 	}
 	tenantID = store.NormalizeTenantID(tenantID)
+	if ac != nil {
+		ac.SeedOfficialBillingIfEmpty(raw)
+	}
 	for _, candidate := range llmComputeAuthorizationTenantKeys(tenantID) {
 		if auth := payload.Tenants[candidate]; auth != nil {
+			if len(auth.ProviderBilling) == 0 && len(payload.ProviderBilling) > 0 {
+				auth.ProviderBilling = payload.ProviderBilling
+			}
 			return auth
 		}
 	}
@@ -183,6 +196,12 @@ func llmComputeAuthorizationTenantKeys(tenantID string) []string {
 }
 
 func tenantIDFromRequest(r *http.Request) string {
+	// A tenant administrator is permanently scoped by the authenticated token.
+	// Do not let a query parameter select another tenant's compute status or
+	// trigger a refresh for it.
+	if admin := AdminFromContext(r.Context()); adminHasTenantScope(admin) {
+		return store.NormalizeTenantID(AdminTenantID(r.Context()))
+	}
 	// Try query param first
 	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
 		return store.NormalizeTenantID(tid)
@@ -195,6 +214,53 @@ func tenantIDFromRequest(r *http.Request) string {
 		return store.NormalizeTenantID(tid)
 	}
 	return ""
+}
+
+type officialProviderBillingView struct {
+	ProviderID               string                           `json:"provider_id,omitempty"`
+	Timezone                 string                           `json:"timezone,omitempty"`
+	CreditMultiplier         float64                          `json:"credit_multiplier"`
+	CreditMultiplierSchedule []llmpool.CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
+	CurrentMultiplier        float64                          `json:"current_multiplier"`
+}
+
+func officialProviderBillingViews(ac *llmservice.TenantLLMAccessControl, auth *llmservice.TenantAuthorizationStatus) []officialProviderBillingView {
+	var policies []llmpool.ProviderBillingPolicy
+	if ac != nil {
+		policies = ac.OfficialProviderBilling()
+	}
+	if len(policies) == 0 && auth != nil {
+		policies = auth.ProviderBilling
+	}
+	if len(policies) == 0 {
+		return nil
+	}
+	now := time.Now()
+	out := make([]officialProviderBillingView, 0, len(policies))
+	for _, policy := range policies {
+		policy = llmpool.NormalizeProviderBillingPolicy(policy)
+		if !officialProviderBillingHasTimeOfUse(policy) || policy.Paused {
+			continue
+		}
+		out = append(out, officialProviderBillingView{
+			ProviderID:               policy.ProviderID,
+			Timezone:                 policy.Timezone,
+			CreditMultiplier:         policy.CreditMultiplier,
+			CreditMultiplierSchedule: policy.CreditMultiplierSchedule,
+			CurrentMultiplier:        llmpool.ResolveCreditMultiplier(policy, now),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func officialProviderBillingHasTimeOfUse(policy llmpool.ProviderBillingPolicy) bool {
+	if len(policy.CreditMultiplierSchedule) > 0 {
+		return true
+	}
+	return policy.CreditMultiplier != 1
 }
 
 func shouldRefreshMaClawComputeStatus(r *http.Request) bool {

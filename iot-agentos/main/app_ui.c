@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "device_api.h"
+#include "services/foreground_coordinator.h"
 #include "sleep_schedule_service.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -18,6 +19,24 @@ static bool s_upload_progress_valid;
 static unsigned s_upload_progress_percent;
 static char s_upload_progress_stage[32];
 static uint32_t s_display_off_idle_ms = APP_UI_DEFAULT_DISPLAY_OFF_IDLE_MS;
+/* A semantic acknowledgement, deliberately independent of the asynchronous
+ * physical DISPLAY_OFF transition.  This lets the Configuration coordinator
+ * distinguish retained policy intent from a later panel/power observation. */
+static bool s_display_off_idle_policy_known;
+static device_status_t s_display_off_idle_policy_last_status = DEVICE_STATUS_UNAVAILABLE;
+/* This is a Power-scheduler admission receipt, not a panel-state shadow. It
+ * prevents Configuration from calling a policy applied merely because the UI
+ * stored its timeout while an immediate ambient deadline failed to arm. */
+static bool s_display_off_idle_schedule_required;
+static bool s_display_off_idle_schedule_known;
+static bool s_display_off_idle_schedule_armed;
+static device_status_t s_display_off_idle_schedule_last_status = DEVICE_STATUS_UNAVAILABLE;
+/* A policy timeout change cannot reuse an old deadline until Power has
+ * observably cancelled it.  Retain this across coordinator retries: the
+ * desired value is already stored, so comparing only the next requested value
+ * would otherwise turn a failed replacement into a false "already armed"
+ * acknowledgement for the former timeout. */
+static bool s_display_off_idle_replacement_pending;
 /* The common UI owns one idle deadline.  Rendering/pet synchronization may
  * publish the same ambient scene repeatedly; those repaints are not activity
  * and must never renew an already running deadline. */
@@ -89,7 +108,7 @@ static bool model_is_ambient_pet(app_ui_surface_t surface, const char *pet_state
            (!strcmp(pet_state, "idle") || !strcmp(pet_state, "quiet"));
 }
 
-static void cancel_ambient_display_off(void);
+static device_status_t cancel_ambient_display_off(void);
 
 static void replay_lock(void) {
     if (s_replay_mutex) xSemaphoreTakeRecursive(s_replay_mutex, portMAX_DELAY);
@@ -99,10 +118,23 @@ static void replay_unlock(void) {
     if (s_replay_mutex) xSemaphoreGiveRecursive(s_replay_mutex);
 }
 
-static void arm_ambient_display_off(uint32_t delay_ms) {
+static void note_idle_policy_schedule_observation(bool required,
+                                                  bool known,
+                                                  bool armed,
+                                                  device_status_t status) {
+    taskENTER_CRITICAL(&s_model_lock);
+    if (s_display_off_idle_policy_known) {
+        s_display_off_idle_schedule_required = required;
+        s_display_off_idle_schedule_known = known;
+        s_display_off_idle_schedule_armed = armed;
+        s_display_off_idle_schedule_last_status = status;
+    }
+    taskEXIT_CRITICAL(&s_model_lock);
+}
+
+static device_status_t arm_ambient_display_off(uint32_t delay_ms) {
 	if (s_display_off_idle_ms == 0) {
-		cancel_ambient_display_off();
-		return;
+		return cancel_ambient_display_off();
 	}
 	if (delay_ms == APP_UI_DEFAULT_DISPLAY_OFF_IDLE_MS) delay_ms = s_display_off_idle_ms;
     taskENTER_CRITICAL(&s_model_lock);
@@ -115,21 +147,40 @@ static void arm_ambient_display_off(uint32_t delay_ms) {
          * deadline has passed, do not let a harmless ambient repaint turn it
          * into a fresh full timeout while that callback is about to run. */
         taskEXIT_CRITICAL(&s_model_lock);
-        return;
+        note_idle_policy_schedule_observation(true, false, false, DEVICE_STATUS_BUSY);
+        return DEVICE_STATUS_BUSY;
     }
     if (!already_armed && !scheduling) s_ambient_display_off_scheduling = true;
     taskEXIT_CRITICAL(&s_model_lock);
-    if (already_armed || scheduling) return;
+    if (already_armed) {
+        /* The same retained policy may be reconciled again while its original
+         * deadline is still active. It is an already-observed scheduler
+         * admission, not a reason to create a second deadline. */
+        note_idle_policy_schedule_observation(true, true, true, DEVICE_STATUS_OK);
+        return DEVICE_STATUS_OK;
+    }
+    if (scheduling) {
+        note_idle_policy_schedule_observation(true, false, false, DEVICE_STATUS_BUSY);
+        return DEVICE_STATUS_BUSY;
+    }
     delay_ms = sleep_schedule_service_adjust_display_off_delay(delay_ms);
     device_status_t status = device_power_schedule_display_off(delay_ms);
+    bool observed_armed = false;
+    if (status == DEVICE_STATUS_OK) {
+        device_power_snapshot_t power = {0};
+        observed_armed = device_power_get_snapshot(&power) && power.display_off_armed;
+        if (!observed_armed) status = DEVICE_STATUS_BUSY;
+    }
     taskENTER_CRITICAL(&s_model_lock);
     s_ambient_display_off_scheduling = false;
-    if (status == DEVICE_STATUS_OK) {
+    if (observed_armed) {
         s_ambient_display_off_armed = true;
         s_ambient_display_off_deadline_us = (uint64_t)esp_timer_get_time() +
                                              (uint64_t)delay_ms * 1000u;
     }
     taskEXIT_CRITICAL(&s_model_lock);
+    note_idle_policy_schedule_observation(true, status == DEVICE_STATUS_OK,
+                                          observed_armed, status);
     if (status != DEVICE_STATUS_OK) {
         /* Power scheduling is an energy optimization; it must not make a
          * foreground transaction fail on an otherwise usable device. */
@@ -137,34 +188,89 @@ static void arm_ambient_display_off(uint32_t delay_ms) {
     } else {
         ESP_LOGI("maclaw_ui", "DISPLAY_OFF armed after %lu ms", (unsigned long)delay_ms);
     }
+    return status;
 }
 
-void app_ui_set_display_off_idle_ms(uint32_t idle_after_ms) {
+device_status_t app_ui_apply_display_off_idle_policy(uint32_t idle_after_ms) {
 	bool timeout_changed;
+	bool replacement_pending;
 	taskENTER_CRITICAL(&s_model_lock);
 	timeout_changed = s_display_off_idle_ms != idle_after_ms;
 	s_display_off_idle_ms = idle_after_ms;
+	if (timeout_changed && idle_after_ms != 0) {
+		s_display_off_idle_replacement_pending = true;
+	}
+	replacement_pending = s_display_off_idle_replacement_pending;
+	/* The policy is fully retained under the same model lock before any
+	 * ambient-only scheduling decision below. A foreground scene may suppress
+	 * scheduling for now, but it must not make Configuration reconciliation
+	 * report that the requested policy was never accepted. */
+	s_display_off_idle_policy_known = true;
+	s_display_off_idle_policy_last_status = DEVICE_STATUS_OK;
+	s_display_off_idle_schedule_required = false;
+	s_display_off_idle_schedule_known = false;
+	s_display_off_idle_schedule_armed = false;
+	s_display_off_idle_schedule_last_status = DEVICE_STATUS_UNAVAILABLE;
 	taskEXIT_CRITICAL(&s_model_lock);
 	if (idle_after_ms == 0) {
-		cancel_ambient_display_off();
+		const device_status_t cancel_status = cancel_ambient_display_off();
+		note_idle_policy_schedule_observation(false, cancel_status == DEVICE_STATUS_OK,
+									 false, cancel_status);
+		return cancel_status;
 	} else {
-		if (timeout_changed) cancel_ambient_display_off();
+		if (timeout_changed || replacement_pending) {
+			const device_status_t cancel_status = cancel_ambient_display_off();
+			if (cancel_status != DEVICE_STATUS_OK) return cancel_status;
+			taskENTER_CRITICAL(&s_model_lock);
+			s_display_off_idle_replacement_pending = false;
+			taskEXIT_CRITICAL(&s_model_lock);
+		}
 		app_ui_model_t model = app_ui_snapshot();
 		bool ambient = (model.surface == APP_UI_SURFACE_PET) &&
 			(!strcmp(model.pet_state, "idle") || !strcmp(model.pet_state, "quiet"));
 		if (!ambient || model.recording_active || model.command_display_locked ||
-			model.alarm_visual_active) return;
-		arm_ambient_display_off(idle_after_ms);
+			model.alarm_visual_active) {
+			note_idle_policy_schedule_observation(false, true, false, DEVICE_STATUS_OK);
+			return DEVICE_STATUS_OK;
+		}
+		return arm_ambient_display_off(idle_after_ms);
 	}
+	return DEVICE_STATUS_OK;
 }
 
-static void cancel_ambient_display_off(void) {
-    device_power_cancel_display_off();
+bool app_ui_get_display_off_idle_policy_state(
+    app_ui_display_off_idle_policy_state_t *out_state) {
+    if (!out_state) return false;
+    taskENTER_CRITICAL(&s_model_lock);
+    *out_state = (app_ui_display_off_idle_policy_state_t){
+        .struct_size = sizeof(*out_state),
+        .abi_version = APP_UI_DISPLAY_OFF_IDLE_POLICY_STATE_ABI_VERSION,
+        .known = s_display_off_idle_policy_known,
+        .idle_after_ms = s_display_off_idle_ms,
+        .last_status = s_display_off_idle_policy_last_status,
+        .schedule_required = s_display_off_idle_schedule_required,
+        .schedule_known = s_display_off_idle_schedule_known,
+        .schedule_armed = s_display_off_idle_schedule_armed,
+        .schedule_last_status = s_display_off_idle_schedule_last_status,
+    };
+    taskEXIT_CRITICAL(&s_model_lock);
+    return true;
+}
+
+static device_status_t cancel_ambient_display_off(void) {
+	const device_status_t status = device_power_cancel_display_off();
+	if (status != DEVICE_STATUS_OK) {
+		note_idle_policy_schedule_observation(true, false, false, status);
+		return status;
+	}
     taskENTER_CRITICAL(&s_model_lock);
     s_ambient_display_off_armed = false;
     s_ambient_display_off_scheduling = false;
     s_ambient_display_off_deadline_us = 0;
+    s_display_off_idle_replacement_pending = false;
     taskEXIT_CRITICAL(&s_model_lock);
+    note_idle_policy_schedule_observation(false, true, false, DEVICE_STATUS_OK);
+	return DEVICE_STATUS_OK;
 }
 
 static void replay_release_dynamic_locked(void) {
@@ -290,6 +396,7 @@ void app_ui_init(void) {
     s_ambient_display_off_armed = false;
     s_ambient_display_off_scheduling = false;
     s_ambient_display_off_deadline_us = 0;
+    s_display_off_idle_replacement_pending = false;
     s_model.surface = APP_UI_SURFACE_PET;
     strlcpy(s_model.pet_state, "idle", sizeof(s_model.pet_state));
     strlcpy(s_model.pet_skin, "clawmate", sizeof(s_model.pet_skin));
@@ -309,7 +416,7 @@ app_ui_model_t app_ui_snapshot(void) {
 }
 
 void app_ui_show_startup_screen(void) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     replay_lock();
     taskENTER_CRITICAL(&s_model_lock);
     s_model.surface = APP_UI_SURFACE_STARTUP;
@@ -320,6 +427,9 @@ void app_ui_show_startup_screen(void) {
     model_touch_locked();
     bool alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
+    foreground_coordinator_observe_acquire(FOREGROUND_OWNER_STARTUP,
+                                           FOREGROUND_PRIORITY_RECOVERY,
+                                           FOREGROUND_SCENE_STARTUP_SPLASH);
     replay_begin_locked(APP_UI_REPLAY_STARTUP);
     if (alarm_active) {
         replay_unlock();
@@ -368,6 +478,7 @@ void app_ui_set_pet_state(const char *state) {
         device_display_set_pet_state(display_state);
     }
     if (!recording && !suppress_ambient && !alarm_active && entered_ambient) {
+        foreground_coordinator_observe_ambient_restored();
 		/* The Hub may periodically repeat an unchanged idle/quiet state while
 		 * delivering ambient data or pet metadata.  That is not user activity:
 		 * rearming here would keep every profile lit indefinitely.  The timeout
@@ -376,7 +487,7 @@ void app_ui_set_pet_state(const char *state) {
 		arm_ambient_display_off(APP_UI_DEFAULT_DISPLAY_OFF_IDLE_MS);
     } else if (!recording && !suppress_ambient) {
         if (!ambient_after) {
-            cancel_ambient_display_off();
+            (void)cancel_ambient_display_off();
         }
     }
     replay_unlock();
@@ -504,7 +615,7 @@ void app_ui_set_recording_visual(bool active, bool paused, uint32_t elapsed_seco
     replay_begin_locked(active ? APP_UI_REPLAY_RECORDING : APP_UI_REPLAY_PET);
 
     if (active || command_locked) {
-        cancel_ambient_display_off();
+        (void)cancel_ambient_display_off();
     } else {
         /* A capture close is a transition back to the ambient surface.  It is
          * the owner of the idle deadline, so arm only when this call actually
@@ -553,7 +664,7 @@ void app_ui_push_recording_pcm(const int16_t *samples, size_t count) {
 }
 
 void app_ui_show_text(const char *title, const char *text) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     replay_lock();
     stop_recording_if_needed_locked();
     taskENTER_CRITICAL(&s_model_lock);
@@ -574,7 +685,7 @@ void app_ui_show_text(const char *title, const char *text) {
 
 void app_ui_show_upload_progress(size_t completed_bytes, size_t total_bytes,
                                  const char *stage) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     replay_lock();
     stop_recording_if_needed_locked();
     // Meeting recordings may approach the Hub's 512 MiB quota. Multiplying a
@@ -614,7 +725,7 @@ void app_ui_show_upload_progress(size_t completed_bytes, size_t total_bytes,
 }
 
 void app_ui_show_response(const char *title, const char *text) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     replay_lock();
     stop_recording_if_needed_locked();
     taskENTER_CRITICAL(&s_model_lock);
@@ -633,7 +744,7 @@ void app_ui_show_response(const char *title, const char *text) {
 
 void app_ui_show_response_image(const char *title, const char *caption,
                                 const uint16_t *pixels, size_t width, size_t height) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     if (!pixels || width < 1 || width > 64 || height < 1 || height > 64) return;
     replay_lock();
     stop_recording_if_needed_locked();
@@ -712,6 +823,7 @@ bool app_ui_dismiss_response(void) {
     taskEXIT_CRITICAL(&s_model_lock);
     if (response_visible) replay_begin_locked(APP_UI_REPLAY_PET);
     if (response_visible && !alarm_active) {
+        foreground_coordinator_observe_ambient_restored();
         // Release the HAL's foreground guard before requesting the ambient
         // repaint. EchoEar keeps response_active as a stale-frame barrier;
         // Bread Compact uses the same lock to reject late idle updates.
@@ -737,6 +849,7 @@ void app_ui_restore_standby(void) {
     model_touch_locked();
     bool alarm_active = s_model.alarm_visual_active;
     taskEXIT_CRITICAL(&s_model_lock);
+    foreground_coordinator_observe_ambient_restored();
     replay_begin_locked(APP_UI_REPLAY_PET);
 
     if (alarm_active) {
@@ -767,7 +880,7 @@ int app_ui_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
 
 bool app_ui_show_qrcode_modules(const uint8_t *modules, size_t module_count,
                                 const char *ssid) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     /* ESP QR encoders use an N×N matrix. Reject malformed producer output
      * before it can mutate shared UI/replay state. */
     if (!modules || module_count == 0 || module_count > 177u * 177u) return false;
@@ -800,7 +913,7 @@ bool app_ui_show_qrcode_modules(const uint8_t *modules, size_t module_count,
 }
 
 void app_ui_show_ready_prompt(const char *title, const char *text) {
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     replay_lock();
     taskENTER_CRITICAL(&s_model_lock);
     bool was_recording = s_model.recording_active;
@@ -836,7 +949,7 @@ void app_ui_show_ready_prompt(const char *title, const char *text) {
 void app_ui_cancel_ready_prompt(void) {
     // A new interaction consumes the prompt before it has a foreground scene.
     // Disarm here rather than relying on a later recorder/message transition.
-    cancel_ambient_display_off();
+    (void)cancel_ambient_display_off();
     replay_lock();
     bool alarm_active;
     if (s_replay.kind == APP_UI_REPLAY_READY_PROMPT) {
@@ -850,8 +963,8 @@ void app_ui_cancel_ready_prompt(void) {
 }
 
 bool app_ui_wake_from_idle(void) {
-    bool woke = device_power_wake_display_from_user();
-    if (woke) {
+    const device_status_t wake_status = device_power_wake_display_from_user();
+    if (wake_status == DEVICE_STATUS_OK) {
         /* The power service consumed the old timer before waking the panel.
          * Mirror that state in the UI owner so the next genuine return to
          * ambient can create a fresh deadline. */
@@ -861,7 +974,25 @@ bool app_ui_wake_from_idle(void) {
         s_ambient_display_off_deadline_us = 0;
         taskEXIT_CRITICAL(&s_model_lock);
     }
-    return woke;
+    return wake_status == DEVICE_STATUS_OK;
+}
+
+void app_ui_note_schedule_display_wake(void) {
+    /* Schedule Power has consumed its deadline before it reports this wake.
+     * Clear the UI mirror even if a foreground surface already restored the
+     * panel, then create one ordinary deadline only for the ambient pet. This
+     * deliberately remains distinct from app_ui_wake_from_idle(): no local
+     * input activity or manual schedule override is synthesized here. */
+    taskENTER_CRITICAL(&s_model_lock);
+    s_ambient_display_off_armed = false;
+    s_ambient_display_off_scheduling = false;
+    s_ambient_display_off_deadline_us = 0;
+    const bool ambient = model_is_ambient_pet(s_model.surface, s_model.pet_state,
+                                              s_model.recording_active,
+                                              s_model.command_display_locked,
+                                              s_model.alarm_visual_active);
+    taskEXIT_CRITICAL(&s_model_lock);
+    if (ambient) arm_ambient_display_off(APP_UI_DEFAULT_DISPLAY_OFF_IDLE_MS);
 }
 
 device_status_t app_ui_apply_remote_brightness(uint8_t percent) {
@@ -877,7 +1008,8 @@ device_status_t app_ui_apply_remote_brightness(uint8_t percent) {
         power.state == DEVICE_POWER_STATE_DISPLAY_OFF;
     bool woke = false;
     if (was_display_off) {
-        woke = device_power_wake_display_from_remote_control();
+        const device_status_t wake_status = device_power_wake_display_from_remote_control();
+        woke = wake_status == DEVICE_STATUS_OK;
         if (!woke) {
             /* A foreground render can legitimately win the race and restore
              * the panel itself.  Re-read the physical observation before
@@ -888,7 +1020,7 @@ device_status_t app_ui_apply_remote_brightness(uint8_t percent) {
             if (device_power_get_snapshot(&after_wake) &&
                 after_wake.state == DEVICE_POWER_STATE_DISPLAY_OFF) {
                 ESP_LOGW("maclaw_ui", "remote brightness left panel in DISPLAY_OFF");
-                return DEVICE_STATUS_BUSY;
+                return wake_status == DEVICE_STATUS_OK ? DEVICE_STATUS_BUSY : wake_status;
             }
         }
     }
@@ -1012,7 +1144,7 @@ void app_ui_set_alarm_visual(bool active, unsigned frame, const char *time_text,
     s_alarm_presentation.max_attempts = max_attempts;
     taskEXIT_CRITICAL(&s_model_lock);
     if (active) {
-        cancel_ambient_display_off();
+        (void)cancel_ambient_display_off();
         if (text_response_visible) {
             have_interrupted_response_page =
                 device_display_get_response_page(&interrupted_response_page);

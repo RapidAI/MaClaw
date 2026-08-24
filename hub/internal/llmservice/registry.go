@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -21,6 +22,12 @@ const (
 	DefaultTokensPerCredit       = 10000
 	DefaultNewUserCredits        = 1000
 	CardCodeLength               = 20
+
+	// New-user benefits are intentionally mutually exclusive. Keep Credits as
+	// the compatibility default so existing tenants retain their current
+	// registration behaviour after upgrading.
+	NewUserBenefitModeCredits   = "credits"
+	NewUserBenefitModeLimitCard = "limit_card"
 
 	AccessPolicyFree          = "free"
 	AccessPolicyGrantRequired = "grant_required"
@@ -44,15 +51,84 @@ type Registry struct {
 	DefaultNewUserServiceGroups []string            `json:"default_new_user_service_groups,omitempty"`
 	DefaultNewUserDurationDays  int                 `json:"default_new_user_duration_days,omitempty"`
 	DefaultNewUserCredits       float64             `json:"default_new_user_credits,omitempty"`
-	TokensPerCredit             int                 `json:"tokens_per_credit,omitempty"`
+	DefaultNewUserBenefitMode   string              `json:"default_new_user_benefit_mode"`
+	// DefaultNewUserLimitCard is a separate, unmetered entitlement for new
+	// users. Unlike DefaultNewUserCredits, it grants access to a binding-active
+	// service group and constrains consumption only through period limits.
+	DefaultNewUserLimitCard NewUserLimitCard `json:"default_new_user_limit_card,omitempty"`
+	TokensPerCredit         int              `json:"tokens_per_credit,omitempty"`
+	// BillingLedger is append-only request settlement evidence. Keeping it in
+	// the same settings document as grants makes the debit and the idempotency
+	// record durable in one write until the SQL ledger migration replaces it.
+	BillingLedger []BillingLedgerEntry `json:"billing_ledger,omitempty"`
+	// BillingReservations are short-lived, request-scoped holds. They live next
+	// to grants so admission, settlement, and recovery use one durable balance
+	// authority while the SQL ledger remains an audit mirror.
+	BillingReservations []BillingReservation `json:"billing_reservations,omitempty"`
+}
+
+type BillingReservation struct {
+	RequestID       string   `json:"request_id"`
+	UserID          string   `json:"user_id,omitempty"`
+	Email           string   `json:"email,omitempty"`
+	ServiceGroupIDs []string `json:"service_group_ids,omitempty"`
+	Credits         float64  `json:"credits"`
+	ProviderID      string   `json:"provider_id,omitempty"`
+	// BillingGroupMultiplier is frozen at admission so delayed reconciliation
+	// never reinterprets usage under a later group-price change.
+	BillingGroupMultiplier float64 `json:"billing_group_multiplier,omitempty"`
+	// SentAt is recorded immediately before an upstream request is dispatched.
+	// It prevents expiry recovery from treating an ambiguous network outcome as
+	// a request that was never sent.
+	SentAt    time.Time `json:"sent_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// BillingLedgerEntry is the immutable settlement fact for one Hub request.
+// Prices are snapshots, never looked up again when reviewing historical usage.
+type BillingLedgerEntry struct {
+	RequestID        string   `json:"request_id"`
+	UserID           string   `json:"user_id,omitempty"`
+	Email            string   `json:"email,omitempty"`
+	ProviderID       string   `json:"provider_id,omitempty"`
+	ServiceGroupIDs  []string `json:"service_group_ids,omitempty"`
+	InputTokens      int64    `json:"input_tokens,omitempty"`
+	OutputTokens     int64    `json:"output_tokens,omitempty"`
+	RequestedCredits float64  `json:"requested_credits"`
+	DeductedCredits  float64  `json:"deducted_credits"`
+	// Requested/DeductedMicrocredits are the authoritative fixed-point amounts.
+	// Float fields remain for compatibility with existing JSON consumers.
+	RequestedMicrocredits  int64                         `json:"requested_microcredits,omitempty"`
+	DeductedMicrocredits   int64                         `json:"deducted_microcredits,omitempty"`
+	BillingGroupMultiplier float64                       `json:"billing_group_multiplier"`
+	Pricing                *llmpool.ResolvedTokenPricing `json:"pricing,omitempty"`
+	CreatedAt              time.Time                     `json:"created_at"`
+}
+
+// NewUserLimitCard describes the rate-limited welcome entitlement. A zero
+// DurationDays means the card never expires; zero period limits mean that
+// particular window is not limited.
+type NewUserLimitCard struct {
+	ServiceGroupIDs []string           `json:"service_group_ids,omitempty"`
+	DurationDays    int                `json:"duration_days,omitempty"`
+	PeriodLimits    CreditPeriodLimits `json:"period_limits,omitempty"`
 }
 
 type ModelServiceGroup struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	Description  string              `json:"description,omitempty"`
-	AccessPolicy string              `json:"access_policy,omitempty"`
-	Models       []ModelServiceModel `json:"models,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	AccessPolicy string `json:"access_policy,omitempty"`
+	// BillingGroupMultiplier is the user-facing price multiplier for this
+	// service group. It is deliberately distinct from provider/model dispatch
+	// multipliers, which are only used for route selection.
+	BillingGroupMultiplier float64                 `json:"billing_group_multiplier,omitempty"`
+	Kind                   string                  `json:"kind,omitempty"`
+	QualityFloor           string                  `json:"quality_floor,omitempty"`
+	ExposedModels          []string                `json:"exposed_models,omitempty"`
+	Routes                 []llmpool.WorkloadRoute `json:"routes,omitempty"`
+	Models                 []ModelServiceModel     `json:"models,omitempty"`
 }
 
 type ModelServiceModel struct {
@@ -67,11 +143,14 @@ type ModelServiceModel struct {
 }
 
 type ModelServiceProviderConfig struct {
-	ProviderID       string   `json:"provider_id"`
-	CapabilityTags   []string `json:"capability_tags,omitempty"`
-	Priority         int      `json:"priority,omitempty"`
-	ResolutionTier   int      `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64  `json:"credit_multiplier,omitempty"`
+	ProviderID       string               `json:"provider_id"`
+	Model            string               `json:"model,omitempty"`
+	BillingMode      string               `json:"billing_mode,omitempty"`
+	CapabilityTags   []string             `json:"capability_tags,omitempty"`
+	Priority         int                  `json:"priority,omitempty"`
+	ResolutionTier   int                  `json:"resolution_tier,omitempty"`
+	CreditMultiplier float64              `json:"credit_multiplier,omitempty"`
+	TokenPricing     llmpool.TokenPricing `json:"token_pricing,omitempty"`
 }
 
 type GroupBinding struct {
@@ -114,6 +193,11 @@ type CreditPeriodUsage struct {
 	Monthly  GrantUsageWindow `json:"monthly,omitempty"`
 }
 
+type CreditUsageEvent struct {
+	OccurredAt  time.Time `json:"occurred_at"`
+	CreditsUsed float64   `json:"credits_used"`
+}
+
 type GrantUsageWindow struct {
 	WindowStart time.Time `json:"window_start,omitempty"`
 	CreditsUsed float64   `json:"credits_used,omitempty"`
@@ -126,37 +210,59 @@ func (c RechargeCard) PlainCode() string {
 }
 
 type Grant struct {
-	ID             string    `json:"id"`
-	UserID         string    `json:"user_id,omitempty"`
-	Email          string    `json:"email"`
-	ServiceGroupID string    `json:"service_group_id"`
-	Source         string    `json:"source"`
-	CardID         string    `json:"card_id,omitempty"`
-	StartsAt       time.Time `json:"starts_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	CreatedAt      time.Time `json:"created_at"`
-	CreditsTotal   float64   `json:"credits_total,omitempty"`
-	CreditsUsed    float64   `json:"credits_used,omitempty"`
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id,omitempty"`
+	Email           string    `json:"email"`
+	ServiceGroupID  string    `json:"service_group_id"`
+	Source          string    `json:"source"`
+	CardID          string    `json:"card_id,omitempty"`
+	StartsAt        time.Time `json:"starts_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	CreatedAt       time.Time `json:"created_at"`
+	Permanent       bool      `json:"permanent,omitempty"`
+	RollingFiveHour bool      `json:"rolling_five_hour,omitempty"`
+	CreditsTotal    float64   `json:"credits_total,omitempty"`
+	CreditsUsed     float64   `json:"credits_used,omitempty"`
 	// Frozen grants are retained for audit but never participate in billing.
 	// Referral revocation uses this rather than deleting already-issued grants.
 	Frozen       bool               `json:"frozen,omitempty"`
 	PeriodLimits CreditPeriodLimits `json:"period_limits,omitempty"`
 	PeriodUsage  CreditPeriodUsage  `json:"period_usage,omitempty"`
+	UsageEvents  []CreditUsageEvent `json:"usage_events,omitempty"`
 }
 
 type AuthorizedModel struct {
-	Name                      string              `json:"name"`
-	ProviderIDs               []string            `json:"provider_ids,omitempty"`
-	ServiceGroupIDs           []string            `json:"service_group_ids,omitempty"`
-	CapabilityTags            []string            `json:"capability_tags,omitempty"`
-	Priority                  int                 `json:"priority,omitempty"`
-	ResolutionTier            int                 `json:"resolution_tier,omitempty"`
-	CreditMultiplier          float64             `json:"credit_multiplier,omitempty"`
-	ProviderCapabilityTags    map[string][]string `json:"provider_capability_tags,omitempty"`
-	ProviderPriorities        map[string]int      `json:"provider_priorities,omitempty"`
-	ProviderResolutionTiers   map[string]int      `json:"provider_resolution_tiers,omitempty"`
-	ProviderServiceGroups     map[string][]string `json:"provider_service_groups,omitempty"`
-	ProviderCreditMultipliers map[string]float64  `json:"provider_credit_multipliers,omitempty"`
+	Name                          string                          `json:"name"`
+	Kind                          string                          `json:"kind,omitempty"`
+	HiddenFromCatalog             bool                            `json:"hidden_from_catalog,omitempty"`
+	ChargedServiceGroupIDs        []string                        `json:"charged_service_group_ids,omitempty"`
+	ProviderIDs                   []string                        `json:"provider_ids,omitempty"`
+	ServiceGroupIDs               []string                        `json:"service_group_ids,omitempty"`
+	CapabilityTags                []string                        `json:"capability_tags,omitempty"`
+	Priority                      int                             `json:"priority,omitempty"`
+	ResolutionTier                int                             `json:"resolution_tier,omitempty"`
+	CreditMultiplier              float64                         `json:"credit_multiplier,omitempty"`
+	ProviderCapabilityTags        map[string][]string             `json:"provider_capability_tags,omitempty"`
+	ProviderPriorities            map[string]int                  `json:"provider_priorities,omitempty"`
+	ProviderResolutionTiers       map[string]int                  `json:"provider_resolution_tiers,omitempty"`
+	ProviderServiceGroups         map[string][]string             `json:"provider_service_groups,omitempty"`
+	ProviderCreditMultipliers     map[string]float64              `json:"provider_credit_multipliers,omitempty"`
+	ProviderUpstreamModels        map[string]string               `json:"provider_upstream_models,omitempty"`
+	ProviderUpstreamRouteModels   map[string]map[string]string    `json:"provider_upstream_route_models,omitempty"`
+	ProviderServiceGroupUpstreams map[string]map[string]string    `json:"provider_service_group_upstreams,omitempty"`
+	ProviderBillingModes          map[string]string               `json:"provider_billing_modes,omitempty"`
+	ProviderTokenPricing          map[string]llmpool.TokenPricing `json:"provider_token_pricing,omitempty"`
+	// ProviderRouteBilling keeps directional pricing tied to the concrete
+	// upstream model. ProviderTokenPricing is retained as a compatibility
+	// projection for callers that only know the provider ID.
+	ProviderRouteBilling map[string]map[string]ProviderRouteBilling `json:"provider_route_billing,omitempty"`
+}
+
+// ProviderRouteBilling is the provider-owned billing configuration for one
+// logical-model / upstream-model route after group aggregation.
+type ProviderRouteBilling struct {
+	BillingMode  string               `json:"billing_mode,omitempty"`
+	TokenPricing llmpool.TokenPricing `json:"token_pricing,omitempty"`
 }
 
 type ActiveGrant struct {
@@ -167,6 +273,8 @@ type ActiveGrant struct {
 	CardOrderID       string                  `json:"card_order_id,omitempty"`
 	StartsAt          time.Time               `json:"starts_at"`
 	ExpiresAt         time.Time               `json:"expires_at"`
+	Permanent         bool                    `json:"permanent,omitempty"`
+	RollingFiveHour   bool                    `json:"rolling_five_hour,omitempty"`
 	Active            bool                    `json:"active"`
 	Effective         bool                    `json:"effective"`
 	Status            string                  `json:"status,omitempty"`
@@ -194,6 +302,7 @@ type ActiveGrantUsageWindow struct {
 	WindowStart time.Time `json:"window_start,omitempty"`
 	WindowEnd   time.Time `json:"window_end,omitempty"`
 	CreditsUsed float64   `json:"credits_used,omitempty"`
+	Rolling     bool      `json:"rolling,omitempty"`
 }
 
 type ServiceStatus struct {
@@ -399,6 +508,31 @@ func purgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepo
 	return SaveRegistry(ctx, system, reg)
 }
 
+func normalizeWorkloadRoutes(routes []llmpool.WorkloadRoute) []llmpool.WorkloadRoute {
+	if len(routes) == 0 {
+		return nil
+	}
+	out := make([]llmpool.WorkloadRoute, 0, len(routes))
+	seen := map[string]struct{}{}
+	for _, route := range routes {
+		class := llmpool.NormalizeWorkloadClass(route.Class)
+		model := strings.TrimSpace(route.Model)
+		if class == "" || model == "" {
+			continue
+		}
+		if _, ok := seen[class]; ok {
+			continue
+		}
+		seen[class] = struct{}{}
+		out = append(out, llmpool.WorkloadRoute{
+			Class:   class,
+			Model:   model,
+			Quality: llmpool.NormalizeQuality(route.Quality),
+		})
+	}
+	return out
+}
+
 func (r *Registry) Normalize() {
 	if r == nil {
 		return
@@ -411,6 +545,13 @@ func (r *Registry) Normalize() {
 		g.Name = strings.TrimSpace(g.Name)
 		g.Description = strings.TrimSpace(g.Description)
 		g.AccessPolicy = NormalizeAccessPolicy(g.AccessPolicy)
+		g.Kind = llmpool.NormalizeServiceGroupKind(g.Kind)
+		if g.Kind == llmpool.ServiceGroupKindStatic {
+			g.Kind = ""
+		}
+		g.QualityFloor = llmpool.NormalizeQuality(g.QualityFloor)
+		g.ExposedModels = normalizeStringSlice(g.ExposedModels)
+		g.Routes = normalizeWorkloadRoutes(g.Routes)
 		for j := range g.Models {
 			m := &g.Models[j]
 			m.Name = strings.TrimSpace(m.Name)
@@ -465,15 +606,28 @@ func (r *Registry) Normalize() {
 		}
 		r.Grants[i].PeriodLimits = normalizeCreditPeriodLimits(r.Grants[i].PeriodLimits)
 		r.Grants[i].PeriodUsage = normalizeCreditPeriodUsage(r.Grants[i].PeriodUsage)
+		r.Grants[i].UsageEvents = normalizeCreditUsageEvents(r.Grants[i].UsageEvents)
 	}
 	r.SystemDefaultServiceGroupID = strings.TrimSpace(r.SystemDefaultServiceGroupID)
 	r.DefaultNewUserServiceGroups = normalizeStringSlice(r.DefaultNewUserServiceGroups)
+	r.DefaultNewUserBenefitMode = normalizeNewUserBenefitMode(r.DefaultNewUserBenefitMode)
 	if r.DefaultNewUserDurationDays < 0 {
 		r.DefaultNewUserDurationDays = 0
 	}
 	if r.DefaultNewUserCredits < 0 {
 		r.DefaultNewUserCredits = 0
 	}
+	r.DefaultNewUserLimitCard.ServiceGroupIDs = normalizeStringSlice(r.DefaultNewUserLimitCard.ServiceGroupIDs)
+	if r.DefaultNewUserLimitCard.DurationDays < 0 {
+		r.DefaultNewUserLimitCard.DurationDays = 0
+	}
+	r.DefaultNewUserLimitCard.PeriodLimits = normalizeCreditPeriodLimits(r.DefaultNewUserLimitCard.PeriodLimits)
+	// The welcome limit card deliberately exposes only rolling five-hour and
+	// daily caps. Do not retain hidden weekly/monthly values supplied through a
+	// direct API payload: they would be enforced without being configurable or
+	// visible in the tenant System Settings UI.
+	r.DefaultNewUserLimitCard.PeriodLimits.Weekly = 0
+	r.DefaultNewUserLimitCard.PeriodLimits.Monthly = 0
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
 	}
@@ -553,6 +707,21 @@ func normalizeCreditPeriodUsage(usage CreditPeriodUsage) CreditPeriodUsage {
 	return usage
 }
 
+func normalizeCreditUsageEvents(events []CreditUsageEvent) []CreditUsageEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	items := make([]CreditUsageEvent, 0, len(events))
+	for _, event := range events {
+		if event.OccurredAt.IsZero() || event.CreditsUsed <= 0 {
+			continue
+		}
+		event.OccurredAt = event.OccurredAt.UTC()
+		items = append(items, event)
+	}
+	return items
+}
+
 func mathMaxZero(v float64) float64 {
 	if v < 0 {
 		return 0
@@ -573,8 +742,27 @@ func (r *Registry) ensureDefaultNewUserSettings() {
 	if r.DefaultNewUserCredits == 0 {
 		r.DefaultNewUserCredits = DefaultNewUserCredits
 	}
+	r.DefaultNewUserBenefitMode = normalizeNewUserBenefitMode(r.DefaultNewUserBenefitMode)
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
+	}
+}
+
+// NewUserBenefitMode returns the one welcome-benefit programme that may be
+// issued for a newly registered user.
+func (r *Registry) NewUserBenefitMode() string {
+	if r == nil {
+		return NewUserBenefitModeCredits
+	}
+	return normalizeNewUserBenefitMode(r.DefaultNewUserBenefitMode)
+}
+
+func normalizeNewUserBenefitMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case NewUserBenefitModeLimitCard:
+		return NewUserBenefitModeLimitCard
+	default:
+		return NewUserBenefitModeCredits
 	}
 }
 func (m *ModelServiceModel) normalizeProviderConfigs() {
@@ -593,6 +781,7 @@ func (m *ModelServiceModel) normalizeProviderConfigs() {
 	configByID := map[string]ModelServiceProviderConfig{}
 	for _, cfg := range m.ProviderConfigs {
 		cfg.ProviderID = strings.TrimSpace(cfg.ProviderID)
+		cfg.Model = strings.TrimSpace(cfg.Model)
 		if cfg.ProviderID == "" {
 			continue
 		}
@@ -749,6 +938,19 @@ func mergeModelServiceProviderConfig(dst ModelServiceProviderConfig, src ModelSe
 	if candidate := normalizeCreditMultiplier(src.CreditMultiplier); dst.CreditMultiplier == 0 || candidate < dst.CreditMultiplier {
 		dst.CreditMultiplier = candidate
 	}
+	// An explicit billing mode is authoritative for the merged route. In
+	// particular, a later `free` configuration must not leave an earlier paid
+	// price behind, otherwise the route's intended free policy can be lost
+	// before request billing gets a chance to enforce it.
+	if mode := llmpool.NormalizeBillingMode(src.BillingMode); mode != "" {
+		dst.BillingMode = mode
+		if mode == llmpool.BillingModeFree {
+			dst.TokenPricing = src.TokenPricing
+		}
+	}
+	if src.TokenPricing.HasCreditPricing() {
+		dst.TokenPricing = src.TokenPricing
+	}
 	return dst
 }
 func containsNormalizedString(items []string, target string) bool {
@@ -868,6 +1070,10 @@ func (r *Registry) PurgeOrphanedServiceGroupReferences() bool {
 
 	// Clean DefaultNewUserServiceGroups.
 	r.DefaultNewUserServiceGroups = filterIDs(r.DefaultNewUserServiceGroups)
+	// Clean the new-user rate-limit card independently. Its groups are an
+	// entitlement overlay, not ordinary default bindings, so keep this list
+	// separate from DefaultNewUserServiceGroups.
+	r.DefaultNewUserLimitCard.ServiceGroupIDs = filterIDs(r.DefaultNewUserLimitCard.ServiceGroupIDs)
 
 	// Clean GroupBindings.
 	n := 0

@@ -382,7 +382,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	}
 
 	sendStatus(fmt.Sprintf("鈻讹笍 姝ｅ湪鎵ц Skill: %s ...", skill.Name))
-	execResult, execErr := h.getSkillExecutor().Execute(skill.Name)
+	execResult, execErr := h.getSkillExecutor().ExecuteInstalledWithArgs(*skill, nil)
 	if execErr != nil {
 		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
 		// Mark as needs_setup so the skill list shows it's not ready to use.

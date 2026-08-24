@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
@@ -376,7 +377,7 @@ func computerUseHasCompetingSecondary(res intent.ClassificationResult) bool {
 	for _, s := range res.Secondary {
 		switch s {
 		case intent.LabelOffice, intent.LabelBrowser, intent.LabelNonCoding,
-			intent.LabelSearch, intent.LabelDocumentDelivery, intent.LabelCoding:
+			intent.LabelSearch, intent.LabelDocumentDelivery, intent.LabelDocumentOpen, intent.LabelCoding:
 			return true
 		}
 	}
@@ -407,7 +408,7 @@ func computerUseStickyShouldRelease(res intent.ClassificationResult) bool {
 	case intent.LabelCoding, intent.LabelBugFix, intent.LabelMaintenance,
 		intent.LabelSearch, intent.LabelBrowser, intent.LabelSSH,
 		intent.LabelKnowledgeWrite, intent.LabelLiveData,
-		intent.LabelNonCoding, intent.LabelDocumentDelivery,
+		intent.LabelNonCoding, intent.LabelDocumentDelivery, intent.LabelDocumentOpen,
 		intent.LabelBusinessData, intent.LabelWorkflowTask:
 		return true
 	default:
@@ -458,14 +459,46 @@ func ensureComputerUseTools(tools, allTools []map[string]interface{}, active boo
 
 // computerUsePlaybookSection returns system-prompt text when CU is active.
 func computerUsePlaybookSection(active bool) string {
+	return computerUsePlaybookSectionFor(active, "")
+}
+
+func computerUsePlaybookSectionFor(active bool, owner string) string {
 	if !active {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## Computer Use（桌面操控 · 文本模型优先）\n")
-	b.WriteString(computeruse.Playbook())
+	if computerUseLLMSupportsVision() {
+		b.WriteString("\n## Computer Use（桌面操控 · 视觉模型看截图）\n")
+		b.WriteString(computeruse.PlaybookVision())
+	} else {
+		b.WriteString("\n## Computer Use（桌面操控 · 文本模型优先）\n")
+		b.WriteString(computeruse.Playbook())
+	}
 	b.WriteString("\n")
+	if extra := computerUseContractPlaybookExtra(owner); extra != "" {
+		b.WriteString(extra)
+		b.WriteString("\n")
+	}
 	return b.String()
+}
+
+func browserPlaybookSection(active bool) string {
+	if !active {
+		return ""
+	}
+	return "\n## Browser Use\n" + browser.Playbook() + "\n"
+}
+
+func (h *IMMessageHandler) shouldActivateBrowser(userText string) bool {
+	if h == nil {
+		return false
+	}
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return false
+	}
+	res := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: userText})
+	return res.Primary == intent.LabelBrowser
 }
 
 // computerUseYOLOAllowed is set from App.GetScreenParsingEnabled when tools register.
@@ -535,6 +568,30 @@ func bindComputerUseApp(app *App) {
 		}
 		return cfg.ComputerUseTargetApps, true
 	}
+	computerUseVisionFn = func() bool {
+		return app.GetMaclawLLMConfig().SupportsVision
+	}
+	computerUseCaptionConfigFn = func() (corelib.MaclawLLMConfig, bool) {
+		cfg := app.GetCaptionLLMConfig()
+		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+			return corelib.MaclawLLMConfig{}, false
+		}
+		if id := strings.TrimSpace(cfg.ProviderID); id != "" {
+			if err := app.ensureOAuthTokenForProvider(id); err != nil {
+				log.Printf("[computer-use] caption oauth: %v", err)
+				return corelib.MaclawLLMConfig{}, false
+			}
+			if err := app.ensureCodeGenTokenForProvider(id); err != nil {
+				log.Printf("[computer-use] caption token: %v", err)
+				return corelib.MaclawLLMConfig{}, false
+			}
+			cfg = app.GetCaptionLLMConfig()
+			if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+				return corelib.MaclawLLMConfig{}, false
+			}
+		}
+		return cfg, true
+	}
 	computerUseEventEmitter = func(name string, data interface{}) {
 		app.emitEvent(name, data)
 	}
@@ -544,5 +601,8 @@ func bindComputerUseApp(app *App) {
 func bindComputerUseYOLOGate(app *App) { bindComputerUseApp(app) }
 
 func computerUsePlaybookOneLiner() string {
+	if computerUseLLMSupportsVision() {
+		return "vision: computer_observe attaches a screenshot → computer_click x,y in image pixels → re-observe"
+	}
 	return "text-primary: computer_observe → computer_click(ref=eN) → re-observe; no pixel guessing; screenshots not sent to LLM"
 }

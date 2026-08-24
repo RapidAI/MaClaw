@@ -1,6 +1,9 @@
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"reflect"
+)
 
 // ResponsesConvertedInput holds the result of converting OpenAI Chat Completions
 // messages into Responses API input format.
@@ -105,7 +108,7 @@ func ConvertToResponsesTools(tools []map[string]interface{}) []map[string]interf
 			flat["description"] = desc
 		}
 		if params, ok := fn["parameters"]; ok {
-			flat["parameters"] = params
+			flat["parameters"] = cloneToolDefinitionValue(params)
 		}
 		if strict, ok := fn["strict"].(bool); ok {
 			flat["strict"] = strict
@@ -141,6 +144,92 @@ func toStringInterfaceMap(m interface{}) map[string]interface{} {
 			return nil
 		}
 		return out
+	}
+}
+
+// cloneToolDefinitionValue keeps provider request bodies independent from the
+// request-owner surface. Converters flatten or rename definition fields, so
+// retaining a nested schema map here would let a provider-side normalizer mutate
+// the frozen input which is still used for receipt/bind verification.
+func cloneToolDefinitionValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			out[key] = cloneToolDefinitionValue(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, item := range typed {
+			out[key] = item
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for index, item := range typed {
+			out[index] = cloneToolDefinitionValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	case []map[string]interface{}:
+		out := make([]map[string]interface{}, len(typed))
+		for index, item := range typed {
+			out[index], _ = cloneToolDefinitionValue(item).(map[string]interface{})
+		}
+		return out
+	default:
+		return cloneToolDefinitionJSONValue(reflect.ValueOf(value)).Interface()
+	}
+}
+
+// cloneToolDefinitionJSONValue handles JSON-shaped named collection types
+// without attempting to sanitize opaque values. That preserves a later
+// serialization failure while preventing mutable map/slice trees from sharing
+// ownership across the provider envelope boundary.
+func cloneToolDefinitionJSONValue(value reflect.Value) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return value
+		}
+		cloned := reflect.New(value.Type()).Elem()
+		cloned.Set(cloneToolDefinitionJSONValue(value.Elem()))
+		return cloned
+	case reflect.Map:
+		if value.IsNil() || value.Type().Key().Kind() != reflect.String {
+			return value
+		}
+		cloned := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iterator := value.MapRange()
+		for iterator.Next() {
+			cloned.SetMapIndex(iterator.Key(), cloneToolDefinitionJSONValue(iterator.Value()))
+		}
+		return cloned
+	case reflect.Slice:
+		if value.IsNil() {
+			return value
+		}
+		cloned := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for index := 0; index < value.Len(); index++ {
+			cloned.Index(index).Set(cloneToolDefinitionJSONValue(value.Index(index)))
+		}
+		return cloned
+	case reflect.Array:
+		cloned := reflect.New(value.Type()).Elem()
+		for index := 0; index < value.Len(); index++ {
+			cloned.Index(index).Set(cloneToolDefinitionJSONValue(value.Index(index)))
+		}
+		return cloned
+	default:
+		return value
 	}
 }
 

@@ -6,22 +6,106 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
+
+// responsesWSRequestChannel is one live Responses WebSocket reservation. Its
+// connection ID is generated only after a successful dial and is retained with
+// that concrete socket until Close. It is deliberately not derived from a
+// URL, model/configuration field, loop ID, request ID, or provider payload.
+//
+// The channel performs exactly one response.create exchange. A caller that
+// needs a retry/fallback/reconnect must create a new channel and therefore a
+// new request surface before sending another request.
+type responsesWSRequestChannel struct {
+	conn         *websocket.Conn
+	wsURL        string
+	connectionID string
+	closeOnce    sync.Once
+	useMu        sync.Mutex
+	used         bool
+}
+
+func openResponsesWSRequestChannel(ctx context.Context, cfg corelib.MaclawLLMConfig, httpClient *http.Client, metrics *llmStreamMetrics) (*responsesWSRequestChannel, error) {
+	wsURL := responsesWSEndpoint(cfg.URL)
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM Stream] WS %s model=%s configured_model=%s wire_api=responses-ws", wsURL, upstreamModel, cfg.Model)
+
+	var tlsConfig *tls.Config
+	if httpClient != nil {
+		if transport, ok := httpClient.Transport.(*http.Transport); ok && transport.TLSClientConfig != nil {
+			tlsConfig = transport.TLSClientConfig
+		}
+	}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second,
+		TLSClientConfig:  tlsConfig,
+	}
+	headers := buildResponsesWSHeaders(cfg, wsURL)
+	if llm.IsCodexSubscriptionEndpoint(cfg.URL) {
+		headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+		if accountID, _ := oauth.ExtractAccountIDFromJWT(cfg.Key); accountID != "" {
+			headers.Set("chatgpt-account-id", accountID)
+		}
+	}
+
+	startedAt := time.Now()
+	conn, response, err := dialer.DialContext(ctx, wsURL, headers)
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(startedAt).Nanoseconds()
+	}
+	if err != nil {
+		if response != nil {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(response.StatusCode, body, wsURL, upstreamModel, cfg.ProviderName))
+		}
+		return nil, fmt.Errorf("WebSocket dial failed: %w [url=%s]", err, wsURL)
+	}
+	connectionID, err := newResponsesWSConnectionID()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &responsesWSRequestChannel{conn: conn, wsURL: wsURL, connectionID: connectionID}, nil
+}
+
+func newResponsesWSConnectionID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate responses websocket connection id: %w", err)
+	}
+	return "responses-ws:" + hex.EncodeToString(value[:]), nil
+}
+
+func (c *responsesWSRequestChannel) Close() {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+	})
+}
 
 // responsesWSEndpoint converts an HTTP base URL to a WebSocket URL for the
 // Responses API WebSocket mode.
@@ -72,7 +156,19 @@ func buildResponsesWSFrame(
 	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
 	tools []map[string]interface{},
+	policies ...agent.ToolSurfaceInvocationPolicy,
 ) ([]byte, error) {
+	policy := agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	normalizedPolicy, err := agent.NormalizeToolSurfaceInvocationPolicy(policy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid responses websocket invocation policy: %w", err)
+	}
+	if normalizedPolicy.Envelope != agent.ToolSurfaceEnvelopeResponses {
+		return nil, fmt.Errorf("responses websocket invocation policy envelope %q is not responses", normalizedPolicy.Envelope)
+	}
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		messages = llm.SanitizeConservativeOpenAICompatMessages(messages)
 	} else {
@@ -98,8 +194,20 @@ func buildResponsesWSFrame(
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		toolsInput = corelib.SanitizeCodeGenOpenAIChatTools(toolsInput)
 	}
-	if convTools := llm.ConvertToResponsesTools(toolsInput); len(convTools) > 0 {
+	convTools := llm.ConvertToResponsesTools(toolsInput)
+	if len(convTools) > 0 {
 		frame["tools"] = convTools
+	} else {
+		// An empty tool surface is an explicit replacement, never an omitted
+		// field whose meaning a stateful compatible provider may inherit.
+		frame["tools"] = []map[string]interface{}{}
+	}
+	policyFields, err := agent.ToolSurfaceInvocationPolicyWireFields(normalizedPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("project responses websocket invocation policy: %w", err)
+	}
+	for key, value := range policyFields {
+		frame[key] = value
 	}
 	// Ensure max_output_tokens is set (same logic as BuildResponsesAPIRequestData).
 	// Skip for Codex subscription endpoints (chatgpt.com/backend-api) — they don't support this parameter.
@@ -126,6 +234,26 @@ func buildResponsesWSFrame(
 	return json.Marshal(frame)
 }
 
+// verifyResponsesWSFrameToolSurface is deliberately applied after the frame
+// builder's provider-specific conversion. It proves the actual `tools` field
+// about to be written on this socket is a complete replacement for the
+// request-owned input surface.
+func verifyResponsesWSFrameToolSurface(frameData []byte, tools []map[string]interface{}, expectedPolicy agent.ToolSurfaceInvocationPolicy, evidence ...agent.ToolSurfacePlanEvidence) (agent.ToolSurfaceReceipt, error) {
+	planEvidence := agent.ToolSurfacePlanEvidence{}
+	if len(evidence) > 0 {
+		planEvidence = evidence[0]
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(frameData, &frame); err != nil {
+		// Keep malformed-frame failures on the same request-owned manifest
+		// projection as every later WS receipt. Returning an empty receipt would
+		// make a manifest/terminal audit chain impossible to reconcile even
+		// though the host had already rendered the surface and plan evidence.
+		return agent.VerifyToolSurfaceRequestPayloadWithAuditEvidence(tools, nil, expectedPolicy, planEvidence)
+	}
+	return agent.VerifyToolSurfaceRequestPayloadWithAuditEvidence(tools, frame, expectedPolicy, planEvidence)
+}
+
 func buildResponsesWSHeaders(cfg corelib.MaclawLLMConfig, wsURL string) http.Header {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+cfg.Key)
@@ -134,6 +262,7 @@ func buildResponsesWSHeaders(cfg corelib.MaclawLLMConfig, wsURL string) http.Hea
 	if corelib.IsCodeGenURL(wsURL) {
 		headers.Set(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent()))
 	}
+	llm.ApplyWorkloadHintHeaderMap(headers, cfg)
 	return headers
 }
 
@@ -149,65 +278,73 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	onToken llm.TokenCallback,
 	metrics *llmStreamMetrics,
 ) (*llm.Response, error) {
-	// -------------------------------------------------------------------
-	// 1. Construct WebSocket URL
-	// -------------------------------------------------------------------
-	wsURL := responsesWSEndpoint(cfg.URL)
-	upstreamModel := cfg.UpstreamModel()
-	log.Printf("[LLM Stream] WS %s model=%s configured_model=%s wire_api=responses-ws", wsURL, upstreamModel, cfg.Model)
-
-	// -------------------------------------------------------------------
-	// 2. Extract TLS config from httpClient transport if available
-	// -------------------------------------------------------------------
-	var tlsConfig *tls.Config
-	if t, ok := httpClient.Transport.(*http.Transport); ok && t.TLSClientConfig != nil {
-		tlsConfig = t.TLSClientConfig
-	}
-
-	// -------------------------------------------------------------------
-	// 3. Create dialer and set request headers
-	// -------------------------------------------------------------------
-	dialer := websocket.Dialer{
-		HandshakeTimeout: time.Duration(cfg.EffectiveTimeoutSec()) * time.Second,
-		TLSClientConfig:  tlsConfig,
-	}
-	headers := buildResponsesWSHeaders(cfg, wsURL)
-	// Codex subscription headers for chatgpt.com/backend-api
-	if llm.IsCodexSubscriptionEndpoint(cfg.URL) {
-		headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
-		if accountID, _ := oauth.ExtractAccountIDFromJWT(cfg.Key); accountID != "" {
-			headers.Set("chatgpt-account-id", accountID)
-		}
-	}
-
-	// -------------------------------------------------------------------
-	// 4. Dial WebSocket
-	// -------------------------------------------------------------------
-	requestBuildStartedAt := time.Now()
-	conn, resp, err := dialer.DialContext(reqCtx, wsURL, headers)
-	if metrics != nil {
-		metrics.HTTPDoNanos += time.Since(requestBuildStartedAt).Nanoseconds()
-	}
+	channel, err := openResponsesWSRequestChannel(reqCtx, cfg, httpClient, metrics)
 	if err != nil {
-		if resp != nil {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
-			return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, wsURL, upstreamModel, cfg.ProviderName))
-		}
-		return nil, fmt.Errorf("WebSocket dial failed: %w [url=%s]", err, wsURL)
+		return nil, err
 	}
-	defer conn.Close()
+	defer channel.Close()
+	return h.streamResponsesWSRequestChannel(reqCtx, cfg, messages, tools, onToken, metrics, channel)
+}
+
+// streamResponsesWSRequestChannel sends one response.create frame and consumes
+// its matching event stream through an already-reserved live socket.
+func (h *IMMessageHandler) streamResponsesWSRequestChannel(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+	channel *responsesWSRequestChannel,
+) (*llm.Response, error) {
+	dispatch, err := h.streamResponsesWSRequestChannelVerified(reqCtx, cfg, messages, tools, onToken, metrics, channel, agent.ToolSurfacePlanEvidence{}, agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses))
+	return dispatch.Response, err
+}
+
+// streamResponsesWSRequestChannelVerified keeps payload verification evidence
+// in the same return value as the response read from this live socket. A
+// correlation-bound request owner must consume this form before it binds a
+// provider response ID.
+func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+	channel *responsesWSRequestChannel,
+	evidence agent.ToolSurfacePlanEvidence,
+	policy agent.ToolSurfaceInvocationPolicy,
+) (agent.VerifiedToolSurfaceDispatch, error) {
+	if channel == nil || channel.conn == nil || strings.TrimSpace(channel.connectionID) == "" {
+		return agent.VerifiedToolSurfaceDispatch{}, fmt.Errorf("Responses API WebSocket request channel is unavailable")
+	}
+	channel.useMu.Lock()
+	if channel.used {
+		channel.useMu.Unlock()
+		return agent.VerifiedToolSurfaceDispatch{}, fmt.Errorf("Responses API WebSocket request channel already used")
+	}
+	channel.used = true
+	channel.useMu.Unlock()
+	conn := channel.conn
+	wsURL := channel.wsURL
 
 	// -------------------------------------------------------------------
-	// 5. Build and send response.create frame
+	// Build and send response.create frame
 	// -------------------------------------------------------------------
-	frameData, err := buildResponsesWSFrame(cfg, messages, tools)
+	frameData, err := buildResponsesWSFrame(cfg, messages, tools, policy)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build response.create frame: %w", err)
+		return agent.VerifiedToolSurfaceDispatch{}, fmt.Errorf("failed to build response.create frame: %w", err)
+	}
+	receipt, err := verifyResponsesWSFrameToolSurface(frameData, tools, policy, evidence)
+	if err != nil {
+		return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, err
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, frameData); err != nil {
-		return nil, fmt.Errorf("failed to send response.create frame: %w", err)
+		receipt.Handoff = agent.ToolSurfaceHandoffAmbiguous
+		return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("failed to send response.create frame: %w", err)
 	}
+	receipt.Handoff = agent.ToolSurfaceHandoffStarted
 
 	// -------------------------------------------------------------------
 	// 6. Token stream filters (same chain as SSE path)
@@ -239,6 +376,13 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	itemAccums := make(map[int]*responsesItemAccum)
 	var finishReason string
 	var usage *llm.Usage
+	// Preserve only provider-issued response identity observed in the Responses
+	// lifecycle envelope. This is parser evidence, not a WebSocket connection
+	// identity and not a substitute for the Coding S1-C adapter lifecycle.
+	// Freezing the first non-empty value prevents tool calls accumulated from
+	// one response from later being attributed to another response on a malformed
+	// or multiplexed-compatible stream.
+	responseID := ""
 
 	// -------------------------------------------------------------------
 	// 8. Idle timeout watchdog
@@ -312,7 +456,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				if contentBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(itemAccums) > 0 {
 					break // return partial content
 				}
-				return nil, fmt.Errorf("WebSocket unexpected close (code=%d): %w", closeCode, err)
+				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket unexpected close (code=%d): %w", closeCode, err)
 			}
 			// Generic read error
 			if contentBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(itemAccums) > 0 {
@@ -322,9 +466,9 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				if metrics != nil {
 					metrics.IdleTimeoutCount++
 				}
-				return nil, fmt.Errorf("WebSocket idle timeout (%v): no data received from %s", guiSSEIdleTimeout, wsURL)
+				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket idle timeout (%v): no data received from %s", guiSSEIdleTimeout, wsURL)
 			}
-			return nil, fmt.Errorf("WebSocket read error: %w", err)
+			return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket read error: %w", err)
 		}
 
 		// Reset idle timer on every received frame
@@ -337,6 +481,13 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 		// Parse frame type
 		if json.Unmarshal(msgData, &baseFrame) != nil {
 			continue
+		}
+		if eventResponseID := responsesWSResponseID(msgData); eventResponseID != "" {
+			if responseID == "" {
+				responseID = eventResponseID
+			} else if responseID != eventResponseID {
+				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("Responses API WebSocket stream response ID changed: %q -> %q", responseID, eventResponseID)
+			}
 		}
 
 		switch normalizeResponsesEventType(baseFrame.Type) {
@@ -410,7 +561,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 					if toolName == "" {
 						toolName = fmt.Sprintf("function_call_%d", ad.OutputIndex)
 					}
-					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
+					return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
 				}
 			}
 
@@ -469,7 +620,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			return nil, fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+			return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
 
 		case responsesEventIncomplete:
 			finishReason = "length"
@@ -490,7 +641,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			return nil, fmt.Errorf("Responses API WebSocket error: %s (code=%s, status=%d)", errMsg, errFrame.Error.Code, errFrame.Status)
+			return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("Responses API WebSocket error: %s (code=%s, status=%d)", errMsg, errFrame.Error.Code, errFrame.Status)
 		}
 	}
 
@@ -502,7 +653,7 @@ postLoop:
 		if metrics != nil {
 			metrics.IdleTimeoutCount++
 		}
-		return nil, fmt.Errorf("WebSocket idle timeout (%v): no data received from %s", guiSSEIdleTimeout, wsURL)
+		return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("WebSocket idle timeout (%v): no data received from %s", guiSSEIdleTimeout, wsURL)
 	}
 
 	// -------------------------------------------------------------------
@@ -581,8 +732,25 @@ postLoop:
 	// Detect and filter truncated tool calls caused by output token limit.
 	finishReason, truncatedTools, truncatedToolArgs := filterTruncatedToolCalls(&msg, finishReason)
 
-	return &llm.Response{
-		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
-		Usage:   usage,
-	}, nil
+	return agent.VerifiedToolSurfaceDispatch{Response: &llm.Response{
+		ResponseID: responseID,
+		Choices:    []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
+		Usage:      usage,
+	}, Receipt: receipt}, nil
+}
+
+// responsesWSResponseID extracts the provider response ID from a Responses
+// WebSocket lifecycle frame. It intentionally ignores client trace fields,
+// local request identifiers and tool-call IDs: none can stand in for a
+// provider response correlation value.
+func responsesWSResponseID(frame []byte) string {
+	var envelope struct {
+		Response struct {
+			ID string `json:"id"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(frame, &envelope) != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.Response.ID)
 }

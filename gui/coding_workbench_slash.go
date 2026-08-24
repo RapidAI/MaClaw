@@ -41,10 +41,7 @@ func (h *IMMessageHandler) handleCodingWorkbenchIMCommand(
 	if h != nil {
 		mem = h.getStickyCodingWorkbenchMemory(userID)
 	}
-	projectPath := strings.TrimSpace(mem.ProjectPath)
-	if projectPath == "" {
-		projectPath = projectPathFromSessionOwnerID(userID)
-	}
+	projectPath := h.codingSessionWorkRoot(userID, mem)
 
 	lower := strings.ToLower(strings.TrimSpace(trimmed))
 	// Approve: run pending plan through local or remote coding template.
@@ -69,12 +66,8 @@ func (h *IMMessageHandler) handleCodingWorkbenchSlash(userID, projectPath, trimm
 	lower := strings.ToLower(trimmed)
 	userID = strings.TrimSpace(userID)
 	projectPath = strings.TrimSpace(projectPath)
-	if projectPath == "" {
-		// Fall back to sticky project path.
-		if h != nil {
-			mem := h.getStickyCodingWorkbenchMemory(userID)
-			projectPath = strings.TrimSpace(mem.ProjectPath)
-		}
+	if projectPath == "" && h != nil {
+		projectPath = h.codingSessionWorkRoot(userID, h.getStickyCodingWorkbenchMemory(userID))
 	}
 
 	switch {
@@ -229,7 +222,7 @@ func (h *IMMessageHandler) resolveCodingPlanExecutionTarget(
 	mem stickyCodingWorkbenchMemory,
 ) (string, remoteCodingTemplateContext, bool, string) {
 	mem = h.getStickyCodingWorkbenchMemory(userID)
-	if strings.EqualFold(mem.Kind, "remote") {
+	if h.codingSessionIsRemote(userID, mem) {
 		remoteCtx := remoteCodingTemplateContext{
 			SessionID:  strings.TrimSpace(mem.RemoteSessionID),
 			WorkDir:    strings.TrimSpace(mem.RemoteWorkDir),
@@ -254,8 +247,9 @@ func (h *IMMessageHandler) resolveCodingPlanExecutionTarget(
 		}
 		return "", remoteCtx, true, ""
 	}
+	projectPath = h.liveLocalCodingExecDir(userID, projectPath)
 	if strings.TrimSpace(projectPath) == "" {
-		projectPath = strings.TrimSpace(mem.ProjectPath)
+		projectPath = h.liveLocalCodingExecDir(userID, mem.ProjectPath)
 	}
 	if strings.TrimSpace(projectPath) == "" {
 		return "", remoteCodingTemplateContext{}, false, "缺少项目路径。请选择或打开项目后重试。"
@@ -1214,8 +1208,7 @@ func (h *IMMessageHandler) startCodingWorkbenchBackgroundVerify(userID, projectP
 	}
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" {
-		mem := h.getStickyCodingWorkbenchMemory(userID)
-		projectPath = strings.TrimSpace(mem.ProjectPath)
+		projectPath = h.codingSessionWorkRoot(userID, h.getStickyCodingWorkbenchMemory(userID))
 	}
 	if projectPath == "" {
 		return "", fmt.Errorf("无法后台验证：缺少项目路径")
@@ -1299,8 +1292,7 @@ func (h *IMMessageHandler) handleCodingHooksSlash(userID, projectPath, trimmed s
 func (h *IMMessageHandler) handleCodingAgentsSlash(userID, projectPath, trimmed string) *IMAgentResponse {
 	_ = trimmed
 	if projectPath == "" {
-		mem := h.getStickyCodingWorkbenchMemory(userID)
-		projectPath = strings.TrimSpace(mem.ProjectPath)
+		projectPath = h.codingSessionWorkRoot(userID, h.getStickyCodingWorkbenchMemory(userID))
 	}
 	if projectPath == "" {
 		return &IMAgentResponse{Text: "无法加载项目指令：缺少项目路径。"}

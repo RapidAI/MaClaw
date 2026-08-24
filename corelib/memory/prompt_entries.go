@@ -146,6 +146,11 @@ type ProactivePromptOptions struct {
 	IncludeDerivedFacts bool
 	DerivedFactLimit    int
 
+	// CatalogOnly emits store pointers (counts/tags) without injecting recalled
+	// entry text, derived facts, scene bodies, or page snippets. The working
+	// set stays empty; the model pulls warehouse content through tools.
+	CatalogOnly bool
+
 	// PageIndexEnabled enables cross-page recall integration via the PageIndex.
 	// When true, ProactiveContextForPrompt queries the PageIndex and includes
 	// matching page-indexed items in the recall results. Zero value (false)
@@ -184,6 +189,11 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 			b.WriteString(index)
 			b.WriteByte('\n')
 		}
+	}
+
+	if opts.CatalogOnly {
+		writeCatalogOnlyWorkingSetFooter(&b, opts)
+		return b.String(), nil
 	}
 
 	if opts.IncludeSceneIndex && !opts.Recall.StrictOwner {
@@ -288,6 +298,20 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		b.WriteString(FormatDerivedFactsForPrompt(s.LastDerivedFacts(), limit))
 	}
 	return b.String(), recalled
+}
+
+func writeCatalogOnlyWorkingSetFooter(b *strings.Builder, opts ProactivePromptOptions) {
+	footer := strings.TrimSpace(opts.RecallEntries.Footer)
+	if footer == "" {
+		footer = CatalogOnlyWorkingSetFooter()
+	}
+	if footer == "" {
+		return
+	}
+	b.WriteString(footer)
+	if !strings.HasSuffix(footer, "\n") {
+		b.WriteByte('\n')
+	}
 }
 
 func appendUniquePromptEntries(entries []Entry, extra ...Entry) []Entry {

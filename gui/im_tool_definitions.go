@@ -17,8 +17,8 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("list_sessions", "列出当前所有远程会话及其状态", nil, nil),
 		toolDef("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
 			map[string]interface{}{
-				"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
-			}, []string{"tool"}),
+				"coding_tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
+			}, []string{"coding_tool"}),
 		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。适用于服务器登录、远程命令、日志排查、服务重启与文件传输。长命令请优先使用 exec_background。重要：连接后如果要执行后台任务，请先用 list_tasks 检查是否已有相同任务在运行，避免重复创建。",
 			map[string]interface{}{
 				"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close"},
@@ -279,7 +279,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"action":       map[string]string{"type": "string", "description": "操作: create/list/launch"},
 				"name":         map[string]string{"type": "string", "description": "模板名称（create/launch 时必填）"},
-				"tool":         map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
+				"coding_tool":  map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
 				"project_path": map[string]string{"type": "string", "description": "项目路径（create 时可选）"},
 				"model_config": map[string]string{"type": "string", "description": "模型配置（create 时可选）"},
 				"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式（create 时可选）"},
@@ -287,11 +287,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("create_template", "会话模板别名工具：创建模板。",
 			map[string]interface{}{
 				"name":         map[string]string{"type": "string", "description": "模板名称"},
-				"tool":         map[string]string{"type": "string", "description": "工具名称"},
+				"coding_tool":  map[string]string{"type": "string", "description": "工具名称"},
 				"project_path": map[string]string{"type": "string", "description": "项目路径"},
 				"model_config": map[string]string{"type": "string", "description": "模型配置"},
 				"yolo_mode":    map[string]string{"type": "boolean", "description": "是否启用 Yolo 模式"},
-			}, []string{"name", "tool"}),
+			}, []string{"name", "coding_tool"}),
 		toolDef("list_templates", "会话模板别名工具：列出模板。", nil, nil),
 		toolDef("launch_template", "会话模板别名工具：启动模板。",
 			map[string]interface{}{
@@ -377,7 +377,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 
 	// ---------- Web search & fetch tools ----------
 	defs = append(defs,
-		toolDef("web_search", "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。",
+		toolDef("web_search", "搜索互联网内容，查询天气、新闻、汇率、股价等实时信息。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。",
 			map[string]interface{}{
 				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
 				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8，最大 20）"},

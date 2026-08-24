@@ -49,11 +49,14 @@ type stickyCodingWorkbenchMemory struct {
 	SessionPlan string `json:"session_plan,omitempty"`
 	// ExecutionPlan is the latest auto-generated multi-step plan for a complex
 	// pure-coding request (markdown T1/T2…). Used for continuity and UI context.
-	ExecutionPlan string   `json:"execution_plan,omitempty"`
-	FilesModified []string `json:"files_modified,omitempty"`
-	FilesCreated  []string `json:"files_created,omitempty"`
-	TurnCount     int      `json:"turn_count,omitempty"`
-	UpdatedAtUnix int64    `json:"updated_at_unix,omitempty"`
+	ExecutionPlan string `json:"execution_plan,omitempty"`
+	// RequirementRestatement is the host-owned paraphrase of the current turn.
+	// Shown to the user so they can see whether the system understood the ask.
+	RequirementRestatement string   `json:"requirement_restatement,omitempty"`
+	FilesModified          []string `json:"files_modified,omitempty"`
+	FilesCreated           []string `json:"files_created,omitempty"`
+	TurnCount              int      `json:"turn_count,omitempty"`
+	UpdatedAtUnix          int64    `json:"updated_at_unix,omitempty"`
 	// SessionFullAccess is session-scoped path full-access for pure coding
 	// workbenches (create-task). It does not write subagent_full_access to
 	// config; high-risk bash still follows SessionHighRiskAccess / global grant.
@@ -140,6 +143,9 @@ func (m stickyCodingWorkbenchMemory) prevOutputs() []string {
 	}
 	if s := strings.TrimSpace(m.SessionPlan); s != "" {
 		out = append(out, "Session plan / overall goal:\n"+truncateRunesForSubAgent(s, 800))
+	}
+	if s := strings.TrimSpace(m.RequirementRestatement); s != "" {
+		out = append(out, "Current request understanding (already shown to the user; implement this and do not restate it):\n"+truncateRunesForSubAgent(s, 400))
 	}
 	if s := strings.TrimSpace(m.ExecutionPlan); s != "" {
 		out = append(out, "Active multi-step execution plan:\n"+truncateRunesForSubAgent(s, 1200))
@@ -541,7 +547,15 @@ func (h *IMMessageHandler) recordStickyLocalCodingTurn(userID, projectPath, user
 	// Persist: flushes mem-only step status updates from the turn.
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.Kind = "local"
-		mem.ProjectPath = strings.TrimSpace(projectPath)
+		path := strings.TrimSpace(projectPath)
+		if isLocalCodingIdentityOrSandbox(projectPathFromSessionOwnerID(userID), path) {
+			if live := h.liveLocalCodingExecDir(userID, ""); live != "" {
+				path = live
+			} else {
+				path = ""
+			}
+		}
+		mem.ProjectPath = path
 		mem.LastUserText = strings.TrimSpace(userText)
 		stickyRememberSessionPlan(mem, userText)
 		mem.TurnCount++
@@ -717,6 +731,21 @@ func (h *IMMessageHandler) clearStickyCodingSessionFullAccess(userID string) {
 		mem.SessionHighRiskAccess = false
 		mem.SessionPermissionMode = "request"
 		// Keep ApprovedDirs so explicit allow_dir grants remain.
+	})
+}
+
+// setStickyCodingRequirementRestatement stores the host-owned paraphrase of
+// the current user request so the GUI can show it before tools start.
+func (h *IMMessageHandler) setStickyCodingRequirementRestatement(userID, restatement string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.RequirementRestatement = truncateRunesForSubAgent(strings.TrimSpace(restatement), 400)
 	})
 }
 
@@ -994,7 +1023,18 @@ func (h *IMMessageHandler) isPureCodingWorkbenchSession(userID string) bool {
 	}
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	kind := strings.TrimSpace(mem.Kind)
-	return kind == "local" || kind == "remote"
+	if kind == "local" || kind == "remote" {
+		return true
+	}
+	// coding_dev / remote_coding_dev tabs must stay on the workbench even
+	// when pending and sticky Kind were both dropped (restart, race).
+	// Otherwise handleIMMessage emits chat [Status] before re-arm.
+	if h.app != nil {
+		if projectPath := projectPathFromSessionOwnerID(userID); projectPath != "" && h.app.projectPathIsCodingWorkbench(projectPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // syncCodingWorkbenchSessionPlanFromGoal mirrors a /goal objective into the
@@ -1014,6 +1054,38 @@ func (h *IMMessageHandler) syncCodingWorkbenchSessionPlanFromGoal(userID, object
 	h.setStickyCodingSessionPlan(userID, objective)
 }
 
+// ensurePureCodingArmedForIncomingMessage re-arms CodingSubAgent routing before
+// an ordinary message is classified. Sticky Kind covers restart/race; the
+// project coding_dev tag covers tabs that never wrote sticky memory. Without
+// this, a 编程 workbench follow-up falls into the shared chat loop and can
+// HostReject as "capability catalog uncovered".
+func (h *IMMessageHandler) ensurePureCodingArmedForIncomingMessage(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	h.ensurePureCodingArmedForGoalContinuation(userID)
+	if h.hasPendingTemplateSubAgentExecution(userID) || h.app == nil {
+		return
+	}
+	projectPath := projectPathFromSessionOwnerID(userID)
+	if projectPath == "" {
+		return
+	}
+	// Do not pre-check projectPathIsCodingWorkbench here. That helper only
+	// reads an already-open project index and can miss after /clear or a
+	// cold start, which dropped this tab into the shared chat loop.
+	st, err := h.app.EnsureCodingWorkbenchArmed(projectPath)
+	if err != nil {
+		log.Printf("[coding-env] incoming re-arm failed user=%s project=%s err=%v", userID, projectPath, err)
+		return
+	}
+	log.Printf("[coding-env] incoming re-arm user=%s project=%s armed=%v kind=%s", userID, projectPath, st.Armed, st.Kind)
+}
+
 // ensurePureCodingArmedForGoalContinuation re-arms sticky local/remote pending
 // routing when sticky memory still classifies the session as pure coding but
 // in-memory pending flags were dropped (restart, cold path, race). Remote with
@@ -1029,12 +1101,7 @@ func (h *IMMessageHandler) ensurePureCodingArmedForGoalContinuation(userID strin
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	switch strings.TrimSpace(mem.Kind) {
 	case "local":
-		execDir := strings.TrimSpace(mem.ProjectPath)
-		if execDir == "" {
-			if p := projectPathFromSessionOwnerID(userID); p != "" {
-				execDir = p
-			}
-		}
+		execDir := h.liveLocalCodingExecDir(userID, mem.ProjectPath)
 		if execDir != "" {
 			h.rearmStickyLocalCodingEnvironment(userID, execDir)
 		}

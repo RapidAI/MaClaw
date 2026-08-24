@@ -2,8 +2,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    assistantMessageHasVisibleBody,
     buildAssistantReplyCopyText,
     copyTextToClipboard,
+    renderCodingAgentThinkingTimelineItem,
     renderContentWithCodeBlocks,
     renderMessage,
 } from "./aiAssistantMarkdown";
@@ -15,16 +17,20 @@ import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 // outside jsdom's scope.
 const safeKBImageJPEG = "/9j/2wCEAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDIBCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMv/AABEIAAEAAQMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOLooor5k/cT/9k=";
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
     showItemInFolderMock: vi.fn(async () => undefined),
     knowledgeOpenImageAssetMock: vi.fn(async () => undefined),
+    attachmentPreviewDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTTHUMB"),
+    attachmentFullDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTFULL"),
 }));
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     ShowItemInFolder: showItemInFolderMock,
     KnowledgeOpenImageAsset: knowledgeOpenImageAssetMock,
+    AIAssistantAttachmentPreviewDataURL: attachmentPreviewDataURLMock,
+    AIAssistantAttachmentFullDataURL: attachmentFullDataURLMock,
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -36,6 +42,7 @@ describe("renderContentWithCodeBlocks", () => {
         openFileOrShowInFolderMock.mockClear();
         showItemInFolderMock.mockClear();
         knowledgeOpenImageAssetMock.mockClear();
+        attachmentFullDataURLMock.mockClear();
     });
 
     it("normalizes escaped newline sequences before rendering", () => {
@@ -191,6 +198,189 @@ describe("renderContentWithCodeBlocks", () => {
         expect(link.style.wordBreak).toBe("break-word");
     });
 
+    it("renders inline LaTeX without interpreting formulas inside code spans", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("设 $x \\in X$，而 `const price = $5;` 保持为代码。", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("x");
+        expect(container.querySelector("code")?.textContent).toBe("const price = $5;");
+        expect(container.textContent).not.toContain("$x \\in X$");
+    });
+
+    it("keeps currency-like dollar pairs as text instead of interpreting them as math", () => {
+        render(<div>{renderContentWithCodeBlocks("预算从 $5 到 $10，公式为 $x + 1$。", lightTheme)}</div>);
+
+        expect(screen.getByText(/预算从 \$5 到 \$10，公式为/)).toBeTruthy();
+        expect(screen.getAllByTestId("assistant-inline-math")).toHaveLength(1);
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("x");
+    });
+
+    it("renders several inline formulas in the same Chinese sentence", () => {
+        render(<div>{renderContentWithCodeBlocks("设 $X$ 是集合，$d: X \\times X \\to \\mathbb{R}$ 满足条件。", lightTheme)}</div>);
+
+        expect(screen.getAllByTestId("assistant-inline-math")).toHaveLength(2);
+        expect(screen.getByText(/设/).textContent).not.toContain("$X$");
+        expect(screen.getByText(/满足条件/).textContent).not.toContain("$d:");
+    });
+
+    it("keeps an inline formula readable without a nested horizontal scrollbar", () => {
+        render(<div>{renderContentWithCodeBlocks("定义为 $d: X \\times X \\to \\mathbb{R}$。", lightTheme)}</div>);
+
+        const formula = screen.getByTestId("assistant-inline-math") as HTMLElement;
+        expect(formula.style.display).toBe("");
+        expect(formula.style.maxWidth).toBe("");
+        expect(formula.style.overflowX).toBe("");
+        expect(formula.style.overflowY).toBe("");
+        expect(formula.style.minWidth).toBe("");
+    });
+
+    it("keeps malformed inline formulas aligned without introducing a scroll container", () => {
+        render(<div>{renderContentWithCodeBlocks("定义为 $\\notARealCommand$。", lightTheme)}</div>);
+
+        const formula = screen.getByTestId("assistant-inline-math") as HTMLElement;
+        expect(formula.style.verticalAlign).toBe("middle");
+        expect(formula.style.display).toBe("");
+        expect(formula.style.overflowX).toBe("");
+        expect(formula.style.overflowY).toBe("");
+    });
+
+    it("renders a formula containing a pipe inside a single table cell", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("| 公式 | 含义 |\n| --- | --- |\n| $P(A|B)$ | 条件概率 |", lightTheme)}</div>,
+        );
+
+        const table = screen.getByTestId("markdown-table") as HTMLTableElement;
+        expect(table.querySelectorAll("thead th")).toHaveLength(2);
+        expect(table.querySelectorAll("tbody td")).toHaveLength(2);
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("P");
+        expect(table.textContent).toContain("条件概率");
+    });
+
+    it("recognizes formulas immediately adjacent to Chinese prose", () => {
+        render(<div>{renderContentWithCodeBlocks("令$x$属于$X$，则$d(x,y)=0$。", lightTheme)}</div>);
+
+        expect(screen.getAllByTestId("assistant-inline-math")).toHaveLength(3);
+        expect(document.body.textContent).not.toContain("$x$");
+        expect(document.body.textContent).not.toContain("$d(x,y)=0$");
+    });
+
+    it("keeps formulas literal inside multi-backtick inline code", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("``const price = $5;`` 且 $x$ 是公式。", lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("code")?.textContent).toBe("const price = $5;");
+        expect(screen.getAllByTestId("assistant-inline-math")).toHaveLength(1);
+    });
+
+    it("does not let escaped dollars or identifier-adjacent dollars swallow a later formula", () => {
+        render(<div>{renderContentWithCodeBlocks("保留 \\$5、US$ price；公式为 $x_1 + y$。", lightTheme)}</div>);
+
+        expect(document.body.textContent).toContain("保留 \\$5、US$ price；公式为");
+        expect(screen.getAllByTestId("assistant-inline-math")).toHaveLength(1);
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("x");
+    });
+
+    it("renders delimited display LaTeX blocks", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("距离公理\n$$\nd(x, y) \\geq 0, \\quad d(x, y) = 0 \\iff x = y\n$$\n成立。", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-display-math").textContent).toContain("d");
+        expect(container.textContent).not.toContain("$$");
+    });
+
+    it("renders display formulas when the opening delimiter shares its first line with TeX", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("$$d(x, y) \\geq 0$$", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-display-math").textContent).toContain("d");
+        expect(container.textContent).not.toContain("$$");
+    });
+
+    it("renders display formulas when the closing delimiter shares its final line with TeX", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("$$\n\\begin{aligned}\nf(x) &= x^2\\\\\n\\end{aligned}$$", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-display-math").textContent).toContain("f");
+        expect(container.textContent).not.toContain("$$");
+    });
+
+    it("renders bracket-delimited display formulas when the closing delimiter shares its final line with TeX", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("\\[\n\\frac{a}{b}\\]", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-display-math").textContent).toContain("a");
+        expect(container.textContent).not.toContain("\\]");
+    });
+
+    it("keeps an unfinished display formula legible until its closing delimiter arrives", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("$$d(x, y) \\geq 0", lightTheme)}</div>,
+        );
+
+        expect(screen.queryByTestId("assistant-display-math")).toBeNull();
+        expect(container.textContent).toContain("$$");
+        expect(container.textContent).toContain("d(x, y)");
+    });
+
+    it("does not turn TeX hashes in an unfinished display formula into a Markdown heading", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("$$\n###\nx + y", lightTheme)}</div>,
+        );
+
+        expect(container.textContent).toContain("###");
+        expect(container.textContent).toContain("x + y");
+        expect(container.querySelector('[style*="font-weight: 600"]')?.textContent).not.toBe("x + y");
+    });
+
+    it("still repairs a bare Markdown heading after a completed display formula", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("$$\n###\nx + y\n$$\n###\nActual title", lightTheme)}</div>,
+        );
+
+        expect(screen.getByText("Actual title")).toBeTruthy();
+        expect(container.textContent).not.toMatch(/\$\$\n?###\n?x \+ y\n?\$\$\n?###/);
+    });
+
+    it("does not disable heading-marker repair for dollar text inside fenced code", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```text\n$$\n```\n###\nActual title", lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("code")?.textContent).toBe("$$");
+        expect(container.textContent).not.toContain("###");
+        expect(screen.getByText("Actual title")).toBeTruthy();
+    });
+
+    it("renders LaTeX parentheses and brackets delimiters", () => {
+        render(
+            <div>{renderContentWithCodeBlocks("内联 \\(x^2\\)\n\\[\n\\frac{a}{b}\n\\]", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("x");
+        expect(screen.getByTestId("assistant-display-math").textContent).toContain("a");
+    });
+
+    it("preserves display-math TeX commands that begin with an escaped newline token", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("$$\n\\newcommand{\\foo}{x}\n\\foo + 1\n$$", lightTheme)}</div>,
+        );
+
+        expect(screen.getByTestId("assistant-display-math").textContent).toContain("x");
+        expect(container.textContent).not.toContain("$$");
+    });
+
+    it("preserves inline-math TeX commands that begin with an escaped newline token", () => {
+        render(<div>{renderContentWithCodeBlocks("Value $\\newcommand{\\foo}{x}\\foo$", lightTheme)}</div>);
+
+        expect(screen.getByTestId("assistant-inline-math").textContent).toContain("x");
+    });
+
     it("wraps long inline emphasis within the message width", () => {
         const boldText = "ThisIsAVeryLongBoldTokenThatShouldWrapInsideTheAssistantPanel";
         const italicText = "ThisIsAVeryLongItalicTokenThatShouldWrapInsideTheAssistantPanel";
@@ -334,19 +524,60 @@ describe("renderContentWithCodeBlocks", () => {
     });
 
     it("keeps screenshot previews inside the message width", () => {
-        const { container } = render(<div>{renderScreenshotPreview("abc", "C:\\Users\\demo\\screen.png", vi.fn(), lightTheme)}</div>);
+        const { container } = render(<div>{renderScreenshotPreview("abc", "C:\\Users\\demo\\screen.png", lightTheme, "zh")}</div>);
 
         const wrapper = screen.getByTestId("screenshot-preview-block") as HTMLElement;
-        const link = container.querySelector("a") as HTMLAnchorElement;
+        const thumbnail = screen.getByTestId("attachment-image-thumbnail") as HTMLButtonElement;
         const image = container.querySelector("img") as HTMLImageElement;
         expect(wrapper.style.maxWidth).toBe("100%");
         expect(wrapper.style.minWidth).toBe("0px");
         expect(wrapper.style.overflow).toBe("hidden");
-        expect(link.style.maxWidth).toBe("100%");
-        expect(image.style.width).toBe("180px");
-        expect(image.style.maxWidth).toBe("100%");
-        expect(image.style.boxSizing).toBe("border-box");
+        expect(thumbnail.style.width).toBe("180px");
+        expect(thumbnail.style.maxWidth).toBe("100%");
+        expect(thumbnail.style.boxSizing).toBe("border-box");
+        expect(image.style.maxHeight).toBe("120px");
+        expect(image.style.objectFit).toBe("contain");
         expect(image.style.display).toBe("block");
+    });
+
+    it("zooms a tool screenshot in the shared preview overlay, reading the saved capture", async () => {
+        const savedPath = "C:\\Users\\demo\\screen.png";
+        render(<div>{renderScreenshotPreview("abc", savedPath, lightTheme, "zh")}</div>);
+
+        const thumbnail = await screen.findByTestId("attachment-image-thumbnail");
+        fireEvent.click(thumbnail);
+
+        // The inline base64 is only the tool's downscaled copy, so the overlay
+        // upgrades to the file on disk.
+        await waitFor(() => {
+            expect(screen.getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,HOSTFULL");
+        });
+        expect(attachmentFullDataURLMock).toHaveBeenCalledWith(savedPath);
+        expect(screen.getByTestId("attachment-image-preview-status").textContent).toBe("screen.png");
+
+        fireEvent.click(screen.getByTestId("attachment-image-preview-close"));
+        expect(screen.queryByTestId("attachment-image-preview-dialog")).toBeNull();
+    });
+
+    it("reveals a saved screenshot in its folder instead of opening the OS viewer", async () => {
+        const savedPath = "C:\\Users\\demo\\screen.png";
+        render(<div>{renderScreenshotPreview("abc", savedPath, lightTheme, "zh")}</div>);
+
+        fireEvent.click(await screen.findByTestId("attachment-image-thumbnail"));
+        fireEvent.click(screen.getByTestId("attachment-image-preview-open-file"));
+
+        expect(showItemInFolderMock).toHaveBeenCalledWith(savedPath);
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+    });
+
+    it("previews an unsaved screenshot from its inline bytes without a reveal action", async () => {
+        render(<div>{renderScreenshotPreview("abc", undefined, lightTheme, "zh")}</div>);
+
+        fireEvent.click(await screen.findByTestId("attachment-image-thumbnail"));
+
+        expect(screen.getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,abc");
+        expect(screen.queryByTestId("attachment-image-preview-open-file")).toBeNull();
+        expect(attachmentFullDataURLMock).not.toHaveBeenCalled();
     });
 
     it("splits dense digital employee capability lists into plain dash lists without pictographs", () => {
@@ -1086,7 +1317,86 @@ describe("renderContentWithCodeBlocks", () => {
     });
 });
 
+describe("renderMessage user attachment chips", () => {
+    const imageAttachment = {
+        filePath: "D:\\tmp\\paste_1.png",
+        fileName: "paste_1.png",
+        extension: ".png",
+        isImage: true,
+        thumbnailDataUrl: "blob:maclaw/pasted-image",
+    };
+
+    beforeEach(() => {
+        attachmentPreviewDataURLMock.mockClear();
+        attachmentFullDataURLMock.mockClear();
+    });
+
+    it("opens a full-image preview from an attached image and closes it again", async () => {
+        render(<div>{renderMessage({
+            id: "with-image",
+            role: "user",
+            content: "看看这张图",
+            attachments: [imageAttachment],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        fireEvent.click(await screen.findByTestId("attachment-image-thumbnail"));
+        await waitFor(() => {
+            expect(screen.getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,HOSTFULL");
+        });
+        expect(attachmentFullDataURLMock).toHaveBeenCalledWith(imageAttachment.filePath);
+
+        fireEvent.click(screen.getByTestId("attachment-image-preview-close"));
+        await waitFor(() => expect(screen.queryByTestId("attachment-image-preview-overlay")).toBeNull());
+    });
+
+    it("uses the saved attachment preview instead of a transient composer object URL", async () => {
+        render(<div>{renderMessage({
+            id: "revoked-image",
+            role: "user",
+            content: "",
+            attachments: [imageAttachment],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        const chipImage = (await screen.findByTestId("attachment-image-thumbnail")).querySelector("img") as HTMLImageElement;
+        expect(chipImage.getAttribute("src")).toBe("data:image/png;base64,HOSTTHUMB");
+
+        expect(attachmentPreviewDataURLMock).toHaveBeenCalledWith(imageAttachment.filePath);
+    });
+
+    it("does not briefly show a file-type badge while the saved image preview is loading", () => {
+        let resolvePreview: (value: string) => void = () => undefined;
+        attachmentPreviewDataURLMock.mockImplementationOnce(() => new Promise<string>((resolve) => { resolvePreview = resolve; }));
+        render(<div>{renderMessage({
+            id: "loading-image",
+            role: "user",
+            content: "",
+            attachments: [imageAttachment],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByLabelText("paste_1.png").textContent).toBe("");
+        resolvePreview("data:image/png;base64,HOSTTHUMB");
+    });
+});
+
 describe("renderMessage assistant display guard", () => {
+    it("keeps coding timeline reasoning out of the assistant bubble", () => {
+        const message = {
+            id: "coding-timeline",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Inspect the timeline renderer",
+            codingTimeline: [{ id: "thought", sequence: 1, kind: "thinking" as const, content: "Inspect the timeline renderer", timestamp: 1 }],
+            timestamp: 1,
+        };
+        expect(assistantMessageHasVisibleBody(message)).toBe(false);
+        render(<div>{renderCodingAgentThinkingTimelineItem(message.codingTimeline[0], lightTheme, "en")}</div>);
+        expect(screen.getByText("Thought")).toBeTruthy();
+        expect(screen.getByText("Inspect the timeline renderer")).toBeTruthy();
+    });
+
     it("renders legacy guide receipts as compact status instead of a system card", () => {
         render(<div>{renderMessage({
             id: "guide-receipt",
@@ -1430,6 +1740,20 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText(/Browser:/)).toBeNull();
     });
 
+    it("strips leftover coding-audit headings from collapsed reasoning", () => {
+        render(<div>{renderMessage({
+            id: "assistant-reasoning-audit-heading",
+            role: "assistant",
+            content: "Created hello.cpp.",
+            reasoning: "I'll write a small C++ file.\n\n## \u9a8c\u8bc1\u7ed3\u679c\ncl passed",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
+
+        expect(screen.getByText("I'll write a small C++ file.")).toBeTruthy();
+        expect(screen.queryByText(/cl passed/)).toBeNull();
+        expect(screen.queryByText(/\u9a8c\u8bc1\u7ed3\u679c/)).toBeNull();
+    });
+
     it("hides Browser role-prefixed reasoning tails", () => {
         render(<div>{renderMessage({
             id: "assistant-reasoning-browser-prefix",
@@ -1444,7 +1768,7 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText(/Browser:/)).toBeNull();
     });
 
-    it("expands reasoning while streaming and collapses it after completion", () => {
+    it("folds ordinary-chat reasoning when streaming completes", () => {
         const message = {
             id: "assistant-streaming-reasoning",
             role: "assistant" as const,
@@ -1454,13 +1778,327 @@ describe("renderMessage assistant display guard", () => {
         };
         const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
 
-        const openDetails = screen.getByText("Thinking process...").closest("details");
-        expect(openDetails?.open).toBe(true);
+        const streamingDetails = screen.getByText("Thinking process...").closest("details");
+        expect(streamingDetails?.open).toBe(true);
         expect(screen.getByText("Inspecting the request.")).toBeTruthy();
+        const reasoningBody = screen.getByTestId("assistant-reasoning-body");
+        expect(reasoningBody.hasAttribute("data-nested-scroll")).toBe(true);
+        Object.defineProperties(reasoningBody, {
+            scrollHeight: { configurable: true, value: 480 },
+            clientHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nChecking Ningbo weather." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        expect(reasoningBody.scrollTop).toBe(480);
 
         rerender(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
-        const closedDetails = screen.getByText("Thinking process...").closest("details");
-        expect(closedDetails?.open).toBe(false);
+        const completedDetails = screen.getByText("Thinking process...").closest("details");
+        expect(completedDetails?.open).toBe(false);
+        unmount();
+    });
+
+    it("keeps ordinary-chat reasoning open while a tool is running", () => {
+        const message = {
+            id: "assistant-tool-running-reasoning",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Searching the forecast source.",
+            timestamp: Date.now(),
+        };
+        const { rerender } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+
+        rerender(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+    });
+
+    it("preserves a manual reasoning toggle until the streaming phase changes", () => {
+        const message = {
+            id: "assistant-manual-reasoning-toggle",
+            role: "assistant" as const,
+            content: "Draft answer.",
+            reasoning: "Checking the request.",
+            timestamp: Date.now(),
+        };
+        const renderChat = (next = message, streaming = true) =>
+            <div>{renderMessage(next, vi.fn(), lightTheme, true, "Saved file", "en", streaming)}</div>;
+        const { rerender } = render(renderChat());
+
+        const summary = screen.getByText("Thinking process...");
+        const details = summary.closest("details");
+        expect(details?.open).toBe(true);
+
+        fireEvent.click(summary);
+        expect(details?.open).toBe(false);
+
+        rerender(renderChat({ ...message, reasoning: "Checking the request.\nReviewing constraints." }));
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+
+        rerender(renderChat(message, false));
+        const completedDetails = screen.getByText("Thinking process...").closest("details");
+        expect(completedDetails?.open).toBe(false);
+
+        fireEvent.click(screen.getByText("Thinking process..."));
+        expect(completedDetails?.open).toBe(true);
+
+        rerender(renderChat({ ...message, content: "Final answer." }, false));
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+    });
+
+    it("reopens reasoning when a paused stream resumes", () => {
+        const message = {
+            id: "assistant-resumed-reasoning",
+            role: "assistant" as const,
+            content: "Draft answer.",
+            reasoning: "Checking the request.",
+            timestamp: Date.now(),
+        };
+        const renderChat = (streaming: boolean) =>
+            <div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", streaming)}</div>;
+        const { rerender } = render(renderChat(true));
+
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+
+        rerender(renderChat(false));
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+
+        rerender(renderChat(true));
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+    });
+
+    it("keeps coding-workbench reasoning collapsed while streaming and after completion", () => {
+        const message = {
+            id: "assistant-coding-reasoning",
+            role: "assistant" as const,
+            content: "Created hello.cpp.",
+            reasoning: "I'll write a small C++ file.",
+            timestamp: Date.now(),
+        };
+        const renderCoding = (next = message, streaming = true) =>
+            renderMessage(next, vi.fn(), lightTheme, true, "Saved file", "en", streaming, undefined, undefined, true);
+        const { rerender, unmount } = render(<div>{renderCoding()}</div>);
+
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        rerender(<div>{renderCoding({ ...message, reasoning: "I'll write a small C++ file.\nChecking compile." })}</div>);
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        rerender(<div>{renderCoding(message, false)}</div>);
+        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        unmount();
+    });
+
+    it("does not hide a coding-workbench recovery card as an empty placeholder", () => {
+        render(<div>{renderMessage({
+            id: "assistant-coding-recover",
+            role: "assistant",
+            content: "",
+            recoverableSession: { sessionID: "sess-1", title: "Resume coding" },
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", true, undefined, undefined, true)}</div>);
+
+        expect(screen.getByTestId("assistant-chat-ai-assistant-coding-recover")).toBeTruthy();
+    });
+
+    it("treats chat status-only reasoning as an empty coding placeholder", () => {
+        expect(assistantMessageHasVisibleBody({
+            id: "status-only",
+            role: "assistant",
+            content: "",
+            reasoning: "\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406\n\u2022 \u5df2\u63a5\u6536\u4efb\u52a1\uff0c\u6b63\u5728\u51c6\u5907\u6267\u884c\u8def\u5f84",
+            timestamp: Date.now(),
+        })).toBe(false);
+        const { container } = render(<div>{renderMessage({
+            id: "assistant-coding-status",
+            role: "assistant",
+            content: "",
+            reasoning: "\u2022 \u6536\u5230\uff0c\u6b63\u5728\u5904\u7406",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, true)}</div>);
+        expect(container.querySelector('[data-testid="assistant-chat-ai-assistant-coding-status"]')).toBeNull();
+        expect(container.textContent || "").not.toMatch(/处理中|思考中|Working|收到/);
+    });
+
+    it("treats audit-only coding content as an empty placeholder", () => {
+        expect(assistantMessageHasVisibleBody({
+            id: "audit-only",
+            role: "assistant",
+            content: "## \u9a8c\u8bc1\u7ed3\u679c\ncl passed\n\n## \u6d89\u53ca\u6587\u4ef6\nhello.cpp",
+            reasoning: "## \u8d28\u91cf\u5ba1\u8ba1\npassed",
+            timestamp: Date.now(),
+        })).toBe(false);
+        const { container } = render(<div>{renderMessage({
+            id: "assistant-coding-audit",
+            role: "assistant",
+            content: "## \u9a8c\u8bc1\u7ed3\u679c\ncl passed",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, true)}</div>);
+        expect(container.querySelector('[data-testid="assistant-chat-ai-assistant-coding-audit"]')).toBeNull();
+    });
+
+    it("treats whitespace-only coding placeholders as empty", () => {
+        expect(assistantMessageHasVisibleBody({
+            id: "ws",
+            role: "assistant",
+            content: "  \n",
+            reasoning: "   ",
+            timestamp: Date.now(),
+        })).toBe(false);
+        const { container } = render(<div>{renderMessage({
+            id: "assistant-coding-ws",
+            role: "assistant",
+            content: "   ",
+            reasoning: "\n",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, true)}</div>);
+        expect(container.querySelector('[data-testid="assistant-chat-ai-assistant-coding-ws"]')).toBeNull();
+    });
+
+    it("does not show a chat Working/思考中 bubble for an empty coding-workbench placeholder", () => {
+        const { container } = render(<div>{renderMessage({
+            id: "assistant-coding-empty",
+            role: "assistant",
+            content: "",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, true)}</div>);
+
+        expect(container.querySelector('[data-testid="assistant-chat-ai-assistant-coding-empty"]')).toBeNull();
+        expect(container.textContent || "").not.toMatch(/处理中|思考中|Working/);
+    });
+
+    it("keeps the ordinary-chat Working placeholder on an empty streaming bubble", () => {
+        render(<div>{renderMessage({
+            id: "assistant-chat-empty",
+            role: "assistant",
+            content: "",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true)}</div>);
+
+        expect(screen.getByText("\u5904\u7406\u4e2d\u2026")).toBeTruthy();
+    });
+
+    it("keeps the thinking pane pinned after a delayed layout grow", () => {
+        let resizeCb: ResizeObserverCallback | undefined;
+        class MockResizeObserver {
+            constructor(cb: ResizeObserverCallback) {
+                resizeCb = cb;
+            }
+            observe() {}
+            disconnect() {}
+            unobserve() {}
+        }
+        vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+        try {
+            const message = {
+                id: "assistant-streaming-reasoning-grow",
+                role: "assistant" as const,
+                content: "",
+                reasoning: "Inspecting the request.",
+                timestamp: Date.now(),
+            };
+            const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+            const reasoningBody = screen.getByTestId("assistant-reasoning-body");
+            Object.defineProperties(reasoningBody, {
+                scrollHeight: { configurable: true, value: 480 },
+                clientHeight: { configurable: true, value: 400 },
+                scrollTop: { configurable: true, value: 0, writable: true },
+            });
+            rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nChecking Ningbo weather." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+            expect(reasoningBody.scrollTop).toBe(480);
+
+            Object.defineProperty(reasoningBody, "scrollHeight", { configurable: true, value: 720 });
+            resizeCb?.([], {} as ResizeObserver);
+            expect(reasoningBody.scrollTop).toBe(720);
+            unmount();
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it("does not unpin thinking follow when content growth fires a scroll event", () => {
+        const message = {
+            id: "assistant-streaming-reasoning-growth-scroll",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Inspecting the request.",
+            timestamp: Date.now(),
+        };
+        const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        const reasoningBody = screen.getByTestId("assistant-reasoning-body");
+        Object.defineProperties(reasoningBody, {
+            scrollHeight: { configurable: true, value: 480 },
+            clientHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 80, writable: true },
+        });
+        Object.defineProperty(reasoningBody, "scrollHeight", { configurable: true, value: 720 });
+        fireEvent.scroll(reasoningBody);
+        rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nI'll commit sources only." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        expect(reasoningBody.scrollTop).toBe(720);
+        unmount();
+    });
+
+    it("does not yank the thinking pane when an upward wheel has not yet produced a scroll event", () => {
+        const message = {
+            id: "assistant-streaming-reasoning-wheel-race",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Inspecting the request.",
+            timestamp: Date.now(),
+        };
+        const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        const reasoningBody = screen.getByTestId("assistant-reasoning-body");
+        Object.defineProperties(reasoningBody, {
+            scrollHeight: { configurable: true, value: 720 },
+            clientHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(reasoningBody, { deltaY: -40 });
+        rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nChecking Ningbo weather." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        expect(reasoningBody.scrollTop).toBe(0);
+        unmount();
+    });
+
+    it("does not yank the thinking pane when the user scrolls up", () => {
+        const message = {
+            id: "assistant-streaming-reasoning-user-up",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Inspecting the request.",
+            timestamp: Date.now(),
+        };
+        const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        const reasoningBody = screen.getByTestId("assistant-reasoning-body");
+        Object.defineProperties(reasoningBody, {
+            scrollHeight: { configurable: true, value: 720 },
+            clientHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(reasoningBody, { deltaY: -40 });
+        fireEvent.scroll(reasoningBody);
+        rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nChecking Ningbo weather." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        expect(reasoningBody.scrollTop).toBe(0);
+        unmount();
+    });
+
+    it("does not yank the thinking pane after a scrollbar pointer drag", () => {
+        const message = {
+            id: "assistant-streaming-reasoning-scrollbar",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Inspecting the request.",
+            timestamp: Date.now(),
+        };
+        const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        const reasoningBody = screen.getByTestId("assistant-reasoning-body");
+        Object.defineProperties(reasoningBody, {
+            scrollHeight: { configurable: true, value: 720 },
+            clientHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.pointerDown(reasoningBody);
+        fireEvent.scroll(reasoningBody);
+        rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nChecking Ningbo weather." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+        expect(reasoningBody.scrollTop).toBe(0);
         unmount();
     });
 

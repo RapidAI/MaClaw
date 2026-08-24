@@ -35,11 +35,21 @@ func (h *IMMessageHandler) shouldSkipWorkflowToolExecutionGate(userID string, ct
 }
 
 type agentLoopToolExecutionOptions struct {
-	Context          *LoopContext
-	UserID           string
+	Context *LoopContext
+	UserID  string
+	// TaskAnchor is snapshotted when the loop starts. Tool calls in this loop
+	// must not switch identity because a newer user turn updates the live map.
+	TaskAnchor *taskIdentityAnchor
+	// ContextTokens comes from the config selected for the current LLM round.
+	// Zero retains the direct-call/default provider behavior.
+	ContextTokens    int
 	UserText         string
 	SkipWorkflowGate bool
 	ToolCall         llm.ToolCall
+	// LegacySurface is the exact ephemeral tool surface that produced this
+	// model response. Managed semantic calls still perform their stronger
+	// grant/epoch admission afterwards; this check closes the unmanaged path.
+	LegacySurface    legacyToolSurface
 	Iteration        int
 	Phase            agentLoopPhase
 	Debug            bool
@@ -69,6 +79,30 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		tc.Function.Arguments = rewrittenArgs
 	}
 	tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
+	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.Allows(tc.Function.Name) {
+		name := strings.TrimSpace(tc.Function.Name)
+		text := legacyToolSurfaceDeniedText(name)
+		return toolExecutionResult{Text: text, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.AllowsLiveProvision(tc.Function.Name) {
+		name := strings.TrimSpace(tc.Function.Name)
+		text := legacyAdapterCatalogDeniedText(name)
+		return toolExecutionResult{Text: text, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if opts.LegacySurface.HasSnapshot() {
+		if err := opts.LegacySurface.AllowsArguments(tc.Function.Name, tc.Function.Arguments); err != nil {
+			name := strings.TrimSpace(tc.Function.Name)
+			return toolExecutionResult{Text: legacyToolArgumentDeniedText(name, err), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		}
+	}
+	if isLegacyModelMCPGateway(tc.Function.Name) {
+		name := strings.TrimSpace(tc.Function.Name)
+		return toolExecutionResult{Text: legacyModelMCPGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if isLegacyModelManageSkillGateway(tc.Function.Name, tc.Function.Arguments) {
+		name := strings.TrimSpace(tc.Function.Name)
+		return toolExecutionResult{Text: legacyModelManageSkillGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	// Record the tool call for trajectory before any reject/execute path so
 	// policy/truncation rejections still pair with a later tool_result entry.
 	if opts.RecordToolCall != nil {
@@ -211,10 +245,13 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			result = *errResult
 		}
 	}
-	if result.Text == "" {
-		if clientTool, ok := clientToolForLoop(opts.Context, tc.Function.Name); ok {
-			result = h.dispatchClientToolCall(opts.Context, clientTool, tc.ID, tc.Function.Arguments)
+	if result.Text == "" && opts.LegacySurface.IsClientTool(tc.Function.Name) {
+		clientTool, ok := clientToolForLoop(opts.Context, tc.Function.Name)
+		if !ok {
+			name := strings.TrimSpace(tc.Function.Name)
+			return toolExecutionResult{Text: "[system rejected] client tool binding is unavailable", ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
+		result = h.dispatchClientToolCall(opts.Context, clientTool, tc.ID, tc.Function.Arguments)
 	}
 	if result.Text == "" {
 		execCtx := context.Background()
@@ -223,7 +260,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			execCtx, cancel, _ = opts.Context.BeginReplannableOperation(context.Background())
 			defer cancel()
 		}
-		result = h.executeToolDetailedWithRuntimeContext(execCtx, policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
+		contextTokens := opts.ContextTokens
+		if contextTokens <= 0 {
+			contextTokens = h.getMaclawLLMConfig().EffectiveContextTokens()
+		}
+		result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withTrustedAuditPrincipal(execCtx, opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
@@ -392,28 +433,18 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 		nil,
 		opts.Context,
 		opts.OnToken,
-		func(text string) {
-			if opts.OnProgress != nil {
-				opts.OnProgress(text)
-			}
-		},
+		wrapCodingAgentUserProgress(opts.OnProgress),
 	)
 	if result == nil {
 		return toolExecutionResult{Text: "CodingSubAgent did not return a result.", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureExecutionPanic}, true
 	}
 	emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, result.FilesModified, result.FilesCreated, previewRoutePath)
-	text := strings.TrimSpace(result.Summary)
-	if text == "" {
-		text = strings.TrimSpace(result.Error)
-	}
+	text := formatCodingSubAgentUserAnswer(result)
 	if text == "" {
 		text = fmt.Sprintf("CodingSubAgent finished with status=%s.", result.Status)
 	}
 	if result.Status == TaskExecPassed {
 		return toolExecutionResult{Text: text, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeSucceeded}, true
-	}
-	if result.Error != "" && !strings.Contains(text, result.Error) {
-		text += "\n\nError: " + result.Error
 	}
 	return toolExecutionResult{Text: text, ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}, true
 }
@@ -780,10 +811,21 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntime(policyUserID, runtimeP
 }
 
 func (h *IMMessageHandler) executeToolDetailedWithRuntimeState(policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
-	return h.executeToolDetailedWithRuntimeContext(context.Background(), policyUserID, hasRuntimeOwner, runtimePlatform, name, argsJSON, userText, onProgress)
+	return h.executeToolDetailedWithRuntimeContextAndContextTokens(context.Background(), policyUserID, hasRuntimeOwner, runtimePlatform, h.getMaclawLLMConfig().EffectiveContextTokens(), name, argsJSON, userText, onProgress)
 }
 
+// executeToolDetailedWithRuntimeContext retains the legacy entry point for
+// direct callers. Agent-loop paths with a routed configuration use the
+// context-aware variant below.
 func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context.Context, policyUserID string, hasRuntimeOwner bool, runtimePlatform, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	return h.executeToolDetailedWithRuntimeContextAndContextTokens(execCtx, policyUserID, hasRuntimeOwner, runtimePlatform, h.getMaclawLLMConfig().EffectiveContextTokens(), name, argsJSON, userText, onProgress)
+}
+
+func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens(execCtx context.Context, policyUserID string, hasRuntimeOwner bool, runtimePlatform string, contextTokens int, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	return h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(execCtx, policyUserID, hasRuntimeOwner, runtimePlatform, contextTokens, nil, name, argsJSON, userText, onProgress)
+}
+
+func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(execCtx context.Context, policyUserID string, hasRuntimeOwner bool, runtimePlatform string, contextTokens int, taskAnchor *taskIdentityAnchor, name, argsJSON, userText string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
 	if execCtx == nil {
 		execCtx = context.Background()
 	}
@@ -833,6 +875,10 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	// Runtime context is host metadata. Never let an LLM-supplied underscored
+	// property choose a larger document page, even though generic schema
+	// validation intentionally ignores internal property names.
+	delete(args, registeredToolContextTokensField)
 	if rewrittenName, rewrittenArgs, rewritten := rewriteInternalBrowserToolCall(name, args); rewritten {
 		name = rewrittenName
 		args = rewrittenArgs
@@ -842,7 +888,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	// Direct/resumed execution paths do not necessarily receive the original
 	// user text, but the active loop context carries the local-file fence. Keep
 	// this check after internal name rewriting so aliases cannot bypass it.
-	if localFileWorkBlocksComputerUseExecution(h.runtimeLoopContextForOwner(policyUserID), userText, name) {
+	if localFileWorkBlocksComputerUseExecution(h.loopContextForComputerUseFence(policyUserID, name), userText, name) {
 		return toolExecutionResult{
 			Text:        "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead.",
 			ToolName:    name,
@@ -851,7 +897,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			FailureKind: toolFailurePolicyRejected,
 		}
 	}
-	if policyUserID != "" {
+	if policyUserID != "" && !isHorizonHostExecution(execCtx) {
 		if !h.isWorkflowToolAllowedForOwner(policyUserID, name) {
 			return toolExecutionResult{Text: workflowPolicyToolRejectedText(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
@@ -873,12 +919,36 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	if platform := strings.TrimSpace(runtimePlatform); platform != "" && h.registeredToolAcceptsRuntimePlatformArg(name) {
 		args[registeredToolRuntimePlatformField] = platform
 	}
-	if name == "set_nickname" && strings.TrimSpace(userText) != "" {
+	if name == "office" && contextTokens > 0 {
+		args[registeredToolContextTokensField] = contextTokens
+	}
+	// _user_text is trusted dispatch metadata, not a model parameter. Clear it
+	// before selectively injecting the text of this exact turn, so an LLM cannot
+	// forge consent for memory or cross-session retrieval.
+	delete(args, "_user_text")
+	if (name == "set_nickname" || name == "session_search" || name == "memory") && strings.TrimSpace(userText) != "" {
 		args["_user_text"] = userText
 	}
+	// These are trusted dispatch metadata, never model parameters. Remove any
+	// model-supplied values even for tools that do not receive a loop snapshot;
+	// otherwise a direct legacy invocation can forge an identity anchor.
+	delete(args, "_task_identity_anchor")
+	if taskAnchor != nil {
+		args["_task_identity_anchor"] = *taskAnchor
+	}
 	var groupPermissions *lansengerGroupPermissionPolicy
-	if loopCtx := h.runtimeLoopContextForOwner(policyUserID); loopCtx != nil {
-		groupPermissions = loopCtx.LansengerGroupPermissions
+	var policyLoop *LoopContext
+	// Horizon host tools are not the leftover IM/group turn. Computer Use still
+	// uses the GUI episode loop for the local-file fence.
+	if !(isHorizonHostExecution(execCtx) && !isComputerUseToolDefinition(name)) {
+		if isComputerUseToolDefinition(name) {
+			policyLoop = h.loopContextForComputerUseFence(policyUserID, name)
+		} else {
+			policyLoop = h.runtimeLoopContextForOwner(policyUserID)
+		}
+	}
+	if policyLoop != nil {
+		groupPermissions = policyLoop.LansengerGroupPermissions
 	}
 	// The loop context is authoritative. Platform is metadata that may be
 	// rewritten by an adapter, whereas this policy is attached only to a local
@@ -988,13 +1058,25 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 			// call; opening the task-panel form here interrupts that autonomous flow
 			// and leaves the UI showing an empty form even though earlier calls may
 			// already have established (for example) an SSH session.
+			if strings.TrimSpace(name) == "call_mcp_tool" {
+				normalized, err := normalizeMCPToolCallArgsForAgentLoop(args)
+				if err != nil {
+					return mcpToolArgumentsShapeFailure(err)
+				}
+				args = normalized
+			}
 			if missing := registeredToolMissingRequired(tool, args); len(missing) > 0 {
 				return registeredToolMissingParametersResult(name, missing)
 			}
 			if validationIssues := registeredToolValidateArgIssues(*tool, args); len(validationIssues) > 0 {
 				return registeredToolValidationFailureResult(name, registeredToolValidationMessages(validationIssues))
 			}
-			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
+			if strings.TrimSpace(name) == "call_mcp_tool" {
+				if errResult := h.preCheckMCPToolArgsForAgentLoop(args, -1); errResult != nil {
+					return *errResult
+				}
+			}
+			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args), UserID: trustedAuditPrincipalFromContext(execCtx, policyUserID)}
 			if h.emitArchiveExternalApprovalIfNeeded(args, securityCtx, policyUserID) {
 				return toolExecutionResult{Text: "External archive extraction needs approval. An approval panel has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
 			}
@@ -1176,7 +1258,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 		"office",
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
-		"group_discussion", "screenshot", "call_mcp_tool", "discover_tool",
+		"group_discussion", "screenshot", "call_mcp_tool", "discover_tool", "session_search",
 		"browser", "browser_session_start", "browser_connect", "ssh", "tts", "asr":
 		return true
 	default:
@@ -1254,8 +1336,10 @@ func inferRegisteredToolOutcome(text string) toolOutcome {
 	}
 	lower := strings.ToLower(trimmed)
 	for _, prefix := range []string{
-		"error:", "[error]", "failed:", "failure:", "argument parse failed:",
+		"error:", "[error]", "[mcp error]", "mcp call failed:", "mcp 调用失败", "mcp 调用被拒绝",
+		"failed:", "failure:", "argument parse failed:", "arguments json",
 		"unknown tool:", "tool execution panicked:", "\u9519\u8bef:", "[\u9519\u8bef]",
+		"缺少 server_id", "本地 mcp manager", "mcp registry",
 	} {
 		if strings.HasPrefix(lower, prefix) {
 			return toolOutcomeFailed
@@ -1443,15 +1527,9 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 		var normalizeErr error
 		args, normalizeErr = normalizeMCPToolCallArgsForAgentLoop(args)
 		if normalizeErr != nil {
-			msg := fmt.Sprintf("Tool call_mcp_tool.arguments must be a complete valid JSON object. %s. Please correct and retry.", normalizeErr.Error())
 			log.Printf("[agent-loop] tool call_mcp_tool arguments normalization failed (iter=%d): %v", iteration, normalizeErr)
-			return &toolExecutionResult{
-				Text:        msg,
-				ToolName:    name,
-				ToolKind:    classifyAgentToolKind(name),
-				Outcome:     toolOutcomeFailed,
-				FailureKind: toolFailureArgumentParse,
-			}
+			result := mcpToolArgumentsShapeFailure(normalizeErr)
+			return &result
 		}
 	}
 	// Check missing required parameters.
@@ -1493,12 +1571,25 @@ func registeredToolValidationFailureResult(name string, messages []string) toolE
 	}
 }
 
-func normalizeMCPToolCallArgsForAgentLoop(args map[string]interface{}) (map[string]interface{}, error) {
-	raw, ok := args["arguments"]
-	if !ok {
-		return args, nil
+func mcpToolArgumentsShapeFailure(err error) toolExecutionResult {
+	detail := "Please correct and retry."
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		detail = err.Error() + ". Please correct and retry."
 	}
-	toolArgs, err := mcpToolArgumentsFromAny(raw)
+	return toolExecutionResult{
+		Text:        "Tool call_mcp_tool.arguments must be a complete valid JSON object. " + detail,
+		ToolName:    "call_mcp_tool",
+		ToolKind:    classifyAgentToolKind("call_mcp_tool"),
+		Outcome:     toolOutcomeFailed,
+		FailureKind: toolFailureArgumentParse,
+	}
+}
+
+func normalizeMCPToolCallArgsForAgentLoop(args map[string]interface{}) (map[string]interface{}, error) {
+	if args == nil {
+		return map[string]interface{}{}, nil
+	}
+	toolArgs, err := mcpToolArgumentsFromAny(args["arguments"])
 	if err != nil {
 		return nil, err
 	}
@@ -1525,6 +1616,78 @@ func promoteMCPRoutingFields(args map[string]interface{}, toolArgs map[string]in
 	}
 }
 
+func isMCPCallEnvelopeKey(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasPrefix(name, "_") {
+		return true
+	}
+	switch name {
+	case "server_id", "tool_name", "arguments", "resolved_id":
+		return true
+	default:
+		return false
+	}
+}
+
+func mcpSchemaArgumentNames(schema map[string]interface{}) []string {
+	seen := make(map[string]struct{})
+	var names []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || isMCPCallEnvelopeKey(name) {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for name := range props {
+			add(name)
+		}
+	}
+	for _, name := range extractMCPToolRequiredArgs(schema) {
+		add(name)
+	}
+	return names
+}
+
+// promoteMCPNestedArgsFromCallEnvelope copies flattened call_mcp_tool fields
+// (for example query next to server_id) into arguments when the nested object
+// omitted them. Non-blank nested values win; blank nested strings do not.
+func promoteMCPNestedArgsFromCallEnvelope(callArgs, toolArgs map[string]interface{}, inputSchema map[string]interface{}) map[string]interface{} {
+	if toolArgs == nil {
+		toolArgs = map[string]interface{}{}
+	}
+	if callArgs == nil {
+		return toolArgs
+	}
+	names := mcpSchemaArgumentNames(inputSchema)
+	if len(names) == 0 {
+		for name := range callArgs {
+			if !isMCPCallEnvelopeKey(name) {
+				names = append(names, name)
+			}
+		}
+	}
+	for _, name := range names {
+		if existing, exists := toolArgs[name]; exists && !mcpBlankString(existing) {
+			continue
+		}
+		if value, ok := callArgs[name]; ok && !mcpBlankString(value) {
+			toolArgs[name] = value
+		}
+	}
+	return toolArgs
+}
+
+func mcpBlankString(value interface{}) bool {
+	s, ok := value.(string)
+	return ok && strings.TrimSpace(s) == ""
+}
+
 func (h *IMMessageHandler) preCheckMCPToolArgsForAgentLoop(args map[string]interface{}, iteration int) *toolExecutionResult {
 	if h == nil {
 		return nil
@@ -1539,19 +1702,18 @@ func (h *IMMessageHandler) preCheckMCPToolArgsForAgentLoop(args map[string]inter
 	}
 	toolArgs, parseErr := mcpToolArgumentsFromAny(args["arguments"])
 	if parseErr != nil {
-		return &toolExecutionResult{
-			Text:        "Tool call_mcp_tool.arguments must be a complete valid JSON object. Please correct and retry.",
-			ToolName:    "call_mcp_tool",
-			ToolKind:    classifyAgentToolKind("call_mcp_tool"),
-			Outcome:     toolOutcomeFailed,
-			FailureKind: toolFailureArgumentParse,
-		}
+		result := mcpToolArgumentsShapeFailure(parseErr)
+		return &result
 	}
 	resolvedID, isLocal, err := h.resolveMCPServerRef(serverRef)
 	if err != nil {
 		return nil
 	}
 	inputSchema := h.lookupMCPInputSchema(resolvedID, toolName, isLocal)
+	toolArgs = promoteMCPNestedArgsFromCallEnvelope(args, toolArgs, inputSchema)
+	if args != nil {
+		args["arguments"] = toolArgs
+	}
 	if len(inputSchema) == 0 {
 		return nil
 	}
@@ -1575,7 +1737,11 @@ func mcpToolArgumentsFromAny(raw interface{}) (map[string]interface{}, error) {
 	case nil:
 		return map[string]interface{}{}, nil
 	case map[string]interface{}:
-		return v, nil
+		cloned := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			cloned[key] = value
+		}
+		return cloned, nil
 	case string:
 		cleaned := coretool.CleanToolArguments(v)
 		if cleaned == "" {

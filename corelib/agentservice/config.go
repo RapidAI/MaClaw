@@ -417,7 +417,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 		return corelib.MaclawLLMConfig{
 			URL:            strings.TrimSpace(provider.URL),
 			Key:            key,
-			Model:          strings.TrimSpace(provider.Model),
+			Model:          corelib.MigrateZhipuCodingModel(provider.Name, provider.Model),
 			Protocol:       protocol,
 			ContextLength:  provider.ContextLength,
 			TimeoutSec:     provider.TimeoutSec,
@@ -432,7 +432,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 
 	url := strings.TrimSpace(cfg.MaclawLLMUrl)
 	key := strings.TrimSpace(cfg.MaclawLLMKey)
-	model := strings.TrimSpace(cfg.MaclawLLMModel)
+	model := corelib.MigrateZhipuCodingModel(cfg.MaclawLLMCurrentProvider, cfg.MaclawLLMModel)
 	if url == "" || key == "" || model == "" {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("llm config is incomplete")
 	}
@@ -469,7 +469,7 @@ func resolveSelectedProvider(cfg corelib.AppConfig) (corelib.MaclawLLMProvider, 
 		return corelib.MaclawLLMProvider{}, fmt.Errorf("maclaw_llm_current_provider is required when multiple providers are configured")
 	}
 	for _, provider := range cfg.MaclawLLMProviders {
-		if provider.Name == selected || strings.EqualFold(provider.Name, selected) {
+		if corelib.MaclawLLMProviderNameEqual(provider.Name, selected) {
 			return provider, nil
 		}
 	}
@@ -515,7 +515,9 @@ func projectSelectedProviderToFlat(cfg corelib.AppConfig, overwrite bool) coreli
 		cfg.MaclawLLMKey = resolveProviderSecret(provider)
 	}
 	if overwrite || strings.TrimSpace(cfg.MaclawLLMModel) == "" {
-		cfg.MaclawLLMModel = strings.TrimSpace(provider.Model)
+		cfg.MaclawLLMModel = corelib.MigrateZhipuCodingModel(provider.Name, provider.Model)
+	} else {
+		cfg.MaclawLLMModel = corelib.MigrateZhipuCodingModel(provider.Name, cfg.MaclawLLMModel)
 	}
 	return cfg
 }
@@ -526,10 +528,10 @@ func normalizeLLMConfigForSave(current, next corelib.AppConfig) corelib.AppConfi
 	}
 	provider, providerIndex, ok := resolveSelectedProviderForFlatConfigWithIndex(next)
 	if !ok {
-		return normalizeLLMFlatConfig(next)
+		return finalizeZhipuCodingLLMConfig(normalizeLLMFlatConfig(next))
 	}
 	if _, currentProviderOK := resolveSelectedProviderForFlatConfig(current); !currentProviderOK {
-		return normalizeLLMFlatConfig(next)
+		return finalizeZhipuCodingLLMConfig(normalizeLLMFlatConfig(next))
 	}
 	currentEffective := effectiveLLMFlatConfig(current)
 	flatURLChanged := llmFlatStringFieldShouldSync(current.MaclawLLMUrl, currentEffective.MaclawLLMUrl, next.MaclawLLMUrl)
@@ -538,7 +540,7 @@ func normalizeLLMConfigForSave(current, next corelib.AppConfig) corelib.AppConfi
 	flatChanged := flatURLChanged || flatKeyChanged || flatModelChanged
 	providerChanged := selectedLLMProviderChanged(current, next) || selectedLLMProviderConfigChanged(current, provider)
 	if providerChanged {
-		return projectSelectedProviderToFlat(next, true)
+		return finalizeZhipuCodingLLMConfig(projectSelectedProviderToFlat(next, true))
 	}
 	if flatChanged {
 		if value := strings.TrimSpace(next.MaclawLLMUrl); flatURLChanged {
@@ -551,13 +553,18 @@ func normalizeLLMConfigForSave(current, next corelib.AppConfig) corelib.AppConfi
 			provider.Model = value
 		}
 		next.MaclawLLMProviders[providerIndex] = provider
-		return projectSelectedProviderToFlat(next, true)
+		return finalizeZhipuCodingLLMConfig(projectSelectedProviderToFlat(next, true))
 	}
-	return normalizeLLMFlatConfig(next)
+	return finalizeZhipuCodingLLMConfig(normalizeLLMFlatConfig(next))
+}
+
+func finalizeZhipuCodingLLMConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	corelib.ApplyZhipuCodingConfigMigration(&cfg)
+	return cfg
 }
 
 func selectedLLMProviderChanged(current, next corelib.AppConfig) bool {
-	return strings.TrimSpace(current.MaclawLLMCurrentProvider) != strings.TrimSpace(next.MaclawLLMCurrentProvider)
+	return !corelib.MaclawLLMProviderNameEqual(current.MaclawLLMCurrentProvider, next.MaclawLLMCurrentProvider)
 }
 
 func selectedLLMProviderConfigChanged(current corelib.AppConfig, nextProvider corelib.MaclawLLMProvider) bool {
@@ -594,7 +601,7 @@ func resolveSelectedProviderForFlatConfigWithIndex(cfg corelib.AppConfig) (corel
 		return cfg.MaclawLLMProviders[0], 0, true
 	}
 	for i, provider := range cfg.MaclawLLMProviders {
-		if strings.EqualFold(strings.TrimSpace(provider.Name), selected) {
+		if corelib.MaclawLLMProviderNameEqual(provider.Name, selected) {
 			return provider, i, true
 		}
 	}

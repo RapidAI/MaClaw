@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const knowledgeToolSourceKindsDescription = "Optional source kinds: url, pdf, doc, docx, ppt, pptx, xls, xlsx, csv, markdown, text, conversation, workflow_artifact"
@@ -322,6 +323,26 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 			return app.toolKnowledgeSuggest(args)
 		},
 	})
+	// Read-only retrieval entries stay annotated for unmanaged/legacy turns.
+	// The managed catalog unpublished this soup in favor of
+	// semantic_read_trusted_knowledge. Ingest and admin/maintenance entries
+	// are annotated with their own families at the end of this function.
+	for _, name := range []string{
+		"knowledge_search",
+		"knowledge_image_search",
+		"knowledge_explain",
+		"knowledge_context_pack",
+		"knowledge_search_facets",
+		"knowledge_topic_relevance",
+		"knowledge_fact_graph",
+		"knowledge_fact_index",
+		"knowledge_entity_profile",
+		"knowledge_suggest",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityKnowledgeReadLocal, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectReadOnly})
+	}
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_save_url",
 		Description: "Save a public HTTP(S) URL into MaClaw knowledge base. Only use when the user explicitly asks to save, remember, archive, or add a web page to the knowledge base. Fetching has public-network safety checks; write-time LLM distillation may be used if configured, but querying later does not require LLM.",
@@ -1779,6 +1800,99 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		},
 	})
 
+	// The knowledge ingest entries share one outcome contract. They stay
+	// annotated for unmanaged/legacy turns. The managed catalog unpublished
+	// this soup in favor of semantic_ingest_trusted_knowledge. Read-only
+	// retrieval entries were annotated with knowledge.read.local above; the
+	// remaining admin/maintenance entries are annotated with
+	// knowledge.admin.maintenance below.
+	for _, name := range []string{
+		"knowledge_save_text",
+		"knowledge_save_url",
+		"knowledge_save_urls",
+		"knowledge_import_files",
+		"knowledge_import_directory",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityKnowledgeIngestLocal, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectSensitive})
+	}
+
+	// Every remaining knowledge_* entry administers or maintains the store
+	// (quality/refresh/enable/disable/delete/labels/links/snapshots/stats).
+	// They stay annotated for unmanaged/legacy turns. The managed catalog
+	// unpublished this soup in favor of semantic_administer_trusted_knowledge.
+	for _, name := range []string{
+		"knowledge_discover_urls",
+		"knowledge_import_status",
+		"knowledge_stats",
+		"knowledge_doctor",
+		"knowledge_health",
+		"knowledge_source_quality",
+		"knowledge_quality_maintenance_plan",
+		"knowledge_quality_maintenance_policies",
+		"knowledge_execute_quality_maintenance_plan",
+		"knowledge_rebuild_quality_gaps",
+		"knowledge_capabilities",
+		"knowledge_url_domain_policies",
+		"knowledge_maintain",
+		"knowledge_export_snapshot",
+		"knowledge_import_snapshot",
+		"knowledge_share_to_hub",
+		"knowledge_import_hub_share",
+		"knowledge_list_sources",
+		"knowledge_list_source_labels",
+		"knowledge_update_source_labels",
+		"knowledge_backfill_source_auto_labels",
+		"knowledge_backfill_quality_labels",
+		"knowledge_disable_quality_sensitive_sources",
+		"knowledge_suppress_quality_duplicate_groups",
+		"knowledge_list_import_batches",
+		"knowledge_list_import_items",
+		"knowledge_retry_import_batch",
+		"knowledge_source_detail",
+		"knowledge_list_source_links",
+		"knowledge_source_graph",
+		"knowledge_source_neighborhood",
+		"knowledge_source_path",
+		"knowledge_preview_topic_links",
+		"knowledge_link_sources",
+		"knowledge_unlink_sources",
+		"knowledge_list_source_link_events",
+		"knowledge_source_timeline",
+		"knowledge_source_digest",
+		"knowledge_refresh_topic_links",
+		"knowledge_list_source_versions",
+		"knowledge_list_duplicate_cards",
+		"knowledge_suppress_duplicate_cards",
+		"knowledge_suppress_duplicate_groups",
+		"knowledge_list_suppressed_cards",
+		"knowledge_scan_sensitive",
+		"knowledge_disable_sensitive_sources",
+		"knowledge_restore_suppressed_cards",
+		"knowledge_restore_suppressed_cards_bulk",
+		"knowledge_update_source_metadata",
+		"knowledge_refresh_source",
+		"knowledge_preview_source_refresh",
+		"knowledge_preview_sources_refresh",
+		"knowledge_preview_sources_refresh_by_filter",
+		"knowledge_refresh_changed_sources",
+		"knowledge_refresh_changed_sources_by_filter",
+		"knowledge_refresh_sources",
+		"knowledge_refresh_sources_by_filter",
+		"knowledge_rebuild_source_derived",
+		"knowledge_rebuild_sources_derived",
+		"knowledge_rebuild_sources_derived_by_filter",
+		"knowledge_disable_source",
+		"knowledge_disable_sources_by_filter",
+		"knowledge_enable_source",
+		"knowledge_enable_sources_by_filter",
+		"knowledge_delete_source",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityKnowledgeAdminMaintenance, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectSensitive})
+	}
 }
 
 func (a *App) toolKnowledgeSearch(args map[string]interface{}) string {

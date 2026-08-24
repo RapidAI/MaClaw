@@ -78,28 +78,30 @@ type Service struct {
 	privateKey    *rsa.PrivateKey
 	publicKeyPEM  string
 
-	ops                      store.HASyncOpRepository
-	cursors                  store.HAPeerCursorRepository
-	versions                 store.HAEntityVersionRepository
-	blockedEmails            store.BlockedEmailRepository
-	blockedIPs               store.BlockedIPRepository
-	news                     store.NewsRepository
-	hubs                     store.HubRepository
-	routes                   store.HubDomainRouteRepository
-	links                    store.HubUserLinkRepository
-	settings                 store.SystemSettingsRepository
-	gossip                   store.GossipRepository
-	skillStore               *skill.SkillStore
-	skillMarket              *skillmarket.Store
-	petStoreSnapshotApplier  func(context.Context, json.RawMessage) error
-	petStoreMetricsApplier   func(context.Context, json.RawMessage) error
-	cardTypes                cardstore.CardTypeRepository
-	cardOrders               cardstore.PurchaseOrderRepository
-	llmAuthorizations        llmservice.TenantAuthorizationRepository
-	llmBindings              store.LLMNodeBindingRepository
-	notifications            notification.Store
-	heartbeatSync            store.HAHeartbeatSyncStateRepository
-	heartbeatSyncMinInterval time.Duration
+	ops                         store.HASyncOpRepository
+	cursors                     store.HAPeerCursorRepository
+	versions                    store.HAEntityVersionRepository
+	blockedEmails               store.BlockedEmailRepository
+	blockedIPs                  store.BlockedIPRepository
+	news                        store.NewsRepository
+	hubs                        store.HubRepository
+	routes                      store.HubDomainRouteRepository
+	links                       store.HubUserLinkRepository
+	settings                    store.SystemSettingsRepository
+	gossip                      store.GossipRepository
+	skillStore                  *skill.SkillStore
+	skillMarket                 *skillmarket.Store
+	petStoreSnapshotApplier     func(context.Context, json.RawMessage) error
+	petStoreMetricsApplier      func(context.Context, json.RawMessage) error
+	llmRegistryCacheInvalidator func()
+	officialClassHeadAck        func(string)
+	cardTypes                   cardstore.CardTypeRepository
+	cardOrders                  cardstore.PurchaseOrderRepository
+	llmAuthorizations           llmservice.TenantAuthorizationRepository
+	llmBindings                 store.LLMNodeBindingRepository
+	notifications               notification.Store
+	heartbeatSync               store.HAHeartbeatSyncStateRepository
+	heartbeatSyncMinInterval    time.Duration
 
 	mu             sync.RWMutex
 	opMu           sync.Mutex
@@ -327,6 +329,23 @@ func (s *Service) SetPetStoreMetricsApplier(fn func(context.Context, json.RawMes
 	s.petStoreMetricsApplier = fn
 }
 
+// SetLLMRegistryCacheInvalidator drops the HubCenter LLM registry memory cache
+// after a replica applies llm_service_registry so pause/resume is not delayed
+// by the 30s LoadRegistry TTL.
+func (s *Service) SetLLMRegistryCacheInvalidator(fn func()) {
+	if s == nil {
+		return
+	}
+	s.llmRegistryCacheInvalidator = fn
+}
+
+func (s *Service) SetOfficialClassHeadRemoteAck(fn func(string)) {
+	if s == nil {
+		return
+	}
+	s.officialClassHeadAck = fn
+}
+
 func (s *Service) AttachCardTypes(repo cardstore.CardTypeRepository) {
 	if s == nil {
 		return
@@ -373,6 +392,54 @@ func (s *Service) NodeID() string {
 		return ""
 	}
 	return s.nodeID
+}
+
+// LookupNodeURL returns the client-facing base URL for a cluster node ID.
+// Hub uses this on LLM 409 redirects so it can jump to the tenant owner.
+func (s *Service) LookupNodeURL(nodeID string) string {
+	if s == nil {
+		return ""
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return ""
+	}
+	s.mu.RLock()
+	selfID := s.nodeID
+	selfURL := strings.TrimRight(strings.TrimSpace(s.clientFacingURL()), "/")
+	s.mu.RUnlock()
+	if nodeID == selfID {
+		return selfURL
+	}
+	for _, peer := range s.listPeerStates() {
+		if peer == nil || strings.TrimSpace(peer.NodeID) != nodeID {
+			continue
+		}
+		if u := strings.TrimRight(strings.TrimSpace(peer.PublicURL), "/"); u != "" {
+			return u
+		}
+		return strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
+	}
+	return ""
+}
+
+func (s *Service) PeerNodeIDs() []string {
+	if s == nil {
+		return nil
+	}
+	states := s.listPeerStates()
+	out := make([]string, 0, len(states))
+	for _, peer := range states {
+		if peer == nil {
+			continue
+		}
+		id := strings.TrimSpace(peer.NodeID)
+		if id == "" {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *Service) SetHeartbeatSyncMinInterval(d time.Duration) {
@@ -2069,14 +2136,23 @@ type GossipSnapshot struct {
 }
 
 func (s *Service) applySystemSettingOp(ctx context.Context, op *store.HASyncOp) error {
-	if s.settings == nil || op.OpType != OpUpsert {
+	if s == nil || op == nil || s.settings == nil || op.OpType != OpUpsert {
 		return nil
 	}
 	var payload systemSettingPayload
 	if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
 		return err
 	}
-	return s.settings.Set(ctx, payload.Key, payload.ValueJSON)
+	if err := s.settings.Set(ctx, payload.Key, payload.ValueJSON); err != nil {
+		return err
+	}
+	if strings.TrimSpace(payload.Key) == llmservice.RegistrySettingKey && s.llmRegistryCacheInvalidator != nil {
+		s.llmRegistryCacheInvalidator()
+	}
+	if strings.TrimSpace(payload.Key) == llmservice.OfficialClassHeadKey && s.officialClassHeadAck != nil {
+		s.officialClassHeadAck(payload.Key)
+	}
+	return nil
 }
 
 func (s *Service) applyGossipSnapshotOp(ctx context.Context, op *store.HASyncOp) error {

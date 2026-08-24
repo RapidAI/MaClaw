@@ -17,6 +17,20 @@ const (
 	NavTimeout        = 30 * time.Second
 )
 
+type attachedFrame struct {
+	TargetID  string
+	SessionID string
+	URL       string
+	Type      string
+	OpenerID  string
+}
+
+type jsDialogState struct {
+	Message string
+	Type    string
+	URL     string
+}
+
 // Session holds the active CDP connection and page state.
 type Session struct {
 	mu     sync.Mutex
@@ -27,11 +41,18 @@ type Session struct {
 	activeFrameID string
 	recentNetwork []string
 	recentErrors  []string
+
+	netMu         sync.Mutex
+	inflight      map[string]struct{}
+	attached      map[string]attachedFrame
+	pendingDialog *jsDialogState
+	visionOnce    bool
 }
 
 var (
-	globalSession   *Session
-	globalSessionMu sync.Mutex
+	globalSession        *Session
+	globalSessionMu      sync.Mutex
+	globalSessionStartMu sync.Mutex
 )
 
 // GetSession returns the global browser session, connecting if needed.
@@ -41,22 +62,22 @@ var (
 // Production-grade: automatically detects stale connections and reconnects
 // transparently so callers always get a working session.
 func GetSession(addr string) (*Session, error) {
-	globalSessionMu.Lock()
-	defer globalSessionMu.Unlock()
-
-	// Fast path: existing session that is still alive.
-	if globalSession != nil && globalSession.client != nil {
-		if globalSession.client.IsAlive() {
-			return globalSession, nil
-		}
-		// Connection is dead; clean up and reconnect.
-		log.Printf("[browser] CDP connection is dead; reconnecting...")
-		globalSession.client.Close()
-		globalSession = nil
+	if sess := liveGlobalSession(); sess != nil {
+		return sess, nil
 	}
 
-	// Resolve CDP address (discover or launch).
-	if addr == "" {
+	globalSessionStartMu.Lock()
+	defer globalSessionStartMu.Unlock()
+	if sess := liveGlobalSession(); sess != nil {
+		return sess, nil
+	}
+
+	if _, client := globalSessionSnapshot(); client != nil {
+		log.Printf("[browser] CDP connection is dead; reconnecting...")
+		clearGlobalSessionIfClient(client)
+	}
+
+	if strings.TrimSpace(addr) == "" {
 		discovered, err := DiscoverOrLaunch()
 		if err != nil {
 			return nil, fmt.Errorf("browser connection failed: %w", err)
@@ -64,16 +85,13 @@ func GetSession(addr string) (*Session, error) {
 		addr = discovered
 	}
 
-	// Connect with retry; the browser may still be starting up or the port
-	// may have changed after a restart.
 	const maxRetries = 3
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(attempt) * 2 * time.Second // 2s, 4s
+			backoff := time.Duration(attempt) * 2 * time.Second
 			log.Printf("[browser] CDP retry (%d/%d), waiting %v...", attempt+1, maxRetries, backoff)
 			time.Sleep(backoff)
-			// Re-discover in case the port changed (e.g. browser restarted with port=0).
 			if newAddr, err := DiscoverCDPAddr(); err == nil {
 				addr = newAddr
 			}
@@ -84,10 +102,71 @@ func GetSession(addr string) (*Session, error) {
 			lastErr = err
 			continue
 		}
-		globalSession = session
-		return globalSession, nil
+		if winner := installGlobalSession(session); winner != session {
+			session.closeClient()
+			return winner, nil
+		}
+		return session, nil
 	}
 	return nil, fmt.Errorf("CDP connection failed after %d retries: %w", maxRetries, lastErr)
+}
+
+func liveGlobalSession() *Session {
+	sess, client := globalSessionSnapshot()
+	if client != nil && client.IsAlive() {
+		return sess
+	}
+	return nil
+}
+
+func globalSessionSnapshot() (*Session, *CDPClient) {
+	globalSessionMu.Lock()
+	sess := globalSession
+	globalSessionMu.Unlock()
+	if sess == nil {
+		return nil, nil
+	}
+	sess.mu.Lock()
+	client := sess.client
+	sess.mu.Unlock()
+	return sess, client
+}
+
+func clearGlobalSessionIfClient(client *CDPClient) {
+	globalSessionMu.Lock()
+	if globalSession == nil {
+		globalSessionMu.Unlock()
+		return
+	}
+	globalSession.mu.Lock()
+	current := globalSession.client
+	globalSession.mu.Unlock()
+	clear := current == client || current == nil
+	if clear {
+		globalSession = nil
+	}
+	globalSessionMu.Unlock()
+	if clear && client != nil {
+		client.Close()
+	}
+}
+
+func installGlobalSession(session *Session) *Session {
+	if session == nil {
+		return nil
+	}
+	globalSessionMu.Lock()
+	defer globalSessionMu.Unlock()
+	if globalSession != nil {
+		globalSession.mu.Lock()
+		open := globalSession.client != nil && !globalSession.client.isClosed()
+		globalSession.mu.Unlock()
+		if open {
+			return globalSession
+		}
+	}
+	globalSession = session
+	return session
 }
 
 // connectToAddr establishes a new CDP session to the given HTTP address.
@@ -135,8 +214,22 @@ func connectToAddr(addr string) (*Session, error) {
 		client.Close()
 		return nil, fmt.Errorf("CDP Log.enable failed: %w", err)
 	}
+	_, _ = client.Send("Accessibility.enable", nil, 5*time.Second)
+	_, _ = client.Send("Target.setAutoAttach", map[string]interface{}{
+		"autoAttach":             true,
+		"waitForDebuggerOnStart": false,
+		"flatten":                true,
+	}, 5*time.Second)
+	_, _ = client.Send("Target.setDiscoverTargets", map[string]interface{}{"discover": true}, 5*time.Second)
 
-	return &Session{client: client, addr: addr, activeTabID: activeTargetIDFromTargets(targets), activeFrameID: "main"}, nil
+	return &Session{
+		client:        client,
+		addr:          addr,
+		activeTabID:   activeTargetIDFromTargets(targets),
+		activeFrameID: "main",
+		inflight:      map[string]struct{}{},
+		attached:      map[string]attachedFrame{},
+	}, nil
 }
 
 func activeTargetIDFromTargets(targets []TargetInfo) string {
@@ -153,39 +246,64 @@ func activeTargetIDFromTargets(targets []TargetInfo) string {
 
 // CloseSession disconnects the global session.
 func CloseSession() {
+	globalSessionStartMu.Lock()
+	defer globalSessionStartMu.Unlock()
 	globalSessionMu.Lock()
-	defer globalSessionMu.Unlock()
-	if globalSession != nil && globalSession.client != nil {
-		globalSession.client.Close()
-		globalSession.client = nil
-	}
+	sess := globalSession
 	globalSession = nil
+	globalSessionMu.Unlock()
+	if sess == nil {
+		return
+	}
+	sess.closeClient()
+}
+
+func (s *Session) closeClient() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	client := s.client
+	s.client = nil
+	s.mu.Unlock()
+	if client != nil {
+		client.Close()
+	}
 }
 
 // Navigate navigates the current page to the given URL.
 func (s *Session) Navigate(url string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if reused := s.switchToReusableNavigationTargetLocked(url); reused != "" {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	if err := validateNavigationPolicy(BrowserPolicy{AllowCrossOriginNavigation: true}, url, ""); err != nil {
+		return "", err
+	}
+	if reused := s.switchToReusableNavigationTarget(url); reused != "" {
 		return reused, nil
 	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
 
-	result, err := s.client.Send("Page.navigate", map[string]interface{}{
+	result, err := client.Send("Page.navigate", map[string]interface{}{
 		"url": url,
 	}, NavTimeout)
 	if err != nil {
 		return "", err
 	}
 
-	// Wait for load event. Unlike Back(), navigations tolerate a slow
-	// "complete" (SPAs with hanging subresources) before falling back to a
-	// structural-stability wait.
-	readyState := s.waitForLoad(NavTimeout, 5*time.Second)
+	// Wait for load without holding s.mu so other session ops are not blocked
+	// for the full navigation timeout.
+	readyState := waitForLoadOn(client, NavTimeout, 5*time.Second)
 	if readyState != "complete" {
 		// SPA pages often reach "interactive" long before first render.
 		// Give the page a short, non-fatal structural-stability window so
 		// follow-up observe/click doesn't hit an empty DOM.
-		if err := s.WaitForStable(3*time.Second, 300*time.Millisecond); err != nil {
+		if err := s.waitForStableOn(client, 3*time.Second, 300*time.Millisecond); err != nil {
 			log.Printf("[browser] navigate %q: readyState=%q, stability wait: %v", url, readyState, err)
 		}
 	}
@@ -194,12 +312,6 @@ func (s *Session) Navigate(url string) (string, error) {
 }
 
 func (s *Session) switchToReusableNavigationTarget(rawURL string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.switchToReusableNavigationTargetLocked(rawURL)
-}
-
-func (s *Session) switchToReusableNavigationTargetLocked(rawURL string) string {
 	if s == nil || strings.TrimSpace(rawURL) == "" {
 		return ""
 	}
@@ -211,7 +323,9 @@ func (s *Session) switchToReusableNavigationTargetLocked(rawURL string) string {
 	if err != nil {
 		return ""
 	}
+	s.mu.Lock()
 	oldActiveID := s.activeTabID
+	s.mu.Unlock()
 	oldActiveBlank := false
 	for _, page := range pages {
 		if page.ID == oldActiveID && normalizeReusableNavigationURL(page.URL) == "about:blank" {
@@ -226,12 +340,12 @@ func (s *Session) switchToReusableNavigationTargetLocked(rawURL string) string {
 		if normalizeReusableNavigationURL(page.URL) != targetKey {
 			continue
 		}
-		if page.ID != s.activeTabID {
-			if err := s.switchPageLocked(page.ID); err != nil {
+		if page.ID != oldActiveID {
+			if err := s.SwitchPage(page.ID); err != nil {
 				return ""
 			}
 			if oldActiveBlank && oldActiveID != "" && oldActiveID != page.ID {
-				s.closeTargetBestEffortLocked(oldActiveID)
+				s.closeTargetBestEffort(oldActiveID)
 			}
 		}
 		payload := map[string]interface{}{"reused_target": true, "target_id": page.ID, "url": page.URL, "title": page.Title}
@@ -243,16 +357,16 @@ func (s *Session) switchToReusableNavigationTargetLocked(rawURL string) string {
 }
 
 func (s *Session) closeTargetBestEffort(targetID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closeTargetBestEffortLocked(targetID)
-}
-
-func (s *Session) closeTargetBestEffortLocked(targetID string) {
-	if s == nil || s.client == nil || strings.TrimSpace(targetID) == "" {
+	if s == nil || strings.TrimSpace(targetID) == "" {
 		return
 	}
-	if _, err := s.client.Send("Target.closeTarget", map[string]interface{}{"targetId": targetID}, 3*time.Second); err != nil {
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return
+	}
+	if _, err := client.Send("Target.closeTarget", map[string]interface{}{"targetId": targetID}, 3*time.Second); err != nil {
 		log.Printf("[browser] close abandoned blank target failed target=%s err=%v", targetID, err)
 	}
 }
@@ -306,7 +420,7 @@ func normalizePageHost(parsed *url.URL) string {
 func (s *Session) Click(selector string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.clickAtLocked(selector)
+	return s.clickAtLockedIn(selector, frameScope{})
 }
 
 // Type types text into an element matching the CSS selector.
@@ -316,10 +430,25 @@ func (s *Session) Type(selector, text string) error {
 
 // TypeContent types plain text or rich content into an element matching the CSS selector.
 func (s *Session) TypeContent(selector, text, contentFormat string) error {
+	return s.TypeContentMaybeAppend(selector, text, contentFormat, false)
+}
+
+func (s *Session) TypeContentMaybeAppend(selector, text, contentFormat string, appendText bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.typeContentLocked(selector, text, contentFormat, appendText)
+}
 
-	if err := s.prepareEditableLocked(selector); err != nil {
+func (s *Session) typeContentLocked(selector, text, contentFormat string, appendText bool) error {
+	return s.typeContentLockedIn(selector, frameScope{}, text, contentFormat, appendText)
+}
+
+func (s *Session) typeContentLockedIn(selector string, scope frameScope, text, contentFormat string, appendText bool) error {
+	if appendText {
+		if err := s.focusEditableLockedIn(selector, scope); err != nil {
+			return err
+		}
+	} else if err := s.prepareEditableLockedIn(selector, scope); err != nil {
 		return err
 	}
 	if normalizeBrowserContentFormat(contentFormat) == BrowserContentFormatMarkdown {
@@ -348,10 +477,19 @@ func (s *Session) TypeActiveContent(text, contentFormat string) error {
 }
 
 func (s *Session) prepareEditableLocked(selector string) error {
-	js := fmt.Sprintf(`
+	return s.prepareEditableLockedIn(selector, frameScope{})
+}
+
+func (s *Session) prepareEditableLockedIn(selector string, scope frameScope) error {
+	return s.evalCheck(prepareEditableJSIn(selector, scope))
+}
+
+func prepareEditableJSIn(selector string, scope frameScope) string {
+	return fmt.Sprintf(`
 		(function() {
-			let el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "element not found: " + %q});
+			%s
+			let el = %s;
+			if (!el) return JSON.stringify({error: "element not found"});
 			if (!(el.isContentEditable || el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
 				el = el.querySelector('textarea,input,[contenteditable="true"],[contenteditable="plaintext-only"],[contenteditable=""]') || el;
 			}
@@ -374,8 +512,27 @@ func (s *Session) prepareEditableLocked(selector string) error {
 				return JSON.stringify({ok: true, tag: el.tagName, contentEditable: !!el.isContentEditable});
 			})(el);
 		})()
-	`, selector, selector)
-	return s.evalCheck(js)
+	`, pierceFindJS, scopedFindCall(selector, scope))
+}
+
+func (s *Session) focusEditableLocked(selector string) error {
+	return s.focusEditableLockedIn(selector, frameScope{})
+}
+
+func (s *Session) focusEditableLockedIn(selector string, scope frameScope) error {
+	return s.evalCheck(focusEditableJSIn(selector, scope))
+}
+
+func focusEditableJSIn(selector string, scope frameScope) string {
+	return fmt.Sprintf(`
+		(function() {
+			%s
+			const el = %s;
+			if (!el) return JSON.stringify({error: "element not found"});
+			el.focus();
+			return JSON.stringify({ok: true});
+		})()
+	`, pierceFindJS, scopedFindCall(selector, scope))
 }
 
 func (s *Session) prepareActiveEditableLocked() error {
@@ -483,6 +640,48 @@ func (s *Session) insertMarkdownLocked(markdown string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Session) insertMarkdownOnLocked(sessionID, markdown string) error {
+	if sessionID == "" {
+		return s.insertMarkdownLocked(markdown)
+	}
+	richHTML := browserMarkdownToHTML(markdown)
+	if strings.TrimSpace(richHTML) == "" {
+		_, err := s.client.SendOn(sessionID, "Input.insertText", map[string]interface{}{"text": markdown}, DefaultCmdTimeout)
+		return err
+	}
+	plainJSON, _ := json.Marshal(markdown)
+	htmlJSON, _ := json.Marshal(richHTML)
+	js := fmt.Sprintf(`
+		(function() {
+			const el = document.activeElement;
+			if (!el || el === document.body || el === document.documentElement) {
+				return JSON.stringify({error: "no focused editable element"});
+			}
+			const plain = %s;
+			const html = %s;
+			if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+				el.value = plain;
+				el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "insertText", data: plain}));
+				return JSON.stringify({ok: true, mode: "plain-field"});
+			}
+			if (!el.isContentEditable) return JSON.stringify({error: "focused element is not contenteditable: " + el.tagName});
+			el.focus();
+			try {
+				const data = new DataTransfer();
+				data.setData("text/html", html);
+				data.setData("text/plain", plain);
+				el.dispatchEvent(new ClipboardEvent("paste", {bubbles: true, cancelable: true, clipboardData: data}));
+			} catch (e) {}
+			if ((el.textContent || "").trim() === "") {
+				document.execCommand("insertHTML", false, html);
+			}
+			el.dispatchEvent(new InputEvent("input", {bubbles: true, cancelable: true, inputType: "insertFromPaste", data: plain}));
+			return JSON.stringify({ok: true, mode: "rich-paste"});
+		})()
+	`, string(plainJSON), string(htmlJSON))
+	return s.evalCheckOnLocked(sessionID, js)
 }
 
 func (s *Session) insertTextLocked(text string) error {
@@ -598,6 +797,10 @@ func (s *Session) clearActiveEditableLocked() {
 // activeElementContainsTextLocked reports whether the focused element's
 // value/textContent contains the expected text.
 func (s *Session) activeElementContainsTextLocked(expected string) bool {
+	return s.activeElementContainsTextOnLocked("", expected)
+}
+
+func (s *Session) activeElementContainsTextOnLocked(sessionID, expected string) bool {
 	expectedJSON, _ := json.Marshal(expected)
 	js := fmt.Sprintf(`
 		(function() {
@@ -607,22 +810,28 @@ func (s *Session) activeElementContainsTextLocked(expected string) bool {
 			return v.indexOf(%s) >= 0 ? "true" : "false";
 		})()
 	`, string(expectedJSON))
-	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
-		"expression":    js,
-		"returnByValue": true,
-	}, 5*time.Second)
+	var (
+		result json.RawMessage
+		err    error
+	)
+	if sessionID == "" {
+		result, err = s.client.Send("Runtime.evaluate", map[string]interface{}{
+			"expression": js, "returnByValue": true,
+		}, 5*time.Second)
+	} else {
+		result, err = s.client.SendOn(sessionID, "Runtime.evaluate", map[string]interface{}{
+			"expression": js, "returnByValue": true,
+		}, 5*time.Second)
+	}
 	if err != nil {
 		return false
 	}
 	return extractStringValue(result) == "true"
 }
 
-// insertTextViaJSLocked sets text directly on the focused element: native
-// value setter for INPUT/TEXTAREA (so React/Vue see the change), execCommand
-// insertText for contenteditable. Both paths dispatch input events.
-func (s *Session) insertTextViaJSLocked(text string) error {
+func insertTextViaJS(text string) string {
 	textJSON, _ := json.Marshal(text)
-	js := fmt.Sprintf(`
+	return fmt.Sprintf(`
 		(function() {
 			const el = document.activeElement;
 			if (!el || el === document.body || el === document.documentElement) {
@@ -638,9 +847,6 @@ func (s *Session) insertTextViaJSLocked(text string) error {
 			}
 			if (!el.isContentEditable) return JSON.stringify({error: "focused element is not editable: " + el.tagName});
 			el.focus();
-			// Clear first: this fallback runs when CDP insertText landed
-			// nothing (or partially); inserting at the cursor on top of
-			// partial content would duplicate text.
 			const range = document.createRange();
 			range.selectNodeContents(el);
 			const selection = window.getSelection();
@@ -654,21 +860,30 @@ func (s *Session) insertTextViaJSLocked(text string) error {
 			return JSON.stringify({ok: true, mode: "js-execcommand"});
 		})()
 	`, string(textJSON))
-	return s.evalCheck(js)
+}
+
+func (s *Session) insertTextViaJSLocked(text string) error {
+	return s.evalCheck(insertTextViaJS(text))
 }
 
 // Screenshot captures a screenshot of the current page, returns base64 PNG.
 func (s *Session) Screenshot(fullPage bool) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
 
 	params := map[string]interface{}{
 		"format":  "png",
 		"quality": 80,
 	}
 	if fullPage {
-		// Get full page metrics.
-		metrics, err := s.client.Send("Page.getLayoutMetrics", nil, DefaultCmdTimeout)
+		metrics, err := client.Send("Page.getLayoutMetrics", nil, DefaultCmdTimeout)
 		if err == nil {
 			var m struct {
 				ContentSize struct {
@@ -688,7 +903,7 @@ func (s *Session) Screenshot(fullPage bool) (string, error) {
 		}
 	}
 
-	result, err := s.client.Send("Page.captureScreenshot", params, DefaultCmdTimeout)
+	result, err := client.Send("Page.captureScreenshot", params, DefaultCmdTimeout)
 	if err != nil {
 		return "", fmt.Errorf("screenshot: %w", err)
 	}
@@ -704,47 +919,92 @@ func (s *Session) Screenshot(fullPage bool) (string, error) {
 
 // GetText returns the text content of an element matching the CSS selector.
 func (s *Session) GetText(selector string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.GetTextInFrame("", selector)
+}
 
-	js := fmt.Sprintf(`
+func getTextJS(selector string) string {
+	return getTextJSIn(selector, frameScope{})
+}
+
+func getTextJSIn(selector string, scope frameScope) string {
+	return fmt.Sprintf(`
 		(function() {
-			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "element not found: " + %q});
+			%s
+			const el = %s;
+			if (!el) return JSON.stringify({error: "element not found"});
 			return JSON.stringify({ok: true, text: el.innerText || el.textContent || ""});
 		})()
-	`, selector, selector)
-
-	return s.evalString(js, "text")
+	`, pierceFindJS, scopedFindCall(selector, scope))
 }
 
 // GetHTML returns the outer HTML of an element, or the full page if selector is empty.
 func (s *Session) GetHTML(selector string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
 
 	var js string
 	if selector == "" {
-		js = `JSON.stringify({ok: true, html: document.documentElement.outerHTML.substring(0, 50000)})`
+		js = pageHTMLJS()
 	} else {
+		selJSON, _ := json.Marshal(selector)
 		js = fmt.Sprintf(`
 			(function() {
-				const el = document.querySelector(%q);
-				if (!el) return JSON.stringify({error: "element not found: " + %q});
+				%s
+				const el = findInFrames(document, %s);
+				if (!el) return JSON.stringify({error: "element not found"});
 				return JSON.stringify({ok: true, html: el.outerHTML.substring(0, 50000)});
 			})()
-		`, selector, selector)
+		`, pierceFindJS, string(selJSON))
 	}
 
-	return s.evalString(js, "html")
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	return evalStringOn(client, js, "html")
+}
+
+func pageHTMLJS() string {
+	return fmt.Sprintf(`(function() {
+		%s
+		const parts = [];
+		function collectHTML(doc) {
+			if (!doc) return;
+			try { parts.push(doc.documentElement ? doc.documentElement.outerHTML : ''); } catch (e) {}
+			function shadows(root) {
+				if (!root) return;
+				let all = [];
+				try { all = root.querySelectorAll('*'); } catch (e) { return; }
+				for (const el of all) {
+					if (el.shadowRoot) {
+						try { parts.push(el.shadowRoot.innerHTML); } catch (e) {}
+						shadows(el.shadowRoot);
+					}
+				}
+			}
+			shadows(doc);
+			for (const f of queryIframes(doc)) {
+				try { if (f.contentDocument) collectHTML(f.contentDocument); } catch (e) {}
+			}
+		}
+		collectHTML(document);
+		return JSON.stringify({ok: true, html: parts.join('\n').substring(0, 50000)});
+	})()`, pierceFindJS)
 }
 
 // Eval executes arbitrary JavaScript and returns the result.
 func (s *Session) Eval(expression string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
 
-	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
 		"expression":    expression,
 		"returnByValue": true,
 	}, DefaultCmdTimeout)
@@ -777,22 +1037,152 @@ func (s *Session) Eval(expression string) (string, error) {
 	}
 }
 
+func (s *Session) countSelector(selector string) (int, error) {
+	if s == nil || s.client == nil {
+		return -1, fmt.Errorf("browser session not connected")
+	}
+	raw, err := s.Eval(countSelectorJS(selector))
+	if err != nil {
+		return -1, err
+	}
+	return parseSelectorCount(raw), nil
+}
+
+func (s *Session) countMatchesInFrame(frameID, selector string) (int, error) {
+	if s == nil || s.client == nil {
+		return -1, fmt.Errorf("browser session not connected")
+	}
+	sessionID := s.frameSessionID(frameID)
+	var (
+		raw string
+		err error
+	)
+	switch {
+	case sessionID != "":
+		raw, err = s.EvalOn(frameID, countSelectorJS(selector))
+	case frameID == "":
+		raw, err = s.Eval(countSelectorJS(selector))
+	case frameID == "main":
+		raw, err = s.Eval(countInDocJS(selector))
+	default:
+		scope, ok := s.scopeFor(frameID)
+		if !ok {
+			return 0, errFrameGone()
+		}
+		raw, err = s.Eval(countScopedJS(selector, scope))
+	}
+	if err != nil {
+		return -1, err
+	}
+	return parseSelectorCount(raw), nil
+}
+
+func (s *Session) rejectNonUniqueInFrame(frameID, selector string) error {
+	n, err := s.countMatchesInFrame(frameID, selector)
+	if err != nil {
+		return err
+	}
+	if n < 0 {
+		return nil
+	}
+	if n > 1 {
+		return fmt.Errorf("selector matches %d elements; run observe and click by ref", n)
+	}
+	if n == 0 {
+		return fmt.Errorf("element not found")
+	}
+	return nil
+}
+
+func countSelectorJS(selector string) string {
+	selJSON, _ := json.Marshal(selector)
+	return fmt.Sprintf(`(function() {
+		%s
+		try { return JSON.stringify({n: countDeepFrames(document, %s)}); }
+		catch (e) { return JSON.stringify({n: -1}); }
+	})()`, pierceFindJS, string(selJSON))
+}
+
+func countInDocJS(selector string) string {
+	selJSON, _ := json.Marshal(selector)
+	return fmt.Sprintf(`(function() {
+		%s
+		try { return JSON.stringify({n: queryAllDeep(document, %s).length}); }
+		catch (e) { return JSON.stringify({n: -1}); }
+	})()`, pierceFindJS, string(selJSON))
+}
+
+func countScopedJS(selector string, scope frameScope) string {
+	selJSON, _ := json.Marshal(selector)
+	nameJSON, _ := json.Marshal(scope.Name)
+	urlJSON, _ := json.Marshal(scope.URL)
+	path := scope.Path
+	if path == nil {
+		path = []int{}
+	}
+	pathJSON, _ := json.Marshal(path)
+	return fmt.Sprintf(`(function() {
+		%s
+		try { return JSON.stringify({n: countScoped(%s, %s, %s, %s)}); }
+		catch (e) { return JSON.stringify({n: -1}); }
+	})()`, pierceFindJS, string(selJSON), nameJSON, urlJSON, string(pathJSON))
+}
+
+func parseSelectorCount(raw string) int {
+	var payload struct {
+		N int `json:"n"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return -1
+	}
+	return payload.N
+}
+
+func waitSelectorJS(selector string) string {
+	return waitSelectorJSIn(selector, frameScope{})
+}
+
+func waitSelectorJSIn(selector string, scope frameScope) string {
+	return fmt.Sprintf(`(function() {
+		%s
+		return %s ? "1" : "0";
+	})()`, pierceFindJS, scopedFindCall(selector, scope))
+}
+
 // WaitForSelector waits until an element matching the selector appears (up to timeout).
 func (s *Session) WaitForSelector(selector string, timeoutSec int) error {
+	return s.WaitForSelectorInFrame("", selector, timeoutSec)
+}
+
+func (s *Session) WaitForSelectorInFrame(frameID, selector string, timeoutSec int) error {
 	if timeoutSec <= 0 {
 		timeoutSec = 10
 	}
 	deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
-	js := fmt.Sprintf(`!!document.querySelector(%q)`, selector)
-
 	for time.Now().Before(deadline) {
-		result, err := s.Eval(js)
-		if err == nil && result == "true" {
+		sessionID := s.frameSessionID(frameID)
+		js := waitSelectorJS(selector)
+		if sessionID == "" && frameID != "" && frameID != "main" {
+			scope, ok := s.scopeFor(frameID)
+			if !ok {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			js = waitSelectorJSIn(selector, scope)
+		}
+		var result string
+		var err error
+		if sessionID == "" {
+			result, err = s.Eval(js)
+		} else {
+			result, err = s.EvalOn(frameID, waitSelectorJS(selector))
+		}
+		if err == nil && result == "1" {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("wait for selector timed out (%ds): %s", timeoutSec, selector)
+	return fmt.Errorf("wait for selector timed out (%ds)", timeoutSec)
 }
 
 // pageVisibilityLocked returns document.visibilityState ("visible",
@@ -835,59 +1225,151 @@ func (s *Session) Scroll(deltaX, deltaY int) error {
 	return err
 }
 
-// Select selects an option in a <select> element.
+// Select selects an option in a <select> element by value or visible label.
 func (s *Session) Select(selector, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.evalCheck(selectOptionJS(selector, value))
+}
 
-	js := fmt.Sprintf(`
+func selectOptionJS(selector, value string) string {
+	return selectOptionJSIn(selector, value, frameScope{})
+}
+
+func selectOptionJSIn(selector, value string, scope frameScope) string {
+	valJSON, _ := json.Marshal(value)
+	return fmt.Sprintf(`
 		(function() {
-			const el = document.querySelector(%q);
-			if (!el) return JSON.stringify({error: "element not found: " + %q});
-			el.value = %q;
-			el.dispatchEvent(new Event('change', {bubbles: true}));
+			%s
+			function applySelect(el, value) {
+				const want = String(value == null ? "" : value).trim();
+				if (!el) return false;
+				if (el.tagName !== "SELECT") {
+					el.value = want;
+					el.dispatchEvent(new Event("change", {bubbles: true}));
+					return true;
+				}
+				el.value = want;
+				if (String(el.value) === want) {
+					el.dispatchEvent(new Event("change", {bubbles: true}));
+					return true;
+				}
+				const needle = want.toLowerCase();
+				for (const opt of Array.from(el.options || [])) {
+					const label = String(opt.textContent || opt.label || "").replace(/\s+/g, " ").trim();
+					if (label.toLowerCase() === needle || String(opt.value).toLowerCase() === needle) {
+						el.value = opt.value;
+						el.dispatchEvent(new Event("change", {bubbles: true}));
+						return true;
+					}
+				}
+				return false;
+			}
+			const el = %s;
+			if (!el) return JSON.stringify({error: "element not found"});
+			const value = %s;
+			if (!applySelect(el, value)) return JSON.stringify({error: "option not found"});
 			return JSON.stringify({ok: true});
 		})()
-	`, selector, selector, value)
-
-	return s.evalCheck(js)
+	`, pierceFindJS, scopedFindCall(selector, scope), string(valJSON))
 }
 
 // ListPages returns all page targets from the CDP endpoint.
 func (s *Session) ListPages() ([]TargetInfo, error) {
+	if s == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
 	return DiscoverTargets(s.addr)
+}
+
+type cdpTargetInfo struct {
+	TargetID string `json:"targetId"`
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	OpenerID string `json:"openerId"`
+}
+
+func (s *Session) getTargetInfos() ([]cdpTargetInfo, error) {
+	if s == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
+	raw, err := client.Send("Target.getTargets", nil, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		TargetInfos []cdpTargetInfo `json:"targetInfos"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("parse target infos: %w", err)
+	}
+	return payload.TargetInfos, nil
+}
+
+func (s *Session) hydratePopupTargetsFrom(infos []cdpTargetInfo) {
+	for _, info := range infos {
+		if strings.TrimSpace(info.OpenerID) == "" {
+			continue
+		}
+		s.notePopupTarget(info.TargetID, info.OpenerID, info.Type, info.URL)
+	}
+}
+
+func pageTargetsFromInfos(infos []cdpTargetInfo) []TargetInfo {
+	out := make([]TargetInfo, 0, len(infos))
+	for _, info := range infos {
+		id := strings.TrimSpace(info.TargetID)
+		if id == "" {
+			continue
+		}
+		out = append(out, TargetInfo{ID: id, Type: info.Type, Title: info.Title, URL: info.URL})
+	}
+	return out
 }
 
 // PruneDuplicatePages closes exact duplicate page targets in the managed
 // browser profile so retries keep one controlled tab instead of piling up tabs.
 func (s *Session) PruneDuplicatePages() int {
-	if s == nil || s.client == nil {
+	if s == nil {
 		return 0
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	pages, err := s.ListPages()
+	client := s.client
+	activeTabID := s.activeTabID
+	addr := s.addr
+	s.mu.Unlock()
+	if client == nil {
+		return 0
+	}
+	pages, err := DiscoverTargets(addr)
 	if err != nil {
 		return 0
 	}
 	activeURL := ""
 	for _, page := range pages {
-		if page.ID == s.activeTabID {
+		if page.ID == activeTabID {
 			activeURL = normalizeDuplicatePageURL(page.URL)
 			break
 		}
 	}
-	log.Printf("[browser] prune duplicate pages scan addr=%s active_tab=%s active_url=%q page_count=%d", s.addr, s.activeTabID, activeURL, len(pages))
+	log.Printf("[browser] prune duplicate pages scan addr=%s active_tab=%s active_url=%q page_count=%d", addr, activeTabID, activeURL, len(pages))
 	seen := map[string]string{}
 	if activeURL != "" {
-		seen[activeURL] = s.activeTabID
+		seen[activeURL] = activeTabID
 	}
 	closed := 0
 	for _, page := range pages {
 		if page.Type != "page" || page.ID == "" {
 			continue
 		}
-		if page.ID == s.activeTabID {
+		if page.ID == activeTabID {
 			continue
 		}
 		key := normalizeDuplicatePageURL(page.URL)
@@ -899,7 +1381,7 @@ func (s *Session) PruneDuplicatePages() int {
 			continue
 		}
 		log.Printf("[browser] closing duplicate page target=%s url=%q kept_target=%s", page.ID, page.URL, seen[key])
-		if _, err := s.client.Send("Target.closeTarget", map[string]interface{}{"targetId": page.ID}, 3*time.Second); err == nil {
+		if _, err := client.Send("Target.closeTarget", map[string]interface{}{"targetId": page.ID}, 3*time.Second); err == nil {
 			closed++
 		} else {
 			log.Printf("[browser] close duplicate page failed target=%s url=%q err=%v", page.ID, page.URL, err)
@@ -924,62 +1406,52 @@ type clickCoordResult struct {
 // iframe) without dispatching mouse events. Used when real input events
 // cannot reach the page (e.g. hidden tab/window).
 func (s *Session) jsClickLocked(selector string) error {
+	return s.jsClickLockedIn(selector, frameScope{})
+}
+
+func (s *Session) jsClickLockedIn(selector string, scope frameScope) error {
+	return s.jsClickLockedOn("", selector, scope)
+}
+
+func (s *Session) jsClickLockedOn(sessionID, selector string, scope frameScope) error {
 	js := fmt.Sprintf(`
 		(function() {
-			function findInFrames(doc, sel) {
-				const el = doc.querySelector(sel);
-				if (el) return el;
-				for (const f of doc.querySelectorAll('iframe')) {
-					let child = null;
-					try { child = f.contentDocument; } catch (e) {}
-					if (!child) continue;
-					const found = findInFrames(child, sel);
-					if (found) return found;
-				}
-				return null;
-			}
-			const el = findInFrames(document, %q);
-			if (!el) return JSON.stringify({error: "element not found: " + %q});
+			%s
+			const el = %s;
+			if (!el) return JSON.stringify({error: "element not found"});
 			el.click();
-			if (!el.isConnected) return JSON.stringify({error: "element detached before click took effect: " + %q});
+			if (!el.isConnected) return JSON.stringify({error: "element detached before click took effect"});
 			return JSON.stringify({ok: true});
 		})()
-	`, selector, selector, selector)
-	return s.evalCheck(js)
+	`, pierceFindJS, scopedFindCall(selector, scope))
+	if sessionID == "" {
+		return s.evalCheck(js)
+	}
+	return s.evalCheckOnLocked(sessionID, js)
 }
 
 func (s *Session) clickAtLocked(selector string) error {
-	// Get element coordinates via JS. The script:
-	//  1. searches the main document and same-origin iframes (frame offsets
-	//     are accumulated so coordinates land in the top-frame viewport);
-	//  2. scrolls instantly and waits two animation frames so smooth-scroll
-	//     animations don't leave us with a stale bounding rect;
-	//  3. checks occlusion via elementFromPoint — a covered element falls
-	//     back to a JS el.click() instead of clicking the overlay on top.
+	return s.clickAtLockedIn(selector, frameScope{})
+}
+
+func (s *Session) clickAtLockedIn(selector string, scope frameScope) error {
+	return s.clickAtLockedOn("", selector, scope)
+}
+
+func (s *Session) clickAtLockedOn(sessionID, selector string, scope frameScope) error {
+	send := func(method string, params map[string]interface{}) (json.RawMessage, error) {
+		if sessionID == "" {
+			return s.client.Send(method, params, DefaultCmdTimeout)
+		}
+		return s.client.SendOn(sessionID, method, params, DefaultCmdTimeout)
+	}
 	js := fmt.Sprintf(`
 		(async function() {
-			function findInFrames(doc, sel, chain) {
-				const el = doc.querySelector(sel);
-				if (el) return {el: el, chain: chain};
-				const iframes = doc.querySelectorAll('iframe');
-				for (const f of iframes) {
-					let child = null;
-					try { child = f.contentDocument; } catch (e) {}
-					if (!child) continue;
-					const found = findInFrames(child, sel, chain.concat([f]));
-					if (found) return found;
-				}
-				return null;
-			}
-			const found = findInFrames(document, %q, []);
-			if (!found) return JSON.stringify({error: "element not found: " + %q});
+			%s
+			const found = %s;
+			if (!found) return JSON.stringify({error: "element not found"});
 			const el = found.el;
 			el.scrollIntoView({block: "center", behavior: "instant"});
-			// Wait up to two animation frames for layout/scroll to settle.
-			// Skip entirely on hidden pages: rAF never fires there and
-			// Chrome throttles timers on long-hidden pages (down to once
-			// per minute), which could hang this eval past the CDP
-			// timeout — and a hidden page has no rendering to settle.
 			if (document.visibilityState !== "hidden") {
 				await new Promise(function(resolve) {
 					let done = false;
@@ -1002,9 +1474,6 @@ func (s *Session) clickAtLocked(selector string) error {
 			if (hit && hit !== el && !el.contains(hit) && !(hit.contains && hit.contains(el))) {
 				occluded = true;
 			}
-			// For elements inside iframes, also check the TOP document at the
-			// accumulated viewport coordinates: a top-level overlay covering
-			// the whole iframe is invisible to the in-frame check above.
 			if (!occluded && found.chain.length > 0) {
 				const topHit = document.elementFromPoint(x, y);
 				if (topHit) {
@@ -1016,21 +1485,18 @@ func (s *Session) clickAtLocked(selector string) error {
 				}
 			}
 			if (occluded) {
-				// el.click() on a detached element does not throw — it just
-				// fires on a node nobody sees. Only count it as clicked
-				// when the element is still in the document.
 				try { el.click(); jsClick = !!el.isConnected; } catch (e) {}
 			}
 			return JSON.stringify({x: x, y: y, tag: el.tagName, occluded: occluded, jsClick: jsClick, vis: document.visibilityState});
 		})()
-	`, selector, selector)
+	`, pierceFindJS, scopedLocatedCall(selector, scope))
 
 	evalCoords := func() (*clickCoordResult, error) {
-		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+		result, err := send("Runtime.evaluate", map[string]interface{}{
 			"expression":    js,
 			"returnByValue": true,
 			"awaitPromise":  true,
-		}, DefaultCmdTimeout)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -1050,57 +1516,40 @@ func (s *Session) clickAtLocked(selector string) error {
 		return err
 	}
 	if coord.Vis == "hidden" && !coord.Occluded {
-		// Chrome swallows Input.dispatchMouseEvent on hidden pages
-		// (background tab / minimized window): the first click just
-		// activates the window and the events never reach the renderer.
-		// Bring the tab to the front and re-measure once.
 		log.Printf("[browser] click %q: page hidden, bringing to front", selector)
-		if _, err := s.client.Send("Page.bringToFront", nil, DefaultCmdTimeout); err == nil {
+		if _, err := send("Page.bringToFront", nil); err == nil {
 			if retried, rerr := evalCoords(); rerr == nil {
 				coord = retried
 			}
 		}
 	}
 	if coord.Vis == "hidden" && !coord.Occluded {
-		// Still hidden (e.g. window could not be foregrounded) — real mouse
-		// events would be swallowed, so click in-page instead.
 		log.Printf("[browser] click %q: page still hidden, used JS click fallback", selector)
-		return s.jsClickLocked(selector)
+		return s.jsClickLockedOn(sessionID, selector, scope)
 	}
 	if coord.Occluded {
 		if coord.JsClick {
-			// Element was covered by an overlay; a coordinate click would
-			// have hit the overlay, so the in-page el.click() fallback
-			// already did the job.
 			log.Printf("[browser] click %q: element occluded, used JS click fallback", selector)
 			return nil
 		}
-		// Occluded and the JS fallback failed (e.g. element detached
-		// mid-eval) — a coordinate click here would hit the overlay, i.e.
-		// the WRONG element. Fail instead of misclicking.
-		return fmt.Errorf("element occluded and JS click fallback failed: %s", selector)
+		return fmt.Errorf("element occluded and JS click fallback failed")
 	}
 
-	// Dispatch real mouse events.
-	// Move the mouse to the target first — React/Vue SPA frameworks rely on
-	// mousemove/mouseover to update internal hover state before processing
-	// click. Without this, some components ignore mousePressed entirely.
-	if _, err := s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
+	if _, err := send("Input.dispatchMouseEvent", map[string]interface{}{
 		"type": "mouseMoved", "x": coord.X, "y": coord.Y,
-	}, DefaultCmdTimeout); err != nil {
-		// Non-fatal: some CDP targets don't accept mouseMoved pre-click.
+	}); err != nil {
 		_ = err
 	}
-	if _, err := s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
+	if _, err := send("Input.dispatchMouseEvent", map[string]interface{}{
 		"type": "mousePressed", "x": coord.X, "y": coord.Y,
 		"button": "left", "clickCount": 1,
-	}, DefaultCmdTimeout); err != nil {
+	}); err != nil {
 		return fmt.Errorf("mousePressed: %w", err)
 	}
-	_, err = s.client.Send("Input.dispatchMouseEvent", map[string]interface{}{
+	_, err = send("Input.dispatchMouseEvent", map[string]interface{}{
 		"type": "mouseReleased", "x": coord.X, "y": coord.Y,
 		"button": "left", "clickCount": 1,
-	}, DefaultCmdTimeout)
+	})
 	return err
 }
 
@@ -1109,45 +1558,41 @@ func (s *Session) clickAtLocked(selector string) error {
 func (s *Session) SetFiles(selector string, files []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.setFilesLocked(selector, frameScope{}, files)
+}
 
-	// Enable DOM domain.
-	s.client.Send("DOM.enable", nil, 5*time.Second)
-
-	// Get document root.
-	docResult, err := s.client.Send("DOM.getDocument", nil, DefaultCmdTimeout)
-	if err != nil {
-		return fmt.Errorf("DOM.getDocument: %w", err)
+func (s *Session) setFilesLocked(selector string, scope frameScope, files []string) error {
+	if _, err := s.client.Send("DOM.enable", nil, 5*time.Second); err != nil {
+		return err
 	}
-	var doc struct {
-		Root struct {
-			NodeID int `json:"nodeId"`
-		} `json:"root"`
-	}
-	if err := json.Unmarshal(docResult, &doc); err != nil {
-		return fmt.Errorf("parse document: %w", err)
-	}
-
-	// Find the file input node.
-	nodeResult, err := s.client.Send("DOM.querySelector", map[string]interface{}{
-		"nodeId":   doc.Root.NodeID,
-		"selector": selector,
+	js := fmt.Sprintf(`(function(){ %s return %s || null; })()`, pierceFindJS, scopedFindCall(selector, scope))
+	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+		"expression":    js,
+		"returnByValue": false,
 	}, DefaultCmdTimeout)
 	if err != nil {
-		return fmt.Errorf("DOM.querySelector: %w", err)
+		return err
+	}
+	objectID := extractObjectID(result)
+	if objectID == "" {
+		return fmt.Errorf("element not found")
+	}
+	desc, err := s.client.Send("DOM.describeNode", map[string]interface{}{"objectId": objectID}, DefaultCmdTimeout)
+	if err != nil {
+		return err
 	}
 	var node struct {
-		NodeID int `json:"nodeId"`
+		Node struct {
+			BackendNodeID int `json:"backendNodeId"`
+		} `json:"node"`
 	}
-	if err := json.Unmarshal(nodeResult, &node); err != nil || node.NodeID == 0 {
-		return fmt.Errorf("element not found: %s", selector)
+	if json.Unmarshal(desc, &node) != nil || node.Node.BackendNodeID == 0 {
+		return fmt.Errorf("element not found")
 	}
-
-	// Set files.
-	_, err = s.client.Send("DOM.setFileInputFiles", map[string]interface{}{
-		"nodeId": node.NodeID,
-		"files":  files,
-	}, DefaultCmdTimeout)
-	if err != nil {
+	if _, err := s.client.Send("DOM.setFileInputFiles", map[string]interface{}{
+		"backendNodeId": node.Node.BackendNodeID,
+		"files":         files,
+	}, DefaultCmdTimeout); err != nil {
 		return fmt.Errorf("setFileInputFiles: %w", err)
 	}
 	return nil
@@ -1155,10 +1600,17 @@ func (s *Session) SetFiles(selector string, files []string) error {
 
 // Back navigates back in browser history and waits for load.
 func (s *Session) Back() error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("browser session not connected")
+	}
 
-	_, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+	_, err := client.Send("Runtime.evaluate", map[string]interface{}{
 		"expression":    "history.back()",
 		"returnByValue": true,
 	}, DefaultCmdTimeout)
@@ -1167,7 +1619,7 @@ func (s *Session) Back() error {
 	}
 	// Accept "interactive" immediately (tolerance 0) — Back() keeps the old
 	// behaviour; the longer SPA-tolerant wait only pays off on Navigate.
-	s.waitForLoad(NavTimeout, 0)
+	waitForLoadOn(client, NavTimeout, 0)
 	return nil
 }
 
@@ -1180,10 +1632,17 @@ type PageInfo struct {
 
 // Info returns the current page's title, URL, and readyState in one call.
 func (s *Session) Info() (*PageInfo, error) {
+	if s == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return nil, fmt.Errorf("browser session not connected")
+	}
 
-	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
 		"expression":    `JSON.stringify({title: document.title, url: location.href, ready_state: document.readyState})`,
 		"returnByValue": true,
 	}, DefaultCmdTimeout)
@@ -1234,17 +1693,44 @@ func (s *Session) FrameSnapshots() []BrowserFrameSnapshot {
 
 // SwitchPage switches to a different page target by its target ID.
 func (s *Session) SwitchPage(targetID string) error {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return fmt.Errorf("missing target id")
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.switchPageLocked(targetID)
+	addr := s.addr
+	from := s.activeTabID
+	s.mu.Unlock()
+	log.Printf("[browser] switch page requested addr=%s from=%s to=%s", addr, from, targetID)
+
+	client, err := connectPageTarget(addr, from, targetID)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	oldTabID := s.activeTabID
+	old := s.client
+	s.client = client
+	s.activeTabID = targetID
+	s.activeFrameID = "main"
+	s.mu.Unlock()
+	if old != nil && old != client {
+		log.Printf("[browser] switch page closing old CDP client addr=%s old=%s new=%s", addr, oldTabID, targetID)
+		old.Close()
+	}
+	log.Printf("[browser] switch page complete addr=%s from=%s to=%s", addr, oldTabID, targetID)
+	return nil
 }
 
-func (s *Session) switchPageLocked(targetID string) error {
-	log.Printf("[browser] switch page requested addr=%s from=%s to=%s", s.addr, s.activeTabID, targetID)
-	targets, err := DiscoverTargets(s.addr)
+func connectPageTarget(addr, from, targetID string) (*CDPClient, error) {
+	targets, err := DiscoverTargets(addr)
 	if err != nil {
-		log.Printf("[browser] switch page discover failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
-		return err
+		log.Printf("[browser] switch page discover failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
+		return nil, err
 	}
 	var wsURL string
 	for _, t := range targets {
@@ -1254,38 +1740,26 @@ func (s *Session) switchPageLocked(targetID string) error {
 		}
 	}
 	if wsURL == "" {
-		log.Printf("[browser] switch page target not found addr=%s from=%s to=%s targets=%d", s.addr, s.activeTabID, targetID, len(targets))
-		return fmt.Errorf("target %s not found", targetID)
+		log.Printf("[browser] switch page target not found addr=%s from=%s to=%s targets=%d", addr, from, targetID, len(targets))
+		return nil, fmt.Errorf("target %s not found", targetID)
 	}
 
 	client, err := ConnectCDP(wsURL)
 	if err != nil {
-		log.Printf("[browser] switch page CDP connect failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
-		return fmt.Errorf("switch page CDP connection failed: %w", err)
+		log.Printf("[browser] switch page CDP connect failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
+		return nil, fmt.Errorf("switch page CDP connection failed: %w", err)
 	}
 	if _, err := client.Send("Page.enable", nil, 5*time.Second); err != nil {
-		log.Printf("[browser] switch page Page.enable failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
+		log.Printf("[browser] switch page Page.enable failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
 		client.Close()
-		return fmt.Errorf("switch page Page.enable failed: %w", err)
+		return nil, fmt.Errorf("switch page Page.enable failed: %w", err)
 	}
 	if _, err := client.Send("Runtime.enable", nil, 5*time.Second); err != nil {
-		log.Printf("[browser] switch page Runtime.enable failed addr=%s from=%s to=%s err=%v", s.addr, s.activeTabID, targetID, err)
+		log.Printf("[browser] switch page Runtime.enable failed addr=%s from=%s to=%s err=%v", addr, from, targetID, err)
 		client.Close()
-		return fmt.Errorf("switch page Runtime.enable failed: %w", err)
+		return nil, fmt.Errorf("switch page Runtime.enable failed: %w", err)
 	}
-
-	oldTabID := s.activeTabID
-	old := s.client
-	s.client = client
-	s.activeTabID = targetID
-	s.activeFrameID = "main"
-
-	if old != nil {
-		log.Printf("[browser] switch page closing old CDP client addr=%s old=%s new=%s", s.addr, oldTabID, targetID)
-		old.Close()
-	}
-	log.Printf("[browser] switch page complete addr=%s from=%s to=%s", s.addr, oldTabID, targetID)
-	return nil
+	return client, nil
 }
 
 func (s *Session) lastNetworkLines() []string {
@@ -1304,6 +1778,24 @@ func (s *Session) lastErrorLines() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.recentErrors...)
+}
+
+func (s *Session) noteRecentNetwork(line string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.recentNetwork = appendCapped(s.recentNetwork, line, browserAgentNetworkLimit)
+	s.mu.Unlock()
+}
+
+func (s *Session) noteRecentError(line string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.recentErrors = appendCapped(s.recentErrors, line, browserAgentErrorLimit)
+	s.mu.Unlock()
 }
 
 // internal helpers
@@ -1329,7 +1821,17 @@ func (s *Session) evalCheck(js string) error {
 }
 
 func (s *Session) evalString(js, field string) (string, error) {
-	result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+	if s == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	return evalStringOn(s.client, js, field)
+}
+
+func evalStringOn(client *CDPClient, js, field string) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("browser session not connected")
+	}
+	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
 		"expression":    js,
 		"returnByValue": true,
 	}, DefaultCmdTimeout)
@@ -1348,6 +1850,18 @@ func (s *Session) evalString(js, field string) (string, error) {
 		return v, nil
 	}
 	return str, nil
+}
+
+func extractObjectID(raw json.RawMessage) string {
+	var resp struct {
+		Result struct {
+			ObjectID string `json:"objectId"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &resp) != nil {
+		return ""
+	}
+	return resp.Result.ObjectID
 }
 
 func extractStringValue(raw json.RawMessage) string {
@@ -1371,11 +1885,24 @@ func extractStringValue(raw json.RawMessage) string {
 // behaviour). It returns the last observed readyState so callers can tell
 // a fully loaded page apart from an interactive-but-still-rendering SPA.
 func (s *Session) waitForLoad(timeout, interactiveTolerance time.Duration) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	return waitForLoadOn(client, timeout, interactiveTolerance)
+}
+
+func waitForLoadOn(client *CDPClient, timeout, interactiveTolerance time.Duration) string {
+	if client == nil {
+		return ""
+	}
 	deadline := time.Now().Add(timeout)
 	interactiveSince := time.Time{}
 	last := ""
 	for time.Now().Before(deadline) {
-		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
+		result, err := client.Send("Runtime.evaluate", map[string]interface{}{
 			"expression":    "document.readyState",
 			"returnByValue": true,
 		}, 3*time.Second)
@@ -1399,7 +1926,17 @@ func (s *Session) waitForLoad(timeout, interactiveTolerance time.Duration) strin
 }
 
 func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
-	if s == nil || s.client == nil {
+	if s == nil {
+		return fmt.Errorf("browser session not connected")
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	return s.waitForStableOn(client, timeout, quiet)
+}
+
+func (s *Session) waitForStableOn(client *CDPClient, timeout, quiet time.Duration) error {
+	if client == nil {
 		return fmt.Errorf("browser session not connected")
 	}
 	if timeout <= 0 {
@@ -1412,11 +1949,11 @@ func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
 	stableSince := time.Time{}
 	lastReady := ""
 	lastURL := ""
-	lastTextLen := 0
+	lastMut := -1
 	consecutiveErrors := 0
 	for time.Now().Before(deadline) {
-		result, err := s.client.Send("Runtime.evaluate", map[string]interface{}{
-			"expression":    `JSON.stringify({ready:document.readyState,url:location.href,text:(document.body&&(document.body.innerText||document.body.textContent)||'').length})`,
+		result, err := client.Send("Runtime.evaluate", map[string]interface{}{
+			"expression":    stabilityProbeJS,
 			"returnByValue": true,
 		}, 2*time.Second)
 		if err != nil {
@@ -1431,15 +1968,13 @@ func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
 		}
 		consecutiveErrors = 0
 		sig := extractStringValue(result)
-		ready, url, textLen := parseStabilitySignature(sig)
+		ready, url, _, mut := parseStabilitySignature(sig)
 		isReady := ready == "complete" || ready == "interactive"
-		// Structural stability: readyState and URL must match exactly;
-		// text length must be within ±5% (tolerates minor dynamic content
-		// like clocks, counters, blinking cursors on SPA pages).
 		structurallyStable := isReady &&
 			ready == lastReady &&
 			url == lastURL &&
-			textLenWithinTolerance(textLen, lastTextLen, 0.05)
+			mut == lastMut &&
+			s.inflightCount() == 0
 		if structurallyStable {
 			if stableSince.IsZero() {
 				stableSince = time.Now()
@@ -1449,27 +1984,68 @@ func (s *Session) WaitForStable(timeout, quiet time.Duration) error {
 		} else {
 			lastReady = ready
 			lastURL = url
-			lastTextLen = textLen
+			lastMut = mut
 			stableSince = time.Time{}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("page not stable within %v", timeout)
+	if lastReady == "complete" || lastReady == "interactive" {
+		log.Printf("[browser] page partially stable ready=%s inflight=%d within %v", lastReady, s.inflightCount(), timeout)
+		return nil
+	}
+	return fmt.Errorf("page not stable within %v (ready=%s)", timeout, lastReady)
 }
+
+const stabilityProbeJS = `(function(){
+	function ensureMut(doc) {
+		if (!doc || !doc.defaultView) return 0;
+		const w = doc.defaultView;
+		if (!w.__maclawMut) {
+			w.__maclawMut = { n: 0 };
+			try { new MutationObserver(function () { w.__maclawMut.n++; }).observe(doc, { subtree: true, childList: true, attributes: true, characterData: false }); } catch (e) {}
+		}
+		return w.__maclawMut.n || 0;
+	}
+	function walk(doc) {
+		let n = ensureMut(doc);
+		for (const f of queryIframes(doc)) {
+			try { if (f.contentDocument) n += walk(f.contentDocument); } catch (e) {}
+		}
+		return n;
+	}
+	function queryIframes(root) {
+		const out = [];
+		function walkNode(node) {
+			if (!node) return;
+			let children = [];
+			try { children = node.children ? Array.from(node.children) : []; } catch (e) { return; }
+			for (const el of children) {
+				const tag = String(el.tagName || '').toLowerCase();
+				if (tag === 'iframe' || tag === 'frame') out.push(el);
+				if (el.shadowRoot) walkNode(el.shadowRoot);
+				walkNode(el);
+			}
+		}
+		walkNode(root.documentElement || root);
+		if (root.shadowRoot) walkNode(root.shadowRoot);
+		return out;
+	}
+	return JSON.stringify({ready: document.readyState, url: location.href, mut: walk(document)});
+})()`
 
 // parseStabilitySignature extracts ready, url, and text length from the
 // JSON signature produced by the stability polling expression.
-func parseStabilitySignature(sig string) (ready, url string, textLen int) {
-	// Fast path: parse the simple JSON without full unmarshal.
+func parseStabilitySignature(sig string) (ready, url string, textLen, mut int) {
 	var payload struct {
 		Ready string `json:"ready"`
 		URL   string `json:"url"`
 		Text  int    `json:"text"`
+		Mut   int    `json:"mut"`
 	}
 	if err := json.Unmarshal([]byte(sig), &payload); err == nil {
-		return payload.Ready, payload.URL, payload.Text
+		return payload.Ready, payload.URL, payload.Text, payload.Mut
 	}
-	return "", "", 0
+	return "", "", 0, 0
 }
 
 // textLenWithinTolerance returns true if current and previous text lengths

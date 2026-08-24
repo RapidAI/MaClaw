@@ -1,0 +1,79 @@
+{
+  "category": "schema_token_budget",
+  "category_id": 21,
+  "title": "schema token budget keeps a closed wave or reports planning_budget_exceeded",
+  "design_ref": "10.1 item 21 / CatalogRenderer schema budget",
+  "format_note": "Empty closed schemas cost 28 tokens each (24 + digest). GUI ExecutionProfile has ToolBudget/MaxSelections only; this sample lands planner + routingeval. Do not invent a host token field.",
+  "samples": [
+    {
+      "id": "schema-budget-keeps-search-prefix",
+      "title": "29 schema tokens fit the first wave and report later waves as budget_exceeded",
+      "context": {"max_schema_tokens": 29},
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+        {"id": "deliver", "capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "phase": "execution"}],
+        "unmet": [
+          {"need_id": "generate", "reason": "budget_exceeded"},
+          {"need_id": "deliver", "reason": "budget_exceeded"}
+        ]
+      }
+    },
+    {
+      "id": "schema-budget-first-wave-overflow",
+      "title": "20 schema tokens cannot fit the first required wave",
+      "context": {"max_schema_tokens": 20},
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {"need_id": "search", "reason": "planning_budget_exceeded"},
+          {"need_id": "generate", "reason": "planning_budget_exceeded"}
+        ]
+      }
+    }
+  ]
+}

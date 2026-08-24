@@ -1,0 +1,69 @@
+{
+  "category": "provider_failure_no_expansion",
+  "category_id": 13,
+  "title": "provider absence or policy failure does not expand authority",
+  "design_ref": "10.1 item 13",
+  "format_note": "Planner-level recovery only. A missing or denied provider may keep the same capability via another FitProof, or report unmet. A shell/high-risk adapter present in the catalog is never selected as compensation. This is not an executor/grant/host-protocol test.",
+  "samples": [
+    {
+      "id": "fallback-same-capability-only",
+      "title": "When the preferred search binding is absent, only the same capability fallback is selected",
+      "notes": "Primary search is missing from this snapshot. Fallback search is selected. bash_adapter is present and must not appear.",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}}],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "fallback_search",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "bash_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "shell.execute.local"}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "adapter": "fallback_search"}]
+      }
+    },
+    {
+      "id": "denied-generate-does-not-select-shell",
+      "title": "Policy-denied generate stays unmet; search remains; shell is not a substitute",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}
+      ],
+      "constraints": [
+        {"id": "deny-generate", "capability": "document.generate.file", "effect": "deny", "authority": "policy"}
+      ],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "bash_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "shell.execute.local"}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "adapter": "search_adapter"}],
+        "unmet": [{"need_id": "generate", "reason": "policy_denied"}]
+      }
+    }
+  ]
+}

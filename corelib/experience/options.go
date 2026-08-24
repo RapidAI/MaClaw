@@ -1,5 +1,7 @@
 package experience
 
+import "github.com/RapidAI/CodeClaw/corelib"
+
 const (
 	defaultMinPatternQualityScore   = 5
 	defaultMinEvidenceScore         = 2
@@ -14,6 +16,12 @@ type Options struct {
 	MinEvidenceScore         int
 	SimilarTriggerThreshold  float64
 	MaxPatternsPerExtraction int
+	// ExperienceDomain is the pool the analysed sessions belong to, stamped
+	// onto every extracted skill. A caller that only ever analyses one kind of
+	// work should set it, otherwise the skill becomes universal and a recipe
+	// distilled from one kind of work is advertised in every other. Consolidation
+	// needs it before deciding a match, so it cannot be applied afterwards.
+	ExperienceDomain string
 }
 
 func DefaultOptions() Options {
@@ -39,5 +47,7 @@ func normalizeOptions(opts Options) Options {
 	if opts.MaxPatternsPerExtraction <= 0 {
 		opts.MaxPatternsPerExtraction = defaults.MaxPatternsPerExtraction
 	}
+	// An unrecognized pool would hide the skill from every agent.
+	opts.ExperienceDomain = corelib.NormalizeSkillExperienceDomain(opts.ExperienceDomain)
 	return opts
 }

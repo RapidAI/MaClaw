@@ -32,7 +32,8 @@ func TestComputerUseDefinitionRegistered(t *testing.T) {
 
 	wantTools := []string{
 		"computer_observe", "computer_click", "computer_type", "computer_key",
-		"computer_scroll", "computer_wait", "computer_focus", "computer_find",
+		"computer_scroll", "computer_select", "computer_scroll_into_view", "computer_drag",
+		"computer_wait", "computer_focus", "computer_find",
 		"computer_done", "computer_playbook",
 	}
 	got := make(map[string]bool, len(cu.ToolNames))
@@ -61,5 +62,8 @@ func TestComputerUseDefinitionRegistered(t *testing.T) {
 	affinity := NewToolAffinityRegistryFromDefinitions(defs)
 	if resolved := affinity.Resolve(LabelComputerUse, nil); len(resolved) == 0 {
 		t.Fatal("tool affinity does not resolve LabelComputerUse")
+	}
+	if screenshot := affinity.Resolve(LabelScreenshot, nil); len(screenshot) != 1 || screenshot[0] != "screenshot" {
+		t.Fatalf("screenshot affinity = %v, want [screenshot]", screenshot)
 	}
 }

@@ -11,6 +11,8 @@
 #include "freertos/task.h"
 
 #include "platform_input.h"
+#include "device_profile_validation.h"
+#include "input_scanner_lifecycle_gate.h"
 
 /*
  * The board port is still the owner of scan/debounce/gesture recognition.
@@ -68,7 +70,11 @@ static input_service_state_t s_input_service;
 /* The scanner can be stopped before Input Service frees its queues, but the
  * selected physical adapter remains boot-lifetime today.  Do not re-open the
  * adapter without its future full deinit/restart contract. */
-static bool s_board_scanner_initialized;
+/* A profile adapter can keep GPIO/touch hardware boot-lifetime while its
+ * scanner task is stopped and joined. Keep only failed joins closed; a
+ * successful join is a real lifecycle boundary and permits a new publisher
+ * generation without reconstructing panel/audio/peripheral hardware. */
+static input_scanner_lifecycle_gate_t s_scanner_lifecycle_gate;
 static portMUX_TYPE s_input_service_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_next_input_generation;
 
@@ -94,6 +100,14 @@ static void input_service_publish_from_board(device_input_action_t action,
                                              device_input_source_t source,
                                              void *context) {
     (void)context;
+    /* Do this before a lane is selected or a publisher is admitted. A bad
+     * profile-private callback must neither consume queue capacity nor create
+     * a gap in the public per-generation sequence stream. */
+    if (!device_input_action_source_is_valid(action, source)) {
+        ESP_LOGW(TAG, "discarded invalid normalized input: action=%d source=%d",
+                 (int)action, (int)source);
+        return;
+    }
     input_service_state_t *service = &s_input_service;
     QueueHandle_t queue;
     bool control = input_service_is_control_action(action);
@@ -188,8 +202,11 @@ static void input_service_task(void *arg) {
 
 device_status_t input_service_start(device_input_cb_t on_input, void *context) {
     if (!on_input) return DEVICE_STATUS_INVALID_ARGUMENT;
-    if (s_input_service.started || s_input_service.stopping) return DEVICE_STATUS_BUSY;
-    if (s_board_scanner_initialized) return DEVICE_STATUS_UNAVAILABLE;
+    if (!input_scanner_lifecycle_gate_allows_start(
+            &s_scanner_lifecycle_gate,
+            s_input_service.started || s_input_service.stopping)) {
+        return DEVICE_STATUS_BUSY;
+    }
 
     memset(&s_input_service, 0, sizeof(s_input_service));
     s_input_service.generation = input_service_allocate_generation();
@@ -234,12 +251,10 @@ device_status_t input_service_start(device_input_cb_t on_input, void *context) {
             /* The scanner can still reference this generation's publisher and
              * queues. Retain all state fail-closed until a future lifecycle
              * pass can complete its stop/join transaction. */
-            s_board_scanner_initialized = true;
+            input_scanner_lifecycle_gate_note_stop_failed(&s_scanner_lifecycle_gate);
             return board_stop_status;
         }
-        /* The selected adapter is boot-lifetime even after its scanner exits.
-         * Do not permit a second board initialization in this boot generation. */
-        s_board_scanner_initialized = true;
+        input_scanner_lifecycle_gate_note_stop_succeeded(&s_scanner_lifecycle_gate);
         vTaskDelete(s_input_service.task);
         vQueueDelete(s_input_service.queue_set);
         vQueueDelete(s_input_service.auxiliary_queue);
@@ -256,8 +271,6 @@ device_status_t input_service_start(device_input_cb_t on_input, void *context) {
     s_input_service.accepting = true;
     s_input_service.started = true;
     taskEXIT_CRITICAL(&s_input_service_lock);
-    s_board_scanner_initialized = true;
-
     ESP_LOGI(TAG, "input service started: control=%u auxiliary=%u",
              INPUT_CONTROL_QUEUE_DEPTH, INPUT_AUXILIARY_QUEUE_DEPTH);
     return DEVICE_STATUS_OK;
@@ -314,9 +327,11 @@ device_status_t input_service_stop(uint32_t timeout_ms) {
     device_status_t board_stop_status =
         platform_input_stop((uint32_t)remaining * portTICK_PERIOD_MS);
     if (board_stop_status != DEVICE_STATUS_OK) {
+        input_scanner_lifecycle_gate_note_stop_failed(&s_scanner_lifecycle_gate);
         input_service_release_stop_owner();
         return board_stop_status;
     }
+    input_scanner_lifecycle_gate_note_stop_succeeded(&s_scanner_lifecycle_gate);
 
     /* With admission closed, this bounded control lane is only drained by the
      * consumer.  Waiting here cannot deadlock a board scanner. */

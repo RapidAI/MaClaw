@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/enterpriseknowledge"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
@@ -260,23 +259,4 @@ func (a *App) ensureEnterpriseSyncAgent() *enterpriseknowledge.SyncAgent {
 // StartEnterpriseDigitalAssetSync starts the background sync agent.
 func (a *App) StartEnterpriseDigitalAssetSync() {
 	a.ensureEnterpriseSyncAgent()
-}
-
-// AppendEnterpriseKnowledgeAutoRecall injects enterprise hits into the system prompt.
-func (a *App) AppendEnterpriseKnowledgeAutoRecall(b *strings.Builder, userMsg string, priorUserMessages []string) {
-	if a == nil || b == nil || strings.TrimSpace(userMsg) == "" {
-		return
-	}
-	minScore := agent.KnowledgeAutoRecallScoreThreshold
-	if cfg, err := a.LoadConfig(); err == nil {
-		if !cfg.IsKnowledgeAutoRecallEnabled() {
-			return
-		}
-		minScore = cfg.EffectiveKnowledgeAutoRecallMinScore()
-	}
-	if c := a.ensureEnterpriseClient(); c != nil {
-		enterpriseknowledge.AppendAutoRecall(c, b, userMsg, priorUserMessages, minScore)
-		return
-	}
-	enterpriseknowledge.AppendAutoRecallFromDataDir(a.GetDataDir(), b, userMsg, priorUserMessages, minScore)
 }

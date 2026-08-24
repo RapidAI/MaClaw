@@ -465,8 +465,11 @@ func TestLansengerGroupMemoryPromptExcludesSharedDesktopEntries(t *testing.T) {
 	if strings.Contains(out, "shared desktop preference secret") || strings.Contains(out, "shared desktop deployment secret") {
 		t.Fatalf("group prompt leaked shared desktop memory: %s", out)
 	}
-	if !strings.Contains(out, "group member preference") || !strings.Contains(out, "group deployment runbook") {
-		t.Fatalf("group prompt omitted its owner-scoped memory: %s", out)
+	if strings.Contains(out, "group member preference") || strings.Contains(out, "group deployment runbook") {
+		t.Fatalf("group prompt must not dump owner warehouse text: %s", out)
+	}
+	if !strings.Contains(out, corememory.PromptSectionUserMemory) {
+		t.Fatalf("group prompt omitted the memory catalog section: %s", out)
 	}
 }
 
@@ -480,10 +483,16 @@ func TestLansengerGroupPermissionPolicyFailsClosedForUnlistedTools(t *testing.T)
 			t.Fatalf("%q must be denied unless it has an explicit group-permission contract", name)
 		}
 	}
-	for _, name := range []string{"memory", "knowledge_search", "read_file", "current_datetime"} {
+	for _, name := range []string{"memory", "knowledge_search", "read_file", "current_datetime", "generate_pdf"} {
 		if !policy.allowsTool(name) {
 			t.Fatalf("%q should be allowed by its explicit contract", name)
 		}
+	}
+	if !policy.allowsTool("invoke_abcdefghij0123456789-_ab") {
+		t.Fatal("opaque CatalogRenderer grants must pass the group filter")
+	}
+	if policy.allowsTool("invoke_evil") {
+		t.Fatal("short invoke_ names are not CatalogRenderer grants")
 	}
 	for _, name := range []string{"web_search", "web_fetch"} {
 		if policy.allowsTool(name) {
@@ -574,12 +583,6 @@ func TestLansengerGroupKnowledgePriorityBlocksWebWhenKnowledgeExists(t *testing.
 	})
 	if reason := policy.webFallbackBlockReason(); reason == "" {
 		t.Fatal("web search must remain blocked when authorised knowledge was found")
-	}
-
-	policy = lansengerGroupPermissionPolicy{KnowledgeSourceIDs: []string{"approved"}}
-	policy.markKnowledgeAutoRecallEvidence()
-	if reason := policy.webFallbackBlockReason(); reason == "" {
-		t.Fatal("web search must remain blocked when authorised auto-recall supplied evidence")
 	}
 }
 

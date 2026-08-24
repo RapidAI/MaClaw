@@ -20,27 +20,21 @@ func (s *HTTPServer) handleWebConsoleV2(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Determine which file to serve
 	reqPath := r.URL.Path
-
-	// For root routes (/, /ui, /console, /console/), serve index.html
 	if reqPath == "/" || reqPath == "/ui" || reqPath == "/console" || reqPath == "/console/" {
 		serveFile(w, sub, "index.html")
 		return
 	}
 
-	// For /console/xxx paths, strip the prefix
+	// <base href="/console/"> so JS/CSS resolve under this prefix.
 	filePath := strings.TrimPrefix(reqPath, "/console/")
 	if filePath == reqPath {
-		// Path didn't have /console/ prefix — not a static asset request
 		serveFile(w, sub, "index.html")
 		return
 	}
 
-	// Try to serve the requested file
 	f, err := sub.Open(filePath)
 	if err != nil {
-		// File not found — serve index.html (SPA fallback)
 		serveFile(w, sub, "index.html")
 		return
 	}

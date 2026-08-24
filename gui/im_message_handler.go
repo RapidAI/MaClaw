@@ -62,6 +62,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if err := contextErr(msg.CancelCtx); err != nil {
 		return &IMAgentResponse{Error: err.Error()}
 	}
+	if resp, handled := h.handleHorizonIMRoute(msg, trimmed); handled {
+		return resp
+	}
 
 	// Notify goal continuation engine that a user message arrived.
 	// This cancels any pending continuation (user takes priority) and resets
@@ -132,7 +135,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// preflight reads conversation state and may process a typed confirmation, so
 	// it cannot be allowed to leave the user staring at an empty placeholder.
 	// This ensures the frontend shows activity within <100ms of message receipt.
-	if onProgress != nil {
+	// Coding workbench turns omit [Status] milestones (Codex: thinking + tools).
+	// Re-arm first: /clear drops sticky Kind, so this check would otherwise
+	// treat a dedicated coding tab as shared chat and leak [Status].
+	h.ensurePureCodingArmedForIncomingMessage(msg.UserID)
+	codingWorkbench := h.isPureCodingWorkbenchSession(msg.UserID)
+	onProgress = suppressCodingWorkbenchStatusProgress(onProgress, codingWorkbench)
+	if onProgress != nil && !codingWorkbench {
 		onProgress("[Status] 已接收任务，正在准备执行路径")
 	}
 
@@ -152,18 +161,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if preflight.Handled {
 		return preflight.Response
 	}
-	if onProgress != nil {
+	if onProgress != nil && !codingWorkbench {
 		onProgress("[Status] 会话预检完成，正在准备上下文")
 	}
 
-	// 治本: expand GUI-selected document paths into bounded native extracts so the
-	// model can answer without first calling office(read_document). Caps live in
-	// agent.ExpandUserSelectedFilePaths (per-file + total + file-size). Idempotent.
-	// MUST run after preflight (confirmation rewrites).
-	if expanded := agent.ExpandUserSelectedFilePaths(msg.Text); expanded != msg.Text {
-		msg.Text = expanded
-		trimmed = strings.TrimSpace(msg.Text)
-	}
+	// Document bodies are expanded later, after turn routing has selected the
+	// actual model. That lets the payload budget follow its context window
+	// instead of freezing it to the desktop's pre-route default here.
 
 	// Eager embedding warmup: pre-compute the query embedding in the background
 	// so that proactive recall (which runs later during system prompt construction)
@@ -175,8 +179,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// (e.g. confirmationApprovedText replaces "确认" with the full execution plan).
 	// Use CompactQueryForEmbedding so a 20k–40k document body does not dominate
 	// (or timeout) the embedding query — recall keys on intent + paths.
-	if h.memoryStore != nil && msg.Text != "" {
-		h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(msg.Text))
+	if h.memoryStore != nil {
+		if query := semanticUserIntentText(msg.Text); query != "" {
+			h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(query))
+		}
 	}
 	preflightDone := time.Since(msgReceivedAt)
 	httpClient := preflight.HTTPClient
@@ -193,7 +199,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return serialization.Response
 	}
 	defer serialization.Unlock()
-	if onProgress != nil {
+	if onProgress != nil && !codingWorkbench {
 		onProgress("[Status] 会话已就绪，正在确定执行方式")
 	}
 	clearAssistantBinding := activateAssistantBindingForTurn(msg.UserID, bindingScope)
@@ -217,7 +223,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if entryContext.Handled {
 		return finalizeIMEntryHostResponse(entryContext.Response, requestID, msg.UserID)
 	}
-	if onProgress != nil {
+	if onProgress != nil && !codingWorkbench {
 		onProgress("[Status] 上下文已准备，正在启动任务")
 	}
 	// Host-side post-recording ASR (and similar) must not hold state.mu: the
@@ -265,6 +271,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		PhasePrompt:               phasePrompt,
 		SkipNeedsConfirmGate:      skipNeedsConfirmGate,
 		AskUserContext:            askUserContext,
+		ResumeWorkingState:        entryContext.ResumeWorkingState,
 		PendingUserReplyContext:   pendingUserReplyContext,
 		CapabilityGapContext:      capabilityGapContext,
 		ClearUIAfterContextSwitch: clearUIAfterContextSwitch,

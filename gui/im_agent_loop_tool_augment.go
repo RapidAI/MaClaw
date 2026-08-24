@@ -5,24 +5,17 @@ import (
 	"strings"
 )
 
-// augmentToolsFromInjection performs incremental tool routing when a merge
-// injection changes the task direction mid-loop.
-//
-// The tool list is computed once at loop start based on the original user
-// message. When a merge injection arrives (e.g. "直接用ssh连上服务器"), the
-// injection text may require tools (ssh, browser, etc.) that weren't in the
-// original routing result. This function re-routes using the injection text
-// and appends any newly activated tools to the current tool set.
-//
-// Mechanism: Route() with injection text → find tools in the result that are
-// NOT in the current set → filter out blocklisted tools (coding gate) →
-// append remaining to current tools.
-//
-// This maintains the invariant that "the tool list reflects the current task
-// direction" while respecting the coding gate's invariant that "blocklisted
-// tools don't appear in the tool list during three-phase workflow".
+// augmentToolsFromInjection replaces the legacy surface with one fresh route
+// result. It must never merge the old list with the injection route: doing so
+// makes an earlier task's tool names authorization for a later task and lets
+// a repeated injection steadily exhaust the tool budget. Managed semantic
+// turns remain closed until their planner publishes a replacement surface.
 func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, injectionText string, currentTools, baseTools []map[string]interface{}, gateActive bool) ([]map[string]interface{}, int) {
 	if injectionText == "" {
+		return currentTools, estimateToolsTokens(currentTools)
+	}
+	if loopContextBlocksLegacyToolRouter(ctx) {
+		log.Printf("[injection-tool-augment] skip name-router augment on managed semantic turn user=%q", userID)
 		return currentTools, estimateToolsTokens(currentTools)
 	}
 	if h.toolRouter == nil {
@@ -38,47 +31,13 @@ func (h *IMMessageHandler) augmentToolsFromInjection(ctx *LoopContext, userID, i
 		return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
 	}
 
-	// Route with the cleaned injection text to see what tools it would activate.
+	// Route the current task direction into a complete replacement candidate.
 	allTools := h.getTools()
 	// Route augmentation happens while an Agent loop is active. Keep this on
 	// the same non-blocking BM25/L2-only path as the initial tool set.
-	injectionRouted := h.routeToolsForUser("", routeText, allTools, true)
-
-	// Build a set of tool names currently available.
-	currentNames := make(map[string]bool, len(currentTools))
-	for _, t := range currentTools {
-		if name := extractToolName(t); name != "" {
-			currentNames[name] = true
-		}
-	}
-
-	// Find tools in the injection routing result that are missing from current.
-	var added []string
-	for _, t := range injectionRouted {
-		name := extractToolName(t)
-		if name == "" {
-			continue
-		}
-		if currentNames[name] {
-			continue
-		}
-		// Look up the full definition from baseTools (which has all tools
-		// before workflow/gate filtering). If not in baseTools, use the
-		// definition from injectionRouted directly.
-		def := findToolDef(baseTools, name)
-		if def == nil {
-			def = t
-		}
-		currentTools = append(currentTools, def)
-		currentNames[name] = true
-		added = append(added, name)
-	}
-
-	if len(added) > 0 {
-		log.Printf("[injection-tool-augment] added %d tools from injection: %v", len(added), added)
-	}
-
-	return h.finalizeInjectionAugmentedTools(ctx, userID, currentTools)
+	replacement := h.routeToolsForUser("", routeText, allTools, true)
+	log.Printf("[injection-tool-augment] replaced legacy surface with %d routed tools", len(replacement))
+	return h.finalizeInjectionAugmentedTools(ctx, userID, replacement)
 }
 
 func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, userID string, tools []map[string]interface{}) ([]map[string]interface{}, int) {
@@ -98,8 +57,29 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
+	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), ctx)
 	tools = stripExecutionContractMetadataForLLM(tools)
-	return tools, estimateToolsTokens(tools)
+	// Injection is a new direction, so it must receive a complete replacement
+	// surface. Do not return the post-filter raw definitions on a planner error:
+	// that would make the old compatibility path an authorization fallback.
+	rendered, _, planBacked, err := h.renderClosedLegacyReplacementSurface(injectionReplacementPolicyText(ctx, tools), ctx, tools)
+	if err != nil || !planBacked {
+		if err != nil {
+			log.Printf("[legacy-adapter] injection replacement rejected user=%q reason=%v", userID, err)
+		}
+		return nil, 0
+	}
+	return rendered, estimateToolsTokens(rendered)
+}
+
+func injectionReplacementPolicyText(ctx *LoopContext, tools []map[string]interface{}) string {
+	// The exact schemas are bound by LegacyAdapterPlan. This digest input only
+	// identifies the host policy decision, therefore it may use the current
+	// request/turn routing text without accepting a historical surface.
+	if ctx != nil && strings.TrimSpace(ctx.ComputerUseRoutingText) != "" {
+		return ctx.ComputerUseRoutingText
+	}
+	return strings.Join(agentLoopToolNamesForLog(tools), ",")
 }
 
 // findToolDef finds a tool definition by name in a tool list.
@@ -153,95 +133,14 @@ func stripGuideLaunchReferenceWrappers(text string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
-// augmentToolsFromSessionPins checks if any session-pinned conditional tools
-// are missing from the current tool list and adds their definitions.
-//
-// This handles the case where discover_tool session-pins a tool (e.g. ssh)
-// mid-loop. The tool list was computed at loop start and doesn't include
-// tools that weren't activated by the original user message. After session-
-// pinning, the next Route() call would include them, but within the same
-// loop we need to proactively add them so the LLM can call them immediately.
-//
-// Respects the workflow tool filter: if the current workflow phase restricts
-// tools (e.g. doc_only), newly pinned tools that aren't in the allowed set
-// won't be added. This prevents discover_tool from bypassing workflow policy.
+// augmentToolsFromSessionPins is intentionally a no-op. Session pins used to
+// union successful legacy tool names into the current model surface, which
+// made the surface history-dependent and could silently exhaust the budget.
+// A discover/injection that changes the task must request a fresh plan; it may
+// not make a newly found name executable in the same loop iteration.
 func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID string, currentTools []map[string]interface{}, currentBudget int) ([]map[string]interface{}, int) {
-	if h == nil || h.toolRouter == nil {
-		return currentTools, currentBudget
-	}
-
-	// Build set of currently visible tool names.
-	currentNames := make(map[string]bool, len(currentTools))
-	for _, t := range currentTools {
-		if name := extractToolName(t); name != "" {
-			currentNames[name] = true
-		}
-	}
-
-	// Check only this owner's session-pinned tools. The router object is shared
-	// by project tabs, so consulting its temporary core-router pin state here
-	// could otherwise add a tool discovered in another conversation.
-	pinnedMissing := h.toolRouter.SessionPinnedToolsMissingForSession(userID, currentNames)
-	if len(pinnedMissing) == 0 {
-		return currentTools, currentBudget
-	}
-
-	// Fetch fresh tool definitions (cache may have been invalidated by
-	// discover_tool) and find definitions for the missing pinned tools.
-	allTools := h.getTools()
-	var added []string
-	for _, name := range pinnedMissing {
-		def := findToolDef(allTools, name)
-		if def == nil {
-			continue
-		}
-		currentTools = append(currentTools, def)
-		currentNames[name] = true
-		added = append(added, name)
-	}
-
-	if len(added) > 0 {
-		// Re-apply workflow tool filter if active — don't let discover_tool
-		// bypass workflow phase policy (e.g. doc_only restrictions).
-		if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
-			currentTools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, currentTools, allTools)
-		}
-		// Re-apply the expert allow-list for the same reason: session-pinned
-		// tools outside the expert whitelist must not re-enter the loop.
-		currentTools = h.filterToolsForExpertUser(userID, currentTools)
-		// discover_tool can pin a conditional tool during a group turn. Keep
-		// group permissions last so discovery cannot create a bypass.
-		if ctx != nil && ctx.LansengerGroupPermissions != nil {
-			currentTools = h.ensureLansengerGroupMemoryRecallTool(userID, currentTools)
-			if ctx.LansengerGroupPermissions.allowsKnowledge() {
-				currentTools = h.ensureLansengerGroupKnowledgeSearchTool(userID, currentTools)
-			}
-			currentTools = filterToolsForLansengerGroupPermissions(currentTools, *ctx.LansengerGroupPermissions)
-		}
-		currentTools = filterComputerUseToolsForLocalFileWork(ctx, "", currentTools)
-		currentTools = stripExecutionContractMetadataForLLM(currentTools)
-		currentBudget = estimateToolsTokens(currentTools)
-
-		// Log which tools actually ended up in the final list (some may have
-		// been removed by the workflow filter).
-		var effective []string
-		finalNames := make(map[string]bool, len(currentTools))
-		for _, t := range currentTools {
-			if n := extractToolName(t); n != "" {
-				finalNames[n] = true
-			}
-		}
-		for _, name := range added {
-			if finalNames[name] {
-				effective = append(effective, name)
-			}
-		}
-		if len(effective) > 0 {
-			log.Printf("[session-pin-augment] added %d session-pinned tools to LLM tool list: %v", len(effective), effective)
-		} else {
-			log.Printf("[session-pin-augment] %d session-pinned tools discovered but filtered by workflow policy: %v", len(added), added)
-		}
-	}
-
+	_ = h
+	_ = ctx
+	_ = userID
 	return currentTools, currentBudget
 }

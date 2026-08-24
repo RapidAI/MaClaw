@@ -25,11 +25,14 @@ static esp_err_t round_peripheral_adapter_initialize(i2c_master_bus_handle_t bus
     return i2c_master_bus_add_device(bus, &config, &s_echoear_touch);
 }
 
-static void round_peripheral_adapter_release(void) {
+static esp_err_t round_peripheral_adapter_release(void) {
+    esp_err_t result = ESP_OK;
     if (s_echoear_touch) {
-        (void)i2c_master_bus_rm_device(s_echoear_touch);
+        const esp_err_t err = i2c_master_bus_rm_device(s_echoear_touch);
+        if (err != ESP_OK) result = err;
         s_echoear_touch = NULL;
     }
+    return result;
 }
 
 static bool round_peripheral_adapter_touch_read(bool *pressed, uint8_t *gesture) {

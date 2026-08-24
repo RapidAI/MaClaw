@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 
 #include "platform_connectivity.h"
+#include "fault_domain.h"
 
 /*
  * The service owns only the small, hardware-neutral observed/selected state.
@@ -44,6 +45,43 @@ static char s_wifi_attempt_network_id[33];
 static uint32_t s_wifi_attempt_users;
 static bool s_connectivity_initialized;
 static bool s_connectivity_stopping;
+/* The EventGroup and its waiters are one Connectivity fault domain.  The
+ * logical selected-uplink values may survive a service restart, but all
+ * readiness observations and EventGroup borrowers are generation-local. */
+static fault_domain_t s_fault_domain = {
+    .struct_size = sizeof(fault_domain_t),
+    .abi_version = FAULT_DOMAIN_ABI_VERSION,
+    .id = FAULT_DOMAIN_ID_CONNECTIVITY,
+    .phase = FAULT_DOMAIN_STOPPED,
+    .generation = 1u,
+};
+/* This is a reversible logical admission fence, not a physical transport
+ * stop.  It is intentionally independent from deinit so a failed system
+ * sleep PREPARE can reopen normal traffic without rebuilding Wi-Fi/ML307. */
+static bool s_system_sleep_preparing;
+static uint32_t s_network_request_users;
+/* ESP-IDF's default event loop belongs to the composition root, but a queued
+ * callback may still start shared Connectivity/Gateway work while that root
+ * is draining a System Sleep or teardown transaction. Keep this value-only
+ * admission fence beside the rest of Connectivity lifecycle state; the root
+ * never needs to retain a second counter or callback-drain semaphore. */
+static StaticSemaphore_t s_wifi_event_callbacks_drained_storage;
+static SemaphoreHandle_t s_wifi_event_callbacks_drained;
+static bool s_wifi_event_callback_admission_open;
+static uint32_t s_wifi_event_callbacks_inflight;
+static bool s_wifi_event_system_sleep_preparing;
+static bool s_wifi_event_system_sleep_was_admitted;
+/* A selected-uplink change may touch a profile-owned transport hint after the
+ * common state has been updated.  Count that short transaction separately
+ * from HTTP borrowers so System Sleep PREPARE cannot run its physical
+ * transport park halfway through a switch. */
+static uint32_t s_transport_selection_users;
+static connectivity_service_system_sleep_request_canceller_t
+    s_system_sleep_request_canceller;
+static void *s_system_sleep_request_canceller_context;
+static connectivity_service_system_sleep_request_resumer_t
+    s_system_sleep_request_resumer;
+static void *s_system_sleep_request_resumer_context;
 #define WIFI_ATTEMPT_READY_BIT BIT0
 
 #define CONNECTIVITY_INIT_LOCK_TIMEOUT_MS 3000u
@@ -69,9 +107,223 @@ static TickType_t connectivity_remaining_ticks(TickType_t started,
     return elapsed >= budget ? 0 : budget - elapsed;
 }
 
+static SemaphoreHandle_t connectivity_wifi_event_callbacks_drained(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (!s_wifi_event_callbacks_drained) {
+        s_wifi_event_callbacks_drained =
+            xSemaphoreCreateBinaryStatic(&s_wifi_event_callbacks_drained_storage);
+    }
+    SemaphoreHandle_t drained = s_wifi_event_callbacks_drained;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return drained;
+}
+
+static void wake_wifi_attempt_waiters_for_system_sleep(void);
+
+void connectivity_service_open_wifi_event_callback_admission(void) {
+    SemaphoreHandle_t drained = connectivity_wifi_event_callbacks_drained();
+    if (!drained) return;
+    /* A notification belongs to the preceding closed generation, not the
+     * newly registered callback generation. */
+    while (xSemaphoreTake(drained, 0) == pdTRUE) {}
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_connectivity_initialized && !s_connectivity_stopping &&
+        !s_system_sleep_preparing && !s_wifi_event_system_sleep_preparing) {
+        s_wifi_event_callback_admission_open = true;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
+bool connectivity_service_wifi_event_callback_enter(void) {
+    bool entered = false;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_connectivity_initialized && !s_connectivity_stopping &&
+        s_wifi_event_callback_admission_open &&
+        !s_system_sleep_preparing && !s_wifi_event_system_sleep_preparing) {
+        ++s_wifi_event_callbacks_inflight;
+        entered = true;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return entered;
+}
+
+void connectivity_service_wifi_event_callback_leave(void) {
+    bool drained = false;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_wifi_event_callbacks_inflight > 0) {
+        --s_wifi_event_callbacks_inflight;
+        drained = !s_wifi_event_callback_admission_open &&
+                  s_wifi_event_callbacks_inflight == 0;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (drained && s_wifi_event_callbacks_drained) {
+        xSemaphoreGive(s_wifi_event_callbacks_drained);
+    }
+}
+
+device_status_t connectivity_service_stop_wifi_event_callback_admission(
+    uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    bool already_drained = false;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    s_wifi_event_callback_admission_open = false;
+    already_drained = s_wifi_event_callbacks_inflight == 0;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (already_drained) return DEVICE_STATUS_OK;
+    SemaphoreHandle_t drained = connectivity_wifi_event_callbacks_drained();
+    if (!drained ||
+        xSemaphoreTake(drained, connectivity_timeout_ticks(timeout_ms)) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return DEVICE_STATUS_OK;
+}
+
+device_status_t connectivity_service_begin_network_request(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool admitted = s_connectivity_initialized && !s_connectivity_stopping &&
+                         !s_system_sleep_preparing;
+    if (admitted) ++s_network_request_users;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return admitted ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
+}
+
+void connectivity_service_end_network_request(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_network_request_users) --s_network_request_users;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
+void connectivity_service_set_system_sleep_request_canceller(
+    connectivity_service_system_sleep_request_canceller_t canceller,
+    void *context) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    s_system_sleep_request_canceller = canceller;
+    s_system_sleep_request_canceller_context = context;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
+void connectivity_service_set_system_sleep_request_resumer(
+    connectivity_service_system_sleep_request_resumer_t resumer,
+    void *context) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    s_system_sleep_request_resumer = resumer;
+    s_system_sleep_request_resumer_context = context;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
+device_status_t connectivity_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = connectivity_timeout_ticks(timeout_ms);
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (!s_connectivity_initialized || s_connectivity_stopping) {
+        taskEXIT_CRITICAL(&s_connectivity_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    if (s_system_sleep_preparing) {
+        taskEXIT_CRITICAL(&s_connectivity_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    s_system_sleep_preparing = true;
+    s_wifi_event_system_sleep_preparing = true;
+    s_wifi_event_system_sleep_was_admitted =
+        s_wifi_event_callback_admission_open;
+    s_wifi_event_callback_admission_open = false;
+    const bool callbacks_drained = s_wifi_event_callbacks_inflight == 0;
+    connectivity_service_system_sleep_request_canceller_t canceller =
+        s_system_sleep_request_canceller;
+    void *canceller_context = s_system_sleep_request_canceller_context;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+
+    if (!callbacks_drained) {
+        SemaphoreHandle_t drained = connectivity_wifi_event_callbacks_drained();
+        const TickType_t remaining = connectivity_remaining_ticks(started, budget);
+        if (!drained || remaining == 0 ||
+            xSemaphoreTake(drained, remaining) != pdTRUE) {
+            /* Both generic and callback admission remain closed until the
+             * Power-owned reverse rollback. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+    }
+
+    /* A pre-fence Wi-Fi waiter otherwise remains blocked until its original
+     * association timeout. Wake it now; it cannot publish readiness because
+     * the predicate below includes s_system_sleep_preparing. */
+    wake_wifi_attempt_waiters_for_system_sleep();
+
+    /* Stop a long-poll or upload from consuming the whole parent transaction
+     * budget.  This bridge deliberately knows neither Wi-Fi client nor ML307
+     * implementation; it only tells the composition root to request bounded
+     * cancellation of work it owns.  Keep admission closed on failure until
+     * Power's mandatory rollback reopens it. */
+    if (canceller) {
+        device_status_t cancel_status = canceller(timeout_ms, canceller_context);
+        if (cancel_status != DEVICE_STATUS_OK) return cancel_status;
+    }
+
+    for (;;) {
+        taskENTER_CRITICAL(&s_connectivity_lock);
+        const bool drained = s_wifi_attempt_users == 0 &&
+                             s_network_request_users == 0 &&
+                             s_transport_selection_users == 0;
+        taskEXIT_CRITICAL(&s_connectivity_lock);
+        if (drained) break;
+        if (connectivity_remaining_ticks(started, budget) == 0) {
+            /* Retain the closed fence until the caller's required rollback.
+             * This fail-closed interval prevents a just-timed-out request
+             * from racing a hypothetical later electrical commit. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(1);
+    }
+    /* The generic request counter cannot see profile-retained physical work.
+     * For Fangtang this parks the ML307 registration/PDP probe after all
+     * admitted HTTP borrowers drain; Wi-Fi-only profiles provide a no-op.
+     * It remains below the value-only Device API and is undone by ABORT. */
+    const TickType_t remaining = connectivity_remaining_ticks(started, budget);
+    if (remaining == 0) return DEVICE_STATUS_TIMEOUT;
+    return platform_connectivity_prepare_system_sleep(
+        (uint32_t)(remaining * portTICK_PERIOD_MS));
+}
+
+void connectivity_service_abort_system_sleep_prepare(void) {
+    connectivity_service_system_sleep_request_resumer_t resumer;
+    void *resumer_context;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    /* Take the callback snapshot while the transaction remains closed. A
+     * restart must not admit a new request until its old worker state has
+     * been restored (or has logged its bounded failure). */
+    resumer = s_system_sleep_request_resumer;
+    resumer_context = s_system_sleep_request_resumer_context;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (resumer) resumer(resumer_context);
+    /* Resume the private transport before reopening generic request admission.
+     * The profile does not restart a modem; it only restores the generation
+     * that PREPARE had parked. */
+    platform_connectivity_abort_system_sleep_prepare();
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_system_sleep_preparing) {
+        s_wifi_event_callback_admission_open =
+            s_wifi_event_system_sleep_was_admitted;
+        s_wifi_event_system_sleep_was_admitted = false;
+        s_wifi_event_system_sleep_preparing = false;
+        s_system_sleep_preparing = false;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
 static EventGroupHandle_t acquire_wifi_attempt_events(void) {
     taskENTER_CRITICAL(&s_connectivity_lock);
-    EventGroupHandle_t events = !s_connectivity_stopping ? s_wifi_attempt_events : NULL;
+    /* A System Sleep PREPARE is a reversible, but deliberately fail-closed,
+     * admission fence.  A station attempt owns mutable adapter state and its
+     * EventGroup wait; do not let a late scan/connect path create or observe
+     * a new attempt after the Power transaction has started draining network
+     * work.  ABORT reopens this gate without rebuilding the Connectivity
+     * generation. */
+    EventGroupHandle_t events = !s_connectivity_stopping &&
+                                  !s_system_sleep_preparing
+                              ? s_wifi_attempt_events
+                              : NULL;
     if (events) ++s_wifi_attempt_users;
     taskEXIT_CRITICAL(&s_connectivity_lock);
     return events;
@@ -83,12 +335,31 @@ static void release_wifi_attempt_events(void) {
     taskEXIT_CRITICAL(&s_connectivity_lock);
 }
 
-bool connectivity_service_initialize(void) {
+/* PREPARE has already closed future EventGroup admission, but an adapter may
+ * have obtained a wait admission immediately before that marker.  Retain one
+ * internal reference while setting the wake bit so deinit cannot delete the
+ * EventGroup underneath this signal.  The waiter re-checks the same marker
+ * and exits false; the subsequent PREPARE drain observes its release. */
+static void wake_wifi_attempt_waiters_for_system_sleep(void) {
+    EventGroupHandle_t events = NULL;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_connectivity_initialized && !s_connectivity_stopping &&
+        s_system_sleep_preparing && s_wifi_attempt_events) {
+        events = s_wifi_attempt_events;
+        ++s_wifi_attempt_users;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (!events) return;
+    xEventGroupSetBits(events, WIFI_ATTEMPT_READY_BIT);
+    release_wifi_attempt_events();
+}
+
+static esp_err_t connectivity_service_initialize_legacy(void) {
     SemaphoreHandle_t deinit_lock = connectivity_deinit_lock();
     if (!deinit_lock ||
         xSemaphoreTake(deinit_lock,
                        connectivity_timeout_ticks(CONNECTIVITY_INIT_LOCK_TIMEOUT_MS)) != pdTRUE) {
-        return false;
+        return ESP_ERR_TIMEOUT;
     }
     taskENTER_CRITICAL(&s_connectivity_lock);
     bool initialized = s_connectivity_initialized;
@@ -96,32 +367,62 @@ bool connectivity_service_initialize(void) {
     taskEXIT_CRITICAL(&s_connectivity_lock);
     if (initialized) {
         xSemaphoreGive(deinit_lock);
-        return true;
+        return ESP_OK;
     }
     if (stopping) {
         xSemaphoreGive(deinit_lock);
-        return false;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!fault_domain_begin_start(&s_fault_domain)) {
+        xSemaphoreGive(deinit_lock);
+        return ESP_ERR_INVALID_STATE;
     }
 
     EventGroupHandle_t events = xEventGroupCreate();
     if (!events) {
+        (void)fault_domain_mark_stopped(&s_fault_domain);
         xSemaphoreGive(deinit_lock);
-        return false;
+        return ESP_ERR_NO_MEM;
     }
 
     taskENTER_CRITICAL(&s_connectivity_lock);
     if (!s_connectivity_initialized && !s_connectivity_stopping) {
         s_wifi_attempt_events = events;
-        s_connectivity_initialized = true;
         events = NULL;
     }
     taskEXIT_CRITICAL(&s_connectivity_lock);
-    if (events) vEventGroupDelete(events);
+    if (events) {
+        vEventGroupDelete(events);
+        (void)fault_domain_mark_stopped(&s_fault_domain);
+        xSemaphoreGive(deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* EventGroup publication is Connectivity's physical self-test. Do not
+     * reopen generic Wi-Fi/HTTP admission solely because allocation succeeded. */
+    if (!fault_domain_begin_self_test(&s_fault_domain) ||
+        !s_wifi_attempt_events ||
+        !fault_domain_mark_ready(&s_fault_domain)) {
+        taskENTER_CRITICAL(&s_connectivity_lock);
+        s_connectivity_initialized = false;
+        events = s_wifi_attempt_events;
+        s_wifi_attempt_events = NULL;
+        taskEXIT_CRITICAL(&s_connectivity_lock);
+        if (events) vEventGroupDelete(events);
+        (void)fault_domain_mark_stopped(&s_fault_domain);
+        xSemaphoreGive(deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Publish common admission only after the fault domain has crossed its
+     * self-test barrier.  A concurrent Wi-Fi/HTTP caller may otherwise obtain
+     * an EventGroup reference in the small interval before READY. */
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    s_connectivity_initialized = true;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
     xSemaphoreGive(deinit_lock);
-    return true;
+    return ESP_OK;
 }
 
-esp_err_t connectivity_service_deinit(uint32_t timeout_ms) {
+static esp_err_t connectivity_service_deinit_legacy(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     const TickType_t started = xTaskGetTickCount();
     const TickType_t budget = connectivity_timeout_ticks(timeout_ms);
@@ -132,19 +433,36 @@ esp_err_t connectivity_service_deinit(uint32_t timeout_ms) {
         return ESP_ERR_TIMEOUT;
     }
     EventGroupHandle_t events = NULL;
+    fault_domain_snapshot_t domain_snapshot;
+    if (!fault_domain_get_snapshot(&s_fault_domain, &domain_snapshot) ||
+        (domain_snapshot.phase != FAULT_DOMAIN_READY &&
+         domain_snapshot.phase != FAULT_DOMAIN_UNKNOWN_OUTCOME)) {
+        xSemaphoreGive(deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     taskENTER_CRITICAL(&s_connectivity_lock);
     if (!s_connectivity_initialized && !s_connectivity_stopping) {
         taskEXIT_CRITICAL(&s_connectivity_lock);
         xSemaphoreGive(deinit_lock);
         return ESP_OK;
     }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (!fault_domain_begin_quiesce(&s_fault_domain)) {
+        xSemaphoreGive(deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    taskENTER_CRITICAL(&s_connectivity_lock);
     s_connectivity_stopping = true;
     s_connectivity_initialized = false;
     s_wifi_ready = false;
     s_cellular_ready = false;
+    s_system_sleep_preparing = false;
     s_wifi_ready_epoch = 0;
     s_provisioning_active = false;
     s_provisioning_pairing_recovery = false;
+    s_wifi_event_callback_admission_open = false;
+    s_wifi_event_system_sleep_preparing = false;
+    s_wifi_event_system_sleep_was_admitted = false;
     events = s_wifi_attempt_events;
     taskEXIT_CRITICAL(&s_connectivity_lock);
 
@@ -153,7 +471,11 @@ esp_err_t connectivity_service_deinit(uint32_t timeout_ms) {
     if (events) xEventGroupSetBits(events, WIFI_ATTEMPT_READY_BIT);
     for (;;) {
         taskENTER_CRITICAL(&s_connectivity_lock);
-        bool drained = s_wifi_attempt_users == 0;
+        /* A deinit must not delete/reconfigure the Connectivity generation
+         * while either a Wi-Fi attempt waiter or a transport-neutral HTTP
+         * borrower still holds its short-lived logical admission. */
+        bool drained = s_wifi_attempt_users == 0 && s_network_request_users == 0 &&
+                       s_transport_selection_users == 0;
         taskEXIT_CRITICAL(&s_connectivity_lock);
         if (drained) break;
         if (connectivity_remaining_ticks(started, budget) == 0) {
@@ -161,6 +483,7 @@ esp_err_t connectivity_service_deinit(uint32_t timeout_ms) {
              * consume the still-live waiter's admission; initialize must not
              * create a replacement EventGroup in the meantime. */
             xSemaphoreGive(deinit_lock);
+            (void)fault_domain_mark_unknown_outcome(&s_fault_domain);
             return ESP_ERR_TIMEOUT;
         }
         vTaskDelay(1);
@@ -180,10 +503,42 @@ esp_err_t connectivity_service_deinit(uint32_t timeout_ms) {
     s_connectivity_stopping = false;
     taskEXIT_CRITICAL(&s_connectivity_lock);
     if (events) vEventGroupDelete(events);
+    if (!fault_domain_mark_stopped(&s_fault_domain)) {
+        /* No EventGroup is published, so the next caller cannot access an old
+         * handle. Still keep fault recovery closed rather than assuming the
+         * lifecycle bookkeeping succeeded. */
+        (void)fault_domain_mark_unknown_outcome(&s_fault_domain);
+        xSemaphoreGive(deinit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     xSemaphoreGive(deinit_lock);
     return ESP_OK;
 }
 
+/* The selected-uplink state is common service policy. Its EventGroup and
+ * shutdown wait are ESP-IDF implementation details, so translate them once
+ * at this boundary instead of making every Wi-Fi or future modem profile
+ * interpret ESP errors. */
+static device_status_t connectivity_status_from_legacy_error(esp_err_t err) {
+    switch (err) {
+        case ESP_OK: return DEVICE_STATUS_OK;
+        case ESP_ERR_INVALID_ARG: return DEVICE_STATUS_INVALID_ARGUMENT;
+        case ESP_ERR_INVALID_STATE: return DEVICE_STATUS_BUSY;
+        case ESP_ERR_TIMEOUT: return DEVICE_STATUS_TIMEOUT;
+        case ESP_ERR_NO_MEM: return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        case ESP_ERR_NOT_FOUND: return DEVICE_STATUS_NOT_FOUND;
+        default: return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+}
+
+device_status_t connectivity_service_initialize(void) {
+    return connectivity_status_from_legacy_error(connectivity_service_initialize_legacy());
+}
+
+device_status_t connectivity_service_deinit(uint32_t timeout_ms) {
+    return connectivity_status_from_legacy_error(
+        connectivity_service_deinit_legacy(timeout_ms));
+}
 uint32_t connectivity_service_begin_wifi_attempt(const char *network_id) {
     if (!network_id || !network_id[0]) return 0;
     EventGroupHandle_t events = acquire_wifi_attempt_events();
@@ -218,7 +573,7 @@ bool connectivity_service_wait_wifi_attempt(uint32_t attempt_epoch,
     bool ready = false;
     for (;;) {
         taskENTER_CRITICAL(&s_connectivity_lock);
-        bool stopping = s_connectivity_stopping;
+        bool stopping = s_connectivity_stopping || s_system_sleep_preparing;
         ready = !stopping && s_wifi_attempt_epoch == attempt_epoch && s_wifi_ready &&
                 s_wifi_ready_epoch == attempt_epoch;
         taskEXIT_CRITICAL(&s_connectivity_lock);
@@ -237,7 +592,8 @@ bool connectivity_service_observe_wifi_disconnected(const char *network_id) {
     if (!network_id || !network_id[0]) return false;
     taskENTER_CRITICAL(&s_connectivity_lock);
     const bool accepted = s_connectivity_initialized && !s_connectivity_stopping &&
-                          s_wifi_attempt_epoch != 0 &&
+                           !s_system_sleep_preparing &&
+                           s_wifi_attempt_epoch != 0 &&
                           strcmp(network_id, s_wifi_attempt_network_id) == 0;
     if (accepted) {
         s_wifi_ready = false;
@@ -257,7 +613,8 @@ bool connectivity_service_observe_wifi_got_ip(const char *connected_network_id) 
      * current association against the session's network identity before
      * publishing; otherwise a late old-candidate event can satisfy a new
      * candidate's synchronous wait after a scan/switch. */
-    if (!s_connectivity_stopping && s_wifi_attempt_epoch != 0 &&
+    if (s_connectivity_initialized && !s_connectivity_stopping &&
+        !s_system_sleep_preparing && s_wifi_attempt_epoch != 0 &&
         strcmp(connected_network_id, s_wifi_attempt_network_id) == 0) {
         s_wifi_ready = true;
         s_wifi_ready_epoch = s_wifi_attempt_epoch;
@@ -269,8 +626,35 @@ bool connectivity_service_observe_wifi_got_ip(const char *connected_network_id) 
     return accepted;
 }
 
-void connectivity_service_set_active_uplink(device_uplink_t uplink) {
-    if (uplink != DEVICE_UPLINK_WIFI && uplink != DEVICE_UPLINK_CELLULAR) return;
+static bool acquire_transport_selection_admission(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    /* Uplink selection remains available before Connectivity initialization:
+     * Fangtang restores durable policy before the composition root decides
+     * whether to build Wi-Fi or ML307.  Once PREPARE begins, however, no new
+     * profile-side selection transaction may enter. */
+    const bool admitted = !s_connectivity_stopping && !s_system_sleep_preparing;
+    if (admitted) ++s_transport_selection_users;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return admitted;
+}
+
+bool connectivity_service_get_fault_domain_snapshot(
+    fault_domain_snapshot_t *out_snapshot) {
+    return fault_domain_get_snapshot(&s_fault_domain, out_snapshot);
+}
+
+static void release_transport_selection_admission(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_transport_selection_users) --s_transport_selection_users;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
+/* The caller owns a transport-selection admission.  PREPARE may have closed
+ * new admission while this bounded operation was in flight, but it waits for
+ * that admission to drain before its profile-side physical park; completing
+ * the already-admitted state/adapter transaction therefore remains coherent. */
+static bool commit_active_uplink_under_admission(device_uplink_t uplink,
+                                                  bool sync_platform_hint) {
     taskENTER_CRITICAL(&s_connectivity_lock);
     /* Selection is durable configuration and is intentionally allowed before
      * the Wi-Fi attempt EventGroup exists: Fangtang restores it before the
@@ -296,9 +680,17 @@ void connectivity_service_set_active_uplink(device_uplink_t uplink) {
      * state is already fail-closed (not ready) before that physical work
      * starts, so a stale prior session can never be reported as ready during
      * an uplink transition. */
-    if (selection_changed) {
+    if (selection_changed && sync_platform_hint) {
         platform_connectivity_set_network_transport(uplink == DEVICE_UPLINK_CELLULAR);
     }
+    return selection_changed;
+}
+
+void connectivity_service_set_active_uplink(device_uplink_t uplink) {
+    if (uplink != DEVICE_UPLINK_WIFI && uplink != DEVICE_UPLINK_CELLULAR) return;
+    if (!acquire_transport_selection_admission()) return;
+    (void)commit_active_uplink_under_admission(uplink, true);
+    release_transport_selection_admission();
 }
 
 bool connectivity_service_is_active_cellular(void) {
@@ -309,14 +701,17 @@ bool connectivity_service_is_active_cellular(void) {
 }
 
 void connectivity_service_restore_selected_uplink(void) {
+    if (!acquire_transport_selection_admission()) return;
     bool cellular = false;
     if (!platform_connectivity_load_transport_selection(&cellular)) cellular = false;
-    connectivity_service_set_active_uplink(cellular ? DEVICE_UPLINK_CELLULAR
-                                                    : DEVICE_UPLINK_WIFI);
+    (void)commit_active_uplink_under_admission(
+        cellular ? DEVICE_UPLINK_CELLULAR : DEVICE_UPLINK_WIFI, true);
+    release_transport_selection_admission();
 }
 
 bool connectivity_service_apply_startup_transport_toggle(uint32_t window_ms) {
     if (window_ms == 0) return false;
+    if (!acquire_transport_selection_admission()) return false;
     taskENTER_CRITICAL(&s_connectivity_lock);
     bool current_cellular = s_active_uplink == DEVICE_UPLINK_CELLULAR;
     taskEXIT_CRITICAL(&s_connectivity_lock);
@@ -324,16 +719,22 @@ bool connectivity_service_apply_startup_transport_toggle(uint32_t window_ms) {
     bool selected_cellular = current_cellular;
     if (!platform_connectivity_apply_startup_transport_toggle(
             window_ms, current_cellular, &selected_cellular)) {
+        release_transport_selection_admission();
         return false;
     }
-    connectivity_service_set_active_uplink(selected_cellular ? DEVICE_UPLINK_CELLULAR
-                                                              : DEVICE_UPLINK_WIFI);
+    /* The profile callback owns the bounded boot gesture and durable choice.
+     * Commit that choice through the same common/profile transport path as
+     * every other uplink switch so the runtime adapter hint stays aligned. */
+    (void)commit_active_uplink_under_admission(
+        selected_cellular ? DEVICE_UPLINK_CELLULAR : DEVICE_UPLINK_WIFI, true);
+    release_transport_selection_admission();
     return true;
 }
 
 void connectivity_service_set_wifi_ready(bool ready) {
     taskENTER_CRITICAL(&s_connectivity_lock);
-    if (!s_connectivity_initialized || s_connectivity_stopping) {
+    if (!s_connectivity_initialized || s_connectivity_stopping ||
+        s_system_sleep_preparing) {
         taskEXIT_CRITICAL(&s_connectivity_lock);
         return;
     }
@@ -344,7 +745,8 @@ void connectivity_service_set_wifi_ready(bool ready) {
 
 void connectivity_service_set_cellular_ready(bool ready) {
     taskENTER_CRITICAL(&s_connectivity_lock);
-    if (!s_connectivity_initialized || s_connectivity_stopping) {
+    if (!s_connectivity_initialized || s_connectivity_stopping ||
+        s_system_sleep_preparing) {
         taskEXIT_CRITICAL(&s_connectivity_lock);
         return;
     }
@@ -355,6 +757,7 @@ void connectivity_service_set_cellular_ready(bool ready) {
 bool connectivity_service_is_active_uplink_ready(void) {
     taskENTER_CRITICAL(&s_connectivity_lock);
     bool ready = s_connectivity_initialized && !s_connectivity_stopping &&
+                 !s_system_sleep_preparing &&
                  (s_active_uplink == DEVICE_UPLINK_CELLULAR
                      ? s_cellular_ready
                      : s_wifi_ready);
@@ -365,7 +768,8 @@ bool connectivity_service_is_active_uplink_ready(void) {
 bool connectivity_service_get_snapshot(device_connectivity_snapshot_t *out_snapshot) {
     if (!out_snapshot) return false;
     taskENTER_CRITICAL(&s_connectivity_lock);
-    const bool available = s_connectivity_initialized && !s_connectivity_stopping;
+    const bool available = s_connectivity_initialized && !s_connectivity_stopping &&
+                           !s_system_sleep_preparing;
     out_snapshot->active_uplink = s_active_uplink;
     out_snapshot->wifi_ready = available && s_wifi_ready;
     out_snapshot->cellular_ready = available && s_cellular_ready;
@@ -422,11 +826,19 @@ static bool cellular_http_request_is_valid(
 }
 
 device_status_t connectivity_service_prepare_cellular_transport(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool sleep_preparing = s_system_sleep_preparing;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (sleep_preparing) return DEVICE_STATUS_BUSY;
     return platform_connectivity_prepare_cellular_transport();
 }
 
 device_status_t connectivity_service_start_cellular_transport(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool sleep_preparing = s_system_sleep_preparing;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (sleep_preparing) return DEVICE_STATUS_BUSY;
     return platform_connectivity_start_cellular_transport(timeout_ms);
 }
 
@@ -437,10 +849,12 @@ device_status_t connectivity_service_establish_cellular_transport(uint32_t timeo
      * readiness predicate belongs to the bounded service generation, not to a
      * particular recovery task in the composition root. */
     taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool sleep_preparing = s_system_sleep_preparing;
     const bool available = s_connectivity_initialized && !s_connectivity_stopping;
     const bool cellular_selected = s_active_uplink == DEVICE_UPLINK_CELLULAR;
-    if (available && cellular_selected) s_cellular_ready = false;
+    if (!sleep_preparing && available && cellular_selected) s_cellular_ready = false;
     taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (sleep_preparing) return DEVICE_STATUS_BUSY;
     if (!available) return DEVICE_STATUS_UNAVAILABLE;
     if (!cellular_selected) return DEVICE_STATUS_BUSY;
 
@@ -467,6 +881,7 @@ bool connectivity_service_is_cellular_transport_ready(void) {
      * callers cannot bypass the bounded session transition above. */
     taskENTER_CRITICAL(&s_connectivity_lock);
     const bool published_ready = s_connectivity_initialized && !s_connectivity_stopping &&
+                                 !s_system_sleep_preparing &&
                                  s_active_uplink == DEVICE_UPLINK_CELLULAR &&
                                  s_cellular_ready;
     taskEXIT_CRITICAL(&s_connectivity_lock);
@@ -479,15 +894,23 @@ device_status_t connectivity_service_quiesce_cellular_transport(uint32_t timeout
      * ML307 work. A timeout leaves the physical adapter to finish its own
      * bounded quiesce, but callers must already see this session as offline. */
     taskENTER_CRITICAL(&s_connectivity_lock);
-    if (s_active_uplink == DEVICE_UPLINK_CELLULAR) s_cellular_ready = false;
+    const bool sleep_preparing = s_system_sleep_preparing;
+    if (!sleep_preparing && s_active_uplink == DEVICE_UPLINK_CELLULAR) {
+        s_cellular_ready = false;
+    }
     taskEXIT_CRITICAL(&s_connectivity_lock);
+    if (sleep_preparing) return DEVICE_STATUS_BUSY;
     return platform_connectivity_quiesce_cellular_transport(timeout_ms);
 }
 
 device_status_t connectivity_service_cellular_http_request(
     const device_connectivity_http_request_t *request) {
     if (!cellular_http_request_is_valid(request)) return DEVICE_STATUS_INVALID_ARGUMENT;
-    return platform_connectivity_cellular_http_request(request);
+    device_status_t admission = connectivity_service_begin_network_request();
+    if (admission != DEVICE_STATUS_OK) return admission;
+    device_status_t status = platform_connectivity_cellular_http_request(request);
+    connectivity_service_end_network_request();
+    return status;
 }
 
 device_status_t connectivity_service_cellular_http_stream_request(
@@ -497,7 +920,11 @@ device_status_t connectivity_service_cellular_http_stream_request(
         request->stream_buffer_size == 0) {
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
-    return platform_connectivity_cellular_http_stream_request(request);
+    device_status_t admission = connectivity_service_begin_network_request();
+    if (admission != DEVICE_STATUS_OK) return admission;
+    device_status_t status = platform_connectivity_cellular_http_stream_request(request);
+    connectivity_service_end_network_request();
+    return status;
 }
 
 bool connectivity_service_cancel_cellular_foreground_request(void) {

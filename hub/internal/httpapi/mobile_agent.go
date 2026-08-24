@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
@@ -108,6 +109,7 @@ func mobileRunAgentLoop(
 	useDelegated bool,
 	baseMessages []map[string]string,
 	emit mobileAgentEventWriter,
+	attachments []agent.MessageAttachment,
 ) (string, string, error) {
 	if len(baseMessages) == 0 {
 		return "", "", fmt.Errorf("agent messages are required")
@@ -126,7 +128,7 @@ func mobileRunAgentLoop(
 	if !mobileOwnerWriteAllowedLocked(principal.TenantID, mobilePrincipalOwnerID(principal)) {
 		return "", "", errString("mobile account is no longer available")
 	}
-	if answer, requestID, ok := mobileTryCoreAgent(ctx, r, principal, officialLLM, delegated, useDelegated, baseMessages, emit); ok {
+	if answer, requestID, ok := mobileTryCoreAgent(ctx, r, principal, officialLLM, delegated, useDelegated, baseMessages, emit, attachments); ok {
 		return answer, requestID, nil
 	}
 	return mobileRunLegacyAgentLoop(ctx, r, officialLLM, delegated, useDelegated, baseMessages, emit)

@@ -92,4 +92,85 @@ describe("useNotifications", () => {
     expect(result.current.unreadCount).toBe(1);
     expect(result.current.urgentToast?.id).toBe("n-urgent");
   });
+
+  it("clears the urgent toast when that notice is revoked or marked read", async () => {
+    const { result } = renderHook(() => useNotifications());
+
+    await waitFor(() =>
+      expect((window as any).go.main.App.GetUnreadNotifications).toHaveBeenCalled()
+    );
+
+    const urgentNotice = {
+      ...unreadNotice,
+      id: "n-urgent",
+      priority: "urgent" as const,
+    };
+
+    act(() => {
+      for (const handler of eventHandlers.get("notification:urgent-toast") || []) {
+        handler(urgentNotice);
+      }
+      for (const handler of eventHandlers.get("notification:new") || []) {
+        handler(urgentNotice);
+      }
+    });
+    expect(result.current.urgentToast?.id).toBe("n-urgent");
+
+    act(() => {
+      result.current.markRead("n-urgent");
+    });
+    expect(result.current.urgentToast).toBeNull();
+
+    act(() => {
+      for (const handler of eventHandlers.get("notification:urgent-toast") || []) {
+        handler(urgentNotice);
+      }
+      for (const handler of eventHandlers.get("notification:revoke") || []) {
+        handler("n-urgent");
+      }
+    });
+    expect(result.current.urgentToast).toBeNull();
+  });
+
+  it("accepts Wails PascalCase notification payloads", async () => {
+    const { result } = renderHook(() => useNotifications());
+
+    await waitFor(() =>
+      expect((window as any).go.main.App.GetUnreadNotifications).toHaveBeenCalled()
+    );
+
+    act(() => {
+      for (const handler of eventHandlers.get("notification:new") || []) {
+        handler({
+          ID: "n-pascal",
+          Title: "Hub broadcast",
+          Content: "hello",
+          Category: "system_announcement",
+          Priority: "urgent",
+          IsRead: false,
+          CreatedAt: "2026-07-03T00:00:00Z",
+        });
+      }
+      for (const handler of eventHandlers.get("notification:urgent-toast") || []) {
+        handler({
+          ID: "n-pascal",
+          Title: "Hub broadcast",
+          Content: "hello",
+          Priority: "urgent",
+        });
+      }
+    });
+
+    expect(result.current.notifications[0]?.id).toBe("n-pascal");
+    expect(result.current.notifications[0]?.title).toBe("Hub broadcast");
+    expect(result.current.urgentToast?.id).toBe("n-pascal");
+
+    act(() => {
+      for (const handler of eventHandlers.get("notification:revoke") || []) {
+        handler({ ID: "n-pascal" });
+      }
+    });
+    expect(result.current.notifications).toHaveLength(0);
+    expect(result.current.urgentToast).toBeNull();
+  });
 });

@@ -468,13 +468,14 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		if normalizeIMMediaKind(msg.MediaType).IsImage() {
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, msg.MimeType))
 		} else {
-			mediaPath, err := saveTelegramMediaToTemp(msg)
-			if err != nil {
-				log.Printf("[telegram-mgr] save media error: %v", err)
-			} else {
-				prefix := "[收到" + mediaLabel(msg.MediaType) + ": " + mediaPath + "]\n"
-				text = prefix + text
-			}
+			text, attachments = appendTrustedHostMediaOrStage(text, attachments, trustedHostMediaInput{
+				MediaType: msg.MediaType,
+				FileName:  msg.MediaName,
+				MimeType:  msg.MimeType,
+				Data:      msg.MediaData,
+			}, func() (string, error) {
+				return saveTelegramMediaToTemp(msg)
+			})
 		}
 	}
 

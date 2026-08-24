@@ -58,18 +58,16 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 		mode = f.policy.Mode()
 	}
 	if mode == "developer" {
-		f.recordAudit(toolName, args, risk, security.PolicyAllow, "developer_mode_allowed", sessionIDFromSecurityContext(ctx))
+		f.recordAudit(toolName, args, risk, security.PolicyAllow, "developer_mode_allowed", sessionIDFromSecurityContext(ctx), userIDFromSecurityContext(ctx))
 		return true, ""
 	}
 
 	// 2. Check session-level approvals.
-	sessionID := ""
-	if ctx != nil {
-		sessionID = ctx.SessionID
-	}
+	sessionID := sessionIDFromSecurityContext(ctx)
+	userID := userIDFromSecurityContext(ctx)
 	if sessionID != "" && f.isSessionApproved(sessionID, toolName) {
 		// Already approved for this session - allow but audit.
-		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID)
+		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID, userID)
 		return true, ""
 	}
 
@@ -80,7 +78,7 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 	}
 
 	// 4. Record audit.
-	f.recordAudit(toolName, args, risk, action, "", sessionID)
+	f.recordAudit(toolName, args, risk, action, "", sessionID, userID)
 
 	// 5. Execute decision.
 	switch action {
@@ -152,9 +150,17 @@ func sessionIDFromSecurityContext(ctx *SecurityCallContext) string {
 	if ctx == nil {
 		return ""
 	}
-	return ctx.SessionID
+	return strings.TrimSpace(ctx.SessionID)
 }
-func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interface{}, risk security.RiskAssessment, action security.PolicyAction, result, sessionID string) {
+
+func userIDFromSecurityContext(ctx *SecurityCallContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return strings.TrimSpace(ctx.UserID)
+}
+
+func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interface{}, risk security.RiskAssessment, action security.PolicyAction, result, sessionID, userID string) {
 	if f.audit == nil {
 		return
 	}
@@ -163,7 +169,8 @@ func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interfac
 	}
 	_ = f.audit.Log(security.AuditEntry{
 		Timestamp:    time.Now(),
-		SessionID:    sessionID,
+		SessionID:    strings.TrimSpace(sessionID),
+		UserID:       strings.TrimSpace(userID),
 		ToolName:     toolName,
 		Arguments:    args,
 		RiskLevel:    risk.Level,

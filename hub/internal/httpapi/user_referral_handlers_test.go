@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	storesqlite "github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
@@ -39,6 +41,34 @@ func TestValidateUserReferralCredits(t *testing.T) {
 	}
 	if err := validateUserReferralCredits(0, 0); err != nil {
 		t.Fatalf("zero credits: %v", err)
+	}
+}
+
+func TestValidateUserReferralServiceGroupRejectsSystemFree(t *testing.T) {
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{
+		llmservice.SystemFreeTemplate(),
+		{ID: "redeem", Name: "Redeem", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		{ID: "free-welcome", Name: "Welcome", AccessPolicy: llmservice.AccessPolicyFree},
+	}}
+	if err := validateUserReferralServiceGroup(reg, "system-free"); !errors.Is(err, llmservice.ErrReferralServiceGroupSystemFree) {
+		t.Fatalf("expected system-free rejection, got %v", err)
+	}
+	if err := validateUserReferralServiceGroup(reg, "free-welcome"); !errors.Is(err, llmservice.ErrReferralServiceGroupNotMetered) {
+		t.Fatalf("expected free-policy rejection, got %v", err)
+	}
+	if err := validateUserReferralServiceGroup(reg, "redeem"); err != nil {
+		t.Fatalf("redeem should be allowed: %v", err)
+	}
+}
+
+func TestNormalizeUserReferralConfigClearsSystemFree(t *testing.T) {
+	cfg := normalizeUserReferralConfig(UserReferralConfig{InviterCredits: 200, InviteeCredits: 100, DurationDays: 30, ServiceGroupID: "system-free"})
+	if cfg.ServiceGroupID != "" {
+		t.Fatalf("system-free service group should be cleared, got %q", cfg.ServiceGroupID)
+	}
+	cfg = normalizeUserReferralConfig(UserReferralConfig{InviterCredits: 200, InviteeCredits: 100, DurationDays: 30, ServiceGroupID: "redeem"})
+	if cfg.ServiceGroupID != "redeem" {
+		t.Fatalf("redeem service group = %q", cfg.ServiceGroupID)
 	}
 }
 
@@ -481,7 +511,7 @@ func TestUpdateUserReferralConfigRejectsInvalidCredits(t *testing.T) {
 		})
 	}
 	valid := `{"enabled":false,"inviter_credits":10.25,"invitee_credits":5.50,"duration_days":30,"daily_reward_cap":20,"service_group_id":""}`
-	if err := llmservice.SaveRegistry(context.Background(), services.store.System, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "referral-credits"}}}); err != nil {
+	if err := llmservice.SaveRegistry(context.Background(), services.store.System, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "referral-credits", AccessPolicy: llmservice.AccessPolicyGrantRequired}}}); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	valid = `{"enabled":false,"inviter_credits":10.25,"invitee_credits":5.50,"duration_days":30,"daily_reward_cap":20,"service_group_id":"referral-credits"}`
@@ -561,7 +591,7 @@ func TestPublicUserReferralRegisterCreatesUserAndAttributionAtomically(t *testin
 	if err := repo.CreateCode(ctx, &store.UserReferralCode{ID: "atomic-http-code", TenantID: store.DefaultTenantID, InviterUserID: inviter.ID, CodeHash: codeHash, EncryptedCode: encrypted, Status: "active", CreatedAt: now}); err != nil {
 		t.Fatalf("create referral code: %v", err)
 	}
-	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "atomic-referral-group"}}}); err != nil {
+	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "atomic-referral-group", AccessPolicy: llmservice.AccessPolicyGrantRequired}}}); err != nil {
 		t.Fatalf("save registry: %v", err)
 	}
 	cfg := UserReferralConfig{Enabled: true, SessionEpoch: "atomic-http-epoch", InviterCredits: 10, InviteeCredits: 5, DurationDays: 30, DailyRewardCap: 20, DailyNetworkClientReviewCap: 100, ServiceGroupID: "atomic-referral-group", Downloads: defaultUserReferralDownloads()}
@@ -1013,6 +1043,206 @@ func TestPublicUserReferralEmailEnrollRequiresCompletedReferralSession(t *testin
 	}
 }
 
+func TestPublicUserReferralEmailEnrollPersistsMachineMetadata(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const code = "rf_test_email_enroll_metadata_0123456789"
+	const inviterID = "referrer-email-enroll-metadata"
+	const inviteeID = "invitee-email-enroll-metadata"
+	const clientID = "email-enroll-metadata-client"
+	const email = "invitee-email-enroll-metadata@example.com"
+	for _, user := range []*store.User{
+		{ID: inviterID, TenantID: store.DefaultTenantID, Email: "referrer-email-enroll-metadata@example.com", SN: "SN-email-enroll-metadata-inviter", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: inviteeID, TenantID: store.DefaultTenantID, Email: email, SN: "SN-email-enroll-metadata-invitee", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := services.store.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+	repo := storesqlite.NewUserReferralRepository(services.db, services.db)
+	encrypted, err := llmservice.EncryptCardCode(code)
+	if err != nil {
+		t.Fatalf("encrypt referral code: %v", err)
+	}
+	codeHash := userReferralCodeHash(store.DefaultTenantID, code)
+	if err := repo.CreateCode(ctx, &store.UserReferralCode{ID: "ref-code-email-enroll-metadata", TenantID: store.DefaultTenantID, InviterUserID: inviterID, CodeHash: codeHash, EncryptedCode: encrypted, Status: "active", CreatedAt: now}); err != nil {
+		t.Fatalf("create referral code: %v", err)
+	}
+	cfg := UserReferralConfig{Enabled: true, DurationDays: 30, Downloads: defaultUserReferralDownloads(), SessionEpoch: "email-enroll-metadata-epoch"}
+	raw, _ := json.Marshal(cfg)
+	if err := ScopedSystemSettingsForTenant(store.DefaultTenantID, services.store.System).Set(ctx, userReferralSettingsKey, string(raw)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	referral := &store.UserReferral{ID: "referral-email-enroll-metadata", TenantID: store.DefaultTenantID, ReferralCodeID: "ref-code-email-enroll-metadata", InviterUserID: inviterID, InviteeUserID: inviteeID, Status: "rewarded", RegisteredAt: now, DurationDays: 30, CreatedAt: now, UpdatedAt: now}
+	if err := repo.CreateReferral(ctx, referral); err != nil {
+		t.Fatalf("create referral: %v", err)
+	}
+	seed := httptest.NewRequest(http.MethodGet, "/invite/"+code, nil)
+	seed.Header.Set("User-Agent", "email-enroll-metadata-desktop")
+	session, err := newUserReferralRegistrationSessionToken(ctx, repo, seed, store.DefaultTenantID, codeHash, cfg.SessionEpoch)
+	if err != nil {
+		t.Fatalf("create desktop session: %v", err)
+	}
+	if err := repo.MarkRegistrationSessionCompleted(ctx, store.DefaultTenantID, userReferralRegistrationSessionTokenHash(store.DefaultTenantID, session), inviteeID, referral.ID, now); err != nil {
+		t.Fatalf("complete desktop session: %v", err)
+	}
+	body := `{"email":"` + email + `","machine_name":"Referral Metadata Desktop","platform":"windows","hostname":"referral-host","arch":"arm64","app_version":"9.8.7","heartbeat_interval_sec":2,"client_id":"` + clientID + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/public/referral-registration/email/enroll", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "email-enroll-metadata-desktop")
+	request.Header.Set(userReferralRegistrationHeader, session)
+	request.Header.Set(userReferralRegistrationTenantHeader, store.DefaultTenantID)
+	recorder := httptest.NewRecorder()
+	services.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("email enrollment status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	machine, err := services.store.Machines.GetByUserAndClientID(ctx, inviteeID, clientID)
+	if err != nil || machine == nil {
+		t.Fatalf("load referral machine=%#v err=%v", machine, err)
+	}
+	if machine.Name != "Referral Metadata Desktop" || machine.Platform != "windows" || machine.Hostname != "referral-host" || machine.Arch != "arm64" || machine.AppVersion != "9.8.7" || machine.HeartbeatSec != 5 {
+		t.Fatalf("machine metadata=%#v", machine)
+	}
+}
+
+func TestUpdateUserReferralConfigRejectsSystemFreeServiceGroup(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{llmservice.SystemFreeTemplate(), {ID: "redeem", Name: "Redeem", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	token := issueTenantAdminTokenForTest(t, services, "referral-system-free")
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodPut, "/api/admin/user-referrals/config", map[string]any{"enabled": true, "inviter_credits": 200, "invitee_credits": 100, "duration_days": 30, "service_group_id": "system-free"}, token)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "SERVICE_GROUP_NOT_ALLOWED") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestPublicUserReferralRegisterDoesNotBindInviteeToSystemFree(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{
+			llmservice.SystemFreeTemplate(),
+			{ID: "redeem", Name: "充值服务组", AccessPolicy: llmservice.AccessPolicyGrantRequired, Models: []llmservice.ModelServiceModel{{Name: "auto"}}},
+		},
+		DefaultNewUserServiceGroups: []string{"redeem"},
+		DefaultNewUserCredits:       1000,
+		DefaultNewUserDurationDays:  30,
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	inviter := &store.User{ID: "redeem-http-inviter", TenantID: store.DefaultTenantID, Email: "redeem-http-inviter@example.com", SN: "SN-redeem-http-inviter", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, inviter); err != nil {
+		t.Fatalf("create inviter: %v", err)
+	}
+	repo := services.store.UserReferrals
+	plain := "rf_redeem_http_0123456789"
+	encrypted, err := llmservice.EncryptCardCode(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codeHash := userReferralCodeHash(store.DefaultTenantID, plain)
+	if err := repo.CreateCode(ctx, &store.UserReferralCode{ID: "redeem-http-code", TenantID: store.DefaultTenantID, InviterUserID: inviter.ID, CodeHash: codeHash, EncryptedCode: encrypted, Status: "active", CreatedAt: now}); err != nil {
+		t.Fatalf("create referral code: %v", err)
+	}
+	cfg := UserReferralConfig{Enabled: true, SessionEpoch: "redeem-http-epoch", InviterCredits: 200, InviteeCredits: 100, DurationDays: 30, DailyRewardCap: 20, DailyNetworkClientReviewCap: 100, ServiceGroupID: "redeem", Downloads: defaultUserReferralDownloads()}
+	raw, _ := json.Marshal(cfg)
+	if err := ScopedSystemSettingsForTenant(store.DefaultTenantID, services.store.System).Set(ctx, userReferralSettingsKey, string(raw)); err != nil {
+		t.Fatalf("save referral config: %v", err)
+	}
+	email := "redeem-http-invitee@example.com"
+	invitationSvc := invitation.NewService(services.store.InvitationCodes, services.store.System)
+	codes, err := invitationSvc.GenerateCodesForTenantWithOptions(ctx, store.DefaultTenantID, invitation.GenerateCodeOptions{
+		Count: 1, LLMServiceGroupID: llmservice.SystemFreeServiceGroupID, LLMGrantDurationDays: 30, LLMGrantCredits: 999,
+	})
+	if err != nil || len(codes) != 1 {
+		t.Fatalf("generate invitation codes=%d err=%v", len(codes), err)
+	}
+	if err := invitationSvc.ValidateAndConsumeForTenant(ctx, store.DefaultTenantID, codes[0].Code, email); err != nil {
+		t.Fatalf("consume invitation code: %v", err)
+	}
+	landing := httptest.NewRequest(http.MethodGet, "/invite/"+plain, nil)
+	landing.Header.Set("User-Agent", "redeem-http-browser")
+	landingRec := httptest.NewRecorder()
+	if err := newUserReferralRegistrationSession(ctx, repo, landingRec, landing, store.DefaultTenantID, codeHash, cfg.SessionEpoch); err != nil {
+		t.Fatalf("create registration session: %v", err)
+	}
+	cookie := landingRec.Result().Cookies()[0]
+	register := httptest.NewRequest(http.MethodPost, "/invite/"+plain+"/register", strings.NewReader(`{"email":"`+email+`","verify_code":"123456"}`))
+	register.Header.Set("User-Agent", "redeem-http-browser")
+	register.Header.Set("Content-Type", "application/json")
+	register.AddCookie(cookie)
+	if _, reserved, err := reserveUserReferralIdentity(ctx, repo, register, store.DefaultTenantID, codeHash, "email", email); err != nil || !reserved {
+		t.Fatalf("reserve identity reserved=%v err=%v", reserved, err)
+	}
+	verifyKey := referralVerificationKey(codeHash, email)
+	deleteVerifyCode(store.DefaultTenantID, verifyKey)
+	if !storeVerifyCode(store.DefaultTenantID, verifyKey, "123456") {
+		t.Fatal("store verification code")
+	}
+	t.Cleanup(func() { deleteVerifyCode(store.DefaultTenantID, verifyKey) })
+	rec := httptest.NewRecorder()
+	services.handler.ServeHTTP(rec, register)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	invitee, err := services.store.Users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
+	if err != nil || invitee == nil {
+		t.Fatalf("registered invitee=%#v err=%v", invitee, err)
+	}
+	reg, err := llmservice.LoadRegistry(ctx, services.store.System)
+	if err != nil || reg == nil {
+		t.Fatalf("load registry=%#v err=%v", reg, err)
+	}
+	for _, binding := range reg.UserBindings {
+		if strings.EqualFold(binding.Email, email) && containsSystemFree(binding.ServiceGroupIDs) {
+			t.Fatalf("invitee must not be bound to system-free: %#v", binding)
+		}
+	}
+	var referralCredits float64
+	for _, grant := range reg.Grants {
+		if !strings.EqualFold(grant.Email, email) && grant.UserID != invitee.ID {
+			continue
+		}
+		if llmservice.IsSystemFreeServiceGroup(grant.ServiceGroupID) {
+			t.Fatalf("invitee must not receive a system-free grant: %#v", grant)
+		}
+		if grant.Source == "user_referral" && grant.ServiceGroupID == "redeem" {
+			referralCredits = grant.CreditsTotal
+		}
+	}
+	if referralCredits != 100 {
+		t.Fatalf("invitee referral credits=%v, want 100", referralCredits)
+	}
+	status, err := llmservice.ResolveServiceStatusForUserID(ctx, services.store.System, nil, invitee.ID, invitee.Email, "https://hub.example/api/llm/v1")
+	if err != nil || status == nil {
+		t.Fatalf("resolve status=%#v err=%v", status, err)
+	}
+	for _, id := range status.ServiceGroupIDs {
+		if llmservice.IsSystemFreeServiceGroup(id) {
+			t.Fatalf("invitee effective groups include system-free: %#v", status.ServiceGroupIDs)
+		}
+	}
+	if status.CreditsAvailable <= 0 || status.CreditsTotal <= 0 {
+		t.Fatalf("invitee should keep metered credits, got %#v", status)
+	}
+}
+
+func containsSystemFree(ids []string) bool {
+	for _, id := range ids {
+		if llmservice.IsSystemFreeServiceGroup(id) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUpdateUserReferralConfigRequiresConfiguredServiceGroup(t *testing.T) {
 	services := newAdminRouterTestContext(t)
 	token := issueTenantAdminTokenForTest(t, services, "referral-settings")
@@ -1327,7 +1557,7 @@ func TestReconcileUserReferralRewardsRecoversTenantScopedFailures(t *testing.T) 
 		}
 	}
 	for _, tenantID := range []string{store.DefaultTenantID, otherTenant.ID} {
-		if err := llmservice.SaveRegistry(ctx, ScopedSystemSettingsForTenant(tenantID, services.store.System), &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "recovery-group", Name: "Recovery"}}}); err != nil {
+		if err := llmservice.SaveRegistry(ctx, ScopedSystemSettingsForTenant(tenantID, services.store.System), &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "recovery-group", Name: "Recovery", AccessPolicy: llmservice.AccessPolicyGrantRequired}}}); err != nil {
 			t.Fatalf("save registry for %s: %v", tenantID, err)
 		}
 	}
@@ -1366,6 +1596,106 @@ func TestReconcileUserReferralRewardsRecoversTenantScopedFailures(t *testing.T) 
 	second, err := ReconcileUserReferralRewards(ctx, identity, repo, services.store.System, services.store.Tenants, services.store.FailureLogs)
 	if err != nil || second.Scanned != 0 || second.Rewarded != 0 || second.Failed != 0 {
 		t.Fatalf("second recovery must be idempotent: result=%#v err=%v", second, err)
+	}
+}
+
+func TestReconcileUserReferralRewardsDetachesSystemFreeFromInvitees(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	invitee := &store.User{ID: "detach-invitee", TenantID: store.DefaultTenantID, Email: "detach-invitee@example.com", SN: "SN-detach-invitee", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := services.store.Users.Create(ctx, invitee); err != nil {
+		t.Fatal(err)
+	}
+	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{llmservice.SystemFreeTemplate(), {ID: "redeem", Name: "Redeem", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		UserBindings:       []llmservice.UserBinding{{UserID: invitee.ID, Email: invitee.Email, ServiceGroupIDs: []string{llmservice.SystemFreeServiceGroupID, "redeem"}}},
+		Grants: []llmservice.Grant{
+			{ID: "detach-referral", UserID: invitee.ID, Email: invitee.Email, ServiceGroupID: "redeem", Source: "user_referral", CardID: "detach-ref", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 100},
+			{ID: "detach-invite", UserID: invitee.ID, Email: invitee.Email, ServiceGroupID: llmservice.SystemFreeServiceGroupID, Source: "invitation_code", CardID: "detach-ic", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 999},
+		},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	identity := auth.NewIdentityService(services.store.Users, nil, nil, nil, nil, nil, services.store.System, nil, "open", true, nil, "")
+	if _, err := ReconcileUserReferralRewards(ctx, identity, storesqlite.NewUserReferralRepository(services.db, services.db), services.store.System, services.store.Tenants, services.store.FailureLogs); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	reg, err := llmservice.LoadRegistry(ctx, services.store.System)
+	if err != nil || reg == nil {
+		t.Fatalf("load registry=%#v err=%v", reg, err)
+	}
+	for _, grant := range reg.Grants {
+		if grant.UserID == invitee.ID && llmservice.IsSystemFreeServiceGroup(grant.ServiceGroupID) && !grant.Frozen {
+			t.Fatalf("invitee still has active system-free grant: %#v", grant)
+		}
+	}
+	for _, binding := range reg.UserBindings {
+		if binding.UserID != invitee.ID {
+			continue
+		}
+		for _, id := range binding.ServiceGroupIDs {
+			if llmservice.IsSystemFreeServiceGroup(id) {
+				t.Fatalf("invitee still bound to system-free: %#v", binding)
+			}
+		}
+	}
+}
+
+func TestGrantUserReferralRewardsRemapsSystemFreeToConfiguredGroup(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	inviter := &store.User{ID: "remap-inviter", TenantID: store.DefaultTenantID, Email: "remap-inviter@example.com", SN: "SN-remap-inviter", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	invitee := &store.User{ID: "remap-invitee", TenantID: store.DefaultTenantID, Email: "remap-invitee@example.com", SN: "SN-remap-invitee", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	for _, user := range []*store.User{inviter, invitee} {
+		if err := services.store.Users.Create(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{llmservice.SystemFreeTemplate(), {ID: "redeem", Name: "Redeem", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := UserReferralConfig{Enabled: true, InviterCredits: 200, InviteeCredits: 100, DurationDays: 30, ServiceGroupID: "redeem", Downloads: defaultUserReferralDownloads()}
+	raw, _ := json.Marshal(cfg)
+	if err := ScopedSystemSettingsForTenant(store.DefaultTenantID, services.store.System).Set(ctx, userReferralSettingsKey, string(raw)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	repo := storesqlite.NewUserReferralRepository(services.db, services.db)
+	referral := &store.UserReferral{ID: "remap-referral", TenantID: store.DefaultTenantID, ReferralCodeID: "remap-code", InviterUserID: inviter.ID, InviteeUserID: invitee.ID, Status: "attributed", RegisteredAt: now, ServiceGroupID: llmservice.SystemFreeServiceGroupID, InviterCredits: 200, InviteeCredits: 100, DurationDays: 30, CreatedAt: now, UpdatedAt: now}
+	if err := repo.CreateReferral(ctx, referral); err != nil {
+		t.Fatalf("create referral: %v", err)
+	}
+	identity := auth.NewIdentityService(services.store.Users, nil, nil, nil, nil, nil, services.store.System, nil, "open", true, nil, "")
+	if err := grantUserReferralRewards(ctx, repo, services.store.System, identity, referral); err != nil {
+		t.Fatalf("grant rewards: %v", err)
+	}
+	reg, err := llmservice.LoadRegistry(ctx, services.store.System)
+	if err != nil || reg == nil {
+		t.Fatalf("load registry=%#v err=%v", reg, err)
+	}
+	var inviterCredits, inviteeCredits float64
+	for _, grant := range reg.Grants {
+		if grant.Source != "user_referral" || grant.CardID != referral.ID {
+			continue
+		}
+		if llmservice.IsSystemFreeServiceGroup(grant.ServiceGroupID) {
+			t.Fatalf("remapped reward must not land on system-free: %#v", grant)
+		}
+		if grant.ServiceGroupID != "redeem" {
+			t.Fatalf("remapped reward group=%q, want redeem", grant.ServiceGroupID)
+		}
+		if grant.UserID == inviter.ID {
+			inviterCredits = grant.CreditsTotal
+		}
+		if grant.UserID == invitee.ID {
+			inviteeCredits = grant.CreditsTotal
+		}
+	}
+	if inviterCredits != 200 || inviteeCredits != 100 {
+		t.Fatalf("remapped credits inviter=%v invitee=%v", inviterCredits, inviteeCredits)
 	}
 }
 
@@ -1730,7 +2060,7 @@ func TestModerateUserReferralApprovalReturnsRewardedFinalStatus(t *testing.T) {
 	if err := repo.CreateReferral(ctx, referral); err != nil {
 		t.Fatal(err)
 	}
-	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "approve-group"}}}); err != nil {
+	if err := llmservice.SaveRegistry(ctx, services.store.System, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "approve-group", AccessPolicy: llmservice.AccessPolicyGrantRequired}}}); err != nil {
 		t.Fatal(err)
 	}
 	identity := auth.NewIdentityService(services.store.Users, nil, nil, nil, nil, nil, services.store.System, nil, "open", true, nil, "")
@@ -1904,6 +2234,9 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 	if err := services.store.Users.Create(ctx, &store.User{ID: "referrer-handoff", TenantID: store.DefaultTenantID, Email: "referrer-handoff@example.com", SN: "SN-handoff", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create inviter: %v", err)
 	}
+	if err := services.store.Users.Create(ctx, &store.User{ID: "invitee-handoff", TenantID: store.DefaultTenantID, Email: "invitee-handoff@example.com", SN: "SN-invitee-handoff", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create invitee: %v", err)
+	}
 	repo := storesqlite.NewUserReferralRepository(services.db, services.db)
 	plain := "rf_test_handoff_0123456789"
 	encrypted, err := llmservice.EncryptCardCode(plain)
@@ -1927,6 +2260,22 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 		t.Fatalf("new browser session: %v", err)
 	}
 	cookie := landingRecorder.Result().Cookies()[0]
+	referral := &store.UserReferral{ID: "referral-handoff", TenantID: store.DefaultTenantID, ReferralCodeID: "ref-code-handoff", InviterUserID: "referrer-handoff", InviteeUserID: "invitee-handoff", Status: "rewarded", RegisteredAt: now, CreatedAt: now, UpdatedAt: now}
+	if err := repo.CreateReferral(ctx, referral); err != nil {
+		t.Fatalf("create completed referral: %v", err)
+	}
+	if err := repo.MarkRegistrationSessionCompleted(ctx, store.DefaultTenantID, userReferralRegistrationSessionTokenHash(store.DefaultTenantID, cookie.Value), referral.InviteeUserID, referral.ID, now); err != nil {
+		t.Fatalf("complete browser session: %v", err)
+	}
+	// Link rotation only blocks future registrations. A completed browser
+	// session may still create its one-time desktop handoff without reviving
+	// the retired public link.
+	if err := repo.RotateCode(ctx, store.DefaultTenantID, "ref-code-handoff", now.Add(time.Second)); err != nil {
+		t.Fatalf("rotate code after completed browser registration: %v", err)
+	}
+	if old, err := repo.GetCodeByHash(ctx, store.DefaultTenantID, codeHash); err != nil || old != nil {
+		t.Fatalf("rotated code must not remain publicly resolvable: code=%#v err=%v", old, err)
+	}
 
 	handoffReq := httptest.NewRequest(http.MethodPost, "/invite/"+plain+"/handoff", nil)
 	handoffReq.Header.Set("User-Agent", "handoff-browser")
@@ -1947,6 +2296,9 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 	if !ok || len(token) < 16 {
 		t.Fatalf("unsafe handoff payload=%q", handoffPayload.Handoff)
 	}
+	if strings.Contains(handoffPayload.Handoff, "invitee-handoff@example.com") {
+		t.Fatalf("handoff must not expose invitee identity: %q", handoffPayload.Handoff)
+	}
 
 	claimBody, _ := json.Marshal(map[string]string{"handoff": token})
 	claimReq := httptest.NewRequest(http.MethodPost, "/api/public/referral-handoffs/claim", strings.NewReader(string(claimBody)))
@@ -1954,6 +2306,9 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 	claimReq.Header.Set("User-Agent", "handoff-browser")
 	if stored, lookupErr := repo.GetHandoff(ctx, userReferralHandoffTokenHash(token), time.Now().UTC()); lookupErr != nil || stored == nil {
 		t.Fatalf("handoff lookup before claim=%#v err=%v", stored, lookupErr)
+	}
+	if err := ScopedSystemSettingsForTenant(store.DefaultTenantID, services.store.System).Set(ctx, "registration_enabled", `false`); err != nil {
+		t.Fatalf("close new-user registration after completed handoff: %v", err)
 	}
 	claimRec := httptest.NewRecorder()
 	claimIdentity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "")
@@ -1963,6 +2318,9 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 	}
 	var claimPayload struct {
 		RegistrationSession string `json:"registration_session"`
+		RegistrationStatus  string `json:"registration_status"`
+		RegisteredIdentity  string `json:"registered_identity"`
+		IdentityType        string `json:"registered_identity_type"`
 		Tenant              struct {
 			ID string `json:"id"`
 		} `json:"tenant"`
@@ -1970,8 +2328,15 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 	if err := json.Unmarshal(claimRec.Body.Bytes(), &claimPayload); err != nil {
 		t.Fatalf("decode claim: %v", err)
 	}
-	if claimPayload.RegistrationSession == "" || claimPayload.Tenant.ID != store.DefaultTenantID {
+	if claimPayload.RegistrationSession == "" || claimPayload.Tenant.ID != store.DefaultTenantID || claimPayload.RegistrationStatus != "registered_rewarded" || claimPayload.RegisteredIdentity != "invitee-handoff@example.com" || claimPayload.IdentityType != "email" {
 		t.Fatalf("invalid claim %#v", claimPayload)
+	}
+	desktopSession, err := repo.GetRegistrationSession(ctx, store.DefaultTenantID, userReferralRegistrationSessionTokenHash(store.DefaultTenantID, claimPayload.RegistrationSession), time.Now().UTC())
+	if err != nil || desktopSession == nil || desktopSession.CompletedAt == nil || desktopSession.InviteeUserID != referral.InviteeUserID || desktopSession.ReferralID != referral.ID {
+		t.Fatalf("completed desktop session=%#v err=%v", desktopSession, err)
+	}
+	if strings.Contains(claimRec.Body.String(), plain) || strings.Contains(claimRec.Body.String(), "referrer-handoff") {
+		t.Fatalf("claim response leaked invitation secret or inviter identity: %s", claimRec.Body.String())
 	}
 
 	desktopReq := httptest.NewRequest(http.MethodPost, "/api/public/referral-registration/register", nil)
@@ -1988,6 +2353,108 @@ func TestUserReferralHandoffClaimIsSingleUseAndCreatesDesktopSession(t *testing.
 	PublicUserReferralHandoffClaimHandler(claimIdentity, repo, services.store.System, services.store.Tenants).ServeHTTP(replayRec, replayReq)
 	if replayRec.Code != http.StatusGone {
 		t.Fatalf("replay status=%d body=%s", replayRec.Code, replayRec.Body.String())
+	}
+}
+
+func TestCompletedReferralHandoffAfterRotationAcceptsLegacyCodeSpelling(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const storedCode = "rf_LeGaCyCaseCode"
+	const openedCode = "RF_LeGaCyCaseCode"
+	const inviterID = "legacy-handoff-inviter"
+	const inviteeID = "legacy-handoff-invitee"
+	if err := services.store.Users.Create(ctx, &store.User{ID: inviterID, TenantID: store.DefaultTenantID, Email: "legacy-handoff-inviter@example.com", SN: "SN-legacy-handoff-inviter", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create inviter: %v", err)
+	}
+	if err := services.store.Users.Create(ctx, &store.User{ID: inviteeID, TenantID: store.DefaultTenantID, Email: "legacy-handoff-invitee@example.com", SN: "SN-legacy-handoff-invitee", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create invitee: %v", err)
+	}
+	repo := storesqlite.NewUserReferralRepository(services.db, services.db)
+	codeHash := legacyUserReferralCodeHash(store.DefaultTenantID, storedCode)
+	if err := repo.CreateCode(ctx, &store.UserReferralCode{ID: "legacy-handoff-code", TenantID: store.DefaultTenantID, InviterUserID: inviterID, CodeHash: codeHash, EncryptedCode: "encrypted", Status: "active", CreatedAt: now}); err != nil {
+		t.Fatalf("create legacy code: %v", err)
+	}
+	cfg := UserReferralConfig{Enabled: true, Downloads: defaultUserReferralDownloads(), SessionEpoch: "legacy-handoff-epoch"}
+	raw, _ := json.Marshal(cfg)
+	if err := ScopedSystemSettingsForTenant(store.DefaultTenantID, services.store.System).Set(ctx, userReferralSettingsKey, string(raw)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	landing := httptest.NewRequest(http.MethodGet, "/invite/"+storedCode, nil)
+	landing.Header.Set("User-Agent", "legacy-handoff-browser")
+	landingRecorder := httptest.NewRecorder()
+	if err := newUserReferralRegistrationSession(ctx, repo, landingRecorder, landing, store.DefaultTenantID, codeHash, cfg.SessionEpoch); err != nil {
+		t.Fatalf("create browser session: %v", err)
+	}
+	cookie := landingRecorder.Result().Cookies()[0]
+	referral := &store.UserReferral{ID: "legacy-handoff-referral", TenantID: store.DefaultTenantID, ReferralCodeID: "legacy-handoff-code", InviterUserID: inviterID, InviteeUserID: inviteeID, Status: "rewarded", RegisteredAt: now, CreatedAt: now, UpdatedAt: now}
+	if err := repo.CreateReferral(ctx, referral); err != nil {
+		t.Fatalf("create referral: %v", err)
+	}
+	if err := repo.MarkRegistrationSessionCompleted(ctx, store.DefaultTenantID, userReferralRegistrationSessionTokenHash(store.DefaultTenantID, cookie.Value), inviteeID, referral.ID, now); err != nil {
+		t.Fatalf("complete browser session: %v", err)
+	}
+	if err := repo.RotateCode(ctx, store.DefaultTenantID, "legacy-handoff-code", now.Add(time.Second)); err != nil {
+		t.Fatalf("rotate legacy code: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/invite/"+openedCode+"/handoff", nil)
+	request.Header.Set("User-Agent", "legacy-handoff-browser")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	services.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("legacy completed handoff status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUserReferralAllowsDesktopEnrollment(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{
+		{status: "reserved", want: true},
+		{status: "attributed", want: true},
+		{status: "rewarded", want: true},
+		{status: "expired", want: true},
+		{status: "rejected", want: false},
+		{status: "revoked", want: false},
+	} {
+		if got := userReferralAllowsDesktopEnrollment(tc.status); got != tc.want {
+			t.Fatalf("status %q allows enrollment=%v; want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestCompletedReferralHandoffCanonicalizesPhoneIdentity(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const tenantID = store.DefaultTenantID
+	const codeHash = "completed-phone-handoff-code"
+	const inviteeID = "completed-phone-handoff-invitee"
+	if err := services.store.Users.Create(ctx, &store.User{ID: inviteeID, TenantID: tenantID, Email: "phone:+86 138-0013-8000", SN: "SN-completed-phone-handoff", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create phone invitee: %v", err)
+	}
+	repo := storesqlite.NewUserReferralRepository(services.db, services.db)
+	if err := repo.CreateReferral(ctx, &store.UserReferral{ID: "completed-phone-handoff-referral", TenantID: tenantID, ReferralCodeID: "completed-phone-handoff-code", InviterUserID: "completed-phone-handoff-inviter", InviteeUserID: inviteeID, Status: "rewarded", RegisteredAt: now, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create phone referral: %v", err)
+	}
+	if err := repo.CreateHandoff(ctx, &store.UserReferralHandoff{TokenHash: userReferralHandoffTokenHash("completed-phone-handoff-token"), TenantID: tenantID, CodeHash: codeHash, ReferralCodeID: "completed-phone-handoff-code", InviterUserID: "completed-phone-handoff-inviter", InviteeUserID: inviteeID, ConfigEpoch: "completed-phone-handoff-epoch", ExpiresAt: now.Add(time.Minute), CreatedAt: now}); err != nil {
+		t.Fatalf("create phone handoff: %v", err)
+	}
+	cfg := UserReferralConfig{Enabled: true, SessionEpoch: "completed-phone-handoff-epoch", Downloads: defaultUserReferralDownloads()}
+	raw, _ := json.Marshal(cfg)
+	if err := ScopedSystemSettingsForTenant(tenantID, services.store.System).Set(ctx, userReferralSettingsKey, string(raw)); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/public/referral-handoffs/claim", strings.NewReader(`{"handoff":"completed-phone-handoff-token"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "completed-phone-handoff-client")
+	recorder := httptest.NewRecorder()
+	identity := auth.NewIdentityService(services.store.Users, services.store.Enrollments, services.store.EmailBlocks, services.store.Machines, services.store.ViewerTokens, services.store.LoginTokens, services.store.System, nil, "open", true, nil, "")
+	PublicUserReferralHandoffClaimHandler(identity, repo, services.store.System, services.store.Tenants).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"registered_identity":"+8613800138000"`) || !strings.Contains(recorder.Body.String(), `"registered_identity_type":"phone"`) {
+		t.Fatalf("phone claim status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

@@ -3,6 +3,7 @@ package skillmarket
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
@@ -68,13 +69,16 @@ func (s *UserService) EnsureAccountWithID(ctx context.Context, userID, email str
 			return nil, err
 		}
 	}
-	if u, err := s.store.GetUserByEmail(ctx, email); err == nil {
-		return u, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
 	if userID == "" {
 		return s.EnsureAccount(ctx, email)
+	}
+	// A Hub user ID is the durable principal. Email and phone are login
+	// identities that may be bound to the same person, so an unmatched contact
+	// must never redirect this user ID to another account's market assets.
+	if _, err := s.store.GetUserByEmail(ctx, email); err == nil {
+		return nil, fmt.Errorf("account email is already bound to another user")
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
 	}
 	now := time.Now()
 	stubTime := time.Unix(0, 0).UTC()
@@ -95,7 +99,10 @@ func (s *UserService) EnsureAccountWithID(ctx context.Context, userID, email str
 			return u, nil
 		}
 		if u, err2 := s.store.GetUserByEmail(ctx, email); err2 == nil {
-			return u, nil
+			if u.ID == userID {
+				return u, nil
+			}
+			return nil, fmt.Errorf("account email is already bound to another user")
 		}
 		return nil, err
 	}

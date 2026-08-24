@@ -26,6 +26,10 @@ export function ActivateRemoteSMS(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['ActivateRemoteSMS'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function AIAssistantAttachmentFullDataURL(arg1) {
+  return window['go']['main']['App']['AIAssistantAttachmentFullDataURL'](arg1);
+}
+
 export function AIAssistantAttachmentPreviewDataURL(arg1) {
   return window['go']['main']['App']['AIAssistantAttachmentPreviewDataURL'](arg1);
 }
@@ -266,6 +270,10 @@ export function CancelOpenAIOAuth() {
   return window['go']['main']['App']['CancelOpenAIOAuth']();
 }
 
+export function CancelQQBotQRLogin(arg1) {
+  return window['go']['main']['App']['CancelQQBotQRLogin'](arg1);
+}
+
 export function CancelRecordedAudioUpload(arg1) {
   return window['go']['main']['App']['CancelRecordedAudioUpload'](arg1);
 }
@@ -464,6 +472,10 @@ export function CodingKnowledgeDeleteByScope(arg1, arg2) {
 
 export function CodingKnowledgeEvict() {
   return window['go']['main']['App']['CodingKnowledgeEvict']();
+}
+
+export function CodingKnowledgeContributeToOrg(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeContributeToOrg'](arg1);
 }
 
 export function CodingKnowledgeExport() {
@@ -1218,6 +1230,18 @@ export function EnterpriseSetSyncPaused(arg1) {
   return window['go']['main']['App']['EnterpriseSetSyncPaused'](arg1);
 }
 
+export function DigitalAssetListContributableLibraries(arg1) {
+  return window['go']['main']['App']['DigitalAssetListContributableLibraries'](arg1);
+}
+
+export function DigitalAssetListMySubmissions() {
+  return window['go']['main']['App']['DigitalAssetListMySubmissions']();
+}
+
+export function DigitalAssetWithdrawSubmission(arg1) {
+  return window['go']['main']['App']['DigitalAssetWithdrawSubmission'](arg1);
+}
+
 export function EnterpriseSyncNow() {
   return window['go']['main']['App']['EnterpriseSyncNow']();
 }
@@ -1834,6 +1858,14 @@ export function GetVectorSearchStatus() {
   return window['go']['main']['App']['GetVectorSearchStatus']();
 }
 
+export function GetEmbedAccelInfo() {
+  return window['go']['main']['App']['GetEmbedAccelInfo']();
+}
+
+export function SetEmbedHWAccel(arg1) {
+  return window['go']['main']['App']['SetEmbedHWAccel'](arg1);
+}
+
 export function GetVirtualRepositoryBackgroundSyncStatus() {
   return window['go']['main']['App']['GetVirtualRepositoryBackgroundSyncStatus']();
 }
@@ -2056,6 +2088,10 @@ export function ImportAgentSkillDir(arg1) {
 
 export function ImportCodexAuth() {
   return window['go']['main']['App']['ImportCodexAuth']();
+}
+
+export function ImportExternalAgents() {
+  return window['go']['main']['App']['ImportExternalAgents']();
 }
 
 export function ImportExpertPackage() {
@@ -2608,6 +2644,10 @@ export function KnowledgeSearchFacets(arg1) {
 
 export function KnowledgeSearchStructured(arg1) {
   return window['go']['main']['App']['KnowledgeSearchStructured'](arg1);
+}
+
+export function KnowledgeContributeToOrg(arg1) {
+  return window['go']['main']['App']['KnowledgeContributeToOrg'](arg1);
 }
 
 export function KnowledgeShareToHub(arg1) {
@@ -3288,6 +3328,10 @@ export function PlanMaclawAppInstall(arg1) {
 
 export function PlatformTransparencyFlags() {
   return window['go']['main']['App']['PlatformTransparencyFlags']();
+}
+
+export function PollQQBotQRStatus(arg1) {
+  return window['go']['main']['App']['PollQQBotQRStatus'](arg1);
 }
 
 export function PollWeixinQRStatus(arg1) {
@@ -4362,6 +4406,10 @@ export function StartOpenAIOAuth() {
   return window['go']['main']['App']['StartOpenAIOAuth']();
 }
 
+export function StartOpenCodeZenLogin() {
+  return window['go']['main']['App']['StartOpenCodeZenLogin']();
+}
+
 export function StartRemoteClaudeSession(arg1, arg2) {
   return window['go']['main']['App']['StartRemoteClaudeSession'](arg1, arg2);
 }
@@ -4404,6 +4452,10 @@ export function StartVirtualRepositoryCodingTask(arg1) {
 
 export function StartVirtualRepositoryOperation(arg1) {
   return window['go']['main']['App']['StartVirtualRepositoryOperation'](arg1);
+}
+
+export function StartQQBotQRLogin() {
+  return window['go']['main']['App']['StartQQBotQRLogin']();
 }
 
 export function StartWeixinQRLogin() {
@@ -4540,6 +4592,10 @@ export function TestAndSaveMaclawLLMProviders(arg1, arg2, arg3) {
 
 export function TestMaclawLLMProfile(arg1, arg2, arg3) {
   return window['go']['main']['App']['TestMaclawLLMProfile'](arg1, arg2, arg3);
+}
+
+export function TestProxyConfig(arg1) {
+  return window['go']['main']['App']['TestProxyConfig'](arg1);
 }
 
 export function TestRemoteSSHConnection(arg1, arg2, arg3, arg4, arg5) {

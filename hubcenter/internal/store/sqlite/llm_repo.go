@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -55,6 +56,7 @@ func EnsureLLMTables(db *sql.DB) error {
 			created_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_usage_hub_tenant_time ON llm_usage_records(hub_id, tenant_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_usage_created_at ON llm_usage_records(created_at)`,
 
 		`CREATE TABLE IF NOT EXISTS llm_card_types (
 			id TEXT PRIMARY KEY,
@@ -109,6 +111,20 @@ func EnsureLLMTables(db *sql.DB) error {
 			expires_at TEXT NOT NULL,
 			PRIMARY KEY (hub_id, tenant_id)
 		)`,
+		// Reconciliation facts outlive the process-local proxy cache. Do not add
+		// automatic retention here: Hub keeps sent reservations until it can
+		// retrieve this exact first-write-wins record.
+		`CREATE TABLE IF NOT EXISTS llm_proxy_billing_attempts (
+			hub_id TEXT NOT NULL COLLATE NOCASE,
+			tenant_id TEXT NOT NULL COLLATE NOCASE,
+			request_id TEXT NOT NULL,
+			status_code INTEGER NOT NULL,
+			provider_id TEXT NOT NULL,
+			pricing_snapshot_json TEXT NOT NULL,
+			completed_at TEXT NOT NULL,
+			PRIMARY KEY (hub_id, tenant_id, request_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_proxy_billing_attempts_completed_at ON llm_proxy_billing_attempts(completed_at)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -129,6 +145,46 @@ func EnsureLLMTables(db *sql.DB) error {
 	}
 	if err := ensureLLMCardOrderAuthorizationIndex(db); err != nil {
 		return err
+	}
+	if err := ensureLLMCardOrderIndexes(db); err != nil {
+		return err
+	}
+	if err := ensureLLMUsageClassColumns(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLLMUsageClassColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "llm_usage_records")
+	if err != nil {
+		return err
+	}
+	if !columns["service_group_id"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN service_group_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.service_group_id: %w", err)
+		}
+	}
+	if !columns["workload_class"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN workload_class TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.workload_class: %w", err)
+		}
+	}
+	if !columns["class_source"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN class_source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.class_source: %w", err)
+		}
+	}
+	if !columns["request_preview"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN request_preview TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.request_preview: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_group_class_time ON llm_usage_records(service_group_id, workload_class, created_at)`); err != nil {
+		return fmt.Errorf("ensure llm usage group/class index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_time_group ON llm_usage_records(created_at, service_group_id)`); err != nil {
+		return fmt.Errorf("ensure llm usage time/group index: %w", err)
 	}
 	return nil
 }
@@ -287,6 +343,31 @@ func ensureLLMCardOrderPaymentDetailColumns(db *sql.DB) error {
 	if !columns["pay_instruction"] {
 		if _, err := db.Exec(`ALTER TABLE llm_card_orders ADD COLUMN pay_instruction TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("ensure llm_card_orders.pay_instruction: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureLLMCardOrderIndexes(db *sql.DB) error {
+	// Legacy databases may still miss columns added by later migrations; only
+	// index columns that actually exist so EnsureLLMTables stays idempotent.
+	columns, err := tableColumns(db, "llm_card_orders")
+	if err != nil {
+		return err
+	}
+	if columns["hub_id"] && columns["tenant_id"] {
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_orders_hub_tenant ON llm_card_orders(hub_id, tenant_id)`); err != nil {
+			return fmt.Errorf("ensure llm orders hub/tenant index: %w", err)
+		}
+	}
+	if columns["status"] && columns["archived_at"] && columns["created_at"] {
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_orders_status_archived_created ON llm_card_orders(status, archived_at, created_at)`); err != nil {
+			return fmt.Errorf("ensure llm orders status index: %w", err)
+		}
+	}
+	if columns["service_group_id"] {
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_orders_service_group ON llm_card_orders(service_group_id)`); err != nil {
+			return fmt.Errorf("ensure llm orders service group index: %w", err)
 		}
 	}
 	return nil
@@ -480,17 +561,88 @@ type llmUsageRepo struct {
 	read  *sql.DB
 }
 
+type llmProxyBillingAttemptRepo struct {
+	write *sql.DB
+	read  *sql.DB
+}
+
+func NewProxyBillingAttemptRepo(p *Provider) *llmProxyBillingAttemptRepo {
+	return &llmProxyBillingAttemptRepo{write: p.Write, read: p.Read}
+}
+
+func (r *llmProxyBillingAttemptRepo) RecordProxyBillingAttempt(ctx context.Context, attempt llmservice.ProxyBillingAttempt) (bool, error) {
+	if r == nil || r.write == nil {
+		return false, fmt.Errorf("proxy billing attempt repository is not configured")
+	}
+	completedAt := attempt.CompletedAt.UTC()
+	if completedAt.IsZero() {
+		return false, fmt.Errorf("proxy billing attempt completed_at is required")
+	}
+	snapshot, err := json.Marshal(attempt.PricingSnapshot)
+	if err != nil {
+		return false, fmt.Errorf("encode proxy billing pricing snapshot: %w", err)
+	}
+	result, err := r.write.ExecContext(ctx, `
+		INSERT OR IGNORE INTO llm_proxy_billing_attempts
+			(hub_id, tenant_id, request_id, status_code, provider_id, pricing_snapshot_json, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		strings.TrimSpace(attempt.HubID), strings.TrimSpace(attempt.TenantID), strings.TrimSpace(attempt.RequestID),
+		attempt.StatusCode, strings.TrimSpace(attempt.ProviderID), string(snapshot), completedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return false, fmt.Errorf("insert proxy billing attempt: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect proxy billing attempt insert: %w", err)
+	}
+	return rows > 0, nil
+}
+
+func (r *llmProxyBillingAttemptRepo) GetProxyBillingAttempt(ctx context.Context, hubID, tenantID, requestID string) (llmservice.ProxyBillingAttempt, bool, error) {
+	if r == nil || r.read == nil {
+		return llmservice.ProxyBillingAttempt{}, false, fmt.Errorf("proxy billing attempt repository is not configured")
+	}
+	var attempt llmservice.ProxyBillingAttempt
+	var snapshotJSON, completedAt string
+	err := r.read.QueryRowContext(ctx, `
+		SELECT hub_id, tenant_id, request_id, status_code, provider_id, pricing_snapshot_json, completed_at
+		  FROM llm_proxy_billing_attempts
+		 WHERE hub_id = ? COLLATE NOCASE AND tenant_id = ? COLLATE NOCASE AND request_id = ?`,
+		strings.TrimSpace(hubID), strings.TrimSpace(tenantID), strings.TrimSpace(requestID)).Scan(
+		&attempt.HubID, &attempt.TenantID, &attempt.RequestID, &attempt.StatusCode, &attempt.ProviderID, &snapshotJSON, &completedAt)
+	if err == sql.ErrNoRows {
+		return llmservice.ProxyBillingAttempt{}, false, nil
+	}
+	if err != nil {
+		return llmservice.ProxyBillingAttempt{}, false, fmt.Errorf("query proxy billing attempt: %w", err)
+	}
+	if err := json.Unmarshal([]byte(snapshotJSON), &attempt.PricingSnapshot); err != nil {
+		return llmservice.ProxyBillingAttempt{}, false, fmt.Errorf("decode proxy billing pricing snapshot: %w", err)
+	}
+	completed, err := time.Parse(time.RFC3339Nano, completedAt)
+	if err != nil {
+		return llmservice.ProxyBillingAttempt{}, false, fmt.Errorf("parse proxy billing completed_at: %w", err)
+	}
+	attempt.CompletedAt = completed.UTC()
+	return attempt, true, nil
+}
+
 func NewLLMUsageRepo(p *Provider) *llmUsageRepo {
 	return &llmUsageRepo{write: p.Write, read: p.Read}
 }
 
 func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsageRecord) error {
+	createdAt := record.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 	_, err := r.write.ExecContext(ctx,
-		`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.HubID, record.TenantID, record.Model, record.ProviderID,
+		record.ServiceGroupID, record.WorkloadClass, record.ClassSource, record.Preview,
 		record.InputTokens, record.OutputTokens, record.Credits,
-		boolToInt(record.CacheHit), record.AuthID, record.CreatedAt.Format(time.RFC3339),
+		boolToInt(record.CacheHit), record.AuthID, createdAt.UTC().Format(time.RFC3339),
 	)
 	return err
 }
@@ -578,6 +730,187 @@ func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, 
 		records = append(records, &rec)
 	}
 	return records, nil
+}
+
+func sqliteUTCDateTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+func (r *llmUsageRepo) QueryProviderTraffic(ctx context.Context, dayStart, weekStart, monthStart time.Time) (map[string]llmservice.ProviderPeriodTraffic, error) {
+	dayBound := sqliteUTCDateTime(dayStart)
+	weekBound := sqliteUTCDateTime(weekStart)
+	monthBound := sqliteUTCDateTime(monthStart)
+	// Widen the indexed scan by a day so offset-formatted legacy rows still enter the
+	// datetime() filter. New writes are UTC RFC3339 and compare directly.
+	scanBound := monthStart.UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	rows, err := r.read.QueryContext(ctx, `
+		SELECT provider_id,
+		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END)
+		  FROM (
+		        SELECT provider_id, input_tokens, output_tokens, datetime(created_at) AS ts
+		          FROM llm_usage_records
+		         WHERE created_at >= ?
+		           AND provider_id != ''
+		       ) AS usage
+		 GROUP BY provider_id`,
+		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := map[string]llmservice.ProviderPeriodTraffic{}
+	for rows.Next() {
+		var providerID string
+		var dayIn, dayOut, weekIn, weekOut, monthIn, monthOut int64
+		if err := rows.Scan(&providerID, &dayIn, &dayOut, &weekIn, &weekOut, &monthIn, &monthOut); err != nil {
+			return nil, err
+		}
+		providerID = strings.TrimSpace(providerID)
+		if providerID == "" || (dayIn == 0 && dayOut == 0 && weekIn == 0 && weekOut == 0 && monthIn == 0 && monthOut == 0) {
+			continue
+		}
+		results[providerID] = llmservice.ProviderPeriodTraffic{
+			Day:   llmservice.TokenTraffic{InputTokens: dayIn, OutputTokens: dayOut, TotalTokens: dayIn + dayOut},
+			Week:  llmservice.TokenTraffic{InputTokens: weekIn, OutputTokens: weekOut, TotalTokens: weekIn + weekOut},
+			Month: llmservice.TokenTraffic{InputTokens: monthIn, OutputTokens: monthOut, TotalTokens: monthIn + monthOut},
+		}
+	}
+	return results, rows.Err()
+}
+
+func (r *llmUsageRepo) QueryClassTraffic(ctx context.Context, serviceGroupID string, since time.Time) ([]llmservice.ClassTrafficRow, map[string]int64, []llmservice.ClassTrafficSample, error) {
+	rows, err := r.read.QueryContext(ctx, `
+		SELECT workload_class, class_source, COUNT(*), SUM(input_tokens), SUM(output_tokens)
+		  FROM llm_usage_records
+		 WHERE service_group_id = ?
+		   AND created_at >= ?
+		 GROUP BY workload_class, class_source`,
+		strings.TrimSpace(serviceGroupID), since.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer rows.Close()
+	byClass := map[string]llmservice.ClassTrafficRow{}
+	sources := map[string]int64{}
+	for rows.Next() {
+		var class, source string
+		var requests, inTok, outTok int64
+		if err := rows.Scan(&class, &source, &requests, &inTok, &outTok); err != nil {
+			return nil, nil, nil, err
+		}
+		if class == "" {
+			class = "unclassified"
+		}
+		curr := byClass[class]
+		curr.Class = class
+		curr.Requests += requests
+		curr.InputTokens += inTok
+		curr.OutputTokens += outTok
+		curr.TotalTokens += inTok + outTok
+		byClass[class] = curr
+		if source != "" {
+			sources[source] += requests
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	out := make([]llmservice.ClassTrafficRow, 0, len(byClass))
+	for _, row := range byClass {
+		out = append(out, row)
+	}
+	samples, err := r.queryClassTrafficSamples(ctx, serviceGroupID, since)
+	if err != nil {
+		return out, sources, nil, err
+	}
+	return out, sources, samples, nil
+}
+
+func (r *llmUsageRepo) QueryServiceGroupTraffic(ctx context.Context, dayStart, weekStart, monthStart time.Time) (map[string]llmservice.ProviderPeriodTraffic, error) {
+	dayBound := sqliteUTCDateTime(dayStart)
+	weekBound := sqliteUTCDateTime(weekStart)
+	monthBound := sqliteUTCDateTime(monthStart)
+	scanBound := monthStart.UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	rows, err := r.read.QueryContext(ctx, `
+		SELECT service_group_id,
+		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
+		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END)
+		  FROM (
+		        SELECT TRIM(service_group_id) AS service_group_id, input_tokens, output_tokens, datetime(created_at) AS ts
+		          FROM llm_usage_records
+		         WHERE created_at >= ?
+		           AND TRIM(service_group_id) != ''
+		       ) AS usage
+		 GROUP BY service_group_id`,
+		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]llmservice.ProviderPeriodTraffic{}
+	for rows.Next() {
+		var groupID string
+		var dayIn, dayOut, weekIn, weekOut, monthIn, monthOut int64
+		if err := rows.Scan(&groupID, &dayIn, &dayOut, &weekIn, &weekOut, &monthIn, &monthOut); err != nil {
+			return nil, err
+		}
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" || (dayIn == 0 && dayOut == 0 && weekIn == 0 && weekOut == 0 && monthIn == 0 && monthOut == 0) {
+			continue
+		}
+		result[groupID] = llmservice.ProviderPeriodTraffic{
+			Day:   llmservice.TokenTraffic{InputTokens: dayIn, OutputTokens: dayOut, TotalTokens: dayIn + dayOut},
+			Week:  llmservice.TokenTraffic{InputTokens: weekIn, OutputTokens: weekOut, TotalTokens: weekIn + weekOut},
+			Month: llmservice.TokenTraffic{InputTokens: monthIn, OutputTokens: monthOut, TotalTokens: monthIn + monthOut},
+		}
+	}
+	return result, rows.Err()
+}
+
+func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGroupID string, since time.Time) ([]llmservice.ClassTrafficSample, error) {
+	sampleRows, err := r.read.QueryContext(ctx, `
+		SELECT created_at, workload_class, class_source, request_preview
+		  FROM llm_usage_records
+		 WHERE service_group_id = ?
+		   AND created_at >= ?
+		   AND class_source != ?
+		   AND TRIM(request_preview) != ''
+		 ORDER BY created_at DESC
+		 LIMIT 20`,
+		strings.TrimSpace(serviceGroupID), since.UTC().Format(time.RFC3339), "hint",
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer sampleRows.Close()
+	var samples []llmservice.ClassTrafficSample
+	for sampleRows.Next() {
+		var createdAt, class, source, preview string
+		if err := sampleRows.Scan(&createdAt, &class, &source, &preview); err != nil {
+			return nil, err
+		}
+		at, _ := time.Parse(time.RFC3339, createdAt)
+		samples = append(samples, llmservice.ClassTrafficSample{
+			At:      at,
+			Class:   class,
+			Source:  source,
+			Preview: preview,
+		})
+	}
+	return samples, sampleRows.Err()
 }
 
 // ---------------------------------------------------------------------------

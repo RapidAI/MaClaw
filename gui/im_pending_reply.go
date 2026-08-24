@@ -101,20 +101,23 @@ const pendingReplyTTL = 30 * time.Minute
 // pendingAskUserState tracks an ask_user question that is waiting for the
 // user's response. Stored in IMMessageHandler.pendingAskUser keyed by userID.
 type pendingAskUserState struct {
-	Question  string
-	Options   []string
-	InputType string
-	History   []agent.ConversationEntry
-	Timestamp time.Time
+	Question     string
+	Options      []string
+	InputType    string
+	Context      string
+	History      []agent.ConversationEntry
+	Timestamp    time.Time
+	WorkingState *agent.WorkingState
 }
 
 // pendingRecordAudioState tracks an interactive recording session waiting for
 // the user to stop. Stored in IMMessageHandler.pendingRecordAudio keyed by userID.
 type pendingRecordAudioState struct {
-	Title     string
-	Purpose   string
-	History   []agent.ConversationEntry
-	Timestamp time.Time
+	Title        string
+	Purpose      string
+	History      []agent.ConversationEntry
+	Timestamp    time.Time
+	WorkingState *agent.WorkingState
 }
 
 // pendingUserReplyState binds a plain-text assistant question to the
@@ -344,27 +347,26 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	return "", false
 }
 
-func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, bool) {
+func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, *agent.WorkingState, bool) {
 	if h == nil {
-		return "", false
+		return "", nil, false
 	}
 	raw, ok := h.pendingAskUser.LoadAndDelete(userID)
 	if !ok {
-		return "", false
+		return "", nil, false
 	}
 	pending, pendingFresh := pendingAskUserForCurrentHistory(raw, entries)
 	if !pendingFresh && pending != nil {
 		log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer_len=%d", userID, len(entries), len(pending.History), len([]rune(trimmed)))
 	}
 	if !pendingFresh {
-		return "", false
+		return "", nil, false
 	}
-	context := fmt.Sprintf(
-		"[Context hint] The user is answering your previous clarification question, not starting a new request.\nAssistant question: %s\nUser answer: %s\nInterpret it as supplementary or corrective information for the current task.",
-		pending.Question, trimmed,
-	)
+	context := agent.FormatPendingAskUserAnswerHint(pending.Question, trimmed, pending.Context)
 	log.Printf("[AskUser] consumed pending ask_user for user %s, question_len=%d answer_len=%d", userID, len([]rune(pending.Question)), len([]rune(trimmed)))
-	return context, true
+	ws := agent.CloneWorkingState(pending.WorkingState)
+	agent.AdvanceWorkingStateAfterUserReply(ws)
+	return context, ws, true
 }
 
 func pendingRecordAudioForCurrentHistory(raw interface{}, entries []agent.ConversationEntry) (*pendingRecordAudioState, bool) {
@@ -389,14 +391,14 @@ func (h *IMMessageHandler) hasActivePendingRecordAudio(userID string, entries []
 	return fresh
 }
 
-func (h *IMMessageHandler) consumePendingRecordAudioAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, bool) {
+func (h *IMMessageHandler) consumePendingRecordAudioAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, *agent.WorkingState, bool) {
 	if h == nil {
-		return "", false
+		return "", nil, false
 	}
 	// Peek first — casual chat while the mic UI is open must NOT clear pending.
 	raw, ok := h.pendingRecordAudio.Load(userID)
 	if !ok {
-		return "", false
+		return "", nil, false
 	}
 	pending, pendingFresh := pendingRecordAudioForCurrentHistory(raw, entries)
 	if !pendingFresh {
@@ -406,14 +408,14 @@ func (h *IMMessageHandler) consumePendingRecordAudioAnswer(userID, trimmed strin
 			log.Printf("[record-audio] discarded stale pending recording user=%s currentLen=%d boundLen=%d answer_len=%d title=%q age=%s",
 				userID, len(entries), len(pending.History), len([]rune(trimmed)), pending.Title, time.Since(pending.Timestamp).Round(time.Second))
 		}
-		return "", false
+		return "", nil, false
 	}
 	if !isRecordAudioCompletionReport(trimmed) {
 		if recordDetailEnabled() {
 			log.Printf("[record-audio] keep pending (non-completion message) user=%s title=%q answer_len=%d",
 				userID, pending.Title, len([]rune(trimmed)))
 		}
-		return "", false
+		return "", nil, false
 	}
 	h.pendingRecordAudio.Delete(userID)
 
@@ -436,7 +438,9 @@ func (h *IMMessageHandler) consumePendingRecordAudioAnswer(userID, trimmed strin
 		log.Printf("[record-audio] consumed pending recording user=%s title=%q purpose=%q status=%q path=%q duration=%q answer_len=%d session_age=%s",
 			userID, pending.Title, pending.Purpose, statusHint, pathHint, durationHint, len([]rune(trimmed)), time.Since(pending.Timestamp).Round(time.Millisecond))
 	}
-	return context, true
+	// Do not advance here: a successful save usually offers post-recording
+	// buttons, and that is still a user pause. The LLM fallback path advances.
+	return context, agent.CloneWorkingState(pending.WorkingState), true
 }
 
 // isRecordAudioCompletionReport reports whether the user message is the structured

@@ -188,6 +188,47 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_user_usage_daily_tenant_day ON user_usage_daily(tenant_id, day);`,
 
+		`CREATE TABLE IF NOT EXISTS llm_usage_records (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			user_id TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			provider_id TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			service_group_id TEXT NOT NULL DEFAULT '',
+			workload_class TEXT NOT NULL DEFAULT '',
+			class_source TEXT NOT NULL DEFAULT '',
+			request_preview TEXT NOT NULL DEFAULT '',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			credits_deducted REAL NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_usage_group_class_time ON llm_usage_records(service_group_id, workload_class, created_at);`,
+
+		// Immutable, request-idempotent audit ledger for LLM credit settlement.
+		// Grants/balances are still maintained by the compatible registry during
+		// the staged migration, but each financial outcome is independently
+		// durable and queryable without parsing that mutable document.
+		`CREATE TABLE IF NOT EXISTS llm_billing_ledger (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			request_id TEXT NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			provider_id TEXT NOT NULL DEFAULT '',
+			service_group_ids_json TEXT NOT NULL DEFAULT '[]',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			requested_microcredits INTEGER NOT NULL DEFAULT 0,
+			deducted_microcredits INTEGER NOT NULL DEFAULT 0,
+			billing_group_multiplier REAL NOT NULL DEFAULT 1,
+			pricing_json TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, request_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_billing_ledger_tenant_created_at ON llm_billing_ledger(tenant_id, created_at DESC);`,
+
 		`CREATE TABLE IF NOT EXISTS viewer_tokens (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
@@ -289,6 +330,8 @@ func RunMigrations(db *sql.DB) error {
 			source_count INTEGER NOT NULL DEFAULT 0,
 			card_count INTEGER NOT NULL DEFAULT 0,
 			byte_size INTEGER NOT NULL DEFAULT 0,
+			library_kind TEXT NOT NULL DEFAULT 'business',
+			accepts_submissions INTEGER NOT NULL DEFAULT 1,
 			created_by TEXT NOT NULL DEFAULT '',
 			updated_by TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
@@ -501,6 +544,7 @@ func RunMigrations(db *sql.DB) error {
 			code_hash TEXT NOT NULL,
 			referral_code_id TEXT NOT NULL,
 			inviter_user_id TEXT NOT NULL,
+			invitee_user_id TEXT NOT NULL DEFAULT '',
 			config_epoch TEXT NOT NULL,
 			service_group_id TEXT NOT NULL DEFAULT '',
 			inviter_credits REAL NOT NULL DEFAULT 0,
@@ -1048,6 +1092,7 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN invitee_user_id TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN referral_id TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE user_referral_registration_sessions ADD COLUMN completed_at TEXT`)
+	alterStmts = append(alterStmts, `ALTER TABLE user_referral_handoffs ADD COLUMN invitee_user_id TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_tenant_created_at ON admin_audit_logs(tenant_id, created_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_failure_event_logs_tenant_created_at ON failure_event_logs(tenant_id, created_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_content_audit_logs_tenant_timestamp ON content_audit_logs(tenant_id, timestamp)`)
@@ -1088,6 +1133,33 @@ func RunMigrations(db *sql.DB) error {
 	)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_heartbeat_log_tenant_user_at ON machine_heartbeat_log(tenant_id, user_id, heartbeat_at)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_heartbeat_log_cleanup ON machine_heartbeat_log(heartbeat_at)`)
+	alterStmts = append(alterStmts, `ALTER TABLE digital_asset_libraries ADD COLUMN library_kind TEXT NOT NULL DEFAULT 'business'`)
+	alterStmts = append(alterStmts, `ALTER TABLE digital_asset_libraries ADD COLUMN accepts_submissions INTEGER NOT NULL DEFAULT 1`)
+	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS digital_asset_submissions (
+		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL,
+		library_id TEXT NOT NULL,
+		submitter_user_id TEXT NOT NULL DEFAULT '',
+		submitter_email TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		status TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		package_ref TEXT NOT NULL DEFAULT '',
+		package_sha256 TEXT NOT NULL DEFAULT '',
+		package_bytes INTEGER NOT NULL DEFAULT 0,
+		item_count INTEGER NOT NULL DEFAULT 0,
+		source_share_id TEXT NOT NULL DEFAULT '',
+		reviewer_user_id TEXT NOT NULL DEFAULT '',
+		review_note TEXT NOT NULL DEFAULT '',
+		reviewed_at TEXT,
+		import_job_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_das_tenant_status ON digital_asset_submissions(tenant_id, status, updated_at DESC)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_das_tenant_submitter ON digital_asset_submissions(tenant_id, submitter_user_id, updated_at DESC)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_das_tenant_library ON digital_asset_submissions(tenant_id, library_id, status)`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {

@@ -10,11 +10,19 @@ export interface ProjectDirBarProps {
     sessionReadyRevision?: number;
     theme: Theme;
     lang?: string;
+    /** Fired after the user successfully switches this tab's working directory. */
+    onWorkingDirChange?: (path: string) => void;
 }
 
 interface DirState {
     path: string;
     isDefault: boolean;
+}
+
+async function readTabWorkingDir(tabId: string): Promise<DirState | null> {
+    const result = await GetTabWorkingDir(tabId) as { path?: string; is_default?: boolean };
+    if (typeof result?.path !== "string" || !result.path.trim()) return null;
+    return { path: result.path, isDefault: !!result.is_default };
 }
 
 /**
@@ -23,7 +31,7 @@ interface DirState {
  * - Click the "Change" button → opens the directory picker
  * - Shows "(默认)" badge when using system default directory
  */
-export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang }: ProjectDirBarProps) {
+export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange }: ProjectDirBarProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const [selectingDirectory, setSelectingDirectory] = useState(false);
     const mountedRef = useRef(true);
@@ -42,11 +50,9 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang 
         let cancelled = false;
         const refresh = () => {
             const generation = ++refreshGenerationRef.current;
-            return GetTabWorkingDir(tabId).then((result: any) => {
-                if (cancelled || !mountedRef.current || generation !== refreshGenerationRef.current) return;
-                if (result && typeof result.path === "string") {
-                    setDirState({ path: result.path, isDefault: !!result.is_default });
-                }
+            return readTabWorkingDir(tabId).then((result) => {
+                if (cancelled || !mountedRef.current || generation !== refreshGenerationRef.current || !result) return;
+                setDirState(result);
             }).catch(() => {});
         };
         setDirState(null); // Clear stale value during tab switch.
@@ -71,14 +77,20 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang 
             const selected = await SelectWorkingDir();
             if (!selected || !mountedRef.current) return;
             await SetTabWorkingDir(tabId, selected);
-            setDirState({ path: selected, isDefault: false });
+            // Backend may rewrite a coding identity/sandbox pick to the live
+            // work root. Read back the path the tab actually bound.
+            const resolved = await readTabWorkingDir(tabId).catch(() => null);
+            if (!mountedRef.current) return;
+            const path = resolved?.path || selected;
+            setDirState({ path, isDefault: resolved?.isDefault ?? false });
+            onWorkingDirChange?.(path);
         } catch (e) {
             console.error("[ProjectDirBar] switch dir failed:", e);
         } finally {
             directorySelectionInFlightRef.current = false;
             if (mountedRef.current) setSelectingDirectory(false);
         }
-    }, [tabId]);
+    }, [tabId, onWorkingDirChange]);
 
     if (!dirState) {
         // Show a fixed-height placeholder to prevent layout shift during tab switch.

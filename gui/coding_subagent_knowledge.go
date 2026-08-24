@@ -74,22 +74,28 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 
 	projectPath := c.subagent.projectPath
 
-	// 1. Coding knowledge (experiences)
+	// 1. Coding knowledge (experiences), plus read-only enterprise technical assets.
+	var pack knowledge.ContextPackResult
 	if c.subagent.codingKB != nil {
-		pack, err := c.subagent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
+		if got, err := c.subagent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
 			Query:       taskQuery,
 			Language:    taskLanguage,
 			ProjectPath: projectPath,
 			MaxItems:    4,
 			MaxChars:    1500,
 			MaxTokens:   750,
-		})
-		if err == nil && len(pack.Items) > 0 {
-			b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
-			b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-			for _, item := range pack.Items {
-				b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
-			}
+		}); err == nil {
+			pack = got
+		}
+	}
+	if c.subagent.handler != nil && c.subagent.handler.app != nil {
+		pack = c.subagent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, taskLanguage, projectPath, 4)
+	}
+	if len(pack.Items) > 0 {
+		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
+		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
+		for _, item := range pack.Items {
+			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
 		}
 	}
 
@@ -210,7 +216,7 @@ func knowledgeImageSearchToolDef() map[string]interface{} {
 
 // executeCodingKnowledgeSearch handles the coding_knowledge_search tool call.
 func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) codingToolExecutionResult {
-	if c.subagent.codingKB == nil {
+	if c.subagent.codingKB == nil && (c.subagent.handler == nil || c.subagent.handler.app == nil) {
 		return codingToolExecutionResult{
 			Text:    "编程知识库未配置。暂无可用的编码经验。",
 			Outcome: codingToolOutcomeSuccess,
@@ -234,13 +240,21 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 		taskLanguage = inferLanguageFromTaskFiles(c.task.Files)
 	}
 
-	experiences, err := c.subagent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-		Query:       query,
-		Language:    taskLanguage,
-		ProjectPath: c.subagent.projectPath,
-		Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
-		Limit:       5,
-	})
+	var experiences []knowledge.CodingExperience
+	var err error
+	if c.subagent.codingKB != nil {
+		experiences, err = c.subagent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
+			Query:       query,
+			Language:    taskLanguage,
+			ProjectPath: c.subagent.projectPath,
+			Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
+			Limit:       5,
+		})
+	}
+	if c.subagent.handler != nil && c.subagent.handler.app != nil {
+		experiences = c.subagent.handler.app.mergeEnterpriseCodingSearch(ctx, experiences, query, taskLanguage, c.subagent.projectPath, 5)
+		err = nil
+	}
 	if err != nil {
 		return codingToolExecutionResult{
 			// Knowledge is advisory. A transient DB/index failure must not turn

@@ -19,6 +19,7 @@ interface HubLLMActiveGrant {
     card_order_id?: string;
     starts_at?: string;
     expires_at: string;
+    permanent?: boolean;
     active?: boolean;
     effective?: boolean;
     status?: string;
@@ -36,12 +37,21 @@ interface HubLLMActiveGrant {
         monthly?: number;
     };
     period_usage?: {
-        five_hour?: { window_start?: string; window_end?: string; credits_used?: number };
+        five_hour?: { window_start?: string; window_end?: string; credits_used?: number; rolling?: boolean };
         daily?: { window_start?: string; window_end?: string; credits_used?: number };
         weekly?: { window_start?: string; window_end?: string; credits_used?: number };
         monthly?: { window_start?: string; window_end?: string; credits_used?: number };
     };
 }
+
+type PeriodEntry = {
+    key: "five_hour" | "daily" | "weekly" | "monthly";
+    label: string;
+    limit: number;
+    used: number;
+    resetIn: string;
+    rolling: boolean;
+};
 
 interface HubLLMServiceStatus {
     active: boolean;
@@ -171,6 +181,9 @@ function formatGrantSource(
     if (key === "default_new_user_backfill") {
         return t("New user gift", "新用户赠送", "新用戶贈送");
     }
+    if (key === "new_user_limit_card") {
+        return t("New-user period benefit", "新用户周期福利", "新用戶週期福利");
+    }
     if (key === "admin_grant") {
         return t("Admin grant", "管理员授权", "管理員授權");
     }
@@ -185,14 +198,35 @@ function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
     return grants.filter((grant) => String(grant.source || "").trim().toLowerCase() !== "hubcenter_compute");
 }
 
+function isNewUserLimitCard(grant: HubLLMActiveGrant): boolean {
+    return String(grant.source || "").trim().toLowerCase() === "new_user_limit_card";
+}
+
+function walletCreditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
+    return creditGrants(status).filter((grant) => !isNewUserLimitCard(grant));
+}
+
 function creditTotals(status: HubLLMServiceStatus | null) {
+    const walletGrants = walletCreditGrants(status);
+    const hasWalletGrant = walletGrants.some((grant) => (
+        numeric(grant.credits_total) > 0
+        || numeric(grant.credits_used) > 0
+        || numeric(grant.credits_remaining) > 0
+        || numeric(grant.credits_available) > 0
+    ));
+    const hasWalletStatus = numeric(status?.credits_total) > 0
+        || numeric(status?.credits_used) > 0
+        || numeric(status?.credits_remaining) > 0;
+    // The limit card's available figure is its current window allowance, not
+    // an account balance. Do not let it fall through as wallet total/remaining.
+    const exposeStatusAvailable = hasWalletGrant || hasWalletStatus || !creditGrants(status).some(isNewUserLimitCard);
     return summarizeHubCreditTotals({
         active: status?.active,
         credits_total: status?.credits_total,
         credits_used: status?.credits_used,
         credits_remaining: status?.credits_remaining,
-        credits_available: status?.credits_available,
-        grants: creditGrants(status),
+        credits_available: exposeStatusAvailable ? status?.credits_available : 0,
+        grants: walletGrants,
     });
 }
 
@@ -208,9 +242,10 @@ function localizeServiceStatusReason(
 }
 
 function serviceExpiry(status: HubLLMServiceStatus | null): string {
+    if (hasPermanentGrant(status)) return "";
     const grants = creditGrants(status);
     const latestGrantExpiry = latestExpiry(grants
-        .filter(grantCanContributeExpiry)
+        .filter((grant) => !grant.permanent && grantCanContributeExpiry(grant))
         .map((grant) => String(grant.expires_at || "")));
     const latestExpiredGrantExpiry = latestExpiry(grants
         .filter((grant) => String(grant.status || "").toLowerCase() === "expired")
@@ -218,11 +253,49 @@ function serviceExpiry(status: HubLLMServiceStatus | null): string {
     return status?.effective_expires_at || latestGrantExpiry || status?.nearest_expires_at || latestExpiredGrantExpiry || "";
 }
 
-function grantRemainingCredits(grant: HubLLMActiveGrant): number {
-    const remaining = numeric(grant.credits_remaining);
-    if (remaining > 0) return remaining;
-    const available = numeric(grant.credits_available);
-    return available > 0 ? available : remaining;
+function hasPermanentGrant(status: HubLLMServiceStatus | null): boolean {
+    return creditGrants(status).some((grant) => grant.permanent === true);
+}
+
+function grantExpiryLabel(
+    grant: HubLLMActiveGrant,
+    lang: string | undefined,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    if (grant.permanent) return t("No expiry", "长期有效", "長期有效");
+    return formatTime(grant.expires_at, lang);
+}
+
+function benefitExpiryLabel(
+    grants: HubLLMActiveGrant[],
+    lang: string | undefined,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    if (grants.some((grant) => grant.permanent)) return t("No expiry", "长期有效", "長期有效");
+    const expiry = latestExpiry(grants
+        .filter((grant) => !grant.permanent && grantCanContributeExpiry(grant))
+        .map((grant) => String(grant.expires_at || "")));
+    return expiry ? formatTime(expiry, lang) : "-";
+}
+
+function periodAllowanceSummary(
+    grant: HubLLMActiveGrant,
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+    const limits = grant.period_limits;
+    const usage = grant.period_usage;
+    if (!limits) return t("No period limit", "未设周期限额", "未設週期限額");
+    const parts: string[] = [];
+    const append = (label: string, limit?: number, used?: number) => {
+        const safeLimit = numeric(limit);
+        if (safeLimit <= 0) return;
+        parts.push(`${label} ${t("available", "可用", "可用")} ${formatCredits(Math.max(0, safeLimit - numeric(used)))} / ${formatCredits(safeLimit)}`);
+    };
+    append(t("5h", "5小时", "5小時"), limits.five_hour, usage?.five_hour?.credits_used);
+    append(t("Today", "今日", "今日"), limits.daily, usage?.daily?.credits_used);
+    append(t("Week", "本周", "本週"), limits.weekly, usage?.weekly?.credits_used);
+    append(t("Month", "本月", "本月"), limits.monthly, usage?.monthly?.credits_used);
+    return parts.join(" · ") || t("No period limit", "未设周期限额", "未設週期限額");
 }
 
 function hasAnyCreditValue(status: HubLLMServiceStatus | null): boolean {
@@ -459,35 +532,43 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [activeGroupNames, availableModels, status]);
 
     const totals = useMemo(() => creditTotals(status), [status]);
+    const periodBenefitGrants = useMemo(() => creditGrants(status).filter(isNewUserLimitCard), [status]);
+    const hasValidityOnlyNewUserBenefit = useMemo(() => (
+        periodBenefitGrants.length > 0 && periodBenefitGrants.every((grant) => !hasPeriodLimits(grant))
+    ), [periodBenefitGrants]);
     const grantsForDetails = useMemo(() => {
         // Filter out expired grants from the details table
         const all = creditGrants(status);
         return all.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
     }, [status]);
     const isActiveUnmeteredService = useMemo(() => {
-        if (!status?.active || grantsForDetails.length > 0 || hasAnyCreditValue(status)) return false;
+        if (!status?.active || (grantsForDetails.length > 0 && !hasValidityOnlyNewUserBenefit) || hasAnyCreditValue(status)) return false;
         return availableModels.length > 0 || authorizedModelsForDisplay.length > 0 || activeGroupNames.length > 0;
-    }, [activeGroupNames, availableModels, authorizedModelsForDisplay, grantsForDetails, status]);
+    }, [activeGroupNames, availableModels, authorizedModelsForDisplay, grantsForDetails, hasValidityOnlyNewUserBenefit, status]);
+    const hasWalletCredits = useMemo(() => (
+        totals.total > 0 || totals.used > 0 || totals.remaining > 0 || totals.available > 0
+    ), [totals]);
     const expiryLabel = useMemo(() => {
         const expiry = serviceExpiry(status);
         if (expiry) return formatTime(expiry, lang);
-        if (isActiveUnmeteredService) return t("No expiry", "长期有效", "長期有效");
+        if (isActiveUnmeteredService || hasPermanentGrant(status)) return t("No expiry", "长期有效", "長期有效");
         return "-";
     }, [isActiveUnmeteredService, lang, status, t]);
     const statusSummary = useMemo(() => serviceStatusSummary(status, lang, t), [status, lang, t]);
 
     // Aggregate period limits and usage from grants that have period constraints.
-    const periodInfo = useMemo(() => {
-        const grants = creditGrants(status);
+    // Keep welcome benefits separate from metered cards: the two are different
+    // kinds of entitlement and must not be added into one misleading balance.
+    const buildPeriodInfo = useCallback((grants: HubLLMActiveGrant[]) => {
         const withPeriod = grants.filter((g) => {
             const pl = g.period_limits;
-            return pl && (Number(pl.five_hour || 0) > 0 || Number(pl.daily || 0) > 0 || Number(pl.weekly || 0) > 0 || Number(pl.monthly || 0) > 0);
+            return pl && (numeric(pl.five_hour) > 0 || numeric(pl.daily) > 0 || numeric(pl.weekly) > 0 || numeric(pl.monthly) > 0);
         });
         if (withPeriod.length === 0) return null;
         // Aggregate across all grants (typically one, but handle multi-grant).
         // Use the latest window_end among grants for each period.
         const agg = {
-            five_hour: { limit: 0, used: 0, windowEnd: "" },
+            five_hour: { limit: 0, used: 0, windowEnd: "", rolling: false },
             daily: { limit: 0, used: 0, windowEnd: "" },
             weekly: { limit: 0, used: 0, windowEnd: "" },
             monthly: { limit: 0, used: 0, windowEnd: "" },
@@ -495,17 +576,18 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         for (const g of withPeriod) {
             const pl = g.period_limits!;
             const pu = g.period_usage;
-            agg.five_hour.limit += Number(pl.five_hour || 0);
-            agg.five_hour.used += Number(pu?.five_hour?.credits_used || 0);
+            agg.five_hour.limit += numeric(pl.five_hour);
+            agg.five_hour.used += numeric(pu?.five_hour?.credits_used);
+            agg.five_hour.rolling = agg.five_hour.rolling || Boolean(pu?.five_hour?.rolling);
             if (pu?.five_hour?.window_end && (!agg.five_hour.windowEnd || pu.five_hour.window_end > agg.five_hour.windowEnd)) agg.five_hour.windowEnd = pu.five_hour.window_end;
-            agg.daily.limit += Number(pl.daily || 0);
-            agg.daily.used += Number(pu?.daily?.credits_used || 0);
+            agg.daily.limit += numeric(pl.daily);
+            agg.daily.used += numeric(pu?.daily?.credits_used);
             if (pu?.daily?.window_end && (!agg.daily.windowEnd || pu.daily.window_end > agg.daily.windowEnd)) agg.daily.windowEnd = pu.daily.window_end;
-            agg.weekly.limit += Number(pl.weekly || 0);
-            agg.weekly.used += Number(pu?.weekly?.credits_used || 0);
+            agg.weekly.limit += numeric(pl.weekly);
+            agg.weekly.used += numeric(pu?.weekly?.credits_used);
             if (pu?.weekly?.window_end && (!agg.weekly.windowEnd || pu.weekly.window_end > agg.weekly.windowEnd)) agg.weekly.windowEnd = pu.weekly.window_end;
-            agg.monthly.limit += Number(pl.monthly || 0);
-            agg.monthly.used += Number(pu?.monthly?.credits_used || 0);
+            agg.monthly.limit += numeric(pl.monthly);
+            agg.monthly.used += numeric(pu?.monthly?.credits_used);
             if (pu?.monthly?.window_end && (!agg.monthly.windowEnd || pu.monthly.window_end > agg.monthly.windowEnd)) agg.monthly.windowEnd = pu.monthly.window_end;
         }
         const computeResetIn = (windowEnd: string): string => {
@@ -516,14 +598,38 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             if (remaining <= 0) return "";
             return formatRetryDuration(remaining, lang);
         };
-        type PeriodEntry = { key: string; label: string; limit: number; used: number; resetIn: string };
         const entries: PeriodEntry[] = [];
-        if (agg.five_hour.limit > 0) entries.push({ key: "five_hour", label: t("5-Hour Limit", "5小时限额", "5小時限額"), limit: agg.five_hour.limit, used: agg.five_hour.used, resetIn: computeResetIn(agg.five_hour.windowEnd) });
-        if (agg.daily.limit > 0) entries.push({ key: "daily", label: t("Daily Limit", "日限额", "日限額"), limit: agg.daily.limit, used: agg.daily.used, resetIn: computeResetIn(agg.daily.windowEnd) });
-        if (agg.weekly.limit > 0) entries.push({ key: "weekly", label: t("Weekly Limit", "周限额", "週限額"), limit: agg.weekly.limit, used: agg.weekly.used, resetIn: computeResetIn(agg.weekly.windowEnd) });
-        if (agg.monthly.limit > 0) entries.push({ key: "monthly", label: t("Monthly Limit", "月限额", "月限額"), limit: agg.monthly.limit, used: agg.monthly.used, resetIn: computeResetIn(agg.monthly.windowEnd) });
+        if (agg.five_hour.limit > 0) entries.push({ key: "five_hour", label: agg.five_hour.rolling ? t("Rolling 5-Hour Limit", "5小时滚动限额", "5小時滾動限額") : t("5-Hour Limit", "5小时限额", "5小時限額"), limit: agg.five_hour.limit, used: agg.five_hour.used, resetIn: computeResetIn(agg.five_hour.windowEnd), rolling: agg.five_hour.rolling });
+        if (agg.daily.limit > 0) entries.push({ key: "daily", label: t("Daily Limit", "日限额", "日限額"), limit: agg.daily.limit, used: agg.daily.used, resetIn: computeResetIn(agg.daily.windowEnd), rolling: false });
+        if (agg.weekly.limit > 0) entries.push({ key: "weekly", label: t("Weekly Limit", "周限额", "週限額"), limit: agg.weekly.limit, used: agg.weekly.used, resetIn: computeResetIn(agg.weekly.windowEnd), rolling: false });
+        if (agg.monthly.limit > 0) entries.push({ key: "monthly", label: t("Monthly Limit", "月限额", "月限額"), limit: agg.monthly.limit, used: agg.monthly.used, resetIn: computeResetIn(agg.monthly.windowEnd), rolling: false });
         return entries.length > 0 ? entries : null;
-    }, [lang, status, t]);
+    }, [lang, t]);
+    // Period benefits are scoped to a service group. Never add limits from
+    // different groups together: they can route to different model families
+    // and a summed number looks like one shared account balance.
+    const benefitPeriodGroups = useMemo(() => {
+        const grantsByServiceGroup = new Map<string, HubLLMActiveGrant[]>();
+        for (const grant of periodBenefitGrants) {
+            const serviceGroupID = String(grant.service_group_id || "").trim() || "-";
+            const grants = grantsByServiceGroup.get(serviceGroupID) || [];
+            grants.push(grant);
+            grantsByServiceGroup.set(serviceGroupID, grants);
+        }
+        const groups: Array<{ serviceGroupID: string; periodInfo: PeriodEntry[]; expiry: string }> = [];
+        for (const [serviceGroupID, grants] of grantsByServiceGroup) {
+            const periodInfo = buildPeriodInfo(grants);
+            if (!periodInfo) continue;
+            groups.push({
+                serviceGroupID,
+                periodInfo,
+                expiry: benefitExpiryLabel(grants, lang, t),
+            });
+        }
+        return groups.sort((a, b) => a.serviceGroupID.localeCompare(b.serviceGroupID));
+    }, [buildPeriodInfo, lang, periodBenefitGrants, t]);
+    const hasPeriodBenefit = benefitPeriodGroups.length > 0;
+    const meteredPeriodInfo = useMemo(() => buildPeriodInfo(walletCreditGrants(status)), [buildPeriodInfo, status]);
 
     const openHubCardStorePage = useCallback(async () => {
         try {
@@ -664,33 +770,110 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     </div>
                 </div>
 
-                <div className="hub-service-redeem__credit-grid">
-                    <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Total credits", "总额度", "總額度")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--primary">{isActiveUnmeteredService ? formatUnlimitedCredits(lang) : formatCredits(totals.total)}</div>
+                {(hasWalletCredits || (!hasPeriodBenefit && !isActiveUnmeteredService)) && (
+                    <div className="hub-service-redeem__wallet-section">
+                        <div className="hub-service-redeem__label hub-service-redeem__label--section">
+                            {t("Account credits", "账户点数", "帳戶點數")}
+                        </div>
+                        <div className="hub-service-redeem__credit-grid">
+                            <div className="hub-service-redeem__credit-card">
+                                <div className="hub-service-redeem__label">{t("Total credits", "总额度", "總額度")}</div>
+                                <div className="hub-service-redeem__value hub-service-redeem__value--primary">{formatCredits(totals.total)}</div>
+                            </div>
+                            <div className="hub-service-redeem__credit-card">
+                                <div className="hub-service-redeem__label">{t("Used credits", "已用额度", "已用額度")}</div>
+                                <div className="hub-service-redeem__value hub-service-redeem__value--warning">{formatCredits(totals.used)}</div>
+                            </div>
+                            <div className="hub-service-redeem__credit-card">
+                                <div className="hub-service-redeem__label">{t("Remaining credits", "剩余额度", "剩餘額度")}</div>
+                                <div className="hub-service-redeem__value hub-service-redeem__value--success">{formatCredits(totals.remaining)}</div>
+                            </div>
+                        </div>
                     </div>
-                    <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Used credits", "已用额度", "已用額度")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--warning">{isActiveUnmeteredService ? "-" : formatCredits(totals.used)}</div>
-                    </div>
-                    <div className="hub-service-redeem__credit-card">
-                        <div className="hub-service-redeem__label">{t("Remaining credits", "剩余额度", "剩餘額度")}</div>
-                        <div className="hub-service-redeem__value hub-service-redeem__value--success">{isActiveUnmeteredService ? formatUnlimitedCredits(lang) : formatCredits(totals.remaining)}</div>
-                    </div>
-                </div>
+                )}
 
-                {periodInfo && (
+                {isActiveUnmeteredService && !hasPeriodBenefit && (
+                    <div className="hub-service-redeem__credit-grid">
+                        <div className="hub-service-redeem__credit-card hub-service-redeem__credit-card--unmetered">
+                            <div className="hub-service-redeem__label">{t("Service access", "服务权益", "服務權益")}</div>
+                            <div className="hub-service-redeem__value hub-service-redeem__value--success">{formatUnlimitedCredits(lang)}</div>
+                        </div>
+                    </div>
+                )}
+
+                {benefitPeriodGroups.length > 0 && (
                     <div className="hub-service-redeem__period-section">
-                        <div className="hub-service-redeem__label hub-service-redeem__label--section">{t("Period Limits (current window)", "周期限额（当前窗口）", "週期限額（當前窗口）")}</div>
+                        <div className="hub-service-redeem__period-heading">
+                            <div>
+                                <div className="hub-service-redeem__label hub-service-redeem__label--section">{t("New-user period benefit", "新用户周期福利", "新用戶週期福利")}</div>
+                                <p>{t("This is a recurring usage allowance, not an account credit balance.", "这是可循环使用的限额，不是账户总点数。", "這是可循環使用的限額，不是帳戶總點數。")}</p>
+                                <p className="hub-service-redeem__period-scope-note">{t("Each service group has an independent allowance; the limits below are not added together.", "每个服务组的限额彼此独立，以下数值不会相加。", "每個服務組的限額彼此獨立，以下數值不會相加。")}</p>
+                            </div>
+                        </div>
+                        <div className="hub-service-redeem__benefit-groups">
+                            {benefitPeriodGroups.map((group) => (
+                                <section key={group.serviceGroupID} className="hub-service-redeem__benefit-group" data-service-group={group.serviceGroupID} aria-label={t(`Service group ${group.serviceGroupID} period benefit`, `服务组 ${group.serviceGroupID} 的周期福利`, `服務組 ${group.serviceGroupID} 的週期福利`)}>
+                                    <div className="hub-service-redeem__benefit-group-header">
+                                        <div className="hub-service-redeem__benefit-group-name">
+                                            <span>{t("Service group", "服务组", "服務組")}</span>
+                                            <strong>{group.serviceGroupID}</strong>
+                                        </div>
+                                        <span className="hub-service-redeem__benefit-expiry">
+                                            <span>{t("Valid until", "有效期", "有效期")}</span>
+                                            <strong>{group.expiry}</strong>
+                                        </span>
+                                    </div>
+                                    <div className="hub-service-redeem__period-grid">
+                                        {group.periodInfo.map((entry) => {
+                                            const pct = entry.limit > 0 ? Math.min(100, Math.round((entry.used / entry.limit) * 100)) : 0;
+                                            const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
+                                            return (
+                                                <div key={entry.key} className="hub-service-redeem__period-card">
+                                                    <div className="hub-service-redeem__period-label">{entry.label}</div>
+                                                    <div className="hub-service-redeem__period-values">
+                                                        <span className="hub-service-redeem__period-available">{formatCredits(Math.max(0, entry.limit - entry.used))}</span>
+                                                        <span className="hub-service-redeem__period-available-label">{t("available", "可用", "可用")}</span>
+                                                        <span className="hub-service-redeem__period-sep">/</span>
+                                                        <span className="hub-service-redeem__period-limit">{formatCredits(entry.limit)}</span>
+                                                    </div>
+                                                    <div className="hub-service-redeem__period-bar" data-kind={barKind}>
+                                                        <div className="hub-service-redeem__period-bar-fill" style={{ width: `${pct}%` }} />
+                                                    </div>
+                                                    <div className="hub-service-redeem__period-footer">
+                                                        <span className="hub-service-redeem__period-pct">{t(`Used ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`)} · {pct}%</span>
+                                                        {entry.resetIn && (
+                                                            <span className="hub-service-redeem__period-reset">
+                                                                {entry.rolling
+                                                                    ? t(`Recovers in ${entry.resetIn}`, `${entry.resetIn}后恢复`, `${entry.resetIn}後恢復`)
+                                                                    : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </section>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {meteredPeriodInfo && (
+                    <div className="hub-service-redeem__period-section">
+                        <div className="hub-service-redeem__label hub-service-redeem__label--section">
+                            {t("Account credit period limits", "账户点数周期限额", "帳戶點數週期限額")}
+                        </div>
                         <div className="hub-service-redeem__period-grid">
-                            {periodInfo.map((entry) => {
+                            {meteredPeriodInfo.map((entry) => {
                                 const pct = entry.limit > 0 ? Math.min(100, Math.round((entry.used / entry.limit) * 100)) : 0;
                                 const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
                                 return (
                                     <div key={entry.key} className="hub-service-redeem__period-card">
                                         <div className="hub-service-redeem__period-label">{entry.label}</div>
                                         <div className="hub-service-redeem__period-values">
-                                            <span className="hub-service-redeem__period-used">{formatCredits(entry.used)}</span>
+                                            <span className="hub-service-redeem__period-available">{formatCredits(Math.max(0, entry.limit - entry.used))}</span>
+                                            <span className="hub-service-redeem__period-available-label">{t("available", "可用", "可用")}</span>
                                             <span className="hub-service-redeem__period-sep">/</span>
                                             <span className="hub-service-redeem__period-limit">{formatCredits(entry.limit)}</span>
                                         </div>
@@ -698,10 +881,12 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                             <div className="hub-service-redeem__period-bar-fill" style={{ width: `${pct}%` }} />
                                         </div>
                                         <div className="hub-service-redeem__period-footer">
-                                            <span className="hub-service-redeem__period-pct">{pct}%</span>
+                                            <span className="hub-service-redeem__period-pct">{t(`Used ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`)} · {pct}%</span>
                                             {entry.resetIn && (
                                                 <span className="hub-service-redeem__period-reset">
-                                                    {t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
+                                                    {entry.rolling
+                                                        ? t(`Recovers in ${entry.resetIn}`, `${entry.resetIn}后恢复`, `${entry.resetIn}後恢復`)
+                                                        : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
                                                 </span>
                                             )}
                                         </div>
@@ -750,9 +935,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                     <th scope="col">{t("Source", "来源")}</th>
                                     <th scope="col">{t("Starts At", "开始时间")}</th>
                                     <th scope="col">{t("Expires At", "到期时间")}</th>
-                                    <th scope="col">{t("Total", "总额")}</th>
-                                    <th scope="col">{t("Used", "已用")}</th>
-                                    <th scope="col">{t("Remaining", "剩余")}</th>
+                                    <th scope="col">{t("Credit balance", "账户点数", "帳戶點數")}</th>
+                                    <th scope="col">{t("Period allowance", "周期限额", "週期限額")}</th>
                                     <th scope="col">{t("Status", "状态")}</th>
                                 </tr>
                             </thead>
@@ -762,10 +946,24 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                         <td><span className="hub-service-redeem__strong">{grant.service_group_id || "-"}</span></td>
                                         <td>{formatGrantSource(grant, t)}</td>
                                         <td>{formatTime(grant.starts_at, lang)}</td>
-                                        <td>{formatTime(grant.expires_at, lang)}</td>
-                                        <td>{formatCredits(grant.credits_total)}</td>
-                                        <td className="hub-service-redeem__cell--warning">{formatCredits(grant.credits_used)}</td>
-                                        <td className="hub-service-redeem__cell--success">{formatCredits(grantRemainingCredits(grant))}</td>
+                                        <td>{grantExpiryLabel(grant, lang, t)}</td>
+                                        {isNewUserLimitCard(grant) ? (
+                                            <>
+                                                <td className="hub-service-redeem__cell--muted">{t("Not applicable", "不适用", "不適用")}</td>
+                                                <td className="hub-service-redeem__cell--benefit">
+                                                    {periodAllowanceSummary(grant, t)}
+                                                </td>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <td>{`${formatCredits(grant.credits_total)} · ${t("used", "已用", "已用")} ${formatCredits(grant.credits_used)}`}</td>
+                                                <td className={hasPeriodLimits(grant) ? "hub-service-redeem__cell--benefit" : "hub-service-redeem__cell--muted"}>
+                                                    {hasPeriodLimits(grant)
+                                                        ? periodAllowanceSummary(grant, t)
+                                                        : t("No period limit", "未设周期限额", "未設週期限額")}
+                                                </td>
+                                            </>
+                                        )}
                                         <td>{grantStatusLabel(grant, lang, t)}</td>
                                     </tr>
                                 ))}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,10 +119,15 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 	// Merge consecutive identical tool calls.
 	mergedSteps := mergeConsecutiveSteps(rawSteps)
 
-	// Extract description from first user message.
-	description := extractUserDescription(session)
+	// The first user message states what the run was for, but it is a one-off
+	// request, not a capability. Store a redacted gist instead: the raw text is
+	// rendered into other agents' prompts as a capability line, where an
+	// unredacted request reads as a standing instruction for the current turn.
+	description := redactLearnedSkillIntent(extractUserDescription(session))
 	if description == "" {
-		description = session.SessionID
+		// SessionID is the loop ID ("chat"), which would name and describe the
+		// skill after the transport rather than the work.
+		return nil, fmt.Errorf("no user request found to describe the skill")
 	}
 
 	name := tool.GenerateSkillName(description)
@@ -134,7 +140,52 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 		Steps:       mergedSteps,
 		Status:      "active",
 		Source:      "learned",
+		// Keep the skill in the pool it was learned from. Coding tasks share
+		// what other coding tasks learned; a chat never contributes a
+		// capability to a coding turn.
+		ExperienceDomain: corelib.NormalizeSkillExperienceDomain(session.ExperienceDomain),
 	}, nil
+}
+
+// learnedSkillIntentMaxRunes bounds a learned skill's stored description.
+// The description is rendered verbatim into other agents' prompts, so a whole
+// paragraph of a past request would crowd out the current task.
+const learnedSkillIntentMaxRunes = 60
+
+var (
+	learnedSkillURLRe     = regexp.MustCompile(`(?i)\b(?:https?|ftp|ssh|file)://\S+`)
+	learnedSkillEmailRe   = regexp.MustCompile(`(?i)\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b`)
+	learnedSkillWinPathRe = regexp.MustCompile(
+		`(?i)(?:\\\\[\w.-]+|[a-z]:)[\\/][^\s"'，。；：、）)\]】]*`)
+	// Each directory segment must contain a letter so that dates such as
+	// 2026/08/17 are not mistaken for paths.
+	learnedSkillUnixPathRe   = regexp.MustCompile(`/(?:[\w.@+-]*[a-zA-Z_][\w.@+-]*/)+[\w.@+-]*`)
+	learnedSkillQuotedRe     = regexp.MustCompile(`[“"「『]\s*[^”"」』]{4,}\s*[”"」』]`)
+	learnedSkillWhitespaceRe = regexp.MustCompile(`\s+`)
+)
+
+// redactLearnedSkillIntent turns the first user message of a trajectory into a
+// storable skill description. A raw request carries local paths, document
+// titles, and contact details that have no bearing on the reusable procedure,
+// and it survives into every prompt that lists installed skills. Strip the
+// identifying parts and cap the length; the remaining gist is what keeps the
+// skill matchable.
+func redactLearnedSkillIntent(intent string) string {
+	s := strings.TrimSpace(intent)
+	if s == "" {
+		return ""
+	}
+	// URLs first: their scheme separator also matches the path patterns.
+	s = learnedSkillURLRe.ReplaceAllString(s, "<链接>")
+	s = learnedSkillEmailRe.ReplaceAllString(s, "<邮箱>")
+	s = learnedSkillWinPathRe.ReplaceAllString(s, "<路径>")
+	s = learnedSkillUnixPathRe.ReplaceAllString(s, "<路径>")
+	s = learnedSkillQuotedRe.ReplaceAllString(s, "<文档>")
+	s = strings.TrimSpace(learnedSkillWhitespaceRe.ReplaceAllString(s, " "))
+	if runes := []rune(s); len(runes) > learnedSkillIntentMaxRunes {
+		s = strings.TrimSpace(string(runes[:learnedSkillIntentMaxRunes])) + "…"
+	}
+	return s
 }
 
 // buildToolResultMap builds a map from tool_call_id to the content string
@@ -799,6 +850,27 @@ func (p *SkillAutoSummaryPipeline) WithNamingLLM(l skillNamingLLM) *SkillAutoSum
 	return p
 }
 
+// autoSummarySessionKey identifies the conversation a draft was distilled
+// from. SessionID alone is the agent loop ID, which is the literal "chat" for
+// every foreground turn regardless of which task tab produced it: keying
+// idempotency on it lets one tab suppress another's draft, and log lines
+// cannot be attributed to a tab. UserID is the per-tab owner, so the pair is
+// unique.
+func autoSummarySessionKey(session *TrajectorySession) string {
+	if session == nil {
+		return ""
+	}
+	sid := strings.TrimSpace(session.SessionID)
+	owner := strings.TrimSpace(session.UserID)
+	if owner == "" {
+		return sid
+	}
+	if sid == "" {
+		return owner
+	}
+	return owner + "|" + sid
+}
+
 // RunPipeline executes the full skill auto-summary pipeline for a session.
 // It is idempotent: repeated calls with the same session_id are skipped.
 // Each stage is run sequentially; any failure aborts subsequent stages.
@@ -806,7 +878,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	if session == nil {
 		return
 	}
-	sid := session.SessionID
+	sid := autoSummarySessionKey(session)
 	if !isAutoSummaryEligibleSession(session) {
 		log.Printf("[skill-auto-summary] session=%s skipped due to terminal status=%q", sid, session.Status)
 		return
@@ -891,6 +963,15 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 				// orphan the previously registered name and duplicate the
 				// skill in the registry.
 				draft.Name = existing.Name
+				// A versioned update must not move a skill between experience
+				// pools: re-learning an existing recipe from a different kind
+				// of session refines it, it does not reclassify what it is for.
+				// A skill that predates domains has no pool yet, so it adopts
+				// the one it was just re-learned in instead of staying
+				// universal forever.
+				if existingDomain := corelib.NormalizeSkillExperienceDomain(existing.ExperienceDomain); existingDomain != corelib.SkillDomainUniversal {
+					draft.ExperienceDomain = existingDomain
+				}
 				// Write new version.
 				defPath, defFormat := findSkillDefinitionFile(existing.SkillDir)
 				if defPath == "" {
@@ -1109,6 +1190,9 @@ func registerAutoSummaryLearnedSkill(exec *SkillExecutor, draft *skill.SkillYAML
 	if skillDir == "" {
 		return fmt.Errorf("skill dir is required for learned overlay")
 	}
+	// ExperienceDomain is a definition field: it lives in skill.yaml and comes
+	// back through the disk scan. The config overlay deliberately carries only
+	// identity, status, and runtime stats.
 	entry := corelib.NLSkillEntry{
 		Name:     name,
 		Source:   source,

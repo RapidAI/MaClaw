@@ -5,7 +5,6 @@ import (
 	pathpkg "path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -55,6 +54,25 @@ func assertContainsNone(t *testing.T, text string, parts []string) {
 			t.Errorf("unexpectedly contained %q", part)
 		}
 	}
+}
+
+func TestSystemPrompt_FirstTurn_DoesNotDumpWarehouseFacts(t *testing.T) {
+	h := newTestIMHandlerWithMemoryStore(t)
+	if err := h.memoryStore.Save(corememory.Entry{
+		Content:  "User's production SSH host is old-warehouse.example",
+		Category: corememory.CategoryUserFact,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := h.buildSystemPromptWithMemory("hello", true)
+	if strings.Contains(prompt, "old-warehouse.example") {
+		t.Fatalf("first-turn prompt dumped warehouse text:\n%s", prompt)
+	}
+	assertContainsAll(t, prompt, []string{
+		corememory.PromptSectionUserMemory,
+		corememory.DefaultRecallHintForPrompt(),
+		corememory.CatalogOnlyWorkingSetFooter(),
+	})
 }
 
 func TestSystemPrompt_FirstTurn_ContainsProactiveMemoryInstruction(t *testing.T) {
@@ -119,11 +137,11 @@ func TestSystemPrompt_ProactiveRecallIncludesSourceHint(t *testing.T) {
 	}
 
 	prompt := h.buildSystemPromptWithMemory("snake requirements keyboard scoring", false)
-	if !strings.Contains(prompt, "source: "+sourcePath) {
-		t.Fatalf("expected proactive recall source hint, got:\n%s", prompt)
+	if strings.Contains(prompt, sourcePath) || strings.Contains(prompt, "keyboard controls and scoring rules") {
+		t.Fatalf("catalog-only prompt must not dump recalled warehouse text, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "full: read_file") {
-		t.Fatalf("expected proactive recall drill-down hint, got:\n%s", prompt)
+	if !strings.Contains(prompt, corememory.CatalogOnlyWorkingSetFooter()) {
+		t.Fatalf("expected catalog-only working-set footer, got:\n%s", prompt)
 	}
 }
 func TestSystemPrompt_TrialReflectEnabled_InProMode(t *testing.T) {
@@ -221,58 +239,10 @@ func TestSystemPrompt_ProactiveRecallIncludesSceneIndex(t *testing.T) {
 	var b strings.Builder
 	h.appendProactiveRecall(&b, "scene prompt", false)
 	out := b.String()
-	if !strings.Contains(out, "[Scene Index]") || !strings.Contains(out, "Requirements") || !strings.Contains(out, "full: read_file") {
-		t.Fatalf("expected scene index in prompt, got:\n%s", out)
+	if strings.Contains(out, "[Scene Index]") || strings.Contains(out, "Build scene prompt support") {
+		t.Fatalf("catalog-only recall must not dump scene bodies, got:\n%s", out)
 	}
-}
-
-func TestProactiveContextForPromptWithBudget_SkipsDuplicateInFlightRecall(t *testing.T) {
-	h := newTestIMHandlerWithMemoryStore(t)
-	h.proactiveRecallInFlight.Store("desktop-user", proactiveRecallState{startedAt: time.Now()})
-
-	prompt, relevant, ok := h.proactiveContextForPromptWithBudget(
-		"repeat query",
-		corememory.IMProactivePromptOptions("", false),
-		"desktop-user",
-		"",
-		false,
-	)
-	if ok {
-		t.Fatal("expected duplicate in-flight proactive recall to be skipped")
-	}
-	if prompt != "" {
-		t.Fatalf("expected empty prompt context, got %q", prompt)
-	}
-	if len(relevant) != 0 {
-		t.Fatalf("expected no recalled entries, got %d", len(relevant))
-	}
-}
-
-func TestBeginProactiveRecall_ReplacesStaleInFlightRecall(t *testing.T) {
-	h := newTestIMHandlerWithMemoryStore(t)
-
-	prevStaleAfter := imProactiveRecallStaleAfter
-	imProactiveRecallStaleAfter = 20 * time.Millisecond
-	t.Cleanup(func() { imProactiveRecallStaleAfter = prevStaleAfter })
-
-	oldState := proactiveRecallState{startedAt: time.Now().Add(-time.Second)}
-	h.proactiveRecallInFlight.Store("desktop-user", oldState)
-
-	newState, ok := h.beginProactiveRecall("desktop-user", "desktop-user", "", false)
-	if !ok {
-		t.Fatal("expected stale in-flight proactive recall to be replaced")
-	}
-	if newState.startedAt.Equal(oldState.startedAt) {
-		t.Fatal("expected a fresh proactive recall state")
-	}
-
-	h.endProactiveRecall("desktop-user", oldState)
-	if got, exists := h.proactiveRecallInFlight.Load("desktop-user"); !exists || got != newState {
-		t.Fatalf("old recall completion should not clear replacement state, got=%v exists=%v", got, exists)
-	}
-
-	h.endProactiveRecall("desktop-user", newState)
-	if _, exists := h.proactiveRecallInFlight.Load("desktop-user"); exists {
-		t.Fatal("expected fresh proactive recall state to be cleared")
+	if !strings.Contains(out, corememory.CatalogOnlyWorkingSetFooter()) {
+		t.Fatalf("expected catalog-only working-set footer, got:\n%s", out)
 	}
 }

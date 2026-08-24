@@ -1,0 +1,46 @@
+{
+  "category": "fitproof_qualifier",
+  "category_id": 20,
+  "title": "FitProof qualifier mismatch is not a semantic near-match",
+  "design_ref": "10.1 item 20",
+  "format_note": "A provider that only provisions freshness=reference cannot prove a current-data need. Similarity is not tested here; the planner has no FitProof without qualifier match.",
+  "samples": [
+    {
+      "id": "current-need-reference-provider",
+      "title": "Need freshness=current is unmet when only reference is provisioned",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}}],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "reference_search",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "reference"}}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "search", "reason": "no_feasible_provider"}]
+      }
+    },
+    {
+      "id": "matching-qualifier-is-selected",
+      "title": "The same provider is selected when the qualifier matches",
+      "needs": [{"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "reference"}}],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "reference_search",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "reference"}}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "adapter": "reference_search"}]
+      }
+    }
+  ]
+}

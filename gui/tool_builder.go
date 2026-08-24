@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -25,14 +26,33 @@ func NewDynamicToolBuilder(registry *ToolRegistry) *DynamicToolBuilder {
 // BuildAll returns tool definitions for every available tool (no filtering).
 func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	b.syncRegistry()
-	return b.attachExecutionContracts(b.inner.BuildAll())
+	return b.attachExecutionContracts(filterLegacyModelDynamicGatewayDefinitions(b.inner.BuildAll()))
 }
 
 // Build returns tool definitions, applying context-aware filtering when
 // the number of available tools exceeds the threshold.
 func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} {
 	b.syncRegistry()
-	return b.attachExecutionContracts(b.inner.Build(userMessage))
+	return b.attachExecutionContracts(filterLegacyModelDynamicGatewayDefinitions(b.inner.Build(userMessage)))
+}
+
+// filterLegacyModelDynamicGatewayDefinitions is deliberately applied at the
+// GUI wrapper too. The core builder enforces the same invariant, but this
+// protects a partially upgraded or alternate builder from turning a registry
+// entry into legacy model authority. Dynamic Skill/MCP calls are emitted only
+// by their managed, identity-bound surfaces.
+func filterLegacyModelDynamicGatewayDefinitions(defs []map[string]interface{}) []map[string]interface{} {
+	if len(defs) == 0 {
+		return defs
+	}
+	filtered := make([]map[string]interface{}, 0, len(defs))
+	for _, def := range defs {
+		if tool.IsLegacyModelDynamicGateway(extractToolName(def)) {
+			continue
+		}
+		filtered = append(filtered, def)
+	}
+	return filtered
 }
 
 // SetEmbedder delegates to corelib/tool.DynamicToolBuilder.SetEmbedder.
@@ -130,7 +150,7 @@ func registeredToolToDef(t RegisteredTool) map[string]interface{} {
 		Required:    t.Required,
 	})
 	if len(t.ExecutionContract) > 0 {
-		def["x_execution_contract"] = t.ExecutionContract
+		def["x_execution_contract"] = agent.CloneToolDefinitionMap(t.ExecutionContract)
 	}
 	return def
 }

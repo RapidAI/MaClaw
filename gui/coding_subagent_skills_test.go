@@ -90,6 +90,131 @@ func TestSelectRelevantSkillsForTaskExcludesGUIIncompatibleLegacySkills(t *testi
 	}
 }
 
+// A full coding environment widens the candidate pool, but it must not pad
+// unfilled slots with unscored skills: a learned skill's description is the
+// raw request of the session it came from, so padding put an unrelated past
+// task in front of the model as if it were the current one.
+func TestSelectRelevantSkillsForTaskFullEnvDoesNotPadWithUnrelatedSkills(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{
+			Name: "craft_task_ded4ddee", Status: "active", Source: "learned",
+			Description: "北京天气",
+			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo weather"}}},
+		},
+		{
+			Name: "craft_api2api2mac", Status: "active", Source: "learned",
+			Description: "api2服务器信息保存进知识库",
+			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo api2"}}},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: app},
+		fullEnvironment: true,
+	}}
+
+	if matched := cb.selectRelevantSkillsForTask("push"); len(matched) != 0 {
+		t.Fatalf("unrelated learned skills leaked into a full-env coding turn: %#v", matched)
+	}
+}
+
+// Relevance scoring is not the isolation boundary. A skill learned from a
+// general chat is excluded from a coding turn even when its text scores well,
+// while the coding pool itself keeps accumulating across coding tasks.
+func TestSelectRelevantSkillsForTaskExcludesOtherExperienceDomain(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{
+			Name: "craft_chat_eslint", Status: "active", Source: "learned",
+			ExperienceDomain: corelib.SkillDomainGeneral,
+			Description:      "自动修复 eslint 报错并格式化代码",
+			Triggers:         []string{"eslint", "lint"},
+			Steps:            []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo chat"}}},
+		},
+		{
+			Name: "craft_coding_eslint", Status: "active", Source: "learned",
+			ExperienceDomain: corelib.SkillDomainCoding,
+			Description:      "自动修复 eslint 报错并格式化代码",
+			Triggers:         []string{"eslint", "lint"},
+			Steps:            []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo coding"}}},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: app},
+		fullEnvironment: true,
+	}}
+
+	matched := cb.selectRelevantSkillsForTask("修复 eslint 报错")
+	for _, item := range matched {
+		if item.Name == "craft_chat_eslint" {
+			t.Fatalf("chat-learned skill leaked into a coding turn: %#v", matched)
+		}
+	}
+	if len(matched) != 1 || matched[0].Name != "craft_coding_eslint" {
+		t.Fatalf("matched skills = %#v, want only the coding-pool skill", matched)
+	}
+}
+
+func TestSelectRelevantSkillsForTaskFullEnvKeepsRelevantSkill(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{
+		{
+			Name: "craft_task_ded4ddee", Status: "active", Source: "learned",
+			Description: "北京天气",
+			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo weather"}}},
+		},
+		{
+			Name: "eslint-fixer", Status: "active",
+			Description: "自动修复 eslint 报错并格式化代码",
+			Triggers:    []string{"eslint", "lint"},
+			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo lint"}}},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler:         &IMMessageHandler{app: app},
+		fullEnvironment: true,
+	}}
+
+	matched := cb.selectRelevantSkillsForTask("修复 eslint 报错")
+	if len(matched) != 1 || matched[0].Name != "eslint-fixer" {
+		t.Fatalf("matched = %#v, want only eslint-fixer", matched)
+	}
+	if matched[0].Score <= 0 {
+		t.Fatalf("matched skill must carry a positive score, got %v", matched[0].Score)
+	}
+}
+
+// Short or unrecognized task text used to fall through the fit filter and
+// admit every installed skill, including document/office ones.
+func TestCodingSubAgentSkillFitsTaskRejectsDocumentSkillsForUnrecognizedTask(t *testing.T) {
+	for _, doc := range []string{
+		"pptx-generator Generate PowerPoint presentation slides deck",
+		"contract-review Review contract clauses and legal document text",
+	} {
+		if codingSubAgentSkillFitsTask("push", doc) {
+			t.Fatalf("document skill %q should not fit an unrecognized short task", doc)
+		}
+	}
+}
+
 func TestExtractBigrams(t *testing.T) {
 	bigrams := extractBigrams("优化ui")
 	if bigrams == nil {
@@ -189,11 +314,11 @@ func TestBuildCodingSubAgentSkillSection_WithSkills(t *testing.T) {
 	if !strings.Contains(section, "eslint-fixer") {
 		t.Error("section should contain second skill name")
 	}
-	if !strings.Contains(section, "manage_skill") {
-		t.Error("section should mention manage_skill usage")
+	if !strings.Contains(section, "Skill 函数") {
+		t.Error("section should describe the request-local Skill function")
 	}
-	if !strings.Contains(section, "action=\"run\"") {
-		t.Error("section should only allow run action")
+	if strings.Contains(section, "manage_skill(action") {
+		t.Error("section must not instruct the model to call the generic gateway")
 	}
 	// Should include required args for skills that have them.
 	if !strings.Contains(section, "参数: input") {
@@ -219,16 +344,16 @@ func TestBuildCodingSubAgentSkillSectionCapsRequiredArgs(t *testing.T) {
 	}
 }
 
-func TestBuildManageSkillToolDefinition_Structure(t *testing.T) {
-	def := buildManageSkillToolDefinition()
+func TestBuildCodingSkillInvocationDefinition_Structure(t *testing.T) {
+	def := buildCodingSkillInvocationDefinition("skill_01_alias", codingSubAgentSkillMatch{Name: "formatter"})
 
 	fn, ok := def["function"].(map[string]interface{})
 	if !ok {
 		t.Fatal("expected function field")
 	}
 	name, _ := fn["name"].(string)
-	if name != "manage_skill" {
-		t.Errorf("expected name=manage_skill, got %q", name)
+	if name != "skill_01_alias" {
+		t.Errorf("expected request-local alias, got %q", name)
 	}
 
 	params, ok := fn["parameters"].(map[string]interface{})
@@ -240,17 +365,14 @@ func TestBuildManageSkillToolDefinition_Structure(t *testing.T) {
 		t.Fatal("expected properties field")
 	}
 
-	// Should have action with enum restriction
-	actionProp, ok := props["action"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected action property")
+	if _, exists := props["name"]; exists {
+		t.Error("request-local Skill invocation must not accept a skill name")
 	}
-	enumVals, ok := actionProp["enum"].([]string)
-	if !ok {
-		t.Fatal("expected enum field in action")
+	if _, exists := props["run_id"]; exists {
+		t.Error("request-local Skill invocation must not accept a run ID")
 	}
-	if len(enumVals) != 2 || enumVals[0] != "run" || enumVals[1] != "status" {
-		t.Errorf("expected enum=[run,status], got %v", enumVals)
+	if _, exists := props["action"]; exists {
+		t.Error("request-local Skill invocation must not accept an action selector")
 	}
 }
 
@@ -290,11 +412,11 @@ func TestExecuteManageSkill_StatusRequiresRunID(t *testing.T) {
 	}
 
 	result := cb.executeManageSkill(map[string]interface{}{"action": "status"})
-	if result.Outcome != codingToolOutcomeFailed {
-		t.Fatalf("missing status run_id outcome = %q, want failed; result=%s", result.Outcome, result.Text)
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("status without a request-local run binding outcome = %q, want blocked; result=%s", result.Outcome, result.Text)
 	}
-	if !strings.Contains(result.Text, "missing required argument") || !strings.Contains(result.Text, "run_id") {
-		t.Fatalf("missing status run_id should produce targeted required-argument error, got %q", result.Text)
+	if !strings.Contains(result.Text, "request-local run binding") {
+		t.Fatalf("status must be rejected without a request-local run binding, got %q", result.Text)
 	}
 	if len(cb.getDynamicToolsRun()) != 0 {
 		t.Fatalf("manage_skill status without run_id should not execute or be tracked, got %#v", cb.getDynamicToolsRun())
@@ -394,6 +516,7 @@ func TestCodingSubAgentDynamicToolFailureClassification(t *testing.T) {
 		"Panic: nil pointer",
 		"Tool error: missing dependency",
 		"MCP call failed: runtime owner is missing",
+		"[MCP ERROR] server=ews tool=find_person code=validation\nRequired parameter 'query' (string) is missing",
 		"MCP tool error: validation failed",
 		"MCP 调用失败: unknown server",
 		"MCP 调用被拒绝: builtin tool",
@@ -430,6 +553,105 @@ func TestIsMatchedSkill_CaseInsensitive(t *testing.T) {
 	}
 	if cb.isMatchedSkill("other-skill") {
 		t.Error("isMatchedSkill should return false for non-matched skill")
+	}
+}
+
+// The SubAgent authorizes a run against its matched set, but the host resolves
+// the name again over every loaded skill and matches stable identities first,
+// so a display name can be captured by a package that carries it as an alias.
+// These tests pin that a reference covering several matched skills is refused,
+// and that the name handed to the host is the matched entry's own identity.
+
+func TestExecuteManageSkillBindsQualifiedIdentity(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "PDF Translator", QualifiedID: "acme.pdf-translator"},
+		},
+	}
+	args := map[string]interface{}{"action": "run", "name": "pdf translator"}
+	cb.executeManageSkill(args)
+
+	if got := args["name"]; got != "pdf translator" {
+		t.Fatalf("compatibility input must not be mutated, got %v", got)
+	}
+}
+
+func TestExecuteManageSkillKeepsDisplayNameWithoutQualifiedID(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "Local Helper"},
+		},
+	}
+	args := map[string]interface{}{"action": "run", "name": "local helper"}
+	cb.executeManageSkill(args)
+
+	// A skill with no stable identity has nothing better to travel as. The
+	// canonical spelling still comes from the matched entry, not the model.
+	if got := args["name"]; got != "local helper" {
+		t.Fatalf("compatibility input must not be mutated, got %v", got)
+	}
+}
+
+func TestExecuteManageSkillRefusesAmbiguousSkillName(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}},
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "Translator", QualifiedID: "acme.translator"},
+			{Name: "Translator", QualifiedID: "other.translator"},
+		},
+	}
+	result := cb.executeManageSkill(map[string]interface{}{"action": "run", "name": "Translator"})
+
+	if result.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("outcome = %v, want blocked", result.Outcome)
+	}
+	if !strings.Contains(result.Text, "ambiguous") ||
+		!strings.Contains(result.Text, "acme.translator") ||
+		!strings.Contains(result.Text, "other.translator") {
+		t.Fatalf("ambiguity rejection should name both skills, got %q", result.Text)
+	}
+	if _, ok := cb.matchedSkill("Translator"); ok {
+		t.Fatal("matchedSkill must fail closed on an ambiguous reference")
+	}
+}
+
+func TestMatchedSkillAcceptsQualifiedIdentity(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		matchedSkills: []codingSubAgentSkillMatch{
+			{Name: "Translator", QualifiedID: "acme.translator"},
+			{Name: "Linter", QualifiedID: "other.linter"},
+		},
+	}
+	// A qualified id picks out one skill even though a colliding display name
+	// would not.
+	match, ok := cb.matchedSkill("acme.translator")
+	if !ok {
+		t.Fatal("a qualified id should resolve to its matched skill")
+	}
+	if match.Name != "Translator" {
+		t.Fatalf("resolved skill = %q, want Translator", match.Name)
+	}
+}
+
+func TestCodingSubAgentSkillQualifiedIDPrefersStableIdentity(t *testing.T) {
+	cases := []struct {
+		name string
+		def  NLSkillDefinition
+		want string
+	}{
+		{"skill id wins", NLSkillDefinition{Name: "T", SkillID: "a.t", HubSkillID: "hub_t", Publisher: "p"}, "a.t"},
+		{"hub id next", NLSkillDefinition{Name: "T", HubSkillID: "hub_t", Publisher: "p"}, "hub_t"},
+		{"publisher qualified last", NLSkillDefinition{Name: "T", Publisher: "p"}, "p:T"},
+		{"display name only has none", NLSkillDefinition{Name: "T"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codingSubAgentSkillQualifiedID(tc.def); got != tc.want {
+				t.Fatalf("qualified id = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

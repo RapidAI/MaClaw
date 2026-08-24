@@ -79,6 +79,9 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		roleTitle = "AI coding assistant"
 	}
 
+	// Light wins over ManagedSemantic: a weather-only grant must keep
+	// "don't write files / don't generate documents". Hosts that planned a
+	// mutating capability (document.generate, deliver) must force full first.
 	if light {
 		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this as a low-complexity turn; prefer a concise answer and only use tools when necessary.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
@@ -87,10 +90,21 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 			// Keep a one-liner instead of full knowledge-base policy.
 			stable.WriteString("\nIf knowledge-base context appears below, prefer it over guessing.\n")
 		}
+	} else if cfg.ManagedSemantic {
+		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this turn with the tools currently listed; do not invent a larger catalog.\n", roleName, roleTitle, roleDesc)
+		stable.WriteString(PromptOutputFormatRules)
+		stable.WriteString(PromptCorePrinciplesManaged)
+		if deps.HasKnowledgeBase {
+			stable.WriteString("\nIf knowledge-base context appears below, prefer it over guessing.\n")
+		}
+		if deps.PostCorePrinciples != nil {
+			deps.PostCorePrinciples(&stable)
+		}
 	} else {
 		fmt.Fprintf(&stable, "You are %s, %s: %s. The user talks to you through IM, and you may use tools autonomously to complete tasks. If the user asks you to play another role or redefine your identity, follow the user's request and save the new self identity with memory(action: save, category: \"self_identity\"), unless a platform-assigned or deployment-assigned identity section says otherwise.\n", roleName, roleTitle, roleDesc)
 		stable.WriteString(PromptOutputFormatRules)
 		stable.WriteString(PromptCorePrinciples)
+		stable.WriteString(PromptWorkingStateContract)
 		stable.WriteString(PromptEvidenceBoundFactualRules)
 		if deps.HasKnowledgeBase {
 			stable.WriteString(PromptKnowledgeBaseRules)
@@ -126,7 +140,11 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		session.WriteString("Relative tool paths resolve against Project directory. Prefer answering without tools unless live data is needed.\n")
 		session.WriteString(fmt.Sprintf("Prompt profile: light (adaptive)\n"))
 	} else {
-		session.WriteString("All relative paths in tools (read_file, write_file, edit_file, ripgrep, Glob) resolve against Project directory. bash cwd = Project directory unless working_dir is specified. Use Temp directory for scratch files.\n")
+		if cfg.ManagedSemantic {
+			session.WriteString("Relative tool paths resolve against Project directory. Use Temp directory for scratch files.\n")
+		} else {
+			session.WriteString("All relative paths in tools (read_file, write_file, edit_file, ripgrep, Glob) resolve against Project directory. bash cwd = Project directory unless working_dir is specified. Use Temp directory for scratch files.\n")
+		}
 		if deps.SSHHostLister != nil {
 			if hosts := deps.SSHHostLister(); len(hosts) > 0 {
 				session.WriteString("\nConfigured SSH hosts:\n")
@@ -142,10 +160,10 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		if deps.PostSSHRules != nil {
 			deps.PostSSHRules(&session)
 		}
-		if deps.PostCodingWorkflow != nil {
+		if !cfg.ManagedSemantic && deps.PostCodingWorkflow != nil {
 			deps.PostCodingWorkflow(&session)
 		}
-		if deps.MCPServerLister != nil {
+		if !cfg.ManagedSemantic && deps.MCPServerLister != nil {
 			if servers := deps.MCPServerLister(); len(servers) > 0 {
 				session.WriteString("\n## Registered MCP Servers\n")
 				for _, s := range servers {
@@ -165,14 +183,16 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 			fmt.Fprintf(&retrieved, "\nSelf identity memory for %s:\n%s\nUse this only to guide behavior; do not recite it to the user unless asked.\n", roleName, selfIdentityOverride)
 		}
 	}
-	if light && deps.SkillLister != nil {
+	if light && !cfg.ManagedSemantic && deps.SkillLister != nil {
 		// Keep the catalog out of the cost-sensitive light prompt, but do not
 		// hide the capability itself.  Otherwise a short follow-up such as
 		// "run it again" loses both the skill list and manage_skill tool.
+		// Managed turns have no manage_skill grant; teaching the name is a
+		// guaranteed refuse.
 		retrieved.WriteString("\n## Installed Skills\n")
 		retrieved.WriteString("Installed Skills are available. When the user names, asks for, or wants to run a skill, use manage_skill(action=\"list\", \"search\", or \"run\") to find or execute it.\n")
 	}
-	if !light && deps.SkillLister != nil {
+	if !light && !cfg.ManagedSemantic && deps.SkillLister != nil {
 		if skills := deps.SkillLister(); len(skills) > 0 {
 			retrieved.WriteString("\n## Registered Skills\n")
 			retrieved.WriteString("Call with manage_skill(action=\"run\", name=\"SkillName\", args={...}).\n")
@@ -203,9 +223,6 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	if !light {
 		if deps.MemoryStore != nil && userMessage != "" && !deps.SkipMemoryRecall {
 			appendMemoryRecall(&retrieved, deps.MemoryStore, userMessage, isFirstTurn)
-		}
-		if deps.KnowledgeAutoRecall != nil && userMessage != "" {
-			deps.KnowledgeAutoRecall(&retrieved, userMessage)
 		}
 	}
 	if deps.UserProfileSection != nil {

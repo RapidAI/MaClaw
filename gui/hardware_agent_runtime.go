@@ -156,7 +156,7 @@ func cloneToolDefinitionMaps(definitions []map[string]interface{}) []map[string]
 	}
 	cloned := make([]map[string]interface{}, len(definitions))
 	for i, definition := range definitions {
-		cloned[i] = cloneToolDefinitionMap(definition)
+		cloned[i] = agent.CloneToolDefinitionMap(definition)
 	}
 	return cloned
 }

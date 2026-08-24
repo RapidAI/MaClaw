@@ -26,6 +26,8 @@ bool compact_connectivity_service_cancel_cellular_requests_for_owner(const void 
 esp_err_t compact_connectivity_service_start_cellular_transport(uint32_t timeout_ms);
 bool compact_connectivity_service_is_cellular_transport_ready(void);
 esp_err_t compact_connectivity_service_quiesce_cellular_transport(uint32_t timeout_ms);
+esp_err_t compact_connectivity_service_prepare_system_sleep(uint32_t timeout_ms);
+void compact_connectivity_service_abort_system_sleep_prepare(void);
 esp_err_t compact_connectivity_service_cellular_http_request(
     const device_connectivity_http_request_t *request);
 esp_err_t compact_connectivity_service_cellular_http_stream_request(

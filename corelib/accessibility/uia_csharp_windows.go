@@ -71,12 +71,39 @@ func findExistingUIACsharp() string {
 	}
 	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Size() > 0 {
+			if csharpSourceNewerThan(p) {
+				continue
+			}
 			// Seed into base/bin for stable subsequent lookups.
 			seedUIACsharpToBaseBin(p)
 			return p
 		}
 	}
 	return ""
+}
+
+func csharpSourceNewerThan(exe string) bool {
+	var candidates []string
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "corelib", "accessibility", "tools", "MaclawUIASidecar", "Program.cs"))
+	}
+	candidates = append(candidates, filepath.Join("corelib", "accessibility", "tools", "MaclawUIASidecar", "Program.cs"))
+	var src string
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			src = p
+			break
+		}
+	}
+	if src == "" {
+		return false
+	}
+	sst, err1 := os.Stat(src)
+	est, err2 := os.Stat(exe)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return sst.ModTime().After(est.ModTime().Add(2 * time.Second))
 }
 
 // seedUIACsharpToBaseBin copies a found prebuilt exe into <MaclawBaseDir>/bin when missing.

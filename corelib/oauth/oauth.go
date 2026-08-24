@@ -118,9 +118,9 @@ func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (oidcDiscovery, e
 	if err != nil {
 		return oidcDiscovery{}, fmt.Errorf("oidc discovery request: %w", err)
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
-		return oidcDiscovery{}, fmt.Errorf("oidc discovery request: %w", err)
+		return oidcDiscovery{}, annotateOAuthNetworkError("oidc discovery request", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -349,10 +349,9 @@ func exchangeCodeInternalCtx(ctx context.Context, cfg Config, code, codeVerifier
 		return nil, fmt.Errorf("token exchange request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token exchange request failed: %w", err)
+		return nil, annotateOAuthNetworkError("token exchange request failed", err)
 	}
 	defer resp.Body.Close()
 

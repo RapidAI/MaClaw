@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "fall_detection_classifier.h"
 #include "persistence_service.h"
 
 /* Raw samples arrive at 125 Hz on the current COM6 adapter.  Sampling the
@@ -15,15 +16,6 @@
  * noisy sample as a fall.  These are deliberately conservative engineering
  * defaults, not medical thresholds; field calibration remains required. */
 #define FALL_SAMPLE_PERIOD_MS 100u
-#define FALL_FREEFALL_MAGNITUDE_MG 350
-#define FALL_FREEFALL_MIN_US 100000LL
-#define FALL_IMPACT_MAGNITUDE_MG 2500
-#define FALL_IMPACT_WINDOW_US 1500000LL
-#define FALL_STILL_MAGNITUDE_MIN_MG 800
-#define FALL_STILL_MAGNITUDE_MAX_MG 1200
-#define FALL_STILL_MAX_GYRO_MDPS 100000
-#define FALL_STILL_MIN_US 3000000LL
-#define FALL_ORIENTATION_COS_PERMILLE 707
 #define FALL_CONFIRMATION_WINDOW_US 15000000LL
 #define FALL_DETECTION_NAMESPACE "fall_detect"
 #define FALL_DETECTION_STORE_KEY "config"
@@ -34,24 +26,6 @@
 #define FALL_DETECTION_ERROR_CAPACITY 112u
 
 static const char *TAG = "fall_detection";
-
-typedef enum {
-    CLASSIFIER_MONITORING = 0,
-    CLASSIFIER_FREEFALL,
-    CLASSIFIER_POST_IMPACT,
-} classifier_state_t;
-
-typedef struct {
-    bool have_baseline;
-    int32_t baseline_x;
-    int32_t baseline_y;
-    int32_t baseline_z;
-    int64_t freefall_start_us;
-    int64_t impact_us;
-    int64_t still_start_us;
-    bool orientation_changed;
-    classifier_state_t state;
-} fall_classifier_t;
 
 typedef struct {
     uint32_t magic;
@@ -97,7 +71,12 @@ static void *s_callback_context;
 static device_power_lease_t s_confirmation_lease = DEVICE_POWER_LEASE_INVALID;
 static TaskHandle_t s_task;
 static SemaphoreHandle_t s_stopped;
+/* A retained worker reaches this binary safe-point before future physical
+ * sleep.  It remains parked rather than being destroyed/recreated, so ABORT
+ * cannot lose a monitoring generation because task creation fails. */
+static SemaphoreHandle_t s_system_sleep_quiesced;
 static volatile bool s_stop_requested;
+static volatile bool s_system_sleep_preparing;
 static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
 /* Only one init/deinit transaction may create, join or reclaim the optional
  * sensor worker.  Public tool admission alone cannot serialize two rollback
@@ -114,6 +93,11 @@ static uint32_t s_user_action_admissions;
  * is an explicit lifecycle borrower: a client callback admitted just before
  * rollback must finish before the service can release the Power domain. */
 static uint32_t s_callback_admissions;
+/* A classifier iteration can obtain a Motion sample, acquire/release a Power
+ * lease and invoke presentation. Treat it as an explicit PREPARE borrower so
+ * the sleep marker cannot be crossed between the loop's first check and those
+ * side effects. */
+static uint32_t s_system_sleep_evaluations;
 /* Serialises the read/check/write replay transaction.  Persistence Service
  * serialises individual NVS calls; it cannot make a load followed by save
  * atomic relative to another Gateway retry. */
@@ -122,7 +106,8 @@ static SemaphoreHandle_t s_mutation_mutex;
 static bool admit_tool(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (s_initialized && !s_stop_requested) {
+    if (s_initialized && !s_stop_requested &&
+        !__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE)) {
         ++s_tool_admissions;
         admitted = true;
     }
@@ -139,7 +124,8 @@ static void release_tool(void) {
 static bool admit_user_action(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (s_initialized && !s_stop_requested) {
+    if (s_initialized && !s_stop_requested &&
+        !__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE)) {
         ++s_user_action_admissions;
         admitted = true;
     }
@@ -156,7 +142,8 @@ static void release_user_action(void) {
 static bool admit_callback(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (!s_stop_requested) {
+    if (!s_stop_requested &&
+        !__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE)) {
         ++s_callback_admissions;
         admitted = true;
     }
@@ -170,8 +157,48 @@ static void release_callback(void) {
     taskEXIT_CRITICAL(&s_lifecycle_lock);
 }
 
-static bool has_configured_motion_sensor(void) {
-    return device_profile_has_capability(DEVICE_CAPABILITY_MOTION_SENSOR);
+static bool begin_system_sleep_evaluation(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool admitted = s_initialized && !s_stop_requested &&
+                          !__atomic_load_n(&s_system_sleep_preparing,
+                                           __ATOMIC_ACQUIRE);
+    if (admitted) ++s_system_sleep_evaluations;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    return admitted;
+}
+
+static void end_system_sleep_evaluation(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_system_sleep_evaluations) --s_system_sleep_evaluations;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+/* A direct task notification lets PREPARE bring the sampler to its next
+ * admission check immediately.  A plain vTaskDelay would leave the Power
+ * transaction waiting for up to one sampling period even though there is no
+ * further Motion work to perform.  Notifications are otherwise harmless:
+ * they merely start the next normal sampling iteration early. */
+static void wait_for_next_sample_or_lifecycle_change(void) {
+    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(FALL_SAMPLE_PERIOD_MS));
+}
+
+/* A profile declaration says that this product family can expose Motion; it
+ * does not prove that an optional sensor completed its private bootstrap.  Do
+ * one value-only read before allocating the retained classifier worker so a
+ * definitively absent adapter is represented exactly like a profile with no
+ * Motion capability.  Transient BUSY/TIMEOUT/IO results remain retryable in
+ * the worker and must not erase a hardware capability at boot. */
+static bool motion_hal_is_definitively_unavailable_at_boot(void) {
+    device_motion_sample_t sample = {0};
+    const device_status_t status = device_motion_get_sample(&sample);
+    if (status == DEVICE_STATUS_UNAVAILABLE || status == DEVICE_STATUS_NOT_FOUND) {
+        ESP_LOGW(TAG, "motion HAL unavailable at startup: %d", (int)status);
+        return true;
+    }
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "motion HAL startup probe deferred to sampler: %d", (int)status);
+    }
+    return false;
 }
 
 static bool valid_store(const fall_detection_store_t *store) {
@@ -242,140 +269,6 @@ static esp_err_t save_store(const fall_detection_store_t *store) {
                                           store, sizeof(*store)));
 }
 
-static int64_t square_i32(int32_t value) {
-    int64_t wide = value;
-    return wide * wide;
-}
-
-static int64_t acceleration_magnitude_squared(const device_motion_sample_t *sample) {
-    return square_i32(sample->acceleration_mg_x) +
-           square_i32(sample->acceleration_mg_y) +
-           square_i32(sample->acceleration_mg_z);
-}
-
-static bool magnitude_is_between(const device_motion_sample_t *sample,
-                                 int32_t minimum_mg, int32_t maximum_mg) {
-    int64_t value = acceleration_magnitude_squared(sample);
-    return value >= square_i32(minimum_mg) && value <= square_i32(maximum_mg);
-}
-
-static int32_t max_abs_gyro_mdps(const device_motion_sample_t *sample) {
-    int64_t x = sample->angular_rate_mdps_x;
-    int64_t y = sample->angular_rate_mdps_y;
-    int64_t z = sample->angular_rate_mdps_z;
-    if (x < 0) x = -x;
-    if (y < 0) y = -y;
-    if (z < 0) z = -z;
-    int64_t maximum = x > y ? x : y;
-    if (z > maximum) maximum = z;
-    return maximum > INT32_MAX ? INT32_MAX : (int32_t)maximum;
-}
-
-static bool is_still(const device_motion_sample_t *sample) {
-    return magnitude_is_between(sample, FALL_STILL_MAGNITUDE_MIN_MG,
-                                FALL_STILL_MAGNITUDE_MAX_MG) &&
-           max_abs_gyro_mdps(sample) <= FALL_STILL_MAX_GYRO_MDPS;
-}
-
-static void update_baseline_if_stable(fall_classifier_t *classifier,
-                                      const device_motion_sample_t *sample) {
-    if (!is_still(sample)) return;
-    classifier->baseline_x = sample->acceleration_mg_x;
-    classifier->baseline_y = sample->acceleration_mg_y;
-    classifier->baseline_z = sample->acceleration_mg_z;
-    classifier->have_baseline = true;
-}
-
-/* Compare only directions.  Squared arithmetic avoids floating point and is
- * safe for the configured 8g range.  A negative dot is necessarily changed. */
-static bool orientation_changed_from_baseline(const fall_classifier_t *classifier,
-                                              const device_motion_sample_t *sample) {
-    if (!classifier->have_baseline) return false;
-    /* Scale first so the squared comparison remains safely in signed 64-bit
-     * arithmetic even at the configured 8g full scale.  Direction thresholds
-     * are intentionally coarse enough that 32mg quantisation is immaterial. */
-    int32_t baseline_x = classifier->baseline_x / 32;
-    int32_t baseline_y = classifier->baseline_y / 32;
-    int32_t baseline_z = classifier->baseline_z / 32;
-    int32_t current_x = sample->acceleration_mg_x / 32;
-    int32_t current_y = sample->acceleration_mg_y / 32;
-    int32_t current_z = sample->acceleration_mg_z / 32;
-    int64_t dot = (int64_t)baseline_x * current_x +
-                  (int64_t)baseline_y * current_y +
-                  (int64_t)baseline_z * current_z;
-    if (dot <= 0) return true;
-    int64_t baseline_sq = square_i32(baseline_x) + square_i32(baseline_y) +
-                          square_i32(baseline_z);
-    int64_t current_sq = square_i32(current_x) + square_i32(current_y) +
-                         square_i32(current_z);
-    if (baseline_sq == 0 || current_sq == 0) return false;
-    /* dot / (|a||b|) <= .707.  Square both positive sides; use permille to
-     * retain a clear, reviewable threshold without a sqrt dependency. */
-    int64_t left = dot * 1000LL;
-    int64_t right_sq = (int64_t)FALL_ORIENTATION_COS_PERMILLE *
-                       FALL_ORIENTATION_COS_PERMILLE * baseline_sq * current_sq;
-    return left * left <= right_sq;
-}
-
-static void classifier_reset(fall_classifier_t *classifier) {
-    classifier->state = CLASSIFIER_MONITORING;
-    classifier->freefall_start_us = 0;
-    classifier->impact_us = 0;
-    classifier->still_start_us = 0;
-    classifier->orientation_changed = false;
-}
-
-static bool classifier_observe(fall_classifier_t *classifier,
-                               const device_motion_sample_t *sample) {
-    int64_t now_us = (int64_t)sample->timestamp_us;
-    int64_t magnitude_sq = acceleration_magnitude_squared(sample);
-    bool freefall = magnitude_sq <= square_i32(FALL_FREEFALL_MAGNITUDE_MG);
-    bool impact = magnitude_sq >= square_i32(FALL_IMPACT_MAGNITUDE_MG);
-
-    switch (classifier->state) {
-        case CLASSIFIER_MONITORING:
-            update_baseline_if_stable(classifier, sample);
-            if (freefall) {
-                classifier->state = CLASSIFIER_FREEFALL;
-                classifier->freefall_start_us = now_us;
-            }
-            break;
-        case CLASSIFIER_FREEFALL:
-            if (impact && now_us - classifier->freefall_start_us >= FALL_FREEFALL_MIN_US) {
-                classifier->state = CLASSIFIER_POST_IMPACT;
-                classifier->impact_us = now_us;
-                classifier->still_start_us = 0;
-                classifier->orientation_changed = false;
-            } else if (!freefall || now_us - classifier->freefall_start_us >
-                                     FALL_IMPACT_WINDOW_US) {
-                classifier_reset(classifier);
-                update_baseline_if_stable(classifier, sample);
-            }
-            break;
-        case CLASSIFIER_POST_IMPACT:
-            if (now_us - classifier->impact_us > FALL_IMPACT_WINDOW_US + FALL_STILL_MIN_US) {
-                classifier_reset(classifier);
-                update_baseline_if_stable(classifier, sample);
-                break;
-            }
-            if (is_still(sample)) {
-                if (orientation_changed_from_baseline(classifier, sample)) {
-                    classifier->orientation_changed = true;
-                }
-                if (classifier->still_start_us == 0) classifier->still_start_us = now_us;
-                if (classifier->orientation_changed &&
-                    now_us - classifier->still_start_us >= FALL_STILL_MIN_US) {
-                    classifier_reset(classifier);
-                    return true;
-                }
-            } else {
-                classifier->still_start_us = 0;
-            }
-            break;
-    }
-    return false;
-}
-
 static void notify_if_current(fall_detection_event_t event, uint32_t generation) {
     /* The callback runs synchronously on the classifier worker, so deinit's
      * worker join is also its callback drain.  Sample the stop generation
@@ -410,7 +303,8 @@ static bool begin_confirmation_window(void) {
     /* Tool execution can disable monitoring between the task's last sample
      * and this commit.  Do not resurrect a prompt after the user's explicit
      * opt-out; release the lease obtained before taking the short lock. */
-    if (s_enabled && s_state == FALL_DETECTION_STATE_MONITORING) {
+    if (!__atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE) && s_enabled &&
+        s_state == FALL_DETECTION_STATE_MONITORING) {
         s_confirmation_lease = lease;
         s_state = FALL_DETECTION_STATE_PENDING_CONFIRMATION;
         s_confirmation_deadline_us = deadline;
@@ -450,46 +344,80 @@ static void finish_confirmation_window(void) {
 
 static void fall_detection_task(void *arg) {
     (void)arg;
-    fall_classifier_t classifier = {0};
-    classifier_reset(&classifier);
+    fall_detection_classifier_t classifier = {0};
+    fall_detection_classifier_reset(&classifier);
     unsigned consecutive_read_errors = 0;
     for (;;) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
         const bool stopping = s_stop_requested;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         if (stopping) break;
-        uint64_t deadline_us;
-        fall_detection_state_t state;
-        taskENTER_CRITICAL(&s_lock);
-        deadline_us = s_confirmation_deadline_us;
-        state = s_state;
-        bool enabled = s_enabled;
-        taskEXIT_CRITICAL(&s_lock);
-        uint64_t now_us = (uint64_t)esp_timer_get_time();
-        if (!enabled) {
-            /* Disable is a policy boundary, not merely a hidden prompt.  Drop
-             * the in-flight classifier evidence so later re-enable cannot
-             * combine motion from two different user-consent periods. */
-            classifier_reset(&classifier);
-        }
-        if (state == FALL_DETECTION_STATE_PENDING_CONFIRMATION &&
-            now_us >= deadline_us) {
-            finish_confirmation_window();
-        } else if (enabled && state == FALL_DETECTION_STATE_MONITORING) {
-            device_motion_sample_t sample = {0};
-            device_status_t status = device_motion_get_sample(&sample);
-            if (status == DEVICE_STATUS_OK) {
-                consecutive_read_errors = 0;
-                if (classifier_observe(&classifier, &sample)) {
-                    (void)begin_confirmation_window();
-                }
-            } else if (++consecutive_read_errors == 10) {
-                ESP_LOGW(TAG, "motion HAL unavailable during monitoring: %d", (int)status);
-                consecutive_read_errors = 0;
+        if (!begin_system_sleep_evaluation()) {
+            taskENTER_CRITICAL(&s_lifecycle_lock);
+            const bool stopped_while_waiting = s_stop_requested;
+            taskEXIT_CRITICAL(&s_lifecycle_lock);
+            if (stopped_while_waiting) break;
+        } else {
+            uint64_t deadline_us;
+            fall_detection_state_t state;
+            taskENTER_CRITICAL(&s_lock);
+            deadline_us = s_confirmation_deadline_us;
+            state = s_state;
+            bool enabled = s_enabled;
+            taskEXIT_CRITICAL(&s_lock);
+            uint64_t now_us = (uint64_t)esp_timer_get_time();
+            if (!enabled) {
+                /* Disable is a policy boundary, not merely a hidden prompt.  Drop
+                 * the in-flight classifier evidence so later re-enable cannot
+                 * combine motion from two different user-consent periods. */
+                fall_detection_classifier_reset(&classifier);
             }
+            if (state == FALL_DETECTION_STATE_PENDING_CONFIRMATION &&
+                now_us >= deadline_us) {
+                finish_confirmation_window();
+            } else if (enabled && state == FALL_DETECTION_STATE_MONITORING) {
+                device_motion_sample_t sample = {0};
+                device_status_t status = device_motion_get_sample(&sample);
+                if (status == DEVICE_STATUS_OK) {
+                    consecutive_read_errors = 0;
+                    if (fall_detection_classifier_observe(&classifier, &sample)) {
+                        (void)begin_confirmation_window();
+                    }
+                } else if (++consecutive_read_errors == 10) {
+                    ESP_LOGW(TAG, "motion HAL unavailable during monitoring: %d", (int)status);
+                    consecutive_read_errors = 0;
+                }
+            }
+            end_system_sleep_evaluation();
+            wait_for_next_sample_or_lifecycle_change();
+            continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(FALL_SAMPLE_PERIOD_MS));
+        taskENTER_CRITICAL(&s_lock);
+        const bool system_sleep_preparing =
+            __atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE);
+        taskEXIT_CRITICAL(&s_lock);
+        if (system_sleep_preparing) {
+            /* The worker owns all classifier/confirmation side effects. It
+             * must acknowledge the closed boundary before Power can continue,
+             * then remain parked until ABORT or terminal deinit wakes it. */
+            if (s_system_sleep_quiesced) xSemaphoreGive(s_system_sleep_quiesced);
+            for (;;) {
+                (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                taskENTER_CRITICAL(&s_lifecycle_lock);
+                const bool stop_after_wait = s_stop_requested;
+                taskEXIT_CRITICAL(&s_lifecycle_lock);
+                taskENTER_CRITICAL(&s_lock);
+                const bool still_preparing =
+                    __atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE);
+                taskEXIT_CRITICAL(&s_lock);
+                if (stop_after_wait) goto stopped;
+                if (!still_preparing) break;
+            }
+            continue;
+        }
+        wait_for_next_sample_or_lifecycle_change();
     }
+stopped:
     /* Publish worker exit before the final completion hand-off.  Deinit reads
      * this handle under the same lock, so it cannot notify a recycled task
      * handle after consuming s_stopped. */
@@ -526,8 +454,14 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
     }
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_stop_requested = false;
+    s_system_sleep_evaluations = 0;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
-    if (!device_profile_has_capability(DEVICE_CAPABILITY_MOTION_SENSOR)) {
+    /* A prior aborted transaction must never carry a closed admission marker
+     * into a new optional-service generation, including a profile that has no
+     * motion hardware and therefore creates no worker to clear it. */
+    __atomic_store_n(&s_system_sleep_preparing, false, __ATOMIC_RELEASE);
+    if (!device_profile_has_capability(DEVICE_CAPABILITY_MOTION_SENSOR) ||
+        motion_hal_is_definitively_unavailable_at_boot()) {
         taskENTER_CRITICAL(&s_lock);
         s_initialized = true;
         s_available = false;
@@ -541,11 +475,14 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
      * uninitialised preference. */
     s_mutation_mutex = xSemaphoreCreateMutex();
     s_stopped = xSemaphoreCreateBinary();
-    if (!s_mutation_mutex || !s_stopped) {
+    s_system_sleep_quiesced = xSemaphoreCreateBinary();
+    if (!s_mutation_mutex || !s_stopped || !s_system_sleep_quiesced) {
         if (s_mutation_mutex) vSemaphoreDelete(s_mutation_mutex);
         if (s_stopped) vSemaphoreDelete(s_stopped);
+        if (s_system_sleep_quiesced) vSemaphoreDelete(s_system_sleep_quiesced);
         s_mutation_mutex = NULL;
         s_stopped = NULL;
+        s_system_sleep_quiesced = NULL;
         xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
@@ -556,8 +493,10 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         ESP_LOGE(TAG, "cannot load persisted configuration: %s", esp_err_to_name(store_err));
         vSemaphoreDelete(s_stopped);
         vSemaphoreDelete(s_mutation_mutex);
+        vSemaphoreDelete(s_system_sleep_quiesced);
         s_stopped = NULL;
         s_mutation_mutex = NULL;
+        s_system_sleep_quiesced = NULL;
         xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_INTERNAL_ERROR;
     }
@@ -565,12 +504,15 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         ESP_LOGE(TAG, "cannot persist migrated configuration schema");
         vSemaphoreDelete(s_stopped);
         vSemaphoreDelete(s_mutation_mutex);
+        vSemaphoreDelete(s_system_sleep_quiesced);
         s_stopped = NULL;
         s_mutation_mutex = NULL;
+        s_system_sleep_quiesced = NULL;
         xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_INTERNAL_ERROR;
     }
     taskENTER_CRITICAL(&s_lock);
+    __atomic_store_n(&s_system_sleep_preparing, false, __ATOMIC_RELEASE);
     s_callback = callback;
     s_callback_context = context;
     /* Mark initialization in progress before task creation so a concurrent
@@ -582,7 +524,9 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
     s_configuration_revision = store.revision;
     s_state = s_enabled ? FALL_DETECTION_STATE_MONITORING : FALL_DETECTION_STATE_DISABLED;
     taskEXIT_CRITICAL(&s_lock);
-    if (xTaskCreate(fall_detection_task, "maclaw_fall", 4096, NULL, 3, &s_task) != pdPASS) {
+    TaskHandle_t created_task = NULL;
+    if (xTaskCreate(fall_detection_task, "maclaw_fall", 4096, NULL, 3,
+                    &created_task) != pdPASS) {
         taskENTER_CRITICAL(&s_lock);
         s_initialized = false;
         s_available = false;
@@ -593,11 +537,20 @@ device_status_t fall_detection_service_init(fall_detection_callback_t callback,
         taskEXIT_CRITICAL(&s_lock);
         vSemaphoreDelete(s_stopped);
         vSemaphoreDelete(s_mutation_mutex);
+        vSemaphoreDelete(s_system_sleep_quiesced);
         s_stopped = NULL;
         s_mutation_mutex = NULL;
+        s_system_sleep_quiesced = NULL;
         xSemaphoreGive(s_deinit_mutex);
         return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     }
+    /* The worker owns no externally visible task identity until this
+     * lifecycle publication.  PREPARE, ABORT and deinit all sample/clear the
+     * handle under this same lock, so a late notification cannot target a
+     * recycled FreeRTOS handle. */
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    s_task = created_task;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
     taskENTER_CRITICAL(&s_lock);
     s_available = true;
     s_enabled = store.enabled != 0;
@@ -630,23 +583,32 @@ device_status_t fall_detection_service_deinit(uint32_t timeout_ms) {
      * not use this shortcut for the normal init publication window: that one
      * has already allocated the worker resources even while availability is
      * temporarily false. */
-    const bool profile_has_motion = has_configured_motion_sensor();
     taskENTER_CRITICAL(&s_lock);
-    const bool unavailable_without_worker = !profile_has_motion &&
-                                           s_initialized && s_task == NULL &&
-                                           s_stopped == NULL && s_mutation_mutex == NULL;
-    if (unavailable_without_worker) {
+    const bool unavailable_without_worker = !s_available &&
+                                            s_initialized && s_stopped == NULL &&
+                                            s_mutation_mutex == NULL;
+    taskEXIT_CRITICAL(&s_lock);
+    /* s_task is published, cleared and consumed only under the lifecycle
+     * lock.  Keep this fast path on that ownership boundary too: sampling the
+     * handle under s_lock could otherwise race a concurrent worker exit and
+     * misclassify a live classifier as the no-IMU profile. */
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool no_classifier_worker = s_task == NULL;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (unavailable_without_worker && no_classifier_worker) {
+        taskENTER_CRITICAL(&s_lock);
         s_initialized = false;
         s_enabled = false;
         s_state = FALL_DETECTION_STATE_UNAVAILABLE;
         s_callback = NULL;
         s_callback_context = NULL;
+        taskEXIT_CRITICAL(&s_lock);
     }
-    taskEXIT_CRITICAL(&s_lock);
-    if (unavailable_without_worker) {
+    if (unavailable_without_worker && no_classifier_worker) {
         taskENTER_CRITICAL(&s_lifecycle_lock);
         s_stop_requested = false;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
+        __atomic_store_n(&s_system_sleep_preparing, false, __ATOMIC_RELEASE);
         return DEVICE_STATUS_OK;
     }
 
@@ -705,6 +667,7 @@ device_status_t fall_detection_service_deinit(uint32_t timeout_ms) {
         uint32_t admissions = s_tool_admissions;
         admissions += s_user_action_admissions;
         admissions += s_callback_admissions;
+        admissions += s_system_sleep_evaluations;
         taskEXIT_CRITICAL(&s_lifecycle_lock);
         if (admissions == 0) break;
         if ((xTaskGetTickCount() - started) >= budget) {
@@ -729,17 +692,125 @@ device_status_t fall_detection_service_deinit(uint32_t timeout_ms) {
         vSemaphoreDelete(s_stopped);
         s_stopped = NULL;
     }
+    if (s_system_sleep_quiesced) {
+        vSemaphoreDelete(s_system_sleep_quiesced);
+        s_system_sleep_quiesced = NULL;
+    }
     taskENTER_CRITICAL(&s_lock);
     s_initialized = false;
+    __atomic_store_n(&s_system_sleep_preparing, false, __ATOMIC_RELEASE);
     s_callback = NULL;
     s_callback_context = NULL;
     taskEXIT_CRITICAL(&s_lock);
     taskENTER_CRITICAL(&s_lifecycle_lock);
     s_stop_requested = false;
+    s_system_sleep_evaluations = 0;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     xSemaphoreGive(s_deinit_mutex);
     ESP_LOGI(TAG, "monitoring stopped");
     return DEVICE_STATUS_OK;
+}
+
+device_status_t fall_detection_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    if (budget == 0) budget = 1;
+    if (!s_deinit_mutex || xSemaphoreTake(s_deinit_mutex, budget) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+
+    taskENTER_CRITICAL(&s_lock);
+    const bool initialized = s_initialized;
+    const bool available = s_available;
+    const bool already_preparing =
+        __atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE);
+    SemaphoreHandle_t quiesced = s_system_sleep_quiesced;
+    taskEXIT_CRITICAL(&s_lock);
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    TaskHandle_t task = s_task;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (!initialized) {
+        xSemaphoreGive(s_deinit_mutex);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    /* Profiles without Motion HAL intentionally publish this optional service
+     * as initialized-but-unavailable. They own no worker or pending event, so
+     * they are already quiescent and must not make every shared sleep request
+     * fail merely because this hardware capability is absent. */
+    if (!available) {
+        xSemaphoreGive(s_deinit_mutex);
+        return DEVICE_STATUS_OK;
+    }
+    if (!task || !quiesced || already_preparing) {
+        xSemaphoreGive(s_deinit_mutex);
+        return DEVICE_STATUS_BUSY;
+    }
+
+    /* Do not retain a stale acknowledgement from a timed-out old PREPARE.
+     * Only the worker's acknowledgement after this admission marker proves
+     * it has stopped sampling, advancing confirmation windows and presenting
+     * fall events. */
+    while (xSemaphoreTake(quiesced, 0) == pdTRUE) {
+    }
+    __atomic_store_n(&s_system_sleep_preparing, true, __ATOMIC_RELEASE);
+
+    for (;;) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const uint32_t admissions = s_tool_admissions +
+                                    s_user_action_admissions +
+                                    s_callback_admissions +
+                                    s_system_sleep_evaluations;
+        const bool stopping = s_stop_requested;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (stopping) {
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_BUSY;
+        }
+        if (admissions == 0) break;
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+        if (elapsed >= budget) {
+            /* Leave the sampler admission closed. It may be returning from a
+             * pre-fence sample/callback; Power ABORT is the only path that
+             * can safely unpark it after all sibling rollback is complete. */
+            xSemaphoreGive(s_deinit_mutex);
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(1);
+    }
+
+    /* The worker normally wakes every 100 ms, but notification makes a short
+     * transaction independent of its sampling cadence. */
+    xTaskNotifyGive(task);
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    const TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
+    if (remaining == 0 || xSemaphoreTake(quiesced, remaining) != pdTRUE) {
+        xSemaphoreGive(s_deinit_mutex);
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    xSemaphoreGive(s_deinit_mutex);
+    return DEVICE_STATUS_OK;
+}
+
+void fall_detection_service_abort_system_sleep_prepare(void) {
+    TaskHandle_t task = NULL;
+    if (!s_deinit_mutex ||
+        xSemaphoreTake(s_deinit_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return;
+    }
+    taskENTER_CRITICAL(&s_lock);
+    const bool was_preparing =
+        __atomic_load_n(&s_system_sleep_preparing, __ATOMIC_ACQUIRE);
+    const bool should_unpark = was_preparing && s_initialized && s_available;
+    __atomic_store_n(&s_system_sleep_preparing, false, __ATOMIC_RELEASE);
+    taskEXIT_CRITICAL(&s_lock);
+    if (should_unpark) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        task = s_task;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+    }
+    if (task) xTaskNotifyGive(task);
+    xSemaphoreGive(s_deinit_mutex);
 }
 
 bool fall_detection_service_is_available(void) {
@@ -766,13 +837,8 @@ bool fall_detection_service_get_snapshot(fall_detection_snapshot_t *out_snapshot
     out_snapshot->confirmation_deadline_us = s_confirmation_deadline_us;
     out_snapshot->configuration_revision = s_configuration_revision;
     taskEXIT_CRITICAL(&s_lock);
-    /* Before app_main reaches the optional service, diagnostics must still
-     * distinguish a sensor-capable profile that is initializing from a board
-     * that can never provide motion samples. */
-    if (!out_snapshot->available && !out_snapshot->enabled &&
-        out_snapshot->state == FALL_DETECTION_STATE_UNAVAILABLE) {
-        out_snapshot->available = has_configured_motion_sensor();
-    }
+    /* Availability is an observed service state, not merely a profile claim:
+     * an optional sensor may be absent even on a Motion-capable profile. */
     return true;
 }
 

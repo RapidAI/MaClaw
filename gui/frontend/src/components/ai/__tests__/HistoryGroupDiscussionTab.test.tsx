@@ -947,6 +947,32 @@ describe("HistoryGroupDiscussionTab", () => {
         expect(getDetailMock).toHaveBeenCalledTimes(1);
     });
 
+    it("filters private reasoning markers from restored history messages", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            messages: [
+                { id: "s1", from_id: "ve-a", from_name: "VE", kind: "stream_chunk", content: "\x01private reasoning", created_at: "2026-01-01T00:00:00Z" },
+                { id: "s2", from_id: "ve-a", from_name: "VE", kind: "stream_chunk", content: "visible\u0000 answer", created_at: "2026-01-01T00:00:01Z" },
+                { id: "a1", from_id: "ve-a", from_name: "VE", kind: "answer", content: "\x01kept answer", created_at: "2026-01-01T00:00:02Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Streamed" readOnly={true} theme={theme} lang="en" />);
+
+        expect(await screen.findByText("visible answer")).toBeTruthy();
+        expect(screen.getByText("kept answer")).toBeTruthy();
+        expect(screen.queryByText("private reasoning")).toBeNull();
+    });
+
+    it("restores legacy Content-only history answers after stripping the sentinel", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            messages: [
+                { id: "a1", from_id: "ve-a", from_name: "VE", kind: "answer", Content: "\x01legacy answer", created_at: "2026-01-01T00:00:00Z" },
+            ],
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Streamed" readOnly={true} theme={theme} lang="en" />);
+
+        expect(await screen.findByText("legacy answer")).toBeTruthy();
+    });
+
     it("coalesces streamed history chunks and hides stream end markers", async () => {
         getDetailMock.mockResolvedValue(detail({
             messages: [

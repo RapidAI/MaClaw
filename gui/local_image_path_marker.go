@@ -177,3 +177,91 @@ func selectedLocalImagePaths(userText string) []string {
 	}
 	return paths
 }
+
+// semanticUserIntentText is the classifier/lexical view of a turn. Desktop
+// picker paths, vision-host instructions, and OCR notes must not be treated
+// as the user asking to read a file or search the weather printed in a photo.
+func semanticUserIntentText(text string) string {
+	// A path-only image turn has no user prose. Returning the original
+	// staging/OCR blob would let lexical overrides treat photo text as a
+	// weather/PDF request.
+	return stripHostImageUnderstandAnnotations(text)
+}
+
+func stripHostImageUnderstandAnnotations(text string) string {
+	text = stripSelectedLocalFilePickerSection(text)
+	var kept []string
+	inOCR := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "--- image_ocr: begin ---" {
+			inOCR = true
+			continue
+		}
+		if trimmed == "--- image_ocr: end ---" {
+			inOCR = false
+			continue
+		}
+		if inOCR || isHostImageUnderstandAnnotationLine(trimmed) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func stripSelectedLocalFilePickerSection(text string) string {
+	prefix := filePathPromptPrefix
+	idx := strings.Index(text, prefix)
+	if idx < 0 {
+		prefix = filePathPromptPrefixHistorical
+		idx = strings.Index(text, prefix)
+	}
+	if idx < 0 {
+		return text
+	}
+	before := strings.TrimSpace(text[:idx])
+	lines := strings.Split(text[idx+len(prefix):], "\n")
+	i := 0
+	sawPath := false
+	for i < len(lines) {
+		kind := classifyLocalImagePathLine(lines[i])
+		if kind == localImagePathLineInstruction {
+			i++
+			break
+		}
+		if kind == localImagePathLineImagePath {
+			sawPath = true
+			i++
+			continue
+		}
+		if sawPath && strings.TrimSpace(lines[i]) != "" {
+			break
+		}
+		i++
+	}
+	after := strings.TrimSpace(strings.Join(lines[i:], "\n"))
+	switch {
+	case before == "":
+		return after
+	case after == "":
+		return before
+	default:
+		return before + "\n" + after
+	}
+}
+
+func isHostImageUnderstandAnnotationLine(line string) bool {
+	switch {
+	case line == "":
+		return false
+	case strings.Contains(line, "For image files, the host sends them directly"),
+		strings.Contains(line, "Analyze attached images first"),
+		strings.HasPrefix(line, "[Host note: selected image"),
+		strings.HasPrefix(line, "[用户发送了图片"),
+		strings.HasPrefix(line, "[图片 ") && strings.Contains(line, "的文字内容"):
+		return true
+	default:
+		return false
+	}
+}

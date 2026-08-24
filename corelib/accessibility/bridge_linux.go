@@ -21,14 +21,14 @@ func NewBridge() Bridge {
 
 // atspiElement is the JSON shape returned by our python3 scripts.
 type atspiElement struct {
-	Role     string          `json:"role"`
-	Name     string          `json:"name"`
-	Value    string          `json:"value"`
-	X        int             `json:"x"`
-	Y        int             `json:"y"`
-	Width    int             `json:"width"`
-	Height   int             `json:"height"`
-	Children []atspiElement  `json:"children,omitempty"`
+	Role     string         `json:"role"`
+	Name     string         `json:"name"`
+	Value    string         `json:"value"`
+	X        int            `json:"x"`
+	Y        int            `json:"y"`
+	Width    int            `json:"width"`
+	Height   int            `json:"height"`
+	Children []atspiElement `json:"children,omitempty"`
 }
 
 func (e *atspiElement) toElement() Element {
@@ -60,6 +60,19 @@ func runPy(script string) (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func runPyStrict(script string) error {
+	cmd := exec.Command("python3", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return fmt.Errorf("accessibility action failed: %w", err)
+		}
+		return fmt.Errorf("accessibility action failed: %w (%s)", err, msg)
+	}
+	return nil
 }
 
 // EnumElements returns the accessibility tree for the window matching the given title.
@@ -252,70 +265,97 @@ for i in range(desktop.childCount):
 	return &el, nil
 }
 
-// ClickElement performs a click on the element's center.
-// First tries pyatspi2 Atspi.generate_mouse_event, then falls back to xdotool.
+// ClickElement attempts an AT-SPI action. It does not synthesize xdotool
+// clicks — callers that want pixel fallback should do that themselves.
 func (b *linuxBridge) ClickElement(el *Element) error {
 	if el == nil {
 		return nil
 	}
-
 	cx := el.Bounds.X + el.Bounds.Width/2
 	cy := el.Bounds.Y + el.Bounds.Height/2
-
 	script := fmt.Sprintf(`
 import sys
 try:
     import pyatspi
-    pyatspi.Registry.generateMouseEvent(%d, %d, "b1c")
-    sys.exit(0)
+except ImportError:
+    sys.exit(1)
+try:
+    desktop = pyatspi.Registry.getDesktop(0)
+    target = None
+    for app in desktop:
+        try:
+            comp = app.queryComponent()
+            target = comp.getAccessibleAtPoint(%d, %d, pyatspi.component.XY_SCREEN)
+        except Exception:
+            continue
+        if target is not None:
+            break
+    if target is None:
+        sys.exit(1)
+    try:
+        action = target.queryAction()
+        for i in range(action.nActions):
+            name = (action.getName(i) or "").lower()
+            if name in ("click", "press", "activate"):
+                action.doAction(i)
+                sys.exit(0)
+        if action.nActions > 0:
+            action.doAction(0)
+            sys.exit(0)
+    except Exception:
+        pass
+    sys.exit(1)
 except Exception:
-    pass
-
-# Fallback: use xdotool
-import subprocess
-subprocess.run(["xdotool", "mousemove", "--sync", "%d", "%d"], check=True)
-subprocess.run(["xdotool", "click", "1"], check=True)
-`, cx, cy, cx, cy)
-
-	_, err := runPy(script)
-	return err
+    sys.exit(1)
+`, cx, cy)
+	return runPyStrict(script)
 }
 
-// TypeInElement types text into the element.
-// First tries pyatspi2 to set the text value, then falls back to xdotool type.
+// TypeInElement tries AT-SPI text/value set. It does not type via xdotool.
 func (b *linuxBridge) TypeInElement(el *Element, text string) error {
 	if el == nil {
 		return nil
 	}
-
 	cx := el.Bounds.X + el.Bounds.Width/2
 	cy := el.Bounds.Y + el.Bounds.Height/2
-
 	safeText := strings.ReplaceAll(text, `\`, `\\`)
 	safeText = strings.ReplaceAll(safeText, `"`, `\"`)
-
 	script := fmt.Sprintf(`
-import sys, subprocess
-
-text = "%s"
-
-# Click to focus the element first
+import sys
 try:
     import pyatspi
-    pyatspi.Registry.generateMouseEvent(%d, %d, "b1c")
+except ImportError:
+    sys.exit(1)
+text = "%s"
+try:
+    desktop = pyatspi.Registry.getDesktop(0)
+    target = None
+    for app in desktop:
+        try:
+            comp = app.queryComponent()
+            target = comp.getAccessibleAtPoint(%d, %d, pyatspi.component.XY_SCREEN)
+        except Exception:
+            continue
+        if target is not None:
+            break
+    if target is None:
+        sys.exit(1)
+    try:
+        txt = target.queryText()
+        txt.setTextContents(text)
+        sys.exit(0)
+    except Exception:
+        pass
+    try:
+        target.setValue(text)
+        sys.exit(0)
+    except Exception:
+        pass
+    sys.exit(1)
 except Exception:
-    subprocess.run(["xdotool", "mousemove", "--sync", "%d", "%d"], check=True)
-    subprocess.run(["xdotool", "click", "1"], check=True)
-
-import time
-time.sleep(0.1)
-
-# Type using xdotool (most reliable for arbitrary text on Linux)
-subprocess.run(["xdotool", "type", "--clearmodifiers", text], check=True)
-`, safeText, cx, cy, cx, cy)
-
-	_, err := runPy(script)
-	return err
+    sys.exit(1)
+`, safeText, cx, cy)
+	return runPyStrict(script)
 }
 
 // GetValue returns the current value of the element using pyatspi2.
@@ -397,6 +437,83 @@ if val:
 		return "", nil
 	}
 	return out, nil
+}
+
+func (b *linuxBridge) SelectElement(el *Element) error {
+	return b.ClickElement(el)
+}
+
+func (b *linuxBridge) ExpandElement(el *Element) error {
+	return b.ClickElement(el)
+}
+
+func (b *linuxBridge) ScrollElementIntoView(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	return runPyStrict(fmt.Sprintf(`
+import sys
+try:
+    import pyatspi
+except ImportError:
+    sys.exit(1)
+try:
+    desktop = pyatspi.Registry.getDesktop(0)
+    target = None
+    for app in desktop:
+        try:
+            comp = app.queryComponent()
+            target = comp.getAccessibleAtPoint(%d, %d, pyatspi.component.XY_SCREEN)
+        except Exception:
+            continue
+        if target is not None:
+            break
+    if target is None:
+        sys.exit(1)
+    try:
+        comp = target.queryComponent()
+        comp.scrollTo(pyatspi.component.SCROLL_ANYWHERE)
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+`, cx, cy))
+}
+
+func (b *linuxBridge) FocusElement(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	return runPyStrict(fmt.Sprintf(`
+import sys
+try:
+    import pyatspi
+except ImportError:
+    sys.exit(1)
+try:
+    desktop = pyatspi.Registry.getDesktop(0)
+    target = None
+    for app in desktop:
+        try:
+            comp = app.queryComponent()
+            target = comp.getAccessibleAtPoint(%d, %d, pyatspi.component.XY_SCREEN)
+        except Exception:
+            continue
+        if target is not None:
+            break
+    if target is None:
+        sys.exit(1)
+    try:
+        target.queryComponent().grabFocus()
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+`, cx, cy))
 }
 
 // Close releases resources. No persistent resources for the python3 approach.

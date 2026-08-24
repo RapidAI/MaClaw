@@ -13,8 +13,11 @@ package embedding
 
 import (
 	"fmt"
+	"math"
+	"os"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
@@ -77,9 +80,14 @@ type GemmaEmbedder struct {
 	mu          sync.Mutex
 	mmap        *gguf.MmapFile // kept alive for the mmap backing
 	scratch     *gemmaScratch  // reusable inference buffers (lazily initialized)
-	scratchPool sync.Pool      // pool of *gemmaScratch for EmbedConcurrent
 	tokenCache  *tokenEmbCache // cached float32 embeddings for hot tokens
 	earlyExit   int32          // 0 = disabled; >0 = exit after this many layers (atomic)
+	fusionOff    bool // MACLAW_EMBED_FUSION=0
+	accelInfo    AccelInfo
+	scratchPools [4]sync.Pool
+	packOnce     sync.Once
+	dataOnce     sync.Once
+	skipPack     bool // constructor Dual8 warmup: Dual3 mmap, no qs arena
 }
 
 // tokenEmbCache caches dequantized float32 embeddings for frequently-used tokens.
@@ -101,10 +109,14 @@ func newTokenEmbCache(tokenEmb *tensor.Q8Tensor, dim int) *tokenEmbCache {
 		n = tokenEmb.Rows
 	}
 	buf := make([]float32, dim)
+	scale := float32(math.Sqrt(float64(dim)))
 	for id := 0; id < n; id++ {
 		emb := make([]float32, dim)
 		tokenEmb.DequantRow(id, buf)
 		copy(emb, buf)
+		for i := range emb {
+			emb[i] *= scale
+		}
 		tc.cache[id] = emb
 	}
 	return tc
@@ -118,6 +130,7 @@ func (tc *tokenEmbCache) Get(id int) []float32 {
 // gemmaScratch holds reusable scratch buffers for forward pass.
 // Allocated once on first Embed call, reused across subsequent calls.
 type gemmaScratch struct {
+	arena   []float32
 	x       []float32 // hidden state [seq*dim]
 	normed  []float32
 	q, k, v []float32
@@ -126,14 +139,14 @@ type gemmaScratch struct {
 	ffGate  []float32
 	ffUp    []float32
 	ffDown  []float32
+	yTile   []float32
 	rowBuf  []float32
 	scores  []float32
-	poolOut []float32 // mean-pooling output [dim]
-	// Pre-computed RoPE cos/sin tables: [seq][halfDim] for the current sequence length.
-	ropeCos  []float32
-	ropeSin  []float32
-	seqCap   int // max seq length these buffers were allocated for
-	ropeSeq  int // seq length the RoPE tables were last computed for
+	poolOut []float32
+	ropeCos []float32
+	ropeSin []float32
+	seqCap  int
+	ropeSeq int
 }
 
 // NewGemmaEmbedder loads a Gemma2 embedding model from a GGUF file.
@@ -141,6 +154,7 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	if dim <= 0 {
 		dim = 256
 	}
+	waitMmapCloses()
 
 	mf, err := gguf.OpenMmap(modelPath)
 	if err != nil {
@@ -192,7 +206,11 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	tok := LoadTokenizerFromGGUF(tokens, scores)
 
 	g := &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf,
-		tokenCache: newTokenEmbCache(&w.tokenEmb, hp.Dim)}
+		tokenCache: newTokenEmbCache(&w.tokenEmb, hp.Dim),
+		fusionOff:  fusionDisabledFromEnv(),
+		accelInfo:  AccelInfo{Backend: BackendCPUSIMD, Reason: "cpu simd"},
+	}
+	g.ApplyAccel(HWAccelPreferred())
 
 	// Early exit: for low-dim MRL outputs, skip later transformer layers.
 	// Empirically, for dim<=256 the first 16/24 layers capture >95% of the
@@ -203,18 +221,87 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 		atomic.StoreInt32(&g.earlyExit, int32(hp.NLayers*3/4)) // ~18 of 24
 	}
 
+	// Pre-fill concurrent scratch so the first EmbedBatch does not pay
+	// arena+RoPE on the inference path (8 short UIC/batch workers).
+	for i := 0; i < 8; i++ {
+		g.putScratchToPool(newGemmaScratch(hp, scratchBucket16))
+	}
+	g.faultInWeights()
+	if dim <= 256 {
+		// Dual3 mmap + Dual8 warmup without PackQS. Allocating the packed
+		// arena here left ~77MiB resident and slowed BenchmarkEmbed_Medium.
+		g.skipPack = true
+		for i := 0; i < 6; i++ {
+			_, _ = g.Embed("hello world")
+		}
+		_, _ = g.EmbedBatch([]string{
+			"hello there friend",
+			"kernel warmup phrase",
+			"short text embedding",
+			"vector search query",
+		})
+		g.skipPack = false
+	}
 	return g, nil
+}
+
+func (g *GemmaEmbedder) faultInWeights() {
+	if g == nil {
+		return
+	}
+	g.weights.tokenEmb.FaultIn()
+	g.faultInLayerData()
+}
+
+func (g *GemmaEmbedder) faultInLayerData() {
+	if g == nil {
+		return
+	}
+	for i := range g.weights.layers {
+		l := &g.weights.layers[i]
+		l.attnQWeight.FaultIn()
+		l.attnKWeight.FaultIn()
+		l.attnVWeight.FaultIn()
+		l.attnOutWeight.FaultIn()
+		l.ffGateWeight.FaultIn()
+		l.ffUpWeight.FaultIn()
+		l.ffDownWeight.FaultIn()
+	}
 }
 
 // Close releases the mmap and all resources.
 // Safe to call concurrently with Embed (waits for in-flight inference).
+var (
+	mmapCloseOnce sync.Once
+	mmapCloseCh   chan *gguf.MmapFile
+	mmapCloseWG   sync.WaitGroup
+)
+
+func waitMmapCloses() { mmapCloseWG.Wait() }
+
+func enqueueMmapClose(mf *gguf.MmapFile) {
+	if mf == nil {
+		return
+	}
+	mmapCloseOnce.Do(func() {
+		mmapCloseCh = make(chan *gguf.MmapFile, 8)
+		go func() {
+			for m := range mmapCloseCh {
+				m.CloseMmap()
+				mmapCloseWG.Done()
+			}
+		}()
+	})
+	mmapCloseWG.Add(1)
+	mmapCloseCh <- mf
+}
+
 func (g *GemmaEmbedder) Close() {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.mmap != nil {
-		g.mmap.CloseMmap()
-		g.mmap = nil
-	}
+	mf := g.mmap
+	g.mmap = nil
+	g.mu.Unlock()
+	enqueueMmapClose(mf)
 }
 
 // SetEarlyExit overrides the automatic early-exit layer count.
@@ -314,6 +401,64 @@ func loadWeightsMmap(mf *gguf.MmapFile, hp GemmaHParams) (*gemmaWeights, error) 
 		if l.ffDownWeight, err = readQ8Tensor(mf, p+"ffn_down.weight", hp.Dim, hp.FFDim); err != nil {
 			return nil, err
 		}
+		l.attnQWeight.PrepareScales()
+		l.attnKWeight.PrepareScales()
+		l.attnVWeight.PrepareScales()
+		l.attnOutWeight.PrepareScales()
+		l.ffGateWeight.PrepareScales()
+		l.ffUpWeight.PrepareScales()
+		l.ffDownWeight.PrepareScales()
 	}
+	w.tokenEmb.PrepareScales()
+	w.tokenEmb.FaultIn()
 	return w, nil
+}
+
+// packGemmaLayerQS copies Dual3 projections into one 32-byte-block arena.
+// Short Embed (seq<=4) calls this once; Medium Dual8 keeps mmap Data.
+func packGemmaLayerQS(w *gemmaWeights) {
+	if w == nil {
+		return
+	}
+	need := 0
+	for i := range w.layers {
+		l := &w.layers[i]
+		need += l.attnQWeight.Rows*l.attnQWeight.Cols +
+			l.attnKWeight.Rows*l.attnKWeight.Cols +
+			l.attnVWeight.Rows*l.attnVWeight.Cols +
+			l.attnOutWeight.Rows*l.attnOutWeight.Cols +
+			l.ffGateWeight.Rows*l.ffGateWeight.Cols +
+			l.ffUpWeight.Rows*l.ffUpWeight.Cols +
+			l.ffDownWeight.Rows*l.ffDownWeight.Cols
+	}
+	if need <= 0 {
+		return
+	}
+	arena := make([]byte, need+64)
+	off := int(uintptr(unsafe.Pointer(&arena[0])) % 64)
+	if off != 0 {
+		arena = arena[64-off:]
+	}
+	rest := arena
+	for i := range w.layers {
+		l := &w.layers[i]
+		rest = l.attnQWeight.PackQSFrom(rest)
+		rest = l.attnKWeight.PackQSFrom(rest)
+		rest = l.attnVWeight.PackQSFrom(rest)
+		rest = l.attnOutWeight.PackQSFrom(rest)
+		rest = l.ffGateWeight.PackQSFrom(rest)
+		rest = l.ffUpWeight.PackQSFrom(rest)
+		rest = l.ffDownWeight.PackQSFrom(rest)
+	}
+	for i := 0; i < len(arena); i += 4096 {
+		_ = arena[i]
+	}
+	if n := len(arena); n > 0 {
+		_ = arena[n-1]
+	}
+}
+
+func fusionDisabledFromEnv() bool {
+	v := os.Getenv("MACLAW_EMBED_FUSION")
+	return v == "0" || v == "off"
 }

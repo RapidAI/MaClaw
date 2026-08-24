@@ -200,6 +200,8 @@ type HubLLMActiveGrant struct {
 	CardOrderID       string              `json:"card_order_id,omitempty"`
 	StartsAt          string              `json:"starts_at"`
 	ExpiresAt         string              `json:"expires_at"`
+	Permanent         bool                `json:"permanent,omitempty"`
+	RollingFiveHour   bool                `json:"rolling_five_hour,omitempty"`
 	Active            bool                `json:"active"`
 	Status            string              `json:"status,omitempty"`
 	StatusReason      string              `json:"status_reason,omitempty"`
@@ -224,6 +226,7 @@ type HubLLMPeriodUsageWindow struct {
 	WindowStart string  `json:"window_start,omitempty"`
 	WindowEnd   string  `json:"window_end,omitempty"`
 	CreditsUsed float64 `json:"credits_used,omitempty"`
+	Rolling     bool    `json:"rolling,omitempty"`
 }
 
 type HubLLMPeriodUsage struct {

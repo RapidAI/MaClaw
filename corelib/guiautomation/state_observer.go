@@ -195,6 +195,51 @@ func (o *GUIStateObserver) WaitForStable(timeout time.Duration) error {
 	return fmt.Errorf("GUI not stable within %v", timeout)
 }
 
+// WaitForIdle waits until consecutive screenshots look unchanged for
+// stableFor, or until timeout. Unlike WaitForStable it is best-effort:
+// timeout returns nil so post-action settle never fails the click itself.
+func (o *GUIStateObserver) WaitForIdle(timeout, stableFor time.Duration) error {
+	if o.screenshotFn == nil || timeout <= 0 {
+		return nil
+	}
+	if stableFor <= 0 {
+		stableFor = 80 * time.Millisecond
+	}
+
+	deadline := time.Now().Add(timeout)
+	prevLen := -1
+	stableSince := time.Time{}
+	interval := 50 * time.Millisecond
+
+	for time.Now().Before(deadline) {
+		img, err := o.screenshotFn()
+		if err != nil {
+			time.Sleep(interval)
+			continue
+		}
+		curLen := len(img)
+		if prevLen >= 0 && curLen == prevLen {
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+			} else if time.Since(stableSince) >= stableFor {
+				return nil
+			}
+		} else {
+			stableSince = time.Time{}
+		}
+		prevLen = curLen
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		if interval > remaining {
+			interval = remaining
+		}
+		time.Sleep(interval)
+	}
+	return nil
+}
+
 // TakeCheckpoint captures a checkpoint after a step completes.
 func (o *GUIStateObserver) TakeCheckpoint(stepIndex int) taskengine.Checkpoint {
 	cp := taskengine.Checkpoint{

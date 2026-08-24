@@ -18,3 +18,8 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# app_main is the composition root for the extended HAL/service startup
+# transaction.  4 KiB is insufficient once its value-only host descriptors
+# are live simultaneously; keep this internal main-task stack explicit rather
+# than relying on the IDF 3584-byte default selected by a fresh profile build.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

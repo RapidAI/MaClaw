@@ -371,7 +371,7 @@ func (d *CapabilityGapDetector) Resolve(
 			})
 		}
 
-		execResult, execErr := d.skillExecutor.ExecuteWithArgs(imported.Name, skillExecutionRunArgs(userMessage))
+		execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*imported, skillExecutionRunArgs(userMessage))
 		return imported.Name, execResult, execErr
 	}
 
@@ -496,7 +496,7 @@ func (d *CapabilityGapDetector) Resolve(
 
 	// Step 7: Execute immediately.
 	sendStatus(localizedSkillInstallExecutingStatus(lang, skill.Name))
-	execResult, execErr := d.skillExecutor.ExecuteWithArgs(skill.Name, skillExecutionRunArgs(userMessage))
+	execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*skill, skillExecutionRunArgs(userMessage))
 
 	// Audit log.
 	if d.auditLog != nil {

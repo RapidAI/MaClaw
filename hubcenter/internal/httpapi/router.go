@@ -79,11 +79,13 @@ type HubHeartbeatRequest struct {
 }
 
 type HubUserLinkSyncRequest struct {
-	HubSecret  string `json:"hub_secret"`
-	TenantID   string `json:"tenant_id,omitempty"`
-	Email      string `json:"email"`
-	IsDefault  bool   `json:"is_default"`
-	ReplaceAll bool   `json:"replace_all,omitempty"`
+	HubSecret                    string `json:"hub_secret"`
+	TenantID                     string `json:"tenant_id,omitempty"`
+	Email                        string `json:"email"`
+	PreviousEmail                string `json:"previous_email,omitempty"`
+	TenantAdminInventoryRevision string `json:"tenant_admin_inventory_revision,omitempty"`
+	IsDefault                    bool   `json:"is_default"`
+	ReplaceAll                   bool   `json:"replace_all,omitempty"`
 }
 
 type deviceCredentialBackupRequest struct {
@@ -282,9 +284,13 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 		if checker := currentLLMAuthorizationSyncChecker(); checker != nil {
 			llmComputeTenants := buildHeartbeatLLMComputeAuthorizationPayload(r.Context(), checker, hubID)
 			allowExternalProviders = heartbeatLLMComputeAllowsExternal(llmComputeTenants)
-			authPayloads[heartbeatAuthorizationKeyLLMCompute] = map[string]any{
+			llmComputePayload := map[string]any{
 				"tenants": llmComputeTenants,
 			}
+			if policies := llmservice.CurrentProviderBillingCatalog(r.Context()); len(policies) > 0 {
+				llmComputePayload["provider_billing"] = policies
+			}
+			authPayloads[heartbeatAuthorizationKeyLLMCompute] = llmComputePayload
 		}
 		// Backward-compatible top-level field for older Hub/UI code. Newer
 		// clients also read authorizations.llm_compute per tenant.
@@ -395,6 +401,38 @@ func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "HUB_USER_LINK_SYNC_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+func HubTenantAdminLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req HubUserLinkSyncRequest
+		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if err := service.SyncHubTenantAdminLink(r.Context(), hubID, req.HubSecret, req.Email, req.TenantID, req.PreviousEmail, req.TenantAdminInventoryRevision); err != nil {
+			if errors.Is(err, hubs.ErrHubUnauthorized) {
+				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubPendingConfirmation) {
+				writeError(w, http.StatusConflict, "HUB_PENDING_CONFIRMATION", "Hub registration is waiting for email confirmation")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubDisabled) {
+				writeError(w, http.StatusLocked, "HUB_DISABLED", "Hub has been disabled by Hub Center")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "HUB_TENANT_ADMIN_LINK_SYNC_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -857,6 +895,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("PUT /api/hubs/{id}/device-credentials", HubDeviceCredentialBackupHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/heartbeat", HubHeartbeatHandler(hubService, haSvc))
 	mux.HandleFunc("POST /api/hubs/{id}/user-links/sync", HubUserLinkSyncHandler(hubService))
+	mux.HandleFunc("POST /api/hubs/{id}/tenant-admin-links/sync", HubTenantAdminLinkSyncHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/user-usage/sync", HubUserUsageSyncHandler(hubService, userUsageRepo))
 	mux.HandleFunc("DELETE /api/hubs/{id}/user-links/sync", HubUserLinkDeleteHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeSyncHandler(hubService))
@@ -1089,7 +1128,12 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/make-private", smHandlers.MakeExpertMarketListingPrivate)
 		mux.HandleFunc("POST /api/v1/expert-market/experts/{id}/publish", smHandlers.PublishExpertMarketListing)
 		mux.HandleFunc("GET /api/v1/admin/expert-market/experts", RequireAdmin(adminService, smHandlers.AdminListExpertMarketListings))
+		mux.HandleFunc("GET /api/v1/admin/expert-market/users", RequireAdmin(adminService, smHandlers.AdminListExpertMarketUsers))
 		mux.HandleFunc("GET /api/v1/admin/expert-market/experts/{id}/events", RequireAdmin(adminService, smHandlers.AdminListExpertMarketEvents))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/transfer-owner", RequireAdmin(adminService, smHandlers.AdminTransferExpertMarketOwner))
+		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/submit-publication", RequireAdmin(adminService, smHandlers.AdminSubmitExpertMarketPublication))
+		mux.HandleFunc("DELETE /api/v1/admin/expert-market/experts/{id}/private", RequireAdmin(adminService, smHandlers.AdminDeletePrivateExpertMarketListing))
+		mux.HandleFunc("DELETE /api/v1/admin/expert-market/experts/{id}/private/purge", RequireAdmin(adminService, smHandlers.AdminPurgePrivateExpertMarketListing))
 		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/approve", RequireAdmin(adminService, smHandlers.AdminApproveExpertMarketListing))
 		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/reject", RequireAdmin(adminService, smHandlers.AdminRejectExpertMarketListing))
 		mux.HandleFunc("POST /api/v1/admin/expert-market/experts/{id}/unlist", RequireAdmin(adminService, smHandlers.AdminUnlistExpertMarketListing))

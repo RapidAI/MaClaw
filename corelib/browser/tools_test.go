@@ -2,11 +2,103 @@ package browser
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+func TestPolicyFromArgsDefaultsDenyUploadDownloadPopup(t *testing.T) {
+	policy := policyFromArgs(map[string]interface{}{})
+	if policy.AllowUpload || policy.AllowDownload || policy.AllowPopup {
+		t.Fatalf("policy defaults should deny upload/download/popup: %#v", policy)
+	}
+	if err := validateUploadPolicy(policy); err == nil {
+		t.Fatal("expected upload blocked")
+	}
+	if err := validateDownloadPolicy(policy); err == nil {
+		t.Fatal("expected download blocked")
+	}
+	if err := validatePopupPolicy(policy); err == nil {
+		t.Fatal("expected popup blocked")
+	}
+	if !shouldDenyManagedDownloads(policy, SessionModePersistent) {
+		t.Fatal("managed sessions should deny downloads by default")
+	}
+	if shouldDenyManagedDownloads(policy, SessionModeConnectUser) {
+		t.Fatal("user-chrome sessions must not set browser-wide download deny")
+	}
+	policy.AllowDownload = true
+	if shouldDenyManagedDownloads(policy, SessionModeIsolated) {
+		t.Fatal("allow_download=true should not deny")
+	}
+	policy.AllowUpload = true
+	if err := validateUploadPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegisterToolsContainsHoverPressDialog(t *testing.T) {
+	reg := tool.NewRegistry()
+	RegisterTools(reg)
+	for _, name := range []string{"browser_hover", "browser_press", "browser_dialog"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("tool %q not registered", name)
+		}
+	}
+}
+
+func TestLLMSafeBrowserErrorStripsSelector(t *testing.T) {
+	got := llmSafeBrowserError(fmt.Errorf("element not found: button.buy-now:nth-of-type(1)"))
+	if strings.Contains(got, "nth-of-type") || strings.Contains(got, "buy-now") {
+		t.Fatalf("leaked selector: %q", got)
+	}
+	got = llmSafeBrowserError(fmt.Errorf(`ref @e1 is stale; run observe again to get fresh refs: element not found: #buy`))
+	if strings.Contains(got, "#buy") {
+		t.Fatalf("leaked selector in stale wrap: %q", got)
+	}
+	if !strings.Contains(got, "@e1") {
+		t.Fatalf("dropped ref: %q", got)
+	}
+	raw := marshalActionResult(nil, nil, fmt.Errorf("element not found: #checkout form button"), ExpectSpec{})
+	if strings.Contains(raw, "#checkout") {
+		t.Fatalf("marshal leaked selector: %s", raw)
+	}
+}
+
+func TestMarshalActionResultUnchangedOmitsRefs(t *testing.T) {
+	snap := BrowserSnapshot{
+		SnapshotID: "snap-2",
+		URL:        "https://example.com/buy",
+		Title:      "Buy",
+		Refs:       []BrowserElementRef{{Ref: "@e1", Role: "button", Name: "Buy"}},
+	}
+	s := &BrowserAgentSession{ID: "sess-1", lastFingerprint: snapshotFingerprint(snap)}
+	result := s.completeAction("browser_click", "clicked @e1", "@e1", &BrowserObservation{Snapshot: snap}, map[string]interface{}{"target": "@e1"}, true)
+	raw := marshalActionResult(s, result, nil, ExpectSpec{})
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != false {
+		t.Fatalf("ok=%v", payload["ok"])
+	}
+	data, _ := payload["data"].(map[string]interface{})
+	if data == nil {
+		t.Fatal("missing data")
+	}
+	if _, ok := data["refs"]; ok {
+		t.Fatal("unchanged result leaked refs")
+	}
+	if data["target"] != "@e1" {
+		t.Fatalf("target=%v", data["target"])
+	}
+	if _, ok := data["delta"]; !ok {
+		t.Fatal("missing delta")
+	}
+}
 
 func TestPolicyFromArgsParsesDomainLists(t *testing.T) {
 	policy := policyFromArgs(map[string]interface{}{
@@ -40,6 +132,145 @@ func TestMarshalBrowserResultIncludesDisplay(t *testing.T) {
 	}
 	if data["session_id"] != "abc" {
 		t.Fatalf("session_id = %#v", data["session_id"])
+	}
+}
+
+func TestCompactVerifyFailureOmitsSelector(t *testing.T) {
+	got := compactVerifyFailure(&VerifyResult{
+		Passed: false,
+		Details: []CriterionResult{{
+			Criterion: CriterionSpec{Type: "dom_exists", Selector: "#secret"},
+			Error:     "element not found",
+		}},
+	})
+	if strings.Contains(got, "#secret") {
+		t.Fatalf("task_run verify failure leaked selector: %s", got)
+	}
+	if !strings.Contains(got, "success criteria not met:") {
+		t.Fatalf("got=%s", got)
+	}
+}
+
+func TestMarshalTaskStateOmitsFrameID(t *testing.T) {
+	raw := marshalTaskState(&TaskState{
+		ID:               "bt-1",
+		Status:           TaskStatusPaused,
+		CurrentStep:      2,
+		TotalSteps:       4,
+		RetryCount:       1,
+		LastError:        "step verification failed",
+		LastResultStatus: "ask",
+		StepTraces:       []StepTrace{{FrameID: "CDP-FRAME-SECRET"}},
+		Checkpoints:      []Checkpoint{{FrameID: "CDP-FRAME-SECRET", ScreenshotB64: "iVBOR"}},
+	})
+	if strings.Contains(raw, "CDP-FRAME-SECRET") || strings.Contains(raw, "iVBOR") || strings.Contains(raw, "frame_id") || strings.Contains(raw, "screenshot") {
+		t.Fatalf("task_status leaked internals: %s", raw)
+	}
+	if !strings.Contains(raw, `"task_id":"bt-1"`) || !strings.Contains(raw, `"retries":1`) {
+		t.Fatalf("got=%s", raw)
+	}
+}
+
+func TestFormatStepVerifyFailureOmitsSelector(t *testing.T) {
+	err := formatStepVerifyFailure(&VerifyResult{
+		Passed: false,
+		Details: []CriterionResult{{
+			Criterion: CriterionSpec{Type: "dom_exists", Selector: "#secret"},
+			Error:     "element not found",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "#secret") {
+		t.Fatalf("step verify failure leaked selector: %v", err)
+	}
+	if formatStepVerifyFailure(nil) == nil {
+		t.Fatal("nil verify result should still fail")
+	}
+}
+
+func TestStepOutcomeFailureGoalClassUnchanged(t *testing.T) {
+	err := stepOutcomeFailure(stepOutcome{result: &BrowserActionResult{GoalClass: true, Status: "unchanged"}})
+	if err == nil {
+		t.Fatal("expected unchanged goal-class to fail the step")
+	}
+	if stepOutcomeFailure(stepOutcome{result: &BrowserActionResult{GoalClass: true, Status: "ok"}}) != nil {
+		t.Fatal("ok goal-class should pass")
+	}
+	if stepOutcomeFailure(stepOutcome{result: &BrowserActionResult{GoalClass: false, Status: "unchanged"}}) != nil {
+		t.Fatal("non-goal unchanged should not fail the task step")
+	}
+}
+
+func TestForgetSubmitClickAllowsRetry(t *testing.T) {
+	s := &BrowserAgentSession{recentSubmitClicks: map[string]time.Time{"k": time.Now()}}
+	s.forgetSubmitClick("k")
+	if err := s.guardSubmitClick("k"); err != nil {
+		t.Fatalf("forget should allow retry: %v", err)
+	}
+}
+
+func TestShouldAskCaptchaWidgetReconfirmsStaleSnapshot(t *testing.T) {
+	if !shouldAskCaptchaWidget(true, true, false, false, nil) {
+		t.Fatal("stale widget snapshot without peek must still ask")
+	}
+	if shouldAskCaptchaWidget(true, true, true, false, nil) {
+		t.Fatal("peek showing widget gone must not ask again")
+	}
+	if !shouldAskCaptchaWidget(true, true, true, true, nil) {
+		t.Fatal("peek confirming widget must ask")
+	}
+	if !shouldAskCaptchaWidget(true, true, true, false, fmt.Errorf("eval failed")) {
+		t.Fatal("peek failure must fail closed")
+	}
+	if shouldAskCaptchaWidget(true, false, false, false, nil) {
+		t.Fatal("trusted false snapshot must not ask")
+	}
+	if shouldAskCaptchaWidget(false, false, false, false, nil) {
+		t.Fatal("no snapshot and no peek must not fake ask")
+	}
+	if !shouldAskCaptchaWidget(false, false, true, true, nil) {
+		t.Fatal("no snapshot plus widget peek must ask")
+	}
+}
+
+func TestMarshalTaskRunResultSanitizesSelector(t *testing.T) {
+	raw := marshalTaskRunResult(nil, fmt.Errorf("element not found: #checkout form button"))
+	if strings.Contains(raw, "#checkout") {
+		t.Fatalf("task_run error leaked selector: %s", raw)
+	}
+	status := marshalTaskState(&TaskState{ID: "bt-1", Status: TaskStatusFailed, LastError: "element not found: #secret"})
+	if strings.Contains(status, "#secret") {
+		t.Fatalf("task_status last_error leaked selector: %s", status)
+	}
+}
+
+func TestMarshalTaskRunAskIncludesResumeTaskID(t *testing.T) {
+	raw := marshalTaskRunResult(&TaskState{
+		ID:               "bt-9",
+		Status:           TaskStatusPaused,
+		LastResultStatus: "ask",
+		AskUser:          captchaAskUserRequest("challenge https://example.com"),
+	}, nil)
+	if !strings.Contains(raw, "resume_task_id=bt-9") {
+		t.Fatalf("ask payload missing resume_task_id: %s", raw)
+	}
+	if strings.Contains(raw, `"status":"paused"`) {
+		t.Fatalf("must not wrap ask as paused json: %s", raw)
+	}
+	raw = marshalTaskRunResult(&TaskState{ID: "bt-9", Status: TaskStatusPaused, LastResultStatus: "ask"}, nil)
+	if !strings.Contains(raw, "resume_task_id=bt-9") {
+		t.Fatalf("nil ask_user missing resume_task_id: %s", raw)
+	}
+}
+
+func TestTaskVerifierNilSessionFn(t *testing.T) {
+	if _, err := (&TaskVerifier{}).Verify([]CriterionSpec{{Type: "dom_exists"}}); err == nil {
+		t.Fatal("expected session error")
+	}
+	if err := (&TaskVerifier{}).WaitForStable(time.Second); err != nil {
+		t.Fatalf("WaitForStable nil sessionFn = %v", err)
 	}
 }
 
@@ -334,11 +565,11 @@ func TestTaskSupervisorRejectsClickAtStep(t *testing.T) {
 
 func TestAgentTaskTypeStepAllowsFocusedEditableWithoutSelector(t *testing.T) {
 	supervisor := NewBrowserTaskSupervisor(nil, nil, nil, func() (*Session, error) { return nil, nil }, nil)
-	err := supervisor.doAgentStep(&BrowserAgentSession{}, StepSpec{Action: "type", Params: map[string]string{"text": "Title"}})
-	if err == nil {
+	result, err := supervisor.doAgentStep(&BrowserAgentSession{}, StepSpec{Action: "type", Params: map[string]string{"text": "Title"}})
+	if err == nil && (result == nil || result.Status != "ask") {
 		t.Fatal("expected browser session error from nil session")
 	}
-	if strings.Contains(err.Error(), "missing selector/ref") {
+	if err != nil && strings.Contains(err.Error(), "missing selector/ref") {
 		t.Fatalf("type step should use active editable fallback, got %v", err)
 	}
 }
@@ -535,5 +766,349 @@ func TestNormalizeStepParams_NestedTakesPrecedence(t *testing.T) {
 	// Nested params should take precedence.
 	if steps[0].Params["ref"] != "@nested" {
 		t.Errorf("Params[ref] = %q, want @nested (nested takes precedence)", steps[0].Params["ref"])
+	}
+}
+
+func TestMarshalActionResultIncludesLastExpect(t *testing.T) {
+	s := &BrowserAgentSession{
+		lastSnapshotID: "snap-1",
+		snapshots: map[string]*BrowserSnapshot{
+			"snap-1": {SnapshotID: "snap-1", URL: "https://example.com/success", Title: "Done"},
+		},
+	}
+	result := &BrowserActionResult{
+		SnapshotID: "snap-1",
+		Status:     "ok",
+		Display:    "clicked",
+		Data: map[string]interface{}{
+			"url":   "https://example.com/success",
+			"title": "Done",
+		},
+	}
+	raw := marshalActionResult(s, result, nil, ExpectSpec{Type: "url_contains", Pattern: "/success"})
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != true {
+		t.Fatalf("ok=%v raw=%s", payload["ok"], raw)
+	}
+	data, _ := payload["data"].(map[string]interface{})
+	excerpt, _ := data["last_expect"].(map[string]interface{})
+	if excerpt["type"] != "url_contains" || excerpt["pattern"] != "/success" {
+		t.Fatalf("last_expect=%v", data["last_expect"])
+	}
+}
+
+func TestAttachLastExpectLedgerOnObserveData(t *testing.T) {
+	s := &BrowserAgentSession{lastExpect: ExpectSpec{Type: "text", Pattern: "Welcome"}}
+	data := attachLastExpectLedger(s, observeDataFromSnapshot(BrowserSnapshot{URL: "https://example.com"}))
+	excerpt, _ := data["last_expect"].(map[string]string)
+	if excerpt["type"] != "text" || excerpt["pattern"] != "Welcome" {
+		t.Fatalf("last_expect=%v", data["last_expect"])
+	}
+}
+
+func TestPolicyNavigateReturnsBlocked(t *testing.T) {
+	s := &BrowserAgentSession{
+		session: &Session{},
+		Policy:  BrowserPolicy{BlockedDomains: []string{"evil.com"}},
+	}
+	got, err := s.Navigate("https://evil.com/phish")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got == nil || got.Status != "blocked" {
+		t.Fatalf("got=%#v", got)
+	}
+	if got.Data["reason"] != "blocked" {
+		t.Fatalf("data=%v", got.Data)
+	}
+	raw := marshalActionResult(s, got, err, ExpectSpec{})
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != false {
+		t.Fatalf("ok=%v raw=%s", payload["ok"], raw)
+	}
+	data, _ := payload["data"].(map[string]interface{})
+	if data["reason"] != "blocked" {
+		t.Fatalf("data=%v", data)
+	}
+}
+
+func TestPolicyUploadReturnsBlocked(t *testing.T) {
+	s := &BrowserAgentSession{
+		session:        &Session{},
+		lastSnapshotID: "snap-1",
+		snapshots: map[string]*BrowserSnapshot{
+			"snap-1": {SnapshotID: "snap-1"},
+		},
+	}
+	got, err := s.SetFilesOn("snap-1", "@e1", "", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got == nil || got.Status != "blocked" {
+		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestNavigateInvalidURLIsErrorNotBlocked(t *testing.T) {
+	s := &BrowserAgentSession{session: &Session{}}
+	got, err := s.Navigate("http://[")
+	if err == nil {
+		t.Fatal("expected invalid url error")
+	}
+	if got != nil {
+		t.Fatalf("invalid url returned result=%#v", got)
+	}
+	if isPolicyDenied(err) {
+		t.Fatalf("invalid url should not be policy denied: %v", err)
+	}
+}
+
+func TestCurrentDomainFromSessionUsesSnapshot(t *testing.T) {
+	s := &BrowserAgentSession{
+		lastSnapshotID: "snap-1",
+		snapshots: map[string]*BrowserSnapshot{
+			"snap-1": {URL: "https://example.com/page"},
+		},
+		session: &Session{},
+	}
+	if got := currentDomainFromSession(s); got != "example.com" {
+		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestExecutePausesOnBlockedCSSNavigate(t *testing.T) {
+	supervisor := NewBrowserTaskSupervisor(nil, nil, nil, func() (*Session, error) {
+		return &Session{}, nil
+	}, nil)
+	state, err := supervisor.Execute(TaskSpec{
+		Steps: []StepSpec{{Action: "navigate", Params: map[string]string{"url": "javascript:alert(1)"}}},
+	})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if state == nil || state.Status != TaskStatusPaused || state.LastResultStatus != "blocked" {
+		t.Fatalf("state=%#v", state)
+	}
+	if state.RetryCount != 0 {
+		t.Fatalf("retries=%d", state.RetryCount)
+	}
+}
+
+func TestExecutePausesOnBlockedNavigate(t *testing.T) {
+	s := &BrowserAgentSession{
+		session: &Session{},
+		Policy:  BrowserPolicy{BlockedDomains: []string{"evil.com"}},
+	}
+	supervisor := NewBrowserTaskSupervisor(nil, nil, nil, nil, nil)
+	supervisor.agentSessionFn = func() (*BrowserAgentSession, error) { return s, nil }
+	state, err := supervisor.Execute(TaskSpec{
+		Steps: []StepSpec{{Action: "navigate", Params: map[string]string{"url": "https://evil.com/"}}},
+	})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if state == nil || state.Status != TaskStatusPaused || state.LastResultStatus != "blocked" {
+		t.Fatalf("state=%#v", state)
+	}
+	if state.RetryCount != 0 {
+		t.Fatalf("retries=%d", state.RetryCount)
+	}
+	raw := marshalTaskRunResult(state, nil)
+	if strings.Contains(raw, "__ASK_USER__") {
+		t.Fatalf("blocked must not be ask: %s", raw)
+	}
+	if !strings.Contains(raw, `"reason":"blocked"`) {
+		t.Fatalf("got=%s", raw)
+	}
+}
+
+func TestApplyExpectDoesNotRecordAskOrBlocked(t *testing.T) {
+	s := &BrowserAgentSession{
+		snapshots: map[string]*BrowserSnapshot{
+			"snap-1": {SnapshotID: "snap-1", URL: "https://example.com/done"},
+		},
+	}
+	s.applyExpect(&BrowserActionResult{SnapshotID: "snap-1", Status: "ok"}, ExpectSpec{Type: "url_contains", Pattern: "/done"})
+	s.applyExpect(&BrowserActionResult{SnapshotID: "snap-1", Status: "ask"}, ExpectSpec{Type: "url_contains", Pattern: "/other"})
+	s.applyExpect(&BrowserActionResult{SnapshotID: "snap-1", Status: "blocked"}, ExpectSpec{Type: "text", Pattern: "nope"})
+	if s.lastExpect.Type != "url_contains" || s.lastExpect.Pattern != "/done" {
+		t.Fatalf("ask/blocked overwrote last_expect: %#v", s.lastExpect)
+	}
+}
+
+func TestApplyExpectDoesNotRecordTrivialExpect(t *testing.T) {
+	s := &BrowserAgentSession{
+		snapshots: map[string]*BrowserSnapshot{
+			"snap-1": {SnapshotID: "snap-1", URL: "https://example.com/done"},
+		},
+	}
+	s.applyExpect(&BrowserActionResult{SnapshotID: "snap-1", Status: "ok"}, ExpectSpec{Type: "url_contains", Pattern: "/done"})
+	s.applyExpect(&BrowserActionResult{SnapshotID: "snap-1", Status: "ok"}, ExpectSpec{Type: "url_contains", Pattern: "/"})
+	if s.lastExpect.Pattern != "/done" {
+		t.Fatalf("trivial expect overwrote last_expect: %#v", s.lastExpect)
+	}
+}
+
+func TestValidateNavigationPolicyBlocksSchemes(t *testing.T) {
+	if err := validateNavigationPolicy(BrowserPolicy{}, "javascript:alert(1)", ""); !isPolicyDenied(err) {
+		t.Fatalf("javascript: err=%v", err)
+	}
+	if err := validateNavigationPolicy(BrowserPolicy{}, "data:text/html,hi", ""); !isPolicyDenied(err) {
+		t.Fatalf("data: err=%v", err)
+	}
+	if err := validateNavigationPolicy(BrowserPolicy{}, "file:///etc/passwd", ""); !isPolicyDenied(err) {
+		t.Fatalf("file: err=%v", err)
+	}
+	if err := validateNavigationPolicy(BrowserPolicy{}, "about:blank", ""); err != nil {
+		t.Fatalf("about:blank err=%v", err)
+	}
+	if err := validateNavigationPolicy(BrowserPolicy{}, "https://example.com/", ""); err != nil {
+		t.Fatalf("https err=%v", err)
+	}
+	if err := validateNavigationPolicy(BrowserPolicy{}, "http://", ""); err == nil || isPolicyDenied(err) {
+		t.Fatalf("missing host should be invalid url, got %v", err)
+	}
+}
+
+func TestOpenURLBlockedReturnsError(t *testing.T) {
+	s := &BrowserAgentSession{
+		session: &Session{},
+		Policy:  BrowserPolicy{BlockedDomains: []string{"evil.com"}},
+	}
+	err := s.OpenURL("https://evil.com/phish")
+	if err == nil {
+		t.Fatal("expected blocked start_url error")
+	}
+	if !strings.Contains(err.Error(), "evil.com") {
+		t.Fatalf("err=%v", err)
+	}
+	if err := s.OpenURL(""); err != nil {
+		t.Fatalf("empty url err=%v", err)
+	}
+}
+
+func TestActionErrorTreatsNonOKStatuses(t *testing.T) {
+	if err := actionError(&BrowserActionResult{Status: "ask", Display: "solve captcha"}, nil); err == nil || !strings.Contains(err.Error(), "solve captcha") {
+		t.Fatal("ask should be an OpenURL error")
+	}
+	if err := actionError(&BrowserActionResult{Status: "unchanged", Display: "same page"}, nil); err != nil {
+		t.Fatalf("unchanged err=%v", err)
+	}
+	if err := actionError(&BrowserActionResult{Status: "ok"}, nil); err != nil {
+		t.Fatalf("ok err=%v", err)
+	}
+	if err := actionError(nil, nil); err == nil {
+		t.Fatal("nil result should be an error")
+	}
+	blockedErr := actionError(&BrowserActionResult{Status: "blocked", Display: "browser policy blocked domain: evil.com"}, nil)
+	if !isPolicyDenied(blockedErr) {
+		t.Fatalf("blocked OpenURL error should be policyDenied: %v", blockedErr)
+	}
+}
+
+func TestSessionNavigateBlocksSchemesWithoutPanic(t *testing.T) {
+	s := &Session{}
+	if _, err := s.Navigate("javascript:alert(1)"); err == nil {
+		t.Fatal("expected javascript: to be blocked")
+	}
+	if _, err := s.Navigate("https://example.com/"); err == nil {
+		t.Fatal("disconnected session should error instead of panicking")
+	}
+}
+
+func TestSwitchPageNilSession(t *testing.T) {
+	if err := (*Session)(nil).SwitchPage("t1"); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+	if err := (&Session{}).SwitchPage(""); err == nil {
+		t.Fatal("expected missing target id")
+	}
+}
+
+func TestWaitForStableNilClient(t *testing.T) {
+	if err := (&Session{}).WaitForStable(time.Second, 50*time.Millisecond); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+}
+
+func TestBackNilClient(t *testing.T) {
+	if err := (&Session{}).Back(); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+}
+
+func TestEvalNilClient(t *testing.T) {
+	if _, err := (*Session)(nil).Eval("1"); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+	if _, err := (&Session{}).Eval("1"); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+}
+
+func TestGetHTMLNilClient(t *testing.T) {
+	if _, err := (*Session)(nil).GetHTML(""); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+	if _, err := (&Session{}).GetHTML(""); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+}
+
+func TestScreenshotNilClient(t *testing.T) {
+	if _, err := (*Session)(nil).Screenshot(false); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+	if _, err := (&Session{}).Screenshot(false); err == nil {
+		t.Fatal("expected disconnected session error")
+	}
+}
+
+func TestPruneDuplicatePagesNilClient(t *testing.T) {
+	if n := (*Session)(nil).PruneDuplicatePages(); n != 0 {
+		t.Fatalf("closed=%d", n)
+	}
+	if n := (&Session{}).PruneDuplicatePages(); n != 0 {
+		t.Fatalf("closed=%d", n)
+	}
+}
+
+func TestWaitForLoadOnNilClient(t *testing.T) {
+	if waitForLoadOn(nil, time.Second, 0) != "" {
+		t.Fatal("nil client should not wait")
+	}
+}
+
+func TestObserveAfterActionGenericErrorNotBlocked(t *testing.T) {
+	obs, blocked, err := (&BrowserAgentSession{ID: "s1"}).observeAfterAction("browser_click")
+	if obs != nil || blocked != nil {
+		t.Fatalf("obs=%v blocked=%v", obs, blocked)
+	}
+	if err == nil {
+		t.Fatal("expected disconnected observe error")
+	}
+	if isPolicyDenied(err) {
+		t.Fatalf("generic observe error should not be policy denied: %v", err)
+	}
+}
+
+func TestClickPopupPolicyDeniedIsBlocked(t *testing.T) {
+	s := &BrowserAgentSession{ID: "s1"}
+	got, err := policyBlockResult(s, "browser_click", policyDenied("browser policy blocked popup; pass allow_popup=true on session_start"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Status != "blocked" || got.Action != "browser_click" {
+		t.Fatalf("got=%#v", got)
+	}
+	raw := marshalActionResult(s, got, err, ExpectSpec{})
+	if strings.Contains(raw, `"ok":true`) || strings.Contains(raw, "ASK_USER") {
+		t.Fatalf("blocked click should be compact ok=false: %s", raw)
 	}
 }

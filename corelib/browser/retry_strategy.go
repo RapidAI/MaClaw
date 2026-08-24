@@ -60,8 +60,15 @@ func (r *RetryStrategy) ClassifyFailure(err error, step StepSpec) FailureType {
 	if err == nil {
 		return FailureVerificationFailed
 	}
+	if isPolicyDenied(err) {
+		return FailureNetworkBlocked
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(msg, "browser policy blocked"):
+		return FailureNetworkBlocked
+	case strings.Contains(msg, "step verification failed") || strings.Contains(msg, "success criteria not met") || strings.Contains(msg, "did not change the page"):
+		return FailureVerificationFailed
 	case strings.Contains(msg, "not found") || strings.Contains(msg, "no node"):
 		return FailureElementNotFound
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out"):

@@ -242,7 +242,8 @@ func remoteActivate(args []string) error {
 		smClient := remote.NewSkillMarketAuthClient()
 		smCtx, smCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		smBaseURL := ResolveHubCenterWithFailover(cfg, cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
-		smResult, smErr := smClient.MachineLogin(smCtx, smBaseURL, result.Email, result.MachineID, result.ViewerToken)
+		contact := firstNonEmpty(strings.TrimSpace(result.Email), "phone:"+strings.TrimSpace(result.PhoneNumber))
+		smResult, smErr := smClient.MachineLogin(smCtx, smBaseURL, cfg.RemoteHubID, firstNonEmpty(strings.TrimSpace(result.UserID), contact), contact, result.MachineID, result.ViewerToken)
 		smCancel()
 		if smErr == nil && smResult.SessionToken != "" {
 			cfg.SkillMarketSessionToken = smResult.SessionToken

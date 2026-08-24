@@ -17,6 +17,11 @@ static void *s_on_press_arg;
 static TaskHandle_t s_button_task;
 static SemaphoreHandle_t s_button_task_stopped;
 static bool s_button_task_stop_requested;
+/* System Sleep retains this boot-lifetime scanner, but no I2C touch or GPIO
+ * sample may overlap a future profile electrical prepare. */
+static SemaphoreHandle_t s_button_task_system_sleep_quiesced;
+static bool s_button_task_system_sleep_preparing;
+static portMUX_TYPE s_button_task_system_sleep_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool s_command_cancel_enabled;
 static volatile uint32_t s_command_gesture_revision;
 /* Once a double tap is emitted, discard residual native/raw touch reports
@@ -50,6 +55,26 @@ static void button_task(void *arg) {
              button_pressed ? "yes" : "no",
              round_peripheral_service_touch_ready() ? "yes" : "no");
     while (true) {
+        taskENTER_CRITICAL(&s_button_task_system_sleep_lock);
+        const bool system_sleep_preparing = s_button_task_system_sleep_preparing;
+        taskEXIT_CRITICAL(&s_button_task_system_sleep_lock);
+        if (system_sleep_preparing) {
+            /* PREPARE raises this marker before waking us. Reaching this
+             * branch proves the previous scan has completed and prevents a
+             * new touch/I2C or activate-key read until ABORT. */
+            if (s_button_task_system_sleep_quiesced) {
+                xSemaphoreGive(s_button_task_system_sleep_quiesced);
+            }
+            for (;;) {
+                (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                taskENTER_CRITICAL(&s_button_task_system_sleep_lock);
+                const bool still_preparing = s_button_task_system_sleep_preparing;
+                taskEXIT_CRITICAL(&s_button_task_system_sleep_lock);
+                if (s_button_task_stop_requested) goto stopped;
+                if (!still_preparing) break;
+            }
+            continue;
+        }
         bool now_button_pressed = round_input_profile_service_activate_key_pressed();
         bool now_panel_pressed = false;
         uint8_t now_touch_gesture = 0;
@@ -134,7 +159,31 @@ static void button_task(void *arg) {
                          s_command_cancel_enabled)
                             ? input_profile->touch_cancel_min_tap_ms
                             : input_profile->touch_regular_min_tap_ms;
-                    if (!long_sent && held_ms >= minimum_tap_ms) {
+                    if (!long_sent &&
+                        input_profile->local_volume_decrease_hold_ms > 0 &&
+                        held_ms >= input_profile->local_volume_decrease_hold_ms) {
+                        /* Round touch/key hardware maps its profile-declared
+                         * alternate control here. Business policy receives the
+                         * same normalized volume intent as Bread's side key;
+                         * it never learns a controller, coordinate, or hold
+                         * interval. The longer configuration hold was already
+                         * emitted while pressed and remains unchanged. */
+                        short_pending = false;
+                        pending_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+                        ESP_LOGI(TAG, "local volume decrease hold: %s",
+                                 gesture_source == DEVICE_INPUT_SOURCE_TOUCH ?
+                                     "touch" : "button");
+                        emit_button_input(DEVICE_INPUT_VOLUME_DOWN, gesture_source);
+                    } else if (!long_sent &&
+                               input_profile->local_volume_increase_hold_ms > 0 &&
+                               held_ms >= input_profile->local_volume_increase_hold_ms) {
+                        short_pending = false;
+                        pending_source = DEVICE_INPUT_SOURCE_UNKNOWN;
+                        ESP_LOGI(TAG, "local volume increase hold: %s",
+                                 gesture_source == DEVICE_INPUT_SOURCE_TOUCH ?
+                                     "touch" : "button");
+                        emit_button_input(DEVICE_INPUT_VOLUME_UP, gesture_source);
+                    } else if (!long_sent && held_ms >= minimum_tap_ms) {
                         int64_t since_previous_us = now_us - released_at_us;
                         int64_t double_window_us =
                             (int64_t)input_profile->double_tap_window_ms * 1000;
@@ -190,6 +239,7 @@ static void button_task(void *arg) {
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(input_profile->scan_poll_ms)) != 0) break;
     }
 
+stopped:
     s_on_button = NULL;
     s_on_press_arg = NULL;
     if (s_button_task_stopped) xSemaphoreGive(s_button_task_stopped);
@@ -205,16 +255,26 @@ esp_err_t round_input_service_start(round_input_service_publish_cb_t on_button, 
     s_on_button = on_button;
     s_on_press_arg = arg;
     s_button_task_stopped = xSemaphoreCreateBinary();
-    if (!s_button_task_stopped) {
+    s_button_task_system_sleep_quiesced = xSemaphoreCreateBinary();
+    if (!s_button_task_stopped || !s_button_task_system_sleep_quiesced) {
+        if (s_button_task_stopped) vSemaphoreDelete(s_button_task_stopped);
+        if (s_button_task_system_sleep_quiesced) {
+            vSemaphoreDelete(s_button_task_system_sleep_quiesced);
+        }
+        s_button_task_stopped = NULL;
+        s_button_task_system_sleep_quiesced = NULL;
         s_on_button = NULL;
         s_on_press_arg = NULL;
         return ESP_ERR_NO_MEM;
     }
     s_button_task_stop_requested = false;
+    s_button_task_system_sleep_preparing = false;
     if (round_input_profile_service_start_scan_task(button_task, &s_button_task) != pdPASS) {
         ESP_LOGE(TAG, "cannot start button task");
         vSemaphoreDelete(s_button_task_stopped);
+        vSemaphoreDelete(s_button_task_system_sleep_quiesced);
         s_button_task_stopped = NULL;
+        s_button_task_system_sleep_quiesced = NULL;
         s_on_button = NULL;
         s_on_press_arg = NULL;
         return ESP_ERR_NO_MEM;
@@ -236,11 +296,52 @@ esp_err_t round_input_service_stop(uint32_t timeout_ms) {
         return ESP_ERR_TIMEOUT;
     }
     vSemaphoreDelete(s_button_task_stopped);
+    vSemaphoreDelete(s_button_task_system_sleep_quiesced);
     s_button_task_stopped = NULL;
+    s_button_task_system_sleep_quiesced = NULL;
     s_button_task = NULL;
     s_button_task_stop_requested = false;
+    s_button_task_system_sleep_preparing = false;
     ESP_LOGI(TAG, "board input scanner stopped");
     return ESP_OK;
+}
+
+esp_err_t round_input_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_button_task_system_sleep_lock);
+    if (!s_button_task || s_button_task_stop_requested ||
+        s_button_task_system_sleep_preparing) {
+        taskEXIT_CRITICAL(&s_button_task_system_sleep_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_button_task_system_sleep_preparing = true;
+    task = s_button_task;
+    taskEXIT_CRITICAL(&s_button_task_system_sleep_lock);
+
+    /* An earlier aborted generation may have left its acknowledgement queued.
+     * Drain it before notifying this generation, so a successful take always
+     * proves the scanner observed the marker above. */
+    while (xSemaphoreTake(s_button_task_system_sleep_quiesced, 0) == pdTRUE) {}
+    xTaskNotifyGive(task);
+    if (xSemaphoreTake(s_button_task_system_sleep_quiesced,
+                       pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return ESP_OK;
+    }
+    /* A timeout is still a closed generation.  Only the owning Power
+     * transaction may ABORT it after reverse-order rollback; reopening here
+     * could resume touch/I2C or activate-key reads while another private
+     * participant remains parked. */
+    return ESP_ERR_TIMEOUT;
+}
+
+void round_input_service_abort_system_sleep_prepare(void) {
+    TaskHandle_t task = NULL;
+    taskENTER_CRITICAL(&s_button_task_system_sleep_lock);
+    s_button_task_system_sleep_preparing = false;
+    task = s_button_task;
+    taskEXIT_CRITICAL(&s_button_task_system_sleep_lock);
+    if (task) xTaskNotifyGive(task);
 }
 
 void round_input_service_set_command_cancel_enabled(bool enabled) {

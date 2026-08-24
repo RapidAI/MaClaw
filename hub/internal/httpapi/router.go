@@ -114,7 +114,7 @@ func NewRouter(
 	var userReferralRepo store.UserReferralRepository
 	if hubDB != nil && identity != nil && tenantRepo != nil {
 		userReferralRepo = storesqlite.NewUserReferralRepository(hubDB, hubDB)
-		system = userReferralMetricSystemSettings{SystemSettingsRepository: system, repo: userReferralRepo}
+		system = userReferralMetricSystemSettings{SystemSettingsRepository: system, repo: userReferralRepo, usage: storesqlite.NewLLMUsageRepository(hubDB, hubDB), billing: storesqlite.NewLLMBillingLedgerRepository(hubDB, hubDB)}
 	}
 	if identity != nil {
 		userLookup = identity.UsersRepo()
@@ -309,6 +309,15 @@ func NewRouter(
 		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/merge", requireGlobalAdmin(AdminTenantMergeHandler(hubDB, tenantRepo, adminAudit, tenantIMRuntimeStopper)))
 		mux.HandleFunc("DELETE /api/admin/tenants/{tenantId}", requireGlobalAdmin(AdminTenantDeleteWithPlatformCallbackHandler(system, adminAudit, admins, hubDB, centerSvc, tenantRepo, tenantIMRuntimeStopper)))
 		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/admins", requireAdmin(AdminTenantAdminCreateHandler(tenantRepo, admins, adminAudit, centerSvc)))
+		// Semantic tool routing (mobile core agent): owner-only dynamic capability
+		// contract publication for observed MCP/Skill bindings, aligned with the
+		// MaClawSrv admin routes. Hub "owner" maps to the global admin scope.
+		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/users/{userId}/dynamic-capabilities/mcp/{serverId}/{toolName}", requireGlobalAdmin(mobilePublishDynamicMCPContractHandler(adminAudit)))
+		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/users/{userId}/dynamic-capabilities/skills/{stableId}", requireGlobalAdmin(mobilePublishDynamicSkillContractHandler(adminAudit)))
+		// The out-of-band exit for an operation that ended unknown. The
+		// operation ledger supplies tenant, user and binding, so the path
+		// carries only the operation it is aimed at.
+		mux.HandleFunc("POST /api/admin/dynamic-effects/{operationId}/resolve", requireGlobalAdmin(mobileResolveUnknownDynamicEffectHandler(adminAudit)))
 	}
 	mux.HandleFunc("GET /api/admin/debug/machines", requireAdmin(DebugListMachinesHandler(deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/machine-events", requireAdmin(DebugListMachineEventsHandler(deviceSvc)))
@@ -348,7 +357,15 @@ func NewRouter(
 		mux.HandleFunc("GET /api/admin/digital-assets/import/jobs/{job_id}", requireTenantAdmin(GetDigitalAssetImportJobAdminHandler(digitalAssetSvc)))
 		mux.HandleFunc("GET /api/admin/digital-assets/settings", requireTenantAdmin(GetDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
 		mux.HandleFunc("PUT /api/admin/digital-assets/settings", requireTenantAdmin(PutDigitalAssetSettingsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/submissions", requireTenantAdmin(ListDigitalAssetSubmissionsAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("GET /api/admin/digital-assets/submissions/{id}", requireTenantAdmin(GetDigitalAssetSubmissionAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/submissions/{id}/approve", requireTenantAdmin(ApproveDigitalAssetSubmissionAdminHandler(digitalAssetSvc)))
+		mux.HandleFunc("POST /api/admin/digital-assets/submissions/{id}/reject", requireTenantAdmin(RejectDigitalAssetSubmissionAdminHandler(digitalAssetSvc)))
 		mux.HandleFunc("GET /api/digital-assets/libraries", ListDigitalAssetLibrariesUserHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("GET /api/digital-assets/libraries/contributable", ListDigitalAssetContributableLibrariesHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("POST /api/digital-assets/submissions", CreateDigitalAssetSubmissionHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("GET /api/digital-assets/submissions", ListMyDigitalAssetSubmissionsHandler(digitalAssetSvc, identity))
+		mux.HandleFunc("POST /api/digital-assets/submissions/{id}/withdraw", WithdrawDigitalAssetSubmissionHandler(digitalAssetSvc, identity))
 		mux.HandleFunc("GET /api/digital-assets/sync/manifest", DigitalAssetSyncManifestHandler(digitalAssetSvc, identity))
 		mux.HandleFunc("POST /api/digital-assets/sync/pull", DigitalAssetSyncPullHandler(digitalAssetSvc, identity))
 		mux.HandleFunc("GET /api/digital-assets/libraries/{id}/sync/packages/{rev}", DigitalAssetSyncPackageHandler(digitalAssetSvc, identity))
@@ -422,6 +439,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/center/user-migration/export", CenterUserMigrationExportHandler(centerSvc, identity, deviceSvc))
 	mux.HandleFunc("POST /api/center/user-migration/import", CenterUserMigrationImportHandler(centerSvc, identity, deviceSvc))
 	mux.HandleFunc("POST /api/center/user-migration/delete", CenterUserMigrationDeleteHandler(centerSvc, identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners, userPurger))
+	mux.HandleFunc("POST /api/center/skillmarket-authenticate", CenterSkillMarketAuthenticateHandler(centerSvc, identity))
 	mux.HandleFunc("POST /api/admin/center/config", requireGlobalAdmin(UpdateCenterConfigHandler(centerSvc, identity, func(url string) {
 		if qqbotPlugin != nil {
 			qqbotPlugin.SetPublicBaseURL(url)
@@ -472,7 +490,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/llm/providers", requireTenantAdmin(UpdateLLMProvidersHandler(system, GetMaClawAccessControl())))
 	mux.HandleFunc("POST /api/admin/llm/providers/test", requireTenantAdmin(TestLLMProviderHandler(system)))
 	mux.HandleFunc("POST /api/admin/llm/providers/test-key", requireTenantAdmin(GenerateLLMProviderTestKeyHandler(identity)))
-	mux.HandleFunc("GET /api/admin/llm/maclaw-compute-status", requireAdmin(MaClawComputeStatusHandler(centerSvc, GetMaClawAccessControl())))
+	mux.HandleFunc("GET /api/admin/llm/maclaw-compute-status", requireTenantAdmin(MaClawComputeStatusHandler(centerSvc, nil)))
 	mux.HandleFunc("GET /api/admin/llm/services", requireTenantAdmin(GetLLMServicesAdminHandler(system)))
 	mux.HandleFunc("PUT /api/admin/llm/services", requireTenantAdmin(UpdateLLMServicesAdminHandler(system, securitySvc, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/system-free", requireTenantAdmin(GetSystemFreeLLMHandler(system)))
@@ -505,6 +523,38 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/llm/service-cards/delete-batch", requireTenantAdmin(DeleteLLMServiceCardsBatchHandler(system, adminAudit)))
 	mux.HandleFunc("DELETE /api/admin/llm/service-grants/{id}", requireTenantAdmin(DeleteLLMServiceGrantHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/usage-report", requireTenantAdmin(GetLLMUsageReportHandler(system, securitySvc)))
+	mux.HandleFunc("GET /api/admin/llm/class-traffic", requireTenantAdmin(GetLLMClassTrafficHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/classify-preview", requireTenantAdmin(PostLLMClassifyPreviewHandler(system)))
+	bindClassHeadSettings(system)
+	if hubCfg != nil {
+		peers := make([]string, 0, len(hubCfg.Replica.Peers))
+		urls := map[string]string{}
+		for _, peer := range hubCfg.Replica.Peers {
+			id := strings.TrimSpace(peer.ID)
+			if id == "" {
+				continue
+			}
+			peers = append(peers, id)
+			if u := strings.TrimSpace(peer.URL); u != "" {
+				urls[id] = u
+			}
+		}
+		local := strings.TrimSpace(hubCfg.Replica.NodeID)
+		if local == "" {
+			local = "local"
+		}
+		bindClassHeadRoster(local, peers, urls, hubCfg.Replica.SharedSecret)
+	}
+	mux.HandleFunc("GET /api/admin/llm/class-head", requireTenantAdmin(GetLLMClassHeadHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/train", requireTenantAdmin(PostLLMClassHeadTrainHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/pipeline", requireTenantAdmin(PostLLMClassHeadPipelineHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/review", requireTenantAdmin(PostLLMClassHeadReviewHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/rollback", requireTenantAdmin(PostLLMClassHeadRollbackHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/pull-official", requireTenantAdmin(PostLLMClassHeadPullOfficialHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/trainer", requireTenantAdmin(PostLLMClassHeadTrainerHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/score", requireTenantAdmin(PostLLMClassHeadScoreHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/class-head/distribute", requireTenantAdmin(PostLLMClassHeadDistributeHandler(system)))
+	mux.HandleFunc("POST /api/internal/llm/class-head/apply", PostInternalClassHeadApplyHandler(system))
 	mux.HandleFunc("GET /api/admin/llm/access-logs", requireTenantAdmin(GetLLMEndpointAccessLogsHandler(system)))
 	mux.HandleFunc("GET /api/admin/card-store/config", requireTenantAdmin(GetCardStoreConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/card-store/config", requireTenantAdmin(UpdateCardStoreConfigHandler(system, adminAudit)))
@@ -686,6 +736,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/users/smart_route", requireAdmin(UpdateUserSmartRouteHandler(identity.UsersRepo())))
 	mux.HandleFunc("GET /api/admin/smart_route_all", requireAdmin(GetSmartRouteAllHandler(system)))
 	mux.HandleFunc("PUT /api/admin/smart_route_all", requireAdmin(UpdateSmartRouteAllHandler(system)))
+	// HTTP threat class-head (not the LLM routing class-head).
+	mountHTTPThreatAdmin(mux, requireTenantAdmin, runtimeDataDir, identity, adminAudit)
 	// Security management
 	if securitySvc != nil {
 		mux.HandleFunc("GET /api/admin/security/groups", requireTenantAdmin(SecurityGroupsHandler(securitySvc)))

@@ -21,12 +21,16 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -64,13 +68,54 @@ type CoreAgentExecutor struct {
 	// delivery identity or configuration.
 	IMFileHandlerContext func(ctx context.Context, principal Principal, args map[string]interface{}) string
 
-	mu             sync.Mutex
-	userMemory     map[string]*memory.Store
-	tasks          map[string]*task.Store
-	userSSH        map[string]*coreAgentSSHResources
-	knowledgeStore KnowledgeStore
-	mcpProvider    MCPToolProvider
-	skillProvider  SkillToolProvider
+	// ScheduleDispatchSend delivers one bound due-time occurrence. A nil
+	// error is not a channel receipt and must settle unknown.
+	ScheduleDispatchSend func(ctx context.Context, principal Principal, channel string, targets []scheduler.DeliveryTarget, text string) error
+	// ScheduleDispatchFileSend delivers one claimed trusted document.
+	// A nil error or missing media id is not a channel receipt and must
+	// settle unknown. It must not call send_file / send_to_im soup.
+	ScheduleDispatchFileSend func(ctx context.Context, principal Principal, channel string, targets []scheduler.DeliveryTarget, data []byte, fileName, mimeType string) error
+	// ScheduleDispatchRun optionally produces the occurrence body. Nil uses
+	// the administered task action text and does not start an agent turn.
+	ScheduleDispatchRun func(ctx context.Context, principal Principal, task *scheduler.ScheduledTask) (string, error)
+	// DelegateSubtask waits for one bound child to finish. Nil keeps
+	// agent.delegate.subtask unpublished. A timeout or "started" without
+	// completion must be unknown, not accepted.
+	DelegateSubtask func(ctx context.Context, principal Principal, task string) (string, error)
+	// TrustedSSH runs one command on a host-bound remote session. Nil keeps
+	// shell.execute.remote_host unpublished unless exactly one live session
+	// already exists. Timeout or disconnect must be unknown.
+	TrustedSSH func(ctx context.Context, principal Principal, command string) (string, error)
+	// TrustedBrowser performs one host-observed browser action. Nil keeps
+	// browser.control.web unpublished. Timeout or disconnect must be unknown.
+	TrustedBrowser func(ctx context.Context, principal Principal, action, url string) (string, error)
+	// TrustedComputerUse performs one host-observed desktop action. Nil
+	// keeps computer.control.desktop unpublished. A missing runtime after
+	// publish must be unknown.
+	TrustedComputerUse func(ctx context.Context, principal Principal, action string) (string, error)
+
+	mu                     sync.Mutex
+	userMemory             map[string]*memory.Store
+	tasks                  map[string]*task.Store
+	userGoals              map[string]*goal.Store
+	userTemplates          map[string]*remote.SessionTemplateManager
+	userSchedules          map[string]*scheduler.Manager
+	userScheduleBindings   map[string]*ScheduleDispatchBindingStore
+	scheduleDispatchFired  map[string]bool
+	userSSH                map[string]*coreAgentSSHResources
+	knowledgeStore         KnowledgeStore
+	auditReader            reviewedHostAuditReader
+	configManager          reviewedHostConfigManager
+	speechTranscriber      reviewedHostSpeechTranscriber
+	speechSynthesizer      reviewedHostSpeechSynthesizer
+	speechPlayer           reviewedHostSpeechPlayer
+	desktopCapturer        reviewedHostDesktopCapturer
+	documentLauncher       reviewedHostDocumentLauncher
+	urlLauncher            reviewedHostURLOpener
+	mcpProvider            MCPToolProvider
+	skillProvider          SkillToolProvider
+	dynamicOperationLedger DynamicOperationLedger
+	dynamicSemanticRouting *DynamicSemanticRouting
 	// codingRuntimeStore is optional and set by the service host after its
 	// durable runtime ledger has been opened. Only explicitly marked coding
 	// workflow requests use it; ordinary chat never changes execution path.
@@ -80,6 +125,58 @@ type CoreAgentExecutor struct {
 	// of truth; this lets API run cancellation interrupt a currently blocking
 	// child LLM/tool call promptly.
 	childExecutions codingruntime.ChildExecutionRegistry
+}
+
+// SetDynamicOperationLedger installs the durable coordinator used by bound
+// Skill/MCP adapters. It is intentionally separate from codingruntime: normal
+// chat also needs durable replay protection for dynamically delegated effects.
+func (e *CoreAgentExecutor) SetDynamicOperationLedger(ledger DynamicOperationLedger) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.dynamicOperationLedger = ledger
+	e.mu.Unlock()
+}
+
+func (e *CoreAgentExecutor) getDynamicOperationLedger() DynamicOperationLedger {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dynamicOperationLedger
+}
+
+// SetDynamicSemanticRouting installs the governed request-to-capability
+// routing boundary used for dynamic Skill/MCP providers. Invalid wiring is
+// retained as unavailable rather than falling back to name-based routing.
+func (e *CoreAgentExecutor) SetDynamicSemanticRouting(routing DynamicSemanticRouting) error {
+	if e == nil {
+		return fmt.Errorf("core agent executor is unavailable")
+	}
+	if err := routing.validate(); err != nil {
+		return err
+	}
+	bindSessionGovernedStore(&routing)
+	e.mu.Lock()
+	copy := routing
+	e.dynamicSemanticRouting = &copy
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *CoreAgentExecutor) getDynamicSemanticRouting() *DynamicSemanticRouting {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.dynamicSemanticRouting == nil {
+		return nil
+	}
+	copy := *e.dynamicSemanticRouting
+	return &copy
 }
 
 type coreAgentSSHResources struct {
@@ -146,38 +243,75 @@ func (e *CoreAgentExecutor) CancelCodingRuntimeTask(req ExecuteRequest) (bool, e
 }
 
 type coreAgentCallbacks struct {
-	ctx                        context.Context
-	appCfg                     corelib.AppConfig
-	llmCfg                     corelib.MaclawLLMConfig
-	principal                  Principal
-	tenant                     Tenant
-	user                       User
-	instance                   Instance
-	userText                   string
-	workspace                  string
-	dataDir                    string
-	allowLocalBash             bool
-	localBashTrustedSingleUser bool
-	localBashTenantID          string
-	localBashUserID            string
-	allowDirectSSH             bool
-	allowSSHFileTransfer       bool
-	memory                     *memory.Store
-	tasks                      *task.Store
-	sshDeps                    sshtool.SSHToolDeps
-	httpClient                 *http.Client
-	toolPolicy                 v2.ToolFilterPolicy
-	mutationScope              v2.MutationScope
-	opsApprovedCommands        []v2.OpsApprovedCommand
-	knowledgeStore             KnowledgeStore
-	mcpProvider                MCPToolProvider
-	skillProvider              SkillToolProvider
-	loopID                     string
-	onToken                    func(string)
-	onToolCall                 func(string)
-	onToolResult               func(name, result string)
-	promptStats                agent.PromptBundleTokenStats
-	promptStableCacheKey       string
+	ctx                           context.Context
+	appCfg                        corelib.AppConfig
+	llmCfg                        corelib.MaclawLLMConfig
+	principal                     Principal
+	tenant                        Tenant
+	user                          User
+	instance                      Instance
+	session                       Session
+	userText                      string
+	attachments                   []agent.MessageAttachment
+	reviewedHostDocument          *reviewedHostDocumentInput
+	reviewedHostImage             *reviewedHostImageInput
+	reviewedHostVoice             *reviewedHostVoiceInput
+	reviewedHostGeneratedDocument *reviewedHostGeneratedDocument
+	reviewedHostGeneratedSpeech   *reviewedHostGeneratedSpeech
+	reviewedHostGeneratedImage    *reviewedHostGeneratedImage
+	reviewedHostGenerate          bool
+	reviewedHostAudioRender       bool
+	reviewedHostVisualCapture     bool
+	reviewedHostPDFRenderer       func(string) ([]byte, error)
+	reviewedHostURLDownloader     reviewedHostURLDownloader
+	reviewedHostAudio             *reviewedHostAudioInput
+	speechTranscriber             reviewedHostSpeechTranscriber
+	speechSynthesizer             reviewedHostSpeechSynthesizer
+	speechPlayer                  reviewedHostSpeechPlayer
+	desktopCapturer               reviewedHostDesktopCapturer
+	documentLauncher              reviewedHostDocumentLauncher
+	urlLauncher                   reviewedHostURLOpener
+	workspace                     string
+	dataDir                       string
+	allowLocalBash                bool
+	localBashTrustedSingleUser    bool
+	localBashTenantID             string
+	localBashUserID               string
+	allowDirectSSH                bool
+	allowSSHFileTransfer          bool
+	memory                        *memory.Store
+	tasks                         *task.Store
+	goals                         *goal.Store
+	templates                     *remote.SessionTemplateManager
+	schedules                     *scheduler.Manager
+	sshDeps                       sshtool.SSHToolDeps
+	httpClient                    *http.Client
+	toolPolicy                    v2.ToolFilterPolicy
+	mutationScope                 v2.MutationScope
+	opsApprovedCommands           []v2.OpsApprovedCommand
+	knowledgeStore                KnowledgeStore
+	auditReader                   reviewedHostAuditReader
+	configManager                 reviewedHostConfigManager
+	mcpProvider                   MCPToolProvider
+	dynamicOperationLedger        DynamicOperationLedger
+	dynamicOperationLedgerMu      sync.Mutex
+	dynamicOperationScope         string
+	taskRelation                  TaskRelationDecision
+	mcpSurfaceMu                  sync.Mutex
+	mcpSurface                    *boundMCPCallSurface
+	skillProvider                 SkillToolProvider
+	skillSurfaceMu                sync.Mutex
+	skillSurface                  *boundSkillCallSurface
+	dynamicSemanticRouting        *DynamicSemanticRouting
+	dynamicSemanticSurface        *coreDynamicSemanticSurface
+	dynamicSemanticInitialized    bool
+	dynamicSemanticManaged        bool
+	loopID                        string
+	onToken                       func(string)
+	onToolCall                    func(string)
+	onToolResult                  func(name, result string)
+	promptStats                   agent.PromptBundleTokenStats
+	promptStableCacheKey          string
 	// lastPromptProfile is set in BuildSystemPrompt so BuildTools can align the
 	// tool surface with light system prompts (same as TUI).
 	lastPromptProfile agent.PromptProfile
@@ -208,6 +342,20 @@ type coreAgentCallbacks struct {
 	// Host-injected proactive IM message tool.
 	imMessageHandler func(args map[string]interface{}) string
 	imFileHandler    func(args map[string]interface{}) string
+
+	// messageMetadata/sessionMetadata are inbound transport facts only.
+	messageMetadata            map[string]string
+	sessionMetadata            map[string]string
+	trustedDestinationID       string
+	inboundChannelScope        string
+	scheduleDispatchBindings   *ScheduleDispatchBindingStore
+	lastAdministeredScheduleID string
+	delegateSubtask            func(context.Context, Principal, string) (string, error)
+	delegateChild              bool
+	trustedSSH                 func(context.Context, Principal, string) (string, error)
+	trustedBrowser             func(context.Context, Principal, string, string) (string, error)
+	trustedComputerUse         func(context.Context, Principal, string) (string, error)
+	executor                   *CoreAgentExecutor
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -221,9 +369,34 @@ func (c *coreAgentCallbacks) CurrentPromptProfile() agent.PromptProfile {
 	return c.lastPromptProfile
 }
 
+// ManagedSemanticTurn reports whether this request is on the governed
+// dynamic catalog. Phase C forbids light→full BuildTools rebuild on that surface.
+func (c *coreAgentCallbacks) ManagedSemanticTurn() bool {
+	return c != nil && c.dynamicSemanticManaged
+}
+
+// dynamicSemanticRequiresFullPrompt reports whether the already-planned
+// surface includes a mutation or confirmation. Light principles say "do not
+// generate documents"; a document.generate grant on a light turn would be
+// filtered out and the model told not to produce it.
+func (c *coreAgentCallbacks) dynamicSemanticRequiresFullPrompt() bool {
+	if c == nil || c.dynamicSemanticSurface == nil {
+		return false
+	}
+	for _, selection := range c.dynamicSemanticSurface.plan.Selections {
+		if !coretool.IsLightPromptSafeSelection(selection) {
+			return true
+		}
+	}
+	return false
+}
+
 // UpgradeLightPromptToFull implements agent.LightProfileUpgrader.
 func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
 	if c == nil {
+		return false
+	}
+	if c.dynamicSemanticManaged {
 		return false
 	}
 	if c.forceFullPrompt || !c.lastPromptProfile.IsLight() {
@@ -297,33 +470,61 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		}
 	}
 	cb := &coreAgentCallbacks{
-		ctx:                  ctx,
-		appCfg:               req.Config,
-		llmCfg:               llmCfg,
-		principal:            req.Principal,
-		tenant:               req.Tenant,
-		user:                 req.User,
-		instance:             req.Instance,
-		userText:             req.Message.Content,
-		workspace:            req.Instance.Workspace,
-		dataDir:              req.DataDir,
-		allowLocalBash:       e.AllowLocalBash,
-		localBashTenantID:    strings.TrimSpace(e.LocalBashTenantID),
-		localBashUserID:      strings.TrimSpace(e.LocalBashUserID),
-		allowDirectSSH:       e.AllowDirectSSH,
-		allowSSHFileTransfer: e.AllowSSHFileTransfer,
-		memory:               resources,
-		tasks:                taskStore,
-		knowledgeStore:       e.knowledgeStore,
-		mcpProvider:          e.mcpProvider,
-		skillProvider:        e.skillProvider,
-		loopID:               fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
-		onToken:              req.OnToken,
-		onToolCall:           req.OnToolCall,
-		onToolResult:         req.OnToolResult,
-		scheduleHandler:      e.ScheduleHandler,
-		imMessageHandler:     imMessageHandler,
-		imFileHandler:        imFileHandler,
+		ctx:                      ctx,
+		appCfg:                   req.Config,
+		llmCfg:                   llmCfg,
+		principal:                req.Principal,
+		tenant:                   req.Tenant,
+		user:                     req.User,
+		instance:                 req.Instance,
+		session:                  req.Session,
+		userText:                 req.Message.Content,
+		attachments:              append([]agent.MessageAttachment(nil), req.Message.Attachments...),
+		workspace:                req.Instance.Workspace,
+		dataDir:                  req.DataDir,
+		allowLocalBash:           e.AllowLocalBash,
+		localBashTenantID:        strings.TrimSpace(e.LocalBashTenantID),
+		localBashUserID:          strings.TrimSpace(e.LocalBashUserID),
+		allowDirectSSH:           e.AllowDirectSSH,
+		allowSSHFileTransfer:     e.AllowSSHFileTransfer,
+		memory:                   resources,
+		tasks:                    taskStore,
+		goals:                    e.goalStoreForDataDir(req.DataDir),
+		templates:                e.templateManagerForDataDir(req.DataDir),
+		schedules:                e.scheduleManagerForDataDir(req.DataDir),
+		scheduleDispatchBindings: e.scheduleDispatchBindingStoreForDataDir(req.DataDir),
+		inboundChannelScope:      inferIMAuditPlatform(req.Message.Metadata, req.Session.Metadata),
+		executor:                 e,
+		knowledgeStore:           e.knowledgeStore,
+		auditReader:              e.getReviewedHostAuditReader(),
+		configManager:            e.getReviewedHostConfigManager(),
+		speechTranscriber:        e.getReviewedHostSpeechTranscriber(),
+		speechSynthesizer:        e.getReviewedHostSpeechSynthesizer(),
+		speechPlayer:             e.getReviewedHostSpeechPlayer(),
+		desktopCapturer:          e.getReviewedHostDesktopCapturer(),
+		documentLauncher:         e.getReviewedHostDocumentLauncher(),
+		urlLauncher:              e.getReviewedHostURLLauncher(),
+		mcpProvider:              e.mcpProvider,
+		skillProvider:            e.skillProvider,
+		dynamicOperationLedger:   e.getDynamicOperationLedger(),
+		dynamicSemanticRouting:   e.getDynamicSemanticRouting(),
+		dynamicOperationScope:    firstNonEmptyDynamicOperationScope(req.Message.ID, req.Session.ID),
+		taskRelation:             trustedTaskRelationForExecute(req),
+		loopID:                   fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
+		onToken:                  wrapVisibleChatTokenCallback(req.OnToken),
+		onToolCall:               req.OnToolCall,
+		onToolResult:             req.OnToolResult,
+		scheduleHandler:          e.ScheduleHandler,
+		imMessageHandler:         imMessageHandler,
+		imFileHandler:            imFileHandler,
+		messageMetadata:          cloneMap(req.Message.Metadata),
+		sessionMetadata:          cloneMap(req.Session.Metadata),
+		trustedDestinationID:     TrustedChannelDestinationID(req.Message.Metadata, req.Session.Metadata),
+		delegateSubtask:          e.DelegateSubtask,
+		delegateChild:            reviewedHostDelegateChild(req.Message.Metadata, req.Session.Metadata),
+		trustedSSH:               e.TrustedSSH,
+		trustedBrowser:           e.TrustedBrowser,
+		trustedComputerUse:       e.TrustedComputerUse,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:       sshResources.mgr,
 			BGTaskMgr:     sshResources.bg,
@@ -363,7 +564,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		cb.moaSource = "request"
 		cb.moaActive = true
 	}
-	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfig(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config))
+	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config), llmCfg.EffectiveContextTokens())
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v moa_preset=%q", req.Session.ID, req.OnToken != nil, cb.moaRequestPreset)
 	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
@@ -416,7 +617,10 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 			}
 		}
 	}
-	return &ExecuteResult{Content: result.Text, OutputType: "text/plain", Metadata: metadata}, nil
+	if handle, err := cb.issueTaskContinuationHandle(); err == nil && handle != "" {
+		metadata["task_continuation_handle"] = handle
+	}
+	return &ExecuteResult{Content: textutil.SanitizeVisibleChatText(result.Text), OutputType: "text/plain", Metadata: metadata}, nil
 }
 
 const (
@@ -608,6 +812,174 @@ func (e *CoreAgentExecutor) taskStoreForSession(sessionID string) *task.Store {
 	return store
 }
 
+func (e *CoreAgentExecutor) goalStoreForDataDir(dataDir string) *goal.Store {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.userGoals == nil {
+		e.userGoals = map[string]*goal.Store{}
+	}
+	key := strings.TrimSpace(dataDir)
+	if key == "" {
+		key = "memory"
+	}
+	if store := e.userGoals[key]; store != nil {
+		return store
+	}
+	persist := ""
+	if strings.TrimSpace(dataDir) != "" {
+		persist = filepath.Join(dataDir, "goals")
+	}
+	store := goal.NewStore(persist)
+	e.userGoals[key] = store
+	return store
+}
+
+func (e *CoreAgentExecutor) templateManagerForDataDir(dataDir string) *remote.SessionTemplateManager {
+	key := strings.TrimSpace(dataDir)
+	if key == "" {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.userTemplates == nil {
+		e.userTemplates = map[string]*remote.SessionTemplateManager{}
+	}
+	if mgr := e.userTemplates[key]; mgr != nil {
+		return mgr
+	}
+	mgr, err := remote.NewSessionTemplateManager(filepath.Join(key, "session_templates.json"))
+	if err != nil {
+		return nil
+	}
+	e.userTemplates[key] = mgr
+	return mgr
+}
+
+func (e *CoreAgentExecutor) scheduleManagerForDataDir(dataDir string) *scheduler.Manager {
+	key := strings.TrimSpace(dataDir)
+	if key == "" {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.userSchedules == nil {
+		e.userSchedules = map[string]*scheduler.Manager{}
+	}
+	if mgr := e.userSchedules[key]; mgr != nil {
+		return mgr
+	}
+	mgr, err := scheduler.NewManager(filepath.Join(key, "schedules.json"))
+	if err != nil {
+		return nil
+	}
+	e.userSchedules[key] = mgr
+	return mgr
+}
+
+func (e *CoreAgentExecutor) scheduleDispatchBindingStoreForDataDir(dataDir string) *ScheduleDispatchBindingStore {
+	key := strings.TrimSpace(dataDir)
+	if e == nil || key == "" {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.userScheduleBindings == nil {
+		e.userScheduleBindings = map[string]*ScheduleDispatchBindingStore{}
+	}
+	if store := e.userScheduleBindings[key]; store != nil {
+		return store
+	}
+	store := NewScheduleDispatchBindingStore(filepath.Join(key, "semantic-routing", "schedule-dispatch-bindings.json"))
+	e.userScheduleBindings[key] = store
+	return store
+}
+
+func (e *CoreAgentExecutor) reviewedHostScheduleDispatchCoordinator() *coretool.SQLiteSemanticExecutionCoordinator {
+	if e == nil {
+		return nil
+	}
+	if routing := e.getDynamicSemanticRouting(); routing != nil {
+		return routing.Coordinator
+	}
+	return nil
+}
+
+func (e *CoreAgentExecutor) ensureReviewedHostScheduleDispatchFire(dataDir string) {
+	key := strings.TrimSpace(dataDir)
+	if e == nil || key == "" || e.ScheduleDispatchSend == nil {
+		return
+	}
+	mgr := e.scheduleManagerForDataDir(key)
+	bindings := e.scheduleDispatchBindingStoreForDataDir(key)
+	coordinator := e.reviewedHostScheduleDispatchCoordinator()
+	if mgr == nil || bindings == nil || coordinator == nil {
+		return
+	}
+	e.mu.Lock()
+	if e.scheduleDispatchFired == nil {
+		e.scheduleDispatchFired = map[string]bool{}
+	}
+	if e.scheduleDispatchFired[key] {
+		e.mu.Unlock()
+		return
+	}
+	e.scheduleDispatchFired[key] = true
+	e.mu.Unlock()
+	run := e.ScheduleDispatchRun
+	send := e.ScheduleDispatchSend
+	principal := Principal{TenantID: strings.TrimSpace(e.LocalBashTenantID), UserID: strings.TrimSpace(e.LocalBashUserID)}
+	mgr.StartWithExecutor(func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
+		result := ""
+		var runErr error
+		if run != nil {
+			result, runErr = run(ctx, principal, task)
+		} else if task != nil {
+			result = strings.TrimSpace(task.Action)
+		}
+		fireErr := FireReviewedHostScheduleDispatch(ctx, reviewedHostScheduleDispatchFireDeps{
+			Bindings: bindings, Coordinator: coordinator,
+			Send: func(ctx context.Context, channel string, targets []scheduler.DeliveryTarget, text string) error {
+				return send(ctx, principal, channel, targets, text)
+			},
+		}, task, result, runErr)
+		if fireErr != nil && runErr == nil {
+			return result, fireErr
+		}
+		return result, runErr
+	})
+}
+
+// RecoverReviewedHostScheduleDispatchFire starts the host-owned fire
+// executor for every data directory that already has an armed binding.
+// It is the restart path: bindings survive on disk, but scheduleDispatchFired
+// does not. Discover never starts a manager; ensure still refuses to mark
+// fired when Send or the coordinator is missing so a later recover can retry.
+func (e *CoreAgentExecutor) RecoverReviewedHostScheduleDispatchFire(roots ...string) int {
+	if e == nil || e.ScheduleDispatchSend == nil || e.reviewedHostScheduleDispatchCoordinator() == nil {
+		return 0
+	}
+	started := 0
+	for _, dataDir := range DiscoverReviewedHostScheduleDispatchDataDirs(roots...) {
+		if e.ReviewedHostScheduleDispatchFireStarted(dataDir) {
+			continue
+		}
+		e.ensureReviewedHostScheduleDispatchFire(dataDir)
+		if e.ReviewedHostScheduleDispatchFireStarted(dataDir) {
+			started++
+		}
+	}
+	return started
+}
+
+func (e *CoreAgentExecutor) ReviewedHostScheduleDispatchFireStarted(dataDir string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.scheduleDispatchFired[strings.TrimSpace(dataDir)]
+}
+
 func (e *CoreAgentExecutor) sshResourcesForUser(tenantID, userID string) *coreAgentSSHResources {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -671,6 +1043,44 @@ func convertHistoryToEntries(history []Message, currentID string) []agent.Conver
 }
 
 func (c *coreAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.llmCfg }
+
+func (c *coreAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg := c.llmCfg
+	classified := llm.ClassifyTurn(userText, llm.ClassifyHints{})
+	decision := agent.RouteDecision{
+		TaskType: string(classified.Task),
+		Model:    cfg.Model,
+		Provider: cfg.ProviderName,
+		Source:   "primary",
+		Reason:   classified.Reason,
+		Applied:  true,
+	}
+	if corelib.IsHubManagedLLMEndpoint(cfg.URL, cfg.Model) || hubServiceURLMatches(c.appCfg, cfg.URL) {
+		cfg = cfg.WithHubWorkloadHints(string(classified.Task), "", "")
+		c.llmCfg = cfg
+		decision.Reason = classified.Reason + "; hub-managed skip desktop cost-route"
+	}
+	return cfg, decision, true
+}
+
+func hubServiceURLMatches(cfg corelib.AppConfig, rawURL string) bool {
+	want := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	if want == "" {
+		return false
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		if !provider.IsHubService {
+			continue
+		}
+		if strings.EqualFold(strings.TrimRight(strings.TrimSpace(provider.URL), "/"), want) {
+			return true
+		}
+	}
+	return false
+}
 
 // AllowMoAFanOut implements agent.MoABudgetGate using AppConfig.DailyLLMBudgetUSD
 // and the durable fleet daily cost snapshot (same source as interactive clients).
@@ -753,6 +1163,10 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if roleDescription == "" {
 		roleDescription = "A REST-served MaClaw agent runtime for end-user assistance."
 	}
+	// The loop builds the prompt before BuildTools. Plan the governed
+	// surface here so ManagedSemantic and the profile see the same plan;
+	// do not issue grants until BuildTools, or TTL starts during prompt I/O.
+	managedSemantic := c.ensureDynamicSemanticInitialized()
 	var promptProfile agent.PromptProfile
 	var classified llm.ClassifyResult
 	if c.forceFullPrompt {
@@ -761,6 +1175,10 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	} else {
 		promptProfile, classified = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
 	}
+	if managedSemantic && !c.forceFullPrompt && c.dynamicSemanticRequiresFullPrompt() {
+		promptProfile = agent.PromptProfileFull
+		classified = llm.ClassifyResult{Task: llm.TaskReasoning, Reason: "semantic capability-managed mutating intent"}
+	}
 	c.lastPromptProfile = promptProfile
 	deps := agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
@@ -768,6 +1186,7 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 			RoleDescription: roleDescription,
 			IsProMode:       false,
 			PromptProfile:   promptProfile,
+			ManagedSemantic: managedSemantic,
 		},
 		MemoryStore:      c.memory,
 		SSHHostLister:    c.configuredSSHHosts,
@@ -775,15 +1194,9 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 		UserProfileSection: func() string {
 			return profile.PromptSection()
 		},
-		KnowledgeAutoRecall: func(b *strings.Builder, userMsg string) {
-			// Personal store and/or enterprise cache under dataDir.
-			if userMsg != "" && (c.knowledgeStore != nil || strings.TrimSpace(c.dataDir) != "") {
-				c.appendKnowledgeAutoRecall(b, userMsg)
-			}
-		},
 	}
 	// Shadow savings estimate + durable hit-rate counters (with classify task).
-	// Skip re-recording when rebuilding after mid-loop light闂備焦鍓氶崑鍛叏娑旂担l upgrade.
+	// Skip re-recording when rebuilding after mid-loop light-to-full upgrade.
 	fullTok, lightTok := 0, 0
 	if promptProfile.IsLight() {
 		fullTok, lightTok = agent.EstimatePromptProfileTokens(deps, userText, isFirstTurn)
@@ -799,7 +1212,7 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	}
 
 	bundle := agent.BuildPromptBundle(deps, userText, isFirstTurn)
-	if c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild {
+	if !managedSemantic && c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\nRuntime child delegation: when independent repository inspection would help, you may call spawn_coding_agent only for explorer or reviewer children. Admission ends this attempt; child results are durable bounded summaries for a later explicit attempt, never an in-process continuation.")
 	}
 	if hardwareContext := c.hardwareBindingPrompt(); hardwareContext != "" {
@@ -808,7 +1221,7 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if clientContext := agent.BuildClientCapabilityPrompt(c.clientCapabilities); clientContext != "" {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + clientContext)
 	}
-	if c.imMessageHandler != nil && c.imFileHandler != nil {
+	if !managedSemantic && c.imMessageHandler != nil && c.imFileHandler != nil {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + `
 
 Specified IM file delivery:
@@ -930,7 +1343,42 @@ func imFileToolParameters(_ bool) map[string]interface{} {
 }
 
 func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest) (*AgentCapabilities, error) {
-	cb := &coreAgentCallbacks{appCfg: req.Config, principal: req.Principal, workspace: req.Instance.Workspace, dataDir: req.DataDir, allowLocalBash: e.AllowLocalBash, localBashTrustedSingleUser: e.LocalBashTrustedSingleUser, localBashTenantID: strings.TrimSpace(e.LocalBashTenantID), localBashUserID: strings.TrimSpace(e.LocalBashUserID), allowDirectSSH: e.AllowDirectSSH, allowSSHFileTransfer: e.AllowSSHFileTransfer, toolPolicy: req.ToolPolicy, mutationScope: req.MutationScope, opsApprovedCommands: append([]v2.OpsApprovedCommand(nil), req.OpsApprovedCommands...), imMessageHandler: e.IMMessageHandler, imFileHandler: e.IMFileHandler}
+	cb := &coreAgentCallbacks{
+		ctx:                        ctx,
+		appCfg:                     req.Config,
+		principal:                  req.Principal,
+		workspace:                  req.Instance.Workspace,
+		dataDir:                    req.DataDir,
+		allowLocalBash:             e.AllowLocalBash,
+		localBashTrustedSingleUser: e.LocalBashTrustedSingleUser,
+		localBashTenantID:          strings.TrimSpace(e.LocalBashTenantID),
+		localBashUserID:            strings.TrimSpace(e.LocalBashUserID),
+		allowDirectSSH:             e.AllowDirectSSH,
+		allowSSHFileTransfer:       e.AllowSSHFileTransfer,
+		toolPolicy:                 req.ToolPolicy,
+		mutationScope:              req.MutationScope,
+		opsApprovedCommands:        append([]v2.OpsApprovedCommand(nil), req.OpsApprovedCommands...),
+		imMessageHandler:           e.IMMessageHandler,
+		imFileHandler:              e.IMFileHandler,
+		scheduleHandler:            e.ScheduleHandler,
+		knowledgeStore:             e.knowledgeStore,
+		mcpProvider:                e.mcpProvider,
+		skillProvider:              e.skillProvider,
+		speechTranscriber:          e.getReviewedHostSpeechTranscriber(),
+		speechSynthesizer:          e.getReviewedHostSpeechSynthesizer(),
+		speechPlayer:               e.getReviewedHostSpeechPlayer(),
+		desktopCapturer:            e.getReviewedHostDesktopCapturer(),
+		documentLauncher:           e.getReviewedHostDocumentLauncher(),
+		urlLauncher:                e.getReviewedHostURLLauncher(),
+		delegateSubtask:            e.DelegateSubtask,
+		goals:                      e.goalStoreForDataDir(req.DataDir),
+		executor:                   e,
+		instance:                   req.Instance,
+		session:                    req.Session,
+	}
+	if mem, err := e.resourcesForUser(req.Principal.TenantID, req.Principal.UserID, req.DataDir); err == nil {
+		cb.memory = mem
+	}
 	if e.IMMessageHandlerContext != nil {
 		cb.imMessageHandler = func(args map[string]interface{}) string { return e.IMMessageHandlerContext(ctx, req.Principal, args) }
 	}
@@ -961,9 +1409,10 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 	specs := []coreToolSpec{
 		{
-			Name:        "record_audio",
-			Description: "Start an interactive long-form meeting recording. The host opens a native recording UI and resumes after the user stops it. Use this immediately for an explicit request to record a meeting; never use it for an IM voice note.",
-			Enabled:     true,
+			Name:           "record_audio",
+			Description:    "Start an interactive long-form meeting recording. The host opens a native recording UI and resumes after the user stops it. Use this immediately for an explicit request to record a meeting; never use it for an IM voice note.",
+			Enabled:        false,
+			DisabledReason: "interactive recording UI is unavailable on this headless host",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1145,13 +1594,25 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			Name:        "send_file",
 			Description: "Deliver a local workspace file. Use destination=desktop for the current client, or destination=im plus channel/group_id/group_name/user_id for an IM destination.",
 			Enabled:     c.imFileHandler != nil,
-			Parameters:  imFileToolParameters(false),
+			DisabledReason: func() string {
+				if c.imFileHandler == nil {
+					return "IM file delivery is not initialized"
+				}
+				return ""
+			}(),
+			Parameters: imFileToolParameters(false),
 		},
 		{
 			Name:        "send_to_im",
 			Description: "Send a local workspace file to IM. Specify channel and group_id/group_name/user_id for an exact destination; omit target fields for legacy bound-channel delivery.",
 			Enabled:     c.imFileHandler != nil,
-			Parameters:  imFileToolParameters(true),
+			DisabledReason: func() string {
+				if c.imFileHandler == nil {
+					return "IM file delivery is not initialized"
+				}
+				return ""
+			}(),
+			Parameters: imFileToolParameters(true),
 		},
 		{
 			Name:        "knowledge_search",
@@ -1288,7 +1749,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "knowledge_import_share",
-			Description: "Import shared knowledge into the local knowledge base by share link or knowledge_id. Supports Hub share URLs (e.g. https://hub.example.com/hub/knowledge/shares/kn_xxx). Call this tool directly when the user provides a knowledge share link 闂?it will fetch and import the content automatically.",
+			Description: "Import shared knowledge into the local knowledge base by share link or knowledge_id. Supports Hub share URLs (e.g. https://hub.example.com/hub/knowledge/shares/kn_xxx). Call this tool directly when the user provides a knowledge share link — it will fetch and import the content automatically.",
 			Enabled:     c.knowledgeStore != nil,
 			DisabledReason: func() string {
 				if c.knowledgeStore == nil {
@@ -1454,7 +1915,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 		},
 		{
 			Name:        "read_document",
-			Description: "Read text from office/PDF documents using native parsers. Supports PDF (.pdf), Word (.doc/.docx), Excel (.xls/.xlsx/.csv), PowerPoint (.ppt/.pptx), and plain text (.txt/.md). Prefer this over read_file for binary documents; use offset plus max_chars to page long extracts.",
+			Description: "Read text from documents and text-based data using native readers. Supports PDF (.pdf), Word (.doc/.docx), Excel (.xls/.xlsx/.csv), PowerPoint (.ppt/.pptx), and text-based files (.txt/.md/.json/.xml/.yaml/.yml/.log). Prefer this over read_file for binary documents; use offset plus max_chars to page long extracts.",
 			Enabled:     c.workspace != "",
 			DisabledReason: func() string {
 				if c.workspace == "" {
@@ -1467,7 +1928,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"properties": map[string]interface{}{
 					"file_path":    map[string]interface{}{"type": "string", "description": "Document path relative to the workspace, or an absolute path within it (alias: path)"},
 					"path":         map[string]interface{}{"type": "string", "description": "Alias for file_path"},
-					"max_chars":    map[string]interface{}{"type": "integer", "description": "Maximum characters for this chunk (default 120000)"},
+					"max_chars":    map[string]interface{}{"type": "integer", "description": "Maximum characters for this chunk (default 30000)"},
 					"offset":       map[string]interface{}{"type": "integer", "description": "Rune offset for the next chunk"},
 					"line_numbers": map[string]interface{}{"type": "boolean", "description": "Prefix extracted lines with stable line numbers"},
 				},
@@ -1573,7 +2034,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			},
 		},
 	}
-	return append(specs, c.knowledgeManagementToolSpecs()...)
+	return append(append(specs, c.sharedHostToolSpecs()...), c.knowledgeManagementToolSpecs()...)
 }
 
 func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
@@ -1621,14 +2082,28 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 	if c != nil && c.runtimeReadOnlyChild {
 		return filterServiceReadOnlyChildToolDefinitions(tools)
 	}
-	// Append MCP tools from all healthy/running servers.
-	// Called on every iteration to pick up newly installed MCP servers.
-	if mcpDefs := c.mcpToolDefs(); len(mcpDefs) > 0 {
-		tools = append(tools, mcpDefs...)
-	}
-	// Append manage_skill tool if skill provider is available.
-	if skillDefs := c.skillToolDefs(); len(skillDefs) > 0 {
-		tools = append(tools, skillDefs...)
+	// A request that belongs to a governed dynamic capability family is served
+	// solely by ToolPlan → CatalogRenderer. It must never union that surface
+	// with either a discovered adapter or an unrelated builtin: doing so would
+	// let implementation names regain authority after the planner selected a
+	// capability. System control tools belong on a separate trusted control
+	// plane; this user-task surface contains only the current plan closure.
+	if semanticDefs, managed := c.dynamicSemanticToolDefinitions(); managed {
+		profile := c.lastPromptProfile
+		if profile == "" && strings.TrimSpace(userText) != "" {
+			profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
+		}
+		return agent.FilterToolDefinitionsForPromptProfile(c, closedManagedSemanticDefinitions(semanticDefs), profile)
+	} else {
+		// The legacy bound adapter surface remains only for request families not
+		// yet migrated to a governed capability resolver. It is deliberately
+		// isolated from the semantic family above.
+		if mcpDefs := c.mcpToolDefs(); len(mcpDefs) > 0 {
+			tools = append(tools, mcpDefs...)
+		}
+		if skillDefs := c.skillToolDefs(); len(skillDefs) > 0 {
+			tools = append(tools, skillDefs...)
+		}
 	}
 	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 {
 		filtered := tools[:0]
@@ -1649,7 +2124,7 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
 	}
 	if profile.IsLight() {
-		return agent.FilterToolDefsForLightTurn(tools)
+		return agent.FilterToolDefinitionsForPromptProfile(c, tools, profile)
 	}
 	return tools
 }
@@ -1729,17 +2204,24 @@ func (c *coreAgentCallbacks) hardwareExpertSkillAllowSet() map[string]bool {
 }
 
 func (c *coreAgentCallbacks) hardwareExpertToolCallAllowed(name string, args map[string]interface{}) (bool, string) {
-	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(name)] {
+	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 && !c.hardwareExpertAdapterToolAllowed(strings.TrimSpace(name), allowed) {
 		return false, fmt.Sprintf("%s is not allowed by the selected hardware expert", strings.TrimSpace(name))
 	}
-	if strings.TrimSpace(name) != "manage_skill" {
-		return true, ""
+	if strings.HasPrefix(strings.TrimSpace(name), "invoke_skill_") {
+		adapter, ok := c.boundSkillCalls().adapter(name)
+		if !ok {
+			return false, "skill selection is not authorized"
+		}
+		if allowed := c.hardwareExpertSkillAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(adapter.Binding.Name)] {
+			return false, fmt.Sprintf("skill %s is not allowed by the selected hardware expert", strings.TrimSpace(adapter.Binding.Name))
+		}
 	}
-	if strings.TrimSpace(stringArg(args, "action")) != "run" {
-		return true, ""
-	}
-	if allowed := c.hardwareExpertSkillAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(stringArg(args, "name"))] {
-		return false, fmt.Sprintf("skill %s is not allowed by the selected hardware expert", strings.TrimSpace(stringArg(args, "name")))
+	// Preserve the legacy authorizer contract for service control callers while
+	// executeManageSkill itself rejects action=run from the generic gateway.
+	if strings.TrimSpace(name) == "manage_skill" && strings.TrimSpace(stringArg(args, "action")) == "run" {
+		if allowed := c.hardwareExpertSkillAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(stringArg(args, "name"))] {
+			return false, fmt.Sprintf("skill %s is not allowed by the selected hardware expert", strings.TrimSpace(stringArg(args, "name")))
+		}
 	}
 	return true, ""
 }
@@ -1748,7 +2230,142 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
 }
 
+// ExecuteToolCall is the host-protocol-aware dynamic semantic boundary. The
+// core loop supplies the model/provider call ID so a durable HostCallJournal
+// can replay the original outcome after reconnect instead of consuming a
+// second invocation grant or dispatching the provider again.
+func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
+	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
+		if result, handled := c.dynamicSemanticSurface.Execute(c.ctx, c.principal, c.mcpProvider, c.skillProvider, strings.TrimSpace(name), argsJSON, callID); handled {
+			c.markSessionGovernedAfterDynamicResult(result)
+			if !result.Succeeded && coretool.ReplanFailureEligible(result.ReasonCode) {
+				if child, err := c.dynamicSemanticSurface.ReplanAfterBindingFailure(c.ctx, c.principal, c.mcpProvider, c.skillProvider, result.ReasonCode); err == nil && child != nil {
+					c.dynamicSemanticSurface = child
+				}
+			}
+			outcome := agent.ToolExecutionOutcomeOK
+			if !result.Succeeded {
+				outcome = agent.ToolExecutionOutcomeError
+			}
+			return agent.ToolExecutionResult{Result: result.Result, Outcome: outcome}
+		}
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown semantic tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	return c.ExecuteToolStructured(name, argsJSON)
+}
+
+func (c *coreAgentCallbacks) dynamicOperationLedgerForCall() DynamicOperationLedger {
+	if c == nil {
+		return nil
+	}
+	c.dynamicOperationLedgerMu.Lock()
+	defer c.dynamicOperationLedgerMu.Unlock()
+	if c.dynamicOperationLedger == nil {
+		c.dynamicOperationLedger = NewMemoryDynamicOperationLedger()
+	}
+	return c.dynamicOperationLedger
+}
+
+// trustedTaskRelationForExecute copies an already verified ingress decision.
+// It must not repair or stamp caller-supplied scope fields here: doing so would
+// turn an unverified root/handle nominated by an upstream caller into an
+// apparently trusted cross-scope decision. verifiedTaskRelationDecision is the
+// only package-private path that may stamp this binding, after handle lookup.
+func trustedTaskRelationForExecute(req ExecuteRequest) TaskRelationDecision {
+	return cloneTaskRelationDecision(req.TaskRelation)
+}
+
+// issueTaskContinuationHandle exposes only an opaque, one-time selector for
+// the current published task. It deliberately runs after the model loop: a
+// caller cannot obtain a handle for an unplanned route, and the response never
+// receives a grant, provider binding, or raw RootTaskID.
+func (c *coreAgentCallbacks) issueTaskContinuationHandle() (string, error) {
+	if c == nil || c.dynamicSemanticSurface == nil || c.dynamicSemanticSurface.routing.Coordinator == nil {
+		return "", nil
+	}
+	handle, err := c.dynamicSemanticSurface.routing.Coordinator.IssueTaskContinuationHandle(
+		c.principal.TenantID,
+		memoryOwnerIDForPrincipal(c.principal),
+		c.loopID,
+		c.dynamicSemanticSurface.scope.RootTaskID,
+		0,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return "", err
+	}
+	return handle.ID, nil
+}
+
+// dynamicTaskRootID uses an authenticated, scope-bound continuation only when
+// ingress has already verified it. The message/operation identity is still
+// used for a new task, so two ordinary turns never acquire a shared route
+// lineage merely because they have the same user or text.
+func (c *coreAgentCallbacks) dynamicTaskRootID() string {
+	if c == nil {
+		return ""
+	}
+	request := DynamicCapabilityNeedRequest{
+		Principal: c.principal, RootTaskID: c.taskRelation.RootTaskID, SessionID: c.loopID, TaskRelation: c.taskRelation,
+	}
+	if c.taskRelation.permitsContinuation(request) {
+		return strings.TrimSpace(c.taskRelation.RootTaskID)
+	}
+	if rootTaskID := strings.TrimSpace(c.dynamicOperationScope); rootTaskID != "" {
+		return rootTaskID
+	}
+	return strings.TrimSpace(c.loopID)
+}
+
+func (c *coreAgentCallbacks) admitDynamicAdapterInvocation(kind, adapterName, bindingID string) (DynamicOperationRecord, bool, error) {
+	if c == nil {
+		return DynamicOperationRecord{}, false, fmt.Errorf("dynamic operation context is unavailable")
+	}
+	rootTaskID := c.dynamicTaskRootID()
+	return dynamicAdapterInvocationAdmission(c.dynamicOperationLedgerForCall(), time.Now().UTC(), c.principal.TenantID, c.principal.UserID, rootTaskID, kind, adapterName, bindingID)
+}
+
+func (c *coreAgentCallbacks) admitDynamicOperation(kind, bindingID string, args map[string]interface{}) (DynamicOperationRecord, bool, error) {
+	if c == nil {
+		return DynamicOperationRecord{}, false, fmt.Errorf("dynamic operation context is unavailable")
+	}
+	rootTaskID := c.dynamicTaskRootID()
+	return dynamicOperationAdmission(c.dynamicOperationLedgerForCall(), time.Now().UTC(), c.principal.TenantID, c.principal.UserID, rootTaskID, kind, bindingID, args)
+}
+
+func firstNonEmptyDynamicOperationScope(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (c *coreAgentCallbacks) completeDynamicOperation(record DynamicOperationRecord, state DynamicOperationState, reasonCode string) (DynamicOperationRecord, error) {
+	return c.dynamicOperationLedgerForCall().Complete(record.Key, state, "", reasonCode, time.Now().UTC())
+}
+
+func dynamicOperationReplayResult(record DynamicOperationRecord) string {
+	switch record.State {
+	case DynamicOperationSucceeded:
+		return "Error: invocation_grant_replayed"
+	case DynamicOperationUnknown:
+		return "Error: operation_unknown_reconcile_required"
+	case DynamicOperationRunning:
+		return "Error: operation_in_progress"
+	default:
+		return "Error: invocation_grant_replayed"
+	}
+}
+
 func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
+	// Semantic dynamic definitions are opaque signed grants rather than static
+	// tool names. Their policy/effect/qualifier admission occurred in the
+	// ToolPlan; execution still validates the grant and durable plan state.
+	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil && c.dynamicSemanticSurface.HasKnownGrant(name) {
+		return true
+	}
 	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
 		return c != nil && c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil
 	}
@@ -1761,13 +2378,60 @@ func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
 	if !v2.IsToolAllowedByPolicy(c.toolPolicy, name) {
 		return false
 	}
-	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 && !allowed[strings.TrimSpace(name)] {
+	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 && !c.hardwareExpertAdapterToolAllowed(strings.TrimSpace(name), allowed) {
 		return false
 	}
 	return isMutationScopeAllowed(c.mutationScope, name)
 }
 
+// IsToolAllowedForPromptProfile keeps light-profile handling capability-first
+// for CatalogRenderer's opaque dynamic invocation grants. The token is used
+// only to find the signed selection; its name is never an authorization rule.
+func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile agent.PromptProfile) bool {
+	if !profile.IsLight() {
+		return true
+	}
+	// Runtime child delegation is a host-owned control-plane transition, not a
+	// coding capability. A light parent must be able to hand off bounded
+	// read-only inspection without first widening the current request surface
+	// through the light→full recovery path. Keep the same ledger-backed checks
+	// as IsToolAllowed so this is exposure alignment, never a name-based bypass.
+	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
+		return c != nil && c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil
+	}
+	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
+		grant, ok := c.dynamicSemanticSurface.grants[strings.TrimSpace(name)]
+		if ok {
+			selection, found := dynamicSemanticSelectionByID(c.dynamicSemanticSurface.plan, grant.SelectionID)
+			return found && coretool.IsLightPromptSafeSelection(selection)
+		}
+	}
+	return agent.IsLightTurnToolAllowed(name)
+}
+
+func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allowed map[string]bool) bool {
+	if allowed[name] {
+		return true
+	}
+	if !strings.HasPrefix(name, "invoke_skill_") || !allowed["manage_skill"] {
+		return false
+	}
+	adapter, ok := c.boundSkillCalls().adapter(name)
+	if !ok {
+		return false
+	}
+	skillAllowed := c.hardwareExpertSkillAllowSet()
+	return len(skillAllowed) == 0 || skillAllowed[strings.TrimSpace(adapter.Binding.Name)]
+}
+
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil && c.dynamicSemanticSurface.HasGrant(name) {
+		// Dynamic semantic calls use an opaque grant as their function name.
+		// The planner has already applied the capability-level policy; the
+		// executor will validate/consume the grant and canonicalize arguments.
+		// Do not pass the opaque name through legacy tool-name policies.
+		return true, ""
+	}
 	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
 		if c == nil || c.runtimeStore == nil || c.runtimeAttempt == nil || c.runtimeReadOnlyChild {
 			return false, "read-only child delegation is unavailable outside a ledger-backed parent coding attempt"
@@ -1857,10 +2521,10 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	}
 	switch strings.TrimSpace(name) {
 	case "record_audio":
-		// Interactive hosts (desktop and mobile) recognize the marker and open
-		// their native recording UI. Keeping this in the shared executor avoids
-		// a mobile-only keyword fork from the assistant tool contract.
-		return agent.ToolExecutionResult{Result: agent.ToolRecordAudio(args), Outcome: agent.ToolExecutionOutcomeOK}
+		// Desktop/mobile hosts honor the interactive marker in their own
+		// loops. MaClawSrv has no recording UI, so a success marker would be a
+		// false start on a headless host.
+		return agent.ToolExecutionResult{Result: "Error: interactive recording UI is unavailable on this headless host", Outcome: agent.ToolExecutionOutcomeError}
 	case "bash":
 		if !c.allowLocalBash {
 			return agent.ToolExecutionResult{Result: "Error: local bash is disabled for this MaClawSrv deployment", Outcome: agent.ToolExecutionOutcomeError}
@@ -1872,11 +2536,7 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		if err != nil {
 			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 		}
-		ctx := c.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		return agent.ToolExecutionResult{Result: agent.ToolBashWithContext(ctx, bashArgs, c.OnProgress)}
+		return commandOutputToolResult(agent.ToolBashWithContext(c.parentContext(), bashArgs, c.OnProgress))
 	case "ssh":
 		if !c.canUseSSH() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
@@ -1893,31 +2553,21 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		if err != nil {
 			return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: %v", err), Outcome: agent.ToolExecutionOutcomeError}
 		}
-		return agent.ToolExecutionResult{Result: sshtool.ToolSSH(c.sshDeps, validated)}
+		return sshToolResult(sshtool.ToolSSH(c.sshDeps, validated))
 	case "ask_user":
-		return agent.ToolExecutionResult{Result: agent.ToolAskUser(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(agent.ToolAskUser(args))
 	case "task":
-		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(agent.ToolTask(c.tasks, args))
 	case "manage_schedule":
 		if c.scheduleHandler == nil {
 			return agent.ToolExecutionResult{Result: "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)", Outcome: agent.ToolExecutionOutcomeError}
 		}
-		out := c.scheduleHandler(args)
-		outcome := agent.ToolExecutionOutcomeOK
-		if strings.HasPrefix(out, "Error:") {
-			outcome = agent.ToolExecutionOutcomeError
-		}
-		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
+		return toolTextResult(c.scheduleHandler(args))
 	case "im_message":
 		if c.imMessageHandler == nil {
 			return agent.ToolExecutionResult{Result: "IM message tool is not initialized", Outcome: agent.ToolExecutionOutcomeError}
 		}
-		out := c.imMessageHandler(args)
-		outcome := agent.ToolExecutionOutcomeOK
-		if strings.HasPrefix(out, "Error:") {
-			outcome = agent.ToolExecutionOutcomeError
-		}
-		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
+		return toolTextResult(c.imMessageHandler(args))
 	case "send_file", "send_to_im":
 		if c.imFileHandler == nil {
 			return agent.ToolExecutionResult{Result: "Error: IM file delivery is not initialized", Outcome: agent.ToolExecutionOutcomeError}
@@ -1933,60 +2583,49 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 		}
 		args["path"] = resolvedPath
-		out := c.imFileHandler(args)
-		outcome := agent.ToolExecutionOutcomeOK
-		if strings.HasPrefix(out, "Error:") {
-			outcome = agent.ToolExecutionOutcomeError
-		}
-		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
+		return toolTextResult(c.imFileHandler(args))
 	case "memory":
-		return agent.ToolExecutionResult{Result: memory.HandleTool(c.memory, args, memory.ToolOptions{
+		return toolTextResult(memory.HandleTool(c.memory, args, memory.ToolOptions{
 			ProjectPath: c.workspace,
 			ContextHint: c.userText,
 			OwnerID:     memoryOwnerIDForPrincipal(c.principal),
 			LoopID:      c.loopID,
-		}), Outcome: agent.ToolExecutionOutcomeOK}
+		}))
 	case "read_file":
-		return agent.ToolExecutionResult{Result: c.executeReadFile(args), Outcome: agent.ToolExecutionOutcomeOK}
-	case "read_document":
-		rawPath := agent.StringArg(args, "file_path")
-		if rawPath == "" {
-			rawPath = agent.StringArg(args, "path")
-		}
-		filePath, err := c.resolveWorkspacePath(rawPath)
+		text, err := c.readFileDetailed(args)
 		if err != nil {
-			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+			return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeError}
 		}
-		args["file_path"] = filePath
-		// The service hosts multiple principals in one process, so a global
-		// OfficeRead provider would let one user's persisted rollout policy affect
-		// another user's read_document result. Bind the trusted request config at
-		// this final execution boundary instead; environment overrides remain
-		// honored by agent's resolver for emergency rollback.
-		return readDocumentToolResult(agent.ToolReadDocumentWithOfficeReadConfig(args, officeReadConfigFromAppConfig(c.appCfg)))
+		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK}
+	case "read_document":
+		return c.executeReadDocument(args)
 	case "read_tool_result":
 		// The authenticated principal is authoritative; never let model-provided
 		// arguments select another tenant/user handle namespace.
 		args["session_key"] = memoryOwnerIDForPrincipal(c.principal)
-		return agent.ToolExecutionResult{Result: agent.ToolReadToolResult(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(agent.ToolReadToolResult(args))
 	case "write_file":
-		return agent.ToolExecutionResult{Result: c.executeWriteFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(c.executeWriteFile(args))
 	case "edit_file":
-		return agent.ToolExecutionResult{Result: c.executeEditFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(c.executeEditFile(args))
 	case "list_directory":
-		return agent.ToolExecutionResult{Result: c.executeListDirectory(args), Outcome: agent.ToolExecutionOutcomeOK}
+		text, err := c.listDirectoryDetailed(args)
+		if err != nil {
+			return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeError}
+		}
+		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK}
 	case "manage_skill":
 		return c.executeManageSkill(args)
 	case "web_search":
-		return agent.ToolExecutionResult{Result: c.executeWebSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(c.executeWebSearch(args))
 	case "web_fetch":
-		return agent.ToolExecutionResult{Result: c.executeWebFetch(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return toolTextResult(c.executeWebFetch(args))
 	case "knowledge_search":
-		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return knowledgeToolResult(c.executeKnowledgeSearch(args))
 	case "knowledge_image_search":
-		return agent.ToolExecutionResult{Result: c.executeKnowledgeImageSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return knowledgeToolResult(c.executeKnowledgeImageSearch(args))
 	case "knowledge_context_pack":
-		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return knowledgeToolResult(c.executeKnowledgeContextPack(args))
 	case "knowledge_import_share":
 		return knowledgeToolResult(c.executeKnowledgeImportShare(args))
 	case "knowledge_import_hub_share":
@@ -2029,23 +2668,32 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	case "knowledge_import_package":
 		return knowledgeToolResult(c.executeKnowledgeImportPackage(args))
 	case "knowledge_export":
-		return agent.ToolExecutionResult{Result: "Error: knowledge_export must be handled by the MaClawSrv host API in this runtime", Outcome: agent.ToolExecutionOutcomeError}
+		return knowledgeToolResult(c.executeKnowledgeExport(args))
 	case "knowledge_import_directory":
 		return knowledgeToolResult(c.executeKnowledgeImportDirectory(args))
 	case "knowledge_import_files":
 		return knowledgeToolResult(c.executeKnowledgeImportFiles(args))
 	case "knowledge_save_url":
-		return agent.ToolExecutionResult{Result: c.executeKnowledgeSaveURL(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return knowledgeToolResult(c.executeKnowledgeSaveURL(args))
 	case "knowledge_save_text":
-		return agent.ToolExecutionResult{Result: c.executeKnowledgeSaveText(args), Outcome: agent.ToolExecutionOutcomeOK}
+		return knowledgeToolResult(c.executeKnowledgeSaveText(args))
 	default:
-		// Try MCP tool dispatch before returning unknown tool error.
-		if result, handled := c.executeMCPTool(strings.TrimSpace(name), args); handled {
-			outcome := agent.ToolExecutionOutcomeOK
-			if strings.HasPrefix(result, "Error:") {
-				outcome = agent.ToolExecutionOutcomeError
+		if result, handled := c.executeSharedHostTool(name, args); handled {
+			return result
+		}
+		if c != nil && c.dynamicSemanticManaged {
+			if c.dynamicSemanticSurface.HasKnownGrant(name) {
+				return agent.ToolExecutionResult{Result: "Error: host_call_identity_required", Outcome: agent.ToolExecutionOutcomeError}
 			}
-			return agent.ToolExecutionResult{Result: result, Outcome: outcome}
+			return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown semantic tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		if result, handled := c.executeBoundSkillTool(strings.TrimSpace(name), args); handled {
+			return toolTextResult(result)
+		}
+		// Only model-visible opaque adapters are eligible for MCP dispatch.
+		// Provider/server/tool names are never accepted as a fallback.
+		if result, handled := c.executeBoundMCPTool(strings.TrimSpace(name), args); handled {
+			return toolTextResult(result)
 		}
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
@@ -2068,7 +2716,11 @@ func officeReadConfigPtrFromAppConfig(cfg corelib.AppConfig) *agent.OfficeReadCo
 // ProjectToolResult implements agent.ToolResultProjector for the server/shared
 // executor. Tenant+user ownership scopes both storage and ID-based re-read.
 func (c *coreAgentCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
-	return agent.TruncateToolResultForToolWithSession(name, memoryOwnerIDForPrincipal(c.principal), result.Result)
+	proj, err := agent.ProjectToolResultWithContext(name, memoryOwnerIDForPrincipal(c.principal), result.Result, c.llmCfg.EffectiveContextTokens())
+	if err != nil && proj.Preview == "" {
+		return agent.TruncateToolResultForToolWithSession(name, memoryOwnerIDForPrincipal(c.principal), result.Result)
+	}
+	return proj.Preview
 }
 
 // isMutationScopeAllowed returns true if the tool is permitted under the given
@@ -2080,7 +2732,7 @@ func isMutationScopeAllowed(scope v2.MutationScope, name string) bool {
 		return true
 	}
 	if scope == v2.MutationScopeNone {
-		// No mutation allowed 闂?block all write tools.
+		// No mutation allowed — block all write tools.
 		switch name {
 		case "write_file", "edit_file", "bash", "ssh", "task", "delegate_task":
 			return false
@@ -2141,14 +2793,15 @@ func coreAgentIntArg(args map[string]interface{}, key string, fallback int) int 
 // recorded as a successful tool call.
 func readDocumentToolResult(result string) agent.ToolExecutionResult {
 	outcome := agent.ToolExecutionOutcomeOK
-	firstLine, _, _ := strings.Cut(result, "\n")
-	if strings.Contains(firstLine, "error_class=timeout") {
+	if class, failed := agent.DocumentReadFailure(result); failed {
 		// The shared OfficeRead boundary applies a real response deadline.
 		// Preserve it as a timeout so the agent loop can use its timeout-aware
 		// recovery path rather than treating it as an ordinary parser error.
-		outcome = agent.ToolExecutionOutcomeTimeout
-	} else if strings.Contains(firstLine, "error_class=") {
-		outcome = agent.ToolExecutionOutcomeError
+		if class == "timeout" {
+			outcome = agent.ToolExecutionOutcomeTimeout
+		} else {
+			outcome = agent.ToolExecutionOutcomeError
+		}
 	}
 	return agent.ToolExecutionResult{Result: result, Outcome: outcome}
 }
@@ -2360,7 +3013,7 @@ func functionToolDefinition(name, description string, params map[string]interfac
 		"function": map[string]interface{}{
 			"name":        name,
 			"description": description,
-			"parameters":  params,
+			"parameters":  agent.CloneToolDefinitionMap(params),
 		},
 	}
 }
@@ -2445,4 +3098,17 @@ func (c *coreAgentCallbacks) configuredSSHHost(label string) *corelib.SSHHostEnt
 
 func (c *coreAgentCallbacks) sshDeniedReason() string {
 	return "ssh is unavailable because this MaClawSrv deployment has no direct SSH access and no configured SSH host labels"
+}
+
+// wrapVisibleChatTokenCallback drops private reasoning-lane deltas and tofu
+// runes before MaClawSrv streams a digital-employee token to Hub or IM.
+func wrapVisibleChatTokenCallback(cb func(string)) func(string) {
+	if cb == nil {
+		return nil
+	}
+	return func(delta string) {
+		if cleaned := textutil.VisibleChatStreamDelta(delta); cleaned != "" {
+			cb(cleaned)
+		}
+	}
 }

@@ -95,6 +95,37 @@ func (kind imMessagePlatformKind) IsIMChannel() bool {
 	}
 }
 
+// ChannelScope returns the canonical channel identity used by capability
+// providers and delivery records. Runtime platforms intentionally retain their
+// transport detail (for example, "lansenger_local"), while a semantic plan
+// describes the user-visible delivery channel ("lansenger"). Keeping this
+// conversion at the typed platform boundary prevents a provider binding from
+// depending on a particular local-vs-hub runtime spelling.
+func (kind imMessagePlatformKind) ChannelScope() string {
+	switch kind {
+	case imMessagePlatformLansenger, imMessagePlatformLansengerLocal:
+		return "lansenger"
+	case imMessagePlatformWeixin, imMessagePlatformWeixinLocal:
+		return "weixin"
+	case imMessagePlatformTelegram, imMessagePlatformTelegramLocal:
+		return "telegram"
+	case imMessagePlatformQQBot, imMessagePlatformQQBotLocal:
+		return "qqbot"
+	case imMessagePlatformFeishu:
+		return "feishu"
+	case imMessagePlatformWecom:
+		return "wecom"
+	case imMessagePlatformDingTalk:
+		return "dingtalk"
+	case imMessagePlatformScheduler:
+		return "scheduler"
+	case imMessagePlatformDesktop, imMessagePlatformTUI, imMessagePlatformVEGroupExecutor:
+		return "desktop"
+	default:
+		return ""
+	}
+}
+
 func (kind imMessagePlatformKind) PrefersAMRVoice() bool {
 	return kind == imMessagePlatformWecom
 }

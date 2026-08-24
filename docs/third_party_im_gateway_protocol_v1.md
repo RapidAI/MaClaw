@@ -575,7 +575,7 @@ accepted feature flags allow them:
 | `ambient` | `features.ambientDisplay` | `ambient.weather.summary`, `temperatureC`, optional `location`, `expiresAt`, and compact `glyphs` |
 | `pet_state` | `features.petStates` | `extra.state` using `idle/listening/thinking/speaking/done/alert/quiet`; optional `durationMs` |
 | `meeting_result` | `features.meetingRecorder` and text output | `text` for the short device summary; `extra.status`, `summary`, and document identifiers may link to Mobile/GUI library content |
-| `pet_profile` | none for the settings fields; `extra.pet_asset` only with `features.petAsset` | message-level `pet_skin` and `pet_motion_enabled` reflect the current GUI pet settings; optional `extra.pet_asset` contains `encoding`, dimensions, short-lived same-origin `urls`, `revision`, and optional `frameMs`; multiple URLs require `features.petAnimation` |
+| `pet_profile` | none for the settings fields; `extra.pet_asset` only with `features.petAsset` | message-level `pet_skin` and `pet_motion_enabled` reflect the current GUI pet settings; optional `extra.pet_asset` contains `encoding`, dimensions, short-lived same-origin `urls`, `revision`, and optional `frameMs`; omitted `frameMs` defaults to 450ms, while a supplied value must be an integral 50..10000ms; multiple URLs require `features.petAnimation` |
 
 Feature messages must not be coerced to `text` by an intermediate GUI or Hub.
 Unknown or unsupported feature types are filtered before enqueueing. Text in a

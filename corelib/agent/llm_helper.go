@@ -38,6 +38,16 @@ type LLMSimpleResponse struct {
 	Content string
 }
 
+// SimpleLLMRequestOptions describes an optional machine-readable response
+// contract for a simple request.  Most simple requests intentionally remain
+// free-form; control-plane callers must opt in and handle a provider that
+// rejects the requested capability rather than accepting silently degraded
+// output.
+type SimpleLLMRequestOptions struct {
+	ResponseFormat         interface{}
+	PreserveResponseFormat bool
+}
+
 type llmHTTPError struct {
 	statusCode int
 	message    string
@@ -99,7 +109,28 @@ func dumpLLMContext(statusCode int, respMsg string, requestBody []byte) error {
 // DoSimpleLLMRequest sends a simple chat completion request (no tool calling)
 // supporting both OpenAI and Anthropic protocols.
 func DoSimpleLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return DoSimpleLLMRequestContext(context.Background(), cfg, messages, client, timeout)
+}
+
+// DoSimpleLLMRequestContext is the cancellable counterpart of
+// DoSimpleLLMRequest. Control-plane classifiers use it so a cancelled agent
+// request does not leave an unrelated LLM classification running in the
+// background. It performs no tool calling.
+func DoSimpleLLMRequestContext(parent context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration) (*LLMSimpleResponse, error) {
+	return DoSimpleLLMRequestContextWithOptions(parent, cfg, messages, client, timeout, SimpleLLMRequestOptions{})
+}
+
+// DoSimpleLLMRequestContextWithOptions is the control-plane counterpart of
+// DoSimpleLLMRequestContext. It preserves a supplied structured-output
+// contract on both Chat Completions and Responses API requests.
+func DoSimpleLLMRequestContextWithOptions(parent context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	if options.ResponseFormat != nil && cfg.Protocol == "anthropic" {
+		return nil, fmt.Errorf("simple LLM structured-output contract is unsupported for Anthropic protocol")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	startedAt := time.Now()
@@ -111,11 +142,11 @@ func DoSimpleLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, cli
 			err  error
 		)
 		if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
-			resp, err = doSimpleResponsesRequest(ctx, cfg, messages, client)
+			resp, err = doSimpleResponsesRequest(ctx, cfg, messages, client, options)
 		} else if cfg.Protocol == "anthropic" {
 			resp, err = doSimpleAnthropicRequest(ctx, cfg, messages, client)
 		} else {
-			resp, err = doSimpleOpenAIRequest(ctx, cfg, messages, client)
+			resp, err = doSimpleOpenAIRequest(ctx, cfg, messages, client, options)
 		}
 		if err == nil {
 			if attempt > 1 {
@@ -142,9 +173,11 @@ func DoSimpleLLMRequest(cfg corelib.MaclawLLMConfig, messages []interface{}, cli
 	return nil, lastErr
 }
 
-func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
+func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
 	req, data, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream: true,
+		Stream:                 true,
+		ResponseFormat:         options.ResponseFormat,
+		PreserveResponseFormat: options.PreserveResponseFormat,
 	})
 	if err != nil {
 		return nil, err
@@ -193,9 +226,15 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	return &LLMSimpleResponse{Content: StripThinkingTags(text)}, nil
 }
 
-func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client) (*LLMSimpleResponse, error) {
+func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	extraBody := map[string]interface{}(nil)
+	if options.ResponseFormat != nil {
+		extraBody = map[string]interface{}{"response_format": options.ResponseFormat}
+	}
 	req, data, endpoint, err := llm.NewResponsesAPIRequest(ctx, cfg, messages, llm.ResponsesAPIRequestOptions{
-		Stream: false,
+		Stream:                 false,
+		ExtraBody:              extraBody,
+		PreserveResponseFormat: options.PreserveResponseFormat,
 	})
 	if err != nil {
 		return nil, err

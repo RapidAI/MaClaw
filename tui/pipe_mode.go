@@ -92,8 +92,6 @@ func runPrompt(promptText string) {
 		fmt.Fprintf(os.Stderr, "warning: config load failed, using defaults: %v\n", err)
 	}
 
-	installTUIOfficeReadConfigProvider(dataDir)
-
 	// Check LLM is configured.
 	llmCfg := buildLLMConfigFromAppConfig(appCfg)
 	if !tuiConfigLLMReady(appCfg) {
@@ -158,10 +156,37 @@ func runPrompt(promptText string) {
 		}),
 		SSHHandler: sshHandler,
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
-			return agent.ToolWebSearchWithStrategyCtx(ctx, tuiWebSearchStrategy(app.appConfig), args)
+			var provider corelib.WebSearchProvider
+			if len(app.appConfig.WebSearchProviders) > 0 {
+				for _, p := range app.appConfig.WebSearchProviders {
+					if p.Name == app.appConfig.WebSearchCurrentProvider {
+						provider = p
+						break
+					}
+				}
+				if provider.Name == "" {
+					provider = app.appConfig.WebSearchProviders[0]
+				}
+			}
+			if provider.Type == "" {
+				provider.Type = "duckduckgo"
+			}
+			return agent.ToolWebSearchCtx(ctx, provider, args)
 		},
 		WebFetchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
-			return agent.ToolWebFetchWithProviderCtx(ctx, args, tuiWebFetchProvider(app.appConfig))
+			var provider corelib.WebSearchProvider
+			if len(app.appConfig.WebSearchProviders) > 0 {
+				for _, p := range app.appConfig.WebSearchProviders {
+					if p.Name == app.appConfig.WebSearchCurrentProvider {
+						provider = p
+						break
+					}
+				}
+				if provider.Name == "" {
+					provider = app.appConfig.WebSearchProviders[0]
+				}
+			}
+			return agent.ToolWebFetchWithProviderCtx(ctx, args, provider)
 		},
 	})
 
@@ -278,7 +303,7 @@ func (c *pipeCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, age
 	}
 	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
 	if ok {
-		c.activeLLM.set(cfg)
+		c.activeLLM.setRoute(cfg, d)
 	}
 	return cfg, d, ok
 }
@@ -308,6 +333,10 @@ func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {
 	defer cancel()
 	args["_ctx"] = ctx
 	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
+}
+
+func (c *pipeCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return projectTUIToolResult(name, result, c.GetLLMConfig())
 }
 
 func (c *pipeCallbacks) IsToolAllowed(name string) bool {
@@ -342,6 +371,18 @@ func (c *pipeCallbacks) OnToolCall(name string) {
 
 func (c *pipeCallbacks) OnToolResult(name string) {
 	// No-op.
+}
+
+func (c *pipeCallbacks) EscalateAfterToolExecution(name string) {
+	_ = name
+	if c != nil {
+		escalateTUIActiveLLMAfterTool(c.app, &c.activeLLM)
+	}
+}
+
+func (c *pipeCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	return c != nil && c.activeLLM.consumeSurfaceRefresh()
 }
 
 func (c *pipeCallbacks) ShouldStop() bool {

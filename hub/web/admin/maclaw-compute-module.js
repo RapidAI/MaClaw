@@ -24,6 +24,7 @@
       authStatusInactive: 'No Compute Auth',
       authStatusError: 'Compute Auth Sync Failed',
       authStatusLoading: 'Checking Compute Auth',
+      openingComputeStore: 'Opening compute store...',
       unlockHint: 'Ask HubCenter to grant compute access before adding external LLM providers.',
       storeContextMissing: 'Hub Center registration is missing. Register this Hub with HubCenter before purchasing compute.',
       activeAuthorizations: 'Active Compute',
@@ -44,6 +45,13 @@
       statusExpired: 'Expired',
       statusExhausted: 'Exhausted',
       statusInactive: 'Invalid',
+      billingTimeOfUse: 'Time-of-use rates',
+      billingDefaultRate: 'Default',
+      billingCurrentRate: 'Now',
+      billingEveryday: 'Every day',
+      billingWeekdays: 'Weekdays',
+      weekdaySun: 'Sun', weekdayMon: 'Mon', weekdayTue: 'Tue', weekdayWed: 'Wed',
+      weekdayThu: 'Thu', weekdayFri: 'Fri', weekdaySat: 'Sat'
     },
     zh: {
       purchaseCompute: '\u8d2d\u4e70\u7b97\u529b',
@@ -54,6 +62,7 @@
       authStatusInactive: '\u672a\u6388\u6743\u7b97\u529b\u6a21\u5757',
       authStatusError: '\u7b97\u529b\u6388\u6743\u540c\u6b65\u5931\u8d25',
       authStatusLoading: '\u6b63\u5728\u68c0\u67e5\u7b97\u529b\u6388\u6743',
+      openingComputeStore: '\u6b63\u5728\u6253\u5f00\u7b97\u529b\u5546\u5e97...',
       unlockHint: '\u9700\u8981\u5148\u5728 HubCenter \u6388\u4e88\u79df\u6237\u7b97\u529b\uff0c\u624d\u80fd\u65b0\u5efa\u5916\u90e8 LLM \u670d\u52a1\u5546\u3002',
       storeContextMissing: '\u7f3a\u5c11 HubCenter \u6ce8\u518c\u4fe1\u606f\uff0c\u8bf7\u5148\u5c06\u6b64 Hub \u6ce8\u518c\u5230 HubCenter \u540e\u518d\u8d2d\u4e70\u7b97\u529b\u3002',
       activeAuthorizations: '\u5df2\u6fc0\u6d3b\u7b97\u529b',
@@ -74,6 +83,13 @@
       statusExpired: '\u5df2\u8fc7\u671f',
       statusExhausted: '\u5df2\u7528\u5b8c',
       statusInactive: '\u5df2\u5931\u6548',
+      billingTimeOfUse: '\u5206\u65f6\u500d\u7387',
+      billingDefaultRate: '\u9ed8\u8ba4',
+      billingCurrentRate: '\u5f53\u524d',
+      billingEveryday: '\u6bcf\u5929',
+      billingWeekdays: '\u5de5\u4f5c\u65e5',
+      weekdaySun: '\u65e5', weekdayMon: '\u4e00', weekdayTue: '\u4e8c', weekdayWed: '\u4e09',
+      weekdayThu: '\u56db', weekdayFri: '\u4e94', weekdaySat: '\u516d'
     }
   };
 
@@ -151,6 +167,22 @@
   // ---------------------------------------------------------------------------
 
   window.openComputeStore = async function() {
+    // Open a placeholder while this click still has browser user activation.
+    // Waiting for the authorization request first causes popup blockers to
+    // reject the first purchase attempt on most browsers.
+    var storeWindow = window.open('about:blank', '_blank');
+    if (storeWindow) {
+      try {
+        // The blank document is same-origin. Give slow authorization refreshes
+        // an intentional state and prevent the destination from retaining an
+        // opener reference after navigation.
+        storeWindow.opener = null;
+        storeWindow.document.title = t('openingComputeStore');
+        storeWindow.document.body.textContent = t('openingComputeStore');
+      } catch (e) {
+        // The placeholder is still usable when a browser restricts its document.
+      }
+    }
     try {
       if (typeof window.checkComputeAuthorization === 'function') {
         await window.checkComputeAuthorization();
@@ -180,6 +212,13 @@
     hubCenterURL = String(hubCenterURL || '').replace(/\/+$/, '');
 
     if (!hubID) {
+      try {
+        if (storeWindow && !storeWindow.closed) {
+          storeWindow.close();
+        }
+      } catch (e) {
+        // The placeholder is only a convenience; retain the registration hint.
+      }
       if (window.showToast) {
         window.showToast(t('storeContextMissing'), 'warn');
       } else {
@@ -196,7 +235,18 @@
     if (email) params.set('email', email);
     var url = hubCenterURL + '/compute-store?' + params.toString();
 
-    window.open(url, '_blank');
+    try {
+      if (storeWindow && !storeWindow.closed) {
+        storeWindow.location.replace(url);
+        return;
+      }
+    } catch (e) {
+      // Continue in the current tab when the placeholder cannot navigate.
+    }
+    // If a browser blocks the placeholder tab, or it is closed while the
+    // authorization refresh runs, still take the tenant to the store instead
+    // of silently requiring a second click.
+    window.location.assign(url);
   };
 
   // ---------------------------------------------------------------------------
@@ -209,12 +259,23 @@
   var _computeAuthRefreshInFlight = null;
 
   window.checkComputeAuthorization = async function() {
+    if (_computeAuthRefreshInFlight) return _computeAuthRefreshInFlight.then(function() {
+      return _computeAuthStatus;
+    });
+    _computeAuthRefreshInFlight = (async function() {
+      try {
+        _computeAuthStatus = await loadComputeStatus();
+        _computeAuthCheckedAt = Date.now();
+      } catch (e) {
+        _computeAuthStatus = { allow_external_providers: false, authorization_error: e && e.message || 'request failed' };
+        _computeAuthCheckedAt = Date.now();
+      }
+      return _computeAuthStatus;
+    })();
     try {
-      _computeAuthStatus = await loadComputeStatus();
-      _computeAuthCheckedAt = Date.now();
-    } catch (e) {
-      _computeAuthStatus = { allow_external_providers: false, authorization_error: e && e.message || 'request failed' };
-      _computeAuthCheckedAt = Date.now();
+      await _computeAuthRefreshInFlight;
+    } finally {
+      _computeAuthRefreshInFlight = null;
     }
     // Full banner re-render with the freshly fetched data.
     // refreshMaClawOfficialBanner internally calls updateComputeUI.
@@ -225,13 +286,14 @@
   };
 
   function refreshComputeAuthorizationIfStale(maxAgeMS) {
-    if (_computeAuthRefreshInFlight) return _computeAuthRefreshInFlight;
+    if (_computeAuthRefreshInFlight) {
+      return _computeAuthRefreshInFlight.then(function() {
+        return _computeAuthStatus;
+      });
+    }
     var age = _computeAuthCheckedAt ? Date.now() - _computeAuthCheckedAt : Infinity;
     if (age <= maxAgeMS) return Promise.resolve(_computeAuthStatus);
-    _computeAuthRefreshInFlight = window.checkComputeAuthorization().finally(function() {
-      _computeAuthRefreshInFlight = null;
-    });
-    return _computeAuthRefreshInFlight;
+    return window.checkComputeAuthorization();
   }
 
   window.canAddExternalProvider = function() {
@@ -380,6 +442,85 @@
     return t('officialComputeGrant');
   }
 
+  var officialBillingWeekdayKeys = ['weekdaySun', 'weekdayMon', 'weekdayTue', 'weekdayWed', 'weekdayThu', 'weekdayFri', 'weekdaySat'];
+
+  function uniqueOfficialBillingDays(days) {
+    var seen = {};
+    var out = [];
+    (days || []).forEach(function(day) {
+      var n = Number(day);
+      if (!Number.isFinite(n) || n < 0 || n > 6 || Math.round(n) !== n || seen[n]) return;
+      seen[n] = true;
+      out.push(n);
+    });
+    return out;
+  }
+
+  function formatOfficialBillingMultiplier(value) {
+    var n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) n = 1;
+    n = Math.round(n * 10000) / 10000;
+    return '\u00d7' + String(n);
+  }
+
+  function formatOfficialBillingDays(days) {
+    var uniq = uniqueOfficialBillingDays(days).slice().sort();
+    if (!uniq.length || uniq.length === 7) return t('billingEveryday');
+    if (uniq.length === 5 && uniq.join(',') === '1,2,3,4,5') return t('billingWeekdays');
+    var keys = officialBillingWeekdayKeys;
+    var lang = (window.currentLang || document.documentElement.lang || 'en').toLowerCase();
+    var sep = lang.startsWith('zh') ? '\u3001' : ', ';
+    return uniq.map(function(day) { return t(keys[day]); }).join(sep);
+  }
+
+  function officialBillingPolicies() {
+    if (!_computeAuthStatus || !Array.isArray(_computeAuthStatus.provider_billing)) return [];
+    return _computeAuthStatus.provider_billing.filter(function(item) {
+      if (!item || item.paused) return false;
+      var windows = item.credit_multiplier_schedule;
+      if (Array.isArray(windows) && windows.length) return true;
+      var n = Number(item.credit_multiplier);
+      return Number.isFinite(n) && n > 0 && n !== 1;
+    });
+  }
+
+  function renderOfficialBillingWindows(item) {
+    var windows = Array.isArray(item && item.credit_multiplier_schedule) ? item.credit_multiplier_schedule : [];
+    if (!windows.length) return '';
+    return windows.map(function(window) {
+      var start = String(window && window.start || '').trim() || '--:--';
+      var end = String(window && window.end || '').trim() || '--:--';
+      return '<div class="item-meta" style="font-size:11px;margin-top:4px">'
+        + esc(formatOfficialBillingDays(window && window.days)) + ' '
+        + esc(start) + '\u2013' + esc(end) + ' '
+        + esc(formatOfficialBillingMultiplier(window && window.multiplier))
+        + '</div>';
+    }).join('');
+  }
+
+  function renderOfficialProviderBilling() {
+    var policies = officialBillingPolicies();
+    if (!policies.length) return '';
+    var rows = policies.map(function(item) {
+      var title = String(item.provider_id || '').trim() || t('officialProvider');
+      var timezone = String(item.timezone || '').trim();
+      var meta = esc(t('billingDefaultRate') + ' ' + formatOfficialBillingMultiplier(item.credit_multiplier));
+      if (timezone) meta += ' \u00b7 ' + esc(timezone);
+      return '<div style="padding:9px 10px;border:1px solid #e7eaf0;border-radius:10px;background:#fff">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center">'
+        + '<div style="min-width:0"><div class="item-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(title) + '</div>'
+        + '<div class="item-meta" style="font-size:10px">' + meta + '</div></div>'
+        + '<span class="badge info" style="justify-self:end;white-space:nowrap">' + esc(t('billingCurrentRate') + ' ' + formatOfficialBillingMultiplier(item.current_multiplier)) + '</span>'
+        + '</div>'
+        + renderOfficialBillingWindows(item)
+        + '</div>';
+    }).join('');
+    return '<div style="margin-top:10px;display:grid;gap:8px">'
+      + '<div class="item-meta" style="font-weight:700;color:var(--text,var(--ink))">' + esc(t('billingTimeOfUse')) + '</div>'
+      + rows
+      + '</div>';
+  }
+
   function renderComputeAuthorizationList() {
     if (!_computeAuthStatus) return '';
     var all = computeAuthorizations();
@@ -467,6 +608,7 @@
       + '<span id="maclawComputeAuthBadge" class="badge warn">' + t('authStatusInactive') + '</span>'
       + window.renderMaClawPurchaseButton()
       + '</div></div>'
+      + renderOfficialProviderBilling()
       + renderComputeAuthorizationList()
       + '</div>';
   };

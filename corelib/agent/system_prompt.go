@@ -22,6 +22,11 @@ type SystemPromptConfig struct {
 	// Use PromptProfileFromUserText / PromptProfileFromTask for adaptive turns.
 	PromptProfile PromptProfile
 
+	// ManagedSemantic replaces soup-name core principles on a grant-bound
+	// turn. The execution layer may still be full; the listed tools are not
+	// the legacy send_file(path=)/manage_skill catalog.
+	ManagedSemantic bool
+
 	// SuppressCodingGateRules suppresses the coding workflow confirmation gate
 	// rules from the system prompt. Used during V2 workflow agent loops where
 	// the phase prompt provides all necessary instructions and the confirmation
@@ -53,6 +58,11 @@ type SystemPromptDeps struct {
 	// that should NOT pollute the project directory. Defaults to os.TempDir().
 	ScratchDir func() string
 
+	// SkillLister supplies the "Registered Skills" catalog. Everything it
+	// returns is advertised to the model unprompted, so a caller whose skill
+	// pool is partitioned (for example self-learned skills scoped to coding vs
+	// general work) must filter before returning: this layer cannot know which
+	// scope the turn belongs to. No production caller wires this today.
 	SkillLister      func() []SkillInfo
 	MCPServerLister  func() []MCPServerInfo
 	SteeringResolver func(userMessage string, contextTokens int) []steering.File
@@ -61,10 +71,9 @@ type SystemPromptDeps struct {
 	// by prompt construction. Coding flow is described through the internal path.
 	CodingProviderInfo func() string
 
-	SSHHostLister       func() []corelib.SSHHostEntry
-	UserProfileSection  func() string
-	HasKnowledgeBase    bool
-	KnowledgeAutoRecall func(b *strings.Builder, userMsg string)
+	SSHHostLister      func() []corelib.SSHHostEntry
+	UserProfileSection func() string
+	HasKnowledgeBase   bool
 
 	PostCorePrinciples func(b *strings.Builder)
 	PostCodingWorkflow func(b *strings.Builder)
@@ -93,10 +102,13 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 
 // appendMemoryRecall appends proactive memory recall to the system prompt.
 func appendMemoryRecall(b *strings.Builder, store *memory.Store, userMessage string, isFirstTurn bool) {
-	b.WriteString(store.UserFactSummaryForPrompt(memory.UserInfoPromptOptions("\n\n" + memory.PromptSectionUserMemory)))
+	b.WriteString("\n\n")
+	b.WriteString(memory.PromptSectionUserMemory)
+	b.WriteByte('\n')
 
-	// Compact auto-extracted document bodies so recall embeds intent+paths, not 20k–40k of body.
-	promptContext, _ := store.ProactiveContextForPrompt(CompactQueryForEmbedding(userMessage), memory.CoreAgentProactivePromptOptions())
+	// Catalog only: index + pull hint. Query is unused when CatalogOnly.
+	_ = userMessage
+	promptContext, _ := store.ProactiveContextForPrompt("", memory.CoreAgentProactivePromptOptions())
 	b.WriteString(promptContext)
 
 	b.WriteString(store.StaticMemorySectionForPrompt(memory.RecallHintAndGuidePromptOptions(isFirstTurn, memory.BuildTUIProactiveMemoryPrompt())))

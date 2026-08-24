@@ -7,12 +7,14 @@ import (
 	"syscall"
 )
 
-// hideCommandWindow prevents a visible console window from appearing when the
-// process is started on Windows. Uses CREATE_NO_WINDOW (0x08000000) which
-// suppresses console creation for the entire process tree, including child
-// cmd.exe interpreters spawned by .cmd/.bat scripts (e.g. npm's FOR /F).
+// hideCommandWindow hides the process being created. Grandchildren still need
+// a hidden host console (ensureHiddenHostConsole) or they will flash.
 func hideCommandWindow(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: _CREATE_NO_WINDOW,
+	if cmd == nil {
+		return
 	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= _CREATE_NO_WINDOW
 }

@@ -77,7 +77,10 @@ func (h *IMMessageHandler) consumePendingCapabilityGapContext(userID string) str
 	)
 }
 
-func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, string) {
+// matchPreferredLocalSkill picks the local skill the loop should steer toward.
+// agentDomain confines the choice to the caller's experience pool so the loop
+// never steers a coding turn into a skill distilled from unrelated chat.
+func matchPreferredLocalSkill(exec *SkillExecutor, userText, agentDomain string) (string, string) {
 	if exec == nil {
 		return "", ""
 	}
@@ -85,12 +88,13 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 	if lower == "" {
 		return "", ""
 	}
+	candidates := filterSkillsForExperienceDomain(agentDomain, exec.List())
 	// Extract intent once, reuse for all skill comparisons.
 	userIntent := extractUserIntentCategory(userText)
 	bestName := ""
 	bestReason := ""
 	bestScore := 0
-	for _, skill := range exec.List() {
+	for _, skill := range candidates {
 		if strings.TrimSpace(skill.Name) == "" {
 			continue
 		}

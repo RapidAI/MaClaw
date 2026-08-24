@@ -6,3 +6,5 @@ package tensor
 func siluMulASM(gate, up []float32) {
 	siluMulScalar(gate, up)
 }
+
+func vzeroupperASM() {}

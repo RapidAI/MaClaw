@@ -148,6 +148,13 @@ func TestApplyThinkingPolicy_RespectsExplicitGlobalSetting(t *testing.T) {
 	}
 }
 
+func TestApplyThinkingPolicy_SkipsOffForAlwaysOnThinkingModel(t *testing.T) {
+	cfg := ApplyThinkingPolicy(corelib.MaclawLLMConfig{Model: "glm-5.3"}, ThinkingOff)
+	if cfg.ThinkingMode != "" || cfg.ReasoningEffort != "" {
+		t.Fatalf("glm-5.3 must keep auto thinking under cost-route Off: %+v", cfg)
+	}
+}
+
 func TestDecideCostRoute_IncludesThinking(t *testing.T) {
 	isolateCostRouteStats(t)
 	t.Setenv(CostRouteEnvKey, "shadow")

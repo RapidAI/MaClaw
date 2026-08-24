@@ -1,0 +1,15 @@
+{
+  "task_id": "hz-1786824322916858600",
+  "user_goal": "add tests",
+  "status": "cancelled",
+  "round_index": 0,
+  "max_rounds": 25,
+  "policy": {
+    "owner_id": "u1",
+    "project_root": "C:\\Users\\ma139\\AppData\\Local\\Temp\\TestCancelSessionForUserCancelsHorizon1558186930\\001",
+    "horizon_task_id": "hz-1786824322916858600",
+    "round_index": 0
+  },
+  "completed": false,
+  "updated_at": "2026-08-15T20:05:22.9173633Z"
+}

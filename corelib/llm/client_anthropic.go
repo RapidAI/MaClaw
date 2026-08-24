@@ -16,9 +16,10 @@ import (
 )
 
 type AnthropicMessagesRequestOptions struct {
-	Stream    bool
-	Tools     []map[string]interface{}
-	MaxTokens int
+	Stream                  bool
+	Tools                   []map[string]interface{}
+	MaxTokens               int
+	ExplicitToolReplacement bool
 }
 
 func BuildAnthropicMessagesRequestBody(
@@ -56,9 +57,14 @@ func BuildAnthropicMessagesRequestBody(
 			reqBody["system"] = converted.SystemText
 		}
 	}
-	if len(opts.Tools) > 0 {
+	if len(opts.Tools) > 0 || opts.ExplicitToolReplacement {
 		if at := ConvertToAnthropicTools(opts.Tools); len(at) > 0 {
 			reqBody["tools"] = at
+		} else if opts.ExplicitToolReplacement {
+			// An owner that is replacing a previously executable surface must
+			// communicate an empty surface explicitly. Omitting tools leaves
+			// stateful Anthropic-compatible providers free to retain history.
+			reqBody["tools"] = []map[string]interface{}{}
 		}
 	}
 	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIAnthropic)
@@ -140,6 +146,7 @@ func DoAnthropicRequestWithOptions(
 // parseAnthropicResponseBody parses a non-streaming Anthropic Messages API response.
 func parseAnthropicResponseBody(body []byte) (*Response, error) {
 	var raw struct {
+		ID         string                  `json:"id,omitempty"`
 		Content    []AnthropicContentBlock `json:"content"`
 		StopReason string                  `json:"stop_reason"`
 		Usage      *Usage                  `json:"usage,omitempty"`
@@ -150,10 +157,15 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 
 	msg := Message{Role: "assistant"}
 	var textParts []string
+	var reasoningParts []string
 	for _, block := range raw.Content {
 		switch block.Type {
 		case "text":
 			textParts = append(textParts, block.Text)
+		case "thinking":
+			if text := anthropicThinkingBlockText(block.Type, block.Thinking, block.Text); text != "" {
+				reasoningParts = append(reasoningParts, text)
+			}
 		case "tool_use":
 			argsJSON, _ := json.Marshal(block.Input)
 			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
@@ -170,6 +182,8 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 		}
 	}
 	msg.Content = StripAllExtra(joinStrings(textParts))
+	// Match the stream path: thinking deltas are concatenated, not joined with extra newlines.
+	msg.ReasoningContent = strings.Join(reasoningParts, "")
 
 	finishReason := "stop"
 	if raw.StopReason == "tool_use" {
@@ -190,12 +204,49 @@ func parseAnthropicResponseBody(body []byte) (*Response, error) {
 	}
 
 	return &Response{
+		ResponseID: strings.TrimSpace(raw.ID),
 		Choices: []Choice{{
 			Message:      msg,
 			FinishReason: finishReason,
 		}},
 		Usage: raw.Usage,
 	}, nil
+}
+
+func anthropicThinkingBlockText(blockType, thinking, text string) string {
+	switch strings.TrimSpace(blockType) {
+	case "thinking":
+		if thinking != "" {
+			return thinking
+		}
+		return text
+	default:
+		return ""
+	}
+}
+
+func anthropicDeltaThinkingText(deltaType, thinking, text string) string {
+	switch strings.TrimSpace(deltaType) {
+	case "thinking_delta", "reasoning_delta":
+		if thinking != "" {
+			return thinking
+		}
+		return text
+	default:
+		return ""
+	}
+}
+
+func appendAnthropicThinking(buf *strings.Builder, onReasoning TokenCallback, text string) {
+	if text == "" {
+		return
+	}
+	if buf != nil {
+		buf.WriteString(text)
+	}
+	if onReasoning != nil {
+		onReasoning(text)
+	}
 }
 
 func joinStrings(parts []string) string {

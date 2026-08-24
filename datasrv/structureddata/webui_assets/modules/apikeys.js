@@ -177,6 +177,7 @@ PageModules.apikeys = {
 
     // Load initial data
     this.refreshAll();
+    this.loadPresets();
   },
 
   // === UI Helpers ===
@@ -221,23 +222,51 @@ PageModules.apikeys = {
 
   // === Data Operations ===
   async refreshAll() {
+    const alive = App.navGuard();
     try {
       const data = await App.api("/api/v1/data/access/api-keys");
-      if (data && data.keys) {
-        this.updateStats(data.keys);
-        this.renderKeyTable(data.keys);
-      }
+      if (!alive()) return;
+      const keys = App.listItems(data, "keys");
+      this._keys = keys;
+      this.updateStats(keys);
+      this.renderKeyTable(keys);
     } catch (e) {
-      // silently fail on initial load
+      if (!alive()) return;
+      const table = document.getElementById("keyTable");
+      if (table) {
+        table.innerHTML = "";
+        table.appendChild(App.emptyState("加载密钥失败", e.message || "需要管理员权限。"));
+      }
+    }
+  },
+
+  async loadPresets() {
+    const alive = App.navGuard();
+    try {
+      const data = await App.api("/api/v1/data/access/presets?limit=100");
+      if (!alive()) return;
+      this._presets = App.listItems(data, "presets");
+      const sel = document.getElementById("accessPreset");
+      if (!sel) return;
+      const keep = sel.value;
+      sel.innerHTML = "";
+      sel.appendChild(App.html("option", { value: "" }, "自定义"));
+      this._presets.forEach(p => {
+        sel.appendChild(App.html("option", { value: p.id }, p.title || p.id));
+      });
+      if (keep) sel.value = keep;
+    } catch (_) {
+      this._presets = this._presets || [];
     }
   },
 
   updateStats(keys) {
     const now = new Date();
     const weekLater = new Date(now.getTime() + 7 * 86400000);
-    let active = 0, expiring = 0, expired = 0;
+    let active = 0, expiring = 0, expired = 0, risk = 0;
     keys.forEach(k => {
-      if (k.disabled) return;
+      if (k.allow_admin || k.allow_raw_data || k.allow_sensitive) risk++;
+      if (k.enabled === false || k.disabled) return;
       if (!k.expires_at) { active++; return; }
       const exp = new Date(k.expires_at);
       if (exp < now) expired++;
@@ -249,16 +278,36 @@ PageModules.apikeys = {
     set("activeKeys", active);
     set("expiringKeys", expiring);
     set("expiredKeys", expired);
+    set("riskKeys", risk);
   },
 
-  renderKeyTable(keys) {
+  renderKeyTable(allKeys) {
     const table = document.getElementById("keyTable");
     if (!table) return;
+    const status = App.val("keyStatusFilter");
+    const q = App.val("keySearch").toLowerCase();
+    const now = new Date();
+    const weekLater = new Date(now.getTime() + 7 * 86400000);
+    const keys = (allKeys || []).filter(k => {
+      if (q) {
+        const hay = [k.id, k.user_id, k.user, k.role, k.note].join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (!status) return true;
+      const disabled = k.enabled === false || k.disabled;
+      const exp = k.expires_at ? new Date(k.expires_at) : null;
+      if (status === "disabled") return disabled;
+      if (disabled) return false;
+      if (status === "expired") return !!(exp && exp < now);
+      if (status === "expiring_soon") return !!(exp && exp >= now && exp < weekLater);
+      if (status === "active") return !exp || exp >= weekLater;
+      return true;
+    });
     if (!keys.length) {
       table.innerHTML = "";
       table.appendChild(App.emptyState(
-        "暂无 API 密钥",
-        "使用上方表单为 Agent 或服务创建首个作用域密钥。"
+        allKeys && allKeys.length ? "没有匹配的密钥" : "暂无 API 密钥",
+        allKeys && allKeys.length ? "调整状态或搜索条件后再试。" : "使用上方表单为 Agent 或服务创建首个作用域密钥。"
       ));
       return;
     }
@@ -272,12 +321,12 @@ PageModules.apikeys = {
     tbl.appendChild(thead);
     const tbody = document.createElement("tbody");
     keys.forEach(k => {
-      const statusEl = k.disabled ? App.badge("已停用") : App.badge("有效", "ok");
+      const statusEl = (k.enabled === false || k.disabled) ? App.badge("已停用") : App.badge("有效", "ok");
       const expiryText = k.expires_at ? new Date(k.expires_at).toLocaleDateString() : "永不过期";
       const selectBtn = h("button", { class: "sm ghost", type: "button", onclick: () => this.selectKey(k.id) }, "选择");
       const row = h("tr", {},
         h("td", { class: "mono" }, k.id || "-"),
-        h("td", {}, k.user || "-"),
+        h("td", {}, k.user_id || k.user || "-"),
         h("td", {}, k.role || "-"),
         h("td", {}, statusEl),
         h("td", {}, expiryText),
@@ -290,20 +339,214 @@ PageModules.apikeys = {
     table.appendChild(tbl);
   },
 
-  // === Actions (stubs - connect to real API) ===
-  selectKey(id) { App.toast("已选择密钥: " + id); },
-  createKey() { App.toast("创建密钥..."); },
-  generatePolicy() { App.toast("正在生成策略..."); },
-  applyPreset() { App.toast("应用预设..."); },
-  recommend() { App.toast("正在生成推荐方案..."); },
-  rotateKey() { App.toast("轮换密钥..."); },
-  previewAccess() { App.toast("预览权限..."); },
-  disableKey() { App.toast("禁用密钥..."); },
-  loadKeys() { this.refreshAll(); },
-  generateHandoff() { App.toast("生成交接文档..."); },
-  runReadiness() { App.toast("运行就绪检查..."); },
-  generatePacket() { App.toast("生成接入包..."); },
-  reviewAccess() { App.toast("复核访问..."); },
-  exportEvidence() { App.toast("导出证据..."); },
-  refreshEvidence() { App.toast("刷新证据..."); },
+  selectKey(id) {
+    this._selectedKey = id;
+    const actions = document.getElementById("selectedKeyActions");
+    if (actions) actions.style.display = "flex";
+    App.toast("已选择密钥: " + id);
+  },
+
+  async createKey() {
+    const id = App.val("accessKeyId");
+    if (!id) { App.toast("请填写密钥 ID", "warn"); return; }
+    const preset = this._preset || {};
+    const allowReports = document.getElementById("allowReports")?.checked !== false;
+    const body = {
+      id,
+      user_id: App.val("accessUserId"),
+      role: App.val("accessRole") || preset.role || "data_user",
+      note: App.val("accessPurpose"),
+      allow_raw_data: document.getElementById("allowRawData")?.checked === true,
+      allow_sensitive: document.getElementById("allowSensitive")?.checked === true,
+      allow_admin: document.getElementById("allowAdmin")?.checked === true,
+      expires_at: App.val("accessExpiry") || undefined,
+    };
+    if (preset.allowed_domains) body.allowed_domains = preset.allowed_domains;
+    if (preset.allowed_datasets) body.allowed_datasets = preset.allowed_datasets;
+    if (preset.allowed_actions) body.allowed_actions = preset.allowed_actions;
+    if (allowReports) {
+      body.allowed_views = preset.allowed_views || [];
+      body.allowed_reports = preset.allowed_reports || [];
+      body.allowed_dashboards = preset.allowed_dashboards || [];
+    }
+    try {
+      const out = await App.api("/api/v1/data/access/api-keys", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const key = out.key || "";
+      const keyId = (out.policy && out.policy.id) || id;
+      const lines = [
+        "MaClawDataSrv agent key (shown once)",
+        "endpoint: " + App.endpoint,
+        "key_id: " + keyId,
+        "key: " + key,
+        "tool: mis_data",
+        "first call: GET /api/v1/data/capabilities",
+      ];
+      const rec = document.getElementById("accessRecommendation");
+      if (rec) {
+        rec.innerHTML = "";
+        rec.appendChild(App.resultCard("密钥只显示一次，请立即复制", {
+          endpoint: App.endpoint,
+          key_id: keyId,
+          key: key || "(服务未返回明文)",
+          first_call: "GET /api/v1/data/capabilities",
+        }));
+      }
+      const handoff = document.getElementById("agentHandoff");
+      if (handoff) handoff.value = lines.join("\n");
+      App.toast(key ? "密钥已创建，请立即复制明文" : "密钥已创建");
+      this.refreshAll();
+    } catch (e) {
+      App.toast(e.message || "创建失败", "danger");
+    }
+  },
+
+  async generatePolicy() {
+    if (!this._presets || !this._presets.length) await this.loadPresets();
+    const el = document.getElementById("accessRecommendation");
+    if (el) {
+      el.innerHTML = "";
+      el.appendChild(App.resultCard("授权预设", this._presets || []));
+    }
+  },
+
+  applyPreset() {
+    const id = App.val("accessPreset");
+    const preset = (this._presets || []).find(p => p.id === id);
+    if (!preset) { App.toast("请先选择授权预设", "warn"); return; }
+    this._preset = preset;
+    App.setVal("accessRole", preset.role || "data_user");
+    const setChk = (fid, v) => { const el = document.getElementById(fid); if (el) el.checked = !!v; };
+    setChk("allowRawData", preset.allow_raw_data);
+    setChk("allowSensitive", preset.allow_sensitive);
+    setChk("allowAdmin", preset.allow_admin);
+    setChk("allowReports", true);
+    App.toast("已应用预设 " + (preset.title || preset.id));
+  },
+
+  async recommend() {
+    if (!this._presets || !this._presets.length) await this.loadPresets();
+    const purpose = App.val("accessPurpose").toLowerCase();
+    const presets = this._presets || [];
+    if (!purpose || !presets.length) {
+      App.toast("请先填写 Agent 用途，并确认预设已加载", "warn");
+      return;
+    }
+    const tokens = purpose.split(/[^a-z0-9_\u4e00-\u9fa5-]+/).filter(t => t.length > 1);
+    let best = null, bestScore = 0;
+    presets.forEach(p => {
+      const hay = [p.id, p.title, p.description].concat(p.allowed_domains || []).join(" ").toLowerCase();
+      const score = tokens.filter(t => hay.includes(t)).length;
+      if (score > bestScore) { best = p; bestScore = score; }
+    });
+    if (!best) { App.toast("没有匹配的预设，请手动选择", "warn"); return; }
+    App.setVal("accessPreset", best.id);
+    this.applyPreset();
+  },
+
+  async rotateKey() {
+    if (!this._selectedKey) { App.toast("请先选择密钥", "warn"); return; }
+    try {
+      const out = await App.api("/api/v1/data/access/api-keys/" + encodeURIComponent(this._selectedKey) + "/rotate", {
+        method: "POST",
+      });
+      const handoff = document.getElementById("agentHandoff");
+      if (handoff && out.key) handoff.value = "rotated key_id=" + this._selectedKey + "\nkey=" + out.key;
+      App.toast("已轮换，请复制新密钥");
+      this.refreshAll();
+    } catch (e) {
+      App.toast(e.message || "轮换失败", "danger");
+    }
+  },
+
+  async previewAccess() {
+    if (!this._selectedKey) { App.toast("请先选择密钥", "warn"); return; }
+    try {
+      const data = await App.api("/api/v1/data/access/api-keys/" + encodeURIComponent(this._selectedKey) + "/capabilities");
+      const el = document.getElementById("accessRecommendation");
+      if (el) {
+        el.innerHTML = "";
+        el.appendChild(App.resultCard("权限预览", data));
+      }
+    } catch (e) {
+      App.toast(e.message || "预览失败", "danger");
+    }
+  },
+
+  async disableKey() {
+    if (!this._selectedKey) { App.toast("请先选择密钥", "warn"); return; }
+    if (!confirm("确定禁用该密钥？")) return;
+    try {
+      await App.api("/api/v1/data/access/api-keys/" + encodeURIComponent(this._selectedKey), { method: "DELETE" });
+      App.toast("已禁用");
+      this.refreshAll();
+    } catch (e) {
+      App.toast(e.message || "禁用失败", "danger");
+    }
+  },
+
+  loadKeys() {
+    if (this._keys) this.renderKeyTable(this._keys);
+    else this.refreshAll();
+  },
+
+  generateHandoff() {
+    const el = document.getElementById("agentHandoff");
+    if (!el) return;
+    el.value = [
+      "# Agent onboarding",
+      "1. GET /api/v1/data/capabilities",
+      "2. POST /api/v1/data/intent/resolve  {query}",
+      "3. follow next_steps.tool_call_template",
+      "4. dry_run before execute_business_action",
+    ].join("\n");
+    App.toast("已生成交接提纲");
+  },
+
+  async runReadiness() {
+    try {
+      const data = await App.api("/api/v1/data/access/review");
+      this.putCompliance(data);
+    } catch (e) {
+      App.toast(e.message || "就绪检查失败", "danger");
+    }
+  },
+
+  generatePacket() { this.generateHandoff(); },
+
+  async reviewAccess() {
+    try {
+      const data = await App.api("/api/v1/data/access/review");
+      this.putCompliance(data);
+    } catch (e) {
+      App.toast(e.message || "复核失败", "danger");
+    }
+  },
+
+  async exportEvidence() {
+    try {
+      await App.download("/api/v1/data/governance/evidence-summary.txt", { filename: "evidence-summary.txt" });
+      App.toast("已导出证据摘要");
+    } catch (e) {
+      App.toast(e.message || "导出失败", "danger");
+    }
+  },
+
+  async refreshEvidence() {
+    try {
+      const data = await App.api("/api/v1/data/governance/evidence-pack");
+      this.putCompliance(data);
+    } catch (e) {
+      App.toast(e.message || "刷新证据失败", "danger");
+    }
+  },
+
+  putCompliance(data) {
+    const el = document.getElementById("complianceResult") || document.getElementById("readinessResult");
+    if (!el) return;
+    el.innerHTML = "";
+    el.appendChild(App.resultCard("治理结果", data));
+  },
 };

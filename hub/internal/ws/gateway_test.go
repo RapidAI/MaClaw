@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -173,6 +174,7 @@ func (s *testIdentityService) IssueViewerTokenForUser(ctx context.Context, userI
 }
 
 type testDeviceBinder struct {
+	mu               sync.RWMutex
 	boundMachineID   string
 	unboundMachineID string
 	markedOnline     int
@@ -182,12 +184,22 @@ type testDeviceBinder struct {
 }
 
 func (d *testDeviceBinder) BindDesktop(machineID string, ctx *ConnContext) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.boundMachineID = machineID
 }
 
 func (d *testDeviceBinder) UnbindDesktop(ctx context.Context, machineID string, conn *ConnContext) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.unboundMachineID = machineID
 	return nil
+}
+
+func (d *testDeviceBinder) unboundMachine() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.unboundMachineID
 }
 
 func (d *testDeviceBinder) MarkOnline(ctx context.Context, machineID string, hello MachineHelloPayload) error {
@@ -221,6 +233,7 @@ func (d *testDeviceBinder) SetAlias(ctx context.Context, machineID string, alias
 func (d *testDeviceBinder) CheckAliasConflict(machineID, userID, alias string) bool { return false }
 
 type testSessionService struct {
+	mu               sync.RWMutex
 	snapshot         *session.SessionCacheEntry
 	events           []string
 	offlineMachineID string
@@ -304,8 +317,16 @@ func (s *testSessionService) RecordHeartbeat(ctx context.Context, tenantID, mach
 	return nil
 }
 func (s *testSessionService) MarkMachineOffline(ctx context.Context, machineID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.offlineMachineID = machineID
 	return nil
+}
+
+func (s *testSessionService) offlineMachine() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.offlineMachineID
 }
 
 func (s *testSessionService) GetSnapshot(userID, machineID, sessionID string) (*session.SessionCacheEntry, bool) {
@@ -882,14 +903,14 @@ func TestGatewayMachineDisconnectMarksMachineOffline(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if deviceBinder.unboundMachineID == "machine-1" && sessionSvc.offlineMachineID == "machine-1" {
+		if deviceBinder.unboundMachine() == "machine-1" && sessionSvc.offlineMachine() == "machine-1" {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if deviceBinder.unboundMachineID != "machine-1" || sessionSvc.offlineMachineID != "machine-1" {
-		t.Fatalf("expected machine disconnect cleanup, got unbound=%q offline=%q", deviceBinder.unboundMachineID, sessionSvc.offlineMachineID)
+	if deviceBinder.unboundMachine() != "machine-1" || sessionSvc.offlineMachine() != "machine-1" {
+		t.Fatalf("expected machine disconnect cleanup, got unbound=%q offline=%q", deviceBinder.unboundMachine(), sessionSvc.offlineMachine())
 	}
 
 	var offlineMsg struct {
@@ -1471,6 +1492,37 @@ func TestGatewayListsAndDeletesOwnedHardwareDevices(t *testing.T) {
 	}
 	if response["type"] != "ack" || capture.deletedClient != "esp32s3-a" {
 		t.Fatalf("delete response=%#v deleted=%q", response, capture.deletedClient)
+	}
+}
+
+func TestConnContextSendRejectsMessagesAfterClose(t *testing.T) {
+	ctx := &ConnContext{sendCh: make(chan any, 1), closeSend: make(chan struct{})}
+	ctx.closeWriter()
+	if ctx.Send(map[string]any{"type": "late-message"}) {
+		t.Fatal("closed connection accepted a queued message")
+	}
+	select {
+	case message := <-ctx.sendCh:
+		t.Fatalf("closed connection queued %#v", message)
+	default:
+	}
+}
+
+func TestConnContextWriteLoopClosesSendAfterWriteFailure(t *testing.T) {
+	ctx := &ConnContext{
+		sendCh:     make(chan any, 1),
+		closeSend:  make(chan struct{}),
+		writerDone: make(chan struct{}),
+	}
+	go ctx.writeLoop()
+	ctx.sendCh <- map[string]any{"type": "will-fail"}
+	select {
+	case <-ctx.writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not stop after a failed write")
+	}
+	if ctx.Send(map[string]any{"type": "late-message"}) {
+		t.Fatal("writer failure left the connection accepting messages")
 	}
 }
 

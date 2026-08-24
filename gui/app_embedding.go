@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -98,7 +99,7 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 	log.Printf("[startup] embedding sync: loading model %s", modelPath)
 
 	emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-		return embedding.NewGemmaEmbedder(path, 256)
+		return embedding.NewGemmaEmbedder(path, embedding.DefaultEmbeddingDim)
 	})
 	if err != nil {
 		log.Printf("[startup] embedding sync: load failed: %v (falling back to async)", err)
@@ -527,7 +528,7 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	a.ensureRemoteInfra()
 
 	emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-		emb, err := embedding.NewGemmaEmbedder(path, 256)
+		emb, err := embedding.NewGemmaEmbedder(path, embedding.DefaultEmbeddingDim)
 		if err != nil {
 			return nil, err
 		}
@@ -749,6 +750,9 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 		a.intentEmbeddingActive.Store(false)
 		a.embeddingActivated.Store(false)
 	}
+	if cfg, err := a.LoadConfig(); err == nil {
+		embedding.SetHWAccelPreferred(cfg.EmbedHWAccelEnabled())
+	}
 	emb, err := load(modelPath)
 	if err != nil {
 		return nil, err
@@ -756,9 +760,43 @@ func (a *App) sharedEmbeddingEmbedder(modelPath string, load func(string) (embed
 	if emb == nil || embedding.IsNoop(emb) {
 		return emb, nil
 	}
+	if g, ok := emb.(*embedding.GemmaEmbedder); ok {
+		g.ApplyAccel(embedding.HWAccelPreferred())
+	}
 	a.intentEmbedder = emb
 	a.intentEmbedderPath = modelPath
 	return emb, nil
+}
+
+// GetEmbedAccelInfo prefers the live GUI embedder instance pin (About badge SoT).
+func (a *App) GetEmbedAccelInfo() embedding.AccelInfo {
+	if a == nil {
+		return embedding.CurrentAccelInfo()
+	}
+	a.embeddingMu.Lock()
+	defer a.embeddingMu.Unlock()
+	if g, ok := a.intentEmbedder.(*embedding.GemmaEmbedder); ok && g != nil {
+		return g.Accel()
+	}
+	info := embedding.CurrentAccelInfo()
+	if info.Backend == "" {
+		info.Backend = embedding.BackendCPUSIMD
+	}
+	return info
+}
+
+// SetEmbedHWAccel persists prefer-NPU and retargets the live GUI instance.
+func (a *App) SetEmbedHWAccel(enabled bool) (corelib.AppConfig, error) {
+	embedding.SetHWAccelPreferred(enabled)
+	if a != nil {
+		a.embeddingMu.Lock()
+		if g, ok := a.intentEmbedder.(*embedding.GemmaEmbedder); ok && g != nil {
+			g.ApplyAccel(enabled)
+		}
+		a.embeddingMu.Unlock()
+	}
+	embedding.ReloadSharedGemmaAccel()
+	return a.PatchConfigFields(map[string]interface{}{"embed_hw_accel": enabled})
 }
 
 func (a *App) closeEmbedderIfNotShared(emb embedding.Embedder) {
@@ -904,7 +942,10 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 		}
 		client := &http.Client{Timeout: 35 * time.Second}
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "unified-intent-classifier"})
-		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, client, 30*time.Second, simpleLLMRequestOptions{
+			ResponseFormat:         intentTreeResponseFormat(),
+			PreserveResponseFormat: true,
+		})
 		a.observeLLMEndpointResult(cfg, err)
 		if err != nil {
 			return "", err
@@ -931,11 +972,22 @@ func (a *App) buildUICLLMContextFunc() intent.LLMClassifyContextFunc {
 		}
 		client := &http.Client{Timeout: 35 * time.Second}
 		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "unified-intent-classifier"})
-		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, client, 30*time.Second, simpleLLMRequestOptions{
+			ResponseFormat:         intentTreeResponseFormat(),
+			PreserveResponseFormat: true,
+		})
 		a.observeLLMEndpointResult(cfg, err)
 		if err != nil {
 			return "", err
 		}
 		return resp.Content, nil
 	}
+}
+
+// intentTreeResponseFormat is a transport-level contract for Layer 3.  The
+// prompt remains useful to providers without structured-output support, but
+// OpenAI-compatible providers must receive a verifiable JSON schema instead
+// of treating classification as ordinary assistant chat.
+func intentTreeResponseFormat() map[string]interface{} {
+	return intent.TreeResponseFormat()
 }

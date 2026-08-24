@@ -1049,6 +1049,55 @@ func TestForwardOpenAICompatRequestSanitizesCodeGenTools(t *testing.T) {
 	}
 }
 
+func TestForwardOpenAICompatRequestPreservesStructuredResponseFormatForConservativeProvider(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if _, ok := body["metadata"]; ok {
+			t.Fatalf("ancillary metadata leaked into conservative request: %#v", body)
+		}
+		responseFormat, ok := body["response_format"].(map[string]any)
+		if !ok || responseFormat["type"] != "json_schema" {
+			t.Fatalf("structured response_format was downgraded: %#v", body["response_format"])
+		}
+		jsonSchema, ok := responseFormat["json_schema"].(map[string]any)
+		if !ok || jsonSchema["name"] != "intent_tree_candidates" || jsonSchema["schema"] == nil {
+			t.Fatalf("structured response_format schema was changed: %#v", responseFormat)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":"chatcmpl-test","object":"chat.completion","model":"qax-codegen/Auto","choices":[]}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{
+		URL:   "https://codegen.qianxin-inc.cn/api/v1",
+		Model: "auto",
+	}, map[string]any{
+		"messages":    []any{map[string]any{"role": "user", "content": "classify"}},
+		"metadata":    map[string]any{"trace": "discard"},
+		"tool_choice": "auto",
+		"response_format": map[string]any{
+			"type": "json_schema",
+			"json_schema": map[string]any{
+				"name":   "intent_tree_candidates",
+				"strict": true,
+				"schema": map[string]any{"type": "object"},
+			},
+		},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
 func TestForwardOpenAICompatRequestPreservesNonCodeGenToolSchema(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

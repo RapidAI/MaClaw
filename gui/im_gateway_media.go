@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 )
 
@@ -231,6 +233,125 @@ func mediaLabel(mediaType string) string {
 // from a local IM gateway. If mimeType is empty it is guessed from mediaType
 // and mediaName. This is the single place all three local gateways (WeChat,
 // QQ, Telegram) use to construct image attachments for the LLM vision path.
+type trustedHostMediaInput struct {
+	MediaType        string
+	FileName         string
+	MimeType         string
+	SourceMediaID    string
+	Data             []byte
+	DefaultAudioMIME string
+}
+
+func buildTrustedHostMediaAttachment(in trustedHostMediaInput) (MessageAttachment, bool) {
+	if len(in.Data) == 0 {
+		return MessageAttachment{}, false
+	}
+	name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(in.FileName), "\\", "/"))
+	if name == "." || name == string(filepath.Separator) {
+		name = ""
+	}
+	probe := agent.MessageAttachment{
+		Type:          firstNonEmptyMediaMeta(in.MediaType, "file"),
+		FileName:      name,
+		MimeType:      firstNonEmptyMediaMeta(in.MimeType, in.MediaType),
+		Data:          base64.StdEncoding.EncodeToString(in.Data),
+		SourceMediaID: strings.TrimSpace(in.SourceMediaID),
+	}
+	if canon, ok := agentservice.ReviewedHostCanonicalizeTrustedAttachment(probe); ok {
+		return canon, true
+	}
+	if mime, ok := agentservice.ReviewedHostTrustedAudioMIME(agent.MessageAttachment{Type: "audio", MimeType: in.DefaultAudioMIME}); ok {
+		return trustedHostAudioAttachment(name, mime, in.SourceMediaID, in.Data)
+	}
+	return MessageAttachment{}, false
+}
+
+func trustedHostAudioAttachment(name, mime, sourceID string, data []byte) (MessageAttachment, bool) {
+	if len(data) == 0 || len(data) > agentservice.ReviewedHostAudioTranscribeMaxBytes {
+		return MessageAttachment{}, false
+	}
+	if name == "" {
+		name = trustedHostAudioFallbackName(mime)
+	}
+	return MessageAttachment{
+		Type:          "audio",
+		FileName:      name,
+		MimeType:      mime,
+		Data:          base64.StdEncoding.EncodeToString(data),
+		Size:          int64(len(data)),
+		SourceMediaID: strings.TrimSpace(sourceID),
+	}, true
+}
+
+func trustedHostAudioFallbackName(mime string) string {
+	switch mime {
+	case "audio/wav":
+		return "recording.wav"
+	case "audio/mpeg":
+		return "recording.mp3"
+	case "audio/ogg":
+		return "recording.ogg"
+	case "audio/opus":
+		return "recording.opus"
+	case "audio/silk":
+		return "recording.silk"
+	case "audio/mp4":
+		return "recording.m4a"
+	case "audio/webm":
+		return "recording.webm"
+	default:
+		return "recording"
+	}
+}
+
+func appendTrustedHostMediaOrStage(text string, attachments []MessageAttachment, in trustedHostMediaInput, stage func() (string, error)) (string, []MessageAttachment) {
+	if att, ok := buildTrustedHostMediaAttachment(in); ok {
+		if strings.TrimSpace(text) == "" {
+			text = "[收到" + mediaLabel(in.MediaType) + "]"
+		}
+		return text, append(attachments, att)
+	}
+	if stage == nil {
+		return text, attachments
+	}
+	path, err := stage()
+	if err != nil || strings.TrimSpace(path) == "" {
+		return text, attachments
+	}
+	return "[收到" + mediaLabel(in.MediaType) + ": " + path + "]\n" + text, attachments
+}
+
+func firstNonEmptyMediaMeta(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func canonicalizeIncomingIMAttachments(attachments []MessageAttachment) []MessageAttachment {
+	if len(attachments) == 0 {
+		return attachments
+	}
+	out := make([]MessageAttachment, 0, len(attachments))
+	for _, att := range attachments {
+		if canon, ok := agentservice.ReviewedHostCanonicalizeTrustedAttachment(att); ok {
+			out = append(out, canon)
+			continue
+		}
+		out = append(out, att)
+	}
+	return out
+}
+
+func weixinTrustedVoiceDefaultMIME(mediaType string) string {
+	if normalizeIMMediaKind(mediaType).IsVoice() {
+		return "audio/silk"
+	}
+	return ""
+}
+
 func buildLocalImageAttachment(mediaData []byte, mediaName, mimeType string) MessageAttachment {
 	if mimeType == "" {
 		mimeType = guessMimeFromMedia(imMediaImage.String(), mediaName)

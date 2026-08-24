@@ -120,6 +120,17 @@ func (h *IMMessageHandler) getLocalMCPManager() *LocalMCPManager {
 	return h.app.localMCPManager
 }
 
+// peekLocalMCPManager returns the lifecycle-owned local MCP runtime without
+// constructing it. Semantic catalog publication must be an observation only:
+// a user turn cannot create a manager (or indirectly make a configured server
+// appear ready) merely because it asks for a capability.
+func (h *IMMessageHandler) peekLocalMCPManager() *LocalMCPManager {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	return h.app.localMCPManager
+}
+
 // --- Tool Router (on App, distinct from h.toolRouter on handler) ---
 
 func (h *IMMessageHandler) getAppToolRouter() *ToolRouter {

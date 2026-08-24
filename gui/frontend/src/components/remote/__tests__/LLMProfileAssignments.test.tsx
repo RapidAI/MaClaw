@@ -19,7 +19,7 @@ vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOff: (...args: unknown[]) => eventsOff(...args),
 }));
 
-import { LLMProfileAssignments } from "../LLMProfileAssignments";
+import { LLMProfileAssignments, captionModelMissingVision } from "../LLMProfileAssignments";
 
 const state = {
     providers: [
@@ -62,6 +62,34 @@ describe("LLMProfileAssignments", () => {
         expect(screen.queryByRole("button", { name: "Manage providers" })).toBeNull();
     });
 
+    it("renders a description action after the assignment help text", async () => {
+        getState.mockResolvedValue(state);
+        render(<LLMProfileAssignments lang="en" descriptionAction={<button type="button">Import other agents</button>} />);
+
+        const help = await screen.findByText("Providers that passed a connection test, plus the provider currently in use. Connections and credentials are managed separately.");
+        const action = screen.getByRole("button", { name: "Import other agents" });
+        expect(help.contains(action)).toBe(false);
+        expect(help.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps the description action available while assignments are loading", () => {
+        getState.mockReturnValue(new Promise(() => {}));
+        render(<LLMProfileAssignments lang="en" descriptionAction={<button type="button">Import other agents</button>} />);
+
+        const section = screen.getByRole("region", { name: "Model assignments" });
+        expect(screen.getByRole("button", { name: "Import other agents" })).toBeTruthy();
+        expect(screen.getByRole("status").textContent).toBe("Loading model assignments…");
+        expect(section.getAttribute("aria-busy")).toBeNull();
+    });
+
+    it("keeps the description action available when assignments fail to load", async () => {
+        getState.mockRejectedValue(new Error("unavailable"));
+        render(<LLMProfileAssignments lang="en" descriptionAction={<button type="button">Import other agents</button>} />);
+
+        expect((await screen.findByRole("alert")).textContent).toBe("Error: unavailable");
+        expect(screen.getByRole("button", { name: "Import other agents" })).toBeTruthy();
+    });
+
     it("renders only the connection-tested providers returned by the assignment API", async () => {
         getState.mockResolvedValue({
             ...state,
@@ -72,14 +100,14 @@ describe("LLMProfileAssignments", () => {
         await screen.findByRole("heading", { name: "Model assignments" });
         const options = Array.from((screen.getByLabelText("Assistant provider") as HTMLSelectElement).options).map(option => option.text);
         expect(options).toEqual(["Select provider", "OpenAI"]);
-        expect(screen.getByText("Only providers with a passed connection test are available here. Connections and credentials are managed separately.")).toBeTruthy();
+        expect(screen.getByText("Providers that passed a connection test, plus the provider currently in use. Connections and credentials are managed separately.")).toBeTruthy();
     });
 
     it("explains how to make providers available when none have passed a test", async () => {
         getState.mockResolvedValue({ ...state, providers: [] });
         render(<LLMProfileAssignments lang="en" />);
 
-        expect((await screen.findByRole("status")).textContent).toContain("No tested providers yet. Test and save a provider in Provider management first.");
+        expect((await screen.findByText("No eligible providers yet. Test and save a provider in Provider management, or keep using the current assistant provider.")).textContent).toBeTruthy();
     });
 
     it("refreshes the eligible provider directory after Provider management confirms a test without discarding a draft", async () => {
@@ -314,5 +342,49 @@ describe("LLMProfileAssignments", () => {
         fireEvent.change(screen.getByLabelText("Coding provider"), { target: { value: "assistant" } });
         fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
         await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.anything(), "rev-2"));
+    });
+
+    it("saves an optional caption model independently of assistant and coding", async () => {
+        getState.mockResolvedValue(state);
+        saveProfiles.mockResolvedValue(undefined);
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Caption provider"), { target: { value: "assistant" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalledWith(expect.objectContaining({
+            caption: expect.objectContaining({ provider_id: "assistant", model: "gpt-5" }),
+            coding: expect.objectContaining({ provider_id: "coding" }),
+        }), "rev-1"));
+    });
+
+    it("warns when the caption provider is not marked vision-capable", async () => {
+        getState.mockResolvedValue(state);
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Caption provider"), { target: { value: "coding" } });
+        expect(screen.getByText("This model was not marked vision-capable. Captioning unlabeled boxes needs a vision model.")).toBeTruthy();
+    });
+
+    it("warns when the caption model is not in the provider vision list", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], connection_test_passed: true },
+                { id: "coding", name: "DeepSeek", model: "deepseek-coder", models: ["deepseek-coder"], supports_vision: false, connection_test_passed: true },
+            ],
+        });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Caption provider"), { target: { value: "assistant" } });
+        fireEvent.change(screen.getByLabelText("Caption model"), { target: { value: "gpt-5-mini" } });
+        expect(screen.getByText("This model was not marked vision-capable. Captioning unlabeled boxes needs a vision model.")).toBeTruthy();
+    });
+
+    it("matches backend vision-model rules for caption warnings", () => {
+        expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "gpt-5" }, "gpt-5")).toBe(false);
+        expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "" }, "llava")).toBe(true);
+        expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, vision_models: ["llava"] }, "LLAVA")).toBe(false);
+        expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: false }, "deepseek-coder")).toBe(true);
     });
 });

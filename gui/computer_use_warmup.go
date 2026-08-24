@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -667,7 +668,7 @@ func runComputerUseSmokeObserve(withVision bool) map[string]interface{} {
 			}
 			if tree, err := bridge.EnumElements(el.Name); err == nil {
 				var flat []taskengine.UIElement
-				flattenA11y(&flat, tree, 0, 2)
+				flattenA11y(&flat, tree, 0, 2, computeruse.ScreenMeta{ScaleFactor: 1})
 				a11yN = len(flat)
 			}
 			break
@@ -1161,7 +1162,7 @@ func (a *App) runComputerUseE2E(opts computerUseE2EOptions) map[string]interface
 	})
 
 	// 3) Observe with window hint when available
-	obs := computerUseObserve(-1, windowHint, false)
+	obs := computerUseObserveCaption(-1, windowHint, false, false, false)
 	addStep("observe_target", map[string]interface{}{
 		"ok": obs.OK, "element_count": obs.ElementCount, "window_count": obs.WindowCount,
 		"yolo": obs.YOLOCount, "a11y": obs.A11yCount, "total_ms": obs.TotalMs,
@@ -1191,7 +1192,7 @@ func (a *App) runComputerUseE2E(opts computerUseE2EOptions) map[string]interface
 			"ok": typeOK, "token": token, "message": cuTruncateRunes(typeMsg, 200),
 		})
 		// Soft verify via OCR when available (may miss small text).
-		obs2 := computerUseObserve(-1, windowHint, true)
+		obs2 := computerUseObserveCaption(-1, windowHint, true, false, false)
 		found := cuE2ETokenFound(obs2.Message, token)
 		addStep("verify_observe", map[string]interface{}{
 			"ok": obs2.OK, "token_found": found, "element_count": obs2.ElementCount,
@@ -1211,7 +1212,7 @@ func (a *App) runComputerUseE2E(opts computerUseE2EOptions) map[string]interface
 					sess.ResetControl()
 				}
 				// Prefer re-click a large region if available after fresh observe.
-				_ = computerUseObserve(-1, windowHint, false)
+				_ = computerUseObserveCaption(-1, windowHint, false, false, false)
 				if ref2 := cuE2EPickClickRef(); ref2 != "" {
 					_ = cuHandleClick(map[string]interface{}{"ref": ref2})
 					addStep("retry_click_ref", map[string]interface{}{"ref": ref2})
@@ -1224,7 +1225,7 @@ func (a *App) runComputerUseE2E(opts computerUseE2EOptions) map[string]interface
 				if typeOK2 {
 					typeOK = true
 				}
-				obs3 := computerUseObserve(-1, windowHint, true)
+				obs3 := computerUseObserveCaption(-1, windowHint, true, false, false)
 				found2 := cuE2ETokenFound(obs3.Message, token)
 				addStep("retry_verify_observe", map[string]interface{}{
 					"ok": obs3.OK, "token_found": found2, "element_count": obs3.ElementCount,
@@ -2215,7 +2216,15 @@ func cuE2ELaunchTarget() (appName, windowHint string, cmd *exec.Cmd, cleanup fun
 		cmd = exec.Command("open", "-a", "TextEdit")
 		return "TextEdit", "TextEdit", cmd, nil // open is fire-and-forget; do not kill TextEdit
 	default:
-		// Avoid launching random Linux editors in CI.
+		if _, err := exec.LookPath("gedit"); err == nil {
+			cmd = exec.Command("gedit")
+			return "gedit", "gedit", cmd, func() {
+				if cmd != nil && cmd.Process != nil {
+					_ = cmd.Process.Kill()
+					_, _ = cmd.Process.Wait()
+				}
+			}
+		}
 		return "", "", nil, nil
 	}
 }
@@ -2280,16 +2289,16 @@ func (a *App) GetComputerUseReadiness() map[string]interface{} {
 		if trusted, ok := perms["accessibility_trusted"].(bool); ok && !trusted {
 			issues = append(issues, map[string]interface{}{
 				"id":       "accessibility",
-				"severity": "warn",
-				"message":  "macOS Accessibility permission not granted",
+				"severity": "error",
+				"message":  "macOS Accessibility permission not granted — Computer Use cannot enumerate or actuate UI",
 				"action":   "open_accessibility",
 			})
 		}
 		if screen, ok := perms["screen_recording"].(bool); ok && !screen {
 			issues = append(issues, map[string]interface{}{
 				"id":       "screen_recording",
-				"severity": "warn",
-				"message":  "macOS Screen Recording permission not granted",
+				"severity": "error",
+				"message":  "macOS Screen Recording permission not granted — Computer Use cannot capture the desktop",
 				"action":   "open_screen_recording",
 			})
 		}

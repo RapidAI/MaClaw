@@ -18,6 +18,10 @@ var LightTurnToolAllowlist = map[string]bool{
 	"read_tool_result":       true,
 	"knowledge_search":       true,
 	"knowledge_context_pack": true,
+	// ask_user is a non-effecting control-plane pause. A light turn must be
+	// able to request missing information instead of either inventing a tool
+	// call outside its rendered surface or escalating solely to ask a question.
+	"ask_user": true,
 	// Skill discovery and execution are deliberately light-safe.  The skill
 	// runner owns dependency checks, so exposing this tool does not require
 	// shell/file access from a light turn.
@@ -70,6 +74,24 @@ func FilterToolDefsForLightTurn(defs []map[string]interface{}) []map[string]inte
 	}
 	if len(out) == 0 {
 		return defs
+	}
+	return out
+}
+
+// FilterToolDefinitionsForPromptProfile keeps LLM exposure aligned with the
+// execution boundary. It is needed for semantic surfaces, whose opaque
+// function names cannot be classified by the static allowlist: their host
+// resolves the invocation grant to a capability/effect contract through
+// PromptProfileToolAuthorizer.
+func FilterToolDefinitionsForPromptProfile(cb LoopCallbacks, defs []map[string]interface{}, profile PromptProfile) []map[string]interface{} {
+	if !profile.IsLight() || len(defs) == 0 {
+		return defs
+	}
+	out := make([]map[string]interface{}, 0, len(defs))
+	for _, def := range defs {
+		if IsToolAllowedForPromptProfile(cb, toolDefName(def), profile) {
+			out = append(out, def)
+		}
 	}
 	return out
 }

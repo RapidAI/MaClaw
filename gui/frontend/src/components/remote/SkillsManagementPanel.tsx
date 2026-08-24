@@ -5,5 +5,7 @@
 export {
     SkillsManagementPanel,
     getLearnedSkillDescriptionPreview,
+    skillDescriptionTooltip,
     hubSourceFilterMatches,
+    LOCAL_SKILLS_DESCRIPTION_COL_PX,
 } from "./SkillsManagementPanelView";

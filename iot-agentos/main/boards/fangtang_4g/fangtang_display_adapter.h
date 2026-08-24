@@ -436,10 +436,13 @@ static bool compact_display_adapter_color_transfer_done(
     return task_woken == pdTRUE;
 }
 
-static inline esp_err_t compact_display_adapter_wait_for_transfer_idle(void) {
+static inline esp_err_t compact_display_adapter_wait_for_transfer_idle(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     if (!s_fangtang_display_transfer_pending) return ESP_OK;
     if (!s_fangtang_display_transfer_done) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_fangtang_display_transfer_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (ticks == 0) ticks = 1;
+    if (xSemaphoreTake(s_fangtang_display_transfer_done, ticks) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return s_fangtang_display_transfer_pending ? ESP_ERR_INVALID_STATE : ESP_OK;
@@ -454,7 +457,7 @@ static inline bool compact_display_adapter_ready(void) {
  * transaction with verified board-specific sequencing. */
 static inline esp_err_t compact_display_enter_display_off(void) {
     if (!s_fangtang_display_panel) return ESP_ERR_INVALID_STATE;
-    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(1000),
                         "fangtang_display", "pending transfer before display off");
     /* GPIO13 PWM is the physical light source.  Make it the required part of
      * DISPLAY_OFF so a transient NV3023 SPI-controller failure cannot leave
@@ -472,7 +475,7 @@ static inline esp_err_t compact_display_enter_display_off(void) {
 
 static inline esp_err_t compact_display_wake_from_display_off(unsigned brightness) {
     if (!s_fangtang_display_panel || brightness > 100) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(1000),
                         "fangtang_display", "pending transfer before display wake");
     esp_err_t err = esp_lcd_panel_disp_on_off(s_fangtang_display_panel, true);
     if (err != ESP_OK) return err;
@@ -666,7 +669,7 @@ static inline esp_err_t compact_display_adapter_draw_bitmap_sync(
     /* Do not overwrite the pending-row state after a timed-out fence.  The
      * retained source remains controller-owned until this adapter observes
      * its own completion, even though the shared renderer has moved on. */
-    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(1000),
                         "fangtang_display", "previous transfer still pending");
     /* The shared renderer may reuse a framebuffer as soon as this call
      * returns.  Drain a stale completion token before the row-by-row writer

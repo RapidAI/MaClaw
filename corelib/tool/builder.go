@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -10,10 +12,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
-// DynamicToolBuilder builds LLM tool definitions dynamically from the Registry.
-// When the total available tools exceed maxDirectTools, it applies context-aware
-// filtering: all builtin tools are always included, and the remaining slots are
-// filled by the most relevant dynamic tools based on keyword similarity.
+// DynamicToolBuilder builds legacy LLM tool definitions dynamically from the
+// Registry. Host-controlled dynamic gateways (for example manage_skill and
+// call_mcp_tool) are never emitted here: their provider/resource identity must
+// be bound by a managed surface before a model can invoke them. When the total
+// available tools exceed maxDirectTools, context-aware filtering keeps builtin
+// tools and fills the remaining slots with relevant static tools.
 type DynamicToolBuilder struct {
 	// mu serializes configuration changes with Build. Build mutates its cached
 	// BM25 index, so allowing activation to swap the registry or hybrid retriever
@@ -149,16 +153,13 @@ func (b *DynamicToolBuilder) SetReranker(rr Reranker) {
 }
 
 // buildEmbeddingText returns the text used for embedding vector computation.
-// Includes name + description + BodySummary when available.
-// Falls back to name + description when BodySummary is empty.
+// It is name + description only: BodySummary is long, templated parameter
+// documentation whose shared boilerplate collapses the embedding space
+// (measured median pairwise cosine ~0.8 across tool vectors), turning cosine
+// ranking into noise. BodySummary is still fed to the LLM reranker via
+// CandidateSummary, where a judge can use it.
 func (b *DynamicToolBuilder) buildEmbeddingText(name, description string) string {
-	text := name + " " + description
-	if b.registry != nil {
-		if t, ok := b.registry.Get(name); ok && t.BodySummary != "" {
-			text += "\n" + t.BodySummary
-		}
-	}
-	return text
+	return name + " " + description
 }
 
 // BuildAll returns tool definitions for every available tool (no filtering).
@@ -168,7 +169,7 @@ func (b *DynamicToolBuilder) BuildAll() []map[string]interface{} {
 	tools := b.registry.ListAvailable()
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, t := range tools {
-		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || IsLegacyModelDynamicGateway(t.Name) {
 			continue
 		}
 		// Skip backward-compat aliases that have handler only, no definition.
@@ -191,27 +192,18 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	tools := b.registry.ListAvailable()
-	var skillScore float64
-	var matchedSkills []string
-	if b.skillProvider != nil {
-		skillScore, matchedSkills = b.builderSkillMatchScore(userMessage)
-	}
 	if len(tools) <= b.maxDirectTools {
 		out := make([]map[string]interface{}, 0, len(tools))
 		for _, t := range tools {
-			if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+			if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || IsLegacyModelDynamicGateway(t.Name) {
 				continue
 			}
 			if t.Description == "" {
 				continue // skip backward-compat aliases
 			}
-			def := RegisteredToolToDef(t)
-			if t.Name == "manage_skill" && len(matchedSkills) > 0 {
-				def = enrichRunSkillDescription(def, matchedSkills, b.matchedSkillCapabilities(matchedSkills))
-			}
-			out = append(out, def)
+			out = append(out, RegisteredToolToDef(t))
 		}
-		return prioritizeMatchedSkillTool(out, len(matchedSkills) > 0)
+		return out
 	}
 
 	// Detect group activation keywords in user message.
@@ -220,7 +212,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	// Split into builtin (always included), group-activated, and dynamic (scored).
 	var builtins, groupActivated, dynamic []RegisteredTool
 	for _, t := range tools {
-		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) {
+		if IsDisabledExternalCodingSessionTool(t.Name) || isInternalBrowserDispatchToolName(t.Name) || IsLegacyModelDynamicGateway(t.Name) {
 			continue
 		}
 		// Skip backward-compat aliases (handler only, no definition).
@@ -275,7 +267,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 
 	// Multi-signal scoring: retrieval + contextual experience + outcome + priority + skill_match.
 	queryTokens := bm25.Tokenize(userMessage)
-	normScores := minMaxNormalize(bm25Scores)
+	normScores := normalizeRetrievalScores(bm25Scores)
 
 	type scored struct {
 		tool  RegisteredTool
@@ -298,15 +290,9 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		}
 		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
 
-		// Skill match bonus: only applies to manage_skill tool.
-		var skillBonus float64
-		if b.skillProvider != nil && t.Name == "manage_skill" {
-			skillBonus = skillScore
-		}
-
 		var s float64
 		if b.skillProvider != nil && b.tracker != nil {
-			s = 0.45*retrievalScore + 0.20*expScore + 0.15*skillBonus + 0.10*outcomeScore + 0.10*priorityBonus
+			s = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else if b.tracker != nil {
 			s = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else {
@@ -377,12 +363,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 
 	out := make([]map[string]interface{}, 0, len(builtins)+len(groupActivated)+limit)
 	for _, t := range builtins {
-		def := RegisteredToolToDef(t)
-		// Enhance manage_skill description with matched skill names.
-		if t.Name == "manage_skill" && len(matchedSkills) > 0 {
-			def = enrichRunSkillDescription(def, matchedSkills, b.matchedSkillCapabilities(matchedSkills))
-		}
-		out = append(out, def)
+		out = append(out, RegisteredToolToDef(t))
 	}
 	for _, t := range groupActivated {
 		out = append(out, RegisteredToolToDef(t))
@@ -390,7 +371,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 	for i := 0; i < limit; i++ {
 		out = append(out, RegisteredToolToDef(scoredList[i].tool))
 	}
-	return prioritizeMatchedSkillTool(out, len(matchedSkills) > 0)
+	return out
 }
 
 func (b *DynamicToolBuilder) matchedSkillCapabilities(matchedSkills []string) []string {
@@ -420,15 +401,13 @@ func prioritizeMatchedSkillTool(defs []map[string]interface{}, matchedSkill bool
 
 // RegisteredToolToDef converts a RegisteredTool to an OpenAI function calling definition.
 func RegisteredToolToDef(t RegisteredTool) map[string]interface{} {
-	params := map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{},
-	}
-	if t.InputSchema != nil && len(t.InputSchema) > 0 {
-		params["properties"] = t.InputSchema
-	}
-	if len(t.Required) > 0 {
-		params["required"] = t.Required
+	params, err := CanonicalRegisteredToolInvocationSchema(t.InputSchema, t.Required)
+	if err != nil {
+		// Registry definitions are trusted host configuration. Preserve the
+		// historic rendering fallback for a malformed legacy entry; governed
+		// routing calls the same canonicalizer and fails closed before issuing a
+		// grant, so this fallback cannot authorize semantic execution.
+		params = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}
 	return map[string]interface{}{
 		"type": "function",
@@ -438,6 +417,93 @@ func RegisteredToolToDef(t RegisteredTool) map[string]interface{} {
 			"parameters":  params,
 		},
 	}
+}
+
+// CanonicalRegisteredToolInvocationSchema is the one projection from a
+// RegisteredTool's historical flat InputSchema to a model-visible and
+// executable parameter schema. Both the normal tool renderer and the semantic
+// invocation authorizer must use it: otherwise equivalent Go map types such as
+// map[string]string and map[string]interface{} produce different contracts.
+//
+// The registry is allowed to carry either the legacy flat field map or a full
+// root object schema. The result is always a closed root object, with Required
+// supplied by the registration metadata when present.
+func CanonicalRegisteredToolInvocationSchema(input map[string]interface{}, required []string) (map[string]interface{}, error) {
+	canonical, err := canonicalJSONSchemaMap(input)
+	if err != nil {
+		return nil, err
+	}
+	if canonical == nil {
+		canonical = map[string]interface{}{}
+	}
+
+	root := make(map[string]interface{}, len(canonical)+3)
+	properties := map[string]interface{}{}
+	if rawProperties, hasProperties := canonical["properties"]; hasProperties {
+		var ok bool
+		properties, ok = rawProperties.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("registered tool schema properties must be an object")
+		}
+		if rawType, exists := canonical["type"]; exists && fmt.Sprint(rawType) != "object" {
+			return nil, fmt.Errorf("registered tool schema root must be an object")
+		}
+		for key, value := range canonical {
+			if key != "type" && key != "properties" && key != "required" && key != "additionalProperties" {
+				root[key] = value
+			}
+		}
+	} else {
+		for key, value := range canonical {
+			switch key {
+			case "type", "required", "additionalProperties":
+				continue
+			}
+			property, ok := value.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("registered tool schema property %q must be an object", key)
+			}
+			properties[key] = property
+		}
+	}
+
+	for key, value := range properties {
+		if strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("registered tool schema property name is empty")
+		}
+		if _, ok := value.(map[string]interface{}); !ok {
+			return nil, fmt.Errorf("registered tool schema property %q must be an object", key)
+		}
+	}
+	root["type"] = "object"
+	root["properties"] = properties
+	root["additionalProperties"] = false
+	if len(required) > 0 {
+		root["required"] = append([]string(nil), required...)
+	} else if rawRequired, ok := canonical["required"]; ok {
+		root["required"] = rawRequired
+	}
+	return root, nil
+}
+
+// canonicalJSONSchemaMap normalizes Go container types through JSON. Tool
+// registrations commonly use map[string]string for concise property specs,
+// while JSON decoding produces map[string]interface{}. JSON Schema is a JSON
+// document, so this conversion is lossless for valid schema data and removes
+// that implementation-detail distinction before either rendering or checking.
+func canonicalJSONSchemaMap(input map[string]interface{}) (map[string]interface{}, error) {
+	if len(input) == 0 {
+		return map[string]interface{}{}, nil
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("encode registered tool schema: %w", err)
+	}
+	var normalized map[string]interface{}
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
+		return nil, fmt.Errorf("decode registered tool schema: %w", err)
+	}
+	return normalized, nil
 }
 
 // GroupKeywords maps user-facing group names (Chinese and English) to tag sets.

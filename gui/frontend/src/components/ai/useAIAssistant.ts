@@ -7,6 +7,8 @@ import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./a
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -210,15 +212,21 @@ interface AIAssistantStreamEvent {
     text?: string;
     session_key?: string;
     display_text?: string;
+    event_scope_id?: string;
+    /**
+     * Monotonic transport order within a request. Present on newer desktop
+     * transports; older hosts fall back to receive order.
+     */
+    sequence?: number;
 }
 
 export function sanitizeAIAssistantStreamText(value: string): string {
     // \x01 is the desktop app's reasoning-lane marker, so preserve it only
-    // when it is the leading byte. All other control characters are unsafe to
-    // render and can otherwise surface as square glyphs.
+    // when it is the leading byte. Other controls and Private Use Area
+    // tokens have no glyph in the panel fonts and render as tofu squares.
     const reasoning = value.startsWith('\x01');
     const visible = (reasoning ? value.slice(1) : value)
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uE000-\uF8FF\uFFF0-\uFFFF]/g, '');
     return reasoning ? `\x01${visible}` : visible;
 }
 
@@ -436,6 +444,28 @@ export interface ChatRecordingSession {
     active: boolean;
 }
 
+/**
+ * One visible item in a coding turn.  Coding models alternate between reasoning
+ * and tool calls; retaining that arrival order lets the workbench render a
+ * Codex-style transcript instead of collecting all thought above all actions.
+ */
+export interface CodingAgentTimelineItem {
+    id: string;
+    /** Monotonic within one assistant turn; never sort this UI by wall clock. */
+    sequence: number;
+    /** Last backend event included in this item when adjacent thought tokens merge. */
+    lastSequence?: number;
+    /**
+     * Transport sequences represented by a lifecycle row. A completed tool can
+     * replace its earlier start row without making the interval between them
+     * unavailable to late-arriving thought/tool events.
+     */
+    eventSequences?: number[];
+    kind: 'thinking' | 'progress';
+    content: string;
+    timestamp: number;
+}
+
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
@@ -446,8 +476,19 @@ export interface ChatMessage {
     content: string;
     /** Local attachment metadata used only for compact user-bubble rendering. */
     attachments?: ChatAttachment[];
-    /** Reasoning/thinking content from reasoning models (displayed as collapsed gray text). */
+    /** Reasoning/thinking content from reasoning models. Ordinary chat starts expanded; coding stays collapsed. */
     reasoning?: string;
+    /** Ordered reasoning/tool trail for a coding-agent turn (transient UI state). */
+    codingTimeline?: CodingAgentTimelineItem[];
+    /**
+     * Individual streamed reasoning deltas, retained only until we know whether
+     * this turn is a coding-agent turn.  A tool event can be delivered after a
+     * later thought event, so a single `reasoning` string is not sufficient to
+     * reconstruct the original thought/tool order at that point.
+     */
+    pendingCodingThoughts?: CodingAgentTimelineItem[];
+    /** Sequence of the first unmaterialized reasoning token before a coding tool arrives. */
+    reasoningStartSequence?: number;
     news?: NewsCardData;
     fields?: Array<{ label: string; value: string }>;
     actions?: ChatAction[];
@@ -491,6 +532,7 @@ const NEW_ROUND_EVENT = "ai-assistant-new-round";
 const STREAM_DONE_EVENT = "ai-assistant-stream-done";
 const INIT_PROGRESS_EVENT = "ai-assistant-init-progress";
 const PROGRESS_EVENT = "ai-assistant-progress";
+const HORIZON_PROJECTION_EVENT = "horizon:projection";
 const FOREGROUND_ROUND_STARTED_EVENT = "ai-assistant-foreground-round-started";
 const RESPONSE_EVENT = "ai-assistant-response";
 const LOCAL_FORGET_SESSION_ROUNDS_EVENT = "ai-assistant:forget-session-rounds";
@@ -532,9 +574,10 @@ const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 // These are the raster formats the desktop host validates and can forward as
 // direct vision input. Other image-like files remain ordinary local files.
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-// The activity tray is a live indication of work, not a transcript. Keep its
-// footprint predictable while the full answer remains in the conversation.
+// Generic progress stays short. Coding-agent tool trails keep a longer window
+// so Read / Edit / $ lines can look like a programming log, not three chips.
 const MAX_LIVE_PROGRESS_MESSAGES = 3;
+const MAX_LIVE_CODING_PROGRESS_MESSAGES = 20;
 // Status milestones are rendered in the answer's reasoning panel. Keep their
 // independent cap so reducing the tool tray does not hide useful milestones.
 const MAX_REASONING_STATUS_MESSAGES = 30;
@@ -549,7 +592,7 @@ function shouldHideProgressText(progressText: string): boolean {
     const trimmed = progressText.trim();
     if (!trimmed) return true;
     // A bare acknowledgement adds no task detail; retain meaningful milestones instead.
-    if (trimmed === GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT) return true;
+    if (trimmed === GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT || trimmed.replace(/^\[Status\]\s*/, "") === GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT) return true;
     if (trimmed.includes("命令仍在执行中")) return true;
     return isHeartbeatProgressText(trimmed);
 }
@@ -574,8 +617,28 @@ function appendProgressText(messages: ChatMessage[], progressText: string): Chat
         content: progressText,
         timestamp: Date.now(),
     }];
-    if (next.length <= MAX_LIVE_PROGRESS_MESSAGES) return next;
-    return next.slice(-MAX_LIVE_PROGRESS_MESSAGES);
+    return capLiveProgressMessages(next);
+}
+
+function capLiveProgressMessages(messages: ChatMessage[]): ChatMessage[] {
+    const codingIndexes: number[] = [];
+    const otherIndexes: number[] = [];
+    messages.forEach((message, index) => {
+        if (isCodingAgentProgressContent(message.content || "")) {
+            codingIndexes.push(index);
+        } else {
+            otherIndexes.push(index);
+        }
+    });
+    const drop = new Set<number>();
+    if (codingIndexes.length > MAX_LIVE_CODING_PROGRESS_MESSAGES) {
+        codingIndexes.slice(0, codingIndexes.length - MAX_LIVE_CODING_PROGRESS_MESSAGES).forEach((index) => drop.add(index));
+    }
+    if (otherIndexes.length > MAX_LIVE_PROGRESS_MESSAGES) {
+        otherIndexes.slice(0, otherIndexes.length - MAX_LIVE_PROGRESS_MESSAGES).forEach((index) => drop.add(index));
+    }
+    if (drop.size === 0) return messages;
+    return messages.filter((_, index) => !drop.has(index));
 }
 
 function isThinkingStatusProgress(progressText: string): boolean {
@@ -887,7 +950,16 @@ function serializePersistedMessages(msgs: ChatMessage[]): string | null {
         .slice(-MAX_PERSISTED_MESSAGES)
         .map(sanitizeChatMessageForDisplay)
         .map(m => {
-            const { thumbnailBase64: _, imageKey: __, ...rest } = m;
+            // Timeline items are live-only presentation state. The durable reply
+            // still stores its final prose/reasoning without replaying stale tools.
+            const {
+                thumbnailBase64: _,
+                imageKey: __,
+                codingTimeline: ___timeline,
+                pendingCodingThoughts: ____pendingCodingThoughts,
+                reasoningStartSequence: _____reasoningSequence,
+                ...rest
+            } = m;
             if (!rest.attachments?.length) return rest;
             return {
                 ...rest,
@@ -912,6 +984,7 @@ function hasPersistableMessageContent(message: ChatMessage): boolean {
     if (message.unfinishedSlot) return true;
     if (message.recoverableSession) return true;
     if (message.localFilePath || message.localFilePaths?.length || message.thumbnailBase64 || message.imageKey) return true;
+    if (message.attachments?.length) return true;
     return false;
 }
 
@@ -1237,7 +1310,110 @@ function localizedExecutionActionText(command: string, label: string | undefined
     return label;
 }
 
-function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage {
+function nextCodingTimelineSequence(timeline: CodingAgentTimelineItem[], preferred?: number): number {
+    const normalizedPreferred = normalizeCodingTimelineSequence(preferred);
+    if (normalizedPreferred > 0 && !codingTimelineSequenceIsTaken(timeline, normalizedPreferred)) {
+        return normalizedPreferred;
+    }
+    return timeline.reduce((max, item) => Math.max(max, item.lastSequence || item.sequence), 0) + 1;
+}
+
+function normalizeCodingTimelineSequence(value?: number): number {
+    return Number.isFinite(value) && (value || 0) > 0 ? Math.trunc(value || 0) : 0;
+}
+
+function codingTimelineSequenceIsTaken(timeline: CodingAgentTimelineItem[], sequence: number): boolean {
+    return timeline.some((item) =>
+        (sequence >= item.sequence && sequence <= (item.lastSequence || item.sequence))
+        || item.eventSequences?.includes(sequence),
+    );
+}
+
+/** Keep the transport order recoverable even when Wails delivers a batch late. */
+function insertCodingTimelineItem(timeline: CodingAgentTimelineItem[], item: CodingAgentTimelineItem): CodingAgentTimelineItem[] {
+    const insertAt = timeline.findIndex((current) => current.sequence > item.sequence);
+    if (insertAt < 0) return [...timeline, item];
+    return [...timeline.slice(0, insertAt), item, ...timeline.slice(insertAt)];
+}
+
+function appendAdjacentCodingThought(
+    timeline: CodingAgentTimelineItem[],
+    content: string,
+    sequence: number,
+    timestamp: number,
+): CodingAgentTimelineItem[] | null {
+    const last = timeline[timeline.length - 1];
+    const lastSequence = last?.lastSequence || last?.sequence || 0;
+    if (last?.kind !== 'thinking' || lastSequence + 1 !== sequence) return null;
+    return [...timeline.slice(0, -1), {
+        ...last,
+        content: `${last.content}${content}`,
+        lastSequence: sequence,
+        timestamp,
+    }];
+}
+
+function codingToolLifecycleMatches(startContent: string, finishedContent: string): boolean {
+    const started = parseCodingAgentProgress(startContent);
+    const finished = parseCodingAgentProgress(finishedContent);
+    if (!started || !finished || started.event !== 'tool_started' || finished.event !== 'tool_finished') return false;
+
+    // A turn is normally sequential, but never merge different turns/runs.
+    for (const field of ['turnID', 'runID', 'taskID'] as const) {
+        if (started[field] && finished[field] && started[field] !== finished[field]) return false;
+    }
+    // Tool name is the primary lifecycle identity; titles are a safe fallback
+    // for older events that did not include a structured tool detail.
+    if (started.detail && finished.detail && started.detail !== finished.detail) return false;
+    if (!started.detail || !finished.detail) {
+        if (!started.title || started.title !== finished.title) return false;
+    }
+
+    // A model may call the same tool repeatedly in one turn. The exact command
+    // (when emitted) distinguishes those lifecycles; without it the nearest
+    // outstanding matching start is the only safe pairing heuristic.
+    const startedCommand = (started.command || '').trim();
+    const finishedCommand = (finished.command || '').trim();
+    return !startedCommand || !finishedCommand || startedCommand === finishedCommand;
+}
+
+function replaceMatchingCodingToolStart(
+    timeline: CodingAgentTimelineItem[],
+    finishedContent: string,
+    finishedSequence: number,
+    timestamp: number,
+): CodingAgentTimelineItem[] | null {
+    for (let index = timeline.length - 1; index >= 0; index--) {
+        const item = timeline[index];
+        if (item.kind !== 'progress' || item.sequence > finishedSequence) continue;
+        if (!codingToolLifecycleMatches(item.content, finishedContent)) continue;
+        const eventSequences = Array.from(new Set([item.sequence, ...(item.eventSequences || []), finishedSequence]));
+        return timeline.map((current, currentIndex) => currentIndex === index
+            ? { ...current, content: finishedContent, timestamp, eventSequences }
+            : current);
+    }
+    return null;
+}
+
+function replaceLateCodingToolStart(
+    timeline: CodingAgentTimelineItem[],
+    startedContent: string,
+    startedSequence: number,
+    timestamp: number,
+): CodingAgentTimelineItem[] | null {
+    for (let index = 0; index < timeline.length; index++) {
+        const item = timeline[index];
+        if (item.kind !== 'progress' || item.sequence < startedSequence) continue;
+        if (!codingToolLifecycleMatches(startedContent, item.content)) continue;
+        const eventSequences = Array.from(new Set([startedSequence, ...(item.eventSequences || []), item.sequence]));
+        return timeline.map((current, currentIndex) => currentIndex === index
+            ? { ...current, sequence: startedSequence, content: item.content, timestamp, eventSequences }
+            : current);
+    }
+    return null;
+}
+
+function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence?: number): ChatMessage {
     // Reasoning tokens are prefixed with \x01 by the backend to distinguish
     // them from content tokens. They represent the model's thinking phase.
     if (delta.startsWith('\x01')) {
@@ -1254,7 +1430,43 @@ function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage 
             : reasoningDelta;
         const nextReasoning = stripRolePrefixReasoning(rawNextReasoning);
         if (nextReasoning === message.reasoning) return message;
-        return { ...message, reasoning: nextReasoning || undefined };
+        // A turn becomes a coding timeline only after its first structured tool
+        // event. Until then it remains an ordinary assistant reasoning stream.
+        const timeline = message.codingTimeline;
+        if (!timeline?.length) {
+            const pendingCodingThoughts = message.pendingCodingThoughts || [];
+            const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
+            if (preferredSequence && codingTimelineSequenceIsTaken(pendingCodingThoughts, preferredSequence)) return message;
+            const sequence = nextCodingTimelineSequence(pendingCodingThoughts, eventSequence);
+            const adjacentThoughts = appendAdjacentCodingThought(pendingCodingThoughts, reasoningDelta, sequence, Date.now());
+            const thought: CodingAgentTimelineItem = {
+                id: nextId(),
+                sequence,
+                kind: 'thinking',
+                content: reasoningDelta,
+                timestamp: Date.now(),
+            };
+            return {
+                ...message,
+                reasoning: nextReasoning || undefined,
+                pendingCodingThoughts: adjacentThoughts || insertCodingTimelineItem(pendingCodingThoughts, thought),
+                reasoningStartSequence: message.reasoning?.trim()
+                    ? message.reasoningStartSequence
+                    : eventSequence,
+            };
+        }
+        const baseTimeline = timeline;
+        const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
+        if (preferredSequence && codingTimelineSequenceIsTaken(baseTimeline, preferredSequence)) return message;
+        const sequence = nextCodingTimelineSequence(baseTimeline, eventSequence);
+        const nextTimeline = appendAdjacentCodingThought(baseTimeline, reasoningDelta, sequence, Date.now()) || insertCodingTimelineItem(baseTimeline, {
+            id: nextId(),
+            sequence,
+            kind: 'thinking',
+            content: reasoningDelta,
+            timestamp: Date.now(),
+        });
+        return { ...message, reasoning: nextReasoning || undefined, codingTimeline: nextTimeline };
     }
 
     const contentDelta = delta;
@@ -1319,12 +1531,12 @@ function normalizeStreamDeltaWithState(streamState: StreamAppendState, incoming:
     return result.delta;
 }
 
-function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string | null, delta: string): ChatMessage[] {
+function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string | null, delta: string, eventSequence?: number): ChatMessage[] {
     if (!assistantMessageId || !delta || messages.length === 0) return messages;
     const lastIndex = messages.length - 1;
     const tail = messages[lastIndex];
     if (tail.id === assistantMessageId) {
-        const updatedTail = appendTokenToMessage(tail, delta);
+        const updatedTail = appendTokenToMessage(tail, delta, eventSequence);
         if (updatedTail === tail) return messages;
         const next = [...messages];
         next[lastIndex] = updatedTail;
@@ -1332,7 +1544,7 @@ function appendTokenToRound(messages: ChatMessage[], assistantMessageId: string 
     }
     const index = findLastIndex(messages, message => message.id === assistantMessageId);
     if (index < 0) return messages;
-    const updatedMessage = appendTokenToMessage(messages[index], delta);
+    const updatedMessage = appendTokenToMessage(messages[index], delta, eventSequence);
     if (updatedMessage === messages[index]) return messages;
     const next = [...messages];
     next[index] = updatedMessage;
@@ -2213,6 +2425,41 @@ function mergeReasoningText(streamedReasoning: string, finalReasoning: string): 
     return `${streamed}${streamed.endsWith('\n') || final.startsWith('\n') ? '' : '\n'}${final}`.trim();
 }
 
+/**
+ * The terminal response can carry a final reasoning fragment after the last
+ * streamed token/tool event. Keep it on a coding turn's trail so hiding the
+ * aggregate reasoning panel never hides that fragment.
+ */
+function appendFinalReasoningToCodingTimeline(message: ChatMessage, response: any): CodingAgentTimelineItem[] | undefined {
+    const timeline = message.codingTimeline;
+    if (!timeline?.length) return timeline;
+
+    const finalReasoning = stripRolePrefixReasoning(typeof response?.reasoning === 'string' ? response.reasoning : '').trim();
+    if (!finalReasoning) return timeline;
+    const streamedReasoning = stripRolePrefixReasoning(message.reasoning || '').trim();
+    let trailingReasoning = finalReasoning;
+    if (streamedReasoning) {
+        if (finalReasoning === streamedReasoning || (finalReasoning.length >= MIN_REASONING_DEDUP_OVERLAP && streamedReasoning.endsWith(finalReasoning))) {
+            return timeline;
+        }
+        if (finalReasoning.startsWith(streamedReasoning)) {
+            trailingReasoning = finalReasoning.slice(streamedReasoning.length).trim();
+        }
+    }
+    if (!trailingReasoning) return timeline;
+    const last = timeline[timeline.length - 1];
+    if (last?.kind === 'thinking') {
+        return [...timeline.slice(0, -1), { ...last, content: `${last.content}${last.content.endsWith('\n') ? '' : '\n'}${trailingReasoning}` }];
+    }
+    return [...timeline, {
+        id: nextId(),
+        sequence: nextCodingTimelineSequence(timeline),
+        kind: 'thinking',
+        content: trailingReasoning,
+        timestamp: Date.now(),
+    }];
+}
+
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
         const nextContent = resolveFinalRoundContent(message, response);
@@ -2237,6 +2484,9 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             ...message,
             content: nextContent,
             reasoning: nextReasoning,
+            codingTimeline: appendFinalReasoningToCodingTimeline(message, response),
+            pendingCodingThoughts: undefined,
+            reasoningStartSequence: undefined,
             fields: nextFields,
             actions: nextActions.length > 0 ? nextActions : undefined,
             confirmation: response.confirmation,
@@ -2329,6 +2579,9 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
         ...message,
         role: 'error',
         content: errorText,
+        codingTimeline: undefined,
+        pendingCodingThoughts: undefined,
+        reasoningStartSequence: undefined,
         timestamp: Date.now(),
     });
     const nextMessages = updateRoundMessage(messages, assistantMessageId, requestId, replaceWithError);
@@ -2363,6 +2616,8 @@ export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: 
             content: content.trimEnd()
                 ? `${content.trimEnd()}\n${CANCELED_BY_USER_LINE}`
                 : CANCELED_BY_USER_LINE,
+            pendingCodingThoughts: undefined,
+            reasoningStartSequence: undefined,
             timestamp: Date.now(),
         };
     };
@@ -2370,11 +2625,24 @@ export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: 
 }
 
 function resolveSendResult(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
-    return errorText
-        ? replaceRoundWithError(messages, assistantMessageId, requestId, errorText, isTimeoutErrorText(errorText))
-        : response?.error
-            ? replaceRoundWithError(messages, assistantMessageId, requestId, response.error, isTimeoutErrorText(response.error))
-            : finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
+    if (errorText) {
+        return replaceRoundWithError(messages, assistantMessageId, requestId, errorText, isTimeoutErrorText(errorText));
+    }
+    const responseError = typeof response?.error === 'string' ? response.error.trim() : '';
+    const { localFilePaths, thumbnailBase64, imageKey } = responseArtifactPayload(response);
+    const hasArtifact = !!thumbnailBase64 || !!imageKey || !!localFilePaths?.length;
+    if (responseError && !hasArtifact) {
+        const display = semanticHostRejectDisplayText(response) || responseError;
+        return replaceRoundWithError(messages, assistantMessageId, requestId, display, isTimeoutErrorText(display));
+    }
+    return finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
+}
+
+function semanticHostRejectDisplayText(response: any): string {
+    const source = String(response?.response_source || response?.ResponseSource || '').trim().toLowerCase();
+    if (source !== 'semantic_host_reject') return '';
+    const text = firstStringValue(response?.text, response?.Text);
+    return text.trim();
 }
 
 function normalizeActionStyle(style: unknown): ChatActionStyle {
@@ -2418,11 +2686,20 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
             }
             return '';
         };
+        const numberField = (...keys: string[]) => {
+            for (const key of keys) {
+                const value = event[key];
+                if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+            }
+            return undefined;
+        };
         return {
             request_id: stringField('request_id', 'requestId', 'RequestID'),
             text: sanitizeAIAssistantStreamText(stringField('text', 'Text')),
             session_key: stringField('session_key', 'sessionKey', 'SessionKey'),
             display_text: stringField('display_text', 'displayText', 'DisplayText'),
+            event_scope_id: stringField('event_scope_id', 'eventScopeId', 'EventScopeID'),
+            sequence: numberField('sequence', 'seq', 'Sequence', 'Seq'),
         };
     }
     if (typeof raw === 'string') {
@@ -2920,6 +3197,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressMessagesBySessionRef = useRef<Map<string, ChatMessage[]>>(new Map());
     const progressTailBySessionRef = useRef<Map<string, string>>(new Map());
+    const strippedCodingStatusReasoningRef = useRef<Set<string>>(new Set());
     const activeProgressSessionKeyRef = useRef(normalizeRuntimeSessionKey(options?.activeSessionKey || getActiveSessionKey()));
     const selectedFilePathsBySessionRef = useRef<Map<string, string[]>>(new Map());
     // File selection is asynchronous. Track explicit attachment mutations so a
@@ -3526,6 +3804,68 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         setMessages(prev => updateMessageById(prev, round.assistantMessageId, message => appendProgressToReasoning(message, progressText)));
     }, []);
 
+    const appendCodingProgressToRound = useCallback((round: ActiveRound | undefined, progressText: string, eventSequence?: number) => {
+        if (!round?.assistantMessageId || !isCodingAgentProgressContent(progressText)) return;
+        setMessages(prev => updateMessageById(prev, round.assistantMessageId, message => {
+            if (message.role !== 'assistant') return message;
+            const timeline = message.codingTimeline || [];
+            const last = timeline[timeline.length - 1];
+            // Ignore a duplicated progress delivery without collapsing distinct
+            // tool calls that happen to share the same display label.
+            const preferredSequence = normalizeCodingTimelineSequence(eventSequence);
+            if (!preferredSequence && last?.kind === 'progress' && last.content === progressText) return message;
+            const openingReasoning = timeline.length === 0 && message.pendingCodingThoughts?.length
+                ? message.pendingCodingThoughts
+                : timeline.length === 0 && message.reasoning?.trim()
+                    ? [{
+                    id: nextId(),
+                    sequence: nextCodingTimelineSequence(timeline, message.reasoningStartSequence),
+                    kind: 'thinking' as const,
+                    content: message.reasoning,
+                    timestamp: message.timestamp,
+                }]
+                : timeline;
+            if (preferredSequence && codingTimelineSequenceIsTaken(openingReasoning, preferredSequence)) return message;
+            const sequence = nextCodingTimelineSequence(openingReasoning, eventSequence);
+            const completedAt = Date.now();
+            const toolProgress = parseCodingAgentProgress(progressText);
+            if (toolProgress?.event === 'tool_finished') {
+                const replacedTimeline = replaceMatchingCodingToolStart(openingReasoning, progressText, sequence, completedAt);
+                if (replacedTimeline) {
+                    return {
+                        ...message,
+                        pendingCodingThoughts: undefined,
+                        reasoningStartSequence: undefined,
+                        codingTimeline: replacedTimeline,
+                    };
+                }
+            }
+            if (toolProgress?.event === 'tool_started') {
+                const replacedTimeline = replaceLateCodingToolStart(openingReasoning, progressText, sequence, completedAt);
+                if (replacedTimeline) {
+                    return {
+                        ...message,
+                        pendingCodingThoughts: undefined,
+                        reasoningStartSequence: undefined,
+                        codingTimeline: replacedTimeline,
+                    };
+                }
+            }
+            return {
+                ...message,
+                pendingCodingThoughts: undefined,
+                reasoningStartSequence: undefined,
+                codingTimeline: insertCodingTimelineItem(openingReasoning, {
+                    id: nextId(),
+                    sequence,
+                    kind: 'progress',
+                    content: progressText,
+                    timestamp: completedAt,
+                }),
+            };
+        }));
+    }, []);
+
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
         clearTransientProgress();
@@ -3593,8 +3933,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
         // ACP Mode B (programming agent): accept rounds even if another tab is
         // active so request_id-matched tokens still stream into the chat.
-        const isAcpModeBRound = requestId.startsWith('acp-');
-        if (!isAcpModeBRound && !isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) {
+        const isDetachedBackendRound = requestId.startsWith('acp-') || requestId.startsWith('horizon-');
+        if (!isDetachedBackendRound && !isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) {
             return null;
         }
         forgottenEventSessionsRef.current.delete(sessionKey);
@@ -3680,13 +4020,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (assistantMessageId) streamAppendStatesByMessageRef.current.delete(assistantMessageId);
     }, []);
 
-    const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string) => {
+    const appendTokenToAssistantMessage = useCallback((assistantMessageId: string, text: string, eventSequence?: number) => {
         if (!assistantMessageId || !text) return;
-        setMessages(prev => updateTailMessage(prev, assistantMessageId, message => appendTokenToMessage(message, text))
-            ?? updateMessageById(prev, assistantMessageId, message => appendTokenToMessage(message, text)));
+        setMessages(prev => updateTailMessage(prev, assistantMessageId, message => appendTokenToMessage(message, text, eventSequence))
+            ?? updateMessageById(prev, assistantMessageId, message => appendTokenToMessage(message, text, eventSequence)));
     }, []);
 
-    const appendTokenToDetachedRound = useCallback((round: ActiveRound, text: string) => {
+    const appendTokenToDetachedRound = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
         if (!round.requestId || !round.assistantMessageId || !text) return;
         const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
         if (!normalizedText) return;
@@ -3695,6 +4035,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             appendAssistantPlaceholder(prev, round.assistantMessageId || '', round.requestId, round.sessionKey),
             round.assistantMessageId,
             normalizedText,
+            eventSequence,
         ));
     }, [streamAppendStateForMessage, updateInFlightRound]);
 
@@ -3792,7 +4133,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, [bumpSelectedFilesRevision, bumpSessionResetEpoch, clearTransientProgress, notifyForegroundIdle, resetActiveRound, resetStreamTokenBuffer, stopResponseTimeout]);
 
-    const queueStreamToken = useCallback((round: ActiveRound, text: string) => {
+    const queueStreamToken = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
         if (!round.assistantMessageId || !text) return;
         const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
         if (!normalizedText) return;
@@ -3803,7 +4144,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // ensures the first reasoning token triggers the "thinking" UI state
         // without delay.
         if (normalizedText.startsWith('\x01')) {
-            appendTokenToAssistantMessage(round.assistantMessageId, normalizedText);
+            appendTokenToAssistantMessage(round.assistantMessageId, normalizedText, eventSequence);
             return;
         }
 
@@ -4079,7 +4420,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     messageId: detachedRound.assistantMessageId,
                     matchedDetachedRequest: true,
                 });
-                appendTokenToDetachedRound(detachedRound, event.text || '');
+                appendTokenToDetachedRound(detachedRound, event.text || '', event.sequence);
                 return;
             }
             if (!isMatchingSessionOrActiveRequest(event, currentRound, activeSessionKeyForEvents())) return;
@@ -4094,7 +4435,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (!currentRound.assistantMessageId || !event.text) return;
             resetResponseTimeoutForActiveRound();
             emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
-            queueStreamToken(currentRound, event.text);
+            queueStreamToken(currentRound, event.text, event.sequence);
         };
 
         const newRoundHandler = (payload: unknown) => {
@@ -4184,6 +4525,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     request_id: responseRequestId,
                     session_key: normalized.session_key || '',
                     text: '',
+                });
+            }
+            if (responseRequestId.startsWith('horizon-')) {
+                startEventDrivenForegroundRound({
+                    request_id: responseRequestId,
+                    session_key: normalized.session_key || '',
+                    text: '',
+                    display_text: '\u3010Horizon\u3011',
                 });
             }
             const currentRound = activeRoundRef.current;
@@ -4295,7 +4644,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         };
         const off = subscribeEvent(RESPONSE_EVENT, handler);
         return () => { off(); };
-    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, stopResponseTimeout]);
+    }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
@@ -4715,6 +5064,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         persistContextBoundaryMessageID(null);
         legacyClearAIAssistantUIState();
         setMessages([]);
+        strippedCodingStatusReasoningRef.current.clear();
         setDraftInputValue("");
         clearTransientProgress();
         latestNewsPayloadRef.current = '[]';
@@ -4985,22 +5335,64 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 || currentRound.sessionKey
                 || activeSessionKey,
             );
-			// Status milestones belong to the answer's thinking panel, not the
-			// separate transient activity feed. Other agent/tool events retain
-			// their existing activity-feed behaviour.
-			if (!isThinkingStatusProgress(progressText)) {
-				appendProgressForSession(progressSessionKey, progressText);
-			}
-			appendProgressToRoundReasoning(
-				matchesDetachedRound ? detachedRound : (matchesSessionRound ? sessionRound || undefined : currentRound),
-				progressText,
-			);
+            // Status milestones belong to the answer's thinking panel, not the
+            // separate transient activity feed. Other agent/tool events retain
+            // their existing activity-feed behaviour.
+            const isStatusProgress = isThinkingStatusProgress(progressText);
+            const isCodingProgress = isCodingAgentProgressContent(progressText);
+            if (!isStatusProgress) {
+                appendProgressForSession(progressSessionKey, progressText);
+            }
+            const progressRound = matchesDetachedRound ? detachedRound : (matchesSessionRound ? sessionRound || undefined : currentRound);
+            const sessionHasCodingTrail = isCodingProgress
+                || (progressMessagesBySessionRef.current.get(progressSessionKey) || [])
+                    .some((message) => isCodingAgentProgressContent(message.content || ''));
+            const assistantId = progressRound?.assistantMessageId || '';
+            if (isCodingProgress && assistantId && !strippedCodingStatusReasoningRef.current.has(assistantId)) {
+                setMessages(prev => updateMessageById(prev, assistantId, message => {
+                    strippedCodingStatusReasoningRef.current.add(assistantId);
+                    if (message.role !== 'assistant' || !reasoningHasCodingStatusMilestone(message.reasoning || '')) return message;
+                    const nextReasoning = stripCodingWorkbenchStatusReasoning(message.reasoning || '');
+                    if (nextReasoning === (message.reasoning || '')) return message;
+                    return { ...message, reasoning: nextReasoning };
+                }));
+            }
+            if (!(isStatusProgress && sessionHasCodingTrail)) {
+                appendProgressToRoundReasoning(progressRound, progressText);
+            }
+            if (isCodingProgress) {
+                appendCodingProgressToRound(progressRound, progressText, event.sequence);
+            }
         };
         const offProgress = subscribeEvent(PROGRESS_EVENT, handler);
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
+    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
+
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            const data = typeof payload === 'string' ? (() => {
+                try { return JSON.parse(payload) as Record<string, unknown>; } catch { return null; }
+            })() : (payload && typeof payload === 'object' ? payload as Record<string, unknown> : null);
+            if (!data) return;
+            const sessionKey = normalizeRuntimeSessionKey(String(data.session_key || data.owner_id || ''));
+            const activeKey = normalizeRuntimeSessionKey(activeSessionKeyForEvents());
+            if (!isMatchingSessionEvent({ session_key: sessionKey }, activeKey || 'desktop-user')) {
+                return;
+            }
+            const status = String(data.status || '').trim();
+            const roundIndex = typeof data.round_index === 'number' ? data.round_index : 0;
+            const maxRounds = typeof data.max_rounds === 'number' ? data.max_rounds : 0;
+            const next = String(data.manager_next || '').trim();
+            const text = `[Horizon] ${status || 'running'} ${roundIndex}/${maxRounds}${next ? ` next=${next}` : ''}`;
+            appendProgressForSession(sessionKey || activeKey, text);
+        };
+        const offProjection = subscribeEvent(HORIZON_PROJECTION_EVENT, handler);
+        return () => {
+            offProjection();
+        };
+    }, [activeSessionKeyForEvents, appendProgressForSession]);
 
     useEffect(() => {
         // agent-view:lifecycle is the single source of truth for view state.

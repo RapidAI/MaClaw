@@ -33,12 +33,12 @@ type tenantListComputeStatusProvider interface {
 	GetAuthorizationStatus(ctx context.Context, tenantID string) *llmservice.TenantAuthorizationStatus
 }
 
-// tenantAdminRouteSyncer records a tenant administrator's email route in
+// tenantAdminRouteSyncer records a tenant administrator's identity in
 // HubCenter. It is intentionally small so tenant administration remains
 // available if HubCenter is temporarily unreachable; startup reconciliation
 // retries any route that could not be synced immediately.
 type tenantAdminRouteSyncer interface {
-	SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
+	SyncTenantAdminRoute(ctx context.Context, email, tenantID string, previousEmailOpt ...string) error
 }
 
 type tenantCreateRequest struct {
@@ -290,15 +290,19 @@ func firstTenantAdminRouteSyncer(syncers []tenantAdminRouteSyncer) tenantAdminRo
 	return nil
 }
 
-func syncTenantAdminRoute(ctx context.Context, syncer tenantAdminRouteSyncer, tenantID, email string) {
+func syncTenantAdminRoute(ctx context.Context, syncer tenantAdminRouteSyncer, tenantID, email string, previousEmailOpt ...string) {
 	if syncer == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(email) == "" {
 		return
 	}
-	if err := syncer.SyncUserRoute(ctx, email, tenantID); err != nil {
+	previousEmail := ""
+	if len(previousEmailOpt) > 0 {
+		previousEmail = strings.TrimSpace(strings.ToLower(previousEmailOpt[0]))
+	}
+	if err := syncer.SyncTenantAdminRoute(ctx, email, tenantID, previousEmailOpt...); err != nil {
 		// A tenant admin has already been committed locally. Do not fail or roll
 		// it back because HubCenter may be transiently unavailable; the startup
 		// reconciler will retry until the route is present.
-		log.Printf("[tenant-admin] HubCenter route sync failed for tenant=%s email=%s: %v", tenantID, strings.TrimSpace(strings.ToLower(email)), err)
+		log.Printf("[tenant-admin] HubCenter administrator identity sync failed for tenant=%s email=%s previous_email=%s: %v", tenantID, strings.TrimSpace(strings.ToLower(email)), previousEmail, err)
 	}
 }
 

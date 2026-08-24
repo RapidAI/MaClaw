@@ -65,7 +65,7 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 	llm := corelib.MaclawLLMConfig{
 		URL:           cfg.MaclawLLMUrl,
 		Key:           cfg.MaclawLLMKey,
-		Model:         cfg.MaclawLLMModel,
+		Model:         corelib.MigrateZhipuCodingModel(cfg.MaclawLLMCurrentProvider, cfg.MaclawLLMModel),
 		Protocol:      cfg.MaclawLLMProtocol,
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
@@ -74,20 +74,26 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 	}
 	// Resolve AgentType and SupportsVision from the current provider (not stored as flat fields).
 	for _, p := range cfg.MaclawLLMProviders {
-		if p.Name == cfg.MaclawLLMCurrentProvider {
-			if token := p.CodexSubscriptionOAuthToken(); token != "" {
-				llm.Key = token
-			} else if strings.TrimSpace(llm.Key) == "" {
-				llm.Key = strings.TrimSpace(p.Key)
-			}
-			if p.TimeoutSec > 0 {
-				llm.TimeoutSec = p.TimeoutSec
-			}
-			llm.AgentType = p.AgentType
-			llm.SupportsVision = p.SupportsVision
-			llm.WireAPI = p.WireAPI
-			break
+		if !corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) {
+			continue
 		}
+		if token := p.CodexSubscriptionOAuthToken(); token != "" {
+			llm.Key = token
+		} else if strings.TrimSpace(llm.Key) == "" {
+			llm.Key = strings.TrimSpace(p.Key)
+		}
+		if p.TimeoutSec > 0 {
+			llm.TimeoutSec = p.TimeoutSec
+		}
+		llm.AgentType = p.AgentType
+		llm.SupportsVision = p.SupportsVision
+		llm.WireAPI = p.WireAPI
+		if strings.TrimSpace(cfg.MaclawLLMModel) == "" {
+			llm.Model = corelib.MigrateZhipuCodingModel(p.Name, p.Model)
+		} else {
+			llm.Model = corelib.MigrateZhipuCodingModel(p.Name, cfg.MaclawLLMModel)
+		}
+		break
 	}
 	if strings.TrimSpace(llm.Key) == "" && llmConfigUsesHubService(cfg) {
 		llm.Key = strings.TrimSpace(cfg.RemoteViewerToken)
@@ -119,7 +125,7 @@ func presetProviders() []presetProvider {
 		},
 		{
 			Name: "智谱 GLM (Coding)", URL: "https://open.bigmodel.cn/api/anthropic",
-			Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0",
+			Model: corelib.ZhipuCodingDefaultModel, Protocol: "anthropic", AgentType: "claude code 2.0",
 			ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "open.bigmodel.cn 获取 API Key（Anthropic 协议）",
 		},
@@ -619,8 +625,9 @@ func ensureTUIoAuthToken() error {
 	if len(cfg.MaclawLLMProviders) == 0 {
 		return nil
 	}
+	oauth.ApplyProxyFromAppConfig(cfg)
 	for i, p := range cfg.MaclawLLMProviders {
-		if p.Name == cfg.MaclawLLMCurrentProvider && p.AuthType == "oauth" {
+		if corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) && p.AuthType == "oauth" {
 			oauthCfg := oauth.DefaultConfig()
 			updated, err := oauth.EnsureValidToken(p, oauthCfg, func(up corelib.MaclawLLMProvider) error {
 				cfg.MaclawLLMProviders[i] = up
@@ -776,7 +783,7 @@ func llmProviders(args []string) error {
 	Println(strings.Repeat("-", 96))
 	for _, p := range cfg.MaclawLLMProviders {
 		marker := "  "
-		if p.Name == cfg.MaclawLLMCurrentProvider {
+		if corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) {
 			marker = "→ "
 		}
 		auth := "-"
@@ -825,7 +832,7 @@ func llmSetProvider(args []string) error {
 	// 查找匹配的 provider
 	var found *corelib.MaclawLLMProvider
 	for i := range cfg.MaclawLLMProviders {
-		if cfg.MaclawLLMProviders[i].Name == name {
+		if corelib.MaclawLLMProviderNameEqual(cfg.MaclawLLMProviders[i].Name, name) {
 			found = &cfg.MaclawLLMProviders[i]
 			break
 		}
@@ -843,10 +850,11 @@ func llmSetProvider(args []string) error {
 	}
 
 	// 更新当前 provider 和 LLM 配置
-	cfg.MaclawLLMCurrentProvider = name
+	cfg.MaclawLLMCurrentProvider = found.Name
 	cfg.MaclawLLMUrl = found.URL
 	cfg.MaclawLLMKey = found.Key
-	cfg.MaclawLLMModel = found.Model
+	cfg.MaclawLLMModel = corelib.MigrateZhipuCodingModel(found.Name, found.Model)
+	found.Model = cfg.MaclawLLMModel
 	cfg.MaclawLLMProtocol = found.Protocol
 	cfg.MaclawLLMContextLength = found.ContextLength
 
@@ -1137,7 +1145,7 @@ func llmUsage(args []string) error {
 	// Find the current OAuth provider
 	var accessToken string
 	for _, p := range cfg.MaclawLLMProviders {
-		if p.Name == cfg.MaclawLLMCurrentProvider && p.AuthType == "oauth" {
+		if corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) && p.AuthType == "oauth" {
 			accessToken = p.Key
 			break
 		}

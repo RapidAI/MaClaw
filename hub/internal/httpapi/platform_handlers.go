@@ -26,6 +26,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -3314,6 +3315,7 @@ func sanitizeRuntimeDeliveryErrorText(text, platformEmployeeID string) string {
 // to the requesting client in real-time via Hub WebSocket).
 func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, tenantID string, entry digitalEmployeeEntry, started time.Time, onChunk func(string)) (string, error) {
 	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var content strings.Builder
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -3326,15 +3328,29 @@ func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, te
 			continue
 		}
 		if chunk, ok := evt["chunk"].(string); ok && chunk != "" {
+			chunk = textutil.VisibleChatStreamDelta(chunk)
+			if chunk == "" {
+				continue
+			}
 			content.WriteString(chunk)
 			if onChunk != nil {
 				onChunk(chunk)
 			}
 		}
 		if done, ok := evt["done"].(bool); ok && done {
-			if finalContent, ok := evt["content"].(string); ok && finalContent != "" {
-				log.Printf("[ve-platform-delivery] SSE done tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(finalContent)))
-				return finalContent, nil
+			doneContent := ""
+			if finalContent, ok := evt["content"].(string); ok {
+				doneContent = finalContent
+			}
+			msgContent := ""
+			if msg, _ := evt["message"].(map[string]any); msg != nil {
+				msgContent = jsonStringContent(msg["content"])
+			}
+			// Prefer the assembled done payload, but do not let a sentinel-only
+			// or tofu-only "content" hide chunks that already streamed.
+			if reply := textutil.FirstVisibleChatText(doneContent, msgContent, content.String()); reply != "" {
+				log.Printf("[ve-platform-delivery] SSE done tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(reply)))
+				return reply, nil
 			}
 			break
 		}
@@ -3346,10 +3362,9 @@ func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, te
 		return "", fmt.Errorf("MaClawSrv runtime SSE read failed: %w", err)
 	}
 	// If we got chunks but no explicit "done" event, use aggregated content.
-	if content.Len() > 0 {
-		result := content.String()
-		log.Printf("[ve-platform-delivery] SSE aggregated tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(result)))
-		return result, nil
+	if reply := textutil.FirstVisibleChatText(content.String()); reply != "" {
+		log.Printf("[ve-platform-delivery] SSE aggregated tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(reply)))
+		return reply, nil
 	}
 	return "", errors.New("MaClawSrv runtime SSE response did not include content")
 }
@@ -3370,22 +3385,27 @@ func setPlatformEmployeeHubHeaders(req *http.Request, entry digitalEmployeeEntry
 }
 
 func macLawSrvRuntimeReplyContent(respBody []byte) string {
-	if len(bytes.TrimSpace(respBody)) == 0 || !json.Valid(respBody) {
-		return strings.TrimSpace(string(respBody))
+	if len(bytes.TrimSpace(respBody)) == 0 {
+		return ""
+	}
+	if !json.Valid(respBody) {
+		return textutil.FirstVisibleChatText(string(respBody))
 	}
 	var root map[string]any
 	if err := json.Unmarshal(respBody, &root); err != nil {
 		return ""
 	}
+	var candidates []string
 	if msg, _ := root["message"].(map[string]any); msg != nil {
-		if content, ok := msg["content"]; ok {
-			return strings.TrimSpace(fmt.Sprint(content))
-		}
+		candidates = append(candidates, jsonStringContent(msg["content"]))
 	}
-	if content, ok := root["content"]; ok {
-		return strings.TrimSpace(fmt.Sprint(content))
-	}
-	return ""
+	candidates = append(candidates, jsonStringContent(root["content"]))
+	return textutil.FirstVisibleChatText(candidates...)
+}
+
+func jsonStringContent(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func macLawSrvReplyMessageID(msg corea2a.GroupDiscussionMessage, targetID string) string {

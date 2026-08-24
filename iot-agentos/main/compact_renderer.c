@@ -1,10 +1,13 @@
-#include "board_port.h"
+#include "legacy_connectivity_transport.h"
+#include "board_background_lifecycle.h"
+#include "legacy_display_scene.h"
+#include "legacy_storage_admission.h"
+#include "legacy_bootstrap_input.h"
 #include "compact_audio_service.h"
 #include "compact_connectivity_service.h"
 #include "compact_display_service.h"
 #include "compact_input_service.h"
 #include "compact_peripheral_service.h"
-#include "compact_wake_service.h"
 #include "font_cjk24.h"
 
 #include <math.h>
@@ -19,13 +22,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-/* The Device Motion HAL asks the selected compact profile the same normalized
- * question.  A profile without an IMU declares that at its adapter boundary;
- * Device API maps it to UNAVAILABLE according to its capability contract. */
-esp_err_t board_port_motion_get_sample(device_motion_sample_t *out_sample) {
-    return compact_peripheral_service_get_motion_sample(out_sample);
-}
-
 /* The renderer consumes normalized profile facts. Selected adapters retain
  * the concrete display and microphone identities. */
 static inline int compact_display_width(void) {
@@ -34,28 +30,9 @@ static inline int compact_display_width(void) {
 static inline int compact_display_height(void) {
     return compact_display_service_height();
 }
-static inline const compact_audio_calibration_t *compact_audio_calibration(void) {
-    return compact_audio_service_calibration();
-}
 #define LCD_WIDTH (compact_display_width())
 #define LCD_HEIGHT (compact_display_height())
 #define BACKLIGHT_BRIGHTNESS_DEFAULT 0u
-#define AUDIO_RATE (compact_audio_calibration()->sample_rate)
-// A command should finish at a natural pause rather than after a fixed window.
-// Keep an upper bound so a noisy microphone cannot retain the command buffer
-// indefinitely. Thirty seconds remains below 1 MiB for 16 kHz PCM, while
-// allowing multi-step commands. Levels are normalized 0..1000 by read_mono.
-#define COMMAND_CAPTURE_MAX_SECONDS 30
-#define COMMAND_CAPTURE_START_TIMEOUT_MS 6000
-/* The selected audio adapter supplies microphone-path calibration. The
- * common capture state machine has one algorithm for every compact board. */
-#define COMMAND_CAPTURE_SILENCE_MS (compact_audio_calibration()->command_silence_ms)
-#define COMMAND_CAPTURE_START_CONFIRM_MS (compact_audio_calibration()->command_start_confirm_ms)
-#define COMMAND_CAPTURE_START_LEVEL (compact_audio_calibration()->command_start_level)
-#define COMMAND_CAPTURE_SILENCE_FLOOR (compact_audio_calibration()->command_silence_floor)
-#define COMMAND_CAPTURE_SILENCE_MARGIN (compact_audio_calibration()->command_silence_margin)
-#define COMMAND_CAPTURE_SILENCE_CEILING (compact_audio_calibration()->command_silence_ceiling)
-#define COMMAND_CAPTURE_PREROLL_MS 300
 #define THINKING_MOUTH_FRAME_MS 420
 #define REMOTE_PET_RENDER_FRAME_MS 80
 #define REMOTE_PET_DEFAULT_KEYFRAME_MS 450
@@ -63,7 +40,7 @@ static inline const compact_audio_calibration_t *compact_audio_calibration(void)
 #define LCD_FRAME_BYTES (LCD_FRAME_PIXELS * sizeof(uint16_t))
 
 static const char *TAG = "maclaw_compact_renderer";
-static board_port_button_cb_t s_button_cb;
+static legacy_input_scanner_publish_cb_t s_button_cb;
 static void *s_button_arg;
 static SemaphoreHandle_t s_background_tasks_lock;
 /* Once a failed-startup rollback closes decorative-work admission, late
@@ -116,11 +93,8 @@ static bool s_ambient_weather_stale;
 static bool s_alarm_scheduled;
 static bool s_wifi_connected;
 static bool s_gateway_ready;
-// Direct-I2S has no codec gain register. The shared PCM mixer holds the
-// mutable GUI value; the selected audio adapter provides its boot calibration.
-static volatile unsigned s_output_volume;
 
-/* `board_port_init()` publishes no scanner or decorative worker until its
+/* `legacy_bootstrap_input_initialize()` publishes no scanner or decorative worker until its
  * last steps.  If construction fails before the panel transaction succeeds,
  * release only renderer-owned objects that cannot yet be observed by another
  * task.  The display adapters independently roll back their partial
@@ -161,7 +135,6 @@ static void compact_renderer_discard_unpublished_init_state(void) {
     s_button_cb = NULL;
     s_button_arg = NULL;
 }
-
 /* After a successful panel transaction, initialization is intentionally
  * fail-closed instead of pretending the board can be reconstructed in the
  * same boot.  No task has been published on these paths, so closing only
@@ -181,7 +154,6 @@ static esp_err_t compact_renderer_fail_after_hardware_init(esp_err_t err,
              step ? step : "unknown", esp_err_to_name(err));
     return err;
 }
-
 #define RESPONSE_TEXT_CAPACITY 2048
 static inline const compact_response_layout_t *compact_response_layout(void) {
     return compact_visual_profile_response_layout();
@@ -243,8 +215,6 @@ typedef struct {
 static compact_dynamic_glyph_t s_dynamic_glyphs[DYNAMIC_GLYPH_CACHE_CAPACITY];
 static uint32_t s_dynamic_glyph_clock;
 static portMUX_TYPE s_glyph_lock = portMUX_INITIALIZER_UNLOCKED;
-
-
 static uint16_t state_color(const char *state);
 static void present_composed_frame(void);
 static void draw_text24_clipped(int x, int y, const char *text,
@@ -351,7 +321,6 @@ static void compact_profile_bind_renderer_primitives(void) {
     };
     compact_visual_profile_bind_renderer(&bridge);
 }
-
 /* A display bitmap is CPU-copied into the retained composition frame when
  * one is active; otherwise the panel consumes it directly. The selected
  * display adapter owns both physical-memory policies, leaving this common
@@ -453,7 +422,7 @@ static bool begin_composed_frame(void) {
 static unsigned s_display_brightness = BACKLIGHT_BRIGHTNESS_DEFAULT;
 
 // Applies a 0..100 brightness level to the backlight PWM.  Callers hold
-// s_lcd_mutex, or run during board_port_init before concurrent display work.
+// s_lcd_mutex, or run during legacy_bootstrap_input_initialize before concurrent display work.
 // Preserve the physical adapter error so the shared Display facade does not
 // acknowledge/persist a GUI setting that never reached the hardware.
 static esp_err_t apply_backlight_brightness(unsigned percent) {
@@ -1655,7 +1624,7 @@ static bool remote_pet_target_size(size_t width, size_t height,
     return true;
 }
 
-bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_height,
+bool legacy_display_scene_get_pet_asset_install_budget(size_t source_width, size_t source_height,
                                              size_t frame_count, size_t *out_total_external_bytes,
                                              size_t *out_max_external_allocation_bytes,
                                              size_t *out_max_frame_count) {
@@ -1681,7 +1650,7 @@ bool board_port_get_pet_asset_install_budget(size_t source_width, size_t source_
     return true;
 }
 
-bool board_port_allows_optional_flash_work(void) {
+bool legacy_storage_admission_allows_optional_flash_work(void) {
     return true;
 }
 
@@ -2359,7 +2328,7 @@ static void compact_renderer_publish_input(device_input_action_t action,
     if (s_button_cb) s_button_cb(action, source, s_button_arg);
 }
 
-esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
+esp_err_t legacy_bootstrap_input_initialize(void) {
     /* A successful panel bring-up is deliberately boot-lifetime. Reject a
      * second init attempt before changing callbacks or allocating a second
      * set of renderer synchronization objects; this is a fail-closed
@@ -2368,8 +2337,6 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
         compact_display_service_ready()) {
         return ESP_ERR_INVALID_STATE;
     }
-    s_button_cb = cb;
-    s_button_arg = arg;
     // Hub reachability is session state. Never restore a previous boot's
     // ONLINE bit: the current handshake/poll must prove it again.
     s_gateway_ready = false;
@@ -2389,9 +2356,6 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
      * enter its diagnostic/degraded path after the adapter has released its
      * partial panel resources. */
     s_display_brightness = compact_display_service_default_brightness();
-    __atomic_store_n(&s_output_volume,
-                     compact_audio_calibration()->output_volume_default,
-                     __ATOMIC_RELAXED);
     esp_err_t display_init_err = compact_display_service_initialize();
     if (display_init_err != ESP_OK) {
         ESP_LOGE(TAG, "compact display adapter init failed: %s",
@@ -2466,8 +2430,44 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
     }
     /* Input profiles may own a bounded boot-time control window before the
      * common gesture scanner starts. Bread's adapter is a no-op; Fangtang's
-     * adapter reserves GPIO0 for its existing network selector. */
+     * adapter reserves GPIO0 for its existing network selector.  This must
+     * happen before Connectivity chooses its uplink, but it does not publish
+     * a command-input callback or create a scanner task. */
     compact_input_service_run_startup_selector();
+    esp_err_t animation_deadline_test_err =
+        compact_display_service_run_animation_deadline_test();
+    if (animation_deadline_test_err != ESP_OK) {
+        return compact_renderer_fail_after_hardware_init(animation_deadline_test_err,
+                                                         "animation stop deadline test");
+    }
+    // Power Service owns the idle-display deadline. The pet worker is started
+    // only when a motion-enabled multi-frame asset is installed, avoiding a
+    // zero-frame lifecycle slot during cache restore.
+    // The mouth animation is decorative state feedback. Give its floating-point
+    // renderer enough stack headroom, but never make the essential buttons,
+    // display, microphone, or speaker unavailable if this task cannot start.
+    /* The compact LCD repaints thinking dots from state transitions. Avoid an
+     * always-resident decorative task during Wi-Fi's memory-intensive startup. */
+    /* Remote assets are optional and their animation task is started only when
+     * a frame pack is actually installed. Keeping an always-idle task alive at
+     * boot wastes an internal task stack while Wi-Fi allocates scan buffers. */
+    return ESP_OK;
+}
+
+esp_err_t legacy_bootstrap_input_start_scanner(
+    legacy_input_scanner_publish_cb_t cb, void *arg) {
+    /* Bootstrap constructs the panel/audio/peripheral transaction exactly
+     * once.  Scanner startup is deliberately a later Input Service concern;
+     * never let it recreate or reconfigure boot-lifetime renderer state. */
+    if (!cb || !s_background_tasks_lock || !s_lcd_mutex ||
+        !compact_display_service_ready()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_button_cb) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_button_cb = cb;
+    s_button_arg = arg;
     esp_err_t scanner_prepare_err = compact_input_service_prepare_scanner();
     if (scanner_prepare_err != ESP_OK) {
         return compact_renderer_fail_after_hardware_init(scanner_prepare_err,
@@ -2494,33 +2494,16 @@ esp_err_t board_port_init(board_port_button_cb_t cb, void *arg) {
         return compact_renderer_fail_after_hardware_init(ESP_FAIL,
                                                           "test after input scanner task");
     }
-    esp_err_t animation_deadline_test_err =
-        compact_display_service_run_animation_deadline_test();
-    if (animation_deadline_test_err != ESP_OK) {
-        return compact_renderer_fail_after_hardware_init(animation_deadline_test_err,
-                                                         "animation stop deadline test");
-    }
-    // Power Service owns the idle-display deadline. The pet worker is started
-    // only when a motion-enabled multi-frame asset is installed, avoiding a
-    // zero-frame lifecycle slot during cache restore.
-    // The mouth animation is decorative state feedback. Give its floating-point
-    // renderer enough stack headroom, but never make the essential buttons,
-    // display, microphone, or speaker unavailable if this task cannot start.
-    /* The compact LCD repaints thinking dots from state transitions. Avoid an
-     * always-resident decorative task during Wi-Fi's memory-intensive startup. */
-    /* Remote assets are optional and their animation task is started only when
-     * a frame pack is actually installed. Keeping an always-idle task alive at
-     * boot wastes an internal task stack while Wi-Fi allocates scan buffers. */
     return ESP_OK;
 }
 
-bool board_port_load_transport_selection(bool *out_cellular) {
+bool legacy_connectivity_transport_load_selection(bool *out_cellular) {
     return compact_connectivity_service_load_transport_selection(out_cellular);
 }
 
-bool board_port_apply_startup_transport_toggle(uint32_t window_ms,
-                                               bool current_cellular,
-                                               bool *out_cellular) {
+bool legacy_connectivity_transport_apply_startup_toggle(uint32_t window_ms,
+                                                         bool current_cellular,
+                                                         bool *out_cellular) {
     /* Input owns raw GPIO sampling and the boot-window gesture. Pass only its
      * normalized result to Connectivity so the selected modem adapter never
      * gains a private dependency on another HAL implementation. */
@@ -2530,47 +2513,47 @@ bool board_port_apply_startup_transport_toggle(uint32_t window_ms,
         toggle_requested, current_cellular, out_cellular);
 }
 
-void board_port_adapt_gateway_url(char *gateway_url, size_t capacity,
-                                  bool cellular_active) {
+void legacy_connectivity_transport_adapt_gateway_url(char *gateway_url, size_t capacity,
+                                                     bool cellular_active) {
     compact_connectivity_service_adapt_gateway_url(gateway_url, capacity,
                                                    cellular_active);
 }
 
-esp_err_t board_port_prepare_cellular_transport(void) {
+esp_err_t legacy_connectivity_transport_prepare_cellular(void) {
     return compact_connectivity_service_prepare_cellular_transport();
 }
 
-bool board_port_cancel_cellular_foreground_request(void) {
+bool legacy_connectivity_transport_cancel_foreground_request(void) {
     return compact_connectivity_service_cancel_cellular_foreground_request();
 }
 
-bool board_port_cancel_cellular_requests_for_owner(const void *owner) {
+bool legacy_connectivity_transport_cancel_requests_for_owner(const void *owner) {
     return compact_connectivity_service_cancel_cellular_requests_for_owner(owner);
 }
 
-esp_err_t board_port_start_cellular_transport(uint32_t timeout_ms) {
+esp_err_t legacy_connectivity_transport_start_cellular(uint32_t timeout_ms) {
     return compact_connectivity_service_start_cellular_transport(timeout_ms);
 }
 
-bool board_port_is_cellular_transport_ready(void) {
+bool legacy_connectivity_transport_cellular_ready(void) {
     return compact_connectivity_service_is_cellular_transport_ready();
 }
 
-esp_err_t board_port_quiesce_cellular_transport(uint32_t timeout_ms) {
+esp_err_t legacy_connectivity_transport_quiesce_cellular(uint32_t timeout_ms) {
     return compact_connectivity_service_quiesce_cellular_transport(timeout_ms);
 }
 
-esp_err_t board_port_cellular_http_request(
+esp_err_t legacy_connectivity_transport_http_request(
     const device_connectivity_http_request_t *request) {
     return compact_connectivity_service_cellular_http_request(request);
 }
 
-esp_err_t board_port_cellular_http_stream_request(
+esp_err_t legacy_connectivity_transport_http_stream_request(
     const device_connectivity_stream_request_t *request) {
     return compact_connectivity_service_cellular_http_stream_request(request);
 }
 
-void board_port_show_startup_screen(void) {
+void legacy_display_scene_show_startup(void) {
     if (!compact_display_service_ready() || !s_lcd_mutex) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (s_alarm_visual_active) {
@@ -2583,27 +2566,7 @@ void board_port_show_startup_screen(void) {
     lcd_startup_screen();
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-
-esp_err_t board_port_adjust_output_volume(int delta_percent, unsigned *out_percent) {
-    unsigned current = __atomic_load_n(&s_output_volume, __ATOMIC_RELAXED);
-    int next = (int)current + delta_percent;
-    if (next < 0) next = 0;
-    if (next > 100) next = 100;
-    esp_err_t err = board_port_set_output_volume((unsigned)next);
-    if (err == ESP_OK && out_percent) *out_percent = (unsigned)next;
-    return err;
-}
-
-esp_err_t board_port_set_output_volume(unsigned percent) {
-    if (percent > 100) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(compact_audio_service_set_output_volume(percent, 1500), TAG,
-                        "direct-I2S output volume transaction");
-    __atomic_store_n(&s_output_volume, percent, __ATOMIC_RELAXED);
-    ESP_LOGI(TAG, "direct-I2S output volume applied: %u%%", percent);
-    return ESP_OK;
-}
-
-esp_err_t board_port_set_display_brightness(unsigned percent) {
+esp_err_t legacy_display_scene_set_brightness(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
     if (s_lcd_mutex &&
         xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) == pdTRUE) {
@@ -2626,11 +2589,19 @@ esp_err_t board_port_set_display_brightness(unsigned percent) {
     return ESP_OK;
 }
 
-esp_err_t board_port_stop_input(uint32_t timeout_ms) {
-    return compact_input_service_stop_scanner(timeout_ms);
+esp_err_t legacy_bootstrap_input_stop_scanner(uint32_t timeout_ms) {
+    const esp_err_t status = compact_input_service_stop_scanner(timeout_ms);
+    if (status == ESP_OK) {
+        /* The scanner has joined, so no task can still call this renderer's
+         * forwarding callback. Drop the old Input Service generation before a
+         * later start installs a fresh normalized publisher. */
+        s_button_cb = NULL;
+        s_button_arg = NULL;
+    }
+    return status;
 }
 
-esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
+esp_err_t board_background_lifecycle_stop(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     /* Input/board initialization can fail before this renderer has published
      * any decorative worker or even its creation mutex. A rollback then owns
@@ -2679,7 +2650,7 @@ esp_err_t board_port_stop_background_tasks(uint32_t timeout_ms) {
     return err;
 }
 
-void board_port_set_pet_state(const char *state) {
+void legacy_display_scene_set_pet_state(const char *state) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     const char *next_state = state ? state : "idle";
     bool ambient = !strcmp(next_state, "idle") || !strcmp(next_state, "quiet");
@@ -2704,7 +2675,7 @@ void board_port_set_pet_state(const char *state) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_command_stage(const char *stage) {
+void legacy_display_scene_set_command_stage(const char *stage) {
     const char *next_stage = stage && stage[0] ? stage : "正在处理";
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     bool changed = strcmp(s_command_stage, next_stage) != 0;
@@ -2717,13 +2688,12 @@ void board_port_set_command_stage(const char *stage) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_command_display_lock(bool locked) {
+void legacy_display_scene_set_command_lock(bool locked) {
     if (s_lcd_mutex) xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_foreground_surface = locked;
     if (s_lcd_mutex) xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_command_cancel_enabled(bool enabled) {(void)enabled;}
-void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
+void legacy_display_scene_set_pet_profile(const char *skin, bool motion_enabled) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     bool changed = skin && skin[0] && strcmp(s_pet_skin, skin) != 0;
     bool motion_changed = s_pet_motion_enabled != motion_enabled;
@@ -2742,7 +2712,7 @@ void board_port_set_pet_profile(const char *skin, bool motion_enabled) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
+esp_err_t legacy_display_scene_set_pet_asset(const uint8_t *const *frames, size_t frame_count,
                                    size_t width, size_t height, uint32_t frame_ms) {
     if (frame_count > REMOTE_PET_MAX_FRAMES) return ESP_ERR_INVALID_ARG;
     size_t bytes = 0;
@@ -2797,9 +2767,9 @@ esp_err_t board_port_set_pet_asset(const uint8_t *const *frames, size_t frame_co
 
 // These boards copy every frame up front; the consuming contract simply
 // releases the caller's sources after the copy completes.
-esp_err_t board_port_set_pet_asset_consuming(uint8_t **frames, size_t frame_count,
+esp_err_t legacy_display_scene_set_pet_asset_consuming(uint8_t **frames, size_t frame_count,
                                              size_t width, size_t height, uint32_t frame_ms) {
-    esp_err_t err = board_port_set_pet_asset((const uint8_t *const *)frames,
+    esp_err_t err = legacy_display_scene_set_pet_asset((const uint8_t *const *)frames,
                                              frame_count, width, height, frame_ms);
     if (err == ESP_OK && frames) {
         for (size_t i = 0; i < frame_count && i < REMOTE_PET_MAX_FRAMES; ++i) {
@@ -2809,12 +2779,12 @@ esp_err_t board_port_set_pet_asset_consuming(uint8_t **frames, size_t frame_coun
     }
     return err;
 }
-void board_port_set_recording_mode(bool meeting) {
+void legacy_display_scene_set_recording_mode(bool meeting) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_recording_mode = meeting;
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed) {
+void legacy_display_scene_set_recording_visual(bool active, bool paused, uint32_t elapsed) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     bool new_session = active && !s_recording_active;
     bool visual_changed = !active || new_session || paused != s_recording_paused ||
@@ -2886,7 +2856,7 @@ void board_port_set_recording_visual(bool active, bool paused, uint32_t elapsed)
     finish_screen_frame(composed);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_audio_level(uint16_t level, uint32_t elapsed) {
+void legacy_display_scene_set_audio_level(uint16_t level, uint32_t elapsed) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (!s_recording_active) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -2925,13 +2895,7 @@ void board_port_set_audio_level(uint16_t level, uint32_t elapsed) {
     finish_screen_frame(composed);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_push_recording_pcm(const int16_t *samples, size_t count) {
-    (void)samples;
-    (void)count;
-    // The direct-I2S port already feeds its normalized level into the shared
-    // 24-column waveform history; raw PCM remains available for future renderers.
-}
-void board_port_show_text(const char *title, const char *text) {
+void legacy_display_scene_show_text(const char *title, const char *text) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_thinking_surface_visible = false;
     ESP_LOGI(TAG, "display: %s | %s", title?title:"", text?text:"");
@@ -2956,7 +2920,7 @@ void board_port_show_text(const char *title, const char *text) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_show_upload_progress(size_t done, size_t total, const char *stage) {
+void legacy_display_scene_show_upload_progress(size_t done, size_t total, const char *stage) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_thinking_surface_visible = false;
     uint16_t bg = color(9,35,64);
@@ -2992,7 +2956,7 @@ void board_port_show_upload_progress(size_t done, size_t total, const char *stag
     ESP_LOGI(TAG,"upload %u/%u %s",(unsigned)done,(unsigned)total,stage?stage:"");
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_show_response(const char *title, const char *text) {
+void legacy_display_scene_show_response(const char *title, const char *text) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     s_thinking_surface_visible = false;
     s_foreground_surface = true;
@@ -3013,8 +2977,7 @@ s_response_next_page_us = RESPONSE_LAYOUT->automatic_page_interval_us > 0 &&
     ESP_LOGI(TAG, "response pages=%u: %s", response_page_count(), s_response_text);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-
-void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_text,
+void legacy_display_scene_set_alarm_visual(bool active, unsigned frame, const char *time_text,
                                  const char *label, unsigned attempt, unsigned max_attempts) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (!active) {
@@ -3061,8 +3024,7 @@ void board_port_set_alarm_visual(bool active, unsigned frame, const char *time_t
     finish_screen_frame(composed);
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-
-void board_port_show_response_image(const char *title, const char *caption,
+void legacy_display_scene_show_response_image(const char *title, const char *caption,
                                     const uint16_t *pixels, size_t width, size_t height) {
     if (!pixels || width < 1 || width > 64 || height < 1 || height > 64) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
@@ -3150,7 +3112,7 @@ s_response_next_page_us = 0;
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-bool board_port_navigate_response(int page_delta) {
+bool legacy_display_scene_navigate_response(int page_delta) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (!s_response_active || page_delta == 0) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -3186,7 +3148,7 @@ bool board_port_navigate_response(int page_delta) {
     return true;
 }
 
-bool board_port_get_response_page(unsigned *page) {
+bool legacy_display_scene_get_response_page(unsigned *page) {
     if (!page || !s_lcd_mutex) return false;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     bool active = s_response_active;
@@ -3195,7 +3157,7 @@ bool board_port_get_response_page(unsigned *page) {
     return active;
 }
 
-bool board_port_restore_response_page(unsigned page) {
+bool legacy_display_scene_restore_response_page(unsigned page) {
     if (!s_lcd_mutex) return false;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (!s_response_active) {
@@ -3218,7 +3180,7 @@ s_response_next_page_us = RESPONSE_LAYOUT->automatic_page_interval_us > 0 &&
     xSemaphoreGiveRecursive(s_lcd_mutex);
     return true;
 }
-int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
+int legacy_display_scene_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
     if (!bitmap || codepoint < 0x20 || codepoint > 0xffff) return 0;
     size_t replacement = 0;
     uint32_t oldest = UINT32_MAX;
@@ -3239,7 +3201,7 @@ int board_port_cache_glyph(uint32_t codepoint, const uint8_t bitmap[72]) {
     taskEXIT_CRITICAL(&s_glyph_lock);
     return 1;
 }
-void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
+void legacy_display_scene_show_qrcode_modules(const uint8_t *modules, size_t module_count,
                                    const char *ssid) {
     if (!modules || module_count == 0 || module_count > 177) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
@@ -3249,11 +3211,11 @@ void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
     s_response_active = false;
     int module_size = (int)module_count;
     int scale = 180 / (module_size + 8);
-    if (scale < 1) { board_port_show_text("setup", ssid); xSemaphoreGiveRecursive(s_lcd_mutex); return; }
+    if (scale < 1) { legacy_display_scene_show_text("setup", ssid); xSemaphoreGiveRecursive(s_lcd_mutex); return; }
     int side = (module_size + 8) * scale;
     uint16_t *qr = allocate_temporary_display_bitmap(
         (size_t)side * side * sizeof(uint16_t));
-    if (!qr) { board_port_show_text("setup", ssid); xSemaphoreGiveRecursive(s_lcd_mutex); return; }
+    if (!qr) { legacy_display_scene_show_text("setup", ssid); xSemaphoreGiveRecursive(s_lcd_mutex); return; }
     for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
         int mx = x / scale - 4, my = y / scale - 4;
         bool dark = mx >= 0 && my >= 0 && mx < module_size && my < module_size &&
@@ -3267,7 +3229,7 @@ void board_port_show_qrcode_matrix(const uint8_t *modules, size_t module_count,
     draw_ascii_centered(LCD_HEIGHT - 42, "WIFI SETUP", color(0, 0, 0), color(255, 255, 255));
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_show_ready_prompt(const char *title, const char *text) {
+void legacy_display_scene_show_ready_prompt(const char *title, const char *text) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (s_alarm_visual_active) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
@@ -3283,13 +3245,13 @@ void board_port_show_ready_prompt(const char *title, const char *text) {
     ESP_LOGI(TAG, "ready: %s | %s", title ? title : "", text ? text : "");
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_cancel_ready_prompt(void) {}
+void legacy_display_scene_cancel_ready_prompt(void) {}
 // Board-owned DISPLAY_OFF transaction shared by Bread Compact and Fangtang.
 // It is deliberately display-only: active system services continue until a
 // future power coordinator has proven a board-specific MCU sleep transaction.
-bool board_port_enter_display_off(void) {
-    if (!s_lcd_mutex || !compact_display_service_ready()) return false;
-    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
+esp_err_t legacy_display_scene_enter_display_off(void) {
+    if (!s_lcd_mutex || !compact_display_service_ready()) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
     // Reject a stale timer expiry that races a new foreground render.  The
     // Power Service owns timing; this adapter remains the only authority for
     // deciding whether its actual scene can safely lose panel/backlight.
@@ -3302,13 +3264,13 @@ bool board_port_enter_display_off(void) {
                  s_recording_active, s_response_active, s_alarm_visual_active,
                  s_state);
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
     esp_err_t err = compact_display_service_enter_display_off();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "DISPLAY_OFF entry transaction failed: %s", esp_err_to_name(err));
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return err;
     }
     s_display_sleeping = true;
     // DISP OFF makes the panel's GRAM retention an implementation detail.
@@ -3317,10 +3279,10 @@ bool board_port_enter_display_off(void) {
     s_front_frame_valid = false;
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "display HAL entered DISPLAY_OFF");
-    return true;
+    return ESP_OK;
 }
 
-bool board_port_display_is_off(void) {
+bool legacy_display_scene_is_off(void) {
     if (!s_lcd_mutex) return false;
     if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) return false;
     bool display_off = s_display_sleeping;
@@ -3328,17 +3290,19 @@ bool board_port_display_is_off(void) {
     return display_off;
 }
 
-bool board_port_wake_from_idle(void) {
-    if (!s_lcd_mutex) return false;
-    xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
+esp_err_t legacy_display_scene_wake_display(void) {
+    if (!s_lcd_mutex) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
     if (!s_display_sleeping) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return ESP_ERR_INVALID_STATE;
     }
     wake_display_for_draw_locked();
     if (s_display_sleeping) {
         xSemaphoreGiveRecursive(s_lcd_mutex);
-        return false;
+        return ESP_FAIL;
     }
     strlcpy(s_state, "idle", sizeof(s_state));
     s_response_active = false;
@@ -3346,9 +3310,9 @@ bool board_port_wake_from_idle(void) {
     show_state_screen(s_state);
     xSemaphoreGiveRecursive(s_lcd_mutex);
     ESP_LOGI(TAG, "ambient display awakened");
-    return true;
+    return ESP_OK;
 }
-void board_port_set_wifi_status(const char *ssid, bool connected) {
+void legacy_display_scene_set_wifi_status(const char *ssid, bool connected) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     strlcpy(s_wifi_ssid, ssid ? ssid : "", sizeof(s_wifi_ssid));
     /* Once the authenticated gateway is ready, a transient STA disconnect
@@ -3360,7 +3324,7 @@ void board_port_set_wifi_status(const char *ssid, bool connected) {
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-void board_port_set_service_ready(bool ready) {
+void legacy_display_scene_set_service_ready(bool ready) {
     if (!s_lcd_mutex) {
         s_gateway_ready = ready;
         return;
@@ -3375,7 +3339,7 @@ void board_port_set_service_ready(bool ready) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-void board_port_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
+void legacy_display_scene_set_ambient(const char *time, const char *location, const char *date, const char *weekday,
  const char *weather, int temp, bool valid, bool stale) {
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     strlcpy(s_ambient_time, time ? time : "", sizeof(s_ambient_time));
@@ -3391,7 +3355,7 @@ void board_port_set_ambient(const char *time, const char *location, const char *
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-void board_port_set_alarm_scheduled(bool scheduled) {
+void legacy_display_scene_set_alarm_scheduled(bool scheduled) {
     if (!s_lcd_mutex) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     if (s_alarm_scheduled != scheduled) {
@@ -3405,206 +3369,7 @@ void board_port_set_alarm_scheduled(bool scheduled) {
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
 
-esp_err_t board_port_audio_stream_start(void) {
-    board_port_pause_wake_word(true);
-    /* Pause is asynchronous. Let the recognizer finish its current I2S read
-     * and explicitly acknowledge the pause before foreground capture begins,
-     * otherwise it can consume the first command samples after the mutex is
-     * released between chunks. */
-    (void)compact_wake_service_wait_for_pause_ack(200);
-    esp_err_t err = compact_audio_service_stream_begin(5000);
-    if (err != ESP_OK) {
-        board_port_pause_wake_word(false);
-        return err;
-    }
-    return ESP_OK;
-}
-esp_err_t board_port_audio_stream_read(int16_t *mono, size_t capacity, size_t *read, uint16_t *level) {
-    if (!mono || !read) return ESP_ERR_INVALID_ARG;
-    compact_audio_capture_stats_t stats = {0};
-    esp_err_t err = compact_audio_service_capture_read(
-        mono, capacity, read, &stats, pdMS_TO_TICKS(1000));
-    if (err == ESP_OK && level) *level = stats.level;
-    return err;
-}
-void board_port_audio_stream_stop(void) {
-    compact_audio_service_stream_end();
-    board_port_pause_wake_word(false);
-}
-
-void board_port_pause_wake_word(bool paused) {
-    compact_wake_service_set_paused(paused);
-}
-
-
-esp_err_t board_port_start_wake_word(board_port_wake_word_cb_t cb, void *arg) {
-    if (!cb) return ESP_ERR_INVALID_ARG;
-    esp_err_t audio_err = compact_audio_service_prepare(5000);
-    if (audio_err != ESP_OK) {
-        ESP_LOGE(TAG, "offline wake microphone init failed: %s",
-                 esp_err_to_name(audio_err));
-        return audio_err;
-    }
-
-    const esp_err_t wake_err = compact_wake_service_start(cb, arg, 10000);
-    if (wake_err == ESP_OK) {
-        ESP_LOGI(TAG, "offline wake task ready");
-    } else if (wake_err == ESP_FAIL) {
-        ESP_LOGW(TAG, "offline wake task exited during model initialization");
-    } else if (wake_err == ESP_ERR_TIMEOUT) {
-        ESP_LOGW(TAG, "offline wake model initialization timed out");
-    }
-    return wake_err;
-}
-
-esp_err_t board_port_stop_wake_word_with_timeout(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    const esp_err_t wake_err = compact_wake_service_stop(timeout_ms);
-    if (wake_err == ESP_OK) ESP_LOGI(TAG, "offline wake task stopped cleanly");
-    return wake_err;
-}
-
-esp_err_t board_port_stop_wake_word(void) {
-    return board_port_stop_wake_word_with_timeout(6000);
-}
-
-esp_err_t board_port_capture_wav(uint8_t **out, size_t *out_len) {
-    if (!out || !out_len) return ESP_ERR_INVALID_ARG;
-    *out=NULL;*out_len=0;
-    // Standby MultiNet owns the same I2S RX channel. Wait for its current
-    // read to finish before taking the mutex, otherwise its next inference
-    // chunk can steal the beginning of the command.
-    board_port_pause_wake_word(true);
-    (void)compact_wake_service_wait_for_pause_ack(200);
-    const esp_err_t capture_begin_err = compact_audio_service_command_capture_begin(1500);
-    if (capture_begin_err != ESP_OK) {
-        board_port_pause_wake_word(false);
-        return capture_begin_err;
-    }
-    const size_t max_samples = AUDIO_RATE * COMMAND_CAPTURE_MAX_SECONDS;
-    const size_t start_timeout_samples =
-        AUDIO_RATE * COMMAND_CAPTURE_START_TIMEOUT_MS / 1000;
-    const size_t silence_samples = AUDIO_RATE * COMMAND_CAPTURE_SILENCE_MS / 1000;
-    const size_t start_confirm_samples =
-        AUDIO_RATE * COMMAND_CAPTURE_START_CONFIRM_MS / 1000;
-    const size_t preroll_samples = AUDIO_RATE * COMMAND_CAPTURE_PREROLL_MS / 1000;
-    size_t len=44+max_samples*2;
-    uint8_t *wav = compact_audio_service_allocate_command_wav(len);
-    if(!wav){compact_audio_service_command_capture_end();board_port_pause_wake_word(false);return ESP_ERR_NO_MEM;}
-    memset(wav,0,44);memcpy(wav,"RIFF",4);uint32_t v=len-8;memcpy(wav+4,&v,4);memcpy(wav+8,"WAVEfmt ",8);
-    v=16;memcpy(wav+16,&v,4);uint16_t s=1;memcpy(wav+20,&s,2);memcpy(wav+22,&s,2);v=AUDIO_RATE;memcpy(wav+24,&v,4);
-    v=AUDIO_RATE*2;memcpy(wav+28,&v,4);s=2;memcpy(wav+32,&s,2);s=16;memcpy(wav+34,&s,2);memcpy(wav+36,"data",4);v=max_samples*2;memcpy(wav+40,&v,4);
-    int16_t *pcm = (int16_t *)(wav + 44);
-    size_t done = 0;
-    size_t voiced = 0;
-    size_t silence = 0;
-    size_t speech_start_sample = 0;
-    bool speech_started = false;
-    uint16_t smoothed_level = 0;
-    uint16_t idle_level = 0;
-    uint32_t last_ui_second = UINT32_MAX;
-    while (done < max_samples) {
-        size_t got = 0;
-        compact_audio_capture_stats_t capture_stats = {0};
-        esp_err_t err = compact_audio_service_capture_read(
-            pcm + done, max_samples - done, &got, &capture_stats, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            compact_audio_service_free_command_wav(wav);
-            compact_audio_service_command_capture_end();
-            board_port_pause_wake_word(false);
-            return err;
-        }
-        if (got == 0) continue;
-        done += got;
-        const uint16_t mean_level = capture_stats.mean_level;
-        const uint16_t level = capture_stats.level;
-        smoothed_level = level > smoothed_level
-                             ? (uint16_t)((smoothed_level + level * 3u) / 4u)
-                             : (uint16_t)((smoothed_level * 7u + level) / 8u);
-        uint32_t elapsed = (uint32_t)(done / AUDIO_RATE);
-        // Command capture is synchronous, unlike the meeting stream. Feed the
-        // same shared recording UI from this loop so its timer and waveform
-        // remain live on every supported board.
-        board_port_push_recording_pcm(pcm + done - got, got);
-        board_port_set_audio_level(smoothed_level, elapsed);
-        if (elapsed != last_ui_second) {
-            board_port_set_recording_visual(true, false, elapsed);
-            last_ui_second = elapsed;
-        }
-        // Require a short run of voiced frames to reject clicks, then end only
-        // after a longer quiet interval. Hysteresis keeps ordinary soft
-        // consonants and brief between-word pauses from ending the command.
-        if (!speech_started) {
-            // Learn the local microphone floor while waiting for speech.  The
-            // minimum keeps a spoken preamble from raising the floor.
-            if (idle_level == 0 || mean_level < idle_level) idle_level = mean_level;
-            voiced = level >= COMMAND_CAPTURE_START_LEVEL ? voiced + got : 0;
-            if (voiced >= start_confirm_samples) {
-                speech_started = true;
-                silence = 0;
-                speech_start_sample = done - voiced;
-                ESP_LOGI(TAG, "command speech started after %u ms", (unsigned)(done * 1000 / AUDIO_RATE));
-            } else if (done >= start_timeout_samples) {
-                ESP_LOGI(TAG, "command capture timed out waiting for speech");
-                compact_audio_service_free_command_wav(wav);
-                compact_audio_service_command_capture_end();
-                board_port_pause_wake_word(false);
-                return ESP_ERR_NOT_FOUND;
-            }
-        } else {
-            uint16_t silence_level = idle_level + COMMAND_CAPTURE_SILENCE_MARGIN;
-            if (silence_level < COMMAND_CAPTURE_SILENCE_FLOOR) {
-                silence_level = COMMAND_CAPTURE_SILENCE_FLOOR;
-            }
-            if (silence_level > COMMAND_CAPTURE_SILENCE_CEILING) {
-                silence_level = COMMAND_CAPTURE_SILENCE_CEILING;
-            }
-            silence = mean_level <= silence_level ? silence + got : 0;
-            if (silence >= silence_samples) {
-                ESP_LOGI(TAG,
-                         "command capture ended after %u ms of silence (mean=%u threshold=%u)",
-                         COMMAND_CAPTURE_SILENCE_MS, mean_level, silence_level);
-                break;
-            }
-        }
-        if (compact_audio_service_command_capture_stop_requested()) {
-            ESP_LOGI(TAG, "command capture manually stopped: speech=%s elapsed=%ums",
-                     speech_started ? "yes" : "no",
-                     (unsigned)(done * 1000 / AUDIO_RATE));
-            break;
-        }
-    }
-    if (!speech_started) {
-        compact_audio_service_free_command_wav(wav);
-        compact_audio_service_command_capture_end();
-        board_port_pause_wake_word(false);
-        return ESP_ERR_NOT_FOUND;
-    }
-    const size_t trim_start = speech_start_sample > preroll_samples
-                                  ? speech_start_sample - preroll_samples
-                                  : 0;
-    const size_t captured_samples = done - trim_start;
-    if (trim_start > 0) {
-        memmove(pcm, pcm + trim_start, captured_samples * sizeof(*pcm));
-    }
-    ESP_LOGI(TAG, "captured %u mono samples (trimmed %u ms)",
-             (unsigned)captured_samples,
-             (unsigned)(trim_start * 1000 / AUDIO_RATE));
-    const size_t actual_len = 44 + captured_samples * sizeof(*pcm);
-    v = (uint32_t)(actual_len - 8); memcpy(wav + 4, &v, sizeof(v));
-    v = (uint32_t)(captured_samples * sizeof(*pcm)); memcpy(wav + 40, &v, sizeof(v));
-    compact_audio_service_command_capture_end();
-    board_port_pause_wake_word(false);
-    *out=wav;
-    *out_len=actual_len;
-    return ESP_OK;
-}
-
-void board_port_release_captured_wav(uint8_t *wav) {
-    compact_audio_service_free_command_wav(wav);
-}
-
-void board_port_set_network_transport(bool cellular) {
+void legacy_connectivity_transport_set_network_transport(bool cellular) {
     if (!s_lcd_mutex) return;
     xSemaphoreTakeRecursive(s_lcd_mutex, portMAX_DELAY);
     const bool changed = compact_visual_profile_publish_network_transport(cellular);
@@ -3615,171 +3380,3 @@ void board_port_set_network_transport(bool cellular) {
     }
     xSemaphoreGiveRecursive(s_lcd_mutex);
 }
-
-bool board_port_get_power_status(unsigned *level_percent, bool *charging) {
-    return compact_peripheral_service_get_power_status(level_percent, charging);
-}
-
-void board_port_request_capture_stop(void) {
-    // Retain a stop that lands in the application-to-reader hand-off window.
-    compact_audio_service_request_command_capture_stop();
-}
-
-void board_port_reset_capture_stop(void) {
-    compact_audio_service_reset_command_capture_stop();
-}
-
-void board_port_request_audio_playback_stop(void) {
-    compact_audio_service_request_playback_stop();
-}
-
-static esp_err_t write_stereo(const int16_t *source, size_t frames, unsigned channels) {
-    int16_t stereo[512];
-    // Take one coherent gain snapshot per DMA block. A GUI hardware_config
-    // update is then visible on the next block without partially scaling a
-    // stereo frame or racing an optimizer-cached ordinary variable.
-    size_t done = 0;
-    while (done < frames) {
-        size_t count = frames - done;
-        if (count > 256) count = 256;
-        const unsigned volume = __atomic_load_n(&s_output_volume, __ATOMIC_RELAXED);
-        for (size_t i = 0; i < count; ++i) {
-            int32_t left = source[(done + i) * channels];
-            int32_t right = channels == 2 ? source[(done + i) * 2 + 1] : left;
-            stereo[i * 2] = (int16_t)(left * (int32_t)volume / 100);
-            stereo[i * 2 + 1] = (int16_t)(right * (int32_t)volume / 100);
-        }
-        size_t written = 0;
-        size_t expected = count * 2 * sizeof(int16_t);
-        esp_err_t err = compact_audio_service_playback_write(
-            stereo, expected, &written, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) return err;
-        if (written != expected) return ESP_ERR_TIMEOUT;
-        done += count;
-    }
-    return ESP_OK;
-}
-
-static esp_err_t speaker_play_begin(void) {
-    return compact_audio_service_playback_begin(1500);
-}
-
-static esp_err_t speaker_play_end(esp_err_t playback_err) {
-    /* Give the final descriptor time to leave DMA, followed by a short zero
-     * tail. Disabling immediately after i2s_channel_write only proves that the
-     * bytes were queued, not that the speaker consumed them. */
-    vTaskDelay(pdMS_TO_TICKS(20));
-    int16_t silence[128] = {0};
-    esp_err_t silence_err = write_stereo(silence, 128, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    esp_err_t stop_err = compact_audio_service_playback_end();
-    if (stop_err != ESP_OK) ESP_LOGW(TAG, "speaker stop failed: %s", esp_err_to_name(stop_err));
-    if (playback_err != ESP_OK) return playback_err;
-    if (silence_err != ESP_OK) return silence_err;
-    return stop_err;
-}
-
-esp_err_t board_port_play_wav(const uint8_t *wav, size_t len) {
-    if (!wav || len < 44 || memcmp(wav, "RIFF", 4) != 0 ||
-        memcmp(wav + 8, "WAVE", 4) != 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    const uint8_t *format_chunk = NULL;
-    const uint8_t *audio_data = NULL;
-    size_t format_size = 0;
-    size_t audio_size = 0;
-    for (size_t offset = 12; offset + 8 <= len;) {
-        const uint8_t *chunk = wav + offset;
-        uint32_t chunk_size = (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) |
-                              ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
-        offset += 8;
-        if (chunk_size > len - offset) return ESP_ERR_INVALID_SIZE;
-        if (memcmp(chunk, "fmt ", 4) == 0) {
-            format_chunk = wav + offset;
-            format_size = chunk_size;
-        } else if (memcmp(chunk, "data", 4) == 0) {
-            audio_data = wav + offset;
-            audio_size = chunk_size;
-        }
-        size_t padded = (size_t)chunk_size + (chunk_size & 1u);
-        if (padded > len - offset) return ESP_ERR_INVALID_SIZE;
-        offset += padded;
-    }
-    if (!format_chunk || format_size < 16 || !audio_data || !audio_size) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    uint16_t format = (uint16_t)format_chunk[0] | ((uint16_t)format_chunk[1] << 8);
-    uint16_t channels = (uint16_t)format_chunk[2] | ((uint16_t)format_chunk[3] << 8);
-    uint32_t rate = (uint32_t)format_chunk[4] | ((uint32_t)format_chunk[5] << 8) |
-                    ((uint32_t)format_chunk[6] << 16) | ((uint32_t)format_chunk[7] << 24);
-    uint16_t bits = (uint16_t)format_chunk[14] | ((uint16_t)format_chunk[15] << 8);
-    if (format != 1 || bits != 16 || (channels != 1 && channels != 2) || rate != AUDIO_RATE) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    size_t frame_bytes = channels * sizeof(int16_t);
-    if (audio_size % frame_bytes != 0) return ESP_ERR_INVALID_SIZE;
-    esp_err_t err = board_port_audio_playback_begin();
-    if (err == ESP_OK) {
-        err = board_port_audio_playback_write((const int16_t *)audio_data,
-                                              audio_size / frame_bytes, channels);
-        err = board_port_audio_playback_end(err);
-    }
-    return err;
-}
-
-esp_err_t board_port_audio_playback_begin(void) {
-    // Give MultiNet time to leave its current microphone read and acknowledge
-    // the pause before speaker playback takes the shared I2S mutex. Acquiring
-    // the mutex first leaves a race where the recognizer cannot acknowledge
-    // until after playback and may resume with stale detector state.
-    board_port_pause_wake_word(true);
-    (void)compact_wake_service_wait_for_pause_ack(300);
-    const esp_err_t err = speaker_play_begin();
-    if (err != ESP_OK) {
-        board_port_pause_wake_word(false);
-    }
-    return err;
-}
-
-esp_err_t board_port_audio_playback_write(const int16_t *pcm, size_t frames,
-                                           unsigned channels) {
-    if (!pcm || frames == 0 || (channels != 1 && channels != 2)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return write_stereo(pcm, frames, channels);
-}
-
-esp_err_t board_port_audio_playback_end(esp_err_t playback_err) {
-    esp_err_t err = speaker_play_end(playback_err);
-    board_port_pause_wake_word(false);
-    return err;
-}
-esp_err_t board_port_play_ack_chime(void) {
-    esp_err_t err = board_port_audio_playback_begin();
-    if (err != ESP_OK) return err;
-    int16_t mono[256];
-    for (int block = 0; block < 10 && err == ESP_OK; ++block) {
-        for (int i = 0; i < 256; ++i) {
-            mono[i] = sinf(2 * 3.14159265f * 660 * (block * 256 + i) / AUDIO_RATE) * 3500;
-        }
-        err = board_port_audio_playback_write(mono, 256, 1);
-    }
-    return board_port_audio_playback_end(err);
-}
-esp_err_t board_port_play_alarm_burst(void) {
-    int16_t mono[256];
-    esp_err_t err = board_port_audio_playback_begin();
-    if (err != ESP_OK) return err;
-    for (int strike = 0; strike < 3 && err == ESP_OK; ++strike) {
-        float hz = strike & 1 ? 2050.0f : 1700.0f;
-        for (int block = 0; block < 5 && err == ESP_OK; ++block) {
-            float amplitude = 7600.0f - block * 1100.0f;
-            for (int i = 0; i < 256; ++i) {
-                mono[i] = (int16_t)(sinf(2.0f * 3.14159265f * hz * (block * 256 + i) / AUDIO_RATE) * amplitude);
-            }
-            err = board_port_audio_playback_write(mono, 256, 1);
-        }
-    }
-    return board_port_audio_playback_end(err);
-}
-esp_err_t board_port_play_ack_voice(void) {return board_port_play_ack_chime();}

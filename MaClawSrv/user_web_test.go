@@ -29,8 +29,14 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	if csp := w.Result().Header.Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self' data: blob:") {
 		t.Fatalf("user web CSP must allow authorized QR blob images, got %q", csp)
 	}
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "MaClawSrv") || !strings.Contains(w.Body.String(), "/app/app.js") {
-		t.Fatalf("user shell = %d body = %s", w.Code, w.Body.String())
+	shell := w.Body.String()
+	for _, needle := range []string{
+		"MaClawSrv", "/app/app.js",
+		`data-view="assistant"`, `data-view="knowledge"`, `data-view="skills"`, `data-view="im"`, `data-view="settings"`,
+	} {
+		if w.Code != http.StatusOK || !strings.Contains(shell, needle) {
+			t.Fatalf("user shell missing %q code=%d body=%s", needle, w.Code, shell)
+		}
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/app/app.js", nil)
@@ -60,6 +66,13 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"/api/v1/config/validate",
 		"/api/v1/config/test",
 		"/api/v1/instances/${encodeURIComponent(inst.id)}/messages",
+		"task_continuation_handle",
+		"data-continue-task",
+		"data-refine-task",
+		"function bindMessageContinuationButtons()",
+		"continuation_handle = handle",
+		"refine_task = true",
+		"Continue this task.",
 		"state.instanceId ? (state.instances.find((x) => x.id === state.instanceId) || null) : (state.instances[0] || null)",
 		"function selectedInstanceMissing()",
 		"hiddenMessages: {}",
@@ -73,7 +86,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"function resetRunState()",
 		"if (state.instanceId !== b.dataset.instance) resetRunState()",
 		"if (state.sessionId !== b.dataset.session) resetRunState()",
-		`if (state.view !== b.dataset.view) { resetRunState(); if (state.view === "settings") resetWeixinQRLogin(); }`,
+		`if (state.view !== b.dataset.view) { resetRunState(); if (state.view === "settings" || state.view === "im") { resetWeixinQRLogin(); resetQQBotQRLogin(); } }`,
 		"$(\"logoutBtn\").onclick = () => { clearAccessToken(); renderMissingToken(); };",
 		"closeRunStream();\n  state.currentRun = null;",
 		"err.status = resp.status",
@@ -91,7 +104,19 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"[\"pointerdown\", \"keydown\", \"input\", \"focus\"].forEach((eventName) => document.addEventListener(eventName, markUserActivity, true));",
 		"throw err; }",
 		"const reader = resp.body.getReader()",
-		"Session expired. Open this page again from VE Platform.",
+		"Session expired. Sign in again.",
+		"/api/v1/auth/token",
+		"function submitSignIn(e)",
+		"id=\"signInForm\"",
+		"function renderSkillsWorkbench()",
+		"function renderIMWorkbench()",
+		"data-view=\"skills\"",
+		"data-view=\"im\"",
+		"skillsNav: \"Skills / MCP\"",
+		"imNav: \"IM\"",
+		"Sign in with your MaClawSrv API key and secret",
+		"function refreshSkillMCPPanels()",
+		"function refreshConfigOrIM()",
 		"function handleAPIError(e)",
 		"模型服务暂时不可用：上游网关返回 502",
 		"async function refreshInstances()",
@@ -510,6 +535,34 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"mcpMarketItemKeys(item).some",
 		"id=\"mcpAddMode\"",
 		"mcpEntriesFromJSON",
+		"function normalizeMCPEntry",
+		"function mcpAuthorizationHeader",
+		"function applyMCPAuthFromHeaders",
+		"auth.toLowerCase().startsWith(\"bearer \")",
+		"entry.auth_type = \"bearer\"",
+		"entry.auth_type = \"api_key\"",
+		"function mcpConfigMap",
+		"\"mcpServers\", \"mcp_servers\", \"mcpservers\", \"servers\"",
+		"normalized === \"mcpservers\"",
+		"function mcpArgsList",
+		"function mcpCommandAndArgs",
+		"mcpArgsList(cfg?.arguments)",
+		"mcpEnvMap(cfg.environment)",
+		"function mcpEnvMap",
+		"function mcpHeadersMap",
+		"function mcpBool",
+		"cfg.serverUrl || cfg.server_url",
+		"cfg.auth_token || cfg.api_key || cfg.apiKey",
+		"entry.auth_type = \"api_key\"",
+		"streamable-http",
+		"function stripMCPImportCodeFence",
+		"function normalizeMCPImportJSON",
+		"function mcpServerAlreadyInstalled",
+		"mcpAlreadyExists",
+		"const created = []",
+		"method: \"DELETE\"",
+		"mcp_servers",
+		"mcpJsonEmpty",
 		"function renderWebSearchManager()",
 		"data-web-search-manager",
 		"data-web-search-readonly",
@@ -696,7 +749,6 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		`renderIMChannelShell(t("channelThirdParty"), t("imThirdPartyDescription"), "thirdparty_gateway_enabled", "thirdparty", defs`,
 		`const IM_DOC_LINKS`,
 		`function renderIMLinkAction(href, label)`,
-		`renderIMLinkAction(IM_DOC_LINKS.qq, t("imGetAppID"))`,
 		`renderIMLinkAction(IM_DOC_LINKS.telegram, t("imTutorial"))`,
 		`renderIMLinkAction(thirdPartyDocsURL(), t("imOpenDocs"))`,
 		`const fields = group.id === "im" ? ""`,
@@ -719,10 +771,22 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		`actionOverride === null ? renderIMCardActions(enabledKey) : actionOverride`,
 		`state.config?.[enabledKey] === true && imRequiredFieldsReady(enabledKey)`,
 		`id="startWeixinQRLogin"`,
+		`id="startQQBotQRLogin"`,
+		`t("qqbotQRRescan")`,
+		`function maskQQBotAppID(id)`,
+		`startQQBotQRLogin(false)`,
+		`state.qqbotQRToken !== token`,
+		`state.qqbotQRStartGen`,
+		`rawStatus === "confirmed"`,
+		`state.qqbotQRToken || state.qqbotQRCodeURL || status === "loading"`,
+		`qqbotQRScanned`,
+		`qqbotQRRefreshes`,
 		`/api/v1/im/weixin/qr/start`,
+		`/api/v1/im/qqbot/qr/start`,
 		`function authorizedObjectURL(path)`,
 		`state.weixinQRCodeURL = imageURL ? await authorizedObjectURL(imageURL) : String(out.qrcode_url || "")`,
 		`/api/v1/im/weixin/qr/poll`,
+		`/api/v1/im/qqbot/qr/poll`,
 		`state.config = userConfigDraft(cfgResp.app_config)`,
 		`function normalizeWeixinQRStatus(status)`,
 		`["wait", "waiting", "pending", "polling", "timeout"].includes(s)`,
@@ -737,8 +801,8 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		`t("imMissingRequired")`,
 		`enabledKey === "weixin_enabled" && !imRequiredFieldsReady(enabledKey)`,
 		`enabledKey === "thirdparty_gateway_enabled"`,
-		`if (state.view === "settings") resetWeixinQRLogin();`,
-		`window.addEventListener("beforeunload", clearWeixinQRPoll)`,
+		`if (state.view === "settings" || state.view === "im") { resetWeixinQRLogin(); resetQQBotQRLogin(); }`,
+		`window.addEventListener("beforeunload", () => { clearWeixinQRPoll(); clearQQBotQRPoll(); })`,
 		`const PLAIN_TEXT_CONFIG_FIELDS = new Set(["qqbot_app_id", "lansenger_app_id"])`,
 		`data-save-start-im`,
 		`data-disconnect-im`,
@@ -896,7 +960,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	assertAdminSecurityHeaders(t, w.Result())
 	css := w.Body.String()
-	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".message-actions", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".composer-actions", ".composer-actions button", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".settings-head", ".settings-actions", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".bool-radio", ".bool-radio-two", ".bool-radio input:checked + span", ".skill-grid", ".skill-card", ".skill-pager", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".migration-manager", ".migration-kv", ".migration-warning", ".migration-grid", ".migration-progress", ".channel-overview", ".im-progress-settings", ".im-subtabs", ".im-subtab.active", ".im-channel-panel", ".im-channel-toolbar", ".im-channel-actions", ".im-link-action", ".im-enable-row", ".im-field-grid", ".im-field-grid-two", ".weixin-account-status", ".weixin-qr-actions", ".channel-protocol", ".channel-protocol-actions", ".im-audit-shell", ".danger-modal-backdrop", ".danger-modal", ".danger-modal-actions", ".knowledge-access-summary", ".knowledge-section-head", ".knowledge-access-layout", ".knowledge-scope-list { display: grid; grid-template-columns: 1fr;", ".knowledge-scope-chip", ".knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto;", ".knowledge-scope-actions", ".knowledge-clear-btn { min-height: 36px;", ".knowledge-scope-badge { flex: 0 0 auto; display: inline-flex;", ".knowledge-scope-meta", ".knowledge-scope-ids", ".knowledge-scope-ids code", ".knowledge-scope-chip small", ".knowledge-batch-panel", ".knowledge-batch-row", "grid-template-rows: auto auto;", ".knowledge-batch-meta", "white-space: nowrap; overflow: hidden;", ".knowledge-batch-pager", ".knowledge-importer", ".knowledge-import-grid { display: grid; grid-template-columns: repeat(2", "align-items: stretch;", ".knowledge-import-grid section { display: grid; grid-template-rows: auto 1fr;", ".knowledge-import-grid section:nth-child(3) { grid-column: 1 / -1; }", ".knowledge-import-fields { display: grid; grid-template-columns: repeat(2", ".knowledge-import-fields > button { align-self: end;", ".knowledge-import-grid h3", ".knowledge-span-2", ".knowledge-search-form input,", ".knowledge-search-form { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(112px, 150px) 96px;", ".knowledge-search-form button { align-self: end; width: 96px;", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)"} {
+	for _, needle := range []string{"@media (prefers-color-scheme: dark)", "@media (prefers-reduced-motion", ".skip-link", "min-height: 100dvh", ".run-panel", ".chat-toolbar", ".clear-panel-btn", ".tool-detail", ".messages-wrap", ".jump-latest", ".message-head", ".message-meta", ".message-time", ".message.pending", ".message-actions", ".md-content.thinking", "@keyframes thinking-dots", ".copy-btn", ".sr-copy-area", ".md-content", ".md-content .md-code", ".md-content .md-code-head", ".md-content blockquote", ".md-content hr", ".md-content .md-table-wrap", "min-width: max-content", ".md-content .task-list-item", ".composer textarea { min-height: 50px; max-height: 180px; resize: none; overflow: auto; }", ".composer-actions", ".composer-actions button", ".cfg-group", ".cfg-group[hidden] { display: none !important; }", ".cfg-tabs", ".cfg-output", ".settings-head", ".settings-actions", ".object-list", ".object-row", ".kv-list", ".kv-pair", ".kv-pair.custom-key-active", ".kv-pair.custom-value-active", ".choice-lines", ".choice-select-stack", ".choice-actions", ".choice-custom", ".choice-custom:not(.custom-active) [data-choice-custom]", ".custom-lines", ".raw-json-editor", ".secret-input", ".bool-radio", ".bool-radio-two", ".bool-radio input:checked + span", ".skill-grid", ".skill-card", ".skill-pager", ".mcp-inline-editor", ".mcp-param-row", ".mcp-param-row button", ".memory-manager", ".memory-toolbar", ".memory-summary", ".memory-chip", ".memory-entry", ".memory-tags", ".memory-load-more", ".migration-manager", ".migration-kv", ".migration-warning", ".migration-grid", ".migration-progress", ".channel-overview", ".im-progress-settings", ".im-subtabs", ".im-subtab.active", ".im-channel-panel", ".im-channel-toolbar", ".im-channel-actions", ".im-link-action", ".im-enable-row", ".im-field-grid", ".im-field-grid-two", ".weixin-account-status", ".weixin-qr-actions", ".channel-protocol", ".channel-protocol-actions", ".im-audit-shell", ".danger-modal-backdrop", ".danger-modal", ".danger-modal-actions", ".knowledge-access-summary", ".knowledge-section-head", ".knowledge-access-layout", ".knowledge-scope-list { display: grid; grid-template-columns: 1fr;", ".knowledge-scope-chip", ".knowledge-scope-head { display: grid; grid-template-columns: minmax(0, 1fr) auto;", ".knowledge-scope-actions", ".knowledge-clear-btn { min-height: 36px;", ".knowledge-scope-badge { flex: 0 0 auto; display: inline-flex;", ".knowledge-scope-meta", ".knowledge-scope-ids", ".knowledge-scope-ids code", ".knowledge-scope-chip small", ".knowledge-batch-panel", ".knowledge-batch-row", "grid-template-rows: auto auto;", ".knowledge-batch-meta", "white-space: nowrap; overflow: hidden;", ".knowledge-batch-pager", ".knowledge-importer", ".knowledge-import-grid { display: grid; grid-template-columns: repeat(2", "align-items: stretch;", ".knowledge-import-grid section { display: grid; grid-template-rows: auto 1fr;", ".knowledge-import-grid section:nth-child(3) { grid-column: 1 / -1; }", ".knowledge-import-fields { display: grid; grid-template-columns: repeat(2", ".knowledge-import-fields > button { align-self: end;", ".knowledge-import-grid h3", ".knowledge-span-2", ".knowledge-search-form input,", ".knowledge-search-form { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(112px, 150px) 96px;", ".knowledge-search-form button { align-self: end; width: 96px;", ".knowledge-progress", ".knowledge-field-error", ".knowledge-field-help", "#issues .error", ".fields { display: block; }", "width: 100%; border: 1px solid var(--line)", ".sign-in-panel", ".workbench-panel"} {
 		if !strings.Contains(css, needle) {
 			t.Fatalf("user css missing marker %s", needle)
 		}
@@ -975,7 +1039,9 @@ func TestUserWebRedirectsSlashlessApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 	req := httptest.NewRequest(http.MethodGet, "/app?launch_token=abc&view=assistant", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -998,7 +1064,9 @@ func TestAdminCanUpdateUserWebConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 
 	path := "/api/v1/admin/tenants/" + tenant.ID + "/users/" + user.ID + "/config"
 	req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{"app_config":{"maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"secret-key","maclaw_llm_model":"gpt-test","memory_max_backups":7}}`))
@@ -1058,7 +1126,9 @@ func TestUserWebSearchConfigIsReadOnlyAndAdminManaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(`{"app_config":{"web_search_providers":[{"name":"user-search","type":"brave"}],"web_search_current_provider":"user-search","default_proxy_enabled":false,"default_proxy_host":"user.proxy","security_policy_mode":"developer","network_level":"full","language":"en-US","maclaw_llm_url":"https://llm.example/v1","maclaw_llm_key":"secret-key","maclaw_llm_model":"gpt-test"}}`))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1102,7 +1172,9 @@ func TestAdminDefaultClientConfigPartialUpdatePreservesBooleans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/client-config/default", strings.NewReader(`{"app_config":{"web_search_providers":[{"name":"new-search","type":"serpapi"}],"web_search_current_provider":"new-search"}}`))
 	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
@@ -1151,7 +1223,9 @@ func TestAdminDefaultClientConfigSchemaOnlyExposesSharedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	defer svc.Close()
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
+	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-config/schema", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")

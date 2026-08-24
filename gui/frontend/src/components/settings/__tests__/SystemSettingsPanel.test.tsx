@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { corelib, main } from '../../../../wailsjs/go/models';
 import { SystemSettingsPanel } from "../SystemSettingsPanel";
 
+const GetEmbedAccelInfo = vi.fn(async (..._args: unknown[]) => ({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' }));
+const SetEmbedHWAccel = vi.fn(async (..._args: unknown[]) => ({}));
+
 vi.mock("../../../../wailsjs/go/main/App", () => ({
   SaveConfig: vi.fn(async () => undefined),
+  GetEmbedAccelInfo: (...args: unknown[]) => GetEmbedAccelInfo(...args),
+  SetEmbedHWAccel: (...args: unknown[]) => SetEmbedHWAccel(...args),
 }));
 
 afterEach(() => {
@@ -89,5 +94,24 @@ describe("SystemSettingsPanel", () => {
     fireEvent.click(screen.getByLabelText("Workstation Mode"));
 
     expect(saveRemoteConfigField).toHaveBeenCalledWith({ workstation_mode: true });
+  });
+
+  it("disables and unchecks hardware acceleration when no NPU is present", async () => {
+    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: false, device: '', reason: 'no NPU/XDNA' });
+    const { saveRemoteConfigField } = renderPanel();
+    const box = await waitFor(() => screen.getByLabelText("Hardware Acceleration"));
+    expect(box).toHaveProperty("disabled", true);
+    expect(box).toHaveProperty("checked", false);
+    fireEvent.click(box);
+    expect(saveRemoteConfigField).not.toHaveBeenCalledWith({ embed_hw_accel: true });
+    expect(SetEmbedHWAccel).not.toHaveBeenCalled();
+  });
+
+  it("enables hardware acceleration checked by default when NPU is present", async () => {
+    GetEmbedAccelInfo.mockResolvedValue({ backend: 'cpu-simd', npu_present: true, device: 'AMD IPU', reason: 'NPU/XDNA present' });
+    renderPanel();
+    const box = await waitFor(() => screen.getByLabelText("Hardware Acceleration"));
+    expect(box).toHaveProperty("disabled", false);
+    expect(box).toHaveProperty("checked", true);
   });
 });

@@ -202,6 +202,8 @@ func (a *App) mutateConfigMaybe(patchFn func(cfg *corelib.AppConfig) bool, opts 
 		}
 		return false, nil
 	}
+	corelib.ApplyZhipuCodingConfigMigration(&cfg)
+	remapLegacyZhipuCodingProfileModels(cfg.MaclawLLMProfiles, cfg.MaclawLLMProviders)
 	if !opts.allowHubManagedSecurity && a.shouldPreserveHubManagedSecurity(current) {
 		clientsecurity.PreserveHubManagedSecurityConfig(current, &cfg)
 	} else if !opts.allowHubManagedSecurity && a.hubSecurityExplicitlyCentralizedFalse() {

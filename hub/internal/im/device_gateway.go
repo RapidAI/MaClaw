@@ -16,6 +16,7 @@ import (
 	_ "image/png"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -111,6 +112,16 @@ type deviceCredentialSnapshotRestorer interface {
 
 const deviceGatewayCredentialsKey = "device_gateway_credentials_v1"
 
+// deviceGatewayPairingsKey keeps short-lived pairing reservations across a
+// Hub process restart. A pairing code is still a one-time secret: it is kept
+// only in the local Hub store, expires after deviceGatewayPairingTTL, and is
+// never included in the credential snapshot replicated to Hub Center.
+//
+// Without this small local journal, a rolling restart between the GUI ACK and
+// the ESP32's HTTPS request leaves the GUI displaying a code that the public
+// endpoint can no longer find.
+const deviceGatewayPairingsKey = "device_gateway_pairings_v1"
+
 // deviceGatewayCredentialsMaxBytes is shared with the authenticated Hub
 // Center backup endpoint. The local SQLite value is also untrusted at startup:
 // bounding it before JSON decoding prevents a corrupted record from making a
@@ -182,11 +193,11 @@ type deviceHardwareConfig struct {
 }
 
 type devicePairing struct {
-	MachineID string
-	TenantID  string
-	UserID    string
-	Pet       devicePetProfile
-	ExpiresAt time.Time
+	MachineID string           `json:"machineId"`
+	TenantID  string           `json:"tenantId"`
+	UserID    string           `json:"userId"`
+	Pet       devicePetProfile `json:"pet"`
+	ExpiresAt time.Time        `json:"expiresAt"`
 }
 
 // pairingRegistrationError is intentionally distinguishable without exposing
@@ -667,9 +678,82 @@ func (g *DeviceGateway) RestoreMissingCredentialsResult(ctx context.Context, res
 	return err == nil, err
 }
 
-// NewPersistentDeviceGateway keeps hardware bearer credentials across Hub
-// process restarts. Pairing codes remain deliberately in memory and expiring;
-// only the durable token-to-owner binding is persisted.
+// NewPersistentDeviceGateway restores durable hardware credentials and the
+// local-only, expiring pairing reservation journal after a Hub restart.
+func normalizePersistedDevicePairings(raw map[string]devicePairing, now time.Time) map[string]devicePairing {
+	pairings := make(map[string]devicePairing, len(raw))
+	machines := make(map[string]struct{}, len(raw))
+	for code, pairing := range raw {
+		code = strings.TrimSpace(code)
+		pairing.MachineID = strings.TrimSpace(pairing.MachineID)
+		pairing.TenantID = normalizeRemoteTenantID(pairing.TenantID)
+		pairing.UserID = strings.TrimSpace(pairing.UserID)
+		if len(code) != 6 || strings.Trim(code, "0123456789") != "" ||
+			pairing.MachineID == "" || pairing.TenantID == "" || pairing.UserID == "" ||
+			!pairing.ExpiresAt.After(now) {
+			continue
+		}
+		// The live registration path exposes one reservation per GUI machine.
+		// Preserve that invariant when recovering a local journal too.
+		if _, exists := machines[pairing.MachineID]; exists {
+			continue
+		}
+		pairing.Pet = normalizeDevicePetProfileAsset(pairing.Pet.Skin, pairing.Pet.MotionEnabled, pairing.Pet.Asset)
+		pairings[code] = pairing
+		machines[pairing.MachineID] = struct{}{}
+	}
+	return pairings
+}
+
+// persistPairingsLocked is deliberately separate from credential persistence:
+// pairing codes are short-lived bootstrap secrets and must never reach the Hub
+// Center credential backup. The caller must hold g.mu.
+func (g *DeviceGateway) persistPairingsLocked() error {
+	if g.store == nil {
+		return nil
+	}
+	raw, err := json.Marshal(g.pairings)
+	if err != nil {
+		return err
+	}
+	return g.store.Set(context.Background(), deviceGatewayPairingsKey, string(raw))
+}
+
+// restorePairingReservationLocked puts back a pairing only if it was not
+// consumed by another request. The caller must hold g.mu.
+func (g *DeviceGateway) restorePairingReservationLocked(pairCode string, pairing devicePairing) {
+	if _, exists := g.pairings[pairCode]; exists {
+		return
+	}
+	g.pairings[pairCode] = pairing
+	if err := g.persistPairingsLocked(); err != nil {
+		log.Printf("device gateway: restore pairing reservation: %v", err)
+	}
+}
+
+func (g *DeviceGateway) loadPersistedPairings() {
+	if g.store == nil {
+		return
+	}
+	raw, err := g.store.Get(context.Background(), deviceGatewayPairingsKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	var saved map[string]devicePairing
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		log.Printf("device gateway: ignore invalid persisted pairing reservations: %v", err)
+		return
+	}
+	pairings := normalizePersistedDevicePairings(saved, time.Now())
+	g.mu.Lock()
+	g.pairings = pairings
+	// Best-effort compaction clears expired/consumed records. A failed cleanup
+	// cannot make a valid reservation disappear from memory during this boot.
+	if err := g.persistPairingsLocked(); err != nil {
+		log.Printf("device gateway: compact persisted pairing reservations: %v", err)
+	}
+	g.mu.Unlock()
+}
 func NewPersistentDeviceGateway(plugin *RemoteGatewayPlugin, store deviceCredentialStore) *DeviceGateway {
 	g := NewDeviceGateway(plugin)
 	g.store = store
@@ -677,16 +761,16 @@ func NewPersistentDeviceGateway(plugin *RemoteGatewayPlugin, store deviceCredent
 		return g
 	}
 	raw, err := store.Get(context.Background(), deviceGatewayCredentialsKey)
-	if err != nil || strings.TrimSpace(raw) == "" {
-		return g
+	if err == nil && strings.TrimSpace(raw) != "" {
+		// The disk snapshot is the same untrusted boundary as a Hub Center backup.
+		// Validate and normalize it before serving any ESP request; otherwise a
+		// partially written or manually corrupted local record could bypass the
+		// recovery checks added for reinstall snapshots.
+		if _, err := g.restorePersistedCredentials(context.Background(), raw, false); err != nil {
+			log.Printf("device gateway: ignore invalid persisted hardware credentials: %v", err)
+		}
 	}
-	// The disk snapshot is the same untrusted boundary as a Hub Center backup.
-	// Validate and normalize it before serving any ESP request; otherwise a
-	// partially written or manually corrupted local record could bypass the
-	// recovery checks added for reinstall snapshots.
-	if _, err := g.restorePersistedCredentials(context.Background(), raw, false); err != nil {
-		log.Printf("device gateway: ignore invalid persisted hardware credentials: %v", err)
-	}
+	g.loadPersistedPairings()
 	return g
 }
 
@@ -1051,6 +1135,10 @@ func (g *DeviceGateway) registerPairingWithPetProfileAsset(machineID, tenantID, 
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	previousPairings := make(map[string]devicePairing, len(g.pairings))
+	for candidate, pairing := range g.pairings {
+		previousPairings[candidate] = pairing
+	}
 	now := time.Now()
 	for candidate, pairing := range g.pairings {
 		if !pairing.ExpiresAt.After(now) {
@@ -1080,6 +1168,10 @@ func (g *DeviceGateway) registerPairingWithPetProfileAsset(machineID, tenantID, 
 		}
 	}
 	g.pairings[code] = devicePairing{MachineID: machineID, TenantID: normalizeRemoteTenantID(tenantID), UserID: userID, Pet: normalizeDevicePetProfileAsset(skin, motionEnabled, asset), ExpiresAt: now.Add(deviceGatewayPairingTTL)}
+	if err := g.persistPairingsLocked(); err != nil {
+		g.pairings = previousPairings
+		return err
+	}
 	return nil
 }
 
@@ -1204,6 +1296,9 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 			g.mu.Lock()
 			if current, exists := g.pairings[pairCode]; exists && current.ExpiresAt.Equal(pairing.ExpiresAt) {
 				delete(g.pairings, pairCode)
+				if err := g.persistPairingsLocked(); err != nil {
+					log.Printf("device gateway: clear invalid pairing reservation: %v", err)
+				}
 			}
 			g.mu.Unlock()
 		}
@@ -1238,13 +1333,6 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		return
 	}
 	token := hex.EncodeToString(bytes[:])
-	for _, principal := range g.tokens {
-		if principal.ClientID == clientID && principal.MachineID != pairing.MachineID {
-			g.mu.Unlock()
-			writeDeviceError(w, http.StatusConflict, "client_id_already_bound", "clientId is already bound to another machine; remove the old binding before pairing again")
-			return
-		}
-	}
 	// Re-pairing an existing client stays available at capacity. A sixth physical
 	// device is refused before issuing a bearer, even if several pairing codes
 	// are outstanding. The user must unbind a device before binding another.
@@ -1254,11 +1342,25 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		writeDeviceError(w, http.StatusConflict, "hardware_device_limit_reached", fmt.Sprintf("hardware binding limit reached (%d devices); remove a bound device before binding a new one", maxDevices))
 		return
 	}
-	// A physical client ID identifies one device across the gateway. Re-pairing
-	// it on the same machine must revoke the earlier credential and discard that
-	// device's stale queue before issuing the new bearer. Cross-machine transfer
-	// requires an explicit unlink, preventing a valid pairing code from silently
-	// taking over another GUI's hardware identity.
+	// Remove the one-time reservation from its local journal before writing the
+	// bearer. This ordering prevents a process crash between the two writes from
+	// resurrecting a code that already has a durable credential. If writing the
+	// credential later fails, the rollback below restores the reservation.
+	reservedPairing := currentPairing
+	delete(g.pairings, pairCode)
+	if err := g.persistPairingsLocked(); err != nil {
+		g.pairings[pairCode] = reservedPairing
+		g.mu.Unlock()
+		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot reserve pairing credential")
+		return
+	}
+
+	// A current six-digit pairing code is explicit authority to move a physical
+	// device to its issuing MaClaw machine. Re-pairing revokes every older bearer
+	// (including one owned by a different machine) and discards stale per-device
+	// state before issuing the replacement credential. This keeps the flow
+	// uniform for every ESP32 board: a user never has to recover an unavailable
+	// old MaClaw instance just to pair their own hardware again.
 	revoked := make(map[string]devicePrincipal)
 	for existingToken, principal := range g.tokens {
 		if principal.ClientID == clientID {
@@ -1287,15 +1389,10 @@ func (g *DeviceGateway) exchangePairing(w http.ResponseWriter, clientID, pairCod
 		for id, media := range removedMedia {
 			g.media[id] = media
 		}
+		g.restorePairingReservationLocked(pairCode, reservedPairing)
 		g.mu.Unlock()
 		writeDeviceError(w, http.StatusInternalServerError, "internal_error", "cannot persist device credential")
 		return
-	}
-	// Consume the one-time pairing only after its credential is durable. This
-	// lets the physical device retry the same request after a transient store
-	// failure without requiring the owner to generate a new code.
-	if current, exists := g.pairings[pairCode]; exists && current.ExpiresAt.Equal(pairing.ExpiresAt) && current.MachineID == pairing.MachineID {
-		delete(g.pairings, pairCode)
 	}
 	g.mu.Unlock()
 	writeDeviceJSON(w, http.StatusCreated, map[string]any{"ok": true, "gatewayToken": token, "clientId": clientID})
@@ -1575,7 +1672,10 @@ func (g *DeviceGateway) handleHandshake(w http.ResponseWriter, r *http.Request) 
 	if petAsset != nil {
 		response["petAsset"] = *petAsset
 	}
-	if meetingRecordings != nil {
+	// The endpoint is not itself permission to use meeting recording.  Advertise
+	// it only after this concrete client has declared and Hub has accepted the
+	// feature; the ESP client applies the same accepted-capability gate.
+	if meetingRecordings != nil && capabilities.Features.MeetingRecorder {
 		response["meetingRecording"] = map[string]any{
 			"basePath": "/api/device-gateway/v1/meeting-recordings", "chunkSize": 1 << 20,
 			"contentTypes": []string{"audio/wav"}, "modes": map[string]bool{"keep": true, "transcript": meetingTranscript, "minutes": meetingMinutes},
@@ -4046,8 +4146,10 @@ func normalizeDevicePetAsset(asset *DevicePetAsset) *DevicePetAsset {
 		}
 	}
 	copy := *asset
-	if copy.FrameMS < 50 || copy.FrameMS > 10000 {
+	if copy.FrameMS == 0 {
 		copy.FrameMS = 450
+	} else if copy.FrameMS < 50 || copy.FrameMS > 10000 {
+		return nil
 	}
 	copy.Frames = append([]string(nil), asset.Frames...)
 	return &copy
@@ -4063,11 +4165,12 @@ func DevicePetAssetFromMap(raw map[string]any) *DevicePetAsset {
 	asset := &DevicePetAsset{}
 	asset.Encoding, _ = raw["encoding"].(string)
 	asset.Data, _ = raw["data"].(string)
-	switch value := raw["frameMs"].(type) {
-	case float64:
-		asset.FrameMS = int(value)
-	case int:
-		asset.FrameMS = value
+	if rawFrameMS, present := raw["frameMs"]; present {
+		frameMS, ok := devicePetAssetMapInteger(rawFrameMS)
+		if !ok || frameMS == 0 {
+			return nil
+		}
+		asset.FrameMS = frameMS
 	}
 	if frames, ok := raw["frames"].([]any); ok {
 		for _, frame := range frames {
@@ -4076,19 +4179,52 @@ func DevicePetAssetFromMap(raw map[string]any) *DevicePetAsset {
 			}
 		}
 	}
-	switch value := raw["width"].(type) {
-	case float64:
-		asset.Width = int(value)
-	case int:
-		asset.Width = value
+	width, ok := devicePetAssetMapInteger(raw["width"])
+	if !ok {
+		return nil
 	}
-	switch value := raw["height"].(type) {
-	case float64:
-		asset.Height = int(value)
-	case int:
-		asset.Height = value
+	asset.Width = width
+	height, ok := devicePetAssetMapInteger(raw["height"])
+	if !ok {
+		return nil
 	}
+	asset.Height = height
 	return normalizeDevicePetAsset(asset)
+}
+
+/* Device gateway WebSocket JSON arrives as map[string]any. Keep conversion
+ * strict: float64 -> int truncation would produce a Hub descriptor the ESP
+ * client correctly rejects, leaving an ordered pet_profile retry pinned. */
+func devicePetAssetMapInteger(value any) (int, bool) {
+	switch number := value.(type) {
+	case int:
+		return number, true
+	case int8:
+		return int(number), true
+	case int16:
+		return int(number), true
+	case int32:
+		return int(number), true
+	case int64:
+		if number < int64(math.MinInt) || number > int64(math.MaxInt) {
+			return 0, false
+		}
+		return int(number), true
+	case float64:
+		if math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number ||
+			number < float64(math.MinInt) || number > float64(math.MaxInt) {
+			return 0, false
+		}
+		return int(number), true
+	case json.Number:
+		parsed, err := strconv.ParseInt(string(number), 10, 0)
+		if err != nil {
+			return 0, false
+		}
+		return int(parsed), true
+	default:
+		return 0, false
+	}
 }
 
 func (g *DeviceGateway) incomingAttachments(clientID string, refs []struct {

@@ -94,6 +94,47 @@ function callMarkAllNotificationsRead(): Promise<void> {
   return binding ? binding() : Promise.resolve();
 }
 
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function asNotificationId(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const raw = value as { id?: unknown; ID?: unknown };
+    return asString(raw.id) || asString(raw.ID);
+  }
+  return "";
+}
+
+function normalizeNotification(raw: unknown): AdminNotification | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = asString(record.id) || asString(record.ID);
+  if (!id) return null;
+  const category = asString(record.category) || asString(record.Category) || "custom";
+  const priority = asString(record.priority) || asString(record.Priority) || "normal";
+  return {
+    id,
+    title: asString(record.title) || asString(record.Title),
+    content: asString(record.content) || asString(record.Content),
+    category: category as AdminNotification["category"],
+    priority: priority as AdminNotification["priority"],
+    is_read: Boolean(record.is_read ?? record.IsRead),
+    created_at: asString(record.created_at) || asString(record.CreatedAt),
+  };
+}
+
+function normalizeNotificationList(raw: unknown): AdminNotification[] {
+  if (!Array.isArray(raw)) return [];
+  const list: AdminNotification[] = [];
+  for (const item of raw) {
+    const notice = normalizeNotification(item);
+    if (notice) list.push(notice);
+  }
+  return list;
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -141,9 +182,7 @@ export function useNotifications(): UseNotificationsReturn {
     try {
       const notifications = await callGetUnreadNotifications();
       if (!mountedRef.current) return;
-      const list: AdminNotification[] = Array.isArray(notifications)
-        ? notifications
-        : [];
+      const list = normalizeNotificationList(notifications);
       const unreadCount = list.filter((n) => !n.is_read).length;
       setState((prev) => ({
         ...prev,
@@ -168,34 +207,33 @@ export function useNotifications(): UseNotificationsReturn {
   // -------------------------------------------------------------------------
 
   const handleNew = useCallback((notification: AdminNotification) => {
-    if (!notification || !notification.id) return;
+    const notice = normalizeNotification(notification);
+    if (!notice) return;
     setState((prev) => {
       // Deduplicate
       const filtered = prev.notifications.filter(
-        (n) => n.id !== notification.id
+        (n) => n.id !== notice.id
       );
       // Prepend (newest first), cap at 10
-      const updated = [notification, ...filtered].slice(0, 10);
+      const updated = [notice, ...filtered].slice(0, 10);
       const unreadCount = updated.filter((n) => !n.is_read).length;
       return { ...prev, notifications: updated, unreadCount };
     });
   }, []);
 
-  const handleRevoke = useCallback((notificationId: string) => {
-    if (!notificationId) return;
+  const handleRevoke = useCallback((notificationId: unknown) => {
+    const id = asNotificationId(notificationId);
+    if (!id) return;
     setState((prev) => {
-      const updated = prev.notifications.filter(
-        (n) => n.id !== notificationId
-      );
+      const updated = prev.notifications.filter((n) => n.id !== id);
       const unreadCount = updated.filter((n) => !n.is_read).length;
       return { ...prev, notifications: updated, unreadCount };
     });
+    setUrgentToast((prev) => (prev?.id === id ? null : prev));
   }, []);
 
   const handleSync = useCallback((notifications: AdminNotification[]) => {
-    const list: AdminNotification[] = Array.isArray(notifications)
-      ? notifications
-      : [];
+    const list = normalizeNotificationList(notifications);
     const capped = list.slice(0, 10);
     const unreadCount = capped.filter((n) => !n.is_read).length;
     setState((prev) => ({
@@ -203,11 +241,15 @@ export function useNotifications(): UseNotificationsReturn {
       notifications: capped,
       unreadCount,
     }));
+    setUrgentToast((prev) =>
+      prev && !capped.some((item) => item.id === prev.id) ? null : prev
+    );
   }, []);
 
   const handleUrgentToast = useCallback((notification: AdminNotification) => {
-    if (!notification || !notification.id) return;
-    setUrgentToast(notification);
+    const notice = normalizeNotification(notification);
+    if (!notice) return;
+    setUrgentToast(notice);
   }, []);
 
   // -------------------------------------------------------------------------
@@ -263,6 +305,7 @@ export function useNotifications(): UseNotificationsReturn {
     callMarkNotificationRead(notificationId).catch((err) => {
       console.warn("[useNotifications] markRead failed:", err);
     });
+    setUrgentToast((prev) => (prev?.id === notificationId ? null : prev));
   }, []);
 
   const markAllRead = useCallback(() => {
@@ -279,6 +322,7 @@ export function useNotifications(): UseNotificationsReturn {
     callMarkAllNotificationsRead().catch((err) => {
       console.warn("[useNotifications] markAllRead failed:", err);
     });
+    setUrgentToast(null);
   }, []);
 
   const dismissUrgentToast = useCallback(() => {

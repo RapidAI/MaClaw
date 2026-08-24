@@ -38,6 +38,90 @@ afterEach(() => {
     __resetWorkspaceDirectoryCacheForTests();
 });
 
+describe('CodePreviewWorkspace hidden entries', () => {
+    it('clears the previous local tree as soon as the working directory changes', async () => {
+        let resolveNew: ((value: unknown) => void) | undefined;
+        getDirectory
+            .mockResolvedValueOnce({ root: 'C:/old-project', entries: [{ name: 'old.go', path: 'old.go', is_dir: false }] })
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve; }));
+        const view = render(<CodePreviewWorkspace projectPath="local-task" refreshToken={0} resetOnRefresh lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        await screen.findByText('old.go');
+
+        view.rerender(<CodePreviewWorkspace projectPath="local-task" refreshToken={1} resetOnRefresh lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(screen.queryByText('old.go')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-root-loading')).toBeTruthy();
+
+        resolveNew?.({ root: 'C:/Users/ma139/Desktop/prog-test', entries: [{ name: 'hello.cpp', path: 'hello.cpp', is_dir: false }] });
+        expect(await screen.findByText('hello.cpp')).toBeTruthy();
+        expect(screen.queryByText('old.go')).toBeNull();
+    });
+
+    it('drops stale child listings when the working directory root changes', async () => {
+        getDirectory
+            .mockResolvedValueOnce({
+                root: 'C:/old-project',
+                entries: [
+                    { name: '.maclaw-tmp', path: '.maclaw-tmp', is_dir: true },
+                    { name: 'src', path: 'src', is_dir: true },
+                ],
+            })
+            .mockResolvedValueOnce({ root: 'C:/old-project', path: 'src', entries: [{ name: 'old.go', path: 'src/old.go', is_dir: false }] })
+            .mockResolvedValueOnce({
+                root: 'C:/Users/ma139/Desktop/prog-test',
+                entries: [
+                    { name: 'hello.cpp', path: 'hello.cpp', is_dir: false },
+                    { name: 'build', path: 'build', is_dir: true },
+                ],
+            });
+        const view = render(<CodePreviewWorkspace projectPath="local-task" refreshToken={0} resetOnRefresh lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.click(await screen.findByTestId('code-preview-workspace-directory'));
+        await screen.findByText('old.go');
+
+        view.rerender(<CodePreviewWorkspace projectPath="local-task" refreshToken={1} resetOnRefresh lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('hello.cpp')).toBeTruthy();
+        expect(screen.getByText('build')).toBeTruthy();
+        expect(screen.queryByText('old.go')).toBeNull();
+        expect(screen.queryByText('.maclaw-tmp')).toBeNull();
+        expect(getDirectory.mock.calls.filter(call => call[1] === 'src')).toHaveLength(1);
+    });
+
+    it('replaces a cached tree when the live working directory root changes', async () => {
+        getDirectory
+            .mockResolvedValueOnce({ root: 'C:/old-project', entries: [{ name: 'src', path: 'src', is_dir: true }] })
+            .mockResolvedValueOnce({ root: 'C:/old-project', path: 'src', entries: [{ name: 'old.go', path: 'src/old.go', is_dir: false }] });
+        const first = render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.click(await screen.findByTestId('code-preview-workspace-directory'));
+        await screen.findByText('old.go');
+        first.unmount();
+
+        getDirectory.mockResolvedValueOnce({
+            root: 'C:/Users/ma139/Desktop/prog-test',
+            entries: [{ name: 'hello.cpp', path: 'hello.cpp', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('hello.cpp')).toBeTruthy();
+        expect(screen.queryByText('old.go')).toBeNull();
+        expect(screen.queryByText('src')).toBeNull();
+    });
+
+    it('does not render dot-prefixed directories from the listing', async () => {
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/ma139/Desktop/prog-test',
+            entries: [
+                { name: '.maclaw-tmp', path: '.maclaw-tmp', is_dir: true },
+                { name: '.git', path: '.git', is_dir: true },
+                { name: 'hello.cpp', path: 'hello.cpp', is_dir: false },
+                { name: 'build', path: 'build', is_dir: true },
+            ],
+        });
+        render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('hello.cpp')).toBeTruthy();
+        expect(screen.getByText('build')).toBeTruthy();
+        expect(screen.queryByText('.maclaw-tmp')).toBeNull();
+        expect(screen.queryByText('.git')).toBeNull();
+    });
+});
+
 describe('workspaceFileIconKind', () => {
     it('assigns distinct SVG badges to common file families', () => {
         expect(workspaceFileIconKind('component.tsx')).toEqual({ badge: 'TS', kind: 'code' });

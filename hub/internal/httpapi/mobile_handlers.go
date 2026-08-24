@@ -29,6 +29,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -2647,6 +2648,9 @@ type mobileSearchRequest struct {
 	// DocumentID binds a mobile draft as the assistant's working object (sync path).
 	// Hub injects the owned draft Markdown into the agent system context.
 	DocumentID string `json:"document_id,omitempty"`
+	// RecordingID binds one viewer-owned meeting recording as a host-trusted
+	// current-turn audio attachment. It is never parsed from query text.
+	RecordingID string `json:"recording_id,omitempty"`
 	// Async enqueues a long-running assistant job and returns 202 immediately
 	// (design: short SSE / long → 后台 job). Stream is ignored when Async is true.
 	Async bool `json:"async,omitempty"`
@@ -2698,6 +2702,8 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 				switch {
 				case strings.Contains(msg, "document"):
 					writeError(w, http.StatusNotFound, "DOCUMENT_NOT_FOUND", "bound document not found or not owned by viewer")
+				case strings.Contains(msg, "recording"):
+					writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "bound recording not found or not owned by viewer")
 				case strings.Contains(msg, "limit"):
 					writeError(w, http.StatusTooManyRequests, "JOB_LIMIT", "too many active assistant jobs")
 				default:
@@ -2729,6 +2735,7 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 		chatMessages := mobileBuildLLMMessages(query, citations, req.Messages, req.Context)
 		boundDocID := ""
 		boundDocTitle := ""
+		var boundAttachments []agent.MessageAttachment
 		if docID := strings.TrimSpace(req.DocumentID); docID != "" {
 			draft, ok := mobileLookupOwnedDraft(principal, docID)
 			if !ok {
@@ -2738,6 +2745,16 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 			chatMessages = mobileInjectBoundDocument(chatMessages, draft)
 			boundDocID = draft.ID
 			boundDocTitle = draft.Title
+			boundAttachments = append(boundAttachments, mobileTrustedDraftAttachments(draft)...)
+		}
+		if recID := strings.TrimSpace(req.RecordingID); recID != "" {
+			if _, ok := mobileLookupOwnedRecording(principal, recID); !ok {
+				writeError(w, http.StatusNotFound, "RECORDING_NOT_FOUND", "bound recording not found or not owned by viewer")
+				return
+			}
+			if attachment, ok := mobileTrustedAudioAttachmentForPrincipal(principal, recID); ok {
+				boundAttachments = append(boundAttachments, attachment)
+			}
 		}
 		answer := mobileSearchAnswer(query, results, links)
 		requestID := ""
@@ -2752,14 +2769,14 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 
 		if req.Stream && hasLLM {
 			// Tool-capable agent loop with progressive SSE (tool_call / tool_result / delta / done).
-			if err := mobileStreamAgentSearchAnswer(r, w, principal, query, citations, officialLLM, delegated, useDelegated, chatMessages); err != nil {
+			if err := mobileStreamAgentSearchAnswer(r, w, principal, query, citations, officialLLM, delegated, useDelegated, chatMessages, boundAttachments); err != nil {
 				mobileWriteSearchSSEError(w, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
 			}
 			return
 		}
 
 		if hasLLM {
-			answer, requestID, err = mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, chatMessages, nil)
+			answer, requestID, err = mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, chatMessages, nil, boundAttachments)
 		}
 		if err != nil {
 			if req.Stream {
@@ -2787,6 +2804,9 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 			if boundDocTitle != "" {
 				payload["document_title"] = boundDocTitle
 			}
+		}
+		if recID := strings.TrimSpace(req.RecordingID); recID != "" {
+			payload["recording_id"] = recID
 		}
 		if req.Stream {
 			mobileWriteSearchSSE(w, payload)
@@ -3260,6 +3280,7 @@ func mobileStreamAgentSearchAnswer(
 	delegated mobileLlmAuthorizationRecord,
 	useDelegated bool,
 	messages []map[string]string,
+	attachments []agent.MessageAttachment,
 ) error {
 	mode := "maclaw_official"
 	if useDelegated {
@@ -3273,7 +3294,7 @@ func mobileStreamAgentSearchAnswer(
 	flusher, err := mobileBeginSearchSSE(w, meta)
 	if err != nil {
 		// No flusher: non-stream agent then chunk.
-		answer, requestID, callErr := mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, messages, nil)
+		answer, requestID, callErr := mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, messages, nil, attachments)
 		if callErr != nil {
 			return callErr
 		}
@@ -3305,7 +3326,7 @@ func mobileStreamAgentSearchAnswer(
 			flusher.Flush()
 		}
 	}
-	answer, requestID, err := mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, messages, emit)
+	answer, requestID, err := mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, messages, emit, attachments)
 	if err != nil {
 		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
 		return nil

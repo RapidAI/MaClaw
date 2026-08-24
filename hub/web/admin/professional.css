@@ -307,6 +307,33 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 /* Review fixes: hero body text needed >=4.5:1 on the tinted hero; system tab items kept a dashed border. */
 .hero p,.hero li{color:#5c6b83}
 #tab-system .item{border-style:solid}
+/* New-user benefit selection: treat the two programs as comparable choices,
+   not as a loose pair of radios. The active option stays obvious without
+   using color alone, and each option explains its consequence in place. */
+#llmServiceSystemRoot{gap:14px!important}
+#llmServiceSystemRoot>.head{align-items:center;margin-bottom:2px;padding-bottom:14px}
+#llmServiceSystemRoot .llm-benefit-mode{display:grid;gap:8px;margin:0;padding:14px 0 16px;border:0;border-bottom:1px solid var(--line);min-inline-size:0}
+#llmServiceSystemRoot .llm-benefit-mode__label{margin:0;color:#334155;font-size:12px;font-weight:750;letter-spacing:0}
+#llmServiceSystemRoot .llm-benefit-mode__options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+#llmServiceSystemRoot .llm-benefit-mode__option{position:relative;display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;align-items:start;min-height:82px;margin:0;padding:13px 14px;border:1px solid #d9e1ec;border-radius:10px;background:#fff;color:#334155;cursor:pointer;transition:border-color .16s ease,background-color .16s ease,box-shadow .16s ease}
+#llmServiceSystemRoot .llm-benefit-mode__option:hover{border-color:#aabbd2;background:#fbfdff}
+#llmServiceSystemRoot .llm-benefit-mode__option.is-active{border-color:#2563eb;background:#f7faff;box-shadow:inset 0 0 0 1px #2563eb}
+#llmServiceSystemRoot .llm-benefit-mode__option input{position:absolute;inline-size:1px;block-size:1px;opacity:0}
+#llmServiceSystemRoot .llm-benefit-mode__indicator{position:relative;display:block;width:18px;height:18px;margin-top:1px;border:1px solid #94a3b8;border-radius:50%;background:#fff}
+#llmServiceSystemRoot .llm-benefit-mode__option.is-active .llm-benefit-mode__indicator{border-color:#2563eb;background:#2563eb}
+#llmServiceSystemRoot .llm-benefit-mode__option.is-active .llm-benefit-mode__indicator::after{content:"";position:absolute;inset:5px;border-radius:50%;background:#fff}
+#llmServiceSystemRoot .llm-benefit-mode__copy{display:grid;gap:4px;min-width:0}
+#llmServiceSystemRoot .llm-benefit-mode__copy strong{font-size:13px;font-weight:750;line-height:1.35;color:#243244}
+#llmServiceSystemRoot .llm-benefit-mode__copy small{color:#5d6b7d;font-size:11px;line-height:1.45}
+#llmServiceSystemRoot .llm-benefit-mode__option:focus-within{outline:3px solid rgba(37,99,235,.3);outline-offset:2px}
+#llmServiceSystemRoot .llm-benefit-mode__note{display:flex;align-items:flex-start;gap:7px;color:#526174;font-size:11px;line-height:1.45}
+#llmServiceSystemRoot .llm-benefit-mode__note::before{content:"i";display:inline-grid;place-items:center;width:15px;height:15px;flex:0 0 15px;margin-top:1px;border:1px solid #aebdce;border-radius:50%;color:#526174;font-family:Georgia,serif;font-size:11px;font-weight:700}
+#llmServiceSystemRoot #llmServiceCreditsBenefitFields,#llmServiceSystemRoot #llmServiceLimitCardBenefitPanel{transition:opacity .16s ease}
+#llmServiceSystemRoot #llmServiceLimitCardBenefitPanel{margin-top:14px!important;padding:14px!important;border-color:#e1e8f1!important;border-radius:10px!important;box-shadow:none!important}
+#llmServiceSystemRoot #llmServiceLimitCardBenefitPanel .item-title::before{display:none}
+#llmServiceSystemRoot #llmServiceSystemHint{margin-top:0!important;padding:10px 12px;border-color:#dbe7f8;background:#f8fbff;color:#526174}
+@media (max-width:680px){#llmServiceSystemRoot .llm-benefit-mode__options{grid-template-columns:1fr}#llmServiceSystemRoot .llm-benefit-mode__option{min-height:0}}
+@media (prefers-reduced-motion:reduce){#llmServiceSystemRoot .llm-benefit-mode__option,#llmServiceSystemRoot #llmServiceCreditsBenefitFields,#llmServiceSystemRoot #llmServiceLimitCardBenefitPanel{transition:none}}
 /* Natural press feedback instead of decorative hover lift on every button. */
 button:hover{transform:none}
 button:active{transform:scale(.985)}
@@ -335,3 +362,59 @@ button:active{transform:scale(.985)}
 @media (max-width:900px){#tab-userreferrals .user-referral-metrics-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:620px){#tab-userreferrals .user-referral-metrics .item-head{display:grid}.user-referral-metrics__controls{align-items:center}.user-referral-metrics__controls select{flex:1;min-width:0}#tab-userreferrals .user-referral-metrics__controls button{flex:0 0 auto}#tab-userreferrals .user-referral-metrics-grid{grid-template-columns:1fr}}
 @media (max-width:980px) and (min-width:621px){.user-referral-detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Per-group class traffic + head dashboard */
+.llh-block{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fbfcfe}
+.llh-win,.llh-tools,.llh-trainer,.llh-gates,.llh-chips{display:flex;flex-wrap:wrap;gap:6px}
+.llh-win{margin-top:8px}
+.lls-traffic-win.is-active{font-weight:700;border-color:#cfe0ff;background:#eef5ff;color:#1d4ed8}
+.llh-try{margin-top:12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.llh-try>summary{cursor:pointer;font-size:13px;font-weight:750;color:#202733}
+.llh-dash{margin-top:10px;display:grid;gap:10px}
+.llh-status{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;font-weight:750}
+.llh-status .badge,.llh-gates .badge,.llh-tags .badge,.llh-sample .badge{text-transform:none;letter-spacing:0}
+.llh-steps{display:flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+.llh-pipe{flex:1 1 72px;min-height:34px;border:0;border-right:1px solid var(--line);background:#fff;color:#667386;font-size:12px;font-weight:750;cursor:pointer}
+.llh-pipe:last-child{border-right:0}
+.llh-pipe.is-active{background:#eef5ff;color:#1d4ed8;box-shadow:inset 0 -2px 0 #2563eb}
+.llh-pipe.is-live{background:#eaf7f1;color:#147d58;box-shadow:inset 0 -2px 0 #147d58}
+.llh-trainer label{margin:0;color:#64748b;font-size:11px;font-weight:750}
+.llh-trainer select{height:32px;min-width:160px;flex:1 1 180px}
+.llh-tools button,.llh-trainer button,.llh-tiny{height:32px;min-height:32px;padding:0 12px;font-size:12px}
+.llh-callout{padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.5}
+.llh-block .llh-block{margin-top:16px;padding:12px 0 0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
+.llh-callout.is-ok{background:#eaf7f1;color:#147d58}
+.llh-callout.is-info{background:#eef5ff;color:#1d4ed8}
+.llh-callout.is-warn{background:#fff7e6;color:#9a6700}
+.llh-callout.is-err{background:#fff0f0;color:#b42318}
+.llh-tools button[disabled],.llh-pipe[disabled],.llh-pipe.is-locked{opacity:.45}
+.llh-pipe.is-locked{cursor:pointer}
+.llh-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.llh-metric{min-width:0;padding:10px;border:1px solid #e1e8f1;border-radius:9px;background:#fff}
+.llh-metric label{display:block;margin:0;color:#64748b;font-size:11px}
+.llh-metric strong{display:block;margin-top:4px;font-size:18px;font-variant-numeric:tabular-nums}
+.llh-metric span{font-size:11px;font-weight:650;color:#667386}
+.llh-mix{display:grid;gap:6px}
+.llh-chip{display:inline-flex;align-items:center;gap:6px;min-height:26px;padding:0 9px;border:1px solid #e1e8f1;border-radius:999px;background:#fff;color:#243244;font-size:11px;font-weight:750}
+.llh-chip em{font-style:normal;color:#667386;font-weight:650}
+.llh-sample,.llh-ack{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:8px;border:1px solid #e1e8f1;border-radius:8px;background:#fff}
+.llh-sample-main{min-width:0;flex:1}
+.llh-tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px}
+.llh-preview{color:#243244;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.llh-gold{height:28px;min-width:104px;padding:0 6px;border:1px solid #e1e8f1;border-radius:8px;background:#fff;color:#202733;font-size:12px}
+.llh-versions,.llh-test{display:grid;gap:6px;padding:10px;border:1px solid #e1e8f1;border-radius:10px;background:#fff}
+.llh-version-table{width:100%;border-collapse:collapse;font-size:12px}
+.llh-version-table th,.llh-version-table td{padding:5px 6px;border-bottom:1px solid #e1e8f1;text-align:left}
+.llh-version-table th{color:#64748b;font-weight:750}
+.llh-try-result{display:grid;gap:6px;margin-top:8px}
+.llh-try-row{display:flex;justify-content:space-between;gap:10px;font-size:12px}
+.llh-try-row span{color:#64748b;font-weight:750}
+.llh-try-row strong{color:#202733;font-weight:750;text-align:right}
+.llh-try-json{margin-top:4px}
+.llh-try-json>summary{cursor:pointer;color:#64748b;font-size:12px;font-weight:750}
+.llh-promote{display:grid;gap:8px;padding:10px;border:1px solid #e1e8f1;border-radius:10px;background:#fff}
+.llh-promote-grid{display:grid;grid-template-columns:minmax(0,1fr) 132px;gap:8px}
+.llh-promote input{height:32px;min-width:0;padding:0 10px}
+.llh-field{display:grid;gap:4px;min-width:0}
+.llh-field span{color:#64748b;font-size:11px;font-weight:750}
+@media (max-width:640px){.llh-metrics,.llh-promote-grid{grid-template-columns:1fr}}

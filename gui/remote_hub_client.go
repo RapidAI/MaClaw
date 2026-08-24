@@ -1804,12 +1804,14 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		c.setLastError(fmt.Sprintf("im.user_message parse error: %s", err.Error()))
 		return
 	}
+	payload.Attachments = canonicalizeIncomingIMAttachments(payload.Attachments)
 	if normalizeIMGatewayPlatformKind(payload.Platform) == imGatewayPlatformThirdParty {
 		if err := c.resolveHubThirdPartyMediaReferences(&payload); err != nil {
 			c.setLastError(fmt.Sprintf("im.user_message third-party media resolve error: %s", err.Error()))
 			_ = c.sendIMAgentResponse(msg.RequestID, &IMAgentResponse{Error: err.Error()})
 			return
 		}
+		payload.Attachments = canonicalizeIncomingIMAttachments(payload.Attachments)
 	}
 	c.rememberHubThirdPartyClientCapabilities(payload)
 	// Preserve the Hub transport family before audit normalization expands it to
@@ -2304,7 +2306,9 @@ func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 			log.Printf("[hub-client] im.cancel_session ignored: hardware runtime not found client=%s", clientID)
 			return
 		}
-		_, _ = handler.CancelSessionForUser(userID)
+		// Hub-delivered cancellation is a control-plane request. Do not hold the
+		// WebSocket read loop waiting for a stuck tool/model call to unwind.
+		_, _ = handler.RequestCancelSessionForUser(userID)
 		return
 	}
 	if userID == "" {
@@ -2312,7 +2316,9 @@ func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 		return
 	}
 	if handler := c.currentIMHandler(); handler != nil {
-		_, _ = handler.CancelSessionForUser(userID)
+		// See hardware path above: acknowledgement of a remote cancel must remain
+		// responsive even while the target loop is still releasing its session lock.
+		_, _ = handler.RequestCancelSessionForUser(userID)
 	}
 }
 

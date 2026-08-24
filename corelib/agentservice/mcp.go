@@ -98,6 +98,21 @@ type remoteMCPRuntime struct {
 	tools        []MCPToolView
 }
 
+// mcpRuntimeInventorySnapshot is one consistent observation of a principal's
+// MCP runtime. It is deliberately value-only: callers must not retain live
+// runtime/client pointers while building a semantic catalog, because a later
+// health check or local-process restart could otherwise mix generations in one
+// route snapshot.
+type mcpRuntimeInventorySnapshot struct {
+	remote map[string]remoteMCPRuntime
+	local  map[string]localMCPInventorySnapshot
+}
+
+type localMCPInventorySnapshot struct {
+	running bool
+	tools   []MCPToolView
+}
+
 var globalMCPRuntimes sync.Map
 
 func runtimeForService(s *Service) *mcpServiceRuntime {
@@ -290,6 +305,12 @@ func (s *Service) UpdateMCPServer(ctx context.Context, p Principal, serverID str
 	if updatedKind == "" {
 		return nil, ErrInstanceNotFound
 	}
+	// A server configuration is part of every dynamic binding's observed
+	// identity. Revoke before persisting/restarting it so an interrupted update
+	// cannot leave its old contracts attached to a changed endpoint.
+	if err := s.revokeMCPServerDynamicContracts(p, serverID); err != nil {
+		return nil, err
+	}
 	if err := s.saveRawUserConfig(p, cfg.AppConfig); err != nil {
 		return nil, err
 	}
@@ -326,6 +347,11 @@ func (s *Service) DeleteMCPServer(ctx context.Context, p Principal, serverID str
 	}
 	if !found {
 		return ErrInstanceNotFound
+	}
+	// Deletion is a control-plane boundary, not merely a runtime cleanup. The
+	// associated contracts must disappear before the configuration can change.
+	if err := s.revokeMCPServerDynamicContracts(p, serverID); err != nil {
+		return err
 	}
 	cfg.AppConfig.MCPServers = remote
 	cfg.AppConfig.LocalMCPServers = local
@@ -625,6 +651,37 @@ func (rt *userMCPRuntime) remoteState(serverID string) *remoteMCPRuntime {
 		return &copyState
 	}
 	return nil
+}
+
+// inventorySnapshot captures remote health/tool lists and local process/tool
+// lists while holding the runtime ownership lock. A local client's own state
+// is copied before the runtime lock is released, so the result represents one
+// catalog observation rather than a collection of individually fresh reads.
+func (rt *userMCPRuntime) inventorySnapshot() mcpRuntimeInventorySnapshot {
+	snapshot := mcpRuntimeInventorySnapshot{
+		remote: make(map[string]remoteMCPRuntime),
+		local:  make(map[string]localMCPInventorySnapshot),
+	}
+	if rt == nil {
+		return snapshot
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for serverID, state := range rt.remote {
+		if state == nil {
+			continue
+		}
+		copyState := *state
+		copyState.tools = cloneMCPTools(state.tools)
+		snapshot.remote[serverID] = copyState
+	}
+	for serverID, client := range rt.local {
+		if client == nil {
+			continue
+		}
+		snapshot.local[serverID] = client.inventorySnapshot()
+	}
+	return snapshot
 }
 
 func (rt *userMCPRuntime) localClient(serverID string) *localMCPClient {
@@ -1072,6 +1129,15 @@ func (c *localMCPClient) GetTools() []MCPToolView {
 	c.stateMu.RLock()
 	defer c.stateMu.RUnlock()
 	return cloneMCPTools(c.tools)
+}
+
+func (c *localMCPClient) inventorySnapshot() localMCPInventorySnapshot {
+	if c == nil {
+		return localMCPInventorySnapshot{}
+	}
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return localMCPInventorySnapshot{running: c.running, tools: cloneMCPTools(c.tools)}
 }
 
 func (c *localMCPClient) IsRunning() bool {

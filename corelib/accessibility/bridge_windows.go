@@ -22,21 +22,25 @@ func NewBridge() Bridge {
 
 // psElement is the JSON shape returned by our PowerShell scripts.
 type psElement struct {
-	Role     string      `json:"role"`
-	Name     string      `json:"name"`
-	Value    string      `json:"value"`
-	X        int         `json:"x"`
-	Y        int         `json:"y"`
-	Width    int         `json:"width"`
-	Height   int         `json:"height"`
-	Children []psElement `json:"children,omitempty"`
+	Role         string      `json:"role"`
+	Name         string      `json:"name"`
+	Value        string      `json:"value"`
+	X            int         `json:"x"`
+	Y            int         `json:"y"`
+	Width        int         `json:"width"`
+	Height       int         `json:"height"`
+	AutomationID string      `json:"automation_id,omitempty"`
+	Patterns     []string    `json:"patterns,omitempty"`
+	Children     []psElement `json:"children,omitempty"`
 }
 
 func (e *psElement) toElement() Element {
 	el := Element{
-		Role:  e.Role,
-		Name:  e.Name,
-		Value: e.Value,
+		Role:         e.Role,
+		Name:         e.Name,
+		Value:        e.Value,
+		AutomationID: e.AutomationID,
+		Patterns:     append([]string(nil), e.Patterns...),
 		Bounds: Rect{
 			X:      e.X,
 			Y:      e.Y,
@@ -71,7 +75,7 @@ func runPS(script string) (string, error) {
 // If the window is not found or has no accessibility info, returns (nil, nil).
 func (b *windowsBridge) EnumElements(windowTitle string) ([]Element, error) {
 	// Prefer long-lived UIA sidecar (loads assemblies once).
-	depth := 3
+	depth := 5
 	if strings.TrimSpace(windowTitle) == "" {
 		depth = 1
 	}
@@ -235,96 +239,42 @@ ConvertTo-Json $obj -Compress
 	return &el, nil
 }
 
-// ClickElement performs a click on the element.
-// First tries InvokePattern (for buttons), then falls back to simulating
-// a mouse click at the element's center coordinates.
+// ClickElement performs a semantic UIA actuation (Invoke/Toggle/Select/Expand)
+// at the element's center. It does not synthesize a mouse click — callers
+// that want pixel fallback should do that themselves.
 func (b *windowsBridge) ClickElement(el *Element) error {
 	if el == nil {
 		return nil
 	}
-
-	// Try InvokePattern first if we have bounds to identify the element,
-	// otherwise fall back to coordinate-based click.
 	cx := el.Bounds.X + el.Bounds.Width/2
 	cy := el.Bounds.Y + el.Bounds.Height/2
-
-	script := fmt.Sprintf(`
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-
-# Try to find the element at the point and use InvokePattern
-try {
-    $pt = New-Object System.Windows.Point(%d, %d)
-    $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
-    if ($el) {
-        try {
-            $ip = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-            if ($ip) { $ip.Invoke(); exit 0 }
-        } catch {}
-    }
-} catch {}
-
-# Fallback: simulate mouse click via cursor position + SendInput
-[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(%d, %d)
-Start-Sleep -Milliseconds 50
-
-$sig = @'
-[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
-'@
-$u = Add-Type -MemberDefinition $sig -Name WinAPI -Namespace ClickSim -PassThru
-$u::mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
-$u::mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
-`, cx, cy, cx, cy)
-
-	_, err := runPS(script)
-	return err
+	ok, strategy, err := globalUIASidecar.invokeAt(cx, cy)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no UIA invoke/toggle/select/expand pattern at (%d,%d)", cx, cy)
+	}
+	_ = strategy
+	return nil
 }
 
-// TypeInElement types text into the element.
-// First tries ValuePattern.SetValue, then falls back to SendKeys.
+// TypeInElement sets the element's value via UIA ValuePattern. It does not
+// SendKeys — callers that want keyboard fallback should do that themselves.
 func (b *windowsBridge) TypeInElement(el *Element, text string) error {
 	if el == nil {
 		return nil
 	}
-
 	cx := el.Bounds.X + el.Bounds.Width/2
 	cy := el.Bounds.Y + el.Bounds.Height/2
-
-	// Escape text for PowerShell string embedding.
-	safeText := strings.ReplaceAll(text, "'", "''")
-
-	script := fmt.Sprintf(`
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-
-try {
-    $pt = New-Object System.Windows.Point(%d, %d)
-    $el = [System.Windows.Automation.AutomationElement]::FromPoint($pt)
-    if ($el) {
-        try {
-            $vp = $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-            if ($vp) { $vp.SetValue('%s'); exit 0 }
-        } catch {}
-    }
-} catch {}
-
-# Fallback: click to focus then SendKeys
-[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(%d, %d)
-Start-Sleep -Milliseconds 50
-$sig = @'
-[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
-'@
-$u = Add-Type -MemberDefinition $sig -Name WinAPI2 -Namespace TypeSim -PassThru
-$u::mouse_event(0x0002, 0, 0, 0, 0)
-$u::mouse_event(0x0004, 0, 0, 0, 0)
-Start-Sleep -Milliseconds 100
-[System.Windows.Forms.SendKeys]::SendWait('%s')
-`, cx, cy, safeText, cx, cy, safeText)
-
-	_, err := runPS(script)
-	return err
+	ok, err := globalUIASidecar.setValueAt(cx, cy, text)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no UIA ValuePattern at (%d,%d)", cx, cy)
+	}
+	return nil
 }
 
 // GetValue returns the current value of the element using ValuePattern.
@@ -358,6 +308,66 @@ try {
 		return "", nil
 	}
 	return out, nil
+}
+
+func (b *windowsBridge) SelectElement(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	ok, _, err := globalUIASidecar.actAt("select_at", cx, cy)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no UIA SelectionItemPattern at (%d,%d)", cx, cy)
+	}
+	return nil
+}
+
+func (b *windowsBridge) ExpandElement(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	ok, _, err := globalUIASidecar.actAt("expand_at", cx, cy)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no UIA ExpandCollapsePattern at (%d,%d)", cx, cy)
+	}
+	return nil
+}
+
+func (b *windowsBridge) ScrollElementIntoView(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	ok, _, err := globalUIASidecar.actAt("scroll_into_view_at", cx, cy)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no UIA ScrollItemPattern at (%d,%d)", cx, cy)
+	}
+	return nil
+}
+
+func (b *windowsBridge) FocusElement(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	ok, _, err := globalUIASidecar.actAt("focus_at", cx, cy)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("UIA SetFocus failed at (%d,%d)", cx, cy)
+	}
+	return nil
 }
 
 // Close releases resources. No persistent resources for the PowerShell approach.

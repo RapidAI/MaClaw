@@ -4,7 +4,6 @@
 
 #include "freertos/FreeRTOS.h"
 
-#include "board_port.h"
 #include "device_api.h"
 #include "font_cjk24.h"
 #include "boards/round_display_font_profile.h"

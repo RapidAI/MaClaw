@@ -16,12 +16,15 @@ esp_err_t round_peripheral_lifecycle_attach(i2c_master_bus_handle_t bus) {
     return round_peripheral_adapter_initialize(bus);
 }
 
-void round_peripheral_lifecycle_detach(void) {
-    round_peripheral_adapter_release();
+esp_err_t round_peripheral_lifecycle_detach(void) {
+    return round_peripheral_adapter_release();
 }
 
 bool round_peripheral_service_touch_read(bool *pressed, uint8_t *gesture) {
-    return round_peripheral_adapter_touch_read(pressed, gesture);
+    if (!round_audio_lifecycle_shared_bus_borrow_begin()) return false;
+    const bool result = round_peripheral_adapter_touch_read(pressed, gesture);
+    round_audio_lifecycle_shared_bus_borrow_end();
+    return result;
 }
 
 bool round_peripheral_service_touch_is_native_double_tap(uint8_t gesture) {
@@ -29,13 +32,22 @@ bool round_peripheral_service_touch_is_native_double_tap(uint8_t gesture) {
 }
 
 bool round_peripheral_service_touch_ready(void) {
-    return round_peripheral_adapter_touch_ready();
+    if (!round_audio_lifecycle_shared_bus_borrow_begin()) return false;
+    const bool result = round_peripheral_adapter_touch_ready();
+    round_audio_lifecycle_shared_bus_borrow_end();
+    return result;
 }
 
 bool round_peripheral_service_get_power_status(unsigned *level_percent, bool *charging) {
-    return round_peripheral_adapter_get_power_status(level_percent, charging);
+    if (!round_audio_lifecycle_shared_bus_borrow_begin()) return false;
+    const bool result = round_peripheral_adapter_get_power_status(level_percent, charging);
+    round_audio_lifecycle_shared_bus_borrow_end();
+    return result;
 }
 
 esp_err_t round_peripheral_service_get_motion_sample(device_motion_sample_t *out_sample) {
-    return round_peripheral_adapter_get_motion_sample(out_sample);
+    if (!round_audio_lifecycle_shared_bus_borrow_begin()) return ESP_ERR_INVALID_STATE;
+    const esp_err_t result = round_peripheral_adapter_get_motion_sample(out_sample);
+    round_audio_lifecycle_shared_bus_borrow_end();
+    return result;
 }

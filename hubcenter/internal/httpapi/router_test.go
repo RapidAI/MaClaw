@@ -1341,7 +1341,12 @@ func TestExpertMarketAdminRoutesRequireAdminToken(t *testing.T) {
 	svc.handler = NewRouter(svc.admins, svc.hubs, svc.entry, nil, nil, svc.store.FailureLogs, nil, nil, handlers, svc.store.System, svc.store.News, nil)
 	for _, route := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/admin/expert-market/experts"},
+		{http.MethodGet, "/api/v1/admin/expert-market/users"},
 		{http.MethodGet, "/api/v1/admin/expert-market/experts/example/events"},
+		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/transfer-owner"},
+		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/submit-publication"},
+		{http.MethodDelete, "/api/v1/admin/expert-market/experts/example/private"},
+		{http.MethodDelete, "/api/v1/admin/expert-market/experts/example/private/purge"},
 		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/approve"},
 		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/reject"},
 		{http.MethodPost, "/api/v1/admin/expert-market/experts/example/unlist"},

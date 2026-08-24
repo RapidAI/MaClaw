@@ -13,6 +13,10 @@ import (
 // Shared LLM types for both stream and non-stream responses
 
 type Response struct {
+	// ResponseID is the provider-issued correlation for this concrete model
+	// response. Hosts may use it to bind a request-local dynamic tool surface;
+	// it is never derived from tool-call arguments or a local loop ID.
+	ResponseID    string   `json:"id,omitempty"`
 	Choices       []Choice `json:"choices"`
 	Usage         *Usage   `json:"usage,omitempty"`
 	LocalCacheHit bool     `json:"-"`
@@ -148,11 +152,74 @@ type openAIWireMessage struct {
 	Role             string      `json:"role"`
 	Content          interface{} `json:"content"`
 	ReasoningContent string      `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
-	FunctionCall     *struct {
+	// Some OpenAI-compatible providers use these aliases instead of
+	// reasoning_content. They are display-safe provider output and are kept in
+	// the same lane as the canonical field.
+	Reasoning    string     `json:"reasoning,omitempty"`
+	Thinking     string     `json:"thinking,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	FunctionCall *struct {
 		Name      string          `json:"name,omitempty"`
 		Arguments json.RawMessage `json:"arguments,omitempty"`
 	} `json:"function_call,omitempty"`
+}
+
+func openAIReasoningText(reasoningContent, reasoning, thinking string) string {
+	if reasoningContent != "" {
+		return reasoningContent
+	}
+	if reasoning != "" {
+		return reasoning
+	}
+	return thinking
+}
+
+// openAIThinkTagPattern accepts the common provider convention of placing
+// reasoning in <think> blocks within the normal OpenAI-compatible content
+// field. The unclosed form matters when an upstream response is truncated.
+var openAIThinkTagPattern = regexp.MustCompile(`(?si)<think>.*?</think>|<think>.*$`)
+
+func splitOpenAIThinkingTags(content string) (visible string, reasoning string) {
+	if !strings.Contains(strings.ToLower(content), "<think>") {
+		return strings.TrimSpace(content), ""
+	}
+
+	var parts []string
+	visible = openAIThinkTagPattern.ReplaceAllStringFunc(content, func(match string) string {
+		body := match
+		lower := strings.ToLower(body)
+		if strings.HasPrefix(lower, "<think>") {
+			body = body[len("<think>"):]
+			lower = lower[len("<think>"):]
+		}
+		if end := strings.LastIndex(lower, "</think>"); end >= 0 {
+			body = body[:end]
+		}
+		if text := strings.TrimSpace(body); text != "" {
+			parts = append(parts, text)
+		}
+		return ""
+	})
+	return strings.TrimSpace(visible), strings.Join(parts, "\n")
+}
+
+func mergeOpenAIReasoningText(explicit, tagged string) string {
+	if strings.TrimSpace(explicit) == "" {
+		explicit = ""
+	}
+	if strings.TrimSpace(tagged) == "" {
+		tagged = ""
+	}
+	switch {
+	case explicit == "":
+		return tagged
+	case tagged == "", explicit == tagged, strings.Contains(explicit, tagged):
+		return explicit
+	case strings.Contains(tagged, explicit):
+		return tagged
+	default:
+		return explicit + "\n" + tagged
+	}
 }
 
 // TokenCallback is called with each text delta from the LLM streaming response.
@@ -161,11 +228,12 @@ type TokenCallback func(delta string)
 // Anthropic specific structures
 
 type AnthropicContentBlock struct {
-	Type  string      `json:"type"`
-	Text  string      `json:"text,omitempty"`
-	ID    string      `json:"id,omitempty"`
-	Name  string      `json:"name,omitempty"`
-	Input interface{} `json:"input,omitempty"`
+	Type     string      `json:"type"`
+	Text     string      `json:"text,omitempty"`
+	Thinking string      `json:"thinking,omitempty"`
+	ID       string      `json:"id,omitempty"`
+	Name     string      `json:"name,omitempty"`
+	Input    interface{} `json:"input,omitempty"`
 }
 
 // ParseNonStreamAnthropicResponse handles the fallback case where the provider
@@ -175,62 +243,7 @@ func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, newHTTPStatusError(resp.StatusCode, body)
 	}
-
-	var anthropicResp struct {
-		Content    []AnthropicContentBlock `json:"content"`
-		StopReason string                  `json:"stop_reason"`
-		Usage      *Usage                  `json:"usage,omitempty"`
-	}
-	if err := json.Unmarshal(body, &anthropicResp); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-
-	msg := Message{Role: "assistant"}
-	var textParts []string
-	for _, block := range anthropicResp.Content {
-		switch block.Type {
-		case "text":
-			textParts = append(textParts, block.Text)
-		case "tool_use":
-			argsJSON, _ := json.Marshal(block.Input)
-			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
-				ID:   block.ID,
-				Type: "function",
-				Function: struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				}{
-					Name:      block.Name,
-					Arguments: string(argsJSON),
-				},
-			})
-		}
-	}
-
-	msg.Content = StripAllExtra(strings.Join(textParts, "\n"))
-
-	finishReason := "stop"
-	if anthropicResp.StopReason == "tool_use" {
-		finishReason = "tool_calls"
-	} else if anthropicResp.StopReason == "max_tokens" {
-		finishReason = "length"
-	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := strings.Join(textParts, "\n")
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
-	}
-
-	return &Response{
-		Choices: []Choice{{Message: msg, FinishReason: finishReason}},
-		Usage:   anthropicResp.Usage,
-	}, nil
+	return parseAnthropicResponseBody(body)
 }
 
 func normalizeOpenAIMessageContent(raw interface{}) (string, interface{}) {
@@ -271,17 +284,18 @@ func normalizeOpenAIMessageContent(raw interface{}) (string, interface{}) {
 }
 
 func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
-	result := &Response{Usage: wire.Usage}
+	result := &Response{ResponseID: strings.TrimSpace(wire.ID), Usage: wire.Usage}
 	if len(wire.Choices) == 0 {
 		return result
 	}
 	result.Choices = make([]Choice, 0, len(wire.Choices))
 	for _, choice := range wire.Choices {
 		content, rawContent := normalizeOpenAIMessageContent(choice.Message.Content)
+		visibleContent, taggedReasoning := splitOpenAIThinkingTags(content)
 		msg := Message{
 			Role:             choice.Message.Role,
-			Content:          StripAllExtra(content),
-			ReasoningContent: choice.Message.ReasoningContent,
+			Content:          StripAllExtra(visibleContent),
+			ReasoningContent: mergeOpenAIReasoningText(openAIReasoningText(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking), taggedReasoning),
 			ToolCalls:        choice.Message.ToolCalls,
 			RawContent:       rawContent,
 		}
@@ -297,7 +311,7 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 			}
 		}
 		if len(msg.ToolCalls) == 0 {
-			if contentCalls, malformed := ParseContentToolCallsDetailed(content); len(contentCalls) > 0 {
+			if contentCalls, malformed := ParseContentToolCallsDetailed(visibleContent); len(contentCalls) > 0 {
 				msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
 				msg.Content = ""
 				finishReason = "tool_calls"

@@ -23,6 +23,8 @@ static inline const round_input_profile_t *echoear_input_profile(void) {
     static const round_input_profile_t profile = {
         .debounce_ms = 25, .scan_poll_ms = 15,
         .double_tap_window_ms = 500, .long_hold_ms = 2500,
+        .local_volume_increase_hold_ms = 1200,
+        .local_volume_decrease_hold_ms = 1800,
         .touch_regular_min_tap_ms = 30, .touch_cancel_min_tap_ms = 15,
         .touch_double_min_gap_ms = 100, .touch_release_drain_ms = 250,
     };

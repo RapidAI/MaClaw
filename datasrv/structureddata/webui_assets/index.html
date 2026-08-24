@@ -114,32 +114,34 @@
         <div class="brand-mark" aria-hidden="true">MIS</div>
         <div>
           <div class="brand-title">MaClawDataSrv</div>
-          <div class="brand-subtitle">数据运营管理</div>
+          <div class="brand-subtitle">企业信息工作台</div>
         </div>
       </div>
 
-      <div class="nav-group">总览</div>
-      <button type="button" class="nav-item active" data-page="overview" data-testid="tab-overview">总览</button>
-      <button type="button" class="nav-item" data-page="quickstart" data-testid="tab-quickstart">快速操作</button>
-
-      <div class="nav-group">数据建模</div>
-      <button type="button" class="nav-item" data-page="domains" data-testid="tab-domains">业务域</button>
-      <button type="button" class="nav-item" data-page="datasets" data-testid="tab-datasets">数据集</button>
-      <button type="button" class="nav-item" data-page="fields" data-testid="tab-fields">字段</button>
-      <button type="button" class="nav-item" data-page="relationships" data-testid="tab-relationships">关联</button>
-
-      <div class="nav-group">数据操作</div>
+      <div class="nav-group">工作</div>
+      <button type="button" class="nav-item active" data-page="overview" data-testid="tab-overview">用户视图</button>
+      <button type="button" class="nav-item" data-page="inbox" data-testid="tab-inbox">待办</button>
       <button type="button" class="nav-item" data-page="records" data-testid="tab-records">记录</button>
       <button type="button" class="nav-item" data-page="actions" data-testid="tab-actions">业务动作</button>
-      <button type="button" class="nav-item" data-page="inbox" data-testid="tab-inbox">收件箱</button>
 
-      <div class="nav-group">集成</div>
-      <button type="button" class="nav-item" data-page="connectors" data-testid="tab-connectors">连接器</button>
+      <div class="nav-group">应用</div>
+      <button type="button" class="nav-item" data-page="domains" data-testid="tab-domains">业务应用</button>
+      <button type="button" class="nav-item" data-page="quickstart" data-testid="tab-quickstart">开通应用</button>
+
+      <div class="nav-group">分析</div>
       <button type="button" class="nav-item" data-page="views" data-testid="tab-views">视图</button>
       <button type="button" class="nav-item" data-page="dashboards" data-testid="tab-dashboards">仪表盘</button>
       <button type="button" class="nav-item" data-page="reports" data-testid="tab-reports">报表</button>
 
-      <div class="nav-group">安全与治理</div>
+      <div class="nav-group">建模</div>
+      <button type="button" class="nav-item" data-page="datasets" data-testid="tab-datasets">数据集</button>
+      <button type="button" class="nav-item" data-page="fields" data-testid="tab-fields">字段</button>
+      <button type="button" class="nav-item" data-page="relationships" data-testid="tab-relationships">关联</button>
+
+      <div class="nav-group">集成</div>
+      <button type="button" class="nav-item" data-page="connectors" data-testid="tab-connectors">连接器</button>
+
+      <div class="nav-group">治理</div>
       <button type="button" class="nav-item" data-page="apikeys" data-testid="tab-apikeys">API 密钥</button>
       <button type="button" class="nav-item" data-page="admins" data-testid="tab-admins">管理员</button>
       <button type="button" class="nav-item" data-page="quality" data-testid="tab-quality">质量检查</button>
@@ -148,8 +150,9 @@
       <button type="button" class="nav-item" data-page="ops" data-testid="tab-ops">运维</button>
 
       <div class="sidebar-foot">
-        <div class="hint">受控写入 · 最小权限 · 可审计</div>
-        <button type="button" class="nav-item" id="cmdOpenBtn" style="margin-top:4px">快速跳转 Ctrl+K</button>
+        <div class="hint">先办事 · 再建模 · Agent 走同一套 API</div>
+        <button type="button" class="nav-item" id="cmdOpenBtn">快速跳转 Ctrl+K</button>
+        <a class="nav-item" href="/legacy">旧版控制台</a>
       </div>
     </nav>
 
@@ -162,7 +165,13 @@
           <div class="meta">
             <span class="status-dot" id="serviceStatus" data-testid="app-service-status">未连接</span>
             <span class="chip brand" id="tenantChip" data-testid="tenant-chip">租户 default</span>
-            <span class="page-context" id="pageContext" data-testid="page-context">总览</span>
+            <label class="dataset-picker-wrap">
+              <span class="sr-only">当前业务表</span>
+              <select id="datasetPicker" data-testid="dataset-picker" title="当前业务表">
+                <option value="">选择当前表…</option>
+              </select>
+            </label>
+            <span class="page-context" id="pageContext" data-testid="page-context">用户视图</span>
           </div>
         </div>
         <div class="meta">

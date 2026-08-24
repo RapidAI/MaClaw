@@ -1188,13 +1188,13 @@ func (p *Plugin) downloadQQAttachments(raw []qqAttachment) []im.MessageAttachmen
 			continue
 		}
 
-		result = append(result, im.MessageAttachment{
+		result = append(result, im.CanonicalizeTrustedHostAttachment(im.MessageAttachment{
 			Type:     attType,
 			FileName: att.FileName,
 			MimeType: att.ContentType,
 			Data:     base64.StdEncoding.EncodeToString(fileData),
 			Size:     int64(len(fileData)),
-		})
+		}))
 		log.Printf("[qqbot] downloaded attachment: %s (%s, %d bytes)", att.FileName, att.ContentType, len(fileData))
 	}
 	return result

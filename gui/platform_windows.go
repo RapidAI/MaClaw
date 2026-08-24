@@ -29,12 +29,11 @@ const (
 	esSystemRequired  = 0x00000001
 	esDisplayRequired = 0x00000002
 
-	// _CREATE_NO_WINDOW prevents the creation of a console window for the
-	// child process AND all its descendants. Unlike HideWindow (which only
-	// hides the first-level window via STARTUPINFO.wShowWindow), this flag
-	// is passed as a CreationFlag to CreateProcess and affects the entire
-	// process tree — child cmd.exe interpreters (e.g. FOR /F inside .cmd
-	// scripts) will not create new console windows.
+	// _CREATE_NO_WINDOW hides the process being created. It does not
+	// automatically apply to grandchildren that cmd/PowerShell start with
+	// their own CreateProcess. A GUI host without a console still causes
+	// those console tools to flash a new window unless the host attaches
+	// a hidden console first (see ensureHiddenHostConsole).
 	_CREATE_NO_WINDOW = 0x08000000
 )
 
@@ -272,6 +271,45 @@ func normalizeFramelessTopInset(physicalInset, dpi int) int {
 }
 
 func (a *App) platformStartup() {
+	ensureHiddenHostConsole()
+	prewarmWindowsCodingToolchain()
+}
+
+var hiddenHostConsoleOnce sync.Once
+
+// ensureHiddenHostConsole gives a Windows GUI process a hidden console so
+// console-subsystem grandchildren (git, cl, hello.exe, codegraph.cmd) inherit
+// it instead of allocating a visible black window on every coding bash call.
+// If the process already has a console (launched from a terminal or go test),
+// leave that console alone.
+func ensureHiddenHostConsole() {
+	hiddenHostConsoleOnce.Do(func() {
+		if hwnd := windowsConsoleWindow(); hwnd != 0 {
+			return
+		}
+		kernel32 := syscall.NewLazyDLL("kernel32.dll")
+		allocConsole := kernel32.NewProc("AllocConsole")
+		ok, _, err := allocConsole.Call()
+		if ok == 0 {
+			log.Printf("[platform] AllocConsole failed: %v", err)
+			return
+		}
+		hwnd := windowsConsoleWindow()
+		if hwnd == 0 {
+			return
+		}
+		user32 := syscall.NewLazyDLL("user32.dll")
+		showWindow := user32.NewProc("ShowWindow")
+		const swHide = 0
+		showWindow.Call(hwnd, uintptr(swHide))
+		log.Printf("[platform] attached a hidden host console so child tools do not flash a window")
+	})
+}
+
+func windowsConsoleWindow() uintptr {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	hwnd, _, _ := kernel32.NewProc("GetConsoleWindow").Call()
+	return hwnd
 }
 
 func (a *App) platformShutdown() {

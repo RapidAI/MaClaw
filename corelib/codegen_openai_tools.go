@@ -33,6 +33,26 @@ func SanitizeCodeGenOpenAICompatBody(body map[string]interface{}) {
 	}
 }
 
+// SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts applies transport
+// cleanup without changing caller-owned output or tool-invocation contracts.
+// Removing one of these controls can yield HTTP 200 for a semantically
+// different turn, which is worse than exposing an upstream capability error.
+func SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts(body map[string]interface{}) {
+	if body == nil {
+		return
+	}
+	contracts := make(map[string]interface{}, 4)
+	for _, key := range []string{"response_format", "tool_choice", "function_call", "parallel_tool_calls"} {
+		if value, ok := body[key]; ok {
+			contracts[key] = value
+		}
+	}
+	SanitizeCodeGenOpenAICompatBody(body)
+	for key, value := range contracts {
+		body[key] = value
+	}
+}
+
 var codeGenOpenAIUnsupportedTopLevelKeys = []string{
 	"stream_options",
 	"parallel_tool_calls",

@@ -70,17 +70,8 @@ func TestRouter_SkillProvider_FourSignalScoring(t *testing.T) {
 		t.Fatal("expected non-empty result")
 	}
 
-	// manage_skill should be in the result (it's a core tool that replaced run_skill).
-	found := false
-	for _, r := range result {
-		name := ExtractToolName(r)
-		if name == "manage_skill" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("manage_skill should be in the result")
+	if routedToolNames(result)["manage_skill"] {
+		t.Error("matched skills must not reconstruct the legacy manage_skill gateway")
 	}
 }
 
@@ -103,7 +94,7 @@ func TestRouter_SkillProvider_NoProvider_FallbackToThreeSignal(t *testing.T) {
 	}
 }
 
-func TestRouter_SkillUploadRequestKeepsManageSkillAndSuppressesInstallHint(t *testing.T) {
+func TestRouter_SkillUploadRequestDoesNotExposeDynamicGateway(t *testing.T) {
 	for _, msg := range []string{
 		"\u4e0a\u4f20\u5230skillmarket\u963f",
 		"\u628a Weather Query skill \u53d1\u5e03\u5230 hubcenter",
@@ -127,8 +118,8 @@ func TestRouter_SkillUploadRequestKeepsManageSkillAndSuppressesInstallHint(t *te
 
 			result := router.Route(msg, tools)
 			names := routedToolNames(result)
-			if !names["manage_skill"] {
-				t.Fatalf("manage_skill should be routed for skill upload request, got %v", toolNamesForTest(result))
+			if names["manage_skill"] {
+				t.Fatalf("skill upload request must not expose legacy manage_skill, got %v", toolNamesForTest(result))
 			}
 			if names["search_and_install_skill"] {
 				t.Fatalf("search_and_install_skill should be suppressed for skill upload request, got %v", toolNamesForTest(result))
@@ -231,16 +222,10 @@ func TestRouter_SkillProvider_NoMatch_NoEnrichment(t *testing.T) {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	// Query about databases — should NOT match deploy skill.
+	// Query about databases must not reconstruct a dynamic gateway.
 	result := router.Route("查询数据库", tools)
-	for _, r := range result {
-		if ExtractToolName(r) == "manage_skill" {
-			desc := ExtractToolDescription(r)
-			if strings.Contains(desc, "deploy-app") {
-				t.Error("manage_skill description should NOT contain deploy-app for unrelated query")
-			}
-			break
-		}
+	if routedToolNames(result)["manage_skill"] {
+		t.Fatal("legacy manage_skill must not be present for unrelated requests")
 	}
 }
 
@@ -393,7 +378,7 @@ func TestRouter_MatchedSkillCapabilitiesIncludesSkillWhenNoDeclaredCapabilities(
 	}
 }
 
-func TestRouter_RouteEnrichesMatchedSkillExecutionContract(t *testing.T) {
+func TestRouter_RouteDoesNotExposeMatchedSkillGateway(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "Weather Query", Triggers: []string{"weather", "forecast", "current data"}, Description: "weather forecast current data lookup", Capabilities: []string{"current_data", "weather"}},
@@ -412,24 +397,12 @@ func TestRouter_RouteEnrichesMatchedSkillExecutionContract(t *testing.T) {
 		t.Fatalf("skill score = %.4f matched=%v, want stable match", score, matched)
 	}
 	result := router.Route("Weather Query weather forecast current data", tools)
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		contract, ok := def["x_execution_contract"].(map[string]interface{})
-		if !ok {
-			t.Fatal("manage_skill missing execution contract")
-		}
-		caps, ok := contract["capabilities"].([]string)
-		if !ok || !testStringSliceContains(caps, "skill") || !testStringSliceContains(caps, "current_data") {
-			t.Fatalf("capabilities = %#v, want skill/current_data", contract["capabilities"])
-		}
-		return
+	if routedToolNames(result)["manage_skill"] {
+		t.Fatalf("matched dynamic skill must not appear on legacy surface: %#v", result)
 	}
-	t.Fatalf("manage_skill missing from routed tools: %#v", result)
 }
 
-func TestRouter_RouteEnrichesMatchedSkillExecutionContractBelowLegacyThreshold(t *testing.T) {
+func TestRouter_RouteDoesNotExposeLowScoreMatchedSkillGateway(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	skills := make([]SkillSummary, 32)
 	for i := range skills {
@@ -455,24 +428,12 @@ func TestRouter_RouteEnrichesMatchedSkillExecutionContractBelowLegacyThreshold(t
 		t.Fatalf("skill score = %.4f matched=%v, want low positive match", score, matched)
 	}
 	result := router.Route("shared", tools)
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		contract, ok := def["x_execution_contract"].(map[string]interface{})
-		if !ok {
-			t.Fatal("manage_skill missing execution contract for low-score matched skill")
-		}
-		caps, ok := contract["capabilities"].([]string)
-		if !ok || !testStringSliceContains(caps, "current_data") {
-			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
-		}
-		return
+	if routedToolNames(result)["manage_skill"] {
+		t.Fatalf("low-score match must not expose legacy gateway: %#v", result)
 	}
-	t.Fatalf("manage_skill missing from routed tools: %#v", result)
 }
 
-func TestRouter_RouteEnrichesMatchedSkillWhenNoDynamicCandidates(t *testing.T) {
+func TestRouter_RouteDoesNotExposeSkillGatewayWithoutCandidates(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "live-skill", Triggers: []string{"live"}, Description: "live lookup", Capabilities: []string{"current_data"}},
@@ -483,24 +444,12 @@ func TestRouter_RouteEnrichesMatchedSkillWhenNoDynamicCandidates(t *testing.T) {
 	}
 
 	result := router.Route("live", tools)
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		contract, ok := def["x_execution_contract"].(map[string]interface{})
-		if !ok {
-			t.Fatal("manage_skill missing execution contract when route returns core only")
-		}
-		caps, ok := contract["capabilities"].([]string)
-		if !ok || !testStringSliceContains(caps, "current_data") {
-			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
-		}
-		return
+	if routedToolNames(result)["manage_skill"] {
+		t.Fatalf("dynamic gateway must be absent even without ordinary candidates: %#v", result)
 	}
-	t.Fatalf("manage_skill missing from routed tools: %#v", result)
 }
 
-func TestRouter_RouteEnrichesSkillOnlyExecutionContract(t *testing.T) {
+func TestRouter_RouteDoesNotExposeSkillOnlyGateway(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "Plain Skill", Triggers: []string{"plain"}, Description: "plain skill"},
@@ -511,50 +460,29 @@ func TestRouter_RouteEnrichesSkillOnlyExecutionContract(t *testing.T) {
 	}
 
 	result := router.Route("plain", tools)
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		contract, ok := def["x_execution_contract"].(map[string]interface{})
-		if !ok {
-			t.Fatal("manage_skill missing execution contract for skill-only match")
-		}
-		caps, ok := contract["capabilities"].([]string)
-		if !ok || len(caps) != 1 || caps[0] != "skill" {
-			t.Fatalf("capabilities = %#v, want [skill]", contract["capabilities"])
-		}
-		return
+	if routedToolNames(result)["manage_skill"] {
+		t.Fatalf("skill-only match must not expose legacy gateway: %#v", result)
 	}
-	t.Fatalf("manage_skill missing from routed tools: %#v", result)
 }
 
-func TestRouter_RouteKeepsMatchedSkillWhenCoreOverBudget(t *testing.T) {
+func TestRouter_RouteDoesNotKeepMatchedSkillGatewayWhenCoreOverBudget(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "Plain Skill", Triggers: []string{"plain"}, Description: "plain skill"},
 	}})
-	router.sessionTools = map[string]bool{}
 	tools := []map[string]interface{}{makeToolDef("manage_skill", "Skill management")}
 	for i := 0; i < MaxToolBudget+4; i++ {
 		name := fmt.Sprintf("session_tool_%d", i)
-		router.sessionTools[name] = true
 		tools = append(tools, makeToolDef(name, "session tool"))
 	}
 
 	result := router.Route("plain", tools)
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		if _, ok := def["x_execution_contract"].(map[string]interface{}); !ok {
-			t.Fatal("manage_skill kept but missing execution contract")
-		}
-		return
+	if routedToolNames(result)["manage_skill"] {
+		t.Fatalf("budget pressure must not restore legacy gateway: %v", toolNamesForTest(result))
 	}
-	t.Fatalf("manage_skill trimmed despite matched skill: %v", toolNamesForTest(result))
 }
 
-func TestRouter_RoutePrioritizesMatchedSkillBeforeGenericCurrentDataTool(t *testing.T) {
+func TestRouter_RouteDoesNotPrioritizeMatchedSkillGateway(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "Live Lookup", Triggers: []string{"live"}, Description: "live current data lookup", Capabilities: []string{"current_data"}},
@@ -569,18 +497,16 @@ func TestRouter_RoutePrioritizesMatchedSkillBeforeGenericCurrentDataTool(t *test
 	}
 
 	result := router.Route("live", tools)
-	manageIdx := toolIndexForTest(result, "manage_skill")
-	if manageIdx != 0 {
-		t.Fatalf("tool order = %v, want matched manage_skill first", toolNamesForTest(result))
+	if toolIndexForTest(result, "manage_skill") >= 0 {
+		t.Fatalf("dynamic skill gateway must not enter legacy ranking: %v", toolNamesForTest(result))
 	}
 }
 
-func TestRouter_RoutePrioritizesMatchedSkillBeforeConditionalCoreTools(t *testing.T) {
+func TestRouter_RouteDoesNotPrioritizeMatchedSkillGatewayBeforeCoreTools(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
 		{Name: "Live Lookup", Triggers: []string{"live"}, Description: "live current data lookup", Capabilities: []string{"current_data"}},
 	}})
-	router.sessionTools = map[string]bool{"session_context": true}
 	tools := []map[string]interface{}{
 		makeToolDef("session_context", "Pinned session context"),
 		makeToolDef("manage_skill", "Skill management"),
@@ -592,14 +518,12 @@ func TestRouter_RoutePrioritizesMatchedSkillBeforeConditionalCoreTools(t *testin
 	}
 
 	result := router.Route("live", tools)
-	manageIdx := toolIndexForTest(result, "manage_skill")
-	sessionIdx := toolIndexForTest(result, "session_context")
-	if manageIdx != 0 || (sessionIdx >= 0 && manageIdx > sessionIdx) {
-		t.Fatalf("tool order = %v, want matched manage_skill before conditional/session tools", toolNamesForTest(result))
+	if toolIndexForTest(result, "manage_skill") >= 0 {
+		t.Fatalf("dynamic skill gateway must not enter legacy ranking: %v", toolNamesForTest(result))
 	}
 }
 
-func TestRouter_SSHIntentKeepsMatchedSkill(t *testing.T) {
+func TestRouter_SSHIntentDoesNotRestoreMatchedSkillGateway(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	ic := NewIntentClassifier(nil)
 	defer ic.Close()
@@ -614,15 +538,12 @@ func TestRouter_SSHIntentKeepsMatchedSkill(t *testing.T) {
 	if !names["ssh"] {
 		t.Fatalf("ssh should remain routed, got %v", toolNamesForTest(result))
 	}
-	if !names["manage_skill"] {
-		t.Fatalf("matched manage_skill should survive ssh fallback suppression, got %v", toolNamesForTest(result))
-	}
-	if toolIndexForTest(result, "manage_skill") != 0 {
-		t.Fatalf("tool order = %v, want matched manage_skill first", toolNamesForTest(result))
+	if names["manage_skill"] {
+		t.Fatalf("SSH intent must not restore legacy skill gateway, got %v", toolNamesForTest(result))
 	}
 }
 
-func TestRouter_BrowserSessionKeepsMatchedSkill(t *testing.T) {
+func TestRouter_BrowserSessionPinDoesNotRestoreMatchedSkillGateway(t *testing.T) {
 	router := NewRouter(NewDefinitionGenerator(nil, nil))
 	router.ActivateSessionTool("browser")
 	router.SetSkillProvider(&mockSkillProvider{skills: []SkillSummary{
@@ -640,14 +561,11 @@ func TestRouter_BrowserSessionKeepsMatchedSkill(t *testing.T) {
 
 	result := router.Route("submit followup", tools)
 	names := routedToolNames(result)
-	if !names["browser"] {
-		t.Fatalf("browser should remain routed, got %v", toolNamesForTest(result))
+	if names["browser"] {
+		t.Fatalf("browser session pin must not route browser, got %v", toolNamesForTest(result))
 	}
-	if !names["manage_skill"] {
-		t.Fatalf("matched manage_skill should survive browser fallback suppression, got %v", toolNamesForTest(result))
-	}
-	if toolIndexForTest(result, "manage_skill") != 0 {
-		t.Fatalf("tool order = %v, want matched manage_skill first", toolNamesForTest(result))
+	if names["manage_skill"] {
+		t.Fatalf("browser context must not restore legacy skill gateway, got %v", toolNamesForTest(result))
 	}
 }
 
@@ -676,21 +594,12 @@ func TestDynamicToolBuilder_SkillProvider(t *testing.T) {
 
 	result := builder.Build("帮我部署应用")
 
-	// manage_skill should have enriched description when a skill is matched.
-	for _, def := range result {
-		if ExtractToolName(def) == "manage_skill" {
-			desc := ExtractToolDescription(def)
-			t.Logf("manage_skill description: %s", desc)
-			if len(names) > 0 && !strings.Contains(desc, "deploy-app") {
-				t.Errorf("manage_skill description should contain deploy-app when skill matched, score=%.4f got: %s", score, desc)
-			}
-			return
-		}
+	if toolIndexForTest(result, "manage_skill") >= 0 {
+		t.Fatalf("dynamic skill gateway must not be emitted by the generic builder: %v", toolNamesForTest(result))
 	}
-	t.Error("manage_skill should be in the build result")
 }
 
-func TestDynamicToolBuilder_EnrichesMatchedSkillBelowLegacyThreshold(t *testing.T) {
+func TestDynamicToolBuilder_DoesNotExposeMatchedSkillBelowLegacyThreshold(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
@@ -719,24 +628,12 @@ func TestDynamicToolBuilder_EnrichesMatchedSkillBelowLegacyThreshold(t *testing.
 		t.Fatalf("skill score = %.4f matched=%v, want low positive match", score, matched)
 	}
 	result := builder.Build("shared")
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		contract, ok := def["x_execution_contract"].(map[string]interface{})
-		if !ok {
-			t.Fatal("manage_skill missing execution contract for low-score matched skill")
-		}
-		caps, ok := contract["capabilities"].([]string)
-		if !ok || !testStringSliceContains(caps, "current_data") {
-			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
-		}
-		return
+	if toolIndexForTest(result, "manage_skill") >= 0 {
+		t.Fatalf("low-score matched skill must not expose legacy gateway: %#v", result)
 	}
-	t.Fatalf("manage_skill missing from build result: %#v", result)
 }
 
-func TestDynamicToolBuilder_EnrichesMatchedSkillWithoutRouting(t *testing.T) {
+func TestDynamicToolBuilder_DoesNotExposeMatchedSkillWithoutRouting(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "bash", Description: "run shell", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
@@ -747,24 +644,12 @@ func TestDynamicToolBuilder_EnrichesMatchedSkillWithoutRouting(t *testing.T) {
 	}})
 
 	result := builder.Build("live")
-	for _, def := range result {
-		if ExtractToolName(def) != "manage_skill" {
-			continue
-		}
-		contract, ok := def["x_execution_contract"].(map[string]interface{})
-		if !ok {
-			t.Fatal("manage_skill missing execution contract when builder skips routing")
-		}
-		caps, ok := contract["capabilities"].([]string)
-		if !ok || !testStringSliceContains(caps, "current_data") {
-			t.Fatalf("capabilities = %#v, want current_data", contract["capabilities"])
-		}
-		return
+	if toolIndexForTest(result, "manage_skill") >= 0 {
+		t.Fatalf("matched skill must not expose a generic gateway: %#v", result)
 	}
-	t.Fatalf("manage_skill missing from build result: %#v", result)
 }
 
-func TestDynamicToolBuilder_PrioritizesMatchedSkillBeforeGenericCurrentDataTool(t *testing.T) {
+func TestDynamicToolBuilder_DoesNotPrioritizeMatchedSkillGateway(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(RegisteredTool{Name: "web_search", Description: "search web", Category: CategoryBuiltin})
 	reg.Register(RegisteredTool{Name: "manage_skill", Description: "Skill management", Category: CategoryBuiltin})
@@ -783,9 +668,7 @@ func TestDynamicToolBuilder_PrioritizesMatchedSkillBeforeGenericCurrentDataTool(
 	}})
 
 	result := builder.Build("live")
-	manageIdx := toolIndexForTest(result, "manage_skill")
-	searchIdx := toolIndexForTest(result, "web_search")
-	if manageIdx < 0 || searchIdx < 0 || manageIdx > searchIdx {
-		t.Fatalf("tool order = %v, want manage_skill before web_search", toolNamesForTest(result))
+	if toolIndexForTest(result, "manage_skill") >= 0 {
+		t.Fatalf("dynamic skill gateway must not enter generic ranking: %v", toolNamesForTest(result))
 	}
 }

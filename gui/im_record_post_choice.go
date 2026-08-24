@@ -66,6 +66,7 @@ type pendingPostRecordingState struct {
 	// KnownSpeakers is the user-confirmed pin passed to diarization (0 = auto).
 	// Set only after the confirm step succeeds; used by host ASR / agent context.
 	KnownSpeakers int
+	WorkingState  *agent.WorkingState
 }
 
 func parseRecordPostChoiceCommand(text string) (recordPostChoiceAction, bool) {
@@ -711,7 +712,7 @@ func (h *IMMessageHandler) offerPostRecordingSpeakerConfirm(
 // offerPostRecordingChoice builds a deterministic ask_user-style response with
 // engine-injected Actions, persists history, and stores pending state for the
 // next user click/reply. lang is the UI language; empty falls back via app/i18n.
-func (h *IMMessageHandler) offerPostRecordingChoice(userID, title, purpose, report, lang string, priorHistory []agent.ConversationEntry) *IMAgentResponse {
+func (h *IMMessageHandler) offerPostRecordingChoice(userID, title, purpose, report, lang string, priorHistory []agent.ConversationEntry, workingState *agent.WorkingState) *IMAgentResponse {
 	if h == nil {
 		return nil
 	}
@@ -749,16 +750,17 @@ func (h *IMMessageHandler) offerPostRecordingChoice(userID, title, purpose, repo
 	now := time.Now()
 	format := extractRecordingFieldFromReport(report, "format")
 	h.pendingPostRecording.Store(userID, &pendingPostRecordingState{
-		Title:       title,
-		Purpose:     strings.TrimSpace(purpose),
-		Path:        path,
-		MP3Path:     mp3Path,
-		Format:      format,
-		DurationSec: extractRecordingFieldFromReport(report, "duration_sec"),
-		SizeBytes:   extractRecordingFieldFromReport(report, "size_bytes"),
-		Report:      report,
-		Lang:        lang,
-		CreatedAt:   now,
+		Title:        title,
+		Purpose:      strings.TrimSpace(purpose),
+		Path:         path,
+		MP3Path:      mp3Path,
+		Format:       format,
+		DurationSec:  extractRecordingFieldFromReport(report, "duration_sec"),
+		SizeBytes:    extractRecordingFieldFromReport(report, "size_bytes"),
+		Report:       report,
+		Lang:         lang,
+		CreatedAt:    now,
+		WorkingState: agent.CloneWorkingState(workingState),
 	})
 	// Warm speaker estimate so the confirm step is snappy.
 	h.preEstimateSpeakersForPending(userID, path, format)

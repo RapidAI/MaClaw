@@ -22,6 +22,15 @@ choice MACLAW_BOARD
             1.75-inch 466x466 round AMOLED board with AXP2101 PMU, CST9217
             touch and ES7210/ES8311 audio codecs. This is a distinct board
             profile; it must not share a rectangular-display configuration.
+
+    config MACLAW_BOARD_REFERENCE_FAKE
+        bool "Reference fake compact profile (CI only)"
+        help
+            A non-release reference profile used to prove that a newly added
+            compact board can select only profile/HAL adapters while reusing
+            the shared business, presentation and Device API layers. It uses
+            Bread-compatible physical ports solely for build/ABI coverage and
+            must never be packaged, flashed or admitted as an official device.
 endchoice
 
 config MACLAW_PRODUCT_ID
@@ -36,6 +45,7 @@ config MACLAW_BOARD_ID
     default "echoear-2st-r8" if MACLAW_BOARD_ECHOEAR_2ST
     default "fangtang-4g-v1" if MACLAW_BOARD_FANGTANG_4G
     default "waveshare-s3-touch-amoled-1.75c-v1" if MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    default "reference-fake-v1" if MACLAW_BOARD_REFERENCE_FAKE
     help
         Machine-readable physical PCB/display/audio configuration. Change only
         when hardware compatibility changes, not for firmware releases.
@@ -57,6 +67,7 @@ config MACLAW_COMPAT_ID
     default "maclaw-clawmate:echoear-2st-r8:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_ECHOEAR_2ST
     default "maclaw-clawmate:fangtang-4g-v1:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_FANGTANG_4G
     default "maclaw-clawmate:waveshare-s3-touch-amoled-1.75c-v1:maclaw-s3-32m-factory-v1" if MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    default "maclaw-clawmate:reference-fake-v1:maclaw-s3-16m-factory-v2" if MACLAW_BOARD_REFERENCE_FAKE
     help
         Compact allow-list key used by the flasher after independent chip and
         partition-table verification.
@@ -67,6 +78,7 @@ config MACLAW_FIRMWARE_DISPLAY_NAME
     default "ClawMate / EchoEar-2ST R8" if MACLAW_BOARD_ECHOEAR_2ST
     default "ClawMate / 无名星智 4G" if MACLAW_BOARD_FANGTANG_4G
     default "ClawMate / Waveshare S3 Touch AMOLED 1.75C" if MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    default "ClawMate / Reference Fake (CI only)" if MACLAW_BOARD_REFERENCE_FAKE
 
 config MACLAW_RELEASE_SEQUENCE
     int "Monotonic firmware release sequence"
@@ -296,6 +308,28 @@ config MACLAW_PROVISIONING_TEST_FORCE_PORTAL
         compiled only when MACLAW_TEST_BUILD is enabled and must never be set
         in a production profile or release package.
 
+config MACLAW_SAFE_MODE_TEST_LOCAL_READY_FAILURE
+    bool "Enter SAFE_MODE at the proven local-ready boundary (test only)"
+    default n
+    help
+        Injects one compile-time-only failure after Persistence, Display/App
+        UI, Input, Power, Wake Deadline and Sleep Schedule are ready, but
+        before radio, SNTP, Gateway, provisioning or normal interaction
+        startup. It proves SAFE_MODE's local alarm/clock/feedback composition
+        and ordinary-input fence. It has no runtime setter, Hub, HTTP,
+        console, or release-firmware path.
+
+config MACLAW_SAFE_MODE_TEST_FORCE_SETUP_TAKE_FAILURE
+    bool "Fail the durable force-setup consume transaction (test only)"
+    default n
+    help
+        Makes the one-shot force-setup read/consume transaction return an
+        error after its durable state was read but before any clear/write is
+        attempted. This exercises the only current production-candidate
+        SAFE_MODE entry without changing credentials or the durable flag. It
+        requires MACLAW_TEST_BUILD and has no runtime setter, Hub, HTTP,
+        console, or release-firmware path.
+
 config MACLAW_DISPLAY_FAILURE_INITIALIZATION
     bool "Inject a selected display bring-up rollback point (test only)"
     default n
@@ -435,10 +469,85 @@ config MACLAW_TASK_REGISTRY_LIFECYCLE_TEST
         It is intended only for a dedicated hardware-in-the-loop image and
          never for a production configuration.
 
+config MACLAW_POWER_LEASE_DISPLAY_OFF_COMMIT_TEST
+    bool "Run DISPLAY_OFF lease-commit lifecycle test at boot (test only)"
+    default n
+    help
+        Exercises the shared Power Lease PREPARE -> COMMIT fence before normal
+        runtime admission opens: a new foreground lease must be refused while
+        the fence is held, lifecycle closure must invalidate the commit, and
+        deinit must not drain the lease generation before the fence is ended.
+        The test then reopens a clean lease generation for ordinary startup.
+        It never performs a panel transaction, configures a wake source, or
+        creates a runtime control path. This option is only for a dedicated
+        test image and must never be enabled by a release profile.
+
+config MACLAW_POWER_DISPLAY_OFF_RETRY_HIL_TEST
+    bool "Run DISPLAY_OFF stale-retry panel HIL at boot (test only)"
+    default n
+    help
+        Holds Power Service's real shared display-transition mutex across an
+        idle deadline, then verifies stale-safe retry against the selected
+        physical panel. The boot-only proof additionally exercises user and
+        remote wake, foreground-lease deferral, and explicit deadline
+        cancellation. It never creates a Hub, HTTP, console, input or other
+        runtime test command and must never be enabled by a release profile.
+
+config MACLAW_SLEEP_SCHEDULE_END_HANDOFF_TEST
+    bool "Run Sleep Schedule end-handoff marker proof at boot (test only)"
+    default n
+    help
+        Exercises the service-private distinction between a natural rest-window
+        end and an explicit policy or wall-clock reconciliation. The proof
+        verifies that only the latter clears schedule-owned DISPLAY_OFF state;
+        a natural end must retain it until the shared Power wake and App UI
+        handoff consume it. It creates no schedule, panel transaction, NVS
+        write, Hub/HTTP/console command or runtime configuration path. This
+        option is only for a dedicated test image and must never be enabled by
+        a release profile.
+
+config MACLAW_SLEEP_SCHEDULE_END_HANDOFF_HIL_TEST
+    bool "Run Sleep Schedule end-handoff panel HIL at boot (test only)"
+    default n
+    help
+        Drives one compile-time-only, non-persistent end-handoff transaction
+        after the composition root has installed its observer: the shared
+        schedule service requests DISPLAY_OFF, observes the selected panel
+        enter that state, closes the synthetic window, wakes the panel through
+        Device Power, invokes the ordinary App UI observer, and confirms the
+        ambient idle deadline was re-armed. It never creates or persists a
+        schedule, changes wall clock, writes NVS, or adds a Hub/HTTP/console
+        command. This option is only for a dedicated test image and must never
+        be enabled by a release profile.
+
+config MACLAW_WAVESHARE_QMI8658_INIT_FAILURE
+    bool "Fail optional Waveshare QMI8658 initialization (test only)"
+    default n
+    depends on MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    help
+        Forces the Waveshare profile's optional Motion HAL acquisition to fail
+        before an I2C device handle is created. It validates that the common
+        PMIC/touch/display/audio/bootstrap path remains available while Motion
+        is reported unavailable. The hook is compile-time-only, has no
+        runtime setter, Hub/HTTP/console/input route, and must never be set in
+        a production profile or release package.
+
+config MACLAW_WAVESHARE_QMI8658_MOTION_READ_FAILURE
+    bool "Fail one optional Waveshare QMI8658 Motion read (test only)"
+    default n
+    depends on MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C
+    depends on !MACLAW_WAVESHARE_QMI8658_INIT_FAILURE
+    help
+        Lets the initial Motion availability probe succeed, then forces exactly
+        one later private QMI8658 sample read to return a retryable timeout.
+        It validates the shared Fall Detection sampler's transient-error path
+        without exposing sensor control outside the profile adapter. This hook
+        is compile-time-only and must never be set in a release profile.
+
 config MACLAW_COMPACT_DISPLAY_ANIMATION_DEADLINE_TEST
     bool "Run compact animation stop-deadline test at boot (test only)"
     default n
-    depends on MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || MACLAW_BOARD_FANGTANG_4G
+    depends on MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD || MACLAW_BOARD_FANGTANG_4G || MACLAW_BOARD_REFERENCE_FAKE
     help
         Runs a service-private decorative-worker lifecycle test after the
         selected compact renderer has initialized. The test deliberately holds

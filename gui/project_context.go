@@ -33,8 +33,9 @@ type ProjectContextArtifact struct {
 }
 
 // LoadProjectContext recalls project-specific knowledge from long-term memory
-// and checks for an active workflow, returning a structured summary suitable
-// for injection as the initial system message in a Project Tab.
+// and checks for an active workflow, returning a structured summary for the
+// Project Tab resume card. That card is UI-only; warehouse bodies are not
+// added to the model working set.
 func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, error) {
 	started := time.Now()
 	if strings.TrimSpace(projectPath) == "" {
@@ -60,13 +61,17 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 	taskArtifacts := contextData.TaskArtifacts
 	projectKnowledge := contextData.ProjectKnowledge
 
-	// Build recent progress from task artifacts (most recent first from recall).
+	// Titles / source paths only. Warehouse bodies stay in tools.
 	var progressParts []string
 	for _, entry := range taskArtifacts {
-		snippet := truncateRunes(entry.Content, 200)
-		if snippet != "" {
-			progressParts = append(progressParts, snippet)
+		label := strings.TrimSpace(entry.Title)
+		if label == "" {
+			label = strings.TrimSpace(entry.SourceURL)
 		}
+		if label == "" {
+			continue
+		}
+		progressParts = append(progressParts, label)
 		if len(progressParts) >= 3 {
 			break
 		}
@@ -104,7 +109,6 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 				SourceType: artifact.SourceType,
 				SourceURL:  artifact.SourceURL,
 				SourceHint: projectTabSourceHint(artifact.SourceURL),
-				Preview:    artifact.Preview,
 			}
 			if !artifact.UpdatedAt.IsZero() {
 				item.UpdatedAt = artifact.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")

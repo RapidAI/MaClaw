@@ -50,6 +50,9 @@ func enterRecoverPhase(phase *agentLoopPhase, reason agentRecoverReason, prompt 
 
 func (h *IMMessageHandler) initialAgentLoopPhase(userText string, ctx *LoopContext) agentLoopPhase {
 	phase := agentLoopPhase{Stage: agentStageOrient, SkillMode: skillPreferenceNone}
+	// Picker paths and host notes are not the user's request. A file named
+	// weather-report.jpg would otherwise trip "report"/"pdf" skill hints.
+	userText = semanticUserIntentText(userText)
 	if ctx != nil && ctx.IsAskUserResponse {
 		return phase
 	}
@@ -67,7 +70,11 @@ func (h *IMMessageHandler) initialAgentLoopPhase(userText string, ctx *LoopConte
 	}
 	phase.ForceSkillPreference = true
 	phase.SkillMode = skillPreferenceRemoteRequired
-	if skillName, skillReason := matchPreferredLocalSkill(h.getSkillExecutor(), userText); skillName != "" {
+	ownerID := ""
+	if ctx != nil {
+		ownerID = ctx.UserID
+	}
+	if skillName, skillReason := matchPreferredLocalSkill(h.getSkillExecutor(), userText, h.skillExperienceDomainForOwner(ownerID)); skillName != "" {
 		phase.SkillMode = skillPreferenceLocalOnly
 		phase.PreferredSkillName = skillName
 		phase.PreferredSkillReason = skillReason

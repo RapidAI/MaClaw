@@ -36,12 +36,20 @@ func TestClassifyTurn_ShortOpsCues(t *testing.T) {
 	}
 }
 
-func TestClassifyTurn_ForceAndAttachments(t *testing.T) {
-	if got := ClassifyTurn("hi", ClassifyHints{ForceReasoning: true}); got.Task != TaskReasoning {
-		t.Fatalf("force: %s", got.Task)
+func TestClassifyTurn_ImageWeatherLooksLikeVision(t *testing.T) {
+	for _, text := range []string{"这张图里的天气如何", "图中有什么", "看看图里写了什么"} {
+		got := ClassifyTurn(text, ClassifyHints{})
+		if got.Task != TaskVision {
+			t.Fatalf("%q got %s (%s), want vision", text, got.Task, got.Reason)
+		}
 	}
-	if got := ClassifyTurn("hi", ClassifyHints{HasAttachments: true}); got.Task != TaskVision {
-		t.Fatalf("attach: %s", got.Task)
+	got := ClassifyTurn("北京天气", ClassifyHints{})
+	if got.Task == TaskVision {
+		t.Fatalf("plain weather must not become vision: %s (%s)", got.Task, got.Reason)
+	}
+	got = ClassifyTurn("地图中的杭州天气", ClassifyHints{})
+	if got.Task == TaskVision {
+		t.Fatalf("地图中 must not count as a photo cue: %s (%s)", got.Task, got.Reason)
 	}
 }
 

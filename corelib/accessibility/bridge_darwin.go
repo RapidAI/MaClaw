@@ -68,6 +68,25 @@ func runPython(script string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func runPythonStrict(script string) error {
+	cmd := exec.Command("python3", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitErr.Stderr)
+			if classifyAccessibilityErrorMessage(stderr) == accessibilityErrorPermissionDenied {
+				return fmt.Errorf("%s", accessibilityPermissionDeniedMessage)
+			}
+		}
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return fmt.Errorf("accessibility action failed: %w", err)
+		}
+		return fmt.Errorf("accessibility action failed: %w (%s)", err, msg)
+	}
+	return nil
+}
+
 // EnumElements returns the accessibility tree for the window matching the given title.
 // If the window is not found or has no accessibility info, returns (nil, nil).
 func (b *darwinBridge) EnumElements(windowTitle string) ([]Element, error) {
@@ -300,7 +319,9 @@ for app in apps:
 	return &el, nil
 }
 
-// ClickElement performs a click on the element's center using Quartz CGEvent.
+// ClickElement tries AXPress on the element at the given bounds. It does not
+// synthesize a Quartz mouse click — callers that want pixel fallback should
+// do that themselves.
 func (b *darwinBridge) ClickElement(el *Element) error {
 	if el == nil {
 		return nil
@@ -308,33 +329,35 @@ func (b *darwinBridge) ClickElement(el *Element) error {
 
 	cx := el.Bounds.X + el.Bounds.Width/2
 	cy := el.Bounds.Y + el.Bounds.Height/2
+	if ok, err := globalAXSidecar.actAt("press_at", cx, cy, ""); err == nil && ok {
+		return nil
+	}
 
 	script := fmt.Sprintf(`
 import sys
 try:
-    from Quartz import (
-        CGEventCreateMouseEvent, CGEventPost,
-        kCGEventLeftMouseDown, kCGEventLeftMouseUp,
-        kCGMouseButtonLeft, kCGHIDEventTap,
+    from ApplicationServices import (
+        AXUIElementCreateSystemWide,
+        AXUIElementCopyElementAtPosition,
+        AXUIElementPerformAction,
     )
-    from CoreFoundation import CGPointMake
 except ImportError:
     sys.exit(1)
 
-point = CGPointMake(%d, %d)
-down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, point, kCGMouseButtonLeft)
-up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, point, kCGMouseButtonLeft)
-CGEventPost(kCGHIDEventTap, down)
-CGEventPost(kCGHIDEventTap, up)
+sys_wide = AXUIElementCreateSystemWide()
+err, target = AXUIElementCopyElementAtPosition(sys_wide, float(%d), float(%d), None)
+if err != 0 or target is None:
+    sys.exit(1)
+r = AXUIElementPerformAction(target, "AXPress")
+sys.exit(0 if r == 0 else 1)
 `, cx, cy)
 
-	_, err := runPython(script)
-	return err
+	return runPythonStrict(script)
 }
 
-// TypeInElement types text into the element.
-// First tries AXUIElementSetAttributeValue for AXValue, then falls back
-// to CGEventCreateKeyboardEvent for each character.
+// TypeInElement sets AXValue on the focused element after pointing at bounds.
+// It does not type via CGEvent — callers that want keyboard fallback should
+// do that themselves.
 func (b *darwinBridge) TypeInElement(el *Element, text string) error {
 	if el == nil {
 		return nil
@@ -342,69 +365,34 @@ func (b *darwinBridge) TypeInElement(el *Element, text string) error {
 
 	cx := el.Bounds.X + el.Bounds.Width/2
 	cy := el.Bounds.Y + el.Bounds.Height/2
+	if ok, err := globalAXSidecar.actAt("set_value_at", cx, cy, text); err == nil && ok {
+		return nil
+	}
 
-	// Escape text for Python string embedding.
 	safeText := strings.ReplaceAll(text, `\`, `\\`)
 	safeText = strings.ReplaceAll(safeText, `"`, `\"`)
 
 	script := fmt.Sprintf(`
-import sys, time
+import sys
 try:
-    from Quartz import (
-        CGEventCreateMouseEvent, CGEventPost, CGEventCreateKeyboardEvent,
-        CGEventKeyboardSetUnicodeString,
-        kCGEventLeftMouseDown, kCGEventLeftMouseUp,
-        kCGEventKeyDown, kCGEventKeyUp,
-        kCGMouseButtonLeft, kCGHIDEventTap,
-    )
-    from CoreFoundation import CGPointMake
     from ApplicationServices import (
-        AXUIElementCreateApplication, AXUIElementCopyAttributeValue,
+        AXUIElementCreateSystemWide,
+        AXUIElementCopyElementAtPosition,
         AXUIElementSetAttributeValue,
     )
-    from AppKit import NSWorkspace
 except ImportError:
     sys.exit(1)
 
 text = "%s"
-
-# Try to set AXValue directly via Accessibility API on the focused element.
-# This requires finding the element at the click point.
-def try_set_value():
-    from ApplicationServices import AXUIElementCreateSystemWide
-    sys_wide = AXUIElementCreateSystemWide()
-    err, focused = AXUIElementCopyAttributeValue(sys_wide, "AXFocusedUIElement", None)
-    if err == 0 and focused:
-        result = AXUIElementSetAttributeValue(focused, "AXValue", text)
-        if result == 0:
-            return True
-    return False
-
-# Click to focus the element first.
-point = CGPointMake(%d, %d)
-down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, point, kCGMouseButtonLeft)
-up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, point, kCGMouseButtonLeft)
-CGEventPost(kCGHIDEventTap, down)
-CGEventPost(kCGHIDEventTap, up)
-time.sleep(0.1)
-
-# Try AXValue first.
-if try_set_value():
-    sys.exit(0)
-
-# Fallback: type each character via CGEventCreateKeyboardEvent.
-for ch in text:
-    key_down = CGEventCreateKeyboardEvent(None, 0, True)
-    CGEventKeyboardSetUnicodeString(key_down, len(ch), ch)
-    key_up = CGEventCreateKeyboardEvent(None, 0, False)
-    CGEventKeyboardSetUnicodeString(key_up, len(ch), ch)
-    CGEventPost(kCGHIDEventTap, key_down)
-    CGEventPost(kCGHIDEventTap, key_up)
-    time.sleep(0.02)
+sys_wide = AXUIElementCreateSystemWide()
+err, target = AXUIElementCopyElementAtPosition(sys_wide, float(%d), float(%d), None)
+if err != 0 or target is None:
+    sys.exit(1)
+r = AXUIElementSetAttributeValue(target, "AXValue", text)
+sys.exit(0 if r == 0 else 1)
 `, safeText, cx, cy)
 
-	_, err := runPython(script)
-	return err
+	return runPythonStrict(script)
 }
 
 // GetValue returns the current value of the element using AXValue attribute.
@@ -458,6 +446,68 @@ if err == 0 and el is not None:
 		return "", nil
 	}
 	return out, nil
+}
+
+func (b *darwinBridge) SelectElement(el *Element) error {
+	return b.ClickElement(el)
+}
+
+func (b *darwinBridge) ExpandElement(el *Element) error {
+	return b.ClickElement(el)
+}
+
+func (b *darwinBridge) ScrollElementIntoView(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	if ok, err := globalAXSidecar.actAt("scroll_into_view_at", cx, cy, ""); err == nil && ok {
+		return nil
+	}
+	return runPythonStrict(fmt.Sprintf(`
+import sys
+try:
+    from ApplicationServices import (
+        AXUIElementCreateSystemWide,
+        AXUIElementCopyElementAtPosition,
+        AXUIElementPerformAction,
+    )
+except ImportError:
+    sys.exit(1)
+sys_wide = AXUIElementCreateSystemWide()
+err, target = AXUIElementCopyElementAtPosition(sys_wide, float(%d), float(%d), None)
+if err != 0 or target is None:
+    sys.exit(1)
+r = AXUIElementPerformAction(target, "AXScrollToVisible")
+sys.exit(0 if r == 0 else 1)
+`, cx, cy))
+}
+
+func (b *darwinBridge) FocusElement(el *Element) error {
+	if el == nil {
+		return nil
+	}
+	cx, cy := elementCenter(el)
+	if ok, err := globalAXSidecar.actAt("focus_at", cx, cy, ""); err == nil && ok {
+		return nil
+	}
+	return runPythonStrict(fmt.Sprintf(`
+import sys
+try:
+    from ApplicationServices import (
+        AXUIElementCreateSystemWide,
+        AXUIElementCopyElementAtPosition,
+        AXUIElementSetAttributeValue,
+    )
+except ImportError:
+    sys.exit(1)
+sys_wide = AXUIElementCreateSystemWide()
+err, target = AXUIElementCopyElementAtPosition(sys_wide, float(%d), float(%d), None)
+if err != 0 or target is None:
+    sys.exit(1)
+r = AXUIElementSetAttributeValue(target, "AXFocused", True)
+sys.exit(0 if r == 0 else 1)
+`, cx, cy))
 }
 
 // Close releases resources. No persistent resources for the python3 approach.

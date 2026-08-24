@@ -42,6 +42,16 @@ void compact_display_service_discard_unpublished_state(void);
 esp_err_t compact_display_service_set_brightness(unsigned percent);
 esp_err_t compact_display_service_enter_display_off(void);
 esp_err_t compact_display_service_wake_from_display_off(unsigned brightness);
+/* System Sleep PREPARE uses this profile-private physical fence only after
+ * Display Service has stopped new semantic submissions.  It proves no panel
+ * DMA source remains borrowed, but deliberately does not alter panel power,
+ * DMA ownership, or worker lifecycle. */
+esp_err_t compact_display_service_wait_for_scanout_idle(uint32_t timeout_ms);
+/* Future System Sleep also parks retained decorative workers after semantic
+ * Display admission is closed. ABORT resumes the same worker generations; it
+ * never recreates panel/DMA resources or changes scene state. */
+esp_err_t compact_display_service_prepare_system_sleep(uint32_t timeout_ms);
+void compact_display_service_abort_system_sleep_prepare(void);
 esp_err_t compact_display_service_draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                                     const void *pixels);
 bool compact_display_service_uses_delta_presentation(void);

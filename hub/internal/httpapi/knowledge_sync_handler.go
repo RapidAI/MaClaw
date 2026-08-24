@@ -280,9 +280,9 @@ func knowledgeSyncTenantAuthorizationStatus(r *http.Request, principal *auth.Vie
 	}
 	if centerSvc != nil {
 		if centerStatus, err := centerSvc.Status(r.Context()); err == nil && centerStatus != nil {
-			if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(centerStatus, tenantID); heartbeatStatus != nil {
+			if heartbeatStatus := llmComputeStatusFromCenterAuthorizationPayload(centerStatus, tenantID, ac); heartbeatStatus != nil {
 				if ac != nil {
-					ac.UpdateFromHeartbeat(tenantID, heartbeatStatus)
+					ac.CacheTenantAuthorization(tenantID, heartbeatStatus)
 				}
 				status = heartbeatStatus
 			}

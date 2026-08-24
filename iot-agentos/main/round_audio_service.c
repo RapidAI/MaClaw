@@ -5,9 +5,12 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <stdatomic.h>
 #include "round_peripheral_lifecycle.h"
+#include "shared_bus_lifecycle.h"
+#include "shared_bus_recovery_transaction.h"
 
 /*
  * There must be exactly one compilation-unit owner for the codec transport.
@@ -92,6 +95,24 @@ static void round_audio_service_capture_pcm_stats(const int16_t *samples,
                                                   size_t frames, int32_t peak,
                                                   round_audio_capture_stats_t *out_stats);
 static bool round_audio_service_capture_sample_is_valid(int16_t sample);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_quiesce(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_drain(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_detach_peripherals(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_detach_codecs(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_delete_bus(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_create_bus(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_attach_peripherals(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_attach_codecs(
+    uint32_t timeout_ms, void *context);
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_self_test(
+    uint32_t timeout_ms, void *context);
 
 const char *round_audio_service_name(void) {
     const round_audio_profile_t *profile = round_audio_profile_adapter();
@@ -114,11 +135,480 @@ uint32_t round_audio_service_sample_rate(void) {
  * a later capture, wake or volume request retries it. */
 static bool s_round_audio_ready;
 static SemaphoreHandle_t s_round_audio_ownership_mutex;
+static SemaphoreHandle_t s_round_shared_bus_mutex;
+static SemaphoreHandle_t s_round_shared_bus_codec_control_mutex;
+static shared_bus_lifecycle_t s_round_shared_bus_lifecycle;
+static bool s_round_shared_bus_lifecycle_initialized;
+static shared_bus_lease_t s_round_shared_bus_borrow_lease;
+static shared_bus_lease_t s_round_shared_bus_codec_control_lease;
+static bool s_round_shared_bus_codec_control_self_test;
+static bool s_round_shared_bus_recovery_self_test;
 static bool s_round_audio_stream_owned;
 static bool s_round_audio_command_capture_owned;
 static _Atomic bool s_round_audio_command_capture_stop_requested;
 static TaskHandle_t s_round_audio_playback_owner;
 static volatile bool s_round_audio_playback_stop_requested;
+
+static esp_err_t round_audio_lifecycle_shared_bus_lock_for(uint32_t timeout_ms) {
+    if (!s_round_shared_bus_mutex) {
+        s_round_shared_bus_mutex = xSemaphoreCreateMutex();
+        if (!s_round_shared_bus_mutex) return ESP_ERR_NO_MEM;
+    }
+    TickType_t timeout = timeout_ms == UINT32_MAX ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    if (timeout_ms != 0u && timeout == 0u) timeout = 1u;
+    return xSemaphoreTake(s_round_shared_bus_mutex, timeout) == pdTRUE
+               ? ESP_OK
+               : ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t round_audio_lifecycle_shared_bus_lock(void) {
+    return round_audio_lifecycle_shared_bus_lock_for(UINT32_MAX);
+}
+
+static void round_audio_lifecycle_shared_bus_unlock(void) {
+    if (s_round_shared_bus_mutex) (void)xSemaphoreGive(s_round_shared_bus_mutex);
+}
+
+static esp_err_t round_audio_lifecycle_shared_bus_result_to_esp_err(
+    shared_bus_lifecycle_result_t result) {
+    switch (result) {
+        case SHARED_BUS_LIFECYCLE_OK: return ESP_OK;
+        case SHARED_BUS_LIFECYCLE_INVALID_ARGUMENT: return ESP_ERR_INVALID_ARG;
+        case SHARED_BUS_LIFECYCLE_RESOURCE_EXHAUSTED: return ESP_ERR_NO_MEM;
+        case SHARED_BUS_LIFECYCLE_UNAVAILABLE: return ESP_ERR_INVALID_STATE;
+        case SHARED_BUS_LIFECYCLE_UNKNOWN_OUTCOME: return ESP_ERR_INVALID_STATE;
+        case SHARED_BUS_LIFECYCLE_BUSY:
+        case SHARED_BUS_LIFECYCLE_STALE_LEASE:
+        default: return ESP_ERR_INVALID_STATE;
+    }
+}
+
+esp_err_t round_audio_lifecycle_shared_bus_begin_bootstrap(void) {
+    ESP_RETURN_ON_ERROR(round_audio_lifecycle_shared_bus_lock(), "round_audio",
+                        "shared bus lifecycle lock");
+    if (!s_round_shared_bus_lifecycle_initialized) {
+        shared_bus_lifecycle_reset(&s_round_shared_bus_lifecycle,
+                                   FAULT_DOMAIN_ID_SHARED_BUS);
+        s_round_shared_bus_lifecycle_initialized = true;
+    }
+    const esp_err_t err = round_audio_lifecycle_shared_bus_result_to_esp_err(
+        shared_bus_lifecycle_begin_reinitialize(&s_round_shared_bus_lifecycle));
+    round_audio_lifecycle_shared_bus_unlock();
+    return err;
+}
+
+esp_err_t round_audio_lifecycle_shared_bus_mark_attached(void) {
+    ESP_RETURN_ON_ERROR(round_audio_lifecycle_shared_bus_lock(), "round_audio",
+                        "shared bus lifecycle lock");
+    const esp_err_t err = !s_round_shared_bus_lifecycle_initialized
+                              ? ESP_ERR_INVALID_STATE
+                              : round_audio_lifecycle_shared_bus_result_to_esp_err(
+                                    shared_bus_lifecycle_mark_attached(
+                                        &s_round_shared_bus_lifecycle));
+    round_audio_lifecycle_shared_bus_unlock();
+    return err;
+}
+
+esp_err_t round_audio_lifecycle_shared_bus_begin_self_test(void) {
+    ESP_RETURN_ON_ERROR(round_audio_lifecycle_shared_bus_lock(), "round_audio",
+                        "shared bus lifecycle lock");
+    const esp_err_t err = !s_round_shared_bus_lifecycle_initialized
+                              ? ESP_ERR_INVALID_STATE
+                              : round_audio_lifecycle_shared_bus_result_to_esp_err(
+                                    shared_bus_lifecycle_begin_self_test(
+                                        &s_round_shared_bus_lifecycle));
+    round_audio_lifecycle_shared_bus_unlock();
+    return err;
+}
+
+esp_err_t round_audio_lifecycle_shared_bus_mark_ready(void) {
+    ESP_RETURN_ON_ERROR(round_audio_lifecycle_shared_bus_lock(), "round_audio",
+                        "shared bus lifecycle lock");
+    const esp_err_t err = !s_round_shared_bus_lifecycle_initialized
+                              ? ESP_ERR_INVALID_STATE
+                              : round_audio_lifecycle_shared_bus_result_to_esp_err(
+                                    shared_bus_lifecycle_mark_ready(
+                                        &s_round_shared_bus_lifecycle));
+    round_audio_lifecycle_shared_bus_unlock();
+    return err;
+}
+
+void round_audio_lifecycle_shared_bus_abort_detached_bootstrap(void) {
+    if (round_audio_lifecycle_shared_bus_lock() != ESP_OK) return;
+    if (s_round_shared_bus_lifecycle_initialized) {
+        shared_bus_lifecycle_snapshot_t snapshot = {0};
+        if (shared_bus_lifecycle_get_snapshot(&s_round_shared_bus_lifecycle, &snapshot) &&
+            snapshot.attachment == SHARED_BUS_ATTACHMENT_DETACHED &&
+            snapshot.active_lease_count == 0u) {
+            /* No physical bus was created, so the lifecycle may return to
+             * STOPPED without masking an external cleanup outcome. */
+            (void)shared_bus_lifecycle_cancel_unattached_start(
+                &s_round_shared_bus_lifecycle);
+        }
+    }
+    round_audio_lifecycle_shared_bus_unlock();
+}
+
+bool round_audio_lifecycle_shared_bus_borrow_begin(void) {
+    if (round_audio_lifecycle_shared_bus_lock() != ESP_OK) return false;
+    if (!s_round_shared_bus_lifecycle_initialized ||
+        shared_bus_lifecycle_acquire(&s_round_shared_bus_lifecycle,
+                                     &s_round_shared_bus_borrow_lease) !=
+            SHARED_BUS_LIFECYCLE_OK) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return false;
+    }
+    /* The lease is released by borrow_end while the same mutex is held; no
+     * profile handle survives this controller transaction. */
+    return true;
+}
+
+void round_audio_lifecycle_shared_bus_borrow_end(void) {
+    if (s_round_shared_bus_lifecycle_initialized &&
+        s_round_shared_bus_borrow_lease.token != 0u) {
+        (void)shared_bus_lifecycle_release(&s_round_shared_bus_lifecycle,
+                                           &s_round_shared_bus_borrow_lease);
+        s_round_shared_bus_borrow_lease = (shared_bus_lease_t){0};
+    }
+    round_audio_lifecycle_shared_bus_unlock();
+}
+
+bool round_audio_lifecycle_shared_bus_codec_control_begin(void) {
+    if (!s_round_shared_bus_codec_control_mutex) {
+        s_round_shared_bus_codec_control_mutex = xSemaphoreCreateMutex();
+        if (!s_round_shared_bus_codec_control_mutex) return false;
+    }
+    /* Recovery owns the shared-bus mutex for its whole rebuild. Its source
+     * owner self-test may use codec register helpers, but must not attempt to
+     * re-take that non-recursive mutex. */
+    if (s_round_shared_bus_recovery_self_test) {
+        return xSemaphoreTake(s_round_shared_bus_codec_control_mutex, portMAX_DELAY) == pdTRUE;
+    }
+    /* Lock in the same order as generic peripheral borrowing: bus first,
+     * then codec control. Otherwise a codec writer could retain its private
+     * mutex while waiting on the bus just as recovery needs it for self-test. */
+    if (round_audio_lifecycle_shared_bus_lock() != ESP_OK) return false;
+    if (xSemaphoreTake(s_round_shared_bus_codec_control_mutex, portMAX_DELAY) != pdTRUE) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return false;
+    }
+    if (s_round_shared_bus_codec_control_lease.token != 0u ||
+        s_round_shared_bus_codec_control_self_test) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return true;
+    }
+    shared_bus_lifecycle_result_t result = SHARED_BUS_LIFECYCLE_UNAVAILABLE;
+    shared_bus_lifecycle_snapshot_t snapshot = {0};
+    if (s_round_shared_bus_lifecycle_initialized &&
+        shared_bus_lifecycle_get_snapshot(&s_round_shared_bus_lifecycle, &snapshot)) {
+        if (snapshot.domain.phase == FAULT_DOMAIN_SELF_TEST &&
+            snapshot.active_lease_count == 0u) {
+            /* Codec probing is part of the source owner's atomic physical
+             * self-test before READY exists.  No generic borrower can acquire
+             * in this phase, and the codec-control mutex keeps the probe
+             * sequence single-owner.  This is deliberately not a runtime
+             * admission bypass. */
+            s_round_shared_bus_codec_control_self_test = true;
+            result = SHARED_BUS_LIFECYCLE_OK;
+        } else {
+            result = shared_bus_lifecycle_acquire(
+                &s_round_shared_bus_lifecycle, &s_round_shared_bus_codec_control_lease);
+        }
+    }
+    /* Keep the shared-bus mutex for the complete register transaction. A
+     * lifecycle lease alone fences admission but cannot serialize a live I2C
+     * transfer against a recovery owner deleting the master bus. `end` both
+     * releases the lease and unlocks this mutex. */
+    if (result == SHARED_BUS_LIFECYCLE_OK) return true;
+
+    round_audio_lifecycle_shared_bus_unlock();
+    (void)xSemaphoreGive(s_round_shared_bus_codec_control_mutex);
+    return false;
+}
+
+void round_audio_lifecycle_shared_bus_codec_control_end(void) {
+    if (!s_round_shared_bus_codec_control_mutex) return;
+    if (s_round_shared_bus_codec_control_self_test) {
+        s_round_shared_bus_codec_control_self_test = false;
+        round_audio_lifecycle_shared_bus_unlock();
+    } else if (s_round_shared_bus_recovery_self_test) {
+        /* Keep the recovery owner's exclusive bus mutex until the entire
+         * rebuild completes; individual codec register writes only release
+         * their codec-control mutex. */
+    } else if (s_round_shared_bus_codec_control_lease.token != 0u) {
+        (void)shared_bus_lifecycle_release(
+            &s_round_shared_bus_lifecycle, &s_round_shared_bus_codec_control_lease);
+        s_round_shared_bus_codec_control_lease = (shared_bus_lease_t){0};
+        round_audio_lifecycle_shared_bus_unlock();
+    }
+    (void)xSemaphoreGive(s_round_shared_bus_codec_control_mutex);
+}
+
+esp_err_t round_audio_lifecycle_shared_bus_begin_teardown(bool *out_active) {
+    if (!out_active) return ESP_ERR_INVALID_ARG;
+    *out_active = false;
+    ESP_RETURN_ON_ERROR(round_audio_lifecycle_shared_bus_lock(), "round_audio",
+                        "shared bus lifecycle lock");
+    if (!s_round_shared_bus_lifecycle_initialized) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return ESP_OK;
+    }
+    shared_bus_lifecycle_snapshot_t snapshot = {0};
+    if (!shared_bus_lifecycle_get_snapshot(&s_round_shared_bus_lifecycle, &snapshot)) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (snapshot.attachment == SHARED_BUS_ATTACHMENT_DETACHED) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return ESP_OK;
+    }
+    if (snapshot.domain.phase != FAULT_DOMAIN_READY &&
+        snapshot.domain.phase != FAULT_DOMAIN_UNKNOWN_OUTCOME) {
+        (void)shared_bus_lifecycle_mark_unknown(&s_round_shared_bus_lifecycle);
+    }
+    const shared_bus_lifecycle_result_t result =
+        shared_bus_lifecycle_begin_recovery(&s_round_shared_bus_lifecycle);
+    if (result != SHARED_BUS_LIFECYCLE_OK ||
+        !shared_bus_lifecycle_can_detach(&s_round_shared_bus_lifecycle)) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return round_audio_lifecycle_shared_bus_result_to_esp_err(result);
+    }
+    *out_active = true;
+    return ESP_OK;
+}
+
+void round_audio_lifecycle_shared_bus_finish_teardown(esp_err_t cleanup_result) {
+    if (!s_round_shared_bus_lifecycle_initialized) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return;
+    }
+    if (cleanup_result == ESP_OK) {
+        if (shared_bus_lifecycle_mark_detached(&s_round_shared_bus_lifecycle) !=
+            SHARED_BUS_LIFECYCLE_OK) {
+            (void)shared_bus_lifecycle_mark_unknown(&s_round_shared_bus_lifecycle);
+        }
+    } else {
+        (void)shared_bus_lifecycle_mark_unknown(&s_round_shared_bus_lifecycle);
+    }
+    round_audio_lifecycle_shared_bus_unlock();
+}
+
+typedef struct {
+    int64_t deadline_us;
+    unsigned output_volume;
+} round_audio_shared_bus_recovery_context_t;
+
+static shared_bus_recovery_status_t round_audio_lifecycle_recovery_status(esp_err_t err) {
+    if (err == ESP_OK) return SHARED_BUS_RECOVERY_STATUS_OK;
+    if (err == ESP_ERR_TIMEOUT) return SHARED_BUS_RECOVERY_STATUS_TIMEOUT;
+    if (err == ESP_ERR_NO_MEM) return SHARED_BUS_RECOVERY_STATUS_UNAVAILABLE;
+    if (err == ESP_ERR_INVALID_ARG) return SHARED_BUS_RECOVERY_STATUS_INVALID_ARGUMENT;
+    if (err == ESP_ERR_INVALID_STATE) return SHARED_BUS_RECOVERY_STATUS_UNAVAILABLE;
+    return SHARED_BUS_RECOVERY_STATUS_IO_ERROR;
+}
+
+/* Keep recovery failure evidence available to the profile-private health
+ * owner.  `ready=false` always keeps shared-bus admission closed; this mapping
+ * is diagnostic only and must never be treated as permission to reuse a
+ * partially rebuilt bus.  Collapsing every failure to INVALID_STATE would
+ * make a bounded supervisor unable to distinguish ordinary contention from a
+ * deadline or an observed I/O failure. */
+static esp_err_t round_audio_lifecycle_recovery_status_to_esp_err(
+    shared_bus_recovery_status_t status) {
+    switch (status) {
+        case SHARED_BUS_RECOVERY_STATUS_OK:
+            return ESP_OK;
+        case SHARED_BUS_RECOVERY_STATUS_INVALID_ARGUMENT:
+            return ESP_ERR_INVALID_ARG;
+        case SHARED_BUS_RECOVERY_STATUS_TIMEOUT:
+            return ESP_ERR_TIMEOUT;
+        case SHARED_BUS_RECOVERY_STATUS_UNAVAILABLE:
+        case SHARED_BUS_RECOVERY_STATUS_BUSY:
+            return ESP_ERR_INVALID_STATE;
+        case SHARED_BUS_RECOVERY_STATUS_IO_ERROR:
+        case SHARED_BUS_RECOVERY_STATUS_INTERNAL_ERROR:
+        default:
+            return ESP_FAIL;
+    }
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_result(
+    esp_err_t err) {
+    return (shared_bus_recovery_step_result_t){
+        .struct_size = sizeof(shared_bus_recovery_step_result_t),
+        .abi_version = SHARED_BUS_RECOVERY_TRANSACTION_ABI_VERSION,
+        .disposition = err == ESP_OK ? SHARED_BUS_RECOVERY_STEP_OK
+                                     : SHARED_BUS_RECOVERY_STEP_REJECTED,
+        .status = round_audio_lifecycle_recovery_status(err),
+    };
+}
+
+static uint32_t round_audio_lifecycle_recovery_remaining_timeout(void *context) {
+    const round_audio_shared_bus_recovery_context_t *recovery = context;
+    if (!recovery) return 0u;
+    const int64_t remaining_us = recovery->deadline_us - esp_timer_get_time();
+    if (remaining_us <= 0) return 0u;
+    const uint64_t remaining_ms = ((uint64_t)remaining_us + 999u) / 1000u;
+    return remaining_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining_ms;
+}
+
+/* The explicit recovery caller already owns the Audio session mutex and the
+ * shared-bus mutex. This first phase therefore fences new command/playback
+ * admission and Input's controller reads before any profile handle changes. */
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_quiesce(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    if (s_round_audio_stream_owned || s_round_audio_command_capture_owned ||
+        s_round_audio_playback_owner) {
+        return round_audio_lifecycle_recovery_result(ESP_ERR_INVALID_STATE);
+    }
+    s_round_audio_playback_stop_requested = true;
+    s_round_audio_ready = false;
+    return round_audio_lifecycle_recovery_result(round_audio_adapter_release_i2s());
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_drain(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    /* Borrowers hold the same mutex for their entire I2C transaction. Since
+     * the recovery owner holds it now, no old borrower can still be executing.
+     * The value core independently verifies can_detach after this callback. */
+    return round_audio_lifecycle_recovery_result(ESP_OK);
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_detach_peripherals(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    return round_audio_lifecycle_recovery_result(round_peripheral_lifecycle_detach());
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_detach_codecs(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    return round_audio_lifecycle_recovery_result(round_audio_adapter_release_codecs());
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_delete_bus(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    return round_audio_lifecycle_recovery_result(round_audio_adapter_delete_codec_bus());
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_create_bus(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    return round_audio_lifecycle_recovery_result(round_audio_adapter_open_codec_bus());
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_attach_peripherals(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    const round_audio_shared_bus_recovery_context_t *recovery = context;
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!recovery || !profile || !s_round_audio_i2c_bus) {
+        return round_audio_lifecycle_recovery_result(ESP_ERR_INVALID_STATE);
+    }
+    const esp_err_t err = round_peripheral_lifecycle_attach(s_round_audio_i2c_bus);
+    if (err != ESP_OK && !profile->touch_initialization_required) {
+        /* Preserve the established optional-controller policy. It is not a
+         * successful touch probe; the later HIL plan still has to exercise
+         * this profile's optional peripheral behaviour explicitly. */
+        ESP_LOGW("round_audio", "shared-bus recovery deferred optional peripheral: %s",
+                 esp_err_to_name(err));
+        return round_audio_lifecycle_recovery_result(ESP_OK);
+    }
+    return round_audio_lifecycle_recovery_result(err);
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_attach_codecs(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    (void)context;
+    return round_audio_lifecycle_recovery_result(round_audio_adapter_attach_codecs());
+}
+
+static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_self_test(
+    uint32_t timeout_ms, void *context) {
+    (void)timeout_ms;
+    const round_audio_shared_bus_recovery_context_t *recovery = context;
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!recovery || !profile) return round_audio_lifecycle_recovery_result(ESP_ERR_INVALID_STATE);
+    /* Codec register helpers normally acquire a READY lease. During this
+     * source-owner self-test READY does not exist yet, so retain the same
+     * narrowly scoped bootstrap exception used by initial bring-up. */
+    s_round_shared_bus_recovery_self_test = true;
+    esp_err_t err = round_audio_adapter_initialize_input_codec(s_round_audio_input_codec);
+    if (err == ESP_OK) err = round_audio_adapter_initialize_i2s();
+    if (err == ESP_OK) err = round_audio_adapter_initialize_power_amplifier();
+    if (err == ESP_OK) {
+        err = round_audio_adapter_initialize_output_codec(
+            s_round_audio_output_codec, profile->output_mute_register,
+            profile->output_volume_register, recovery->output_volume);
+    }
+    s_round_shared_bus_recovery_self_test = false;
+    if (err == ESP_OK) round_audio_adapter_log_i2s_ready(profile->name);
+    return round_audio_lifecycle_recovery_result(err);
+}
+
+esp_err_t round_audio_lifecycle_recover_shared_bus(unsigned output_volume,
+                                                   uint32_t timeout_ms) {
+    if (output_volume > 100u || timeout_ms == 0u) return ESP_ERR_INVALID_ARG;
+    /* This is one caller-owned recovery budget, not an Audio-mutex budget
+     * followed by a separate shared-bus-mutex budget.  Otherwise contention
+     * before the physical transaction can make a nominally bounded recovery
+     * run for almost twice its advertised timeout. */
+    round_audio_shared_bus_recovery_context_t context = {
+        .deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000,
+        .output_volume = output_volume,
+    };
+    ESP_RETURN_ON_ERROR(round_audio_service_acquire(timeout_ms), "round_audio",
+                        "shared-bus recovery audio ownership timeout");
+    const uint32_t remaining_after_audio_lock =
+        round_audio_lifecycle_recovery_remaining_timeout(&context);
+    if (remaining_after_audio_lock == 0u) {
+        round_audio_service_release_ownership();
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t lock_err =
+        round_audio_lifecycle_shared_bus_lock_for(remaining_after_audio_lock);
+    if (lock_err != ESP_OK) {
+        round_audio_service_release_ownership();
+        return lock_err;
+    }
+    if (!s_round_shared_bus_lifecycle_initialized) {
+        round_audio_lifecycle_shared_bus_unlock();
+        round_audio_service_release_ownership();
+        return ESP_ERR_INVALID_STATE;
+    }
+    const shared_bus_recovery_transaction_callbacks_t callbacks = {
+        .struct_size = sizeof(callbacks),
+        .abi_version = SHARED_BUS_RECOVERY_TRANSACTION_ABI_VERSION,
+        .remaining_timeout_ms = round_audio_lifecycle_recovery_remaining_timeout,
+        .quiesce_consumers = round_audio_lifecycle_recovery_quiesce,
+        .wait_for_borrowers = round_audio_lifecycle_recovery_drain,
+        .detach_peripherals = round_audio_lifecycle_recovery_detach_peripherals,
+        .detach_codec = round_audio_lifecycle_recovery_detach_codecs,
+        .delete_bus = round_audio_lifecycle_recovery_delete_bus,
+        .create_bus = round_audio_lifecycle_recovery_create_bus,
+        .attach_peripherals = round_audio_lifecycle_recovery_attach_peripherals,
+        .attach_codec = round_audio_lifecycle_recovery_attach_codecs,
+        .self_test = round_audio_lifecycle_recovery_self_test,
+        .context = &context,
+    };
+    const shared_bus_recovery_transaction_result_t result =
+        shared_bus_recovery_transaction_execute(&s_round_shared_bus_lifecycle, &callbacks);
+    s_round_audio_ready = result.ready;
+    round_audio_lifecycle_shared_bus_unlock();
+    round_audio_service_release_ownership();
+    return result.ready ? ESP_OK :
+           round_audio_lifecycle_recovery_status_to_esp_err(result.status);
+}
 
 static esp_err_t round_audio_service_acquire(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
@@ -635,7 +1125,7 @@ void round_audio_service_wake_capture_end(round_audio_wake_capture_t *capture) {
 }
 
 static void round_audio_service_release(void) {
-    round_audio_adapter_release_impl();
+    (void)round_audio_adapter_release_impl();
     s_round_audio_ready = false;
 }
 

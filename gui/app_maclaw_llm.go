@@ -13,9 +13,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -32,7 +34,8 @@ const codegenProviderName = "CodeGen"
 
 const legacyHubServiceProviderName = "MaClaw\u6a21\u578b\u670d\u52a1"
 
-const zhipuCodingProviderName = "智谱编程"
+const zhipuCodingProviderName = corelib.ZhipuCodingProviderName
+const zhipuCodingDefaultModel = corelib.ZhipuCodingDefaultModel
 const volcengineAgentPlanProviderName = "\u706b\u5c71\u5f15\u64ce Agent Plan"
 const legacyVolcengineTokenPlanProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan"
 const legacyVolcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)"
@@ -41,6 +44,7 @@ const legacyVolcengineTokenPlanAnthropicProviderNameAlt = "\u706b\u5c71\u5f15\u6
 const (
 	maclawLLMProfileAssistant = "assistant"
 	maclawLLMProfileCoding    = "coding"
+	maclawLLMProfileCaption   = "caption"
 	maclawLLMProfilesVersion  = 1
 )
 
@@ -55,6 +59,7 @@ type MaclawLLMProfileProviderSummary struct {
 	ConnectionTestPassed bool     `json:"connection_test_passed"`
 	IsHubService         bool     `json:"is_hub_service,omitempty"`
 	SupportsVision       bool     `json:"supports_vision"`
+	VisionModels         []string `json:"vision_models,omitempty"`
 	AuthType             string   `json:"auth_type,omitempty"`
 }
 
@@ -92,6 +97,7 @@ type MaclawLLMProfilePanelState struct {
 	Profiles  corelib.MaclawLLMProfiles         `json:"profiles"`
 	Assistant MaclawLLMProfileEffectiveSummary  `json:"assistant"`
 	Coding    MaclawLLMProfileEffectiveSummary  `json:"coding"`
+	Caption   MaclawLLMProfileEffectiveSummary  `json:"caption"`
 	Revision  string                            `json:"revision"`
 }
 
@@ -120,9 +126,7 @@ func newMaclawLLMProviderID() string {
 // config merely to open settings; the ID is persisted on the next controlled
 // save. New providers still receive random IDs.
 func legacyMaclawLLMProviderID(name string) string {
-	name = strings.ToLower(strings.TrimSpace(name))
-	sum := sha256.Sum256([]byte(name))
-	return "legacy_llmp_" + hex.EncodeToString(sum[:8])
+	return corelib.MaclawLLMLegacyProviderID(name)
 }
 
 func maclawLLMProviderIDForRead(provider corelib.MaclawLLMProvider) string {
@@ -211,6 +215,8 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 	seenHubService := false
 	seenVolcengineAgentPlan := false
 	hubIndex := -1
+	keepEmptyZhipuDefault := keepEmptyZhipuCodingDefault(providers)
+	openCodeDefaults := defaultOpenCodeProvider()
 	for _, provider := range providers {
 		originalName := strings.TrimSpace(provider.Name)
 		provider.Name = canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(provider.Name))
@@ -229,6 +235,13 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 				continue
 			}
 			seenVolcengineAgentPlan = true
+		}
+		provider = normalizeZhipuCodingProvider(provider)
+		if corelib.MaclawLLMProviderNameEqual(provider.Name, configfile.ExternalAgentProviderOpenCode) {
+			provider = normalizeOpenCodeProvider(provider, openCodeDefaults)
+		}
+		if !keepEmptyZhipuDefault && isEmptyZhipuCodingDefault(provider) {
+			continue
 		}
 		normalized = append(normalized, provider)
 		if provider.Name == hubServiceProviderName {
@@ -315,18 +328,146 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 }
 
 // sameMaclawLLMProviderConnection reports whether a completed connection test
-// remains valid for a provider. It deliberately includes every field that
-// affects an inference request, including API credentials for API-key users.
-// Managed OAuth/SSO secrets are represented by their stored configuration
-// fields here; their dedicated refresh/login flows always clear the result.
-func sameMaclawLLMProviderConnection(a, b corelib.MaclawLLMProvider) bool {
+// remains valid. API-key changes invalidate the result. OAuth access tokens
+// rotate independently of the endpoint, so a new token is not a new
+// connection. Login flows that also rewrite URL/model/protocol still clear
+// ConnectionTestPassed explicitly.
+func sameMaclawLLMProviderConnectionShape(a, b corelib.MaclawLLMProvider) bool {
 	return strings.EqualFold(strings.TrimRight(strings.TrimSpace(a.URL), "/"), strings.TrimRight(strings.TrimSpace(b.URL), "/")) &&
-		strings.TrimSpace(a.Key) == strings.TrimSpace(b.Key) &&
 		strings.EqualFold(strings.TrimSpace(a.Model), strings.TrimSpace(b.Model)) &&
-		strings.EqualFold(strings.TrimSpace(a.Protocol), strings.TrimSpace(b.Protocol)) &&
-		strings.EqualFold(strings.TrimSpace(a.WireAPI), strings.TrimSpace(b.WireAPI)) &&
+		maclawLLMConnectionProtocol(a) == maclawLLMConnectionProtocol(b) &&
+		maclawLLMConnectionWireAPI(a) == maclawLLMConnectionWireAPI(b) &&
 		strings.EqualFold(strings.TrimSpace(a.AuthType), strings.TrimSpace(b.AuthType)) &&
 		strings.EqualFold(a.UserAgent(), b.UserAgent())
+}
+
+func sameMaclawLLMProviderConnection(a, b corelib.MaclawLLMProvider) bool {
+	if !sameMaclawLLMProviderConnectionShape(a, b) {
+		return false
+	}
+	if normalizeMaclawLLMAuthTypeKind(a.AuthType).IsOAuth() && normalizeMaclawLLMAuthTypeKind(b.AuthType).IsOAuth() {
+		return true
+	}
+	return strings.TrimSpace(a.Key) == strings.TrimSpace(b.Key)
+}
+
+func maclawLLMProviderWithReadTimeConnectionDefaults(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	for _, defaults := range defaultMaclawLLMProviders() {
+		if !strings.EqualFold(strings.TrimSpace(defaults.Name), strings.TrimSpace(provider.Name)) {
+			continue
+		}
+		if !provider.IsCustom && strings.TrimSpace(defaults.URL) != "" {
+			provider.URL = defaults.URL
+		}
+		if !provider.IsCustom && provider.Name == "xAI-Grok" {
+			provider = normalizeXAIProvider(provider, defaults)
+		}
+		if !provider.IsCustom && provider.Name == configfile.ExternalAgentProviderOpenCode {
+			provider = normalizeOpenCodeProvider(provider, defaults)
+		}
+		break
+	}
+	if strings.TrimSpace(provider.WireAPI) == "" && provider.IsCodexSubscriptionOAuthProvider() {
+		provider.WireAPI = "responses-ws"
+	}
+	return provider
+}
+
+func maclawLLMProviderMatchesTestedConnection(provider corelib.MaclawLLMProvider, tested corelib.MaclawLLMConfig) bool {
+	testedID := strings.TrimSpace(tested.ProviderID)
+	if testedID != "" &&
+		maclawLLMProviderIDForRead(provider) != testedID &&
+		corelib.MaclawLLMLegacyProviderID(provider.Name) != testedID {
+		return false
+	}
+	effective := maclawLLMProviderWithReadTimeConnectionDefaults(provider)
+	testedProvider := corelib.MaclawLLMProvider{
+		URL:       tested.URL,
+		Model:     tested.Model,
+		Protocol:  tested.Protocol,
+		WireAPI:   tested.WireAPI,
+		AuthType:  tested.AuthType,
+		AgentType: tested.AgentType,
+	}
+	if strings.TrimSpace(tested.Model) == "" {
+		testedProvider.Model = effective.Model
+	}
+	return sameMaclawLLMProviderConnectionShape(effective, testedProvider)
+}
+
+func maclawLLMConnectionProtocol(provider corelib.MaclawLLMProvider) string {
+	protocol := strings.ToLower(strings.TrimSpace(provider.Protocol))
+	if protocol == "" {
+		return "openai"
+	}
+	return protocol
+}
+
+func maclawLLMConnectionWireAPI(provider corelib.MaclawLLMProvider) string {
+	wire := strings.ToLower(strings.TrimSpace(provider.WireAPI))
+	if wire != "" {
+		return wire
+	}
+	if !provider.IsCustom && strings.EqualFold(strings.TrimSpace(provider.Name), "xAI-Grok") {
+		return "responses"
+	}
+	if provider.IsCodexSubscriptionOAuthProvider() {
+		return "responses-ws"
+	}
+	return ""
+}
+
+// maclawLLMProviderEligibleForAssignment reports whether a provider may appear
+// in model-assignment pickers. A passed connection test is the normal path.
+// The live current provider is also eligible when it has credentials: OAuth
+// default refreshes can clear ConnectionTestPassed while the user is still
+// using that provider as 助手服务商.
+func maclawLLMProviderEligibleForAssignment(provider corelib.MaclawLLMProvider, current, storedKey string) bool {
+	if provider.ConnectionTestPassed {
+		return true
+	}
+	current = strings.TrimSpace(current)
+	if current == "" || !corelib.MaclawLLMProviderNameEqual(provider.Name, current) {
+		return false
+	}
+	return strings.TrimSpace(provider.Key) != "" ||
+		strings.TrimSpace(provider.OAuthAccessToken) != "" ||
+		strings.TrimSpace(storedKey) != ""
+}
+
+func maclawLLMProviderReferencedByProfiles(profiles corelib.MaclawLLMProfiles, provider corelib.MaclawLLMProvider) bool {
+	id := maclawLLMProviderIDForRead(provider)
+	hashID := corelib.MaclawLLMLegacyProviderID(provider.Name)
+	match := func(providerID string) bool {
+		providerID = strings.TrimSpace(providerID)
+		if providerID == "" {
+			return false
+		}
+		return providerID == id || providerID == hashID
+	}
+	if match(profiles.Assistant.ProviderID) {
+		return true
+	}
+	if !profiles.Coding.InheritAssistant && match(profiles.Coding.ProviderID) {
+		return true
+	}
+	return maclawLLMProfileAssigned(profiles.Caption) && match(profiles.Caption.ProviderID)
+}
+
+func sameMaclawLLMProfileProviderID(previousID, nextID string, providers []corelib.MaclawLLMProvider) bool {
+	previousID, nextID = strings.TrimSpace(previousID), strings.TrimSpace(nextID)
+	if previousID == "" || nextID == "" {
+		return false
+	}
+	if previousID == nextID {
+		return true
+	}
+	previous, previousOK := resolveMaclawLLMProviderByID(providers, previousID)
+	next, nextOK := resolveMaclawLLMProviderByID(providers, nextID)
+	if !previousOK || !nextOK {
+		return false
+	}
+	return maclawLLMProviderIDForRead(previous) == maclawLLMProviderIDForRead(next)
 }
 
 // maclawLLMProviderConnectionIdentity is the stable shape used only to
@@ -334,12 +475,16 @@ func sameMaclawLLMProviderConnection(a, b corelib.MaclawLLMProvider) bool {
 // excludes the name and ID themselves, but otherwise mirrors the fields that
 // decide whether a completed connection test is still valid.
 func maclawLLMProviderConnectionIdentity(provider corelib.MaclawLLMProvider) string {
+	key := strings.TrimSpace(provider.Key)
+	if normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth() {
+		key = ""
+	}
 	return strings.Join([]string{
 		strings.ToLower(strings.TrimRight(strings.TrimSpace(provider.URL), "/")),
-		strings.TrimSpace(provider.Key),
+		key,
 		strings.ToLower(strings.TrimSpace(provider.Model)),
-		strings.ToLower(strings.TrimSpace(provider.Protocol)),
-		strings.ToLower(strings.TrimSpace(provider.WireAPI)),
+		maclawLLMConnectionProtocol(provider),
+		maclawLLMConnectionWireAPI(provider),
 		strings.ToLower(strings.TrimSpace(provider.AuthType)),
 		strings.ToLower(strings.TrimSpace(provider.UserAgent())),
 	}, "\x00")
@@ -381,12 +526,12 @@ func retainTrustedMaclawLLMProviderTestResults(providers, previous []corelib.Mac
 // state so they cannot be mistaken for a valid OAuth session.
 func normalizeXAIProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	legacyAuth := !normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth()
-	legacyDefaultModel := strings.EqualFold(strings.TrimSpace(provider.Model), "grok-build")
+	legacyDefaultModel := isLegacyXAIDefaultModel(provider.Model)
 	provider.URL = defaults.URL
 	provider.AuthType = defaults.AuthType
 	provider.Protocol = defaults.Protocol
 	provider.WireAPI = defaults.WireAPI
-	// Migrate the former built-in grok-build default, plus API-key-era
+	// Migrate former built-in defaults (grok-build, grok-4.5), plus API-key-era
 	// configurations, to the current OAuth default. Explicit OAuth model
 	// selections remain untouched.
 	if legacyAuth || legacyDefaultModel || strings.TrimSpace(provider.Model) == "" {
@@ -406,6 +551,66 @@ func normalizeXAIProvider(provider, defaults corelib.MaclawLLMProvider) corelib.
 	return provider
 }
 
+func isLegacyXAIDefaultModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "grok-build", "grok-4.5":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeOpenCodeProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.ImportSource = ""
+	provider.IsCustom = false
+	if strings.TrimSpace(defaults.URL) != "" {
+		provider.URL = defaults.URL
+	}
+	if strings.TrimSpace(defaults.Protocol) != "" {
+		provider.Protocol = defaults.Protocol
+	}
+	if strings.TrimSpace(defaults.AgentType) != "" {
+		provider.AgentType = defaults.AgentType
+	}
+	if strings.EqualFold(strings.TrimSpace(provider.AuthType), "oauth") {
+		provider.AuthType = ""
+	}
+	if strings.TrimSpace(provider.Model) == "" && strings.TrimSpace(defaults.Model) != "" {
+		provider.Model = defaults.Model
+	}
+	if provider.ContextLength <= 0 && defaults.ContextLength > 0 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	return provider
+}
+
+func normalizeZhipuCodingProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.Model = corelib.MigrateZhipuCodingModel(provider.Name, provider.Model)
+	return provider
+}
+
+func maclawLLMProviderHasStoredCredentials(provider corelib.MaclawLLMProvider) bool {
+	return strings.TrimSpace(provider.Key) != "" || strings.TrimSpace(provider.OAuthAccessToken) != ""
+}
+
+func isEmptyZhipuCodingDefault(provider corelib.MaclawLLMProvider) bool {
+	return strings.EqualFold(strings.TrimSpace(provider.Name), zhipuCodingProviderName) &&
+		!maclawLLMProviderHasStoredCredentials(provider)
+}
+
+func keepEmptyZhipuCodingDefault(providers []corelib.MaclawLLMProvider) bool {
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider.Name)
+		if !corelib.IsZhipuCodingProviderName(name) {
+			continue
+		}
+		if !strings.EqualFold(name, zhipuCodingProviderName) || maclawLLMProviderHasStoredCredentials(provider) {
+			return false
+		}
+	}
+	return true
+}
+
 func markHubServiceProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
 	provider.Name = canonicalHubServiceProviderName(provider.Name)
 	provider.IsHubService = provider.Name == hubServiceProviderName
@@ -420,6 +625,18 @@ func canonicalVolcengineTokenPlanProviderName(name string) string {
 	return name
 }
 
+func defaultOpenCodeProvider() corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          configfile.ExternalAgentProviderOpenCode,
+		URL:           configfile.OpenCodeZenBaseURL,
+		Model:         configfile.OpenCodeZenDefaultModel,
+		Protocol:      "openai",
+		AgentType:     configfile.ExternalAgentTypeOpenCode,
+		ContextLength: 128000,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
@@ -427,11 +644,12 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5-20250514", AuthType: "oauth", Protocol: "anthropic", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "GitHub Copilot", URL: "https://api.githubcopilot.com", Model: "claude-sonnet-4", AuthType: "oauth", ContextLength: 200000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
-		// xAI's Grok Build OAuth provider defaults to Grok 4.5 with a 400K context window.
+		// xAI's Grok Build OAuth provider defaults to Grok 4.6 with a 400K context window.
 		// The public xAI endpoint is OpenAI-compatible, so it uses the standard
 		// OpenAI request and model-discovery path.
-		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-4.5", Protocol: "openai", AuthType: "oauth", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
-		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-4.6", Protocol: "openai", AuthType: "oauth", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
+		defaultOpenCodeProvider(),
+		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: zhipuCodingDefaultModel, Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
 		{Name: volcengineAgentPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
@@ -556,6 +774,12 @@ func (a *App) GetMaclawLLMProviders() struct {
 	existingNames := make(map[string]bool, len(providers))
 	for _, p := range providers {
 		existingNames[p.Name] = true
+		if corelib.IsZhipuCodingProviderName(p.Name) {
+			existingNames[zhipuCodingProviderName] = true
+		}
+		if corelib.MaclawLLMProviderNameEqual(p.Name, configfile.ExternalAgentProviderOpenCode) {
+			existingNames[configfile.ExternalAgentProviderOpenCode] = true
+		}
 	}
 	// Build a lookup: provider name → default order index.
 	defaultOrder := make(map[string]int, len(defaults))
@@ -589,7 +813,8 @@ func (a *App) GetMaclawLLMProviders() struct {
 	if current != "" {
 		found := false
 		for _, p := range providers {
-			if p.Name == current {
+			if corelib.MaclawLLMProviderNameEqual(p.Name, current) {
+				current = p.Name
 				found = true
 				break
 			}
@@ -676,7 +901,6 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 // Test & Save inference request or a verified Hub service-status response.
 func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, current, expectedProviderRevision, trustedProviderID string) error {
 	current = canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(current))
-	providers = normalizeMaclawLLMProviders(providers)
 	start := time.Now()
 	log.Printf("[LLM] SaveMaclawLLMProviders:start current=%s providers=%d", current, len(providers))
 	cfg, err := a.LoadConfig()
@@ -684,6 +908,7 @@ func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		log.Printf("[LLM] SaveMaclawLLMProviders:load_config_failed after=%s err=%v", time.Since(start), err)
 		return fmt.Errorf("load config: %w", err)
 	}
+	providers = normalizeMaclawLLMProviders(providers)
 	// Provider management owns connection/catalog data, while profile
 	// assignments are edited from a separate surface (including the bottom
 	// quick picker). This method prepares its provider payload outside the
@@ -775,7 +1000,7 @@ func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	if profiles == nil {
 		var selected *corelib.MaclawLLMProvider
 		for i := range providers {
-			if strings.EqualFold(strings.TrimSpace(providers[i].Name), current) {
+			if corelib.MaclawLLMProviderNameEqual(providers[i].Name, current) {
 				selected = &providers[i]
 				break
 			}
@@ -807,11 +1032,17 @@ func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 					return fmt.Errorf("cannot remove provider used by the independent coding profile; select another coding provider or enable follow assistant first")
 				}
 			}
+			if maclawLLMProfileAssigned(profiles.Caption) {
+				if _, exists := resolveMaclawLLMProviderByID(providers, profiles.Caption.ProviderID); !exists {
+					return fmt.Errorf("cannot remove provider used by the caption profile; select another caption model or clear it in model assignments first")
+				}
+			}
 			return err
 		}
 	}
 	cfg.MaclawLLMProviders = providers
 	cfg.MaclawLLMProfiles = profiles
+	remapLegacyZhipuCodingProfileModels(profiles, providers)
 	if err := applyAssistantProfileCompatibilityProjection(&cfg, *profiles); err != nil {
 		return err
 	}
@@ -956,7 +1187,11 @@ func (a *App) FetchMaclawLLMProfileModels(providerID string) ([]ProviderModelIte
 		if strings.TrimSpace(resolved.URL) == "" {
 			return nil, fmt.Errorf("provider %q has no endpoint", provider.Name)
 		}
-		return a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), true)
+		items, err := a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), true)
+		if err != nil {
+			return nil, err
+		}
+		return items, nil
 	}
 	return nil, fmt.Errorf("provider %q not found", providerID)
 }
@@ -983,7 +1218,7 @@ func (a *App) materializeMaclawLLMProvider(p corelib.MaclawLLMProvider) corelib.
 	return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
 		URL:             p.URL,
 		Key:             key,
-		Model:           p.Model,
+		Model:           corelib.MigrateZhipuCodingModel(p.Name, p.Model),
 		Protocol:        p.Protocol,
 		ContextLength:   p.ContextLength,
 		TimeoutSec:      normalizeLLMTimeoutSec(p.TimeoutSec),
@@ -1003,13 +1238,15 @@ func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.Macla
 		if profiles.Version <= 0 {
 			profiles.Version = maclawLLMProfilesVersion
 		}
+		remapLegacyZhipuCodingProfileModels(&profiles, providers)
+		remapOpenCodeProfileModels(&profiles, providers)
 		return &profiles, nil
 	}
 	// Legacy configs retain name-based selection only until a controlled write.
 	// Resolve the name in memory; never materialize IDs or profiles while reading.
 	current = strings.TrimSpace(current)
 	for _, provider := range providers {
-		if strings.EqualFold(strings.TrimSpace(provider.Name), current) {
+		if corelib.MaclawLLMProviderNameEqual(provider.Name, current) {
 			return &corelib.MaclawLLMProfiles{
 				Version: maclawLLMProfilesVersion,
 				Assistant: corelib.MaclawLLMProfile{
@@ -1023,6 +1260,68 @@ func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.Macla
 	return nil, fmt.Errorf("legacy current provider %q not found", current)
 }
 
+func remapLegacyZhipuCodingProfileModels(profiles *corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) {
+	if profiles == nil {
+		return
+	}
+	// Also matches GUI hash IDs after a later save assigned a real provider.ID.
+	remap := func(profile *corelib.MaclawLLMProfile) {
+		if profile == nil {
+			return
+		}
+		provider, ok := resolveMaclawLLMProviderByID(providers, profile.ProviderID)
+		if !ok || !corelib.IsZhipuCodingProviderName(provider.Name) {
+			return
+		}
+		profile.Model = corelib.MigrateZhipuCodingModel(provider.Name, profile.Model)
+	}
+	remap(&profiles.Assistant)
+	remap(&profiles.Coding)
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		remap(&profiles.Caption)
+	}
+}
+
+func remapOpenCodeProfileModels(profiles *corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) {
+	if profiles == nil {
+		return
+	}
+	remap := func(profile *corelib.MaclawLLMProfile) {
+		if profile == nil {
+			return
+		}
+		provider, ok := resolveMaclawLLMProviderByID(providers, profile.ProviderID)
+		if !ok {
+			return
+		}
+		profile.Model = constrainOpenCodeModel(provider, profile.Model)
+	}
+	remap(&profiles.Assistant)
+	remap(&profiles.Coding)
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		remap(&profiles.Caption)
+	}
+}
+
+func constrainOpenCodeModel(provider corelib.MaclawLLMProvider, model string) string {
+	if !isOpenCodeZenProvider(provider) {
+		return strings.TrimSpace(model)
+	}
+	model = strings.TrimSpace(model)
+	if model != "" {
+		return model
+	}
+	if fallback := strings.TrimSpace(provider.Model); fallback != "" {
+		return fallback
+	}
+	return configfile.OpenCodeZenDefaultModel
+}
+
+func isOpenCodePresetSlot(provider corelib.MaclawLLMProvider) bool {
+	return corelib.MaclawLLMProviderNameEqual(provider.Name, configfile.ExternalAgentProviderOpenCode) ||
+		strings.EqualFold(strings.TrimSpace(provider.ImportSource), configfile.ExternalAgentSourceOpenCode)
+}
+
 func resolveMaclawLLMProviderByID(providers []corelib.MaclawLLMProvider, providerID string) (corelib.MaclawLLMProvider, bool) {
 	providerID = strings.TrimSpace(providerID)
 	if providerID == "" {
@@ -1030,6 +1329,9 @@ func resolveMaclawLLMProviderByID(providers []corelib.MaclawLLMProvider, provide
 	}
 	for _, provider := range providers {
 		if maclawLLMProviderIDForRead(provider) == providerID {
+			return provider, true
+		}
+		if corelib.MaclawLLMLegacyProviderID(provider.Name) == providerID {
 			return provider, true
 		}
 	}
@@ -1040,7 +1342,7 @@ func resolveMaclawLLMProviderByID(providers []corelib.MaclawLLMProvider, provide
 // single entry point for new dual-profile callers; it never writes config.
 func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, error) {
 	profile = strings.ToLower(strings.TrimSpace(profile))
-	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding && profile != maclawLLMProfileCaption {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("unknown LLM profile %q", profile)
 	}
 	cfg, err := a.LoadConfig()
@@ -1053,15 +1355,23 @@ func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, 
 		return corelib.MaclawLLMConfig{}, err
 	}
 	selected := profiles.Assistant
-	if profile == maclawLLMProfileCoding && !profiles.Coding.InheritAssistant {
-		selected = profiles.Coding
+	switch profile {
+	case maclawLLMProfileCoding:
+		if !profiles.Coding.InheritAssistant {
+			selected = profiles.Coding
+		}
+	case maclawLLMProfileCaption:
+		if !maclawLLMProfileAssigned(profiles.Caption) {
+			return corelib.MaclawLLMConfig{}, fmt.Errorf("caption LLM profile is not configured")
+		}
+		selected = profiles.Caption
 	}
 	provider, ok := resolveMaclawLLMProviderByID(state.Providers, selected.ProviderID)
-	if !ok && cfg.MaclawLLMProfiles == nil {
+	if !ok && cfg.MaclawLLMProfiles == nil && profile != maclawLLMProfileCaption {
 		// Old files do not yet have provider IDs. Coding follows that legacy
 		// assistant selection, so the name fallback also applies to coding.
 		for _, candidate := range state.Providers {
-			if strings.EqualFold(strings.TrimSpace(candidate.Name), state.Current) {
+			if corelib.MaclawLLMProviderNameEqual(candidate.Name, state.Current) {
 				provider, ok = candidate, true
 				break
 			}
@@ -1070,7 +1380,7 @@ func (a *App) ResolveMaclawLLMProfile(profile string) (corelib.MaclawLLMConfig, 
 	if !ok {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM profile %q references unavailable provider", profile)
 	}
-	model := strings.TrimSpace(selected.Model)
+	model := constrainOpenCodeModel(provider, corelib.MigrateZhipuCodingModel(provider.Name, selected.Model))
 	if model == "" {
 		return corelib.MaclawLLMConfig{}, fmt.Errorf("LLM profile %q has no model", profile)
 	}
@@ -1100,6 +1410,20 @@ func (a *App) GetCodingLLMConfig() corelib.MaclawLLMConfig {
 	return cfg
 }
 
+// GetCaptionLLMConfig returns the optional Computer Use caption model.
+// Empty means unlabeled boxes stay on OCR/a11y/heuristic labels.
+func (a *App) GetCaptionLLMConfig() corelib.MaclawLLMConfig {
+	cfg, err := a.ResolveMaclawLLMProfile(maclawLLMProfileCaption)
+	if err != nil {
+		return corelib.MaclawLLMConfig{}
+	}
+	return cfg
+}
+
+func maclawLLMProfileAssigned(profile corelib.MaclawLLMProfile) bool {
+	return strings.TrimSpace(profile.ProviderID) != "" || strings.TrimSpace(profile.Model) != ""
+}
+
 func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) error {
 	if profiles.Version > maclawLLMProfilesVersion {
 		return fmt.Errorf("unsupported LLM profile version %d", profiles.Version)
@@ -1110,14 +1434,21 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 	if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Assistant.ProviderID); !ok {
 		return fmt.Errorf("assistant references an unavailable provider")
 	}
-	if profiles.Coding.InheritAssistant {
-		return nil
+	if !profiles.Coding.InheritAssistant {
+		if strings.TrimSpace(profiles.Coding.ProviderID) == "" || strings.TrimSpace(profiles.Coding.Model) == "" {
+			return fmt.Errorf("coding provider and model are required when it does not follow assistant")
+		}
+		if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Coding.ProviderID); !ok {
+			return fmt.Errorf("coding references an unavailable provider")
+		}
 	}
-	if strings.TrimSpace(profiles.Coding.ProviderID) == "" || strings.TrimSpace(profiles.Coding.Model) == "" {
-		return fmt.Errorf("coding provider and model are required when it does not follow assistant")
-	}
-	if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Coding.ProviderID); !ok {
-		return fmt.Errorf("coding references an unavailable provider")
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		if strings.TrimSpace(profiles.Caption.ProviderID) == "" || strings.TrimSpace(profiles.Caption.Model) == "" {
+			return fmt.Errorf("caption provider and model are required when a caption model is selected")
+		}
+		if _, ok := resolveMaclawLLMProviderByID(providers, profiles.Caption.ProviderID); !ok {
+			return fmt.Errorf("caption references an unavailable provider")
+		}
 	}
 	return nil
 }
@@ -1130,16 +1461,20 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 // Keep this separate from validateMaclawLLMProfiles: provider management must
 // still be able to save a legacy configuration whose existing profile predates
 // connection-test tracking, so the user can repair it by testing a provider.
-func validateMaclawLLMProfileAssignments(profiles, previous corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) error {
+func validateMaclawLLMProfileAssignments(profiles, previous corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider, current string, app *App) error {
 	if err := validateMaclawLLMProfiles(profiles, providers); err != nil {
 		return err
 	}
 	requireTested := func(profile, providerID, previousProviderID string) error {
 		provider, ok := resolveMaclawLLMProviderByID(providers, providerID)
-		// Legacy profiles can retain their already-configured provider so that
-		// users can repair it, but an assignment API cannot newly select an
-		// untested provider.
-		if !ok || (!provider.ConnectionTestPassed && providerID != previousProviderID) {
+		if !ok {
+			return fmt.Errorf("%s provider has not passed a connection test; test and save it in provider management first", profile)
+		}
+		storedKey := ""
+		if app != nil {
+			storedKey = app.resolveProviderKeyFromStore(provider)
+		}
+		if !maclawLLMProviderEligibleForAssignment(provider, current, storedKey) && !sameMaclawLLMProfileProviderID(previousProviderID, providerID, providers) {
 			return fmt.Errorf("%s provider has not passed a connection test; test and save it in provider management first", profile)
 		}
 		return nil
@@ -1148,7 +1483,16 @@ func validateMaclawLLMProfileAssignments(profiles, previous corelib.MaclawLLMPro
 		return err
 	}
 	if !profiles.Coding.InheritAssistant {
-		if err := requireTested("coding", profiles.Coding.ProviderID, previous.Coding.ProviderID); err != nil {
+		previousCodingID := previous.Coding.ProviderID
+		if previous.Coding.InheritAssistant {
+			previousCodingID = previous.Assistant.ProviderID
+		}
+		if err := requireTested("coding", profiles.Coding.ProviderID, previousCodingID); err != nil {
+			return err
+		}
+	}
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		if err := requireTested("caption", profiles.Caption.ProviderID, previous.Caption.ProviderID); err != nil {
 			return err
 		}
 	}
@@ -1180,6 +1524,9 @@ func remapLegacyProfileProviderIDs(profiles *corelib.MaclawLLMProfiles, before, 
 	}
 	if mapped := durableByLegacyID[strings.TrimSpace(profiles.Coding.ProviderID)]; mapped != "" {
 		profiles.Coding.ProviderID = mapped
+	}
+	if mapped := durableByLegacyID[strings.TrimSpace(profiles.Caption.ProviderID)]; mapped != "" {
+		profiles.Caption.ProviderID = mapped
 	}
 }
 
@@ -1280,7 +1627,7 @@ func (a *App) setMaclawLLMProfileHealth(profile, providerID, model string, recor
 // success/failure of a previous selection after a concurrent save.
 func (a *App) setMaclawLLMProfileHealthIfCurrent(profile string, resolved corelib.MaclawLLMConfig, record maclawLLMProfileHealthRecord) bool {
 	profile = strings.ToLower(strings.TrimSpace(profile))
-	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding && profile != maclawLLMProfileCaption {
 		return false
 	}
 	current, err := a.ResolveMaclawLLMProfile(profile)
@@ -1395,18 +1742,20 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	}
 	state := MaclawLLMProfilePanelState{Profiles: *profiles, Revision: maclawLLMProfileRevision(cfg)}
 	for _, provider := range providers {
-		// Assigning an unverified endpoint to an execution profile can make a
-		// working assistant silently switch to a broken service. Keep provider
-		// management comprehensive, but expose only successfully tested entries
-		// in this assignment-specific read model.
-		if !provider.ConnectionTestPassed {
+		// Assigning an unverified catalog endpoint to an execution profile can
+		// make a working assistant silently switch to a broken service. Keep
+		// provider management comprehensive, but expose only tested entries —
+		// plus the live current provider and any provider already assigned.
+		if !maclawLLMProviderEligibleForAssignment(provider, cfg.MaclawLLMCurrentProvider, a.resolveProviderKeyFromStore(provider)) &&
+			!maclawLLMProviderReferencedByProfiles(*profiles, provider) {
 			continue
 		}
 		state.Providers = append(state.Providers, MaclawLLMProfileProviderSummary{
 			ID: maclawLLMProviderIDForRead(provider), Name: strings.TrimSpace(provider.Name),
 			Model: strings.TrimSpace(provider.Model), Models: append([]string(nil), provider.Models...),
 			ConnectionTestPassed: provider.ConnectionTestPassed,
-			IsHubService:         provider.IsHubService, SupportsVision: provider.SupportsVision, AuthType: provider.AuthType,
+			IsHubService:         provider.IsHubService, SupportsVision: provider.SupportsVision,
+			VisionModels: append([]string(nil), provider.VisionModels...), AuthType: provider.AuthType,
 		})
 	}
 	assistant, assistantErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
@@ -1431,6 +1780,16 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	} else {
 		if state.Coding.ProviderID == "" {
 			state.Coding.ProviderID = profiles.Coding.ProviderID
+		}
+	}
+	if !maclawLLMProfileAssigned(profiles.Caption) {
+		state.Caption = MaclawLLMProfileEffectiveSummary{Profile: maclawLLMProfileCaption}
+	} else {
+		caption, captionErr := a.ResolveMaclawLLMProfile(maclawLLMProfileCaption)
+		state.Caption = profileSummaryFromResolved(a, maclawLLMProfileCaption, false, caption, captionErr)
+		state.Caption.SupportsVision = profileSupportsVisionForModel(providers, state.Caption.ProviderID, state.Caption.Model)
+		if state.Caption.ProviderID == "" {
+			state.Caption.ProviderID = profiles.Caption.ProviderID
 		}
 	}
 	return state, nil
@@ -1473,7 +1832,7 @@ func containsStringFold(values []string, value string) bool {
 	return false
 }
 
-// SaveMaclawLLMProfiles persists the two model assignments atomically. The
+// SaveMaclawLLMProfiles persists the assistant, coding, and caption assignments atomically. The
 // caller must provide the revision returned by GetMaclawLLMProfilePanelState;
 // a stale draft is rejected rather than overwriting a newer settings change.
 // It is deliberately separate from SaveMaclawLLMProviders so a coding-only
@@ -1485,6 +1844,9 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 	profiles.Assistant.Model = strings.TrimSpace(profiles.Assistant.Model)
 	profiles.Coding.ProviderID = strings.TrimSpace(profiles.Coding.ProviderID)
 	profiles.Coding.Model = strings.TrimSpace(profiles.Coding.Model)
+	profiles.Caption.ProviderID = strings.TrimSpace(profiles.Caption.ProviderID)
+	profiles.Caption.Model = strings.TrimSpace(profiles.Caption.Model)
+	profiles.Caption.InheritAssistant = false
 	revision = strings.TrimSpace(revision)
 	if revision == "" {
 		return fmt.Errorf("LLM profile revision is required")
@@ -1505,6 +1867,8 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 		beforeIDs := append([]corelib.MaclawLLMProvider(nil), providers...)
 		providers = ensureMaclawLLMProviderIDs(normalizeMaclawLLMProviders(providers), cfg.MaclawLLMProviders)
 		remapLegacyProfileProviderIDs(&profiles, beforeIDs, providers)
+		remapLegacyZhipuCodingProfileModels(&profiles, providers)
+		remapOpenCodeProfileModels(&profiles, providers)
 		if err := validateMaclawLLMProfiles(profiles, providers); err != nil {
 			validationErr = err
 			return false
@@ -1514,11 +1878,11 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 			validationErr = previousErr
 			return false
 		}
-		if err := validateMaclawLLMProfileAssignments(profiles, *previous, providers); err != nil {
+		if err := validateMaclawLLMProfileAssignments(profiles, *previous, providers, cfg.MaclawLLMCurrentProvider, a); err != nil {
 			validationErr = err
 			return false
 		}
-		assistantChanged = previous == nil || previous.Assistant.ProviderID != profiles.Assistant.ProviderID || previous.Assistant.Model != profiles.Assistant.Model
+		assistantChanged = previous == nil || !sameMaclawLLMProfileProviderID(previous.Assistant.ProviderID, profiles.Assistant.ProviderID, providers) || previous.Assistant.Model != profiles.Assistant.Model
 		cfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider(nil), providers...)
 		cfg.MaclawLLMProfiles = &profiles
 		if err := applyAssistantProfileCompatibilityProjection(cfg, profiles); err != nil {
@@ -1564,7 +1928,7 @@ func (a *App) QuickSaveMaclawLLMProfile(profile, providerID, model, revision str
 	profile = strings.TrimSpace(profile)
 	providerID = strings.TrimSpace(providerID)
 	model = strings.TrimSpace(model)
-	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding && profile != maclawLLMProfileCaption {
 		return MaclawLLMProfilePanelState{}, fmt.Errorf("unknown LLM profile %q", profile)
 	}
 	if providerID == "" || model == "" {
@@ -1589,6 +1953,10 @@ func (a *App) QuickSaveMaclawLLMProfile(profile, providerID, model, revision str
 		}
 		profiles.Coding.ProviderID = providerID
 		profiles.Coding.Model = model
+	case maclawLLMProfileCaption:
+		profiles.Caption.ProviderID = providerID
+		profiles.Caption.Model = model
+		profiles.Caption.InheritAssistant = false
 	}
 	if err := a.SaveMaclawLLMProfiles(profiles, state.Revision); err != nil {
 		return MaclawLLMProfilePanelState{}, err
@@ -1603,7 +1971,7 @@ func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLM
 	profile = strings.ToLower(strings.TrimSpace(profile))
 	providerID = strings.TrimSpace(providerID)
 	model = strings.TrimSpace(model)
-	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding {
+	if profile != maclawLLMProfileAssistant && profile != maclawLLMProfileCoding && profile != maclawLLMProfileCaption {
 		return MaclawLLMProfileProbeResult{}, fmt.Errorf("unknown LLM profile %q", profile)
 	}
 	result := MaclawLLMProfileProbeResult{Profile: profile, ProviderID: providerID, Model: model}
@@ -1619,6 +1987,8 @@ func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLM
 		result.ReasonCode = "invalid_configuration"
 		return result, nil
 	}
+	model = constrainOpenCodeModel(provider, corelib.MigrateZhipuCodingModel(provider.Name, model))
+	result.Model = model
 	// Build from the caller's selection rather than the persisted profile: this
 	// diagnostic must be usable before the user clicks Save.
 	resolved := a.materializeMaclawLLMProvider(provider)
@@ -1676,9 +2046,10 @@ func (a *App) SetMaclawLLMCurrentModel(model string) error {
 		for i := range cfg.MaclawLLMProviders {
 			pName := strings.TrimSpace(cfg.MaclawLLMProviders[i].Name)
 			pCanon := canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(pName))
-			if pName != currentRaw && (currentCanon == "" || pCanon != currentCanon) {
+			if !corelib.MaclawLLMProviderNameEqual(pName, currentRaw) && (currentCanon == "" || pCanon != currentCanon) {
 				continue
 			}
+			model = constrainOpenCodeModel(cfg.MaclawLLMProviders[i], corelib.MigrateZhipuCodingModel(pName, model))
 			cfg.MaclawLLMProviders[i].Model = model
 			has := false
 			for _, m := range cfg.MaclawLLMProviders[i].Models {
@@ -1693,7 +2064,7 @@ func (a *App) SetMaclawLLMCurrentModel(model string) error {
 			break
 		}
 		// Always keep the legacy flat field aligned (used by some status paths).
-		cfg.MaclawLLMModel = model
+		cfg.MaclawLLMModel = corelib.MigrateZhipuCodingModel(currentRaw, model)
 		return true
 	})
 	if err != nil {
@@ -1736,7 +2107,7 @@ func (a *App) SaveMaclawLLMConfig(llm corelib.MaclawLLMConfig) error {
 		}
 		cfg.MaclawLLMUrl = strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 		cfg.MaclawLLMKey = strings.TrimSpace(llm.Key)
-		cfg.MaclawLLMModel = strings.TrimSpace(llm.Model)
+		cfg.MaclawLLMModel = corelib.MigrateZhipuCodingModel(cfg.MaclawLLMCurrentProvider, strings.TrimSpace(llm.Model))
 		cfg.MaclawLLMProtocol = llm.Protocol
 		cfg.MaclawLLMContextLength = llm.ContextLength
 		cfg.MaclawLLMTimeoutSec = normalizeLLMTimeoutSec(llm.TimeoutSec)
@@ -1864,6 +2235,9 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 // StartXAIOAuth runs Grok Build's OAuth 2.1/OIDC Authorization Code + PKCE
 // flow. It uses the same native system-browser launcher as OpenAI OAuth.
 func (a *App) StartXAIOAuth() (string, error) {
+	if cfg, err := a.LoadConfig(); err == nil {
+		oauth.ApplyProxyFromAppConfig(cfg)
+	}
 	ctx, finish, claimResult := a.beginOAuthFlow(300 * time.Second)
 	// Use the same native browser launcher as the working OpenAI flow. This
 	// avoids the Wails BrowserOpenURL bridge silently dropping xAI's long OIDC
@@ -1966,11 +2340,11 @@ func (a *App) TestAndSaveMaclawLLMProviders(providers []corelib.MaclawLLMProvide
 	if providerName == "" {
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider name is required")
 	}
-	providers = normalizeMaclawLLMProviders(providers)
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("load config: %w", err)
 	}
+	providers = normalizeMaclawLLMProviders(providers)
 	for i := range providers {
 		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 		providers[i] = corelib.NormalizeCodeGenSSOProvider(providers[i])
@@ -1991,6 +2365,26 @@ func (a *App) TestAndSaveMaclawLLMProviders(providers []corelib.MaclawLLMProvide
 		return corelib.MaclawLLMTestResult{}, fmt.Errorf("provider %q not found", providerName)
 	}
 
+	providerID := maclawLLMProviderIDForRead(providers[providerIndex])
+	refreshID := persistedMaclawLLMProviderReadID(cfg.MaclawLLMProviders, providerName, providerID)
+	prepared, configChanged, err := a.prepareManagedAuthForConnectionTest(providers[providerIndex], refreshID)
+	if err != nil {
+		return corelib.MaclawLLMTestResult{}, err
+	}
+	providers[providerIndex] = prepared
+	if configChanged {
+		// Legacy no-store OAuth/SSO refresh may dual-write config.json.
+		// Adopt that write only when the revision actually changed; a no-op
+		// refresh must not pick up a concurrent provider edit.
+		after, loadErr := a.LoadConfig()
+		if loadErr != nil {
+			return corelib.MaclawLLMTestResult{}, fmt.Errorf("load config: %w", loadErr)
+		}
+		if maclawLLMProviderRevision(after) != maclawLLMProviderRevision(cfg) {
+			cfg = after
+		}
+	}
+
 	// Materialization hydrates managed credentials from their protected store,
 	// so OAuth/SSO tests exercise exactly the runtime request path.
 	tested := a.materializeMaclawLLMProvider(providers[providerIndex])
@@ -2002,10 +2396,56 @@ func (a *App) TestAndSaveMaclawLLMProviders(providers []corelib.MaclawLLMProvide
 		providers[providerIndex].VisionModels = visionModelsWithResult(providers[providerIndex].VisionModels, providers[providerIndex].Model, result.SupportsVision)
 		providers[providerIndex].SupportsVision = result.SupportsVision
 	}
-	if err := a.saveMaclawLLMProviders(providers, current, maclawLLMProviderRevision(cfg), maclawLLMProviderIDForRead(providers[providerIndex])); err != nil {
+	if err := a.saveMaclawLLMProviders(providers, current, maclawLLMProviderRevision(cfg), providerID); err != nil {
 		return corelib.MaclawLLMTestResult{}, err
 	}
 	return result, nil
+}
+
+func persistedMaclawLLMProviderReadID(providers []corelib.MaclawLLMProvider, name, fallback string) string {
+	name = strings.TrimSpace(name)
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider.Name), name) {
+			return maclawLLMProviderIDForRead(provider)
+		}
+	}
+	return fallback
+}
+
+// prepareManagedAuthForConnectionTest refreshes the candidate provider's
+// managed credentials before Test & Save. Ping only refreshes the current
+// assistant provider, so an expired Grok token would otherwise be sent as-is.
+//
+// Store-backed OAuth refresh stays out of config.json. That keeps the original
+// provider revision, so a concurrent catalog edit during refresh is still
+// rejected, and the refreshed secret is persisted only after the probe succeeds.
+func (a *App) prepareManagedAuthForConnectionTest(provider corelib.MaclawLLMProvider, persistedID string) (corelib.MaclawLLMProvider, bool, error) {
+	persistedID = strings.TrimSpace(persistedID)
+	if persistedID == "" {
+		persistedID = maclawLLMProviderIDForRead(provider)
+	}
+	authKind := normalizeMaclawLLMAuthTypeKind(provider.AuthType)
+	if !authKind.IsOAuth() && provider.AuthType != "sso" {
+		return provider, false, nil
+	}
+	useStore := authKind.IsOAuth() && a.credentialStore != nil && credentialStoreProviderID(provider) != ""
+	if useStore {
+		// Refresh the candidate itself. Looking up a persisted ID can miss
+		// legacy name-hash aliases after ensureMaclawLLMProviderIDs assigns a
+		// durable ID, which would skip refresh and replay the expired token.
+		if err := a.ensureOAuthTokenViaStoreMaybeSync(provider, 0, false); err != nil {
+			return provider, false, err
+		}
+		return a.applyStoredOAuthCredential(provider), false, nil
+	}
+	if err := a.ensureOAuthTokenForProvider(persistedID); err != nil {
+		return provider, false, err
+	}
+	if err := a.ensureCodeGenTokenForProvider(persistedID); err != nil {
+		return provider, true, err
+	}
+	data := a.GetMaclawLLMProviders()
+	return overlayManagedAuthFromList(provider, data.Providers), true, nil
 }
 
 // markMaclawLLMProviderConnectionTestPassed records that a full text request
@@ -2019,10 +2459,10 @@ func (a *App) markMaclawLLMProviderConnectionTestPassed(providerName string, tes
 	}
 	// Legacy entries receive a durable ID only on a controlled write. The
 	// post-login capability probe may therefore hold their deterministic
-	// read-only alias while the stored provider still has no ID; compare via
-	// maclawLLMProviderIDForRead below so this is not mistaken for a race.
-	testedProviderID := strings.TrimSpace(tested.ProviderID)
-	testedModel := strings.TrimSpace(tested.Model)
+	// read-only alias while the stored provider still has no ID; compare IDs
+	// with that alias as well as the later durable ID. Connection fields are
+	// compared after the same read-time defaults the probe used, so filling
+	// empty xAI protocol/wire/model on GetMaclawLLMProviders is not a race.
 	found := false
 	stale := false
 	_, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
@@ -2037,13 +2477,7 @@ func (a *App) markMaclawLLMProviderConnectionTestPassed(providerName string, tes
 			// are deliberately excluded: managed OAuth/SSO credentials can live
 			// outside this config record and are materialized separately.
 			provider := cfg.MaclawLLMProviders[i]
-			if (testedProviderID != "" && maclawLLMProviderIDForRead(provider) != testedProviderID) ||
-				(testedModel != "" && !strings.EqualFold(strings.TrimSpace(provider.Model), testedModel)) ||
-				!strings.EqualFold(strings.TrimRight(strings.TrimSpace(provider.URL), "/"), strings.TrimRight(strings.TrimSpace(tested.URL), "/")) ||
-				!strings.EqualFold(strings.TrimSpace(provider.Protocol), strings.TrimSpace(tested.Protocol)) ||
-				!strings.EqualFold(strings.TrimSpace(provider.WireAPI), strings.TrimSpace(tested.WireAPI)) ||
-				!strings.EqualFold(strings.TrimSpace(provider.AuthType), strings.TrimSpace(tested.AuthType)) ||
-				!strings.EqualFold(provider.UserAgent(), tested.UserAgent()) {
+			if !maclawLLMProviderMatchesTestedConnection(provider, tested) {
 				stale = true
 				return false
 			}
@@ -2255,7 +2689,7 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 		textResult, err = a.testOpenAILLM(llm)
 	}
 	if err != nil {
-		return corelib.MaclawLLMTestResult{}, err
+		return corelib.MaclawLLMTestResult{}, formatMaclawLLMTestError(err, llm)
 	}
 
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
@@ -2275,22 +2709,36 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	}, nil
 }
 
+func formatMaclawLLMTestError(err error, cfg corelib.MaclawLLMConfig) error {
+	if err == nil {
+		return nil
+	}
+	provider := strings.TrimSpace(cfg.ProviderName)
+	if provider == "" {
+		provider = strings.TrimSpace(cfg.AgentType)
+	}
+	msg := strings.TrimSpace(llm.UserFacingErrorWithProvider(err, provider))
+	msg = strings.TrimPrefix(msg, "HTTP 500: ")
+	msg = strings.TrimPrefix(msg, "llm error: ")
+	msg = strings.TrimPrefix(msg, "parse response: ")
+	if runes := []rune(msg); len(runes) > 512 {
+		msg = string(runes[:512]) + "..."
+	}
+	if msg == "" {
+		return err
+	}
+	return fmt.Errorf("%s", msg)
+}
+
 // testOpenAILLM tests an OpenAI-compatible endpoint.
 func (a *App) testOpenAILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := a.llmHTTPClient(30 * time.Second)
 
 	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "provider-test"})
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
-		msg := err.Error()
-		msg = strings.TrimPrefix(msg, "HTTP 500: ")
-		msg = strings.TrimPrefix(msg, "llm error: ")
-		msg = strings.TrimPrefix(msg, "parse response: ")
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return "", fmt.Errorf("%s", msg)
+		return "", err
 	}
 	if resp == nil || resp.Content == "" {
 		return "", fmt.Errorf("no response from model")
@@ -2302,18 +2750,12 @@ func (a *App) testOpenAILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 func (a *App) testAnthropicLLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	cfg.Protocol = "anthropic"
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := a.llmHTTPClient(30 * time.Second)
 
 	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "provider-test"})
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
-		msg := err.Error()
-		msg = strings.TrimPrefix(msg, "HTTP 500: ")
-		msg = strings.TrimPrefix(msg, "parse response: ")
-		if len(msg) > 512 {
-			msg = msg[:512] + "..."
-		}
-		return "", fmt.Errorf("%s", msg)
+		return "", err
 	}
 	if resp == nil || resp.Content == "" {
 		return "", fmt.Errorf("no response from model")
@@ -2328,7 +2770,7 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	cfg.WireAPI = "responses"
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := a.llmHTTPClient(30 * time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -2353,6 +2795,7 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	resp, err := client.Do(req)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
+		log.Printf("[LLM] TestResponsesAPI request failed endpoint=%s model=%s err=%v", endpoint, cfg.Model, err)
 		return "", fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	defer resp.Body.Close()
@@ -2360,6 +2803,7 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName)
+		log.Printf("[LLM] TestResponsesAPI http_error status=%d endpoint=%s model=%s msg=%s", resp.StatusCode, endpoint, cfg.Model, msg)
 		err := fmt.Errorf("%s", msg)
 		globalLLMScheduler.ObserveResult(trace, err)
 		return "", err
@@ -2368,6 +2812,7 @@ func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	parsed, err := llm.ParseNonStreamResponsesAPIResponse(resp)
 	globalLLMScheduler.ObserveResult(trace, err)
 	if err != nil {
+		log.Printf("[LLM] TestResponsesAPI parse failed endpoint=%s model=%s err=%v", endpoint, cfg.Model, err)
 		return "", err
 	}
 	if len(parsed.Choices) == 0 || parsed.Choices[0].Message.Content == "" {
@@ -2730,7 +3175,7 @@ func (a *App) withGlobalThinkingMode(cfg corelib.MaclawLLMConfig) corelib.Maclaw
 		return cfg
 	}
 	cfg.ThinkingMode = normalizeThinkingModeSetting(appCfg.MaclawLLMThinkingMode)
-	return cfg
+	return corelib.CoerceAlwaysOnThinkingMode(cfg)
 }
 
 // maclawLLMConfigForMutation returns the complete current configuration. It
@@ -2809,7 +3254,13 @@ type MobileLLMQRCodeSession struct {
 
 // maclawLLMPingClient is a shared HTTP client for lightweight LLM pings.
 // Reusing the client enables TCP connection pooling across periodic pings.
-var maclawLLMPingClient = &http.Client{Timeout: 10 * time.Second}
+var maclawLLMPingClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		Proxy:               llmOrEnvProxy,
+		TLSHandshakeTimeout: 8 * time.Second,
+	},
+}
 
 // PingMaclawLLM performs a lightweight connectivity check against the
 // configured LLM endpoint.  It first tries GET /models (free, no tokens
@@ -4657,6 +5108,32 @@ func preserveManagedAuthSecrets(incoming, existing []corelib.MaclawLLMProvider) 
 	return incoming
 }
 
+func overlayManagedAuthFromList(provider corelib.MaclawLLMProvider, existing []corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	name := strings.TrimSpace(provider.Name)
+	for _, persisted := range existing {
+		if !strings.EqualFold(strings.TrimSpace(persisted.Name), name) {
+			continue
+		}
+		if persisted.Name == "xAI-Grok" && !normalizeMaclawLLMAuthTypeKind(persisted.AuthType).IsOAuth() {
+			return provider
+		}
+		if key := strings.TrimSpace(persisted.Key); key != "" {
+			provider.Key = key
+		}
+		if token := strings.TrimSpace(persisted.OAuthAccessToken); token != "" {
+			provider.OAuthAccessToken = token
+		}
+		if token := strings.TrimSpace(persisted.RefreshToken); token != "" {
+			provider.RefreshToken = token
+		}
+		if persisted.TokenExpiresAt != 0 {
+			provider.TokenExpiresAt = persisted.TokenExpiresAt
+		}
+		return provider
+	}
+	return provider
+}
+
 // urlsMatchForModelFetch reports whether two provider base URLs refer to the
 // same API host for model discovery (exact or parent/child path).
 func urlsMatchForModelFetch(a, b string) bool {
@@ -4754,6 +5231,55 @@ func (a *App) resolveAPIKeyForModelFetch(baseURL string) string {
 	return ""
 }
 
+func isOpenCodeZenProvider(provider corelib.MaclawLLMProvider) bool {
+	if strings.EqualFold(strings.TrimSpace(provider.ImportSource), configfile.ExternalAgentSourceOpenCode) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(provider.Name), configfile.ExternalAgentProviderOpenCode) {
+		return true
+	}
+	return isOpenCodeZenURL(provider.URL)
+}
+
+func isOpenCodeZenURL(baseURL string) bool {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return false
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "opencode.ai" && !strings.HasSuffix(host, ".opencode.ai") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(u.Path), "/zen")
+}
+
+var (
+	fetchProviderModelsHTTPClientMu      sync.Mutex
+	fetchProviderModelsHTTPClientForTest *http.Client
+)
+
+func fetchProviderModelsHTTPClient() *http.Client {
+	fetchProviderModelsHTTPClientMu.Lock()
+	defer fetchProviderModelsHTTPClientMu.Unlock()
+	if fetchProviderModelsHTTPClientForTest != nil {
+		return fetchProviderModelsHTTPClientForTest
+	}
+	return &http.Client{Timeout: 15 * time.Second}
+}
+
+func setFetchProviderModelsHTTPClientForTest(client *http.Client) {
+	fetchProviderModelsHTTPClientMu.Lock()
+	fetchProviderModelsHTTPClientForTest = client
+	fetchProviderModelsHTTPClientMu.Unlock()
+}
+
 // FetchProviderModels 通过 {baseURL}/models 端点获取服务商可用的模型列表。
 // 适用于所有 OpenAI / Anthropic 兼容的 API 服务商。
 //
@@ -4809,7 +5335,7 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 		protocol = "openai"
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := fetchProviderModelsHTTPClient()
 	if strings.EqualFold(protocol, "anthropic") {
 		log.Printf("[FetchProviderModels] using Anthropic SDK for model listing")
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

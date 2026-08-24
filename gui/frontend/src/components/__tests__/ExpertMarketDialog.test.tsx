@@ -410,7 +410,7 @@ describe('ExpertMarketDialog', () => {
         await waitFor(() => expect(AppAPI.PublishExpertMarketListing).toHaveBeenCalledWith('expert-public'));
         expect(await screen.findByText('Pending review')).toBeTruthy();
         expect(screen.getByRole('button', { name: 'Make private' })).toBeTruthy();
-        expect(screen.queryByRole('button', { name: 'Make public' })).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Make public' })).toBeNull();
 	});
 
 	it('permanently removes a private share after confirmation', async () => {

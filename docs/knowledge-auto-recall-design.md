@@ -1,3 +1,5 @@
+> **Superseded for IM/Core/GUI first-turn inject.** New contract: [design/clean-working-set-on-demand-retrieval.md](design/clean-working-set-on-demand-retrieval.md) (overview: [design/clean-working-set-on-demand-retrieval-zh.md](design/clean-working-set-on-demand-retrieval-zh.md)). This file remains a historical note for the old silent-inject path.
+
 # 知识库自动召回策略设计
 
 ## 问题

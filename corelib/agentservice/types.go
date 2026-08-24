@@ -950,6 +950,15 @@ type PostMessageInput struct {
 	Attachments        []agent.MessageAttachment `json:"attachments,omitempty"`
 	Metadata           map[string]string         `json:"metadata,omitempty"`
 	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
+	// ContinuationHandle is an opaque server-issued task selector from a prior
+	// response. It is not a RootTaskID and cannot select a task on its own:
+	// Service consumes and validates it against the authenticated principal,
+	// trusted session and current route lineage before building ExecuteRequest.
+	ContinuationHandle string `json:"continuation_handle,omitempty"`
+	// RefineTask is an explicit UI/API action paired with ContinuationHandle.
+	// Service derives and issues the server-only amendment command from this
+	// turn's text; callers never submit a command ID, digest, root, or revision.
+	RefineTask bool `json:"refine_task,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
 }
@@ -966,6 +975,11 @@ type SendMessageInput struct {
 	ClientSessionKey   string                    `json:"client_session_key,omitempty"`
 	ClientMessageID    string                    `json:"client_message_id,omitempty"`
 	ClientCapabilities *agent.ClientCapabilities `json:"client_capabilities,omitempty"`
+	// ContinuationHandle is the opaque, server-issued selector for explicitly
+	// continuing the current governed task in SessionID. SendMessage forwards it
+	// unchanged to PostMessage; Service performs the authoritative consumption.
+	ContinuationHandle string `json:"continuation_handle,omitempty"`
+	RefineTask         bool   `json:"refine_task,omitempty"`
 	// MoAPreset optionally selects a multi-model council preset for this message
 	// (also accepted as metadata["moa_preset"]).
 	MoAPreset string `json:"moa_preset,omitempty"`
@@ -1002,6 +1016,12 @@ type ExecuteRequest struct {
 	DataDir            string
 	Config             corelib.AppConfig
 	ClientCapabilities *agent.ClientCapabilities
+
+	// TaskRelation is a host-only continuation decision. It is deliberately
+	// excluded from transport JSON: request text, a client tool, or a model must
+	// not be able to select an existing RootTaskID. The authenticated service
+	// ingress may attach a previously verified handle before Execute.
+	TaskRelation *TaskRelationDecision `json:"-"`
 
 	// ToolPolicy optionally constrains tool exposure and execution for this
 	// request. Empty means unrestricted beyond the executor's normal

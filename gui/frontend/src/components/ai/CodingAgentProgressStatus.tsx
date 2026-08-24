@@ -7,6 +7,9 @@ interface CodingAgentProgressTheme {
     isDark?: boolean;
 }
 
+/** Clicking a Read/Edit/Write path focuses the existing code preview. */
+export const CodingAgentPreviewFocusContext = React.createContext<((path: string) => void) | undefined>(undefined);
+
 export const CODING_AGENT_KNOWN_PHASES = ["starting", "running", "completed", "failed", "retrying", "skipped", "result"] as const;
 export type CodingAgentKnownPhase = (typeof CODING_AGENT_KNOWN_PHASES)[number];
 export type CodingAgentStatusPhase = CodingAgentKnownPhase | "unknown";
@@ -80,6 +83,15 @@ export interface CodingAgentProgress {
     durationMs?: number;
     count?: number;
     files?: string[];
+    added?: number;
+    removed?: number;
+    fileChanges?: CodingAgentFileChange[];
+}
+
+export interface CodingAgentFileChange {
+    path: string;
+    added: number;
+    removed: number;
 }
 
 export interface CodingAgentToolTrace {
@@ -190,6 +202,9 @@ export function normalizeCodingAgentProgress(progress: CodingAgentProgress): Cod
         durationMs: Number.isFinite(progress.durationMs) && progress.durationMs !== undefined && progress.durationMs >= 0 ? progress.durationMs : undefined,
         count: Number.isFinite(progress.count) && progress.count !== undefined && progress.count >= 0 ? progress.count : undefined,
         files: normalizeCodingAgentFiles(progress.files),
+        added: Number.isFinite(progress.added) && progress.added !== undefined && progress.added >= 0 ? progress.added : undefined,
+        removed: Number.isFinite(progress.removed) && progress.removed !== undefined && progress.removed >= 0 ? progress.removed : undefined,
+        fileChanges: normalizeCodingAgentFileChanges(progress.fileChanges),
     };
 }
 
@@ -197,6 +212,40 @@ function normalizeCodingAgentFiles(files?: string[]): string[] | undefined {
     if (!Array.isArray(files)) return undefined;
     const normalized = files.map((file) => normalizeCodingAgentTitle(file)).filter(Boolean);
     return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeCodingAgentFileChanges(changes?: CodingAgentFileChange[]): CodingAgentFileChange[] | undefined {
+    if (!Array.isArray(changes)) return undefined;
+    const normalized: CodingAgentFileChange[] = [];
+    for (const change of changes) {
+        const path = normalizeCodingAgentTitle(change?.path);
+        if (!path) continue;
+        normalized.push({
+            path,
+            added: Number.isFinite(change.added) && change.added > 0 ? Math.round(change.added) : 0,
+            removed: Number.isFinite(change.removed) && change.removed > 0 ? Math.round(change.removed) : 0,
+        });
+    }
+    return normalized.length > 0 ? normalized : undefined;
+}
+
+export function codingAgentFileChangeRows(progress: CodingAgentProgress): CodingAgentFileChange[] {
+    const normalized = normalizeCodingAgentProgress(progress);
+    if (normalized.fileChanges?.length) return normalized.fileChanges;
+    return (normalized.files || []).map((path) => ({ path, added: 0, removed: 0 }));
+}
+
+/** Paths a trail row can open in the code preview. */
+export function codingAgentPreviewTargetPaths(progress: CodingAgentProgress): string[] {
+    const seen = new Set<string>();
+    const paths: string[] = [];
+    for (const row of codingAgentFileChangeRows(progress)) {
+        const path = (row.path || "").trim();
+        if (!path || seen.has(path)) continue;
+        seen.add(path);
+        paths.push(path);
+    }
+    return paths;
 }
 
 export function isCodingAgentActivePhase(phase: string): boolean {
@@ -322,11 +371,167 @@ export function isCodingAgentActivityEvent(progress: CodingAgentProgress): boole
     return (
         event === "tool_started" ||
         event === "tool_finished" ||
+        event === "assistant_note" ||
         event.endsWith("_summary") ||
         event === "diff_check" ||
         event === "diff_summary" ||
         event === "diff_updated"
     );
+}
+
+/** Codex trail items: tools, notes, file cards — not audit/status banners. */
+export function isCodingAgentPlainTrailEvent(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    return (
+        event === "tool_started" ||
+        event === "tool_finished" ||
+        event === "assistant_note" ||
+        event === "diff_updated" ||
+        event === "diff_summary"
+    );
+}
+
+/** Audit banners stay on the result object / sidebar, not in the chat trail. */
+export function isCodingAgentChatHiddenEvent(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event === "assistant_note") {
+        return codingAssistantNoteLooksInternal((progress.detail || progress.summary || "").trim());
+    }
+    return (
+        event === "quality_summary" ||
+        event === "exploration_summary" ||
+        event === "verification_summary" ||
+        event === "guardrail_summary" ||
+        event === "file_activity_summary" ||
+        event === "command_summary"
+    );
+}
+
+/** True when the chat already has a Codex Read/Edit/$ (or note) line. */
+export function codingAgentMessagesHavePlainTrail(messages: ChatMessage[]): boolean {
+    return codingAgentLatestTurnHasPlainTrail(messages);
+}
+
+/** True when the latest coding turn already has a visible Read/Edit/$ (or note). */
+export function codingAgentLatestTurnHasPlainTrail(messages: ChatMessage[]): boolean {
+    const parsed: CodingAgentProgress[] = [];
+    for (const msg of messages) {
+        const progress = parseCodingAgentProgress(msg.content || "");
+        if (progress) parsed.push(progress);
+    }
+    if (parsed.length === 0) return false;
+    const latest = parsed[parsed.length - 1];
+    for (const progress of parsed) {
+        if (!codingAgentSameTurn(progress, latest)) continue;
+        if (isCodingAgentPlainTrailEvent(progress) && !isCodingAgentChatHiddenEvent(progress)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Pre-tool wait: same mono trail as Read/Edit/$, not a chat "思考中" bubble. */
+export function renderCodingAgentWorkingTrail(t: CodingAgentProgressTheme, lang: string): React.ReactNode {
+    const accent = runningTone.accent;
+    return (
+        <div
+            data-testid="coding-agent-working-trail"
+            role="status"
+            aria-live="off"
+            aria-label={lang.startsWith("zh") ? "工作中" : "Working"}
+            style={{
+                display: "grid",
+                gridTemplateColumns: "12px auto",
+                alignItems: "baseline",
+                columnGap: 6,
+                margin: "2px 0",
+                padding: 0,
+                fontSize: 11,
+                lineHeight: 1.4,
+                color: t.text,
+                opacity: 0.9,
+            }}
+        >
+            <span
+                aria-hidden="true"
+                className="coding-agent-working-dot"
+                style={{
+                    color: accent,
+                    fontWeight: 700,
+                    fontFamily: monoFont,
+                    textAlign: "center",
+                    fontSize: 11,
+                    width: 12,
+                    animation: "blink 1.2s step-end infinite",
+                }}
+            >
+                {"\u00b7"}
+            </span>
+            <span
+                style={{
+                    color: accent,
+                    fontFamily: monoFont,
+                    fontSize: 11,
+                    fontWeight: 600,
+                }}
+            >
+                Working
+            </span>
+        </div>
+    );
+}
+
+/** Drop thinking dumps, tool JSON, and leftover audit headings from mid-turn notes. */
+export function codingAssistantNoteLooksInternal(text: string): boolean {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return true;
+    if (trimmed.startsWith("##") || trimmed.includes("## ")) return true;
+    const lower = trimmed.toLowerCase();
+    const needles = [
+        "质量审计",
+        "执行报告",
+        "验证结果",
+        "涉及文件",
+        "验证状态",
+        "探索状态",
+        "diff 自检",
+        "quality audit",
+        "execution report",
+        "\u8ba1\u5212\u6267\u884c\u7ed3\u679c",
+        "\u6267\u884c\u6b65\u9aa4",
+        "tool_call",
+        "<think>",
+        "</think>",
+    ];
+    if (needles.some((needle) => trimmed.includes(needle) || lower.includes(needle))) {
+        return true;
+    }
+    return trimmed.startsWith("{") && (lower.includes('"name"') || lower.includes("tool"));
+}
+
+/** Codex-style trail labels. Never show an ssh_ prefix. */
+export function codingAgentToolDisplayName(name: string): string {
+    const raw = (name || "").trim();
+    if (!raw) return "tool";
+    const lower = raw.toLowerCase();
+    const bare = lower.startsWith("ssh_") ? lower.slice(4) : lower;
+    if (bare === "bash") return "$";
+    if (bare === "read_file" || bare === "read") return "Read";
+    if (bare === "write_file" || bare === "write") return "Write";
+    if (bare === "edit_file" || bare === "edit_lines" || bare === "str_replace" || bare === "apply_patch") return "Edit";
+    if (
+        bare === "ripgrep" ||
+        bare === "grep_search" ||
+        bare === "glob" ||
+        bare === "list_dir" ||
+        bare === "list_directory" ||
+        bare === "search_files"
+    ) {
+        return "Search";
+    }
+    if (bare === "git_diff") return "Diff";
+    if (lower.startsWith("ssh_")) return codingAgentToolDisplayName(raw.slice(4));
+    return raw;
 }
 
 export function parseCodingAgentEventProgress(content: string): CodingAgentProgress | null {
@@ -338,6 +543,15 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
         if (raw.agent !== "coding") return null;
         const taskID = typeof raw.task_id === "string" ? raw.task_id : typeof raw.taskID === "string" ? raw.taskID : undefined;
         const files = Array.isArray(raw.files) ? raw.files.filter((file): file is string => typeof file === "string") : undefined;
+        const fileChanges = Array.isArray(raw.file_changes)
+            ? raw.file_changes
+                .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+                .map((item) => ({
+                    path: typeof item.path === "string" ? item.path : "",
+                    added: typeof item.added === "number" ? item.added : 0,
+                    removed: typeof item.removed === "number" ? item.removed : 0,
+                }))
+            : undefined;
         return normalizeCodingAgentProgress({
             phase: normalizeCodingAgentPhase(String(raw.phase || "")),
             taskID,
@@ -354,6 +568,9 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
             durationMs: typeof raw.duration_ms === "number" ? raw.duration_ms : typeof raw.durationMs === "number" ? raw.durationMs : undefined,
             count: typeof raw.count === "number" ? raw.count : undefined,
             files,
+            added: typeof raw.added === "number" ? raw.added : undefined,
+            removed: typeof raw.removed === "number" ? raw.removed : undefined,
+            fileChanges,
         });
     } catch {
         return null;
@@ -504,8 +721,10 @@ export function codingAgentOutcomeMark(progress: CodingAgentProgress, isDark?: b
 export function codingAgentToolNameText(progress: CodingAgentProgress): string {
     const event = (progress.event || "").trim().toLowerCase();
     if (event === "tool_finished" || event === "tool_started") {
-        return (progress.detail || "tool").trim() || "tool";
+        return codingAgentToolDisplayName(progress.detail || "tool");
     }
+    if (event === "assistant_note") return "note";
+    if (event === "diff_updated") return "Edit";
     if (event === "quality_summary") return "quality";
     if (event === "command_summary") return "commands";
     if (event === "file_activity_summary") return "files";
@@ -518,11 +737,64 @@ export function codingAgentToolNameText(progress: CodingAgentProgress): string {
     return event.replace(/_summary$/, "").replace(/_/g, " ") || "task";
 }
 
+/** Codex-style trail path: repo-relative, never a drive-letter dump. */
+export function compactCodingTrailPath(path: string): string {
+    const next = (path || "").trim().replace(/\\/g, "/");
+    if (!next) return "";
+    const abs = next.startsWith("/") || /^[A-Za-z]:\//.test(next);
+    if (!abs) return next;
+    const parts = next.split("/").filter((part) => part && !/^[A-Za-z]:$/.test(part));
+    if (parts.length >= 2) return parts.slice(-2).join("/");
+    return parts[0] || next;
+}
+
+/** Codex-style file card: `foo.go (+12 -3)`. */
+export function codingAgentEditedFileDetailText(progress: CodingAgentProgress, maxRunes = 88): string | undefined {
+    const rows = codingAgentFileChangeRows(progress).filter((row) => row.path);
+    const added = progress.added ?? rows.reduce((sum, row) => sum + (row.added || 0), 0);
+    const removed = progress.removed ?? rows.reduce((sum, row) => sum + (row.removed || 0), 0);
+    let text = "";
+    if (rows.length > 0) {
+        text = rows.map((row) => compactCodingTrailPath(row.path)).filter(Boolean).join(", ");
+        if (added > 0 || removed > 0) {
+            text = `${text} (+${added} -${removed})`;
+        }
+    } else if ((progress.detail || "").trim().startsWith("Edited ")) {
+        text = (progress.detail || "").trim().replace(
+            /^Edited\s+(.+?)(?:\s+(\(\+\d+\s+-\d+\)))?\s*$/,
+            (_match, filePath: string, delta?: string) => (
+                `Edited ${compactCodingTrailPath(filePath) || filePath}${delta ? ` ${delta}` : ""}`
+            ),
+        );
+    }
+    return text ? truncateCodingAgentInlineText(text, maxRunes) : undefined;
+}
+
+function codingAgentToolLooksLikeFileEdit(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event === "diff_updated") return true;
+    if (event !== "tool_finished" && event !== "tool_started") return false;
+    const label = codingAgentToolDisplayName(progress.detail || "");
+    return label === "Edit" || label === "Write";
+}
+
 /** Secondary detail: command, path hint, or short summary — not label soup. */
 export function codingAgentToolDetailText(progress: CodingAgentProgress, lang: string, maxRunes = 88): string | undefined {
     const event = (progress.event || "").trim().toLowerCase();
     if ((event === "tool_finished" || event === "tool_started") && progress.command) {
         return truncateCodingAgentInlineText(progress.command, maxRunes);
+    }
+    if (codingAgentToolLooksLikeFileEdit(progress)) {
+        const edited = codingAgentEditedFileDetailText(progress, maxRunes);
+        if (edited) return edited;
+    }
+    if ((event === "tool_finished" || event === "tool_started" || event === "diff_updated") && progress.files?.length) {
+        return truncateCodingAgentInlineText(progress.files.map(compactCodingTrailPath).filter(Boolean).join(", "), maxRunes);
+    }
+    if (event === "assistant_note" || event === "diff_updated") {
+        if (progress.detail) return truncateCodingAgentInlineText(progress.detail, maxRunes);
+        if (progress.summary) return truncateCodingAgentInlineText(progress.summary, maxRunes);
+        return undefined;
     }
     if (event === "tool_finished" || event === "tool_started") {
         // Prefer human status for diagnostics; else title.
@@ -581,11 +853,19 @@ export function codingAgentUiIsDark(isDark?: boolean): boolean {
 function codingAgentLineIsRunning(progress: CodingAgentProgress): boolean {
     const event = (progress.event || "").trim().toLowerCase();
     if (event === "tool_started") return true;
-    if (event === "tool_finished" || event.endsWith("_summary") || event === "diff_check" || event === "diff_summary") {
+    if (event === "tool_finished" || event === "assistant_note" || event.endsWith("_summary") || event === "diff_check" || event === "diff_summary" || event === "diff_updated") {
         return false;
     }
     // Pure task_status / legacy lines: active phase and no outcome yet.
     return isCodingAgentActivePhase(progress.phase) && !(progress.outcome || "").trim();
+}
+
+/** Completed, non-critical tool calls can collapse to one compact receipt. */
+function codingAgentToolLineCanCollapse(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    return event === "tool_finished"
+        && !codingAgentLineIsRunning(progress)
+        && !codingAgentProgressLooksCritical(progress);
 }
 
 /**
@@ -647,35 +927,214 @@ export function pickCodingAgentFeedHeader(rows: CodingAgentProgress[]): CodingAg
     });
 }
 
+function renderCodingAgentAssistantNote(
+    progress: CodingAgentProgress,
+    t: CodingAgentProgressTheme,
+    key?: string,
+): React.ReactNode {
+    const text = (progress.detail || progress.summary || "").trim();
+    if (!text || codingAssistantNoteLooksInternal(text)) return null;
+    return (
+        <div
+            key={key}
+            data-testid="coding-agent-assistant-note"
+            style={{
+                margin: "2px 0 3px",
+                paddingLeft: 18,
+                color: t.text,
+                fontSize: 12,
+                lineHeight: 1.45,
+                opacity: 0.92,
+            }}
+        >
+            {text}
+        </div>
+    );
+}
+
 /** One terminal-style tool/activity line (used inside the feed panel). */
-function renderCodingAgentToolLine(
+const CODING_AGENT_FILE_TABLE_PREVIEW = 8;
+const codingAgentAddColor = { light: "#2f7a58", dark: "#5dba8a" };
+const codingAgentDelColor = { light: "#b45309", dark: "#f0b35a" };
+
+function renderCodingAgentFileChangeTable(
     progress: CodingAgentProgress,
     t: CodingAgentProgressTheme,
     lang: string,
-    opts?: { key?: string; showCommandTestId?: boolean; hideDetailIfEquals?: string },
+    key?: string,
 ): React.ReactNode {
+    const rows = codingAgentFileChangeRows(progress);
+    if (rows.length === 0) return null;
+    return (
+        <CodingAgentFileChangeTable
+            key={key}
+            progress={progress}
+            rows={rows}
+            t={t}
+            lang={lang}
+        />
+    );
+}
+
+function CodingAgentFileChangeTable({
+    progress,
+    rows,
+    t,
+    lang,
+}: {
+    progress: CodingAgentProgress;
+    rows: CodingAgentFileChange[];
+    t: CodingAgentProgressTheme;
+    lang: string;
+}): React.ReactElement {
+    const onOpenPreviewFile = React.useContext(CodingAgentPreviewFocusContext);
+    const [expanded, setExpanded] = React.useState(false);
+    const hidden = Math.max(0, rows.length - CODING_AGENT_FILE_TABLE_PREVIEW);
+    const visible = expanded || hidden === 0 ? rows : rows.slice(0, CODING_AGENT_FILE_TABLE_PREVIEW);
+    const added = progress.added ?? rows.reduce((sum, row) => sum + row.added, 0);
+    const removed = progress.removed ?? rows.reduce((sum, row) => sum + row.removed, 0);
+    const addColor = t.isDark ? codingAgentAddColor.dark : codingAgentAddColor.light;
+    const delColor = t.isDark ? codingAgentDelColor.dark : codingAgentDelColor.light;
+    const count = progress.count && progress.count > rows.length ? progress.count : rows.length;
+    const header = lang.startsWith("zh") ? `${count} 个文件已更改` : `${count} files changed`;
+    const showAll = lang.startsWith("zh") ? "全部显示" : "Show all";
+    const more = lang.startsWith("zh") ? `+${hidden} 个文件` : `+${hidden} files`;
+    return (
+        <div
+            data-testid="coding-agent-file-changes"
+            style={{
+                margin: "2px 0 1px",
+                padding: "2px 0 1px",
+            }}
+        >
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 8,
+                    marginBottom: 4,
+                    fontFamily: monoFont,
+                    fontSize: 11,
+                    lineHeight: 1.35,
+                }}
+            >
+                <span style={{ fontWeight: 600, color: t.text, flex: 1, minWidth: 0 }}>{header}</span>
+                <span style={{ color: addColor, fontVariantNumeric: "tabular-nums" }}>+{added}</span>
+                <span style={{ color: delColor, fontVariantNumeric: "tabular-nums" }}>-{removed}</span>
+                {hidden > 0 && !expanded && (
+                    <button
+                        type="button"
+                        data-testid="coding-agent-file-changes-expand"
+                        onClick={() => setExpanded(true)}
+                        style={{
+                            padding: 0,
+                            border: "none",
+                            background: "none",
+                            color: "#3b82f6",
+                            fontFamily: monoFont,
+                            fontSize: 11,
+                            cursor: "pointer",
+                        }}
+                    >
+                        {showAll}
+                    </button>
+                )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                {visible.map((row) => (
+                    <div
+                        key={row.path}
+                        role={onOpenPreviewFile ? "button" : undefined}
+                        tabIndex={onOpenPreviewFile ? 0 : undefined}
+                        data-testid="coding-agent-file-change-row"
+                        data-preview-path={onOpenPreviewFile ? row.path : undefined}
+                        onClick={onOpenPreviewFile ? () => onOpenPreviewFile(row.path) : undefined}
+                        onKeyDown={onOpenPreviewFile ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                onOpenPreviewFile(row.path);
+                            }
+                        } : undefined}
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "minmax(0, 1fr) auto auto",
+                            columnGap: 10,
+                            alignItems: "baseline",
+                            fontFamily: monoFont,
+                            fontSize: 11,
+                            lineHeight: 1.45,
+                            color: t.text,
+                            cursor: onOpenPreviewFile ? "pointer" : undefined,
+                        }}
+                        title={row.path}
+                    >
+                        <span
+                            style={{
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {compactCodingTrailPath(row.path) || row.path}
+                        </span>
+                        <span style={{ color: addColor, fontVariantNumeric: "tabular-nums" }}>+{row.added}</span>
+                        <span style={{ color: delColor, fontVariantNumeric: "tabular-nums" }}>-{row.removed}</span>
+                    </div>
+                ))}
+            </div>
+            {hidden > 0 && !expanded && (
+                <div style={{ marginTop: 3, color: t.fieldLabel, fontFamily: monoFont, fontSize: 10 }}>
+                    {more}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function CodingAgentToolLine({
+    progress,
+    t,
+    lang,
+    showCommandTestId,
+    hideDetailIfEquals,
+    onOpenPreviewFile,
+}: {
+    progress: CodingAgentProgress;
+    t: CodingAgentProgressTheme;
+    lang: string;
+    showCommandTestId?: boolean;
+    hideDetailIfEquals?: string;
+    onOpenPreviewFile?: (path: string) => void;
+}): React.ReactElement {
     const tone = resolveCodingAgentStatusTone(progress, t.isDark);
     const mark = codingAgentOutcomeMark(progress, t.isDark);
     const toolName = codingAgentToolNameText(progress);
     let detail = codingAgentToolDetailText(progress, lang);
+    const previewPaths = codingAgentPreviewTargetPaths(progress);
+    const previewPath = previewPaths[0];
+    const canOpenPreview = !!(onOpenPreviewFile && previewPath);
     // Avoid repeating the feed header title on every tool row.
-    if (detail && opts?.hideDetailIfEquals && detail === opts.hideDetailIfEquals) {
+    if (detail && hideDetailIfEquals && detail === hideDetailIfEquals) {
         detail = undefined;
     }
     const duration = formatCodingAgentDuration(progress.durationMs);
     const command = (progress.command || "").trim();
     const showCmdPreview = !!codingAgentCommandPreviewText(progress, lang);
     const running = codingAgentLineIsRunning(progress);
+    const canCollapse = codingAgentToolLineCanCollapse(progress);
+    const [expanded, setExpanded] = React.useState(false);
+    const collapsed = canCollapse && !expanded;
+    const collapseLabel = lang.startsWith("zh") ? "已完成，展开详情" : "Completed, show details";
+    const expandedLabel = lang.startsWith("zh") ? "收起工具详情" : "Collapse tool details";
     return (
-        <div
-            key={opts?.key}
+        <details
             data-testid="coding-agent-tool-line"
             data-tool-running={running ? "true" : "false"}
+            data-tool-collapsed={collapsed ? "true" : "false"}
+            open={!collapsed}
+            onToggle={(event) => setExpanded((event.currentTarget as HTMLDetailsElement).open)}
             style={{
-                display: "grid",
-                gridTemplateColumns: "12px minmax(52px, 72px) minmax(0, 1fr) auto",
-                alignItems: "baseline",
-                columnGap: 6,
                 padding: "0",
                 fontSize: 11,
                 lineHeight: 1.4,
@@ -683,63 +1142,55 @@ function renderCodingAgentToolLine(
                 opacity: running ? 0.9 : 1,
             }}
         >
-            <span
-                aria-hidden="true"
+            <summary
+                aria-label={collapsed ? collapseLabel : expandedLabel}
                 style={{
-                    color: mark.color,
-                    fontWeight: 700,
-                    fontFamily: monoFont,
-                    textAlign: "center",
-                    fontSize: 11,
-                    width: 12,
+                    display: "grid",
+                    gridTemplateColumns: "12px minmax(52px, 72px) minmax(0, 1fr) auto",
+                    alignItems: "baseline",
+                    columnGap: 6,
+                    cursor: canCollapse ? "pointer" : "default",
+                    listStyle: "none",
                 }}
             >
-                {mark.glyph}
-            </span>
-            <span
-                style={{
-                    color: tone.accent,
-                    fontFamily: monoFont,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                }}
-                title={toolName}
-            >
-                {toolName}
-            </span>
-            <span
-                data-testid={showCmdPreview || opts?.showCommandTestId ? "coding-agent-command-preview" : undefined}
-                role={showCmdPreview ? "note" : undefined}
-                aria-label={showCmdPreview ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${command}` : undefined}
-                title={command || detail || undefined}
-                style={{
-                    color: t.fieldLabel,
-                    fontFamily: monoFont,
-                    fontSize: 11,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                }}
-            >
-                {detail || ""}
-            </span>
-            <span
-                style={{
-                    color: t.fieldLabel,
-                    fontFamily: monoFont,
-                    fontSize: 10,
-                    flexShrink: 0,
-                    opacity: 0.85,
-                    fontVariantNumeric: "tabular-nums",
-                }}
-            >
-                {duration || ""}
-            </span>
-        </div>
+                <span aria-hidden="true" style={{ color: mark.color, fontWeight: 700, fontFamily: monoFont, textAlign: "center", fontSize: 11, width: 12 }}>
+                    {mark.glyph}
+                </span>
+                <span style={{ color: tone.accent, fontFamily: monoFont, fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={toolName}>
+                    {toolName}
+                </span>
+                <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {collapsed ? (lang.startsWith("zh") ? "已完成" : "Completed") : (detail || "")}
+                </span>
+                <span style={{ color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, flexShrink: 0, opacity: 0.85, fontVariantNumeric: "tabular-nums" }}>
+                    {duration || ""}
+                </span>
+            </summary>
+            {(detail || command || canOpenPreview) && (
+                <div style={{ margin: "2px 0 3px 18px", color: t.fieldLabel, fontFamily: monoFont, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span
+                        data-testid={canOpenPreview ? "coding-agent-preview-link" : (showCmdPreview || showCommandTestId ? "coding-agent-command-preview" : undefined)}
+                        role={canOpenPreview ? "button" : showCmdPreview ? "note" : undefined}
+                        tabIndex={canOpenPreview ? 0 : undefined}
+                        data-preview-path={canOpenPreview ? previewPath : undefined}
+                        aria-label={canOpenPreview
+                            ? `${lang.startsWith("zh") ? "打开预览" : "Open preview"}: ${compactCodingTrailPath(previewPath) || previewPath}`
+                            : showCmdPreview ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${command}` : undefined}
+                        title={command || detail || undefined}
+                        onClick={canOpenPreview ? () => onOpenPreviewFile?.(previewPath) : undefined}
+                        onKeyDown={canOpenPreview ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                onOpenPreviewFile?.(previewPath);
+                            }
+                        } : undefined}
+                        style={{ cursor: canOpenPreview ? "pointer" : undefined }}
+                    >
+                        {detail || command}
+                    </span>
+                </div>
+            )}
+        </details>
     );
 }
 
@@ -767,9 +1218,46 @@ export function renderCodingAgentActivityFeed(
 
     const header = pickCodingAgentFeedHeader(rows.map((r) => r.progress));
     // When tools/summaries exist, omit pure task_status lines — header already shows phase.
-    const activityRows = rows.filter(({ progress }) => !isCodingAgentTaskStatusOnly(progress));
-    const lineRows = activityRows.length > 0 ? activityRows : rows;
-    const visibleLineRows = lineRows.slice(-3);
+    const activityRows = rows.filter(({ progress }) => !isCodingAgentTaskStatusOnly(progress) && !isCodingAgentChatHiddenEvent(progress));
+    const lineRows = activityRows.length > 0 ? activityRows : rows.filter(({ progress }) => !isCodingAgentChatHiddenEvent(progress));
+    // Codex shows Read/Edit/$ as they happen — not a "T1 running" board before
+    // the first tool. Structured assistant notes and file summaries are visible
+    // coding activity too, and must retain their place in an interleaved trail.
+    const hasRenderableActivity = lineRows.some(({ progress }) =>
+        isCodingAgentPlainTrailEvent(progress)
+        || (progress.event || "").trim().toLowerCase() === "assistant_note"
+        || ((progress.event || "").trim().toLowerCase() === "diff_summary" && codingAgentFileChangeRows(progress).length > 0),
+    );
+    if (!hasRenderableActivity) {
+        return null;
+    }
+    return (
+        <CodingAgentActivityFeedShell
+            header={header}
+            lineRows={lineRows}
+            t={t}
+            lang={lang}
+        />
+    );
+}
+
+const MAX_VISIBLE_FEED_LINES = 20;
+
+function CodingAgentActivityFeedShell({
+    header,
+    lineRows,
+    t,
+    lang,
+}: {
+    header: CodingAgentProgress;
+    lineRows: Array<{ msg: ChatMessage; progress: CodingAgentProgress }>;
+    t: CodingAgentProgressTheme;
+    lang: string;
+}): React.ReactElement {
+    const onOpenPreviewFile = React.useContext(CodingAgentPreviewFocusContext);
+    const [expanded, setExpanded] = React.useState(false);
+    const hiddenCount = Math.max(0, lineRows.length - MAX_VISIBLE_FEED_LINES);
+    const visibleLineRows = expanded || hiddenCount === 0 ? lineRows : lineRows.slice(-MAX_VISIBLE_FEED_LINES);
     const lineProgress = visibleLineRows.map((r) => r.progress);
     const tone = resolveCodingAgentFeedTone(header, lineProgress, t.isDark);
     const headerTask = header.taskID;
@@ -803,14 +1291,19 @@ export function renderCodingAgentActivityFeed(
     const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "rgba(47, 111, 188, 0.14)";
     const bg = t.isDark ? "rgba(15, 23, 42, 0.42)" : "rgba(246, 248, 251, 0.98)";
     const hairline = t.isDark ? "rgba(148,163,184,0.12)" : "rgba(47, 111, 188, 0.09)";
-    const showHeaderRule = isMulti;
+    const hasToolTrail = lineRows.some(({ progress }) => !isCodingAgentTaskStatusOnly(progress));
+    const hasPlainTrail = lineRows.some(({ progress }) => isCodingAgentPlainTrailEvent(progress));
+    const showFailureChip = criticalCount > 0 && !hasPlainTrail;
+    const showBoardHeader = !hasToolTrail || showFailureChip;
+    const showHeaderRule = isMulti && showBoardHeader && !hasToolTrail;
     // Parent Fragment owns the React list key; avoid remount-churning key on the shell.
 
     return (
         <div
             className={codingAgentStatusClassName(header, "chat-progress")}
             data-testid="coding-agent-progress"
-            data-coding-feed={isMulti ? "true" : activityRows.length > 0 ? "activity" : "single"}
+            data-coding-feed={isMulti ? "true" : lineRows.some(({ progress }) => !isCodingAgentTaskStatusOnly(progress)) ? "activity" : "single"}
+            data-coding-trail={hasPlainTrail ? "plain" : "board"}
             data-tone-accent={tone.accent}
             {...codingAgentStatusDataAttrs(header, "chat-progress")}
             role="status"
@@ -819,18 +1312,20 @@ export function renderCodingAgentActivityFeed(
             aria-atomic="false"
             aria-label={feedLabel}
             style={{
-                margin: "4px 0",
-                padding: "4px 7px 4px",
-                borderRadius: 5,
-                border: `1px solid ${borderColor}`,
-                background: bg,
+                margin: hasPlainTrail ? "2px 0" : "4px 0",
+                padding: hasPlainTrail ? "0" : "4px 7px 4px",
+                borderRadius: hasPlainTrail ? 0 : 5,
+                border: hasPlainTrail ? "none" : `1px solid ${borderColor}`,
+                background: hasPlainTrail ? "transparent" : bg,
                 color: t.text,
-                // Soft top accent instead of a left stripe (tool-log chrome, not alert card).
-                boxShadow: t.isDark
-                    ? `inset 0 1.5px 0 0 ${tone.accent}`
-                    : `inset 0 1.5px 0 0 ${tone.accent}, 0 1px 1px rgba(15,23,42,0.03)`,
+                boxShadow: hasPlainTrail
+                    ? "none"
+                    : (t.isDark
+                        ? `inset 0 1.5px 0 0 ${tone.accent}`
+                        : `inset 0 1.5px 0 0 ${tone.accent}, 0 1px 1px rgba(15,23,42,0.03)`),
             }}
         >
+            {showBoardHeader && (
             <div
                 data-testid="coding-agent-feed-header"
                 style={{
@@ -845,13 +1340,15 @@ export function renderCodingAgentActivityFeed(
                     fontFamily: monoFont,
                 }}
             >
+                {!hasToolTrail && (
                 <span style={{ fontWeight: 700, color: tone.accent, letterSpacing: "0.01em" }}>
                     {codingAgentBrandLabel(lang)}
                 </span>
-                {headerTask && (
+                )}
+                {!hasToolTrail && headerTask && (
                     <span style={{ fontWeight: 600, color: t.fieldLabel }}>{headerTask}</span>
                 )}
-                {headerTitle && (
+                {!hasToolTrail && headerTitle && (
                     <span
                         style={{
                             flex: 1,
@@ -868,11 +1365,12 @@ export function renderCodingAgentActivityFeed(
                         {headerTitle}
                     </span>
                 )}
-                {!headerTitle && <span style={{ flex: 1 }} />}
+                {(!headerTitle || hasToolTrail) && <span style={{ flex: 1 }} />}
                 <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0, fontSize: 10 }}>
-                    {headerStatus}
+                    {hasToolTrail ? (showFailureChip ? (lang.startsWith("zh") ? `${criticalCount} \u9879\u5931\u8d25` : `${criticalCount} failed`) : "") : headerStatus}
                 </span>
             </div>
+            )}
             <div
                 data-testid="coding-agent-feed-lines"
                 style={{
@@ -880,15 +1378,44 @@ export function renderCodingAgentActivityFeed(
                     flexDirection: "column",
                     gap: 0,
                     paddingLeft: 2,
-                    overflow: "hidden",
+                    maxHeight: 280,
+                    overflowY: "auto",
                 }}
             >
+                {hiddenCount > 0 && !expanded && (
+                    <button
+                        type="button"
+                        data-testid="coding-agent-feed-expand"
+                        onClick={() => setExpanded(true)}
+                        style={{
+                            alignSelf: "flex-start",
+                            margin: "0 0 2px",
+                            padding: 0,
+                            border: "none",
+                            background: "none",
+                            color: t.fieldLabel,
+                            fontFamily: monoFont,
+                            fontSize: 10,
+                            cursor: "pointer",
+                        }}
+                    >
+                        {lang.startsWith("zh") ? `展开更早 ${hiddenCount} 步` : `Show earlier ${hiddenCount} steps`}
+                    </button>
+                )}
                 {visibleLineRows.map(({ msg, progress }) =>
-                    renderCodingAgentToolLine(progress, t, lang, {
-                        key: msg.id,
-                        showCommandTestId: visibleLineRows.length === 1,
-                        hideDetailIfEquals: headerTitle || undefined,
-                    }),
+                    (progress.event || "").trim().toLowerCase() === "assistant_note"
+                        ? renderCodingAgentAssistantNote(progress, t, msg.id)
+                        : codingAgentFileChangeRows(progress).length > 0 && (progress.event || "").trim().toLowerCase() === "diff_summary"
+                        ? renderCodingAgentFileChangeTable(progress, t, lang, msg.id)
+                        : <CodingAgentToolLine
+                            key={msg.id}
+                            progress={progress}
+                            t={t}
+                            lang={lang}
+                            showCommandTestId={visibleLineRows.length === 1}
+                            hideDetailIfEquals={headerTitle || undefined}
+                            onOpenPreviewFile={onOpenPreviewFile}
+                        />,
                 )}
             </div>
         </div>
@@ -1049,6 +1576,30 @@ export function codingAgentVariantDisplayText(progress: CodingAgentProgress, lan
         codingAgentDisplayText(normalized, lang),
         codingAgentFilePreviewText(normalized, lang),
     );
+}
+
+/** Input placeholder: current Read/Edit/$ line, never a "Coding · T2 running" scorecard. */
+export function codingAgentInputStatusText(progress: CodingAgentProgress | null | undefined, lang: string): string | undefined {
+    if (!progress) return undefined;
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event === "tool_started" || event === "tool_finished") {
+        const name = codingAgentToolNameText(progress);
+        const detail = codingAgentToolDetailText(progress, lang, 48);
+        const line = [name, detail].filter(Boolean).join(" ");
+        return line || (lang.startsWith("zh") ? "\u5904\u7406\u4e2d\u2026" : "Working...");
+    }
+    return lang.startsWith("zh") ? "\u5904\u7406\u4e2d\u2026" : "Working...";
+}
+
+/** Programming composer: only a real tool line, never generic 处理中 / Working. */
+export function codingAgentComposerStatusText(progress: CodingAgentProgress | null | undefined, lang: string): string | undefined {
+    if (!progress) return undefined;
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event !== "tool_started" && event !== "tool_finished") return undefined;
+    const name = codingAgentToolNameText(progress);
+    const detail = codingAgentToolDetailText(progress, lang, 48);
+    const line = [name, detail].filter(Boolean).join(" ").trim();
+    return line || undefined;
 }
 
 export function codingAgentCompactText(progress: CodingAgentProgress, lang: string): string {

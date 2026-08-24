@@ -40,7 +40,7 @@ func ValidateArgs(schema map[string]interface{}, args map[string]interface{}) (e
 				if !ok {
 					continue
 				}
-				if _, present := args[name]; !present {
+				if requiredArgMissing(args, name) {
 					expected := expectedTypeFromProperties(properties, name)
 					errs = append(errs, ValidationError{
 						Param:    name,
@@ -62,7 +62,7 @@ func ValidateArgs(schema map[string]interface{}, args map[string]interface{}) (e
 
 	for paramName, propRaw := range properties {
 		argVal, present := args[paramName]
-		if !present {
+		if !present || argVal == nil {
 			continue
 		}
 
@@ -138,6 +138,20 @@ func typesMatch(declared, actual string) bool {
 	// Go's float64 can represent both JSON number and integer.
 	if actual == "number" && declared == "integer" {
 		return true
+	}
+	return false
+}
+
+func requiredArgMissing(args map[string]interface{}, name string) bool {
+	if args == nil {
+		return true
+	}
+	value, present := args[name]
+	if !present || value == nil {
+		return true
+	}
+	if s, ok := value.(string); ok {
+		return strings.TrimSpace(s) == ""
 	}
 	return false
 }

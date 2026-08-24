@@ -165,6 +165,8 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		[]string{"screenshot"}, // suppressedNames
 		true,                   // browserPublishAffordance
 		false,                  // explicitScreenshotRequest
+		false,                  // semanticScreenshotRequest
+		false,                  // screenshotRequest
 		nil,                    // no reranker result
 		0,                      // skillMatchScore
 		nil,                    // matchedSkills
@@ -186,6 +188,8 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		nil,                      // suppressedNames
 		false,                    // browserPublishAffordance
 		true,                     // explicitScreenshotRequest
+		false,                    // semanticScreenshotRequest
+		true,                     // screenshotRequest
 		[]string{"tool_c"},       // with reranker result
 		0.5,                      // skillMatchScore
 		[]string{"deploy-app"},   // matchedSkills
@@ -208,7 +212,7 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 	if !strings.Contains(content, "routing_hint +0.0300") || !strings.Contains(content, "routing_hint -0.0200") {
 		t.Error("log should contain routing hint adjustments")
 	}
-	if !strings.Contains(content, "Execution affordances: browser_publish=true explicit_screenshot=false") {
+	if !strings.Contains(content, "Execution affordances: browser_publish=true explicit_screenshot=false semantic_screenshot=false screenshot_requested=false") {
 		t.Error("log should contain execution affordances")
 	}
 	if !strings.Contains(content, "Suppressed tools (1): [screenshot]") {

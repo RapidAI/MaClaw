@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -34,9 +33,22 @@ type BrowserTaskSupervisor struct {
 // taskEntry wraps TaskState with a cancel function for interruption.
 type taskEntry struct {
 	state   *TaskState
+	spec    TaskSpec
 	cancel  context.CancelFunc
 	pauseC  chan struct{} // signal to pause after current step
 	resumeC chan struct{} // signal to resume from paused state
+}
+
+type stepOutcome struct {
+	result *BrowserActionResult
+	err    error
+}
+
+func (o stepOutcome) isAskOrBlocked() bool {
+	if o.result == nil {
+		return false
+	}
+	return o.result.Status == "ask" || o.result.Status == "blocked"
 }
 
 // NewBrowserTaskSupervisor creates a supervisor.
@@ -72,6 +84,8 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	s.DiscardAll()
+
 	// Generate task ID and register
 	s.mu.Lock()
 	s.idCounter++
@@ -85,7 +99,7 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		StartedAt:  time.Now(),
 		StepTraces: []StepTrace{},
 	}
-	s.tasks[spec.ID] = &taskEntry{state: state, cancel: cancel, pauseC: make(chan struct{}, 1), resumeC: make(chan struct{}, 1)}
+	s.tasks[spec.ID] = &taskEntry{state: state, spec: spec, cancel: cancel, pauseC: make(chan struct{}, 1), resumeC: make(chan struct{}, 1)}
 	s.mu.Unlock()
 
 	s.log("browser task %s started: %s (%d steps)", spec.ID, spec.Description, len(spec.Steps))
@@ -109,8 +123,26 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		state.StepTraces = append(state.StepTraces, stepTrace)
 		s.emitProgress(spec.ID, fmt.Sprintf("step %d/%d: %s", i+1, len(spec.Steps), step.Action), i+1, len(spec.Steps))
 
-		err := s.executeStepWithRetry(ctx, spec, step, i, state)
-		if err != nil {
+		outcome := s.executeStepWithRetry(ctx, spec, step, i, state)
+		if outcome.isAskOrBlocked() {
+			state.Status = TaskStatusPaused
+			if result := outcome.result; result != nil {
+				state.AskUser = result.AskUser
+				state.LastResultStatus = result.Status
+				if result.Status == "blocked" {
+					state.LastError = firstNonEmpty(result.Display, "blocked")
+				}
+				if len(state.StepTraces) > 0 {
+					state.StepTraces[len(state.StepTraces)-1].Summary = result.Status
+					state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
+				}
+				s.log("browser task %s paused at step %d: %s", spec.ID, i+1, result.Status)
+				s.emitProgress(spec.ID, fmt.Sprintf("paused at step %d: %s", i+1, result.Status), i+1, len(spec.Steps))
+			}
+			return state, nil
+		}
+		if outcome.err != nil {
+			err := outcome.err
 			state.Status = TaskStatusFailed
 			state.LastError = err.Error()
 			if len(state.StepTraces) > 0 {
@@ -168,8 +200,7 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 		}
 		if !result.Passed {
 			state.Status = TaskStatusFailed
-			details, _ := json.Marshal(result.Details)
-			state.LastError = fmt.Sprintf("success criteria not met: %s", string(details))
+			state.LastError = compactVerifyFailure(result)
 			s.log("browser task %s verification failed: %s", spec.ID, state.LastError)
 			return state, fmt.Errorf("%s", state.LastError)
 		}
@@ -186,10 +217,40 @@ func (s *BrowserTaskSupervisor) GetState(taskID string) (*TaskState, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	entry, ok := s.tasks[taskID]
-	if !ok {
+	if !ok || entry == nil || entry.state == nil {
 		return nil, false
 	}
 	return entry.state, true
+}
+
+// DiscardAll cancels and removes every tracked task for this supervisor.
+func (s *BrowserTaskSupervisor) DiscardAll() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, entry := range s.tasks {
+		if entry != nil && entry.cancel != nil {
+			entry.cancel()
+		}
+		delete(s.tasks, id)
+	}
+}
+
+// ResumeSpec returns the original spec and 0-based index of the paused step.
+func (s *BrowserTaskSupervisor) ResumeSpec(taskID string) (TaskSpec, int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.tasks[taskID]
+	if !ok || entry == nil || entry.state == nil || entry.state.Status != TaskStatusPaused {
+		return TaskSpec{}, 0, false
+	}
+	from := entry.state.CurrentStep - 1
+	if from < 0 {
+		from = 0
+	}
+	return entry.spec, from, true
 }
 
 // Cancel cancels a running or paused task.
@@ -252,7 +313,28 @@ func (s *BrowserTaskSupervisor) Verify(criteria []CriterionSpec) (*VerifyResult,
 
 // ── internal ──
 
-func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec TaskSpec, step StepSpec, stepIdx int, state *TaskState) error {
+func stepOutcomeFailure(o stepOutcome) error {
+	if o.err != nil {
+		return o.err
+	}
+	if o.result != nil && o.result.GoalClass && o.result.Status == "unchanged" {
+		return fmt.Errorf("submit click did not change the page")
+	}
+	return nil
+}
+
+func (s *BrowserTaskSupervisor) forgetStepSubmit(outcome stepOutcome) {
+	if s == nil || outcome.result == nil || outcome.result.submitRememberKey == "" || s.agentSessionFn == nil {
+		return
+	}
+	agentSession, err := s.agentSessionFn()
+	if err != nil || agentSession == nil {
+		return
+	}
+	agentSession.forgetSubmitClick(outcome.result.submitRememberKey)
+}
+
+func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec TaskSpec, step StepSpec, stepIdx int, state *TaskState) stepOutcome {
 	timeout := step.Timeout
 	if timeout <= 0 {
 		timeout = spec.StepTimeout
@@ -261,27 +343,41 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 	currentStep := step
 	for retry := 0; ; retry++ {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("cancelled")
+			return stepOutcome{err: fmt.Errorf("cancelled")}
 		}
 
-		err := s.executeOneStep(ctx, currentStep, timeout)
+		outcome := s.executeOneStep(ctx, currentStep, timeout)
+		if outcome.err != nil && outcome.result == nil && isPolicyDenied(outcome.err) {
+			outcome = stepOutcome{result: blockedActionResult(currentStep.Action, outcome.err.Error())}
+		}
+		if outcome.isAskOrBlocked() {
+			return outcome
+		}
 
+		err := stepOutcomeFailure(outcome)
 		// Step-level verification
 		if err == nil && currentStep.Verify != nil {
 			vr, verr := s.verifier.Verify([]CriterionSpec{*currentStep.Verify})
 			if verr != nil {
 				err = verr
-			} else if !vr.Passed {
-				err = fmt.Errorf("step verification failed: %s", vr.Details[0].Error)
+			} else if vr == nil || !vr.Passed {
+				err = formatStepVerifyFailure(vr)
 			}
 		}
+		outcome.err = err
 
 		if err == nil {
 			if len(state.StepTraces) > 0 {
 				state.StepTraces[len(state.StepTraces)-1].Summary = "ok"
 				state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
 			}
-			return nil // success
+			return outcome
+		}
+
+		s.forgetStepSubmit(outcome)
+
+		if s.retrier == nil {
+			return stepOutcome{err: err}
 		}
 
 		// Decide retry
@@ -289,61 +385,73 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 		decision := s.retrier.Decide(failType, currentStep, retry, nil)
 
 		if !decision.ShouldRetry {
-			return fmt.Errorf("step %d failed: %v (%s)", stepIdx+1, err, decision.Reason)
+			return stepOutcome{err: fmt.Errorf("step %d failed: %v (%s)", stepIdx+1, err, decision.Reason)}
 		}
 
 		s.log("browser task %s step %d retry %d: %s", spec.ID, stepIdx+1, retry+1, decision.Reason)
 		state.RetryCount++
 
 		if decision.WaitBefore > 0 {
-			time.Sleep(decision.WaitBefore)
+			timer := time.NewTimer(decision.WaitBefore)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return stepOutcome{err: fmt.Errorf("cancelled")}
+			case <-timer.C:
+			}
 		}
 		if decision.AdjustedStep != nil {
 			currentStep = *decision.AdjustedStep
 		}
-		// If NeedsLLM, we still retry — the LLMContext is available for the caller
-		// to inspect via task state. In a future iteration, this will trigger
-		// an actual LLM call.
 	}
 }
 
-func (s *BrowserTaskSupervisor) executeOneStep(ctx context.Context, step StepSpec, timeout time.Duration) error {
+func (s *BrowserTaskSupervisor) executeOneStep(ctx context.Context, step StepSpec, timeout time.Duration) stepOutcome {
 	stepCtx, stepCancel := context.WithTimeout(ctx, timeout)
 	defer stepCancel()
 
-	ch := make(chan error, 1)
+	ch := make(chan stepOutcome, 1)
 	go func() {
 		if s.agentSessionFn != nil {
 			agentSession, err := s.agentSessionFn()
 			if err != nil {
-				ch <- fmt.Errorf("browser session: %w", err)
+				ch <- stepOutcome{err: fmt.Errorf("browser session: %w", err)}
 				return
 			}
-			ch <- s.doAgentStep(agentSession, step)
+			result, err := s.doAgentStep(agentSession, step)
+			ch <- stepOutcome{result: result, err: err}
+			return
+		}
+		if s.sessionFn == nil {
+			ch <- stepOutcome{err: fmt.Errorf("browser session not connected")}
 			return
 		}
 		sess, err := s.sessionFn()
 		if err != nil {
-			ch <- fmt.Errorf("browser session: %w", err)
+			ch <- stepOutcome{err: fmt.Errorf("browser session: %w", err)}
 			return
 		}
-		ch <- s.doStep(sess, step)
+		if sess == nil {
+			ch <- stepOutcome{err: fmt.Errorf("browser session not connected")}
+			return
+		}
+		ch <- stepOutcome{err: s.doStep(sess, step)}
 	}()
 
 	select {
-	case err := <-ch:
-		return err
+	case outcome := <-ch:
+		return outcome
 	case <-stepCtx.Done():
 		if ctx.Err() != nil {
-			return fmt.Errorf("cancelled")
+			return stepOutcome{err: fmt.Errorf("cancelled")}
 		}
-		return fmt.Errorf("step timed out after %v", timeout)
+		return stepOutcome{err: fmt.Errorf("step timed out after %v", timeout)}
 	}
 }
 
-func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, step StepSpec) error {
+func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, step StepSpec) (*BrowserActionResult, error) {
 	if agentSession == nil {
-		return fmt.Errorf("browser session not connected")
+		return nil, fmt.Errorf("browser session not connected")
 	}
 	snapshotID := step.Params["snapshot_id"]
 	ref := step.Params["ref"]
@@ -352,31 +460,33 @@ func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, s
 	case "navigate":
 		url := step.Params["url"]
 		if url == "" {
-			return fmt.Errorf("navigate: missing url param")
+			return nil, fmt.Errorf("navigate: missing url param")
 		}
-		_, err := agentSession.Navigate(url)
-		return err
+		return agentSession.Navigate(url)
 
 	case "click":
 		text := step.Params["text"]
+		var result *BrowserActionResult
+		var err error
 		if ref == "" && selector == "" && text != "" {
-			_, err := agentSession.ClickText(snapshotID, text)
-			return err
+			result, err = agentSession.ClickText(snapshotID, text)
+		} else if ref == "" && selector == "" {
+			return nil, fmt.Errorf("click: missing selector/ref/text param")
+		} else {
+			result, err = agentSession.Click(snapshotID, ref, selector)
 		}
-		if ref == "" && selector == "" {
-			return fmt.Errorf("click: missing selector/ref/text param")
+		if result != nil {
+			agentSession.rememberSubmitClickIfOK(result.submitRememberKey, result)
 		}
-		_, err := agentSession.Click(snapshotID, ref, selector)
-		return err
+		return result, err
 
 	case "click_at":
-		return fmt.Errorf("click_at step is disabled in stable browser tasks; use click with ref/selector/text")
+		return nil, fmt.Errorf("click_at step is disabled in stable browser tasks; use click with ref/selector/text")
 
 	case "type":
 		text := step.Params["text"]
 		contentFormat := step.Params["content_format"]
-		_, err := agentSession.TypeContent(snapshotID, ref, selector, text, contentFormat)
-		return err
+		return agentSession.TypeContent(snapshotID, ref, selector, text, contentFormat)
 
 	case "wait":
 		timeoutMS := 0
@@ -390,20 +500,51 @@ func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, s
 			}
 			timeoutMS = timeoutSec * 1000
 		}
-		_, err := agentSession.Wait(snapshotID, ref, selector, timeoutMS)
-		return err
+		return agentSession.Wait(snapshotID, ref, selector, timeoutMS)
 
 	case "eval":
-		return fmt.Errorf("eval step is disabled in stable browser tasks; use observe/extract plus page-level actions")
+		return nil, fmt.Errorf("eval step is disabled in stable browser tasks; use observe/extract plus page-level actions")
 
-	case "scroll", "select":
-		if agentSession.session == nil {
-			return fmt.Errorf("browser session not connected")
+	case "scroll":
+		dx, dy := 0, 500
+		if v, ok := step.Params["delta_x"]; ok {
+			fmt.Sscanf(v, "%d", &dx)
 		}
-		return s.doStep(agentSession.session, step)
+		if v, ok := step.Params["delta_y"]; ok {
+			fmt.Sscanf(v, "%d", &dy)
+		}
+		return agentSession.ScrollBy(snapshotID, ref, selector, dx, dy)
+
+	case "select":
+		return agentSession.SelectOption(snapshotID, ref, selector, step.Params["value"])
+
+	case "hover":
+		return agentSession.Hover(snapshotID, ref, selector)
+
+	case "press":
+		return agentSession.Press(step.Params["key"])
+
+	case "dialog":
+		accept := true
+		if v := strings.ToLower(strings.TrimSpace(step.Params["accept"])); v == "false" || v == "0" {
+			accept = false
+		}
+		return agentSession.HandleDialog(accept, step.Params["text"])
+
+	case "set_files":
+		files := []string{}
+		if v := strings.TrimSpace(step.Params["files"]); v != "" {
+			for _, part := range strings.Split(v, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					files = append(files, part)
+				}
+			}
+		}
+		return agentSession.SetFilesOn(snapshotID, ref, selector, files)
 
 	default:
-		return fmt.Errorf("unknown action: %s", step.Action)
+		return nil, fmt.Errorf("unknown action: %s", step.Action)
 	}
 }
 
@@ -423,6 +564,13 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 			return fmt.Errorf("click: missing selector param")
 		}
 		return sess.Click(sel)
+
+	case "hover":
+		sel := step.Params["selector"]
+		if sel == "" {
+			return fmt.Errorf("hover: missing selector param")
+		}
+		return sess.Hover(sel)
 
 	case "click_at":
 		return fmt.Errorf("click_at step is disabled in stable browser tasks; use click with selector")
@@ -468,14 +616,31 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 		}
 		return sess.Select(sel, val)
 
+	case "press":
+		key := step.Params["key"]
+		if key == "" {
+			return fmt.Errorf("press: missing key param")
+		}
+		return sess.Press(key)
+
+	case "dialog":
+		accept := true
+		if v := strings.ToLower(strings.TrimSpace(step.Params["accept"])); v == "false" || v == "0" {
+			accept = false
+		}
+		return sess.HandleDialog(accept, step.Params["text"])
+
 	default:
 		return fmt.Errorf("unknown action: %s", step.Action)
 	}
 }
 
 func (s *BrowserTaskSupervisor) takeCheckpoint(state *TaskState, stepIdx int) {
+	if s == nil || s.sessionFn == nil || state == nil {
+		return
+	}
 	sess, err := s.sessionFn()
-	if err != nil {
+	if err != nil || sess == nil {
 		return
 	}
 	info, _ := sess.Info()
@@ -504,8 +669,11 @@ func (s *BrowserTaskSupervisor) takeCheckpoint(state *TaskState, stepIdx int) {
 }
 
 func (s *BrowserTaskSupervisor) capturePageSnapshot() *PageSnapshot {
+	if s == nil || s.sessionFn == nil {
+		return nil
+	}
 	sess, err := s.sessionFn()
-	if err != nil {
+	if err != nil || sess == nil {
 		return nil
 	}
 	info, _ := sess.Info()

@@ -90,57 +90,30 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 }
 
 func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
 	ownerID, explicitRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if explicitRuntimeOwner && ownerID == "" {
 		return "MCP call failed: runtime owner is missing; isolated runtime will not fall back to desktop owner"
 	}
-	serverRef, _ := args["server_id"].(string)
-	toolName, _ := args["tool_name"].(string)
-	if isDisabledExternalCodingSessionTool(toolName) {
-		return disabledExternalCodingSessionToolText(toolName)
-	}
-	if serverRef == "" || toolName == "" {
-		if nested, err := mcpToolArgumentsFromAny(args["arguments"]); err == nil {
-			promoteMCPRoutingFields(args, nested)
-			serverRef, _ = args["server_id"].(string)
-			toolName, _ = args["tool_name"].(string)
-		}
-	}
-	if isDisabledExternalCodingSessionTool(toolName) {
-		return disabledExternalCodingSessionToolText(toolName)
-	}
-	if serverRef == "" || toolName == "" {
-		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
-	}
-
-	// Extract tool arguments — handle both map and JSON string from LLM.
-	var toolArgs map[string]interface{}
-	switch v := args["arguments"].(type) {
-	case map[string]interface{}:
-		toolArgs = v
-	case string:
-		if v = strings.TrimSpace(v); v != "" {
-			if err := json.Unmarshal([]byte(coretool.CleanToolArguments(v)), &toolArgs); err != nil {
-				return fmt.Sprintf("arguments JSON 解析失败: %s", err.Error())
-			}
-		}
-	}
-	if toolArgs == nil {
-		toolArgs = map[string]interface{}{}
+	toolArgs, err := mcpToolArgumentsFromAny(args["arguments"])
+	if err != nil {
+		return fmt.Sprintf("arguments JSON 解析失败: %s", err.Error())
 	}
 	promoteMCPRoutingFields(args, toolArgs)
-	serverRef, _ = args["server_id"].(string)
-	toolName, _ = args["tool_name"].(string)
+	args["arguments"] = toolArgs
+	serverRef := strings.TrimSpace(nonEmptyStringFromAny(args["server_id"]))
+	toolName := strings.TrimSpace(nonEmptyStringFromAny(args["tool_name"]))
+	if isDisabledExternalCodingSessionTool(toolName) {
+		return disabledExternalCodingSessionToolText(toolName)
+	}
 	if serverRef == "" || toolName == "" {
 		return "缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name"
 	}
 
 	if builtin := h.builtinToolServerRef(serverRef); builtin != "" {
 		return fmt.Sprintf("MCP 调用被拒绝: %q 是 MaClaw 内置工具，不是 MCP Server。请直接调用 %s 工具；call_mcp_tool 只允许调用外部 MCP Server。", builtin, builtin)
-	}
-
-	if h.getLocalMCPManager() == nil {
-		_ = h.getLocalMCPManager() // ensure
 	}
 
 	resolvedID, isLocal, err := h.resolveMCPServerRef(serverRef)
@@ -151,21 +124,17 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	// Look up the target tool's InputSchema from the tools cache for local
 	// validation. If the tool is not in the cache, skip validation (graceful
 	// degradation per Req 3.7).
-	var inputSchema map[string]interface{}
-	inputSchema = h.lookupMCPInputSchema(resolvedID, toolName, isLocal)
+	inputSchema := h.lookupMCPInputSchema(resolvedID, toolName, isLocal)
+	toolArgs = promoteMCPNestedArgsFromCallEnvelope(args, toolArgs, inputSchema)
+	args["arguments"] = toolArgs
 
 	// Validate arguments against the InputSchema before making the RPC call.
-	if inputSchema != nil {
+	// Agent-driven calls must stay in the loop: return a retryable error so the
+	// model can fill missing fields (for example find_person.query). The right-side
+	// MCP form is only for explicit user-panel submit, not autonomous execution.
+	if len(inputSchema) > 0 {
 		if validationErrs := mcputil.ValidateArgs(inputSchema, toolArgs); len(validationErrs) > 0 {
-			if h.emitMCPToolAgentViewForOwner(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs, ownerID) {
-				return mcpAgentViewCorrectionMessage
-			}
-			var msgs []string
-			for _, ve := range validationErrs {
-				msgs = append(msgs, ve.Message)
-			}
-			stdErr := mcputil.NewStandardError(resolvedID, toolName, mcputil.ErrValidation, strings.Join(msgs, "; "))
-			return mcputil.FormatForLLM(nil, stdErr)
+			return mcpValidationErrorTextForAgentLoop(resolvedID, toolName, validationErrs)
 		}
 	}
 
@@ -617,7 +586,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			return b.String()
 		}
 		consumeRuntimePolicyOwnerIDFromToolArgs(args)
-		runID, err := runner.StartRunForOwner(installPolicyOwnerID, entry.Name, runArgs)
+		runID, err := runner.StartRunForInstalledEntry(installPolicyOwnerID, *entry, runArgs)
 		if err != nil {
 			b.WriteString(fmt.Sprintf("执行启动失败: %s", err.Error()))
 		} else {
@@ -1882,6 +1851,21 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	if ownerID == "" {
 		ownerID = desktopUserID
 	}
+	action := normalizeMemoryToolAction(stringVal(args, "action"))
+	anchor, anchored := taskIdentityAnchorFromToolArgs(args)
+	if !anchored {
+		// Direct legacy callers have no loop snapshot. They may use the live
+		// anchor, whereas normal agent loops always receive the immutable one.
+		anchor, anchored = h.taskIdentityAnchorForUser(ownerID)
+	}
+	if action == memoryToolActionSave {
+		if anchored && anchoredMemorySaveRejected(anchor, stringVal(args, "content")) {
+			return fmt.Sprintf("[system rejected] 当前任务锚定对象为 %s；拒绝把未包含该对象的学术/个人资料写入长期记忆，以免把其他人的材料串入当前任务。", anchor.Subject)
+		}
+	}
+	if anchored && taskAnchorBlocksMemoryRead(anchor, action, stringVal(args, "_user_text")) {
+		return "[system rejected] 当前任务已绑定对象和源文件。请先重读当前来源完成续写/浓缩；只有用户在本轮明确要求使用长期记忆时，才能召回或浏览记忆。"
+	}
 	return corememory.HandleTool(h.memoryStore, args, corememory.ToolOptions{
 		ProjectPath: projectPath,
 		ContextHint: h.buildMemoryContextHintForUser(ownerID),
@@ -1981,7 +1965,10 @@ func (h *IMMessageHandler) toolCreateTemplate(args map[string]interface{}) strin
 	}
 
 	name := stringVal(args, "name")
-	tool := stringVal(args, "tool")
+	tool := stringVal(args, "coding_tool")
+	if tool == "" {
+		tool = stringVal(args, "tool")
+	}
 	if name == "" || tool == "" {
 		return "缺少 name 或 tool 参数"
 	}
@@ -2238,6 +2225,146 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 	}
 }
 
+// toolAdministerScheduledTask is the managed-surface handler for
+// schedule.administer.local. It never binds channel Delivery and rejects any
+// delivery/channel/destination argument. Old tasks that already have Delivery
+// remain readable on list; their fire still uses the legacy dispatcher.
+// New managed creates never write Delivery; due-time fire is unwired.
+func (h *IMMessageHandler) toolAdministerScheduledTask(args map[string]interface{}) string {
+	if scheduleAdministerArgsForbidden(args) {
+		return "受管定时任务不能绑定渠道投递或路径；到点外发尚未接入 delivery receipt"
+	}
+	action := normalizeManageScheduleAction(stringVal(args, "action"))
+	switch action {
+	case manageScheduleActionList:
+		return h.toolListScheduledTasks()
+	case manageScheduleActionCreate:
+		return h.toolCreateScheduledTaskLocalOnly(args)
+	case manageScheduleActionUpdate:
+		return h.toolUpdateScheduledTaskLocalOnly(args)
+	case manageScheduleActionDelete:
+		return h.toolDeleteScheduledTask(args)
+	case manageScheduleActionPause:
+		return h.toolSetScheduledTaskPaused(args, true)
+	case manageScheduleActionResume:
+		return h.toolSetScheduledTaskPaused(args, false)
+	default:
+		return "受管定时任务只支持 list/create/update/delete/pause/resume"
+	}
+}
+
+func scheduleAdministerArgsForbidden(args map[string]interface{}) bool {
+	if scheduleArgsTouchDelivery(args) {
+		return true
+	}
+	if args == nil {
+		return false
+	}
+	for _, key := range []string{"channel", "destination", "path", "group_name", "group_id", "user_id", "list_targets", "delivery_channel"} {
+		if _, ok := args[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *IMMessageHandler) toolCreateScheduledTaskLocalOnly(args map[string]interface{}) string {
+	if scheduleAdministerArgsForbidden(args) {
+		return "受管定时任务不能绑定渠道投递或路径；到点外发尚未接入 delivery receipt"
+	}
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
+		return "定时任务管理器未初始化"
+	}
+	name := stringVal(args, "name")
+	taskAction := stringVal(args, "task_action")
+	if taskAction == "" {
+		if normalizeManageScheduleAction(stringVal(args, "action")) == manageScheduleActionUnknown {
+			taskAction = stringVal(args, "action")
+		}
+	}
+	if name == "" || taskAction == "" {
+		return "缺少 name 或 task_action 参数（task_action 为到点要执行的内容）"
+	}
+	hour := scheduleIntArg(args, "hour", -1)
+	if hour < 0 || hour > 23 {
+		return "hour 必须在 0-23 之间"
+	}
+	t := scheduler.ScheduledTask{
+		BotProfileID:    h.lansengerBotProfileID,
+		Name:            name,
+		Action:          taskAction,
+		Hour:            hour,
+		Minute:          scheduleIntArg(args, "minute", 0),
+		DayOfWeek:       scheduleIntArg(args, "day_of_week", -1),
+		DayOfMonth:      scheduleIntArg(args, "day_of_month", -1),
+		IntervalMinutes: scheduleIntArg(args, "interval_minutes", 0),
+		StartDate:       stringVal(args, "start_date"),
+		EndDate:         stringVal(args, "end_date"),
+		TaskType:        stringVal(args, "task_type"),
+	}
+	id, err := manager.Add(t)
+	if err != nil {
+		return fmt.Sprintf("创建定时任务失败: %s", err.Error())
+	}
+	h.emitAppEvent("scheduled-tasks-changed")
+	if created := manager.Get(id); created != nil && scheduler.IsRecurringTask(created) {
+		go func() {
+			if err := scheduler.SyncTaskToSystemCalendar(created); err != nil {
+				h.appLog(fmt.Sprintf("[scheduled-task] calendar sync failed: %v", err))
+			}
+		}()
+	}
+	task := manager.Get(id)
+	if task == nil {
+		return fmt.Sprintf("定时任务已创建（ID: %s）", id)
+	}
+	if task.Delivery != nil {
+		return fmt.Sprintf("创建定时任务失败: 受管创建不得写入 Delivery（ID: %s）", id)
+	}
+	h.rememberAdministeredTaskID(id)
+	if task.NextRunAt != nil {
+		return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, taskAction, task.NextRunAt.Format("2006-01-02 15:04"))
+	}
+	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
+}
+
+func (h *IMMessageHandler) toolUpdateScheduledTaskLocalOnly(args map[string]interface{}) string {
+	if scheduleAdministerArgsForbidden(args) {
+		return "受管定时任务不能绑定渠道投递或路径；到点外发尚未接入 delivery receipt"
+	}
+	manager := h.scheduledTaskManagerForTool()
+	if manager == nil {
+		return "定时任务管理器未初始化"
+	}
+	id := stringVal(args, "id")
+	if id == "" {
+		return "缺少 id 参数"
+	}
+	if h.scheduledTaskForBot(manager, id) == nil {
+		return fmt.Sprintf("未找到定时任务（ID: %s）", id)
+	}
+	if ta := stringVal(args, "task_action"); ta != "" {
+		args["action"] = ta
+	} else if normalizeManageScheduleAction(stringVal(args, "action")) != manageScheduleActionUnknown {
+		delete(args, "action")
+	}
+	delete(args, "delivery")
+	if err := manager.Update(id, args); err != nil {
+		return fmt.Sprintf("更新失败: %s", err.Error())
+	}
+	h.emitAppEvent("scheduled-tasks-changed")
+	h.rememberAdministeredTaskID(id)
+	if t := h.scheduledTaskForBot(manager, id); t != nil {
+		next := "-"
+		if t.NextRunAt != nil {
+			next = t.NextRunAt.Format("2006-01-02 15:04")
+		}
+		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+	}
+	return "定时任务已更新"
+}
+
 // toolSetMaxIterations allows the agent to dynamically adjust the max
 // iterations for the current conversation loop. This does NOT change the
 // persisted config — it only affects the in-flight loop.
@@ -2327,7 +2454,10 @@ func isExplicitNicknameRequest(text string) bool {
 // ---------------------------------------------------------------------------
 
 func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) string {
-	providerName := stringVal(args, "provider")
+	providerName := stringVal(args, "llm_vendor")
+	if providerName == "" {
+		providerName = stringVal(args, "provider")
+	}
 	if providerName == "" {
 		// No provider specified — list available providers and current selection.
 		info := h.getMaclawLLMProviders()
@@ -2622,6 +2752,7 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 		return "请提供 id 或 name 参数"
 	}
 	var err error
+	deletedID := id
 	if id != "" {
 		if h.scheduledTaskForBot(manager, id) == nil {
 			return "未找到定时任务（ID: " + id + "）"
@@ -2639,11 +2770,13 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 		if match == nil {
 			return "未找到定时任务（名称: " + name + "）"
 		}
+		deletedID = match.ID
 		err = manager.Delete(match.ID)
 	}
 	if err != nil {
 		return fmt.Sprintf("删除失败: %s", err.Error())
 	}
+	h.unbindScheduleDispatch(deletedID)
 	h.emitAppEvent("scheduled-tasks-changed")
 	return "定时任务已删除"
 }

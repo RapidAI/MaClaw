@@ -152,6 +152,59 @@ func TestBuildOpenAIChatRequestDataDefaultsToolUseMaxTokens(t *testing.T) {
 	}
 }
 
+func TestRequestBuildersEmitExplicitEmptyToolSurface(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"}
+	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	builders := []struct {
+		name  string
+		build func() ([]byte, error)
+	}{
+		{
+			name: "chat",
+			build: func() ([]byte, error) {
+				_, body, err := BuildOpenAIChatRequestData(cfg, messages, OpenAIChatRequestOptions{ExplicitToolReplacement: true})
+				return body, err
+			},
+		},
+		{
+			name: "responses",
+			build: func() ([]byte, error) {
+				_, body, err := BuildResponsesAPIRequestData(cfg, messages, ResponsesAPIRequestOptions{ExplicitToolReplacement: true})
+				return body, err
+			},
+		},
+		{
+			name: "anthropic",
+			build: func() ([]byte, error) {
+				_, body, err := BuildAnthropicMessagesRequestData(cfg, messages, AnthropicMessagesRequestOptions{ExplicitToolReplacement: true})
+				return body, err
+			},
+		},
+	}
+
+	for _, tt := range builders {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := tt.build()
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			var payload map[string]interface{}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			tools, present := payload["tools"]
+			if !present {
+				t.Fatalf("request omitted explicit empty tools replacement: %#v", payload)
+			}
+			list, ok := tools.([]interface{})
+			if !ok || len(list) != 0 {
+				t.Fatalf("tools = %#v, want []", tools)
+			}
+		})
+	}
+}
+
 func TestBuildOpenAIChatRequestDataHonorsExplicitToolUseMaxTokens(t *testing.T) {
 	cfg := corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-chat"}
 	tools := []map[string]interface{}{{
@@ -399,7 +452,7 @@ func TestAnthropicSDKMessageStreamPreservesToolSchemaBody(t *testing.T) {
 		Key:      "test-key",
 		Model:    "glm-5.1",
 		Protocol: "anthropic",
-	}, body, srv.Client(), nil); err != nil {
+	}, body, srv.Client(), nil, nil); err != nil {
 		t.Fatalf("anthropicSDKMessageStream: %v", err)
 	}
 	if strings.Contains(captured, `"properties":{"q":{"type":"string"},"properties":{},"type":"object"}`) {
@@ -481,7 +534,7 @@ func TestAnthropicSDKMessageStreamPreservesHTTP400RawBody(t *testing.T) {
 		Key:      "test-key",
 		Model:    "glm-5.1",
 		Protocol: "anthropic",
-	}, []byte(`{"model":"glm-5.1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`), srv.Client(), nil)
+	}, []byte(`{"model":"glm-5.1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`), srv.Client(), nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -2327,7 +2380,7 @@ func TestOpenAI_RequestBody_KeepsMaclawOfficialHubToolsAfterToolInteraction(t *t
 	}
 }
 
-func TestDoOpenAIRequest_RetriesQwenWithoutToolsOnBadRequest(t *testing.T) {
+func TestDoOpenAIRequestDoesNotRetryQwenWithoutToolsOnBadRequest(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -2335,23 +2388,11 @@ func TestDoOpenAIRequest_RetriesQwenWithoutToolsOnBadRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if attempts == 1 {
-			if _, ok := body["tools"]; !ok {
-				t.Fatalf("first attempt missing tools: %#v", body)
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
-			return
+		if _, ok := body["tools"]; !ok {
+			t.Fatalf("active request lost tools: %#v", body)
 		}
-		if _, ok := body["tools"]; ok {
-			t.Fatalf("retry leaked tools: %#v", body)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id": "chatcmpl-retry",
-			"choices": []map[string]interface{}{{
-				"message": map[string]interface{}{"role": "assistant", "content": "ok"},
-			}},
-		})
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
 	}))
 	defer srv.Close()
 
@@ -2362,21 +2403,18 @@ func TestDoOpenAIRequest_RetriesQwenWithoutToolsOnBadRequest(t *testing.T) {
 			"parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 	}}
-	resp, err := DoOpenAIRequest(
+	_, err := DoOpenAIRequest(
 		context.Background(),
 		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 		tools,
 		srv.Client(),
 	)
-	if err != nil {
-		t.Fatalf("DoOpenAIRequest returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected upstream HTTP 400")
 	}
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
-	}
-	if got := resp.Choices[0].Message.Content; got != "ok" {
-		t.Fatalf("content = %q, want ok", got)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 
@@ -2411,49 +2449,74 @@ func TestDoOpenAIRequest_DoesNotRetryWithoutToolsAfterToolHistory(t *testing.T) 
 	}
 }
 
-func TestShouldRetryOpenAIWithoutToolsIgnoresEmptyToolCalls(t *testing.T) {
-	cfg := corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"}
-	messages := []interface{}{
-		map[string]interface{}{"role": "assistant", "content": "done", "tool_calls": []interface{}{}},
-		map[string]interface{}{"role": "assistant", "content": "done", "function_call": map[string]interface{}{}},
-	}
-	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file"}}}
-	if !ShouldRetryOpenAIWithoutTools(cfg, http.StatusBadRequest, messages, tools) {
-		t.Fatal("expected retry when only empty historical tool fields are present")
-	}
-}
-
-func TestShouldRetryOpenAIWithoutToolsIgnoresTypedEmptyFunctionCall(t *testing.T) {
-	type functionCall struct {
-		Name      string `json:"name,omitempty"`
-		Arguments string `json:"arguments,omitempty"`
-	}
-	cfg := corelib.MaclawLLMConfig{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b"}
-	messages := []interface{}{
-		map[string]interface{}{"role": "assistant", "content": "done", "function_call": functionCall{}},
-	}
-	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file"}}}
-	if !ShouldRetryOpenAIWithoutTools(cfg, http.StatusBadRequest, messages, tools) {
-		t.Fatal("expected retry when typed function_call is empty")
-	}
-
-	messages[0] = map[string]interface{}{"role": "assistant", "content": "", "function_call": functionCall{Name: "read_file", Arguments: "{}"}}
-	if ShouldRetryOpenAIWithoutTools(cfg, http.StatusBadRequest, messages, tools) {
-		t.Fatal("did not expect retry when typed function_call is populated")
-	}
-}
-
 func TestShouldRetryOpenAIWithCompactAllowsToollessBadRequest(t *testing.T) {
 	cfg := corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"}
 	messages := []interface{}{
 		map[string]interface{}{"role": "system", "content": strings.Repeat("runtime context\n", 900)},
 		map[string]interface{}{"role": "user", "content": "latest request"},
 	}
-	if !ShouldRetryOpenAIWithCompact(cfg, http.StatusBadRequest, messages) {
+	if !ShouldRetryOpenAIWithCompact(cfg, http.StatusBadRequest, messages, nil) {
 		t.Fatal("expected compact retry for conservative OpenAI-compatible 400 without tools")
 	}
-	if ShouldRetryOpenAIWithCompact(corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"}, http.StatusBadRequest, messages) {
+	if ShouldRetryOpenAIWithCompact(cfg, http.StatusBadRequest, messages, []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file"}}}) {
+		t.Fatal("a request that still exposes tools must not compact into a tool-free retry")
+	}
+	if ShouldRetryOpenAIWithCompact(corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"}, http.StatusBadRequest, messages, nil) {
 		t.Fatal("standard OpenAI provider should not use compact compatibility retry")
+	}
+}
+
+func TestBuildOpenAIChatRequestDataPreservesExplicitToolControlsForConservativeProvider(t *testing.T) {
+	parallel := false
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "use read_file"}},
+		OpenAIChatRequestOptions{
+			Tools: []map[string]interface{}{{
+				"type":     "function",
+				"function": map[string]interface{}{"name": "read_file", "parameters": map[string]interface{}{"type": "object"}},
+			}},
+			ToolChoice:             map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "read_file"}},
+			ParallelToolCalls:      &parallel,
+			PreserveResponseFormat: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var request map[string]interface{}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if request["tool_choice"] == nil || request["parallel_tool_calls"] != false || len(request["tools"].([]interface{})) != 1 {
+		t.Fatalf("explicit tool contract was downgraded: %#v", request)
+	}
+}
+
+func TestBuildResponsesAPIRequestDataPreservesExplicitToolControlsForConservativeProvider(t *testing.T) {
+	parallel := false
+	_, body, err := BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "use read_file"}},
+		ResponsesAPIRequestOptions{
+			Tools: []map[string]interface{}{{
+				"type":     "function",
+				"function": map[string]interface{}{"name": "read_file", "parameters": map[string]interface{}{"type": "object"}},
+			}},
+			ToolChoice:             "required",
+			ParallelToolCalls:      &parallel,
+			PreserveResponseFormat: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData: %v", err)
+	}
+	var request map[string]interface{}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if request["tool_choice"] != "required" || request["parallel_tool_calls"] != false || len(request["tools"].([]interface{})) != 1 {
+		t.Fatalf("explicit Responses tool contract was downgraded: %#v", request)
 	}
 }
 
@@ -2511,7 +2574,7 @@ func TestDoOpenAIRequest_CompactsQwenWithoutToolsOnBadRequest(t *testing.T) {
 	}
 }
 
-func TestDoOpenAIRequestStream_RetriesQwenWithoutToolsOnBadRequest(t *testing.T) {
+func TestDoOpenAIRequestStreamDoesNotRetryQwenWithoutToolsOnBadRequest(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -2519,23 +2582,15 @@ func TestDoOpenAIRequestStream_RetriesQwenWithoutToolsOnBadRequest(t *testing.T)
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if attempts == 1 {
-			if _, ok := body["tools"]; !ok {
-				t.Fatalf("first attempt missing tools: %#v", body)
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
-			return
+		if _, ok := body["tools"]; !ok {
+			t.Fatalf("active request lost tools: %#v", body)
 		}
-		if _, ok := body["tools"]; ok {
-			t.Fatalf("retry leaked tools: %#v", body)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
 	}))
 	defer srv.Close()
 
-	resp, err := DoOpenAIRequestStream(
+	_, err := DoOpenAIRequestStream(
 		context.Background(),
 		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
@@ -2546,14 +2601,11 @@ func TestDoOpenAIRequestStream_RetriesQwenWithoutToolsOnBadRequest(t *testing.T)
 		srv.Client(),
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("DoOpenAIRequestStream returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected upstream HTTP 400")
 	}
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
-	}
-	if got := resp.Choices[0].Message.Content; got != "ok" {
-		t.Fatalf("content = %q, want ok", got)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 
@@ -2612,7 +2664,7 @@ func TestDoOpenAIRequestStream_CompactsQwenWithoutToolsOnBadRequest(t *testing.T
 	}
 }
 
-func TestDoOpenAIRequestStream_CompactsQwenAfterToollessBadRequest(t *testing.T) {
+func TestDoOpenAIRequestStreamDoesNotCompactQwenWithCurrentToolSurface(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -2620,7 +2672,6 @@ func TestDoOpenAIRequestStream_CompactsQwenAfterToollessBadRequest(t *testing.T)
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		messages := body["messages"].([]interface{})
 		switch attempts {
 		case 1:
 			if _, ok := body["tools"]; !ok {
@@ -2628,36 +2679,13 @@ func TestDoOpenAIRequestStream_CompactsQwenAfterToollessBadRequest(t *testing.T)
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":{"message":"tools unsupported"}}`))
-		case 2:
-			if _, ok := body["tools"]; ok {
-				t.Fatalf("toolless retry leaked tools: %#v", body)
-			}
-			if len(messages) != 3 {
-				t.Fatalf("toolless retry messages len = %d, want original 3", len(messages))
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":{"message":"context too large"}}`))
-		case 3:
-			if _, ok := body["tools"]; ok {
-				t.Fatalf("compact retry leaked tools: %#v", body)
-			}
-			if len(messages) != 2 {
-				t.Fatalf("compact retry messages len = %d, want 2", len(messages))
-			}
-			user := messages[1].(map[string]interface{})
-			content := user["content"].(string)
-			if !strings.Contains(content, "latest request") || strings.Contains(content, "older request") || strings.Contains(content, "runtime context\nruntime context") {
-				t.Fatalf("compact retry user content = %.200q", content)
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"))
 		default:
 			t.Fatalf("unexpected attempt %d", attempts)
 		}
 	}))
 	defer srv.Close()
 
-	resp, err := DoOpenAIRequestStream(
+	_, err := DoOpenAIRequestStream(
 		context.Background(),
 		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai"},
 		[]interface{}{
@@ -2672,14 +2700,11 @@ func TestDoOpenAIRequestStream_CompactsQwenAfterToollessBadRequest(t *testing.T)
 		srv.Client(),
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("DoOpenAIRequestStream returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected upstream HTTP 400")
 	}
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts)
-	}
-	if got := resp.Choices[0].Message.Content; got != "ok" {
-		t.Fatalf("content = %q, want ok", got)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 
@@ -2731,6 +2756,40 @@ func TestDoOpenAIRequestStream_JSONFallbackFromSDKResponse(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %#v, want total 5", resp.Usage)
+	}
+}
+
+func TestDoOpenAIRequestStream_JSONFallbackExtractsThinkTags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"<think>Plan first.</think>Done."},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	var streamedText, streamedReasoning string
+	resp, err := DoOpenAIRequestStreamWithReasoning(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "agnes", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamedText += delta },
+		func(delta string) { streamedReasoning += delta },
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequestStreamWithReasoning returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.Content, "Done."; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Plan first."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+	if got, want := streamedText, "Done."; got != want {
+		t.Fatalf("streamed text = %q, want %q", got, want)
+	}
+	if got, want := streamedReasoning, "Plan first."; got != want {
+		t.Fatalf("streamed reasoning = %q, want %q", got, want)
 	}
 }
 
@@ -2817,6 +2876,87 @@ func TestDoOpenAIRequestStreamWithReasoningStreamsReasoningDeltas(t *testing.T) 
 	}
 	if got, want := resp.Choices[0].Message.ReasoningContent, "Inspect the request."; got != want {
 		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+}
+
+func TestDoOpenAIRequestStreamWithReasoningExtractsInlineThinkTagDeltas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"Prefix <th"}}]}`,
+			`data: {"choices":[{"delta":{"content":"ink>Plan "}}]}`,
+			`data: {"choices":[{"delta":{"content":"first.</think>Done."},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			"",
+		}, "\n")))
+	}))
+	defer srv.Close()
+
+	var textDeltas, reasoningDeltas []string
+	resp, err := DoOpenAIRequestStreamWithReasoning(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "agnes", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		nil,
+		srv.Client(),
+		func(delta string) { textDeltas = append(textDeltas, delta) },
+		func(delta string) { reasoningDeltas = append(reasoningDeltas, delta) },
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequestStreamWithReasoning returned error: %v", err)
+	}
+	if got, want := strings.Join(textDeltas, ""), "Prefix Done."; got != want {
+		t.Fatalf("text deltas = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(reasoningDeltas, ""), "Plan first."; got != want {
+		t.Fatalf("reasoning deltas = %q, want %q", got, want)
+	}
+	if got, want := resp.Choices[0].Message.Content, "Prefix Done."; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Plan first."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+}
+
+func TestParseSSEToResponseExtractsInlineThinkTags(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"<THINK>Plan "}}]}`,
+		`data: {"choices":[{"delta":{"content":"first.</THINK>Done."},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		"",
+	}, "\n"))
+
+	resp, err := ParseSSEToResponse(body)
+	if err != nil {
+		t.Fatalf("ParseSSEToResponse returned error: %v", err)
+	}
+	msg := resp.Choices[0].Message
+	if got, want := msg.Content, "Done."; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if got, want := msg.ReasoningContent, "Plan first."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+}
+
+func TestDoOpenAIRequestStreamWithReasoningPreservesNormalLeadingBackslash(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"\\\\path\"},\"finish_reason\":\"stop\"}]}\ndata: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	resp, err := DoOpenAIRequestStreamWithReasoning(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "agnes", Protocol: "openai"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, srv.Client(), nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequestStreamWithReasoning returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.Content, `\path`; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
 	}
 }
 
@@ -3468,6 +3608,98 @@ func TestResponsesAPIRequestData_MapsJSONSchemaResponseFormatToTextFormat(t *tes
 	}
 	if _, ok := format["json_schema"]; ok {
 		t.Fatalf("Responses text.format leaked nested json_schema: %#v", format)
+	}
+}
+
+func TestResponsesAPIRequestData_PreservesControlPlaneJSONSchemaForConservativeCompat(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.example.invalid/v1", Model: "qwen-coder", ProviderName: "Qwen"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "classify"}},
+		ResponsesAPIRequestOptions{
+			ExtraBody: map[string]interface{}{
+				"response_format": map[string]interface{}{
+					"type": "json_schema",
+					"json_schema": map[string]interface{}{
+						"name": "intent_tree_candidates", "strict": true,
+						"schema": map[string]interface{}{"type": "object"},
+					},
+				},
+			},
+			PreserveResponseFormat: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	text, _ := req["text"].(map[string]interface{})
+	format, _ := text["format"].(map[string]interface{})
+	if format["type"] != "json_schema" || format["name"] != "intent_tree_candidates" || format["strict"] != true {
+		t.Fatalf("text.format = %#v, want preserved strict schema", format)
+	}
+}
+
+func TestResponsesAPIRequestData_PreservesDeepSeekFlashControlPlaneSchema(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "classify"}},
+		ResponsesAPIRequestOptions{
+			ExtraBody: map[string]interface{}{
+				"response_format": map[string]interface{}{
+					"type": "json_schema",
+					"json_schema": map[string]interface{}{
+						"name": "intent_tree_candidates", "strict": true,
+						"schema": map[string]interface{}{"type": "object"},
+					},
+				},
+			},
+			PreserveResponseFormat: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	text, _ := req["text"].(map[string]interface{})
+	format, _ := text["format"].(map[string]interface{})
+	if format["type"] != "json_schema" || format["name"] != "intent_tree_candidates" || format["strict"] != true {
+		t.Fatalf("DeepSeek Responses text.format=%#v, want preserved strict schema", format)
+	}
+	if _, hasSchema := format["schema"]; !hasSchema {
+		t.Fatalf("DeepSeek Responses text.format missing schema: %#v", format)
+	}
+}
+
+func TestResponsesAPIRequestData_DowngradesDeepSeekFlashFreeFormSchema(t *testing.T) {
+	_, body, err := BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "answer"}},
+		ResponsesAPIRequestOptions{ExtraBody: map[string]interface{}{
+			"response_format": map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"name": "answer", "schema": map[string]interface{}{"type": "object"}, "strict": true,
+				},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("BuildResponsesAPIRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	text, _ := req["text"].(map[string]interface{})
+	format, _ := text["format"].(map[string]interface{})
+	if format["type"] != "json_object" {
+		t.Fatalf("DeepSeek free-form Responses text.format=%#v, want json_object", format)
 	}
 }
 
@@ -4191,11 +4423,12 @@ func TestBuildOpenAIChatRequestData_DowngradesDeepSeekFlashN(t *testing.T) {
 	}
 }
 
-func TestBuildOpenAIChatRequestData_DowngradesDeepSeekFlashJSONSchemaResponseFormat(t *testing.T) {
+func TestBuildOpenAIChatRequestData_PreservesDeepSeekFlashJSONSchemaResponseFormat(t *testing.T) {
 	_, body, err := BuildOpenAIChatRequestData(
 		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 		OpenAIChatRequestOptions{
+			PreserveResponseFormat: true,
 			ResponseFormat: map[string]interface{}{
 				"type": "json_schema",
 				"json_schema": map[string]interface{}{
@@ -4214,15 +4447,39 @@ func TestBuildOpenAIChatRequestData_DowngradesDeepSeekFlashJSONSchemaResponseFor
 		t.Fatalf("failed to parse request body: %v", err)
 	}
 	responseFormat := req["response_format"].(map[string]interface{})
-	if got := responseFormat["type"]; got != "json_object" {
-		t.Fatalf("DeepSeek flash response_format.type = %#v, want json_object", got)
+	if got := responseFormat["type"]; got != "json_schema" {
+		t.Fatalf("DeepSeek flash response_format.type = %#v, want json_schema", got)
 	}
-	if _, ok := responseFormat["json_schema"]; ok {
-		t.Fatalf("DeepSeek flash response_format leaked json_schema: %#v", responseFormat)
+	if _, ok := responseFormat["json_schema"]; !ok {
+		t.Fatalf("DeepSeek flash response_format missing json_schema: %#v", responseFormat)
 	}
 }
 
-func TestBuildOpenAIChatRequestData_DowngradesIncompleteDeepSeekFlashJSONSchemaResponseFormat(t *testing.T) {
+func TestBuildOpenAIChatRequestData_DowngradesDeepSeekFlashFreeFormJSONSchemaResponseFormat(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		OpenAIChatRequestOptions{ResponseFormat: map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name": "answer", "schema": map[string]interface{}{"type": "object"}, "strict": true,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	format, _ := req["response_format"].(map[string]interface{})
+	if format["type"] != "json_object" {
+		t.Fatalf("DeepSeek free-form Chat response_format=%#v, want json_object", format)
+	}
+}
+
+func TestBuildOpenAIChatRequestDataRejectsIncompleteDeepSeekFlashJSONSchemaResponseFormat(t *testing.T) {
 	type responseFormat struct {
 		Type       string         `json:"type"`
 		JSONSchema map[string]any `json:"json_schema,omitempty"`
@@ -4245,14 +4502,8 @@ func TestBuildOpenAIChatRequestData_DowngradesIncompleteDeepSeekFlashJSONSchemaR
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
-	responseFormatBody := req["response_format"].(map[string]interface{})
-	if got := responseFormatBody["type"]; got != "json_object" {
-		t.Fatalf("DeepSeek flash response_format.type = %#v, want json_object", got)
-	}
-	messages := req["messages"].([]interface{})
-	first := messages[0].(map[string]interface{})
-	if got := first["content"].(string); !strings.Contains(strings.ToLower(got), "json") {
-		t.Fatalf("JSON response instruction missing: %#v", got)
+	if _, ok := req["response_format"]; ok {
+		t.Fatalf("incomplete JSON schema must be rejected, got %#v", req["response_format"])
 	}
 }
 
@@ -4963,6 +5214,52 @@ func TestParseSSE_ReasoningContent(t *testing.T) {
 	}
 	if got := streamed.String(); got != "The answer is 42." {
 		t.Errorf("streamed tokens = %q, want content only", got)
+	}
+}
+
+func TestParseSSE_ReasoningAliases(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning":"First "}}]}`,
+		`data: {"choices":[{"delta":{"thinking":"second"}}]}`,
+		`data: {"choices":[{"delta":{"content":"Done."}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n"))
+
+	var streamedReasoning strings.Builder
+	resp, err := parseSSEStreamWithReasoning(strings.NewReader(string(body)), nil, func(delta string) {
+		streamedReasoning.WriteString(delta)
+	})
+	if err != nil {
+		t.Fatalf("parseSSEStreamWithReasoning returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "First second"; got != want {
+		t.Fatalf("reasoning aliases = %q, want %q", got, want)
+	}
+	if got, want := streamedReasoning.String(), "First second"; got != want {
+		t.Fatalf("streamed reasoning aliases = %q, want %q", got, want)
+	}
+}
+
+func TestParseNonStreamOpenAIResponseBody_ReasoningAliases(t *testing.T) {
+	tests := []struct {
+		name, field string
+	}{
+		{name: "reasoning", field: "reasoning"},
+		{name: "thinking", field: "thinking"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"choices":[{"message":{"role":"assistant","content":"Done.","` + tt.field + `":"Plan first."},"finish_reason":"stop"}]}`)
+			resp, err := ParseNonStreamOpenAIResponseBody(body)
+			if err != nil {
+				t.Fatalf("ParseNonStreamOpenAIResponseBody returned error: %v", err)
+			}
+			if got, want := resp.Choices[0].Message.ReasoningContent, "Plan first."; got != want {
+				t.Fatalf("%s = %q, want %q", tt.field, got, want)
+			}
+		})
 	}
 }
 

@@ -323,13 +323,13 @@ function buildTaskContextMenuItems(opts: {
     setRenameValue: (value: string) => void;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
-    hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
+    removeTask: (projectPath: string, tags?: string[]) => Promise<void>;
     refreshTasks: () => void;
     openEditRemoteDialog: (projectPath: string, name: string, tags?: string[]) => void | Promise<void>;
 }): TaskContextMenuItem[] {
     const {
         lang, menu, openProjectTabPaths, openExpertTabIDs, setRenamingTaskPath, setRenameValue,
-        setTaskContextMenu, pinTask, hideTask, refreshTasks, openEditRemoteDialog,
+        setTaskContextMenu, pinTask, removeTask, refreshTasks, openEditRemoteDialog,
     } = opts;
     const expertID = expertIDFromTaskTags(menu.tags);
     const tabOpen = isProjectTabOpen(menu.projectPath, openProjectTabPaths)
@@ -385,14 +385,14 @@ function buildTaskContextMenuItems(opts: {
             // Keep the existing one-argument call for ordinary tasks so legacy
             // callers/mocks retain their contract; expert rows need tags for
             // the guarded hide path to identify their open tab.
-            if (expertID) {
-                await hideTask(menu.projectPath, menu.tags);
-            } else {
-                await hideTask(menu.projectPath);
-            }
-            emitProjectTaskClosed(menu.projectPath);
-            refreshTasks();
+            // Close the menu first so the in-row progress state is visible
+            // immediately while the backend removes the task.
             setTaskContextMenu(null);
+            if (expertID) {
+                await removeTask(menu.projectPath, menu.tags);
+            } else {
+                await removeTask(menu.projectPath);
+            }
         },
     });
     return items;
@@ -482,6 +482,13 @@ export const SidebarTaskManagement = ({
     /** Invalidates an older evidence request when a row is closed or another row opens. */
     const sceneDetailRequestGenRef = useRef(0);
     const [openingTaskPath, setOpeningTaskPath] = useState<string | null>(null);
+    /** Task rows currently being removed from the durable task list. */
+    const [removingTaskPaths, setRemovingTaskPaths] = useState<Set<string>>(() => new Set());
+    /** Keep errors per task so concurrent removal failures remain actionable. */
+    const [removeErrors, setRemoveErrors] = useState<Map<string, string>>(() => new Map());
+    // State updates are asynchronous; keep the authoritative in-flight set in
+    // a ref so a rapid second click cannot start a duplicate backend deletion.
+    const removingTaskPathsRef = useRef<Set<string>>(new Set());
     const creatingTaskRef = useRef(false);
     /** Invalidates completion UI from a create whose form was superseded by a newer request. */
     const createTaskGenRef = useRef(0);
@@ -510,6 +517,7 @@ export const SidebarTaskManagement = ({
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
+            removingTaskPathsRef.current.clear();
             if (selectPlaceholderTimerRef.current != null) {
                 clearTimeout(selectPlaceholderTimerRef.current);
                 selectPlaceholderTimerRef.current = null;
@@ -1027,7 +1035,7 @@ export const SidebarTaskManagement = ({
 
     const handleTaskDoubleClick = async (task: TaskManagementItem) => {
         const projectPath = task.project_path;
-        if (renamingTaskPath) return;
+        if (renamingTaskPath || removingTaskPaths.has(projectPath)) return;
         if (openingTaskPath === projectPath) return;
         if (!assistantReady) {
             onTaskSwitchBlocked?.();
@@ -1041,6 +1049,42 @@ export const SidebarTaskManagement = ({
             await resumeTask(projectPath, task);
         } finally {
             setOpeningTaskPath(current => current === projectPath ? null : current);
+        }
+    };
+
+    const handleRemoveTask = async (projectPath: string, tags?: string[]) => {
+        if (removingTaskPathsRef.current.has(projectPath)) return;
+        removingTaskPathsRef.current.add(projectPath);
+        setRemovingTaskPaths(new Set(removingTaskPathsRef.current));
+        setRemoveErrors(current => {
+            if (!current.has(projectPath)) return current;
+            const next = new Map(current);
+            next.delete(projectPath);
+            return next;
+        });
+        try {
+            // Retain the one-argument backend call for ordinary tasks.
+            // Expert rows pass their tags so the guard can keep their history safe.
+            const removed = tags
+                ? await hideTask(projectPath, tags)
+                : await hideTask(projectPath);
+            if (removed === false) {
+                return;
+            }
+            emitProjectTaskClosed(projectPath);
+            refreshTasks();
+        } catch (error) {
+            console.error('[SidebarTaskManagement] Remove task failed:', error);
+            if (mountedRef.current) {
+                setRemoveErrors(current => {
+                    const next = new Map(current);
+                    next.set(projectPath, extractErrorMessage(error) || textForLang(lang, 'Failed to remove task', '删除任务失败', '刪除任務失敗'));
+                    return next;
+                });
+            }
+        } finally {
+            removingTaskPathsRef.current.delete(projectPath);
+            if (mountedRef.current) setRemovingTaskPaths(new Set(removingTaskPathsRef.current));
         }
     };
 
@@ -1098,8 +1142,10 @@ export const SidebarTaskManagement = ({
             const pureCoding = isPureCodingTask(proj);
             const workflowStatus = workflowStatusForTask(proj.active_workflow, lang);
             const createdAtLabel = taskCreationLabel(proj.created_at, lang);
+            const isRemoving = removingTaskPaths.has(proj.project_path);
+            const removalError = removeErrors.get(proj.project_path) || '';
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'}>
-                <div onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${createdAtLabel ? '\n' + createdAtLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                <div onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: openingTaskPath === proj.project_path || isRemoving ? 'progress' : 'pointer', transition: 'background 0.15s', opacity: openingTaskPath === proj.project_path || isRemoving ? 0.78 : 1 }} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${codingBadge ? '\n' + codingBadge : ''}${createdAtLabel ? '\n' + createdAtLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => { if (!isRemoving) e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)'; }} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
                         {(workflowStatus || codingBadge || proj.pinned) && (
@@ -1136,11 +1182,12 @@ export const SidebarTaskManagement = ({
                             </span>
                         )}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
-                        <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{openingTaskPath === proj.project_path ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...') : (proj.preview || proj.project_path)}</span>
-                        {openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
-                        {openingTaskPath === proj.project_path && <span aria-label={textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
+                        <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{isRemoving ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...') : openingTaskPath === proj.project_path ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...') : (proj.preview || proj.project_path)}</span>
+                        {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
+                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
+                        {removalError && <span data-testid="task-remove-error" role="alert" style={{ display: 'block', marginTop: '4px', color: 'var(--theme-danger, #b91c1c)', fontSize: '0.62rem', lineHeight: 1.3, textAlign: 'left' }}>{removalError}</span>}
                     </span>
-                    <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); void openSceneDetail(proj.project_path, proj.name); }} disabled={sceneDetailLoading && sceneDetailPath === proj.project_path} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: sceneDetailLoading && sceneDetailPath === proj.project_path ? 0.4 : 0.78, cursor: 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
+                    <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); if (!isRemoving) void openSceneDetail(proj.project_path, proj.name); }} disabled={isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path)} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path) ? 0.4 : 0.78, cursor: isRemoving ? 'progress' : 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
                 </div>
                 {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
             </div>
@@ -1302,7 +1349,7 @@ export const SidebarTaskManagement = ({
                     setRenameValue,
                     setTaskContextMenu,
                     pinTask,
-                    hideTask,
+                    removeTask: handleRemoveTask,
                     refreshTasks,
                     openEditRemoteDialog,
                 }).map(item => (

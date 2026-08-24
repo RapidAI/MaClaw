@@ -1,0 +1,53 @@
+{
+  "category": "catalog_incomplete_vs_unmet",
+  "category_id": 40,
+  "title": "incomplete catalog is distinct from a complete catalog with no provider",
+  "design_ref": "10.1 item 40 / coverage vs publish atomicity",
+  "format_note": "catalog_incomplete is a lifecycle gap. no_feasible_provider is infeasibility after a complete inventory.",
+  "samples": [
+    {
+      "id": "complete-catalog-missing-generate-is-unmet",
+      "title": "Complete catalog without a generate provider is no_feasible_provider",
+      "notes": "Search still materializes. Generate is unmet, not catalog_incomplete.",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}
+      ],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {"need_id": "search", "capability": "information.search.web", "phase": "execution"}
+        ],
+        "unmet": [
+          {"need_id": "generate", "reason": "no_feasible_provider"}
+        ]
+      }
+    },
+    {
+      "id": "incomplete-catalog-is-not-unmet",
+      "title": "Incomplete coverage cannot be treated as infeasibility",
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}
+      ],
+      "catalog": {
+        "coverage": {"state": "incomplete", "reason_code": "catalog_incomplete"},
+        "providers": []
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {"need_id": "generate", "reason": "catalog_incomplete"}
+        ]
+      }
+    }
+  ]
+}

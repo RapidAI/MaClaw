@@ -97,11 +97,10 @@ func (g *tuiWeixinGateway) Start() {
 	}
 
 	gw := weixin.NewGateway(weixin.Config{
-		Token:              cfg.WeixinToken,
-		BaseURL:            baseURL,
-		CDNURL:             cdnURL,
-		AccountID:          cfg.WeixinAccountID,
-		SessionPersistPath: weixin.DefaultSessionPersistPath(),
+		Token:     cfg.WeixinToken,
+		BaseURL:   baseURL,
+		CDNURL:    cdnURL,
+		AccountID: cfg.WeixinAccountID,
 	}, g.onIncomingMessage)
 	gw.SetStatusCallback(g.onStatusChange)
 
@@ -280,15 +279,8 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 		}
 		lastProgress = now
 		lastProgressText = stripped
-		lang := "zh"
-		if g != nil && g.app != nil {
-			lang = strings.TrimSpace(g.app.appConfig.Language)
-			if lang == "" {
-				lang = "zh"
-			}
-		}
 		g.sendText(userID, contextToken,
-			i18n.T(i18n.MsgProgressPrefix, lang)+stripped)
+			i18n.T(i18n.MsgProgressPrefix, "zh")+stripped)
 	}
 
 	// NOTE: Workflow interception is skipped for WeChat messages.
@@ -378,8 +370,7 @@ func (g *tuiWeixinGateway) sendText(toUserID, contextToken, text string) {
 	}
 }
 
-// SendProactiveText pushes text to the owner's last active WeChat private session.
-// Used by scheduled-task delivery (channel=weixin, user_id=self).
+// SendProactiveText pushes text to the owner's most-recent private session.
 func (g *tuiWeixinGateway) SendProactiveText(text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -394,40 +385,32 @@ func (g *tuiWeixinGateway) SendProactiveText(text string) error {
 	if gw == nil || !gw.IsRunning() {
 		return fmt.Errorf("weixin gateway not running")
 	}
-	type session struct{ uid, tok string }
-	var candidates []session
+	type session struct{ uid, token string }
+	candidates := make([]session, 0, 4)
 	seen := map[string]bool{}
-	if last := strings.TrimSpace(gw.LastActiveUserID()); last != "" {
-		if tok := strings.TrimSpace(gw.GetContextToken(last)); tok != "" {
-			candidates = append(candidates, session{uid: last, tok: tok})
-			seen[last] = true
+	if uid := strings.TrimSpace(gw.LastActiveUserID()); uid != "" {
+		if token := strings.TrimSpace(gw.GetContextToken(uid)); token != "" {
+			candidates = append(candidates, session{uid, token})
+			seen[uid] = true
 		}
 	}
 	for _, pair := range gw.ContextSessionsByRecency() {
-		uid, tok := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
-		if uid == "" || tok == "" || seen[uid] {
-			continue
+		uid, token := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+		if uid != "" && token != "" && !seen[uid] {
+			candidates = append(candidates, session{uid, token})
+			seen[uid] = true
 		}
-		candidates = append(candidates, session{uid: uid, tok: tok})
-		seen[uid] = true
 	}
 	if len(candidates) == 0 {
-		return fmt.Errorf("no active weixin session (先用微信私聊机器人一次)")
+		return fmt.Errorf("no active weixin session")
 	}
 	var lastErr error
-	for _, c := range candidates {
-		if err := gw.SendText(context.Background(), weixin.OutgoingText{
-			ToUserID:     c.uid,
-			Text:         text,
-			ContextToken: c.tok,
-		}); err != nil {
+	for _, target := range candidates {
+		if err := gw.SendText(context.Background(), weixin.OutgoingText{ToUserID: target.uid, Text: text, ContextToken: target.token}); err != nil {
 			lastErr = err
 			continue
 		}
 		return nil
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("weixin proactive text failed")
 	}
 	return lastErr
 }
@@ -456,7 +439,7 @@ func (c *tuiWeixinCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig
 	}
 	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
 	if ok {
-		c.activeLLM.set(cfg)
+		c.activeLLM.setRoute(cfg, d)
 	}
 	return cfg, d, ok
 }
@@ -483,6 +466,10 @@ func (c *tuiWeixinCallbacks) ExecuteTool(name, argsJSON string) string {
 	defer cancel()
 	args["_ctx"] = ctx
 	return c.app.toolRegistry.ExecuteCtx(ctx, name, args)
+}
+
+func (c *tuiWeixinCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return projectTUIToolResult(name, result, c.GetLLMConfig())
 }
 
 func (c *tuiWeixinCallbacks) IsToolAllowed(name string) bool {
@@ -516,6 +503,18 @@ func (c *tuiWeixinCallbacks) OnToolCall(name string) {
 
 func (c *tuiWeixinCallbacks) OnToolResult(name string) {
 	// No UI update for WeChat.
+}
+
+func (c *tuiWeixinCallbacks) EscalateAfterToolExecution(name string) {
+	_ = name
+	if c != nil {
+		escalateTUIActiveLLMAfterTool(c.app, &c.activeLLM)
+	}
+}
+
+func (c *tuiWeixinCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	return c != nil && c.activeLLM.consumeSurfaceRefresh()
 }
 
 func (c *tuiWeixinCallbacks) ShouldStop() bool {

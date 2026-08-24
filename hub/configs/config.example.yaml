@@ -64,3 +64,11 @@ logging:
   level: info
   # Runtime logs: hub.log (all) and registration.log (onboarding/registration only).
   dir: ./data/logs
+# Optional same-install Hub replicas for tenant classification-head distribution.
+# Single process can omit this block (node_id defaults to local).
+replica:
+  node_id: hub-a
+  shared_secret: ""
+  peers:
+    - id: hub-b
+      url: https://hub-b.example.com

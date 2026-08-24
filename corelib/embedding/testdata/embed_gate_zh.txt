@@ -1,0 +1,10 @@
+帮我写一个程序
+修复这个bug
+登录服务器查看GPU占用
+翻译这篇文章
+你好
+今天天气怎么样
+打开浏览器搜索
+summarize this document
+create a web application
+查看服务器日志

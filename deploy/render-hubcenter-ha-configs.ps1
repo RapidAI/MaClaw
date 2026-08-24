@@ -7,6 +7,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Import-InventoryDataFile {
+    param([string]$Path)
+
+    $importDataFile = Get-Command Import-PowerShellDataFile -ErrorAction SilentlyContinue
+    if ($null -ne $importDataFile) {
+        return Import-PowerShellDataFile -LiteralPath $Path
+    }
+
+    # Windows PowerShell 5.1 lacks Import-PowerShellDataFile; generated
+    # deployment inventories are local PSD1 hashtables.
+    $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    return & {
+        param([string]$InventoryFile)
+        Invoke-Expression ([System.IO.File]::ReadAllText($InventoryFile))
+    } $resolvedPath
+}
+
 function Normalize-Url {
     param([string]$Value)
     return $Value.Trim().TrimEnd('/')
@@ -207,7 +224,7 @@ logging:
   dir: ./data/logs
 "@
 }
-$inventory = Import-PowerShellDataFile -Path $InventoryPath
+$inventory = Import-InventoryDataFile -Path $InventoryPath
 if ($null -eq $inventory) {
     throw "Failed to load inventory from $InventoryPath"
 }

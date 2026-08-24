@@ -19,11 +19,21 @@ type tenantScopedSystemSettings struct {
 // reward metrics without a database lookup on every request.
 type userReferralMetricSystemSettings struct {
 	store.SystemSettingsRepository
-	repo store.UserReferralRepository
+	repo    store.UserReferralRepository
+	usage   store.LLMUsageRepository
+	billing store.LLMBillingLedgerRepository
 }
 
 func (s userReferralMetricSystemSettings) UserReferralMetricRepository() store.UserReferralRepository {
 	return s.repo
+}
+
+func (s userReferralMetricSystemSettings) LLMUsageRepository() store.LLMUsageRepository {
+	return s.usage
+}
+
+func (s userReferralMetricSystemSettings) LLMBillingLedgerRepository() store.LLMBillingLedgerRepository {
+	return s.billing
 }
 
 func (s userReferralMetricSystemSettings) TenantID() string {

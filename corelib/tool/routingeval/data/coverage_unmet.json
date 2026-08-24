@@ -1,0 +1,43 @@
+{
+  "category": "coverage_unmet",
+  "category_id": 5,
+  "title": "incomplete catalog must not silently drop generate",
+  "design_ref": "10.1 item 5 / coverage_unmet",
+  "samples": [
+    {
+      "id": "generate-catalog-incomplete",
+      "title": "document.generate.file unmet when catalog is incomplete",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}
+      ],
+      "catalog": {
+        "coverage": {"state": "incomplete", "reason_code": "catalog_incomplete"},
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {"need_id": "search", "reason": "catalog_incomplete"},
+          {"need_id": "generate", "reason": "catalog_incomplete"}
+        ]
+      }
+    },
+    {
+      "id": "unknown-capability-unmet",
+      "title": "Unknown capability is fail-closed",
+      "needs": [{"id": "mystery", "capability": "eval.unknown.capability"}],
+      "catalog": {"providers": []},
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "mystery", "reason": "unknown_capability"}]
+      }
+    }
+  ]
+}

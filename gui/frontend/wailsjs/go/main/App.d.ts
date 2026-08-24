@@ -148,6 +148,8 @@ export function CancelNLSkillRun(arg1:string):Promise<void>;
 
 export function CancelOpenAIOAuth():Promise<void>;
 
+export function CancelQQBotQRLogin(arg1:string):Promise<void>;
+
 export function CancelRecordedAudioUpload(arg1:string):Promise<void>;
 
 export function CancelSwarmRun(arg1:string):Promise<void>;
@@ -247,6 +249,8 @@ export function CodingKnowledgeDelete(arg1:string):Promise<void>;
 export function CodingKnowledgeDeleteByScope(arg1:string,arg2:string):Promise<number>;
 
 export function CodingKnowledgeEvict():Promise<number>;
+
+export function CodingKnowledgeContributeToOrg(arg1:main.DigitalAssetContributeRequest):Promise<main.DigitalAssetSubmissionView>;
 
 export function CodingKnowledgeExport():Promise<main.CodingKnowledgeExportPack>;
 
@@ -623,6 +627,12 @@ export function EnterprisePurgeRevokedLibrary(arg1:string):Promise<void>;
 
 export function EnterpriseSetSyncPaused(arg1:boolean):Promise<void>;
 
+export function DigitalAssetListContributableLibraries(arg1:string):Promise<Array<main.DigitalAssetContributableLibrary>>;
+
+export function DigitalAssetListMySubmissions():Promise<Array<main.DigitalAssetSubmissionView>>;
+
+export function DigitalAssetWithdrawSubmission(arg1:string):Promise<main.DigitalAssetSubmissionView>;
+
 export function EnterpriseSyncNow():Promise<main.EnterpriseSyncStatus>;
 
 export function EnterpriseSyncStatus():Promise<main.EnterpriseSyncStatus>;
@@ -935,6 +945,10 @@ export function GetVectorSearchEnabled():Promise<boolean>;
 
 export function GetVectorSearchStatus():Promise<main.VectorSearchStatus>;
 
+export function GetEmbedAccelInfo():Promise<{backend: string; device: string; reason: string; npu_present: boolean}>;
+
+export function SetEmbedHWAccel(arg1:boolean):Promise<corelib.AppConfig>;
+
 export function GetVirtualRepositoryBackgroundSyncStatus():Promise<string>;
 
 export function GetVirtualRepositoryChanges(arg1:string):Promise<string>;
@@ -1046,6 +1060,8 @@ export function HideTask(arg1:string):Promise<void>;
 export function ImportAgentSkillDir(arg1:string):Promise<string>;
 
 export function ImportCodexAuth():Promise<string>;
+
+export function ImportExternalAgents():Promise<any>;
 
 export function ImportExpertPackage():Promise<main.ExpertPackageImportResult>;
 
@@ -1322,6 +1338,8 @@ export function KnowledgeSearch(arg1:knowledge.SearchOptions):Promise<Array<know
 export function KnowledgeSearchFacets(arg1:knowledge.SearchOptions):Promise<knowledge.SearchFacetsResult>;
 
 export function KnowledgeSearchStructured(arg1:knowledge.StructuredSearchOptions):Promise<Array<knowledge.SearchResult>>;
+
+export function KnowledgeContributeToOrg(arg1:main.DigitalAssetContributeRequest):Promise<main.DigitalAssetSubmissionView>;
 
 export function KnowledgeShareToHub(arg1:main.KnowledgeHubShareRequest):Promise<main.KnowledgeHubShareResult>;
 
@@ -1656,6 +1674,8 @@ export function PingSkillHub(arg1:string):Promise<Record<string, any>>;
 export function PlanMaclawAppInstall(arg1:string):Promise<main.maclawAppInstallPlan>;
 
 export function PlatformTransparencyFlags():Promise<boolean|boolean>;
+
+export function PollQQBotQRStatus(arg1:string):Promise<Record<string, string>>;
 
 export function PollWeixinQRStatus(arg1:string):Promise<Record<string, string>>;
 
@@ -2191,6 +2211,8 @@ export function StartMaclawAppApprovalWorkflow(arg1:main.MaclawAppApprovalWorkfl
 
 export function StartOpenAIOAuth():Promise<string>;
 
+export function StartOpenCodeZenLogin():Promise<any>;
+
 export function StartRemoteClaudeSession(arg1:string,arg2:boolean):Promise<main.RemoteSessionView>;
 
 export function StartRemoteHandoffSession(arg1:string,arg2:string,arg3:boolean,arg4:string,arg5:main.RemoteLaunchSource):Promise<main.RemoteSessionView>;
@@ -2212,6 +2234,8 @@ export function StartUserDataMigrationImport(arg1:string,arg2:string):Promise<ma
 export function StartVirtualRepositoryCodingTask(arg1:string):Promise<main.VirtualRepositoryCodingTaskLaunch>;
 
 export function StartVirtualRepositoryOperation(arg1:string):Promise<string>;
+
+export function StartQQBotQRLogin():Promise<Record<string, string>>;
 
 export function StartWeixinQRLogin():Promise<Record<string, string>>;
 
@@ -2280,6 +2304,8 @@ export function TestMaclawLLM(arg1:corelib.MaclawLLMConfig):Promise<corelib.Macl
 export function TestAndSaveMaclawLLMProviders(arg1:Array<corelib.MaclawLLMProvider>,arg2:string,arg3:string):Promise<corelib.MaclawLLMTestResult>;
 
 export function TestMaclawLLMProfile(arg1:string,arg2:string,arg3:string):Promise<main.MaclawLLMProfileProbeResult>;
+
+export function TestProxyConfig(arg1:Record<string, any>):Promise<Record<string, any>>;
 
 export function TestRemoteSSHConnection(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<string>;
 
@@ -2394,3 +2420,5 @@ export function WithdrawPetStorePack(arg1:string):Promise<void>;
 
 export function WriteCodingWorkbenchConflictFileContent(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 export function AIAssistantAttachmentPreviewDataURL(arg1:string):Promise<string>;
+
+export function AIAssistantAttachmentFullDataURL(arg1:string):Promise<string>;

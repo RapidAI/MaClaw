@@ -31,6 +31,9 @@ func AutoCompressConversation(
 	if len(conversation) <= 5 {
 		return conversation
 	}
+	if conversationHasPendingAsk(conversation) {
+		return conversation
+	}
 
 	messages := InterfaceSliceToContextMessages(conversation)
 	if len(messages) == 0 {

@@ -17,10 +17,10 @@
  * Uses inline styles based on theme props (no CSS modules).
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { FileTabBar, cycleFilePath } from './FileTabBar';
+import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
-import { getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
+import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
 import { computeDiff } from './diffCompute';
 import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
@@ -179,6 +179,8 @@ export interface CodePreviewPanelProps {
     projectPath?: string;
     /** Bumped after remote SSH reconnect so the workspace tree reloads in place. */
     workspaceRefreshToken?: number;
+    /** Local working-directory changes drop the previous tree immediately. */
+    workspaceResetOnRefresh?: boolean;
     onOpenWorkspaceFile?: (file: CodeFile) => void;
     /** Close a single file tab (VS Code-style). */
     onCloseFile?: (filePath: string) => void;
@@ -884,6 +886,7 @@ export function CodePreviewPanel({
     onSelectFile,
     projectPath,
     workspaceRefreshToken,
+    workspaceResetOnRefresh = false,
     onOpenWorkspaceFile,
     onCloseFile,
     onCloseOtherFiles,
@@ -1402,7 +1405,7 @@ export function CodePreviewPanel({
                             X
                         </button>
                     </div>
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
                 </div>
             </div>
         );
@@ -1595,16 +1598,24 @@ export function CodePreviewPanel({
                         </span>
                     )}
                     {activeFile.opType && activeFile.opType !== 'read' ? (
-                        <span style={{ flexShrink: 0, opacity: 0.8 }}>
-                            {activeFile.opType === 'create' ? 'NEW' : 'MOD'}
-                        </span>
+                        codeFileLineDeltaHasChange(computeCodeFileLineDelta(activeFile)) ? (
+                            <CodeFileDiffStat
+                                file={activeFile}
+                                theme={theme}
+                                testId="code-preview-diff-stat"
+                            />
+                        ) : (
+                            <span style={{ flexShrink: 0, opacity: 0.8 }}>
+                                {activeFile.opType === 'create' ? 'NEW' : 'MOD'}
+                            </span>
+                        )
                     ) : null}
                     {totalLines > 0 && (
                         <span data-testid="code-preview-line-count" style={{ flexShrink: 0, opacity: 0.8 }}>
                             {totalLines} {lang.startsWith('zh') ? '行' : 'lines'}
                         </span>
                     )}
-                    {isCodeFileDirty(activeFile) ? (
+                    {isCodeFileDirty(activeFile) && !codeFileLineDeltaHasChange(computeCodeFileLineDelta(activeFile)) ? (
                         <span data-testid="code-preview-dirty-badge" style={{ flexShrink: 0, opacity: 0.9 }}>
                             {lang.startsWith('zh') ? '已修改' : 'changed'}
                         </span>
@@ -1680,7 +1691,7 @@ export function CodePreviewPanel({
                 }}
             >
                 {workspaceActive ? (
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
                 ) : activeFile ? (
                     diffLines ? (
                         <DiffView

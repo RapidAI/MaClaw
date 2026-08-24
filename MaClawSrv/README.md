@@ -58,7 +58,7 @@
 
 
 
-- `MaClawSrv` is a pure agent service. It does not expose coding-session orchestration or local programming workspace management APIs.
+- `MaClawSrv` is the headless Maclaw GUI: the same shared core as the desktop app (loop, tools, skills, MCP, knowledge, memory, coding/delegate, ASR/TTS). `/app` is the user workbench. Coding work uses the shared executor and `delegate_task` / coding-runtime adapters; it does not ship a desktop IDE chrome.
 
 
 

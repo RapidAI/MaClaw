@@ -233,7 +233,7 @@ func generateWorkflowDraftWithLLM(r *http.Request, system store.SystemSettingsRe
 	models, _ := llmservice.BuildAuthorizedModelsForServiceGroups(serviceReg, []string{serviceGroupID})
 	models = filterAuthorizedModelsForConfiguredProviders(models, providerReg)
 	body := workflowDraftLLMRequestBody(description, language)
-	model, externalModel, err := resolveAuthorizedModel(body, models)
+	model, externalModel, _, err := resolveAuthorizedModel(r, body, models, serviceReg)
 	if err != nil {
 		return nil, err
 	}

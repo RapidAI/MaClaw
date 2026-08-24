@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestBuildResponsesWSHeadersDefaultsCodeGenClientName(t *testing.T) {
@@ -33,11 +34,70 @@ func TestBuildResponsesWSHeadersPreservesCustomCodeGenClientName(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesWSHeadersAttachesHubHints(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{
+		URL: "https://hub.example.com/api/llm/v1", Model: "auto", Key: "sk-test",
+	}.WithHubWorkloadHints("reasoning", "coding", "implementation")
+	headers := buildResponsesWSHeaders(cfg, "wss://hub.example.com/api/llm/v1/responses")
+	if got := headers.Get("X-MaClaw-Task-Type"); got != "reasoning" {
+		t.Fatalf("task type = %q", got)
+	}
+	if got := headers.Get("X-MaClaw-Workflow-Type"); got != "coding" {
+		t.Fatalf("workflow type = %q", got)
+	}
+	if got := headers.Get("X-MaClaw-Phase-Kind"); got != "implementation" {
+		t.Fatalf("phase kind = %q", got)
+	}
+}
+
 func TestBuildResponsesWSHeadersSkipsNonCodeGenURL(t *testing.T) {
 	cfg := corelib.MaclawLLMConfig{Key: "sk-test", AgentType: "custom-agent"}
 	headers := buildResponsesWSHeaders(cfg, "wss://api.example.com/v1/responses")
 	if got := headers.Get(corelib.CodeGenClientNameHeader); got != "" {
 		t.Fatalf("non-CodeGen %s = %q, want empty", corelib.CodeGenClientNameHeader, got)
+	}
+}
+
+func TestBuildResponsesWSFrameProjectsHostOwnedInvocationPolicy(t *testing.T) {
+	data, err := buildResponsesWSFrame(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		[]map[string]interface{}{{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":       "only_tool",
+				"parameters": map[string]interface{}{"type": "object"},
+			},
+		}},
+		agent.ToolSurfaceInvocationPolicy{
+			Envelope:          agent.ToolSurfaceEnvelopeResponses,
+			ToolChoice:        agent.ToolSurfaceToolChoice{Mode: agent.ToolSurfaceToolChoiceSpecific, Name: "only_tool"},
+			ParallelToolCalls: agent.ToolSurfaceOptionalBool{Present: true, Value: false},
+		},
+	)
+	if err != nil {
+		t.Fatalf("build response.create frame: %v", err)
+	}
+	var frame map[string]interface{}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatal(err)
+	}
+	choice, _ := frame["tool_choice"].(map[string]interface{})
+	if choice["type"] != "function" || choice["name"] != "only_tool" || frame["parallel_tool_calls"] != false {
+		t.Fatalf("frame policy=%#v", frame)
+	}
+	if _, err := verifyResponsesWSFrameToolSurface(data, []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":       "only_tool",
+			"parameters": map[string]interface{}{"type": "object"},
+		},
+	}}, agent.ToolSurfaceInvocationPolicy{
+		Envelope:          agent.ToolSurfaceEnvelopeResponses,
+		ToolChoice:        agent.ToolSurfaceToolChoice{Mode: agent.ToolSurfaceToolChoiceSpecific, Name: "only_tool"},
+		ParallelToolCalls: agent.ToolSurfaceOptionalBool{Present: true, Value: false},
+	}); err != nil {
+		t.Fatalf("frame receipt rejected host policy: %v", err)
 	}
 }
 
@@ -410,6 +470,307 @@ func TestResponsesWSStreamUsesCompletedResponseReasoningSummaryFallback(t *testi
 	}
 	if got := streamed.String(); !strings.Contains(got, "\x01Completed summary.") {
 		t.Fatalf("completed response summary was not streamed: %q", got)
+	}
+}
+
+func TestResponsesWSStreamPreservesProviderResponseID(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.created","response":{"id":"resp-ws-1","status":"in_progress"}}`,
+			`{"type":"response.completed","response":{"id":"resp-ws-1","status":"completed"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesWSLLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.ResponseID, "resp-ws-1"; got != want {
+		t.Fatalf("response ID = %q, want %q", got, want)
+	}
+}
+
+func TestResponsesWSStreamRejectsConflictingProviderResponseIDs(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.created","response":{"id":"resp-ws-a","status":"in_progress"}}`,
+			`{"type":"response.completed","response":{"id":"resp-ws-b","status":"completed"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	_, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "response ID changed") {
+		t.Fatalf("conflicting response IDs were accepted: %v", err)
+	}
+}
+
+func TestReserveCodingResponsesWSRequestChannelBindsLiveSocketAndAllowsOneRequest(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-channel-1","status":"completed"}}`)); err != nil {
+			t.Fatalf("write frame: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses-ws"}
+	requestChannel, err := reserveCodingResponsesWSRequestChannel(context.Background(), &IMMessageHandler{}, cfg, srv.Client())
+	if err != nil {
+		t.Fatalf("reserve channel: %v", err)
+	}
+	defer requestChannel.Close(nil)
+	execution := requestChannel.ExecutionContext()
+	if execution.Protocol != "openai-responses-ws" || execution.ConnectionID == "" || !strings.HasPrefix(execution.ConnectionID, "responses-ws:") {
+		t.Fatalf("execution context=%+v", execution)
+	}
+	// This direct transport test deliberately has no dynamic plan. Even a static
+	// empty audit record must be attached before the one-shot channel can write
+	// its final frame; otherwise the channel fails closed before network I/O.
+	if err := requestChannel.(agent.ToolSurfaceDispatchPreparationRequestChannel).SetToolSurfaceDispatchPreparation(agent.ToolSurfaceDispatchPreparation{AuditEvidence: agent.ToolSurfacePlanEvidence{}, InvocationPolicy: agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)}); err != nil {
+		t.Fatalf("set dispatch preparation: %v", err)
+	}
+	resp, err := requestChannel.Do(context.Background(), nil, nil, nil, true)
+	if err != nil || resp.ResponseID != "resp-channel-1" {
+		t.Fatalf("channel response=%+v err=%v", resp, err)
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, true); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("channel allowed a successor request: %v", err)
+	}
+}
+
+func TestCodingResponsesWSRequestChannelFreezesAuditEvidenceBeforeDispatch(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-audit-freeze","status":"completed"}}`)); err != nil {
+			t.Fatalf("write completed response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses-ws"}
+	requestChannel, err := reserveCodingResponsesWSRequestChannel(context.Background(), &IMMessageHandler{}, cfg, srv.Client())
+	if err != nil {
+		t.Fatalf("reserve channel: %v", err)
+	}
+	defer requestChannel.Close(nil)
+	evidence := agent.ToolSurfacePlanEvidence{
+		Available:          true,
+		PlanID:             "ws-plan-freeze",
+		PlanSnapshotDigest: "ws-snapshot-freeze",
+		CatalogGeneration:  12,
+		Omitted:            []agent.ToolSurfaceOmission{{NeedID: "network", ReasonCode: "policy_denied"}},
+	}
+	if err := requestChannel.(agent.ToolSurfaceDispatchPreparationRequestChannel).SetToolSurfaceDispatchPreparation(agent.ToolSurfaceDispatchPreparation{AuditEvidence: evidence, InvocationPolicy: agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)}); err != nil {
+		t.Fatalf("set dispatch preparation: %v", err)
+	}
+	want, err := agent.VerifyToolSurfaceWirePayloadWithAuditEvidence(nil, nil, agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses), evidence)
+	if err != nil {
+		t.Fatalf("build expected receipt: %v", err)
+	}
+	// Mutating caller-owned evidence after Set must not alter the record used by
+	// the pending socket dispatch.
+	evidence.Omitted[0].ReasonCode = "mutated_after_set"
+	dispatch, err := requestChannel.(agent.VerifiedToolSurfaceRequestChannel).DoVerified(context.Background(), nil, nil, nil, true)
+	if err != nil || dispatch.Response == nil || dispatch.Response.ResponseID != "resp-audit-freeze" || !dispatch.Receipt.Verified {
+		t.Fatalf("dispatch=%+v err=%v", dispatch, err)
+	}
+	if dispatch.Receipt.AuditDigest != want.AuditDigest {
+		t.Fatalf("receipt used mutated audit evidence: receipt=%+v want=%+v", dispatch.Receipt, want)
+	}
+}
+
+func TestReserveCodingResponsesWSRequestChannelDoesNotUseConfiguredLabelsAsConnectionID(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp-channel-2","status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "connection-from-model", ProviderID: "connection-from-provider", ProviderName: "connection-from-name", Protocol: "openai", WireAPI: "responses-ws"}
+	requestChannel, err := reserveCodingResponsesWSRequestChannel(context.Background(), &IMMessageHandler{}, cfg, srv.Client())
+	if err != nil {
+		t.Fatalf("reserve channel: %v", err)
+	}
+	defer requestChannel.Close(nil)
+	if err := requestChannel.(agent.ToolSurfaceDispatchPreparationRequestChannel).SetToolSurfaceDispatchPreparation(agent.ToolSurfaceDispatchPreparation{AuditEvidence: agent.ToolSurfacePlanEvidence{}, InvocationPolicy: agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)}); err != nil {
+		t.Fatalf("set dispatch preparation: %v", err)
+	}
+	connectionID := requestChannel.ExecutionContext().ConnectionID
+	for _, forbidden := range []string{cfg.URL, cfg.Model, cfg.ProviderID, cfg.ProviderName, "connection-from"} {
+		if strings.Contains(connectionID, forbidden) {
+			t.Fatalf("connection ID %q derived from config field %q", connectionID, forbidden)
+		}
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, true); err != nil {
+		t.Fatalf("one request through socket channel: %v", err)
+	}
+}
+
+func TestCodingResponsesWSRequestChannelMissingAuditEvidenceIsTerminalBeforeWrite(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	receivedFrame := make(chan bool, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			receivedFrame <- false
+			return
+		}
+		defer conn.Close()
+		_, frame, err := conn.ReadMessage()
+		receivedFrame <- err == nil && len(frame) > 0
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses-ws"}
+	requestChannel, err := reserveCodingResponsesWSRequestChannel(context.Background(), &IMMessageHandler{}, cfg, srv.Client())
+	if err != nil {
+		t.Fatalf("reserve channel: %v", err)
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, true); err == nil || !strings.Contains(err.Error(), "audit evidence was not set") {
+		t.Fatalf("missing audit evidence accepted: %v", err)
+	}
+	preparer := requestChannel.(agent.ToolSurfaceDispatchPreparationRequestChannel)
+	if err := preparer.SetToolSurfaceDispatchPreparation(agent.ToolSurfaceDispatchPreparation{AuditEvidence: agent.ToolSurfacePlanEvidence{}, InvocationPolicy: agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)}); err == nil || !strings.Contains(err.Error(), "after dispatch attempt") {
+		t.Fatalf("failed pre-handoff dispatch was reused after setting preparation: %v", err)
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, true); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("failed pre-handoff dispatch admitted a successor: %v", err)
+	}
+	requestChannel.Close(nil)
+	if got := <-receivedFrame; got {
+		t.Fatal("channel wrote a WebSocket frame after missing audit evidence")
+	}
+}
+
+func TestCodingResponsesWSRequestChannelRejectsNonStreamAsTerminalBeforeWrite(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	receivedFrame := make(chan bool, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			receivedFrame <- false
+			return
+		}
+		defer conn.Close()
+		_, frame, err := conn.ReadMessage()
+		receivedFrame <- err == nil && len(frame) > 0
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses-ws"}
+	requestChannel, err := reserveCodingResponsesWSRequestChannel(context.Background(), &IMMessageHandler{}, cfg, srv.Client())
+	if err != nil {
+		t.Fatalf("reserve channel: %v", err)
+	}
+	if err := requestChannel.(agent.ToolSurfaceDispatchPreparationRequestChannel).SetToolSurfaceDispatchPreparation(agent.ToolSurfaceDispatchPreparation{AuditEvidence: agent.ToolSurfacePlanEvidence{}, InvocationPolicy: agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)}); err != nil {
+		t.Fatalf("set dispatch preparation: %v", err)
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, false); err == nil || !strings.Contains(err.Error(), "requires stream mode") {
+		t.Fatalf("non-stream request accepted: %v", err)
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, true); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("non-stream request admitted a successor send: %v", err)
+	}
+	requestChannel.Close(nil)
+	if got := <-receivedFrame; got {
+		t.Fatal("channel wrote a WebSocket frame after non-stream rejection")
+	}
+}
+
+func TestCodingResponsesWSRequestChannelRejectsSplitOrChangedDispatchPreparation(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	receivedFrame := make(chan bool, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			receivedFrame <- false
+			return
+		}
+		defer conn.Close()
+		_, frame, err := conn.ReadMessage()
+		receivedFrame <- err == nil && len(frame) > 0
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses-ws"}
+	requestChannel, err := reserveCodingResponsesWSRequestChannel(context.Background(), &IMMessageHandler{}, cfg, srv.Client())
+	if err != nil {
+		t.Fatalf("reserve channel: %v", err)
+	}
+	preparer := requestChannel.(agent.ToolSurfaceDispatchPreparationRequestChannel)
+	first := agent.ToolSurfaceDispatchPreparation{AuditEvidence: agent.ToolSurfacePlanEvidence{}, InvocationPolicy: agent.DefaultToolSurfaceInvocationPolicy(agent.ToolSurfaceEnvelopeResponses)}
+	if err := preparer.SetToolSurfaceDispatchPreparation(first); err != nil {
+		t.Fatalf("set atomic dispatch preparation: %v", err)
+	}
+	changed := first
+	changed.InvocationPolicy = agent.ToolSurfaceInvocationPolicy{Envelope: agent.ToolSurfaceEnvelopeResponses, ToolChoice: agent.ToolSurfaceToolChoice{Mode: agent.ToolSurfaceToolChoiceRequired}}
+	if err := preparer.SetToolSurfaceDispatchPreparation(changed); err == nil || !strings.Contains(err.Error(), "dispatch preparation changed") {
+		t.Fatalf("changed preparation accepted: %v", err)
+	}
+	if _, err := requestChannel.Do(context.Background(), nil, nil, nil, false); err == nil || !strings.Contains(err.Error(), "requires stream mode") {
+		t.Fatalf("channel did not consume reservation after rejected split setup: %v", err)
+	}
+	requestChannel.Close(nil)
+	if got := <-receivedFrame; got {
+		t.Fatal("channel wrote after rejected/terminal preparation sequence")
 	}
 }
 

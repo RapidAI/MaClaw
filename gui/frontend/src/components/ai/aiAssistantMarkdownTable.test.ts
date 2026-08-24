@@ -44,6 +44,33 @@ describe("isMarkdownTableRow / separator", () => {
     });
 });
 
+describe("parseMarkdownTableCells inline opaque spans", () => {
+    it("keeps literal pipes inside dollar-delimited formulas in one cell", () => {
+        expect(parseMarkdownTableCells("| $P(A|B)$ | conditional probability |"))
+            .toEqual(["$P(A|B)$", "conditional probability"]);
+    });
+
+    it("keeps literal pipes inside LaTeX-parentheses formulas in one cell", () => {
+        expect(parseMarkdownTableCells("| \\(A|B\\) | relation |"))
+            .toEqual(["\\(A|B\\)", "relation"]);
+    });
+
+    it("keeps literal pipes inside variable-length inline code spans", () => {
+        expect(parseMarkdownTableCells("| ``a | b`` | code |"))
+            .toEqual(["``a | b``", "code"]);
+    });
+
+    it("continues to unescape an escaped table pipe", () => {
+        expect(parseMarkdownTableCells("| A \\| B | value |"))
+            .toEqual(["A | B", "value"]);
+    });
+
+    it("does not mistake currency pairs for an inline formula", () => {
+        expect(parseMarkdownTableCells("| $5 | $10 |"))
+            .toEqual(["$5", "$10"]);
+    });
+});
+
 describe("repairMixedNarrativeTable split-row repair", () => {
     it("merges weather-style rows with a wrap glyph", () => {
         const model = buildMarkdownTableModel([

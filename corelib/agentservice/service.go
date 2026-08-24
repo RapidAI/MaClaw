@@ -22,6 +22,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -35,13 +37,17 @@ type Config struct {
 }
 
 type Service struct {
-	store            Store
-	records          RecordStore
-	executor         Executor
-	tokens           *TokenManager
-	dataRoot         string
-	credentialPepper string
-	now              func() time.Time
+	store               Store
+	records             RecordStore
+	dynamicOperations   DynamicOperationLedger
+	dynamicCapabilities DynamicCapabilityContractRegistry
+	dynamicSemanticMu   sync.Mutex
+	dynamicSemantic     *DynamicSemanticRoutingResources
+	executor            Executor
+	tokens              *TokenManager
+	dataRoot            string
+	credentialPepper    string
+	now                 func() time.Time
 
 	// SkillSourceFilter returns the allowed skill sources for a given principal.
 	// nil means all sources are allowed. Set by MaClawSrv at initialization
@@ -87,16 +93,51 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 		return nil, fmt.Errorf("create data root: %w", err)
 	}
 	var records RecordStore
+	var dynamicOperations DynamicOperationLedger
+	var dynamicCapabilities DynamicCapabilityContractRegistry
 	if useFileStores {
 		sqliteRecords, err := NewSQLiteRecordStore(filepath.Join(cfg.DataRoot, "records", "records.db"))
 		if err != nil {
 			return nil, fmt.Errorf("create record store: %w", err)
 		}
 		records = sqliteRecords
+		sqliteOperations, err := NewSQLiteDynamicOperationLedger(filepath.Join(cfg.DataRoot, "operations", "dynamic_operations.db"))
+		if err != nil {
+			_ = sqliteRecords.Close()
+			return nil, fmt.Errorf("create dynamic operation ledger: %w", err)
+		}
+		dynamicOperations = sqliteOperations
+		sqliteCapabilities, err := NewSQLiteDynamicCapabilityRegistry(filepath.Join(cfg.DataRoot, "capabilities", "dynamic_contracts.db"))
+		if err != nil {
+			_ = sqliteRecords.Close()
+			_ = sqliteOperations.Close()
+			return nil, fmt.Errorf("create dynamic capability registry: %w", err)
+		}
+		dynamicCapabilities = sqliteCapabilities
 	} else {
 		records = NewMemoryRecordStore()
+		dynamicOperations = NewMemoryDynamicOperationLedger()
+		dynamicCapabilities = NewDynamicCapabilityRegistry()
 	}
-	return &Service{store: store, records: records, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
+	// A previous process may have crashed after dispatching a dynamic provider
+	// but before it persisted a terminal receipt. Never automatically replay
+	// such work: make the stale lease explicitly unknown for reconciliation.
+	if _, err := dynamicOperations.ReconcileStaleRunning(time.Now().UTC(), DynamicOperationRunningLease); err != nil {
+		if c, ok := records.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+		if c, ok := dynamicOperations.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+		if c, ok := dynamicCapabilities.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+		return nil, fmt.Errorf("reconcile dynamic operation ledger: %w", err)
+	}
+	if setter, ok := executor.(interface{ SetDynamicOperationLedger(DynamicOperationLedger) }); ok {
+		setter.SetDynamicOperationLedger(dynamicOperations)
+	}
+	return &Service{store: store, records: records, dynamicOperations: dynamicOperations, dynamicCapabilities: dynamicCapabilities, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
 }
 
 // Close releases process-held resources (e.g. SQLite record store). Safe to call
@@ -106,12 +147,195 @@ func (s *Service) Close() error {
 		return nil
 	}
 	if c, ok := s.records.(interface{ Close() error }); ok {
-		return c.Close()
+		if err := c.Close(); err != nil {
+			return err
+		}
+	}
+	if c, ok := s.dynamicOperations.(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			return err
+		}
+	}
+	if c, ok := s.dynamicCapabilities.(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			return err
+		}
+	}
+	s.dynamicSemanticMu.Lock()
+	semantic := s.dynamicSemantic
+	s.dynamicSemantic = nil
+	s.dynamicSemanticMu.Unlock()
+	if semantic != nil {
+		return semantic.Close()
 	}
 	return nil
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }
+
+// DynamicCapabilityContracts returns the read-only Service-owned contract
+// resolver for runtime bridges. Publication is intentionally unavailable from
+// this surface; an authenticated lifecycle host must construct a
+// DynamicCapabilityContractPublisher with its reviewed capability registry.
+func (s *Service) DynamicCapabilityContracts() DynamicCapabilityContractResolver {
+	if s == nil {
+		return nil
+	}
+	return s.dynamicCapabilities
+}
+
+// revokeMCPServerDynamicContracts is used by the authenticated MCP lifecycle
+// path before a server is changed or removed. It deliberately revokes every
+// tool binding for that server: a server-level endpoint, credential, command,
+// or environment change invalidates the trusted observation beneath it.
+func (s *Service) revokeMCPServerDynamicContracts(p Principal, serverID string) error {
+	if s == nil || s.dynamicCapabilities == nil {
+		return fmt.Errorf("dynamic capability registry is unavailable")
+	}
+	if err := s.dynamicCapabilities.RevokeMCPServerContracts(p, serverID); err != nil {
+		return fmt.Errorf("revoke MCP dynamic capability contracts: %w", err)
+	}
+	return nil
+}
+
+// revokeSkillDynamicContract is the corresponding lifecycle fence for one
+// immutable Skill identity. It is called before replacement/deletion so a
+// failed filesystem transition is conservative (unavailable), never stale.
+func (s *Service) revokeSkillDynamicContract(p Principal, stableID string) error {
+	if s == nil || s.dynamicCapabilities == nil {
+		return fmt.Errorf("dynamic capability registry is unavailable")
+	}
+	if err := s.dynamicCapabilities.RevokeSkillContract(p, stableID); err != nil {
+		return fmt.Errorf("revoke Skill dynamic capability contract: %w", err)
+	}
+	return nil
+}
+
+// ConfigureDynamicSemanticRouting attaches the durable Core Agent semantic
+// execution boundary for one or more governed dynamic capability families.
+// The caller remains responsible for supplying the reviewed capability
+// registry and request-level resolver; Service only owns the restart-safe
+// state stores and host-local signing key.
+func (s *Service) ConfigureDynamicSemanticRouting(registry *coretool.CapabilityRegistry, resolver DynamicCapabilityNeedResolver, policy DynamicCapabilityPolicyAdapter, ttl time.Duration, coordinators ...DynamicExternalEffectCoordinator) error {
+	if s == nil {
+		return fmt.Errorf("service is unavailable")
+	}
+	configurer, ok := s.executor.(interface {
+		SetDynamicSemanticRouting(DynamicSemanticRouting) error
+	})
+	if !ok {
+		return fmt.Errorf("executor does not support dynamic semantic routing")
+	}
+	s.dynamicSemanticMu.Lock()
+	defer s.dynamicSemanticMu.Unlock()
+	if s.dynamicSemantic == nil {
+		resources, err := OpenDynamicSemanticRoutingResources(s.dataRoot)
+		if err != nil {
+			return err
+		}
+		s.dynamicSemantic = resources
+	}
+	if len(coordinators) == 0 {
+		// The semantic coordinator owns operation, receipt, host-call and plan
+		// state together. A provider's synchronous text response therefore
+		// remains awaiting_receipt until a trusted integration settles it.
+		coordinators = []DynamicExternalEffectCoordinator{LedgerDynamicExternalEffectCoordinator{SemanticCoordinator: s.dynamicSemantic.coordinator}}
+	}
+	routing, err := s.dynamicSemantic.Routing(registry, resolver, policy, ttl, coordinators...)
+	if err != nil {
+		return err
+	}
+	if err := configurer.SetDynamicSemanticRouting(routing); err != nil {
+		return err
+	}
+	if setter, ok := s.executor.(interface {
+		SetReviewedHostAuditReader(reviewedHostAuditReader)
+	}); ok {
+		setter.SetReviewedHostAuditReader(serviceReviewedHostAuditReader{svc: s})
+	}
+	if setter, ok := s.executor.(interface {
+		SetReviewedHostConfigManager(reviewedHostConfigManager)
+	}); ok {
+		setter.SetReviewedHostConfigManager(s)
+	}
+	return nil
+}
+
+// ReconcileDynamicEffectReceiptSource is the trusted host entry point for one
+// binding-specific provider/channel receipt integration. It re-derives the
+// settlement-only routing view from the durable resources on every call: the
+// worker that drives it holds no grants, adapter names, model call IDs, or
+// dispatch closures, and an observation can never create permission to invoke
+// a provider.
+func (s *Service) ReconcileDynamicEffectReceiptSource(ctx context.Context, source DynamicEffectReceiptSource) error {
+	if s == nil {
+		return fmt.Errorf("service is unavailable")
+	}
+	s.dynamicSemanticMu.Lock()
+	resources := s.dynamicSemantic
+	s.dynamicSemanticMu.Unlock()
+	if resources == nil {
+		return fmt.Errorf("dynamic semantic routing is not configured")
+	}
+	resources.mu.Lock()
+	routing := DynamicSemanticRouting{
+		ExecutionStore: resources.executionStore, RouteState: resources.routeState,
+		EffectCoordinator: resources.effectCoordinator,
+	}
+	resources.mu.Unlock()
+	return routing.ReconcileDynamicEffectReceiptSource(ctx, source)
+}
+
+// ExpireDynamicEffectReceiptWaits converges operations that have waited past
+// the receipt lease from awaiting_receipt to unknown, so that an effect nobody
+// will ever confirm stops occupying a state nothing can leave. Hosts drive it
+// from the receipt worker loop.
+func (s *Service) ExpireDynamicEffectReceiptWaits(context.Context) (int, error) {
+	if s == nil {
+		return 0, fmt.Errorf("service is unavailable")
+	}
+	s.dynamicSemanticMu.Lock()
+	resources := s.dynamicSemantic
+	s.dynamicSemanticMu.Unlock()
+	if resources == nil {
+		return 0, nil
+	}
+	resources.mu.Lock()
+	coordinator := resources.coordinator
+	resources.mu.Unlock()
+	if coordinator == nil {
+		return 0, nil
+	}
+	return coordinator.ReconcileExpiredReceiptWaits(time.Now().UTC(), coretool.ExternalEffectReceiptLease)
+}
+
+// ResolveUnknownDynamicEffect is the trusted host entry point for an
+// operator's out-of-band verdict on an operation that ended unknown. Like
+// receipt reconciliation it re-derives a settlement-only routing view, so the
+// caller holds no grants, no adapter names and no dispatch closure: the most
+// this path can do is write down a finding.
+//
+// Authenticating the operator and deciding who is allowed to make such a
+// finding belongs to the host. Service only guarantees that whoever it was is
+// recorded alongside the verdict.
+func (s *Service) ResolveUnknownDynamicEffect(resolution DynamicSemanticManualResolution) error {
+	if s == nil {
+		return fmt.Errorf("service is unavailable")
+	}
+	s.dynamicSemanticMu.Lock()
+	resources := s.dynamicSemantic
+	s.dynamicSemanticMu.Unlock()
+	if resources == nil {
+		return fmt.Errorf("dynamic semantic routing is not configured")
+	}
+	resources.mu.Lock()
+	routing := DynamicSemanticRouting{
+		ExecutionStore: resources.executionStore, RouteState: resources.routeState,
+		EffectCoordinator: resources.effectCoordinator,
+	}
+	resources.mu.Unlock()
+	return routing.ResolveUnknownDynamicSemanticExternalEffect(resolution)
+}
 
 // SetCodingRuntimeStore attaches a host-owned durable coding Ledger to an
 // executor that explicitly supports it. Service keeps ownership of principal,
@@ -130,6 +354,18 @@ func (s *Service) SetCodingRuntimeStore(store codingruntime.Store) bool {
 	}
 	configurer.SetCodingRuntimeStore(store)
 	return true
+}
+
+// CodingRuntimeStoreSupported reports whether the configured executor can host
+// the durable coding runtime ledger. Test doubles such as EchoExecutor cannot.
+func (s *Service) CodingRuntimeStoreSupported() bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.executor.(interface {
+		SetCodingRuntimeStore(codingruntime.Store)
+	})
+	return ok
 }
 
 // CodingRuntimeRemoteRecoveryProber asks the configured executor for a
@@ -301,6 +537,18 @@ func (s *Service) DeleteTenant(ctx context.Context, tenantID string) error {
 			return ErrDeleteProtected
 		}
 		return ErrTenantBusy
+	}
+	// Tenant deletion bypasses DeleteUser, so clear each scoped declaration
+	// explicitly before removing the tenant. This preserves the same
+	// fail-closed re-creation invariant as the user lifecycle path.
+	users, err := s.store.ListUsers(tenantID)
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		if err := s.dynamicCapabilities.ClearPrincipal(Principal{TenantID: tenantID, UserID: user.ID}); err != nil {
+			return fmt.Errorf("revoke dynamic capability contracts: %w", err)
+		}
 	}
 	if err := s.store.DeleteTenant(tenantID); err != nil {
 		return err
@@ -603,6 +851,12 @@ func (s *Service) DeleteUser(ctx context.Context, tenantID, userID string) error
 		}
 		return ErrUserBusy
 	}
+	// Remove durable control-plane declarations before the principal record and
+	// its filesystem scope disappear. A later recreated user with the same IDs
+	// must never inherit the deleted principal's dynamic authority.
+	if err := s.dynamicCapabilities.ClearPrincipal(Principal{TenantID: tenantID, UserID: userID}); err != nil {
+		return fmt.Errorf("revoke dynamic capability contracts: %w", err)
+	}
 	if err := s.store.DeleteUser(tenantID, userID); err != nil {
 		return err
 	}
@@ -624,6 +878,9 @@ func (s *Service) PurgeUserData(ctx context.Context, tenantID, userID string) er
 	userID = strings.TrimSpace(userID)
 	if tenantID == "" || userID == "" {
 		return fmt.Errorf("tenant_id and user_id are required")
+	}
+	if err := s.dynamicCapabilities.ClearPrincipal(Principal{TenantID: tenantID, UserID: userID}); err != nil {
+		return fmt.Errorf("revoke dynamic capability contracts: %w", err)
 	}
 
 	instances, err := s.store.ListInstances(tenantID, userID)
@@ -1494,6 +1751,12 @@ func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next coreli
 	}
 	merged := normalizeLLMConfigForSave(current.AppConfig, mergeSecretPreserving(current.AppConfig, next))
 	cfg := UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: merged, UpdatedAt: s.now()}
+	// Revoke before persisting the new config. This intentionally favors safe
+	// unavailability if a later config write fails: a changed endpoint or
+	// credential must never retain an old trusted routing declaration.
+	if err := s.dynamicCapabilities.ClearPrincipal(p); err != nil {
+		return nil, fmt.Errorf("revoke dynamic capability contracts: %w", err)
+	}
 	if err := s.store.SaveUserConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -2372,7 +2635,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 			metadata["moa_preset"] = preset
 		}
 	}
-	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, OnToken: in.OnToken})
+	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, ClientCapabilities: in.ClientCapabilities, ContinuationHandle: in.ContinuationHandle, RefineTask: in.RefineTask, OnToken: in.OnToken})
 	if err != nil {
 		return sess, run, msg, err
 	}
@@ -2490,7 +2753,8 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if content == "" && len(in.Attachments) == 0 {
 		return nil, nil, fmt.Errorf("content is required")
 	}
-	if err := validateMessageAttachments(in.Attachments); err != nil {
+	attachments := CanonicalizeReviewedHostMessageAttachments(in.Attachments)
+	if err := validateMessageAttachments(attachments); err != nil {
 		return nil, nil, err
 	}
 	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricMessages); err != nil {
@@ -2499,9 +2763,30 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	if err := s.enforceQuotaLimit(p.TenantID, p.UserID, quotaMetricRuns); err != nil {
 		return nil, nil, err
 	}
+	var taskRelation *TaskRelationDecision
+	if handleID := strings.TrimSpace(in.ContinuationHandle); handleID != "" {
+		var decision TaskRelationDecision
+		if in.RefineTask {
+			decision, err = s.refineTaskRelation(handleID, p, sess, content)
+			if err != nil {
+				return nil, nil, err
+			}
+		} else {
+			decision, err = s.consumeTaskContinuationHandle(handleID, p, sess)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		taskRelation = &decision
+	} else if in.RefineTask {
+		// An amendment command always refines one explicit, current task. It
+		// cannot nominate a root by itself, so require the one-time continuation
+		// selector that the user chose alongside it.
+		return nil, nil, fmt.Errorf("task refinement requires continuation handle")
+	}
 	effectiveContent, pendingAskReq := buildEffectiveUserContent(sess, content)
 	now := s.now()
-	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: append([]agent.MessageAttachment(nil), in.Attachments...), Metadata: cloneMap(in.Metadata), CreatedAt: now}
+	userMsg := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleUser, InputType: defaultString(in.InputType, "text/plain"), Content: content, Attachments: attachments, Metadata: cloneMap(in.Metadata), CreatedAt: now}
 	if err := s.store.SaveMessage(userMsg); err != nil {
 		return nil, nil, err
 	}
@@ -2529,6 +2814,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		DataDir:            inst.DataDir,
 		Config:             cfg.AppConfig,
 		ClientCapabilities: in.ClientCapabilities,
+		TaskRelation:       taskRelation,
 		ToolPolicy:         toolPolicyFromMetadata(userMsg.Metadata, sess.Metadata),
 		MutationScope: mutationScopeFromMetadata(
 			userMsg.Metadata,
@@ -2573,7 +2859,7 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.failed", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID}})
 		return &run, nil, execErr
 	}
-	assistant := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleAssistant, OutputType: defaultString(res.OutputType, "text/plain"), Content: res.Content, Metadata: cloneMap(res.Metadata), CreatedAt: completed}
+	assistant := Message{ID: NewID("msg"), SessionID: sess.ID, TenantID: p.TenantID, UserID: p.UserID, InstanceID: instanceID, Role: MessageRoleAssistant, OutputType: defaultString(res.OutputType, "text/plain"), Content: textutil.SanitizeVisibleChatText(res.Content), Metadata: cloneMap(res.Metadata), CreatedAt: completed}
 	if s.AssistantMessageMetadataHook != nil {
 		for key, value := range s.AssistantMessageMetadataHook(ctx, p, inst, sess, run, assistant, cfg.AppConfig) {
 			if assistant.Metadata == nil {
@@ -2604,6 +2890,90 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	return &run, &assistant, nil
 }
 
+// consumeTaskContinuationHandle is the sole Service ingress that converts a
+// transport handle into a trusted semantic relation. It has no fallback to a
+// RootTaskID, user text, session metadata, or historic tool surface. A missing
+// semantic coordinator is therefore an explicit unavailability result rather
+// than permission to replay a potentially mutating task.
+func (s *Service) consumeTaskContinuationHandle(handleID string, principal Principal, session Session) (TaskRelationDecision, error) {
+	if s == nil {
+		return TaskRelationDecision{}, fmt.Errorf("task continuation unavailable")
+	}
+	s.dynamicSemanticMu.Lock()
+	resources := s.dynamicSemantic
+	s.dynamicSemanticMu.Unlock()
+	if resources == nil {
+		return TaskRelationDecision{}, fmt.Errorf("task continuation unavailable")
+	}
+	resources.mu.Lock()
+	coordinator := resources.coordinator
+	resources.mu.Unlock()
+	if coordinator == nil {
+		return TaskRelationDecision{}, fmt.Errorf("task continuation unavailable")
+	}
+	trustedSessionID := semanticTaskSessionID(principal, session)
+	record, err := coordinator.ConsumeTaskContinuationHandle(handleID, principal.TenantID, memoryOwnerIDForPrincipal(principal), trustedSessionID, s.now().UTC())
+	if err != nil {
+		return TaskRelationDecision{}, fmt.Errorf("task continuation rejected: %w", err)
+	}
+	return verifiedTaskRelationDecision(TaskRelationDecision{
+		Kind:               TaskRelationContinue,
+		RootTaskID:         record.RootTaskID,
+		ContinuationHandle: record.ID,
+		EvidenceIDs:        []string{"task_continuation_handle:" + record.ID},
+	}, principal, trustedSessionID), nil
+}
+
+// refineTaskRelation atomically converts the explicit, scope-bound
+// continuation selector into a server-owned amendment command. The command
+// remains active until PublishSurface consumes it atomically with the winning
+// child; if a child CAS loses, only this exact opaque selector can retry it.
+func (s *Service) refineTaskRelation(handleID string, principal Principal, session Session, amendmentText string) (TaskRelationDecision, error) {
+	if s == nil {
+		return TaskRelationDecision{}, fmt.Errorf("task refinement unavailable")
+	}
+	s.dynamicSemanticMu.Lock()
+	resources := s.dynamicSemantic
+	s.dynamicSemanticMu.Unlock()
+	if resources == nil {
+		return TaskRelationDecision{}, fmt.Errorf("task refinement unavailable")
+	}
+	resources.mu.Lock()
+	coordinator := resources.coordinator
+	resources.mu.Unlock()
+	if coordinator == nil {
+		return TaskRelationDecision{}, fmt.Errorf("task refinement unavailable")
+	}
+	amendmentText = strings.TrimSpace(amendmentText)
+	if amendmentText == "" {
+		return TaskRelationDecision{}, fmt.Errorf("task refinement requires amendment text")
+	}
+	trustedSessionID := semanticTaskSessionID(principal, session)
+	// The digest is computed only after authenticated Service ingress accepted
+	// an explicit refine action. The client sees neither the digest nor command
+	// ID and cannot nominate a root/revision; PublishSurface will consume this
+	// command only if its expected-parent CAS wins.
+	digest := coretool.SchemaDigest([]byte("task-amendment/v1\x00" + amendmentText))
+	continuation, command, err := coordinator.PrepareTaskRefinement(handleID, principal.TenantID, memoryOwnerIDForPrincipal(principal), trustedSessionID, digest, s.now().UTC())
+	if err != nil {
+		return TaskRelationDecision{}, fmt.Errorf("task refinement rejected: %w", err)
+	}
+	return verifiedTaskRelationDecision(TaskRelationDecision{
+		Kind:               TaskRelationRefine,
+		RootTaskID:         continuation.RootTaskID,
+		ContinuationHandle: continuation.ID,
+		AmendmentCommandID: command.ID,
+		AmendmentDigest:    command.Digest,
+		AmendmentRevision:  command.ParentRevision,
+		AmendmentFencing:   command.ParentFencingToken,
+		EvidenceIDs:        []string{"task_continuation_handle:" + continuation.ID, "task_amendment_command:" + command.ID},
+	}, principal, trustedSessionID), nil
+}
+
+func semanticTaskSessionID(principal Principal, session Session) string {
+	return fmt.Sprintf("srv:%s:%s", strings.TrimSpace(session.ID), strings.TrimSpace(principal.UserID))
+}
+
 func validateMessageAttachments(attachments []agent.MessageAttachment) error {
 	if len(attachments) > maxMessageAttachments {
 		return fmt.Errorf("attachments exceeds %d items", maxMessageAttachments)
@@ -2616,11 +2986,22 @@ func validateMessageAttachments(attachments []agent.MessageAttachment) error {
 		if err != nil {
 			return fmt.Errorf("attachments[%d].data must be base64", i)
 		}
-		if len(decoded) > coreim.ThirdPartyMaxDirectBytes {
-			return fmt.Errorf("attachments[%d].data exceeds %d bytes", i, coreim.ThirdPartyMaxDirectBytes)
+		maxBytes := messageAttachmentMaxBytes(att)
+		if len(decoded) > maxBytes {
+			return fmt.Errorf("attachments[%d].data exceeds %d bytes", i, maxBytes)
 		}
 	}
 	return nil
+}
+
+func messageAttachmentMaxBytes(att agent.MessageAttachment) int {
+	if _, ok := ReviewedHostTrustedAudioMIME(att); ok {
+		return ReviewedHostAudioTranscribeMaxBytes
+	}
+	if _, ok := ReviewedHostTrustedDocumentMIME(att.FileName, att.MimeType); ok {
+		return int(agent.MaxOfficeReadFileBytes)
+	}
+	return coreim.ThirdPartyMaxDirectBytes
 }
 
 func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) v2.ToolFilterPolicy {

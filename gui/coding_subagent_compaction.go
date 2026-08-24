@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -259,11 +260,22 @@ type codingSubAgentHooks struct {
 	handler   *IMMessageHandler
 	userID    string
 	iteration int
+	loopCtx   *LoopContext
+	// replanRevision belongs to the callback queried by RunLoop. The hook only
+	// advances it after incorporating the revision observed before draining.
+	// A steer accepted during drain must remain visible to the replacement loop.
+	replanRevision *atomic.Int64
 }
 
 func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) []interface{} {
 	out := conversation
 	changed := false
+	processedRevision := int64(0)
+	if h != nil && h.loopCtx != nil {
+		// Snapshot before drain, exactly like the shared agent loop. This closes
+		// the race where a steer arrives while pending injections are consumed.
+		processedRevision = h.loopCtx.ReplanRevision()
+	}
 	if h != nil && h.handler != nil && strings.TrimSpace(h.userID) != "" {
 		// Prefer length growth over injected payload text: a drained-but-empty
 		// guide wrapper should not force a no-op conversation rewrite.
@@ -272,6 +284,9 @@ func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) 
 			out = next
 			changed = true
 		}
+	}
+	if h != nil && h.replanRevision != nil {
+		h.replanRevision.Store(processedRevision)
 	}
 	if h != nil {
 		h.iteration++
@@ -318,11 +333,18 @@ func (s *CodingSubAgent) buildLoopHooks(cb *codingSubAgentCallbacks) *codingSubA
 		compactor: compactor,
 		handler:   handler,
 		userID:    codingSubAgentOwnerUserID(loopCtx),
+		loopCtx:   loopCtx,
+		replanRevision: func() *atomic.Int64 {
+			if cb == nil {
+				return nil
+			}
+			return &cb.llmReplanRevision
+		}(),
 	}
 }
 
 // buildRemoteCodingLoopHooks wires guide-launch injection for pure remote coding.
-func (r *RemoteCodingSubAgent) buildRemoteCodingLoopHooks() *codingSubAgentHooks {
+func (r *RemoteCodingSubAgent) buildRemoteCodingLoopHooks(cb *remoteCodingCallbacks) *codingSubAgentHooks {
 	var handler *IMMessageHandler
 	var loopCtx *LoopContext
 	if r != nil {
@@ -332,5 +354,12 @@ func (r *RemoteCodingSubAgent) buildRemoteCodingLoopHooks() *codingSubAgentHooks
 	return &codingSubAgentHooks{
 		handler: handler,
 		userID:  codingSubAgentOwnerUserID(loopCtx),
+		loopCtx: loopCtx,
+		replanRevision: func() *atomic.Int64 {
+			if cb == nil {
+				return nil
+			}
+			return &cb.llmReplanRevision
+		}(),
 	}
 }

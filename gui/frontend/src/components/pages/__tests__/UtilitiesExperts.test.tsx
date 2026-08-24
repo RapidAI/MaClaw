@@ -58,8 +58,9 @@ type AppSpies = {
     GetACPHostStatus: ReturnType<typeof vi.fn>;
 	GetExpertMarketAccount: ReturnType<typeof vi.fn>;
 	WithdrawExpertMarketListing: ReturnType<typeof vi.fn>;
-	DeletePrivateExpertMarketListing: ReturnType<typeof vi.fn>;
+    DeletePrivateExpertMarketListing: ReturnType<typeof vi.fn>;
     SubmitExpertMarketListing: ReturnType<typeof vi.fn>;
+    SubmitExpertMarketListingWithDistribution: ReturnType<typeof vi.fn>;
 };
 
 function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppSpies {
@@ -80,8 +81,9 @@ function installAppSpies(experts: unknown[] = [builtinExpert, userExpert]): AppS
         GetACPHostStatus: vi.fn().mockRejectedValue(new Error('no backend')),
         GetExpertMarketAccount: vi.fn().mockResolvedValue({ uploads: [] }),
 		WithdrawExpertMarketListing: vi.fn().mockResolvedValue(undefined),
-		DeletePrivateExpertMarketListing: vi.fn().mockResolvedValue(undefined),
+        DeletePrivateExpertMarketListing: vi.fn().mockResolvedValue(undefined),
         SubmitExpertMarketListing: vi.fn().mockResolvedValue({ id: 'listing-new' }),
+        SubmitExpertMarketListingWithDistribution: vi.fn().mockResolvedValue({ id: 'listing-new' }),
     };
     (window as any).go = { main: { App: spies } };
     return spies;
@@ -207,7 +209,50 @@ describe('UtilitiesPage AI expert section', () => {
         expect(dialog.textContent).toContain(userExpert.name);
         expect(screen.queryByRole('dialog', { name: 'AI Expert Market' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
-        await waitFor(() => expect((window as any).go.main.App.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public'));
+        await waitFor(() => expect((window as any).go.main.App.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+    });
+
+    it('enables platform distribution by default for a public share', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        expect((screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }) as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
+
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+        expect(spies.SubmitExpertMarketListing).not.toHaveBeenCalled();
+    });
+
+    it('disables share controls while the submission is in flight', async () => {
+        const spies = installAppSpies();
+        let resolveSubmission!: (listing: Record<string, unknown>) => void;
+        spies.SubmitExpertMarketListingWithDistribution.mockReturnValue(new Promise(resolve => { resolveSubmission = resolve; }));
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
+
+        const submit = await screen.findByRole('button', { name: 'Submitting…' });
+        expect((submit as HTMLButtonElement).disabled).toBe(true);
+        expect(submit.getAttribute('aria-busy')).toBe('true');
+        expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }) as HTMLInputElement).disabled).toBe(true);
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.getByRole('dialog', { name: 'Share AI expert' })).toBeTruthy();
+
+        resolveSubmission({ id: 'listing-new' });
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Share AI expert' })).toBeNull());
+    });
+
+    it('closes the share dialog with Escape and restores focus to its trigger', async () => {
+        render(<UtilitiesPage lang="en" />);
+        const trigger = await screen.findByTestId('utilities-expert-share-user-exp-1');
+        trigger.focus();
+        fireEvent.click(trigger);
+        await screen.findByRole('dialog', { name: 'Share AI expert' });
+        fireEvent.keyDown(window, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Share AI expert' })).toBeNull());
+        expect(document.activeElement).toBe(trigger);
     });
 
     it('removes Share after submission and does not offer the expert in a marketplace share list', async () => {
@@ -230,6 +275,47 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
         fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
         await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private'));
+    });
+
+    it('clears platform distribution before submitting a private share', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }));
+        fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
+
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'private'));
+        expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled();
+    });
+
+    it('restores the default distribution opt-in when returning to public before submission', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
+        expect((screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }) as HTMLInputElement).checked).toBe(false);
+        fireEvent.click(screen.getByRole('radio', { name: 'Public (default, review required)' }));
+        expect((screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i }) as HTMLInputElement).checked).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
+
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
+    });
+
+    it('preserves an explicit public distribution opt-out while briefly private', async () => {
+        const spies = installAppSpies();
+        render(<UtilitiesPage lang="en" />);
+        fireEvent.click(await screen.findByTestId('utilities-expert-share-user-exp-1'));
+        const distribution = screen.getByRole('checkbox', { name: /Allow platform distribution by industry/i });
+        fireEvent.click(distribution);
+        fireEvent.click(screen.getByRole('radio', { name: 'Private (no review, only you can see it)' }));
+        expect((distribution as HTMLInputElement).checked).toBe(false);
+        fireEvent.click(screen.getByRole('radio', { name: 'Public (default, review required)' }));
+        expect((distribution as HTMLInputElement).checked).toBe(false);
+        fireEvent.click(screen.getByRole('button', { name: 'Submit to AI Expert Market' }));
+
+        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public'));
+        expect(spies.SubmitExpertMarketListingWithDistribution).not.toHaveBeenCalled();
     });
 
     it('keeps Share hidden from the successful submission response when the account refresh fails', async () => {
@@ -327,7 +413,7 @@ describe('UtilitiesPage AI expert section', () => {
         fireEvent.click(share);
         fireEvent.click(await screen.findByRole('button', { name: 'Submit to AI Expert Market' }));
 
-        await waitFor(() => expect(spies.SubmitExpertMarketListing).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public'));
+        await waitFor(() => expect(spies.SubmitExpertMarketListingWithDistribution).toHaveBeenCalledWith('user-exp-1', '1.0.0', 0, 'public', true));
         expect(await screen.findByTestId('utilities-expert-unlist-user-exp-1')).toBeTruthy();
         expect(screen.queryByTestId('utilities-expert-share-user-exp-1')).toBeNull();
     });

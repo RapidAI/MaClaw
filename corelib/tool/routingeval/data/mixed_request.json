@@ -1,0 +1,55 @@
+{
+  "category": "mixed_request",
+  "category_id": 32,
+  "title": "mixed lookup plus document.generate",
+  "design_ref": "10.1 item 32 / multi-capability plan graph",
+  "samples": [
+    {
+      "id": "live-data-generate-file",
+      "title": "live_data plus document_generate plus file deliver",
+      "mode": "needs",
+      "input_text": "query nanjing weather and generate pdf report",
+      "labels": [
+        {"label": "live_data"},
+        {"label": "document_generate"},
+        {"label": "deliver_current_file"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "file_deliver_adapter",
+            "kind": "channel",
+            "effects": ["external_effect"],
+            "capabilities": [{"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}],
+            "consumes": [{"kind": "document", "required": true}]
+          }
+        ]
+      },
+      "expected": {
+        "needs": [
+          {"capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+          {"capability": "document.generate.file", "qualifiers": {"format": "pdf"}},
+          {"capability": "artifact.deliver.current_channel", "qualifiers": {"format": "file"}}
+        ],
+        "selections": [
+          {"need_id": "need-live_data", "capability": "information.search.web", "phase": "execution"},
+          {"need_id": "need-document_generate", "capability": "document.generate.file", "phase": "execution"},
+          {"need_id": "need-deliver_current_file", "capability": "artifact.deliver.current_channel", "phase": "delivery"}
+        ],
+        "artifact_edges": [{"consumer_need": "need-deliver_current_file", "producer_need": "need-document_generate"}],
+        "ready_without_facts": ["need-live_data"]
+      }
+    }
+  ]
+}

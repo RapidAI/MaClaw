@@ -28,11 +28,14 @@ import (
 	"github.com/shakinm/xlsReader/xls"
 )
 
-// Default max runes returned by read_document when the caller does not set max_chars.
-// Large bid packages / specs can exceed this; callers can page with offset + max_chars.
-const defaultOfficeReadMaxRunes = 120_000
+// Default max runes returned by read_document when the caller does not set
+// max_chars. Context-aware callers select their own default; this remains a
+// conservative compatibility value for direct and legacy calls.
+const defaultOfficeReadMaxRunes = 30_000
 
-// Hard upper bound so a single tool result cannot blow up the model context.
+// Hard upper bound for callers that deliberately request a larger page. The
+// model-facing projection still spills it safely when it exceeds its preview
+// budget, and the document's offset/max_chars contract remains authoritative.
 const maxOfficeReadMaxRunes = 500_000
 
 // OfficeRead extracts an entire Office container before ToolReadDocument
@@ -99,22 +102,29 @@ const officeExtractCacheMaxTextBytes = 3 * 1024 * 1024
 
 const officeExtractVersionAttempts = 2
 
-// ToolReadDocument extracts text from office/PDF files using native parsers.
+// ToolReadDocument extracts text from Office/PDF and text-based files using
+// native readers.
 //
 // Supported extensions:
 //   - Word: .docx, .doc
 //   - Excel: .xlsx, .xls, .csv
 //   - PowerPoint: .pptx, .ppt (the latter through the staged OfficeRead path)
 //   - PDF: .pdf
-//   - Text: .txt, .md, .markdown
+//   - Text-based data: .txt, .md, .markdown, .json, .xml, .yaml, .yml, .log
 //
 // Args:
 //   - file_path | path: required file path
-//   - max_chars: optional rune limit for this chunk (default 120000)
+//   - max_chars: optional rune limit for this chunk (default 30000)
 //   - offset: optional rune offset into the full extract (default 0)
 //   - line_numbers: optional bool; when true, prefix each line with L1:/L2: markers
 func ToolReadDocument(args map[string]interface{}) string {
 	return toolReadDocumentWithSettings(args, currentOfficeReadSettings())
+}
+
+// ToolReadDocumentWithContext applies the current host's OfficeRead policy
+// while deriving the default page size from the active model context.
+func ToolReadDocumentWithContext(args map[string]interface{}, contextTokens int) string {
+	return toolReadDocumentWithSettingsAndDefault(args, currentOfficeReadSettings(), DocumentReadMaxRunesForContext(contextTokens), DocumentReadToolResultLimit(contextTokens))
 }
 
 // ToolReadDocumentWithOfficeReadConfig reads a document under an explicit
@@ -124,7 +134,72 @@ func ToolReadDocumentWithOfficeReadConfig(args map[string]interface{}, config Of
 	return toolReadDocumentWithSettings(args, officeReadSettingsForConfig(config))
 }
 
+// ToolReadDocumentWithOfficeReadConfigAndContext keeps the page emitted by
+// read_document aligned with the active model's usable context budget. An
+// explicit max_chars always wins, so agents can still request smaller focused
+// pages or resume from an offset deterministically.
+func ToolReadDocumentWithOfficeReadConfigAndContext(args map[string]interface{}, config OfficeReadConfig, contextTokens int) string {
+	return toolReadDocumentWithSettingsAndDefault(args, officeReadSettingsForConfig(config), DocumentReadMaxRunesForContext(contextTokens), DocumentReadToolResultLimit(contextTokens))
+}
+
+// DocumentReadMaxRunesForContext chooses a CJK-safe page body size from the
+// projection budget, leaving 4 KiB for headers and continuation metadata.
+func DocumentReadMaxRunesForContext(contextTokens int) int {
+	bytes := DocumentReadToolResultLimit(contextTokens) - 4*1024
+	if bytes <= 0 {
+		return defaultOfficeReadMaxRunes
+	}
+	runes := bytes / 3
+	if runes < defaultOfficeReadMaxRunes {
+		return defaultOfficeReadMaxRunes
+	}
+	if runes > maxOfficeReadMaxRunes {
+		return maxOfficeReadMaxRunes
+	}
+	return runes
+}
+
+// officeReadErrorClassMarker introduces the failure class on the first line of
+// every unsuccessful read. The formatters below write it and DocumentReadFailure
+// reads it, so the two must never name it separately.
+const officeReadErrorClassMarker = "error_class="
+
+// DocumentReadFailure reports the failure class named by the stable envelope
+// that every unsuccessful read carries, and whether the result is a failure at
+// all. A document page returns ("", false).
+//
+// The envelope exists so a host can tell a failed read from a page without
+// reading the prose, but until now each host wrote that judgement itself, and
+// most of them simply skipped it. Keeping it next to the formatters that emit
+// the envelope is what makes the two sides impossible to drift apart.
+func DocumentReadFailure(result string) (string, bool) {
+	firstLine, _, _ := strings.Cut(result, "\n")
+	marker := strings.Index(firstLine, officeReadErrorClassMarker)
+	if marker < 0 {
+		return "", false
+	}
+	class := firstLine[marker+len(officeReadErrorClassMarker):]
+	// The class sits inside a parenthesised suffix, so it ends at the first
+	// character that cannot belong to a class name.
+	if cut := strings.IndexFunc(class, func(r rune) bool {
+		return !(r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}); cut >= 0 {
+		class = class[:cut]
+	}
+	if class == "" {
+		// The envelope said the read failed even though the class is
+		// unreadable; believing the marker over the parse keeps an
+		// unrecognised envelope from being served as a document.
+		return "unknown", true
+	}
+	return class, true
+}
+
 func toolReadDocumentWithSettings(args map[string]interface{}, settings officeReadSettings) string {
+	return toolReadDocumentWithSettingsAndDefault(args, settings, defaultOfficeReadMaxRunes, DocumentReadMaxToolResult)
+}
+
+func toolReadDocumentWithSettingsAndDefault(args map[string]interface{}, settings officeReadSettings, defaultMaxRunes, previewLimitBytes int) string {
 	filePath := officeFilePathArg(args)
 	if filePath == "" {
 		return "缺少 file_path 参数（也可用 path）"
@@ -159,9 +234,12 @@ func toolReadDocumentWithSettings(args map[string]interface{}, settings officeRe
 		return formatOfficeReadFailure(filePath, format, fmt.Errorf("文件中没有可读取的文本内容"))
 	}
 
-	maxRunes := intArg(args, "max_chars", defaultOfficeReadMaxRunes)
+	if defaultMaxRunes <= 0 {
+		defaultMaxRunes = defaultOfficeReadMaxRunes
+	}
+	maxRunes := intArg(args, "max_chars", defaultMaxRunes)
 	if maxRunes <= 0 {
-		maxRunes = defaultOfficeReadMaxRunes
+		maxRunes = defaultMaxRunes
 	}
 	if maxRunes > maxOfficeReadMaxRunes {
 		maxRunes = maxOfficeReadMaxRunes
@@ -171,6 +249,15 @@ func toolReadDocumentWithSettings(args map[string]interface{}, settings officeRe
 		offset = 0
 	}
 	withLineNumbers := boolArg(args, "line_numbers", false)
+	// A numbered line can add up to ten ASCII bytes ("L500000: ") for
+	// every source rune. Keep the automatic page safely below the same
+	// projection budget as the result envelope; explicit max_chars remains an
+	// intentional caller choice and is still protected by spill/read-back.
+	if withLineNumbers {
+		if _, explicitlySet := args["max_chars"]; !explicitlySet {
+			maxRunes = minOfficeReadRunes(maxRunes, documentReadLineNumberedDefaultMaxRunes(previewLimitBytes))
+		}
+	}
 
 	fullRunes := []rune(text)
 	totalChars := len(fullRunes)
@@ -222,6 +309,24 @@ func toolReadDocumentWithSettings(args map[string]interface{}, settings officeRe
 	b.WriteByte('\n')
 	b.WriteString(outBody)
 	return b.String()
+}
+
+func documentReadLineNumberedDefaultMaxRunes(previewLimitBytes int) int {
+	const (
+		metadataReserve = 4 * 1024
+		maxBytesPerRune = 13 // 3 UTF-8 bytes plus a 10-byte LNNNNNN: prefix/newline.
+	)
+	if previewLimitBytes <= metadataReserve {
+		return 1
+	}
+	return (previewLimitBytes - metadataReserve) / maxBytesPerRune
+}
+
+func minOfficeReadRunes(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // extractOfficeTextCached returns ExtractOfficeText results with a short-lived
@@ -603,7 +708,7 @@ func extractOfficeTextWithSettings(filePath string, settings officeReadSettings)
 		}
 	}
 	if format == "unknown" || format == "" {
-		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md）", ext)
+		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log）", ext)
 	}
 	return "", kind, err
 }
@@ -765,7 +870,7 @@ func preflightNonOfficeExtractInput(filePath, format string) error {
 
 func isExplicitPlainTextFormat(format string) bool {
 	switch strings.TrimPrefix(strings.ToLower(strings.TrimSpace(format)), ".") {
-	case "txt", "text", "md", "markdown":
+	case "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log":
 		return true
 	default:
 		return false
@@ -796,7 +901,7 @@ func extractLegacyOfficeTextWithFormat(filePath, format string) (string, string,
 	case "pptx":
 		text, err := extractPPTXText(filePath)
 		return validateLegacyOfficeText(text, "pptx", err)
-	case "txt", "text", "md", "markdown":
+	case "txt", "text", "md", "markdown", "json", "xml", "yaml", "yml", "log":
 		data, err := os.ReadFile(filePath)
 		if err != nil {
 			return "", format, err
@@ -952,7 +1057,7 @@ func formatOfficeReadFailure(filePath, format string, err error) string {
 	// labels, or implementation details. The tool response becomes model
 	// context, so never serialize err itself here. The stable class preserves
 	// actionable routing without turning the response into a diagnostics dump.
-	b.WriteString(fmt.Sprintf("读取失败（error_class=%s）\n", errorClass))
+	b.WriteString(fmt.Sprintf("读取失败（%s%s）\n", officeReadErrorClassMarker, errorClass))
 	b.WriteString(fmt.Sprintf("# path: %s\n# format: %s\n", filePath, format))
 	if guidance, blocked := officeReadBlockedFailureGuidance(errorClass); blocked {
 		// These errors were produced by a boundary that has already rejected this
@@ -1006,7 +1111,7 @@ func officeReadBlockedFailureGuidance(errorClass string) (string, bool) {
 }
 
 func formatOfficeReadUnavailable(filePath string) string {
-	return fmt.Sprintf("文件不存在或无法访问（error_class=unavailable）\n# path: %s\n", filePath)
+	return fmt.Sprintf("文件不存在或无法访问（%sunavailable）\n# path: %s\n", officeReadErrorClassMarker, filePath)
 }
 
 // formatOfficeReadInvalidPath reports a caller path that names something other
@@ -1014,7 +1119,7 @@ func formatOfficeReadUnavailable(filePath string) string {
 // guidance: attempting another parser on a directory cannot recover a read and
 // would make the model treat a tool validation failure as document content.
 func formatOfficeReadInvalidPath(filePath, detail string) string {
-	return fmt.Sprintf("读取失败（error_class=invalid_path）\n# path: %s\n\n%s\n", filePath, detail)
+	return fmt.Sprintf("读取失败（%sinvalid_path）\n# path: %s\n\n%s\n", officeReadErrorClassMarker, filePath, detail)
 }
 
 func officeReadFailureClass(err error) string {

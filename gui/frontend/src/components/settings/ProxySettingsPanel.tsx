@@ -1,7 +1,10 @@
-import { Dispatch, SetStateAction } from 'react';
-import { corelib, main } from '../../../wailsjs/go/models';
+import { Dispatch, SetStateAction, useRef, useState } from 'react';
+import { SaveProxyConfig, TestProxyConfig } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { ProxySettingsFields } from './ProxySettingsFields';
 import { ProxyScopeSettings } from './ProxyScopeSettings';
+import { buildConfig, errorText, proxyFormPayload } from './proxySettingsHelpers';
 
 type ProxySettingsPanelProps = {
     config: corelib.AppConfig | null;
@@ -9,14 +12,87 @@ type ProxySettingsPanelProps = {
     isWindows: boolean;
     lang: string;
     t: (key: string) => string;
+    showToastMessage?: (message: string, duration?: number) => void;
+};
+
+type ProxyTestState = {
+    ok: boolean;
+    text: string;
 };
 
 const textForLang = localizeText;
 
-const buildConfig = (config: corelib.AppConfig | null, patch: Record<string, any>) => new corelib.AppConfig({ ...(config || {}), ...patch });
+export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t, showToastMessage }: ProxySettingsPanelProps) => {
+    const [saving, setSaving] = useState(false);
+    const [testing, setTesting] = useState(false);
+    const [banner, setBanner] = useState<ProxyTestState | null>(null);
+    const inflight = useRef(false);
+    const updateConfig = (patch: Record<string, any>) => {
+        setBanner(null);
+        setConfig(buildConfig(config, patch));
+    };
+    const busy = saving || testing;
+    const port = Number(config?.default_proxy_port?.trim());
+    const canTest = Boolean(
+        config?.default_proxy_enabled &&
+        config.default_proxy_host?.trim() &&
+        Number.isInteger(port) &&
+        port >= 1 &&
+        port <= 65535,
+    );
 
-export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: ProxySettingsPanelProps) => {
-    const updateConfig = (patch: Record<string, any>) => setConfig(buildConfig(config, patch));
+    const saveProxy = async () => {
+        if (!config || inflight.current) return;
+        inflight.current = true;
+        setSaving(true);
+        try {
+            await SaveProxyConfig(proxyFormPayload(config));
+            setBanner({ ok: true, text: t('saved') });
+            showToastMessage?.(t('saved'));
+        } catch (err) {
+            const message = errorText(err) || t('proxySaveFailed');
+            const text = `${t('proxySaveFailed')}: ${message}`;
+            setBanner({ ok: false, text });
+            showToastMessage?.(text, 5000);
+        } finally {
+            inflight.current = false;
+            setSaving(false);
+        }
+    };
+
+    const testProxy = async () => {
+        if (!config || inflight.current) return;
+        if (!canTest) {
+            setBanner({ ok: false, text: t('proxyTestNeedConfig') });
+            return;
+        }
+        inflight.current = true;
+        setTesting(true);
+        setBanner(null);
+        try {
+            const result = await TestProxyConfig(proxyFormPayload(config));
+            const latency = Number(result?.latency_ms || 0);
+            const ip = typeof result?.egress_ip === 'string' ? result.egress_ip : '';
+            if (result?.ok) {
+                const text = [
+                    t('proxyTestOK'),
+                    result.status ? `HTTP ${result.status}` : '',
+                    latency > 0 ? `${latency}ms` : '',
+                    ip ? `IP ${ip}` : '',
+                ].filter(Boolean).join(' · ');
+                setBanner({ ok: true, text });
+            } else {
+                const detail = typeof result?.message === 'string' && result.message ? result.message : t('proxyTestFailed');
+                setBanner({ ok: false, text: `${t('proxyTestFailed')}: ${detail}` });
+            }
+        } catch (err) {
+            const message = errorText(err) || t('proxyTestFailed');
+            setBanner({ ok: false, text: `${t('proxyTestFailed')}: ${message}` });
+        } finally {
+            inflight.current = false;
+            setTesting(false);
+        }
+    };
 
     return (
     <div className="settings-panel proxy-settings-panel">
@@ -27,110 +103,38 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t }: Pr
                     type="checkbox"
                     aria-label={t("proxyEnabled")}
                     checked={config?.default_proxy_enabled || false}
-                    onChange={(e) => updateConfig({ default_proxy_enabled: e.target.checked })}
+                    onChange={(e) => {
+                        const enabled = e.target.checked;
+                        const patch: Record<string, any> = { default_proxy_enabled: enabled };
+                        if (
+                            enabled &&
+                            !config?.default_proxy_scope_maclaw &&
+                            !config?.default_proxy_scope_coding_tools &&
+                            !config?.default_proxy_scope_agent
+                        ) {
+                            patch.default_proxy_scope_maclaw = true;
+                        }
+                        updateConfig(patch);
+                    }}
                 />
                 <span aria-hidden="true" />
             </span>
         </label>
 
-        <div className="proxy-settings-grid proxy-settings-grid--server">
-            <div className="proxy-settings-field proxy-settings-field--protocol">
-                <label className="form-label">{t("proxyProtocol")}</label>
-                <select
-                    className="form-input"
-                    value={config?.default_proxy_protocol || 'http'}
-                    onChange={(e) => updateConfig({ default_proxy_protocol: e.target.value })}
-                >
-                    <option value="http">HTTP</option>
-                    <option value="https">HTTPS</option>
-                    <option value="socks5">SOCKS5</option>
-                </select>
-            </div>
-            <div className="proxy-settings-field">
-                <label className="form-label">{t("proxyHost")}</label>
-                <input
-                    type="text"
-                    className="form-input"
-                    spellCheck={false}
-                    placeholder={t("proxyHostPlaceholder")}
-                    value={config?.default_proxy_host || ''}
-                    onChange={(e) => updateConfig({ default_proxy_host: e.target.value })}
-                />
-            </div>
-            <div className="proxy-settings-field proxy-settings-field--port">
-                <label className="form-label">{t("proxyPort")}</label>
-                <input
-                    type="text"
-                    className="form-input"
-                    spellCheck={false}
-                    placeholder={t("proxyPortPlaceholder")}
-                    value={config?.default_proxy_port || ''}
-                    onChange={(e) => updateConfig({ default_proxy_port: e.target.value })}
-                />
-            </div>
-        </div>
-
-        <div className="proxy-settings-grid proxy-settings-grid--auth">
-            <div className="proxy-settings-field">
-                <label className="form-label">{t("proxyUsername")}</label>
-                <input
-                    type="text"
-                    className="form-input"
-                    spellCheck={false}
-                    autoComplete="off"
-                    value={config?.default_proxy_username || ''}
-                    onChange={(e) => updateConfig({ default_proxy_username: e.target.value })}
-                />
-            </div>
-            <div className="proxy-settings-field">
-                <label className="form-label">{t("proxyPassword")}</label>
-                <input
-                    type="password"
-                    className="form-input"
-                    autoComplete="new-password"
-                    value={config?.default_proxy_password || ''}
-                    onChange={(e) => updateConfig({ default_proxy_password: e.target.value })}
-                />
-            </div>
-        </div>
-
-        <div className="proxy-settings-field">
-            <label className="form-label">{t("proxyBypass")}</label>
-            <textarea
-                className="form-input"
-                rows={2}
-                spellCheck={false}
-                placeholder={t("proxyBypassPlaceholder")}
-                value={config?.default_proxy_bypass || ''}
-                onChange={(e) => updateConfig({ default_proxy_bypass: e.target.value })}
-            />
-            <div className="proxy-settings-hint">{t("proxyBypassHint")}</div>
-        </div>
-
+        <ProxySettingsFields config={config} t={t} updateConfig={updateConfig} />
         <ProxyScopeSettings config={config} isWindows={isWindows} t={t} updateConfig={updateConfig} />
-
+        <div className="proxy-settings-hint">{t("proxyTestHint")}</div>
+        {banner && (
+            <div className="proxy-settings-status" data-ok={banner.ok ? 'true' : 'false'} role="status">
+                {banner.text}
+            </div>
+        )}
         <div className="proxy-settings-actions">
-            <button
-                className="btn-primary"
-                onClick={() => {
-                    if (!config) return;
-                    try {
-                        (window as any).go?.main?.App?.SaveProxyConfig?.({
-                            enabled: config.default_proxy_enabled || false,
-                            protocol: config.default_proxy_protocol || 'http',
-                            host: config.default_proxy_host || '',
-                            port: config.default_proxy_port || '',
-                            username: config.default_proxy_username || '',
-                            password: config.default_proxy_password || '',
-                            bypass: config.default_proxy_bypass || '',
-                            scope_maclaw: config.default_proxy_scope_maclaw || false,
-                            scope_coding_tools: config.default_proxy_scope_coding_tools || false,
-                            scope_agent: config.default_proxy_scope_agent || false,
-                        });
-                    } catch {}
-                }}
-            >
-                {textForLang(lang, 'Save', '\u4fdd\u5b58', '\u4fdd\u5b58')}
+            <button type="button" className="btn-secondary" disabled={busy || !canTest} aria-busy={testing} onClick={() => { void testProxy(); }}>
+                {testing ? t('proxyTesting') : t('proxyTest')}
+            </button>
+            <button type="button" className="btn-primary" disabled={busy || !config} aria-busy={saving} onClick={() => { void saveProxy(); }}>
+                {saving ? t('saving') : textForLang(lang, 'Save', '\u4fdd\u5b58', '\u4fdd\u5b58')}
             </button>
         </div>
     </div>

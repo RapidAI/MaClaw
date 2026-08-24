@@ -50,11 +50,23 @@ const LLM_SERVICE_I18N = {
     issueCard: 'Issue Service Exchange Card',
     issueCardPlansHint: 'Plan defaults: day 300 credits / 5h 150; week 1200 / 5h 300 / daily 600; month 5000 / 5h 600 / daily 1200 / weekly 2400; quarter 17000 / 5h 1200 / daily 2400 / weekly 4800 / monthly 10000; year 70000 / 5h 2400 / daily 4800 / weekly 9600 / monthly 40000.',
     systemDefaults: 'New User Benefits',
-    systemDesc: 'Grant credits and bind a model-service group automatically for new users.',
-    systemHint: 'New users receive 30% of the configured credits after registration, and the remaining 70% after email confirmation. The built-in default group is Default (No Model Access) and is used as the fallback when no group is selected.',
+    systemDesc: 'Choose one welcome benefit that is issued automatically to every new user.',
+    newUserBenefitMode: 'Active welcome benefit',
+    newUserBenefitCredits: 'Credits benefit',
+    newUserBenefitLimitCard: 'Limit card benefit',
+    newUserBenefitExclusive: 'Only one benefit can be active. The inactive configuration is retained for a later switch.',
+    systemHintCredits: 'New users receive 30% of the configured credits after registration, and the remaining 70% after email confirmation. The built-in default group is Default (No Model Access) and is used as the fallback when no group is selected.',
+    systemHintLimitCard: 'New users receive the configured limit card after registration. No Credits are issued at registration, email confirmation, or phone verification.',
     newUserGroups: 'Default LLM Service Group',
     newUserDays: 'Validity (Days)',
     newUserCredits: 'Benefit Credits',
+    newUserLimitCard: 'New User Limit Card',
+    newUserLimitCardDesc: 'Grant a binding-active group with rate limits. Recharge groups cannot be selected; 0 means unlimited or permanent.',
+    newUserLimitCardGroups: 'Limit Card Service Groups',
+    newUserLimitCardDays: 'Validity (days, 0 = permanent)',
+    newUserLimitCardFiveHour: 'Rolling 5-hour limit (Credits, 0 = unlimited)',
+    newUserLimitCardDaily: 'Daily limit (Credits, 0 = unlimited)',
+    newUserLimitCardNoGroups: 'No binding-active service groups are available. Create a non-recharge service group first.',
     saveDefaults: 'Save Defaults',
     credits: 'Credits',
     fiveHourCredits: '5h Credits',
@@ -75,6 +87,11 @@ const LLM_SERVICE_I18N = {
     diagnoseBtn: 'Diagnose',
     diagnoseEmpty: 'Enter an email to inspect effective entitlements.',
     diagnoseLoadFailed: 'Load entitlement diagnostic failed: {error}',
+    classHeadTitle: 'This group\'s classification head',
+    classHeadHint: 'Dynamic groups train from their own downstream traffic. Open a group to review traffic, train, and promote.',
+    classHeadDesc: 'Downstream requests billed to this group become samples. Train this group\'s head only. Promote when gates are green. Other groups are not mixed in.',
+    classTrain: 'Traffic / train',
+    classTrafficTitle: 'Downstream traffic (training samples)',
     loadFailed: 'Load model services failed: {error}',
     saveDone: 'Model service configuration saved.',
     saveFailed: 'Save model services failed: {error}',
@@ -332,11 +349,23 @@ const LLM_SERVICE_I18N = {
     issueCard: '\u53d1\u884c\u670d\u52a1\u5151\u6362\u5361',
     issueCardPlansHint: '\u9ed8\u8ba4\u89c4\u5219\uff1a\u5929\u5361 300 / 5\u5c0f\u65f6 150\uff1b\u5468\u5361 1200 / 5\u5c0f\u65f6 300 / \u6bcf\u65e5 600\uff1b\u6708\u5361 5000 / 5\u5c0f\u65f6 600 / \u6bcf\u65e5 1200 / \u6bcf\u5468 2400\uff1b\u5b63\u5361 17000 / 5\u5c0f\u65f6 1200 / \u6bcf\u65e5 2400 / \u6bcf\u5468 4800 / \u6bcf\u6708 10000\uff1b\u5e74\u5361 70000 / 5\u5c0f\u65f6 2400 / \u6bcf\u65e5 4800 / \u6bcf\u5468 9600 / \u6bcf\u6708 40000\u3002',
     systemDefaults: '\u65b0\u7528\u6237\u798f\u5229',
-    systemDesc: '\u4e3a\u65b0\u7528\u6237\u81ea\u52a8\u53d1\u653e credits \u5e76\u7ed1\u5b9a\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
-    systemHint: '\u65b0\u7528\u6237\u6ce8\u518c\u540e\u5148\u53d1\u653e\u914d\u7f6e credits \u7684 30%\uff0c\u90ae\u4ef6\u786e\u8ba4\u540e\u518d\u53d1\u653e\u5269\u4f59 70%\u3002\u5982\u679c\u672a\u9009\u62e9\u670d\u52a1\u7ec4\uff0c\u5c06\u56de\u9000\u5230\u5185\u7f6e Default\uff08\u65e0\u6a21\u578b\u6743\u9650\uff09\u3002',
+    systemDesc: '\u4e3a\u6bcf\u4f4d\u65b0\u7528\u6237\u9009\u62e9\u4e00\u79cd\u81ea\u52a8\u53d1\u653e\u7684\u798f\u5229\u3002',
+    newUserBenefitMode: '\u5f53\u524d\u542f\u7528\u7684\u65b0\u7528\u6237\u798f\u5229',
+    newUserBenefitCredits: 'Credits \u798f\u5229',
+    newUserBenefitLimitCard: '\u9650\u989d\u5361\u798f\u5229',
+    newUserBenefitExclusive: '\u4e00\u6b21\u53ea\u80fd\u542f\u7528\u4e00\u79cd\u798f\u5229\u3002\u672a\u542f\u7528\u7684\u914d\u7f6e\u4f1a\u4fdd\u7559\uff0c\u4ee5\u4fbf\u4e4b\u540e\u5207\u6362\u3002',
+    systemHintCredits: '\u65b0\u7528\u6237\u6ce8\u518c\u540e\u5148\u53d1\u653e\u914d\u7f6e Credits \u7684 30%\uff0c\u90ae\u4ef6\u786e\u8ba4\u540e\u518d\u53d1\u653e\u5269\u4f59 70%\u3002\u5982\u679c\u672a\u9009\u62e9\u670d\u52a1\u7ec4\uff0c\u5c06\u56de\u9000\u5230\u5185\u7f6e Default\uff08\u65e0\u6a21\u578b\u6743\u9650\uff09\u3002',
+    systemHintLimitCard: '\u65b0\u7528\u6237\u6ce8\u518c\u540e\u5373\u83b7\u5f97\u914d\u7f6e\u7684\u9650\u989d\u5361\u3002\u6ce8\u518c\u3001\u90ae\u7bb1\u786e\u8ba4\u548c\u624b\u673a\u9a8c\u8bc1\u90fd\u4e0d\u4f1a\u518d\u53d1\u653e Credits\u3002',
     newUserGroups: '\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4',
     newUserDays: '\u6709\u6548\u671f\uff08\u5929\uff09',
     newUserCredits: '\u798f\u5229 Credits',
+    newUserLimitCard: '\u65b0\u7528\u6237\u9650\u989d\u5361',
+    newUserLimitCardDesc: '\u4e3a\u7ed1\u5b9a\u5373\u751f\u6548\u7684\u670d\u52a1\u7ec4\u6388\u6743\u5e76\u9650\u989d\u3002\u5145\u503c\u7ec4\u4e0d\u53ef\u9009\uff1b0 \u8868\u793a\u4e0d\u9650\u5236\u6216\u6c38\u4e45\u6709\u6548\u3002',
+    newUserLimitCardGroups: '\u9650\u989d\u5361\u670d\u52a1\u7ec4',
+    newUserLimitCardDays: '\u6709\u6548\u671f\uff08\u5929\uff0c0 = \u6c38\u4e45\uff09',
+    newUserLimitCardFiveHour: '5 \u5c0f\u65f6\u6eda\u52a8\u9650\u989d\uff08Credits\uff0c0 = \u4e0d\u9650\uff09',
+    newUserLimitCardDaily: '\u6bcf\u65e5\u6700\u9ad8\u9650\u989d\uff08Credits\uff0c0 = \u4e0d\u9650\uff09',
+    newUserLimitCardNoGroups: '\u6682\u65e0\u53ef\u9009\u7684\u7ed1\u5b9a\u5373\u751f\u6548\u670d\u52a1\u7ec4\uff0c\u8bf7\u5148\u521b\u5efa\u975e\u5145\u503c\u7ec4\u3002',
     saveDefaults: '\u4fdd\u5b58\u9ed8\u8ba4\u503c',
     credits: '\u79ef\u5206',
     fiveHourCredits: '5 \u5c0f\u65f6\u989d\u5ea6',
@@ -357,6 +386,11 @@ const LLM_SERVICE_I18N = {
     diagnoseBtn: '\u5f00\u59cb\u8bca\u65ad',
     diagnoseEmpty: '\u8bf7\u8f93\u5165\u90ae\u7bb1\u4ee5\u67e5\u770b\u5b9e\u9645\u751f\u6548\u7684\u6743\u9650\u3002',
     diagnoseLoadFailed: '\u52a0\u8f7d\u6388\u6743\u8bca\u65ad\u5931\u8d25: {error}',
+    classHeadTitle: '\u672c\u7ec4\u5206\u7c7b\u5934',
+    classHeadHint: '\u52a8\u6001\u7ec4\u7528\u672c\u7ec4\u4e0b\u6e38\u6d41\u91cf\u8bad\u7ec3\u3002\u6253\u5f00\u7ec4\u9875\u53ef\u770b\u6d41\u91cf\u3001\u8bad\u7ec3\u548c\u8f6c\u6b63\u3002',
+    classHeadDesc: '\u8fd9\u7ec4\u6263\u8d39\u7684\u4e0b\u6e38\u8bf7\u6c42\u4f1a\u53d8\u6210\u6837\u672c\u3002\u53ea\u8bad\u8fd9\u4e00\u7ec4\u7684\u5934\uff0c\u95e8\u7981\u5168\u7eff\u624d\u80fd\u8f6c\u6b63\u3002\u4e0d\u4f1a\u6df7\u522b\u7684\u7ec4\u3002',
+    classTrain: '\u6d41\u91cf/\u8bad\u7ec3',
+    classTrafficTitle: '\u4e0b\u6e38\u6d41\u91cf\uff08\u8bad\u7ec3\u6837\u672c\uff09',
     loadFailed: '\u52a0\u8f7d\u6a21\u578b\u670d\u52a1\u5931\u8d25: {error}',
     saveDone: '\u6a21\u578b\u670d\u52a1\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002',
     saveFailed: '\u4fdd\u5b58\u6a21\u578b\u670d\u52a1\u5931\u8d25: {error}',
@@ -566,11 +600,12 @@ let llmServiceSelectedCardMap = {};
 let llmServiceCardSearch = '';
 let llmServiceCardPage = 1;
 const llmServiceCardPageSize = 20;
-let llmServiceCardsPageData = { items: [], total: 0, page: 1, page_size: llmServiceCardPageSize };
+let llmServiceCardsPageData = null;
 let llmServiceGrantSearch = '';
 let llmServiceGrantPage = 1;
 const llmServiceGrantPageSize = 20;
 let llmServiceSystemSettingsLoading = false;
+let llmServiceSystemSettingsRequestID = 0;
 const llmServiceCapabilityOptions = ['document', 'reasoning', 'tools'];
 const llmServicePriorityOptions = [0, 10, 30, 50, 80, 100];
 const llmServiceResolutionOptions = [0, 1, 2, 3];
@@ -814,7 +849,8 @@ function ensureLLMServiceAdminUI() {
     '<div class="grid2"><div><label id="llmServiceBindingGroupIDLabel"></label><input id="llmServiceBindingGroupID" list="llmSecurityGroupOptions"><div id="llmServiceBindingGroupIDPicker" class="hint" style="margin-top:8px"></div></div><div><label id="llmServiceBindingServiceGroupsLabel"></label><input id="llmServiceBindingServiceGroups" list="llmServiceGroupOptions"><div id="llmServiceBindingServiceGroupsPicker" class="hint" style="margin-top:8px"></div></div></div><div class="actions"><button class="btn-secondary" onclick="addLLMServiceGroupBinding()" id="llmServiceAddGroupBindingBtn"></button></div><div id="llmServiceGroupBindingsList"></div>' +
     '<div style="margin-top:10px" class="item-title" id="llmServiceUsersTitle"></div><div class="grid2"><div><label id="llmServiceUserEmailLabel"></label><input id="llmServiceUserEmail"></div><div><label id="llmServiceUserServiceGroupsLabel"></label><input id="llmServiceUserServiceGroups" list="llmServiceGroupOptions"><div id="llmServiceUserServiceGroupsPicker" class="hint" style="margin-top:8px"></div></div></div><div class="actions"><button class="btn-secondary" onclick="addLLMServiceUserBinding()" id="llmServiceAddUserBindingBtn"></button></div><div id="llmServiceUserBindingsList"></div>' +
     '</div>' +
-    '<div class="item" style="grid-column:1 / -1"><div class="item-head"><div><div class="item-title" id="llmServiceDiagnoseTitle"></div><div class="item-meta" id="llmServiceDiagnoseDesc"></div></div></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceDiagnoseEmailLabel"></label><input id="llmServiceDiagnoseEmail"></div><div style="display:flex;align-items:flex-end"><button class="btn-secondary" onclick="diagnoseLLMServiceUser()" id="llmServiceDiagnoseBtn"></button></div></div><div id="llmServiceDiagnoseResult" style="margin-top:10px"></div></div>';
+    '<div class="item" style="grid-column:1 / -1"><div class="item-head"><div><div class="item-title" id="llmServiceDiagnoseTitle"></div><div class="item-meta" id="llmServiceDiagnoseDesc"></div></div></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceDiagnoseEmailLabel"></label><input id="llmServiceDiagnoseEmail"></div><div style="display:flex;align-items:flex-end"><button class="btn-secondary" onclick="diagnoseLLMServiceUser()" id="llmServiceDiagnoseBtn"></button></div></div><div id="llmServiceDiagnoseResult" style="margin-top:10px"></div></div>' +
+    '<div class="item" style="grid-column:1 / -1" id="llmClassHeadHint"><div class="item-head"><div><div class="item-title">' + escapeHtml(typeof lsx === 'function' ? lsx('classHeadTitle') : 'Classification head') + '</div><div class="item-meta">' + escapeHtml(typeof lsx === 'function' ? lsx('classHeadHint') : 'Each dynamic group has its own head. Open a group to train and promote.') + '</div></div></div></div>';
   tab.appendChild(host);
   if (!document.getElementById('llmServiceGroupOptions')) { var dl = document.createElement('datalist'); dl.id = 'llmServiceGroupOptions'; document.body.appendChild(dl); }
   if (!document.getElementById('llmSecurityGroupOptions')) { var sdl = document.createElement('datalist'); sdl.id = 'llmSecurityGroupOptions'; document.body.appendChild(sdl); }
@@ -1422,6 +1458,20 @@ function renderLLMServiceSystemGroupOptions() {
   if (!hasBuiltin) options.unshift('<option value="' + llsEsc(BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID) + '">' + llsEsc(BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID + ' - Default (No Model Access)') + '</option>');
   select.innerHTML = options.join('');
 }
+function renderLLMServiceLimitCardGroupOptions() {
+  var select = document.getElementById('llmServiceLimitCardGroups');
+  if (!select) return;
+  var groups = (llmServiceAdminCache && llmServiceAdminCache.model_service_groups || []).filter(function(group) {
+    return String(group && group.id || '').trim() && llsNormalizeAccessPolicy(group && group.access_policy || '') === 'free';
+  });
+  select.innerHTML = groups.map(function(group) {
+    var id = String(group.id || '').trim();
+    var label = group.name && group.name !== id ? (id + ' - ' + group.name) : id;
+    return '<option value="' + llsEsc(id) + '">' + llsEsc(label) + '</option>';
+  }).join('');
+  var hint = document.getElementById('llmServiceLimitCardNoGroups');
+  if (hint) hint.classList.toggle('hidden', groups.length > 0);
+}
 function refreshLLMServiceGroupSelectors() {
   var datalist = document.getElementById('llmServiceGroupOptions');
   var groups = (llmServiceAdminCache && llmServiceAdminCache.model_service_groups || []).filter(function(group) { return String(group && group.id || '').trim(); });
@@ -1688,26 +1738,30 @@ function renderLLMServiceChainOverview(cache) {
     }).join('') : '<div class="item-meta" style="color:#2f855a">' + escapeHtml(lsx('chainHealthy')) + '</div>') + '</div>' +
   '</div>';
 }
-async function loadLLMServiceAdmin() {
+async function loadLLMServiceAdmin(options) {
+  options = options || {};
   ensureLLMServiceAdminUI();
   ensureLLMServiceSystemUI();
   renderLLMServiceModelRuntime();
   try {
     await Promise.all([loadLLMServiceProviderOptions(), loadLLMServiceSecurityGroupOptions()]);
-    const results = await Promise.all([
-      api('/api/admin/llm/services?include_cards=false'),
-      llmServiceLoadCardsPage(llmServiceCardPage || 1),
-      llmServiceGlobalScoped() ? loadLLMServiceModelRuntime({ silent: true }) : Promise.resolve(null)
-    ]);
+    const requests = [api('/api/admin/llm/services?include_cards=false')];
+    // System Settings only needs the benefit registry. Avoid fetching a card
+    // page that is not visible there; the cards tab loads it when opened.
+    if (!options.systemOnly) requests.push(llmServiceLoadCardsPage(llmServiceCardPage || 1));
+    requests.push(llmServiceGlobalScoped() ? loadLLMServiceModelRuntime({ silent: true }) : Promise.resolve(null));
+    const results = await Promise.all(requests);
     const data = results[0];
     llmServiceAdminCache = data || { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
     if (llmServiceSelectedGroupID && !(llmServiceAdminCache.model_service_groups || []).some(function(g) { return g.id === llmServiceSelectedGroupID; })) llmServiceSelectedGroupID = '';
     renderLLMServiceAdmin();
     renderLLMServiceSystemSettings();
+    return llmServiceAdminCache;
   } catch (err) {
     const msg = lsx('loadFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
+    return null;
   }
 }
 function renderLLMServiceAdmin() {
@@ -1782,7 +1836,7 @@ function renderLLMServiceAdmin() {
       const groupHeader = '<div class="row header" style="grid-template-columns:1.1fr .9fr 1.6fr auto"><div>' + escapeHtml(lsx('name')) + '</div><div>' + escapeHtml(lsx('id')) + '</div><div>' + escapeHtml(lsx('modelsLabel')) + '</div><div></div></div>';
       const groupRows = groups.map(function(g) {
         const active = g.id === llmServiceSelectedGroupID;
-        const escapedID = String(g.id || '').replace(/'/g, "\'");
+        const escapedID = llmServiceJSArg(g.id || '');
         const modelList = (g.models || []).length ? (g.models || []).map(function(model) { return llmServiceModelSummary(model); }).join(' | ') : lsx('noAuthorizedModelDetails');
         const desc = g.description ? ('<div class="item-meta" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(g.description) + '</div>') : '';
         const accessPolicy = llsNormalizeAccessPolicy(g && g.access_policy || '');
@@ -1792,7 +1846,9 @@ function renderLLMServiceAdmin() {
           + '<div style="min-width:0"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(g.name || g.id) + '</div>' + ui.badge(lsx('modelsCount', { count: String((g.models || []).length) }), 'info') + ui.badge(llsAccessPolicyLabel(accessPolicy), accessBadgeTone) + '</div>' + desc + '</div>'
           + '<div class="item-meta mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(g.id || '') + '</div>'
           + '<div class="item-meta mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(modelList) + '</div>'
-          + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap"><button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="event.stopPropagation();openLLMServiceGroupDialog(\'edit\',\'' + escapedID + '\')">' + escapeHtml(lsx('edit')) + '</button>' + (isProtectedLLMServiceGroup(g.id) ? '' : '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="event.stopPropagation();llsRemoveGroupById(\'' + escapedID + '\')">' + escapeHtml(lsx('remove')) + '</button>') + '</div>'
+          + '<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap">'
+          + (g.kind === 'dynamic' ? '<button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="event.stopPropagation();openLLMServiceGroupDialog(\'edit\',\'' + escapedID + '\',\'train\')">' + escapeHtml(lsx('classTrain')) + '</button>' : '')
+          + '<button class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" onclick="event.stopPropagation();openLLMServiceGroupDialog(\'edit\',\'' + escapedID + '\')">' + escapeHtml(lsx('edit')) + '</button>' + (isProtectedLLMServiceGroup(g.id) ? '' : '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="event.stopPropagation();llsRemoveGroupById(\'' + escapedID + '\')">' + escapeHtml(lsx('remove')) + '</button>') + '</div>'
           + '</div>'
           + '</div>';
       }).join('');
@@ -2264,10 +2320,14 @@ function ensureLLMServiceSystemUI() {
   host.style.marginTop = '18px';
   host.innerHTML = '' +
     '<div class="head" style="margin-bottom:8px"><div><div class="item-title" id="llmServiceSystemTitle"></div><div class="item-meta" id="llmServiceSystemDesc"></div></div><div class="actions"><button class="btn-primary" onclick="saveLLMServiceSystemSettings()" id="llmServiceSystemSaveBtn"></button></div></div>' +
+    '<fieldset class="llm-benefit-mode" id="llmServiceNewUserBenefitMode"><legend class="llm-benefit-mode__label" id="llmServiceNewUserBenefitModeLabel"></legend><div class="llm-benefit-mode__options" role="radiogroup" aria-labelledby="llmServiceNewUserBenefitModeLabel"><label class="llm-benefit-mode__option" data-benefit-mode="credits"><input type="radio" name="llmServiceNewUserBenefitMode" value="credits" onchange="llmServiceSetNewUserBenefitMode(this.value)"><span class="llm-benefit-mode__indicator" aria-hidden="true"></span><span class="llm-benefit-mode__copy"><strong id="llmServiceNewUserBenefitCredits"></strong><small id="llmServiceNewUserBenefitCreditsDesc"></small></span></label><label class="llm-benefit-mode__option" data-benefit-mode="limit_card"><input type="radio" name="llmServiceNewUserBenefitMode" value="limit_card" onchange="llmServiceSetNewUserBenefitMode(this.value)"><span class="llm-benefit-mode__indicator" aria-hidden="true"></span><span class="llm-benefit-mode__copy"><strong id="llmServiceNewUserBenefitLimitCard"></strong><small id="llmServiceNewUserBenefitLimitCardDesc"></small></span></label></div><div class="llm-benefit-mode__note" id="llmServiceNewUserBenefitExclusive"></div></fieldset>' +
+    '<fieldset id="llmServiceCreditsBenefitFields" style="border:0;padding:0;margin:0">' +
     '<div class="grid2">' +
     '<div><label id="llmServiceSystemGroupsLabel"></label><select id="llmServiceSystemGroups" multiple size="4" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:92px"></select></div>' +
     '<div><label id="llmServiceSystemDaysLabel"></label><input id="llmServiceSystemDays" type="number" min="1" value="30"></div>' +
-    '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div></div><div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
+    '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div></div></fieldset>' +
+    '<div class="item" id="llmServiceLimitCardBenefitPanel" style="margin-top:14px;padding:14px"><div class="item-title" id="llmServiceLimitCardTitle"></div><div class="item-meta" id="llmServiceLimitCardDesc" style="margin:4px 0 10px"></div><fieldset id="llmServiceLimitCardBenefitFields" style="border:0;padding:0;margin:0"><div class="grid2"><div><label id="llmServiceLimitCardGroupsLabel"></label><select id="llmServiceLimitCardGroups" multiple size="4" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:92px"></select><div class="hint hidden" id="llmServiceLimitCardNoGroups" style="margin-top:6px"></div></div><div><label id="llmServiceLimitCardDaysLabel"></label><input id="llmServiceLimitCardDays" type="number" min="0" step="1" value="0"></div></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceLimitCardFiveHourLabel"></label><input id="llmServiceLimitCardFiveHour" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceLimitCardDailyLabel"></label><input id="llmServiceLimitCardDaily" type="number" min="0" step="1" value="0"></div></div></fieldset></div>' +
+    '<div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
   tab.appendChild(host);
   applyLLMServiceSystemI18n();
 }
@@ -2275,12 +2335,53 @@ function applyLLMServiceSystemI18n() {
   if (!llmServiceTenantScoped()) return;
   _s('llmServiceSystemTitle', 'textContent', lsx('systemDefaults'));
   _s('llmServiceSystemDesc', 'textContent', lsx('systemDesc'));
+  _s('llmServiceNewUserBenefitModeLabel', 'textContent', lsx('newUserBenefitMode'));
+  _s('llmServiceNewUserBenefitCredits', 'textContent', lsx('newUserBenefitCredits'));
+  _s('llmServiceNewUserBenefitCreditsDesc', 'textContent', lsx('systemHintCredits'));
+  _s('llmServiceNewUserBenefitLimitCard', 'textContent', lsx('newUserBenefitLimitCard'));
+  _s('llmServiceNewUserBenefitLimitCardDesc', 'textContent', lsx('systemHintLimitCard'));
+  _s('llmServiceNewUserBenefitExclusive', 'textContent', lsx('newUserBenefitExclusive'));
   _s('llmServiceSystemGroupsLabel', 'textContent', lsx('newUserGroups'));
   _s('llmServiceSystemDaysLabel', 'textContent', lsx('newUserDays'));
   _s('llmServiceSystemCreditsLabel', 'textContent', lsx('newUserCredits'));
+  _s('llmServiceLimitCardTitle', 'textContent', lsx('newUserLimitCard'));
+  _s('llmServiceLimitCardDesc', 'textContent', lsx('newUserLimitCardDesc'));
+  _s('llmServiceLimitCardGroupsLabel', 'textContent', lsx('newUserLimitCardGroups'));
+  _s('llmServiceLimitCardDaysLabel', 'textContent', lsx('newUserLimitCardDays'));
+  _s('llmServiceLimitCardFiveHourLabel', 'textContent', lsx('newUserLimitCardFiveHour'));
+  _s('llmServiceLimitCardDailyLabel', 'textContent', lsx('newUserLimitCardDaily'));
+  _s('llmServiceLimitCardNoGroups', 'textContent', lsx('newUserLimitCardNoGroups'));
   _s('llmServiceSystemSaveBtn', 'textContent', lsx('saveDefaults'));
-  _s('llmServiceSystemHint', 'textContent', lsx('systemHint'));
 }
+function llmServiceNewUserBenefitMode() {
+  var selected = document.querySelector('input[name="llmServiceNewUserBenefitMode"]:checked');
+  return selected && selected.value === 'limit_card' ? 'limit_card' : 'credits';
+}
+function llmServiceSetNewUserBenefitMode(mode) {
+  mode = mode === 'limit_card' ? 'limit_card' : 'credits';
+  Array.prototype.slice.call(document.querySelectorAll('input[name="llmServiceNewUserBenefitMode"]')).forEach(function(input) {
+    input.checked = input.value === mode;
+  });
+  var modeRoot = document.getElementById('llmServiceNewUserBenefitMode');
+  if (modeRoot) modeRoot.dataset.mode = mode;
+  Array.prototype.slice.call(document.querySelectorAll('.llm-benefit-mode__option')).forEach(function(option) {
+    option.classList.toggle('is-active', option.dataset.benefitMode === mode);
+  });
+  var creditsFields = document.getElementById('llmServiceCreditsBenefitFields');
+  var limitCardFields = document.getElementById('llmServiceLimitCardBenefitFields');
+  var limitCardPanel = document.getElementById('llmServiceLimitCardBenefitPanel');
+  if (creditsFields) {
+    creditsFields.disabled = mode !== 'credits';
+    creditsFields.style.opacity = mode === 'credits' ? '' : '0.55';
+  }
+  if (limitCardFields) {
+    limitCardFields.disabled = mode !== 'limit_card';
+    limitCardFields.style.opacity = mode === 'limit_card' ? '' : '0.55';
+  }
+  if (limitCardPanel) limitCardPanel.style.opacity = mode === 'limit_card' ? '' : '0.75';
+  _s('llmServiceSystemHint', 'textContent', lsx(mode === 'limit_card' ? 'systemHintLimitCard' : 'systemHintCredits'));
+}
+window.llmServiceSetNewUserBenefitMode = llmServiceSetNewUserBenefitMode;
 function renderLLMServiceSystemSettings() {
   if (!llmServiceTenantScoped()) return;
   applyLLMServiceSystemI18n();
@@ -2295,6 +2396,15 @@ function renderLLMServiceSystemSettings() {
   Array.prototype.slice.call(systemSelect && systemSelect.options || []).forEach(function(option) { option.selected = !!selectedSystemGroups[option.value]; });
   _s('llmServiceSystemDays', 'value', String(llmServiceAdminCache.default_new_user_duration_days || 30));
   _s('llmServiceSystemCredits', 'value', String(llmServiceAdminCache.default_new_user_credits || 1000));
+  renderLLMServiceLimitCardGroupOptions();
+  var limitCard = llmServiceAdminCache.default_new_user_limit_card || {};
+  var selectedLimitGroups = {};
+  (limitCard.service_group_ids || []).forEach(function(id) { selectedLimitGroups[String(id || '').trim()] = true; });
+  Array.prototype.slice.call(document.getElementById('llmServiceLimitCardGroups')?.options || []).forEach(function(option) { option.selected = !!selectedLimitGroups[option.value]; });
+  _s('llmServiceLimitCardDays', 'value', String(Number(limitCard.duration_days || 0)));
+  _s('llmServiceLimitCardFiveHour', 'value', String(Number(limitCard.period_limits && limitCard.period_limits.five_hour || 0)));
+  _s('llmServiceLimitCardDaily', 'value', String(Number(limitCard.period_limits && limitCard.period_limits.daily || 0)));
+  llmServiceSetNewUserBenefitMode(llmServiceAdminCache.default_new_user_benefit_mode);
   refreshLLMServiceGroupSelectors();
 }
 function ensureLLMServiceSystemSettingsLoaded() {
@@ -2302,21 +2412,36 @@ function ensureLLMServiceSystemSettingsLoaded() {
   ensureLLMServiceSystemUI();
   if (llmServiceAdminCache || llmServiceSystemSettingsLoading) return;
   if (typeof token === 'function' && !token()) return;
+  var requestID = ++llmServiceSystemSettingsRequestID;
   llmServiceSystemSettingsLoading = true;
-  loadLLMServiceAdmin().finally(function() {
-    llmServiceSystemSettingsLoading = false;
+  loadLLMServiceAdmin({ systemOnly: true }).catch(function() {
+    // loadLLMServiceAdmin already reports the failure. Keep this handler here
+    // so a superseded request cannot surface as an unhandled rejection.
+  }).finally(function() {
+    if (requestID === llmServiceSystemSettingsRequestID) llmServiceSystemSettingsLoading = false;
   });
 }
 async function saveLLMServiceSystemSettings() {
   if (!llmServiceTenantScoped()) return;
   ensureLLMServiceSystemUI();
-  if (!llmServiceAdminCache) await loadLLMServiceAdmin();
+  if (!llmServiceAdminCache) await loadLLMServiceAdmin({ systemOnly: true });
+  if (!llmServiceAdminCache) return;
+  llmServiceAdminCache.default_new_user_benefit_mode = llmServiceNewUserBenefitMode();
   var selectedSystemGroups = Array.prototype.slice.call(document.getElementById('llmServiceSystemGroups').options || []).filter(function(option) { return option.selected && option.value; }).map(function(option) { return option.value; });
   llmServiceAdminCache.default_new_user_service_groups = selectedSystemGroups.length ? selectedSystemGroups : [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
   llmServiceAdminCache.default_new_user_duration_days = Number(document.getElementById('llmServiceSystemDays').value || 30);
   if (!(llmServiceAdminCache.default_new_user_duration_days > 0)) llmServiceAdminCache.default_new_user_duration_days = 30;
   llmServiceAdminCache.default_new_user_credits = Number(document.getElementById('llmServiceSystemCredits').value || 1000);
   if (!(llmServiceAdminCache.default_new_user_credits > 0)) llmServiceAdminCache.default_new_user_credits = 1000;
+  var limitCardGroups = Array.prototype.slice.call(document.getElementById('llmServiceLimitCardGroups').options || []).filter(function(option) { return option.selected && option.value; }).map(function(option) { return option.value; });
+  var limitCardDays = Number(document.getElementById('llmServiceLimitCardDays').value || 0);
+  var limitCardFiveHour = Number(document.getElementById('llmServiceLimitCardFiveHour').value || 0);
+  var limitCardDaily = Number(document.getElementById('llmServiceLimitCardDaily').value || 0);
+	if (!(limitCardDays >= 0) || !(limitCardFiveHour >= 0) || !(limitCardDaily >= 0)) {
+    showToast(lsx('saveFailed', { error: 'limit card values must be zero or greater' }), 'error');
+		return;
+	}
+  llmServiceAdminCache.default_new_user_limit_card = { service_group_ids: limitCardGroups, duration_days: limitCardDays, period_limits: { five_hour: limitCardFiveHour, daily: limitCardDaily } };
   if (!(llmServiceAdminCache.tokens_per_credit > 0)) llmServiceAdminCache.tokens_per_credit = 10000;
   if (llmServiceWarnUnknownServiceGroups(llmServiceAdminCache.default_new_user_service_groups || [])) return;
   try {
@@ -2525,6 +2650,22 @@ var LLS_DIALOG_I18N = {
   accessPolicyFreeHint: { zh: '\u53ea\u8981\u7528\u6237\u88ab\u7ed1\u5230\u8fd9\u4e2a\u670d\u52a1\u7ec4\uff0c\u5c31\u80fd\u76f4\u63a5\u4f7f\u7528\u3002\u4e0d\u5f3a\u4f9d\u8d56\u5151\u6362\u5361\u6216 grant\u3002', en: 'Anyone bound to this service group can use it directly. A redeemed card or active grant is not required.' },
   accessPolicyGrantRequiredHint: { zh: '\u7528\u6237\u5373\u4f7f\u5df2\u7ed1\u5230\u8fd9\u4e2a\u670d\u52a1\u7ec4\uff0c\u4ecd\u5fc5\u987b\u6301\u6709\u5bf9\u5e94\u7684\u6709\u6548 grant \u4e14\u6709\u5269\u4f59\u989d\u5ea6\uff0c\u624d\u4f1a\u88ab\u8def\u7531\u5230 provider\u3002', en: 'Even bound users must still have an active grant with remaining credits before traffic can be routed to a live provider.' },
   creditMultiplier: { zh: 'Credit \u500d\u7387', en: 'Credit Multiplier' },
+  billingMode: { zh: '\u8ba1\u8d39\u6a21\u5f0f', en: 'Billing Mode' },
+  billingModeHint: { zh: 'paid \u6263\u8d39\uff0cfree \u514d\u8d39\uff0c\u7a7a\u4e3a\u517c\u5bb9', en: 'paid = charge, free = no charge, empty = legacy' },
+  billingModePaid: { zh: '\u6536\u8d39', en: 'Paid' },
+  billingModeFree: { zh: '\u514d\u8d39', en: 'Free' },
+  billingModeLegacy: { zh: '\u517c\u5bb9\uff08\u7a7a\uff09', en: 'Legacy (empty)' },
+  tokenPricingTitle: { zh: 'Token \u8ba1\u8d39\uff08\u6bcf\u4e07 Token\uff09', en: 'Token Pricing (per 10k tokens)' },
+  tokenPricingHint: { zh: 'Credits \u5b57\u6bb5\u53c2\u4e0e\u6263\u8d39\uff1bRMB \u4ec5\u5c55\u793a', en: 'Credits fields are billed; RMB is display-only' },
+  inputCreditsPer10k: { zh: '\u8f93\u5165 Credits / \u4e07', en: 'Input Credits / 10k' },
+  outputCreditsPer10k: { zh: '\u8f93\u51fa Credits / \u4e07', en: 'Output Credits / 10k' },
+  inputRMBPer10k: { zh: '\u8f93\u5165 RMB / \u4e07\uff08\u53c2\u8003\uff09', en: 'Input RMB / 10k (ref)' },
+  outputRMBPer10k: { zh: '\u8f93\u51fa RMB / \u4e07\uff08\u53c2\u8003\uff09', en: 'Output RMB / 10k (ref)' },
+  minimumRequestCredits: { zh: '\u5355\u6b21\u6700\u4f4e\u6d88\u8d39 Credits', en: 'Minimum Credits / request' },
+  pricingTimezone: { zh: '\u8ba1\u8d39\u65f6\u533a', en: 'Pricing Timezone' },
+  pricingVersion: { zh: '\u8ba1\u8d39\u7248\u672c', en: 'Pricing Version' },
+  billingInvalid: { zh: '\u8bf7\u4fee\u6b63\u65e0\u6548\u7684\u8ba1\u8d39\u6570\u503c', en: 'Fix invalid pricing numbers' },
+  billingPaidNeedsCredits: { zh: '\u6536\u8d39\u6a21\u5f0f\u9700\u81f3\u5c11\u4e00\u9879 Credits \u6b63\u6570\uff08\u8f93\u5165/\u8f93\u51fa/\u6700\u4f4e\u6d88\u8d39\uff09\u3002', en: 'Paid billing requires at least one positive Credits price (input, output, or minimum).' },
   createdProvidersPrefix: { zh: '\u5df2\u521b\u5efa\u670d\u52a1\u5546: ', en: 'Created providers: ' },
   editServiceGroup: { zh: '\u7f16\u8f91\u670d\u52a1\u7ec4', en: 'Edit Service Group' },
   newServiceGroup: { zh: '\u65b0\u5efa\u670d\u52a1\u7ec4', en: 'New Service Group' },
@@ -2540,7 +2681,156 @@ var LLS_DIALOG_I18N = {
   routeNeedsModel: { zh: '\u6bcf\u6761\u8def\u7531\u90fd\u9700\u8981\u4e00\u4e2a\u865a\u62df\u6a21\u578b\u540d\uff0c\u7559\u7a7a\u65f6\u9ed8\u8ba4\u4e3a auto', en: 'Each route needs a virtual model name; empty values default to auto' },
   routeNeedsProvider: { zh: '\u6bcf\u6761\u8def\u7531\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u670d\u52a1\u5546', en: 'Each route needs at least one provider' },
   duplicateRouteAlias: { zh: '\u5b58\u5728\u91cd\u590d\u7684\u865a\u62df\u6a21\u578b\u540d\uff1a{name}\u3002\u540c\u540d\u865a\u62df\u6a21\u578b\u4fdd\u5b58\u540e\u4f1a\u81ea\u52a8\u5408\u5e76\uff0c\u8bf7\u6539\u6210\u4e0d\u540c\u7684\u865a\u62df\u6a21\u578b\u540d\uff0c\u6216\u653e\u5728\u540c\u4e00\u6761\u8def\u7531\u91cc\u914d\u7f6e\u591a\u4e2a\u670d\u52a1\u5546\u3002', en: 'Duplicate virtual model name: {name}. Rows with the same name merge after save. Use different virtual model names, or attach multiple providers to one route.' },
-  unknownError: { zh: '\u672a\u77e5\u9519\u8bef', en: 'unknown error' }
+  unknownError: { zh: '\u672a\u77e5\u9519\u8bef', en: 'unknown error' },
+  groupKind: { zh: '\u7ec4\u7c7b\u578b', en: 'Group kind' },
+  groupKindStatic: { zh: '\u9759\u6001\uff08\u4eca\u5929\uff09', en: 'Static (current)' },
+  groupKindDynamic: { zh: '\u52a8\u6001 Auto', en: 'Dynamic Auto' },
+  workloadRoutes: { zh: '\u4e1a\u52a1\u7c7b\u8def\u7531', en: 'Workload routes' },
+  workloadRoutesDesc: { zh: '\u52a8\u6001\u7ec4\u6309 WorkloadClass \u9009\u903b\u8f91\u6a21\u578b\u3002plan/design \u4e0d\u80fd\u8d70 low\u3002', en: 'Dynamic groups pick a logical model by WorkloadClass. plan/design cannot use low.' },
+  classTraffic: { zh: '\u5206\u7c7b\u6d41\u91cf', en: 'Class traffic' },
+  classTrafficTitle: { zh: '\u4e0b\u6e38\u6d41\u91cf\uff08\u8bad\u7ec3\u6837\u672c\uff09', en: 'Downstream traffic (training samples)' },
+  classTrafficDesc: { zh: '\u8fd9\u7ec4\u6263\u8d39\u6210\u529f\u7684\u8bf7\u6c42\uff0c\u6309\u4efb\u52a1\u5206\u7c7b\u6c47\u603b\u3002\u4e0b\u9762\u7684\u5206\u7c7b\u5934\u53ea\u7528\u8fd9\u4e00\u7ec4\u6d41\u91cf\u8bad\u7ec3\u3002', en: 'Successful billed requests to this group, totaled by class. The head below trains from this group only.' },
+  classHeadTitle: { zh: '\u672c\u7ec4\u5206\u7c7b\u5934', en: 'This group\'s classification head' },
+  classHeadDesc: { zh: '\u53ea\u8bad\u3001\u53ea\u8f6c\u6b63\u8fd9\u4e00\u7ec4\u7684\u5934\u3002\u8f6c\u6b63\u4e4b\u540e\u7ebf\u4e0a\u5206\u7c7b\u624d\u8d70\u8fd9\u4e2a\u5934\uff0c\u95e8\u7981\u672a\u7eff\u4e0d\u8981\u5f00\u3002', en: 'Train and promote only this group\'s classifier. Live mode uses this head for routing. Keep it off until gates are green.' },
+  tryRun: { zh: '\u8bd5\u8dd1', en: 'Run' },
+  failed: { zh: '\u5931\u8d25', en: 'Failed' },
+  classCol: { zh: '\u7c7b\u522b', en: 'Class' },
+  classReq: { zh: '\u8bf7\u6c42', en: 'Req' },
+  classIn: { zh: '\u5165', en: 'In' },
+  classOut: { zh: '\u51fa', en: 'Out' },
+  classTokens: { zh: 'Token', en: 'Tokens' },
+  classTotal: { zh: '\u603b\u8ba1', en: 'Total' },
+  classSourceMix: { zh: '\u6765\u6e90\u5360\u6bd4', en: 'Class source mix' },
+  noHintSamples: { zh: '\u65e0\u63d0\u793a\u6837\u672c', en: 'No-hint samples' },
+  noHintSamplesEmpty: { zh: '\u6682\u65e0\u65e0\u63d0\u793a\u6837\u672c', en: 'No no-hint samples' },
+  classTrafficEmpty: { zh: '\u8be5\u7a97\u53e3\u6682\u65e0\u6d41\u91cf', en: 'No traffic in this window' },
+  classTrafficLoading: { zh: '\u52a0\u8f7d\u4e2d\u2026', en: 'Loading\u2026' },
+  ruleTryRun: { zh: '\u8bd5\u8dd1\u89c4\u5219', en: 'Try rules' },
+  ruleTryHint: { zh: '\u8bd5\u8dd1\u89c4\u5219\u5206\u7c7b\uff0c\u4e0d\u4f1a\u8bad\u7ec3\u4e5f\u4e0d\u4f1a\u6539\u5934\u3002', en: 'Dry-run the rule classifier. This does not train or change the head.' },
+  trainThisGroup: { zh: '\u8bad\u7ec3\u672c\u7ec4', en: 'Train this group' },
+  pullOfficial: { zh: '\u62c9\u53d6\u5b98\u65b9', en: 'Pull official' },
+  rollBack: { zh: '\u56de\u6eda', en: 'Roll back' },
+  distribute: { zh: '\u5206\u53d1', en: 'Distribute' },
+  refreshHead: { zh: '\u5237\u65b0', en: 'Refresh' },
+  applyTrainer: { zh: '\u5e94\u7528\u8bad\u7ec3\u8282\u70b9', en: 'Apply trainer' },
+  trainerEmpty: { zh: '\uff08\u7a7a=\u672c\u8282\u70b9\uff09', en: '(empty = this node)' },
+  pipeOff: { zh: '\u89c4\u5219', en: 'Rules' },
+  pipeShadow: { zh: '\u5f71\u5b50', en: 'Shadow' },
+  pipeCanary: { zh: '\u91d1\u4e1d\u96c0', en: 'Canary' },
+  pipeOn: { zh: '\u8f6c\u6b63', en: 'Live' },
+  gateReviewCoverage: { zh: '\u590d\u6838\u8986\u76d6', en: 'Review coverage' },
+  gateAccuracy: { zh: '\u51c6\u786e\u7387', en: 'Accuracy' },
+  gateRecall: { zh: '\u89c4\u5212\u53ec\u56de', en: 'Plan recall' },
+  gateTwoWindows: { zh: '\u8fde\u7eed\u4e24\u7a97', en: 'Two windows' },
+  gateArtifact: { zh: '\u5236\u54c1\u5c31\u7eea', en: 'Artifact ready' },
+  headVersion: { zh: '\u7248\u672c', en: 'Version' },
+  headLastError: { zh: '\u4e0a\u6b21\u8bad\u7ec3\u5931\u8d25', en: 'Last train error' },
+  headSamples: { zh: '\u5f85\u590d\u6838\u6837\u672c', en: 'Samples to review' },
+  markGold: { zh: '\u6807\u91d1', en: 'Mark gold' },
+  goldPrompt: { zh: '\u91d1\u6807\u5206\u7c7b\uff08\u89c4\u5212 / \u8bbe\u8ba1 / \u7f16\u7801\uff0c\u6216 plan / design / code\uff09', en: 'Gold class (plan / design / review / doc_write / code / ops / chat / classify)' },
+  goldInvalid: { zh: '\u91d1\u6807\u5fc5\u987b\u662f\u51bb\u7ed3\u5206\u7c7b\uff1a\u89c4\u5212 / \u8bbe\u8ba1 / \u8bc4\u5ba1 / \u6587\u6863 / \u7f16\u7801 / \u8fd0\u7ef4 / \u5bf9\u8bdd / \u5206\u7c7b\u3002', en: 'Gold class must be plan, design, review, doc_write, code, ops, chat, or classify.' },
+  goldPick: { zh: '\u91d1\u6807\u5206\u7c7b', en: 'Gold class' },
+  ackAcked: { zh: '\u5df2\u786e\u8ba4', en: 'Acked' },
+  ackPending: { zh: '\u5f85\u786e\u8ba4', en: 'Pending' },
+  tryClass: { zh: '\u5206\u7c7b', en: 'Class' },
+  trySource: { zh: '\u6765\u6e90', en: 'Source' },
+  tryModel: { zh: '\u6a21\u578b', en: 'Model' },
+  tryQuality: { zh: '\u8d28\u91cf', en: 'Quality' },
+  tryUpgraded: { zh: '\u80fd\u529b\u5347\u6863', en: 'Capability upgrade' },
+  tryYes: { zh: '\u662f', en: 'Yes' },
+  tryRaw: { zh: '\u539f\u59cb JSON', en: 'Raw JSON' },
+  srcHint: { zh: '\u63d0\u793a', en: 'Hint' },
+  srcWorkflow: { zh: '\u5de5\u4f5c\u6d41', en: 'Workflow' },
+  srcTaskType: { zh: '\u4efb\u52a1\u7c7b\u578b', en: 'Task type' },
+  srcHeuristic: { zh: '\u89c4\u5219', en: 'Heuristic' },
+  srcFallback: { zh: '\u56de\u9000', en: 'Fallback' },
+  srcHead: { zh: '\u5206\u7c7b\u5934', en: 'Head' },
+  training: { zh: '\u8bad\u7ec3\u4e2d\u2026', en: 'Training\u2026' },
+  tryPlaceholder: { zh: '\u5199\u4e00\u4efd\u5546\u4e1a\u8ba1\u5212', en: 'write a business plan' },
+  tryWorkflow: { zh: '\u5de5\u4f5c\u6d41\u7c7b\u578b', en: 'Workflow type' },
+  tryPhase: { zh: '\u9636\u6bb5\u7c7b\u578b', en: 'Phase kind' },
+  tryTask: { zh: '\u4efb\u52a1\u7c7b\u578b', en: 'Task type' },
+  win24h: { zh: '24 \u5c0f\u65f6', en: '24h' },
+  win7d: { zh: '7 \u5929', en: '7d' },
+  win30d: { zh: '30 \u5929', en: '30d' },
+  qualityHigh: { zh: '\u9ad8', en: 'High' },
+  qualityMid: { zh: '\u4e2d', en: 'Mid' },
+  qualityLow: { zh: '\u4f4e', en: 'Low' },
+  tierHigh: { zh: '\u5b98\u65b9\u9ad8\u6863\uff08official-high\uff09', en: 'Official high (official-high)' },
+  tierMid: { zh: '\u5b98\u65b9\u4e2d\u6863\uff08official-mid\uff09', en: 'Official mid (official-mid)' },
+  tierLow: { zh: '\u5b98\u65b9\u4f4e\u6863\uff08official-low\uff09', en: 'Official low (official-low)' },
+  headReady: { zh: '\u95e8\u7981\u5df2\u8fc7\uff0c\u53ef\u4ee5\u8fdb\u91d1\u4e1d\u96c0\u6216\u8f6c\u6b63\u3002', en: 'Gates passed. Canary or live is allowed.' },
+  headNotReady: { zh: '\u95e8\u7981\u672a\u8fc7\uff0c\u8bf7\u7559\u5728\u5f71\u5b50\u89c2\u5bdf\uff1b\u7834\u4f8b\u9700\u586b\u539f\u56e0\u5e76\u8f93\u5165 PROMOTE\u3002', en: 'Gates are not green. Stay in shadow, or type PROMOTE with a reason.' },
+  headNeedShadow: { zh: '\u5148\u8fdb\u5165\u5f71\u5b50\u3002off \u4e0d\u80fd\u76f4\u63a5\u8df3\u5230 canary/on\u3002', en: 'Go to shadow first. Off cannot jump to canary or live.' },
+  headNeedServing: { zh: '\u5148\u8bad\u7ec3\u6216\u62c9\u53d6 serving \u5934\uff0c\u518d\u8fdb\u5f71\u5b50\u3002', en: 'Train or pull a serving head before entering shadow.' },
+  headAdoptReady: { zh: '\u5df2\u6709 serving \u5934\u3002\u5148\u8fdb\u5f71\u5b50\u89c2\u5bdf\uff0c\u518d\u4e0a\u91d1\u4e1d\u96c0\u6216\u8f6c\u6b63\u3002', en: 'Serving head is ready. Enter shadow to observe before canary or live.' },
+  headNeedDistribute: { zh: '\u5206\u53d1\u672a\u9f50\uff0c\u4e0d\u80fd\u5347 canary/on\uff0c\u4e5f\u4e0d\u80fd\u56de\u6eda\u3002', en: 'Wait for serving ACK before canary, live, or rollback.' },
+  headAccuracy: { zh: '\u51c6\u786e\u7387', en: 'Accuracy' },
+  headPlanRecall: { zh: '\u89c4\u5212\u53ec\u56de', en: 'Plan recall' },
+  headRuleAgreement: { zh: '\u89c4\u5219\u4e00\u81f4\u7387', en: 'Rule agreement' },
+  headReviews: { zh: '\u8bc4\u5ba1', en: 'Reviews' },
+  headHuman: { zh: '\u4eba\u5de5', en: 'Human' },
+  headGates: { zh: '\u95e8\u7981', en: 'Gates' },
+  headTrainer: { zh: '\u8bad\u7ec3\u8282\u70b9', en: 'Trainer' },
+  headLocal: { zh: '\u672c\u673a', en: 'Local' },
+  headPrevious: { zh: '\u4e0a\u4e00\u7248', en: 'Previous' },
+  headVersions: { zh: '\u5386\u53f2\u7248\u672c', en: 'Head versions' },
+  headVersionPath: { zh: '\u5b58\u50a8\u8def\u5f84', en: 'Store path' },
+  headRole: { zh: '\u69fd\u4f4d', en: 'Slot' },
+  headRole_current: { zh: '\u5f53\u524d', en: 'Current' },
+  headRole_previous: { zh: '\u4e0a\u4e00\u7248', en: 'Previous' },
+  headRole_history: { zh: '\u5386\u53f2', en: 'History' },
+  headSource_train: { zh: '\u672c\u4fa7\u8bad\u7ec3', en: 'Trained here' },
+  headSource_pull_official: { zh: '\u62c9\u53d6\u5b98\u65b9', en: 'Pulled official' },
+  headSource_replica: { zh: '\u526f\u672c\u540c\u6b65', en: 'Replica apply' },
+  headSource: { zh: '\u6765\u6e90', en: 'Source' },
+  headTau: { zh: 'Tau', en: 'Tau' },
+  headRetired: { zh: '\u5df2\u9000\u5f79', en: 'Retired' },
+  headTrainedAt: { zh: '\u8bad\u7ec3\u65f6\u95f4', en: 'Trained' },
+  headTest: { zh: '\u5206\u7c7b\u5934\u6d4b\u8bd5', en: 'Head test' },
+  headTestHint: { zh: '\u5bf9\u5df2\u5b58\u50a8\u7684\u67d0\u4e00\u7248\u505a\u5e72\u8dd1\u3002\u89c4\u5219\u4ecd\u5148\u5206\u7c7b\u3002\u7ebf\u4e0a\u53ea\u6539\u5199\u542f\u53d1\u5f0f/\u56de\u9000\uff1b\u63d0\u793a\u3001\u5de5\u4f5c\u6d41\u3001\u4efb\u52a1\u7c7b\u578b\u4e0d\u52a8\u3002\u4e0d\u5199\u5165\u8bed\u6599\u3002', en: 'Dry-run one stored version. Rules classify first. Live rewrite only applies to heuristic/fallback; hint, workflow, and task type stay. Nothing is saved.' },
+  headTestSlot: { zh: '\u7248\u672c', en: 'Version' },
+  headTestRun: { zh: '\u6253\u5206\u9009\u4e2d\u7248\u672c', en: 'Score selected version' },
+  headTestCompare: { zh: '\u5bf9\u6bd4\u5f53\u524d/\u4e0a\u4e00\u7248', en: 'Compare current / previous' },
+  headEmbedderOff: { zh: '\u5d4c\u5165\u6a21\u578b\u8fd8\u6ca1\u5c31\u7eea\u3002\u5148\u5230\u670d\u52a1\u5546\u9875\u4e0b\u8f7d\uff0c\u518d\u6253\u5206\u3002', en: 'Embedding model is not ready. Download it on Providers before scoring.' },
+  headIfLive: { zh: '\u82e5\u8f6c\u6b63', en: 'If live' },
+  headWouldRewrite: { zh: '\u4f1a\u6539\u5199', en: 'Would rewrite' },
+  headNoRewrite: { zh: '\u4ecd\u8d70\u89c4\u5219', en: 'Keep rule class' },
+  headProtected: { zh: '\u53d7\u4fdd\u62a4\uff08\u63d0\u793a/\u5de5\u4f5c\u6d41/\u4efb\u52a1\u7c7b\u578b\uff09', en: 'Protected (hint / workflow / task type)' },
+  headNeedText: { zh: '\u5148\u8f93\u5165\u4e00\u6bb5\u6587\u672c', en: 'Enter text first' },
+  headProbs: { zh: '\u5934\u6982\u7387', en: 'Head probs' },
+  headNoVersion: { zh: '\u5148\u8bad\u4e00\u7248\u5934\uff0c\u518d\u5728\u8fd9\u91cc\u6d4b\u8bd5\u3002', en: 'Train a head first, then score it here.' },
+  headAck: { zh: 'ACK', en: 'ACK' },
+  sampleRule: { zh: '\u89c4\u5219', en: 'Rule' },
+  sampleGold: { zh: '\u91d1\u6807', en: 'Gold' },
+  sampleHead: { zh: '\u5934', en: 'Head' },
+  headUnused: { zh: '\u8fd8\u6ca1\u6709\u5206\u7c7b\u5934\u3002\u7b49\u672c\u7ec4\u6709\u4e0b\u6e38\u6d41\u91cf\u540e\u518d\u8bad\uff0c\u4e5f\u53ef\u4ee5\u5148\u62c9\u5b98\u65b9\u5934\u3002', en: 'No head yet. Train after this group has downstream traffic, or pull the official head.' },
+  headUnusedOfficial: { zh: '\u8fd8\u6ca1\u6709\u5206\u7c7b\u5934\u3002\u5b98\u65b9\u7ec4\u53ea\u80fd\u7528\u672c\u7ec4\u81ea\u5df1\u7684\u4e0b\u6e38\u6d41\u91cf\u8bad\u7ec3\u3002', en: 'No head yet. Train after this official group has its own downstream traffic.' },
+  headHasSamples: { zh: '\u5df2\u6709\u6837\u672c\u3002\u5148\u6807\u91d1\u6807\uff0c\u6216\u76f4\u63a5\u8bad\u7ec3\u672c\u7ec4\u3002', en: 'Samples are ready. Mark gold classes or train this group.' },
+  confirmLive: { zh: '\u8f6c\u6b63\u540e\uff0c\u8fd9\u4e00\u7ec4\u7684\u7ebf\u4e0a\u5206\u7c7b\u4f1a\u8d70\u8bad\u597d\u7684\u5934\u3002\u786e\u5b9a\u7ee7\u7eed\uff1f', en: 'Live mode will route this group with the trained head. Continue?' },
+  markGoldChange: { zh: '\u6539\u91d1\u6807', en: 'Change gold' },
+  promoteNeed: { zh: '\u7834\u4f8b\u9700\u8981\u539f\u56e0\uff0c\u5e76\u8f93\u5165 PROMOTE\u3002', en: 'Override requires a reason and the token PROMOTE.' },
+  promoteGo: { zh: '\u786e\u8ba4\u7834\u4f8b', en: 'Confirm override' },
+  trainNeedData: { zh: '\u672c\u7ec4\u8fd8\u6ca1\u6709\u6837\u672c\u3002\u7b49\u6709\u4e0b\u6e38\u6d41\u91cf\u518d\u8bad\uff0c\u6216\u5148\u62c9\u5b98\u65b9\u5934\u3002', en: 'Train after this group has samples, or pull the official head.' },
+  trainNeedDataOfficial: { zh: '\u672c\u7ec4\u8fd8\u6ca1\u6709\u6837\u672c\u3002\u5b98\u65b9\u7ec4\u8981\u7b49\u81ea\u5df1\u7684\u4e0b\u6e38\u6d41\u91cf\u518d\u8bad\u3002', en: 'Train after this official group has its own samples.' },
+  headPromptReason: { zh: '\u95e8\u7981\u672a\u901a\u8fc7\u65f6\u7684\u539f\u56e0', en: 'Reason if gates are not green' },
+  headPromptOverride: { zh: '\u8986\u76d6\u4ee4\u724c\uff08PROMOTE\uff09', en: 'Override token (PROMOTE)' },
+  headNoData: { zh: '\u65e0\u6570\u636e', en: 'No data' },
+  classPlan: { zh: '\u89c4\u5212', en: 'Plan' },
+  classDesign: { zh: '\u8bbe\u8ba1', en: 'Design' },
+  classReview: { zh: '\u8bc4\u5ba1', en: 'Review' },
+  classDocWrite: { zh: '\u6587\u6863', en: 'Docs' },
+  classCode: { zh: '\u7f16\u7801', en: 'Code' },
+  classOps: { zh: '\u8fd0\u7ef4', en: 'Ops' },
+  classBalanced: { zh: '\u5747\u8861', en: 'Balanced' },
+  classChat: { zh: '\u5bf9\u8bdd', en: 'Chat' },
+  classClassify: { zh: '\u5206\u7c7b', en: 'Classify' },
+  officialModel: { zh: '\u5b98\u65b9\u6863\u4f4d', en: 'Official tier' },
+  exposedModels: { zh: '/v1/models \u66b4\u9732\u540d', en: 'Catalog names' },
+  exposedModelsDesc: { zh: '\u7559\u7a7a\u5219\u76ee\u5f55\u53ea\u5217 auto\u3002\u586b\u4e86\u4e5f\u53ef pin \u8fd9\u4e9b\u540d\u8df3\u8fc7 L1\u3002', en: 'Empty lists only auto. Listed names stay pin-able and skip L1.' },
+  qualityFloor: { zh: '\u8d28\u91cf\u5e95\u7ebf', en: 'Quality floor' },
+  qualityFloorNone: { zh: '\u65e0', en: 'none' },
+  classHeadLink: { zh: '\u672c\u7ec4\u5206\u7c7b\u5934', en: 'Group classification-head eval' }
 };
 function llsX(key, vars) {
   var entry = LLS_DIALOG_I18N[key];
@@ -2550,6 +2840,21 @@ function llsX(key, vars) {
     return Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match;
   });
 }
+function llsNormalizeTokenPricing(src){
+  var p = src && typeof src === 'object' ? src : {};
+  var out={};
+  function num(k){ var v=p[k]; if(v===undefined||v===null||v==='') return undefined; var n=Number(v); if(!isFinite(n)||n<0) return undefined; return n; }
+  var v; v=num('input_credits_per_10k'); if(v!==undefined) out.input_credits_per_10k=v;
+  v=num('output_credits_per_10k'); if(v!==undefined) out.output_credits_per_10k=v;
+  v=num('input_rmb_per_10k'); if(v!==undefined) out.input_rmb_per_10k=v;
+  v=num('output_rmb_per_10k'); if(v!==undefined) out.output_rmb_per_10k=v;
+  v=num('minimum_request_credits'); if(v!==undefined) out.minimum_request_credits=v;
+  if(p.timezone) out.timezone=String(p.timezone).trim();
+  if(p.version) out.version=String(p.version).trim();
+  if(p.price_schedule && Array.isArray(p.price_schedule) && p.price_schedule.length){ try{ out.price_schedule=JSON.parse(JSON.stringify(p.price_schedule)); }catch(e){ out.price_schedule=p.price_schedule.slice(); } }
+  return out;
+}
+function llsFormatPricingBrief(tp){ if(!tp) return ''; var inC=tp.input_credits_per_10k,outC=tp.output_credits_per_10k; if(inC===undefined&&outC===undefined) return ''; return (inC!==undefined?String(inC):'-')+'/'+(outC!==undefined?String(outC):'-')+' Credits/10k'; }
 function llsNormalizeProviderConfig(config, providerID, legacy) {
   var tags = Array.from(new Set((((config && config.capability_tags) || (legacy && legacy.capability_tags) || []).map(function(v) { return String(v || '').trim(); }).filter(Boolean))));
   var priority = Number(config && config.priority);
@@ -2558,12 +2863,17 @@ function llsNormalizeProviderConfig(config, providerID, legacy) {
   if (!resolution) resolution = Number(legacy && legacy.resolution_tier || 0) || 0;
   var multiplier = Number(config && config.credit_multiplier);
   if (!(multiplier > 0)) multiplier = Number(legacy && legacy.credit_multiplier || 1) || 1;
+  var billingMode = String((config && config.billing_mode) || '').trim();
+  var tokenPricing = llsNormalizeTokenPricing(config && config.token_pricing);
   return {
     provider_id: normalizeLLMServiceProviderRef(providerID || config && config.provider_id || ''),
+    model: String(config && config.model || '').trim(),
+    billing_mode: billingMode,
     capability_tags: tags,
     priority: priority,
     resolution_tier: resolution,
-    credit_multiplier: multiplier
+    credit_multiplier: multiplier,
+    token_pricing: tokenPricing
   };
 }
 function llsAggregateProviderConfigs(configs) {
@@ -2620,14 +2930,39 @@ function llsCloneGroup(g) {
     name: String(g && g.name || '').trim(),
     description: String(g && g.description || '').trim(),
     access_policy: llsNormalizeAccessPolicy(g && g.access_policy || ''),
+    kind: String(g && g.kind || '').trim() === 'dynamic' ? 'dynamic' : 'static',
+    quality_floor: String(g && g.quality_floor || '').trim(),
+    exposed_models: (g && g.exposed_models || []).map(function(name) { return String(name || '').trim(); }).filter(Boolean),
+    routes: (g && g.routes || []).map(function(route) {
+      return { class: String(route && route.class || '').trim(), model: String(route && route.model || '').trim(), quality: String(route && route.quality || '').trim() };
+    }),
     models: (g && g.models || []).map(llsCloneModel)
   };
 }
 function llsEmptyGroup() {
-  return { id: '', name: '', description: '', access_policy: 'free', models: [{ name: 'auto', provider_ids: [], provider_configs: [], capability_tags: [], priority: 50, resolution_tier: 0, credit_multiplier: 1 }] };
+  return { id: '', name: '', description: '', access_policy: 'free', kind: 'static', quality_floor: '', exposed_models: [], routes: [], models: [{ name: 'auto', provider_ids: [], provider_configs: [], capability_tags: [], priority: 50, resolution_tier: 0, credit_multiplier: 1 }] };
+}
+function llsDefaultDynamicRoutes() {
+  return [
+    { class: 'plan', model: 'official-high', quality: 'high' },
+    { class: 'design', model: 'official-high', quality: 'high' },
+    { class: 'review', model: 'official-high', quality: 'high' },
+    { class: 'doc_write', model: 'official-mid', quality: 'mid' },
+    { class: 'code', model: 'official-mid', quality: 'mid' },
+    { class: 'ops', model: 'official-mid', quality: 'mid' },
+    { class: 'balanced', model: 'official-mid', quality: 'mid' },
+    { class: 'chat', model: 'official-low', quality: 'low' },
+    { class: 'classify', model: 'official-low', quality: 'low' }
+  ];
 }
 function llsEsc(v) {
   return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function llsJsArg(v) {
+  return llsEsc(JSON.stringify(String(v || '')));
+}
+function llsIsOfficialGroup(id) {
+  return String(id || '').trim().toLowerCase() === 'maclaw-official';
 }
 function llsProviderName(id) {
   var n = normalizeLLMServiceProviderRef(id);
@@ -2675,7 +3010,7 @@ function llsProviderOptions() {
     return '<option value="' + llsEsc(p.id) + '">' + escapeHtml(llmServiceProviderDisplay(p)) + '</option>';
   }).join('');
 }
-async function openLLMServiceGroupDialog(mode, id) {
+async function openLLMServiceGroupDialog(mode, id, focus) {
   ensureLLMServiceGroupModalUI();
   await refreshLLMServiceProviderOptions();
   var wantKey = llmServiceGroupIDKey(id);
@@ -2696,7 +3031,15 @@ async function openLLMServiceGroupDialog(mode, id) {
   renderLLMServiceGroupDialog();
   var o = document.getElementById('llmServiceGroupModalOverlay');
   if (o) o.classList.add('show');
-  setTimeout(function() { var first = document.getElementById('llsGroupId'); if (first && typeof first.focus === 'function') first.focus(); }, 0);
+  setTimeout(function() {
+    if (focus === 'train') {
+      var train = document.getElementById('llmClassTrainCard') || document.getElementById('llmClassHeadCard') || document.getElementById('llsClassTraffic');
+      if (train && typeof train.scrollIntoView === 'function') train.scrollIntoView({ block: 'start' });
+      return;
+    }
+    var first = document.getElementById('llsGroupId');
+    if (first && typeof first.focus === 'function') first.focus();
+  }, 0);
   return true;
 }
 function closeLLMServiceGroupDialog() {
@@ -2740,6 +3083,8 @@ function llsRenderProviderCard(rowIndex, providerID, providerIndex, total) {
   var downDisabled = providerIndex >= total - 1 ? ' disabled' : '';
   var features = (cfg && cfg.capability_tags || []).filter(function(v) { return llmServiceCapabilityOptions.indexOf(v) >= 0; }).join(', ');
   var extra = llsProviderExtraTags(cfg);
+  var billingLabel = cfg && cfg.billing_mode ? cfg.billing_mode : 'legacy';
+  var pricingBrief = llsFormatPricingBrief(cfg && cfg.token_pricing);
   return '<div class="item" style="margin-top:10px;border:1px solid rgba(47,128,237,.12);background:rgba(47,128,237,.04)">'
     + '<div class="item-head"><div><div class="item-title">' + escapeHtml(llsProviderChipLabel(rowIndex, providerID)) + '</div><div class="item-meta">' + escapeHtml(llsX('providerParams')) + '</div></div>'
     + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
@@ -2748,13 +3093,16 @@ function llsRenderProviderCard(rowIndex, providerID, providerIndex, total) {
     + '<button class="btn-ghost" type="button" style="height:28px;padding:0 10px" onclick="llsMoveProvider(' + rowIndex + ',\'' + escapedID + '\',1)"' + downDisabled + '>' + escapeHtml(llsX('down')) + '</button>'
     + '<button class="btn-danger" type="button" style="height:28px;padding:0 10px" onclick="llsRemoveProvider(' + rowIndex + ',\'' + escapedID + '\')">' + escapeHtml(lsx('remove')) + '</button>'
     + '</div></div>'
+    + (normalizeLLMServiceProviderRef(providerID) === 'maclaw_official' ? llsProviderSummaryLine(llsX('officialModel'), (cfg && cfg.model) || '-') : '')
     + llsProviderSummaryLine(llsX('featureSummary'), features)
     + llsProviderSummaryLine(llsX('extraFeatureSummary'), extra)
     + llsProviderSummaryLine(llsX('priority'), String(Number(cfg && cfg.priority || 0) || 0))
     + llsProviderSummaryLine(llsX('resolutionTier'), String(Number(cfg && cfg.resolution_tier || 0) || 0))
     + llsProviderSummaryLine(llsX('creditMultiplier'), String(Number(cfg && cfg.credit_multiplier || 1) || 1))
+    + llsProviderSummaryLine(llsX('billingMode'), billingLabel + (pricingBrief ? ' \u00b7 '+pricingBrief : ''))
     + '</div>';
 }
+function llsClonePricingForDraft(tp){ var p=llsNormalizeTokenPricing(tp||{}); var out={input_credits_per_10k:p.input_credits_per_10k,output_credits_per_10k:p.output_credits_per_10k,input_rmb_per_10k:p.input_rmb_per_10k,output_rmb_per_10k:p.output_rmb_per_10k,minimum_request_credits:p.minimum_request_credits,timezone:p.timezone||'',version:p.version||''}; if(p.price_schedule) out.price_schedule=p.price_schedule; return out; }
 function llsProviderDialogDraft(rowIndex, providerID) {
   var model = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[rowIndex];
   var cfg = model && providerID ? llsProviderConfig(model, providerID) : null;
@@ -2762,10 +3110,13 @@ function llsProviderDialogDraft(rowIndex, providerID) {
   if (!normalizedProviderID && llmServiceProviderOptions.length) normalizedProviderID = normalizeLLMServiceProviderRef(llmServiceProviderOptions[0] && llmServiceProviderOptions[0].id || '');
   return {
     provider_id: normalizedProviderID,
+    model: String(cfg && cfg.model || '').trim() || (normalizedProviderID === 'maclaw_official' ? 'official-mid' : ''),
+    billing_mode: String(cfg && cfg.billing_mode || '').trim(),
     capability_tags: Array.from(new Set((cfg && cfg.capability_tags || []).map(function(v) { return String(v || '').trim(); }).filter(Boolean))),
     priority: Number(cfg && cfg.priority || 0) || 0,
     resolution_tier: Number(cfg && cfg.resolution_tier || 0) || 0,
-    credit_multiplier: Number(cfg && cfg.credit_multiplier || 1) || 1
+    credit_multiplier: Number(cfg && cfg.credit_multiplier || 1) || 1,
+    token_pricing: llsClonePricingForDraft(cfg && cfg.token_pricing)
   };
 }
 function openLLSProviderDialog(rowIndex, providerID) {
@@ -2786,7 +3137,15 @@ function closeLLSProviderDialog() {
 }
 function llsSetProviderDialogField(key, value) {
   if (!llmServiceProviderDialogState || !llmServiceProviderDialogState.draft) return;
-  llmServiceProviderDialogState.draft[key] = value;
+  if(key==='billing_mode' || key==='model') llmServiceProviderDialogState.draft[key]=String(value||'').trim();
+  else llmServiceProviderDialogState.draft[key] = value;
+}
+function llsSetTokenPricingField(key, value){
+  if(!llmServiceProviderDialogState||!llmServiceProviderDialogState.draft) return;
+  var tp=llmServiceProviderDialogState.draft.token_pricing||(llmServiceProviderDialogState.draft.token_pricing={});
+  if(key==='timezone'||key==='version'){ tp[key]=String(value||'').trim(); return; }
+  if(value===''||value==null){ delete tp[key]; return; }
+  var n=Number(value); if(!isFinite(n)||n<0){ tp[key]=value; return; } tp[key]=n;
 }
 function llsToggleProviderDialogFeature(feature, enabled) {
   if (!llmServiceProviderDialogState || !llmServiceProviderDialogState.draft) return;
@@ -2821,12 +3180,23 @@ function renderLLSProviderDialog() {
   root.innerHTML = '<div class="item" style="border:none;box-shadow:none;padding:0;background:transparent">'
     + '<div class="item-title">' + escapeHtml(title) + '</div>'
     + '<div class="grid2" style="margin-top:10px">'
-    + '<div style="grid-column:1 / -1"><label>' + escapeHtml(llsX('providerName')) + '</label><select ' + (originalProviderID ? 'disabled' : '') + ' onchange="llsSetProviderDialogField(\'provider_id\', normalizeLLMServiceProviderRef(this.value || \'\'))" style="width:100%">' + providerOptions + '</select></div>'
+    + '<div style="grid-column:1 / -1"><label>' + escapeHtml(llsX('providerName')) + '</label><select ' + (originalProviderID ? 'disabled' : '') + ' onchange="llsSetProviderDialogField(\'provider_id\', normalizeLLMServiceProviderRef(this.value || \'\'));renderLLSProviderDialog()" style="width:100%">' + providerOptions + '</select></div>'
+    + (normalizeLLMServiceProviderRef(draft.provider_id || '') === 'maclaw_official' ? ('<div style="grid-column:1 / -1"><label>' + escapeHtml(llsX('officialModel')) + '</label><select onchange="llsSetProviderDialogField(\'model\', this.value)" style="width:100%">' + ['official-high','official-mid','official-low'].map(function(name) { return '<option value="' + name + '"' + (draft.model === name ? ' selected' : '') + '>' + name + '</option>'; }).join('') + '</select></div>') : '')
     + '<div style="grid-column:1 / -1"><label>' + escapeHtml(llsX('featureTags')) + '</label><div>' + featureChecks + '</div></div>'
     + '<div style="grid-column:1 / -1"><label>' + escapeHtml(llsX('extraFeatures')) + '</label><input value="' + llsEsc(extra) + '" placeholder="' + llsEsc(llsX('extraFeaturesPlaceholder')) + '" oninput="llsSetProviderDialogExtra(this.value)"></div>'
     + '<div><label>' + escapeHtml(llsX('priority')) + '</label><select onchange="llsSetProviderDialogField(\'priority\', Number(this.value || 0) || 0)">' + llmServicePriorityOptions.map(function(v) { return '<option value="' + v + '"' + (Number(draft.priority || 0) === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
     + '<div><label>' + escapeHtml(llsX('resolutionTier')) + '</label><select onchange="llsSetProviderDialogField(\'resolution_tier\', Number(this.value || 0) || 0)">' + llmServiceResolutionOptions.map(function(v) { return '<option value="' + v + '"' + (Number(draft.resolution_tier || 0) === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select><div class="hint" style="margin-top:6px">' + escapeHtml(llsX('resolutionTierHint')) + '</div></div>'
     + '<div><label>' + escapeHtml(llsX('creditMultiplier')) + '</label><select onchange="llsSetProviderDialogField(\'credit_multiplier\', Number(this.value || 1) || 1)">' + llmServiceMultiplierOptions.map(function(v) { return '<option value="' + v + '"' + (Number(draft.credit_multiplier || 1) === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
+    + '</div>'
+    + '<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px"><div class="item-title">'+escapeHtml(llsX('tokenPricingTitle'))+'</div><div class="hint">'+escapeHtml(llsX('tokenPricingHint'))+'</div>'
+    + '<div class="grid2" style="margin-top:8px"><div><label>'+escapeHtml(llsX('billingMode'))+'</label><select onchange="llsSetProviderDialogField(\'billing_mode\',this.value)"><option value=""'+(String(draft.billing_mode||'')===''?' selected':'')+'>'+escapeHtml(llsX('billingModeLegacy'))+'</option><option value="paid"'+(draft.billing_mode==='paid'?' selected':'')+'>'+escapeHtml(llsX('billingModePaid'))+'</option><option value="free"'+(draft.billing_mode==='free'?' selected':'')+'>'+escapeHtml(llsX('billingModeFree'))+'</option></select><div class="hint">'+escapeHtml(llsX('billingModeHint'))+'</div></div>'
+    + '<div><label>'+escapeHtml(llsX('pricingTimezone'))+'</label><input value="'+llsEsc((draft.token_pricing&&draft.token_pricing.timezone)||'')+'" placeholder="Asia/Shanghai" oninput="llsSetTokenPricingField(\'timezone\',this.value)"></div></div>'
+    + '<div class="grid2"><div><label>'+escapeHtml(llsX('inputCreditsPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.input_credits_per_10k!==undefined?String(draft.token_pricing.input_credits_per_10k):'')+'" placeholder="1" oninput="llsSetTokenPricingField(\'input_credits_per_10k\',this.value)"></div>'
+    + '<div><label>'+escapeHtml(llsX('outputCreditsPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.output_credits_per_10k!==undefined?String(draft.token_pricing.output_credits_per_10k):'')+'" placeholder="4" oninput="llsSetTokenPricingField(\'output_credits_per_10k\',this.value)"></div></div>'
+    + '<div class="grid2"><div><label>'+escapeHtml(llsX('inputRMBPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.input_rmb_per_10k!==undefined?String(draft.token_pricing.input_rmb_per_10k):'')+'" placeholder="0.02" oninput="llsSetTokenPricingField(\'input_rmb_per_10k\',this.value)"></div>'
+    + '<div><label>'+escapeHtml(llsX('outputRMBPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.output_rmb_per_10k!==undefined?String(draft.token_pricing.output_rmb_per_10k):'')+'" placeholder="0.08" oninput="llsSetTokenPricingField(\'output_rmb_per_10k\',this.value)"></div></div>'
+    + '<div class="grid2"><div><label>'+escapeHtml(llsX('minimumRequestCredits'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.minimum_request_credits!==undefined?String(draft.token_pricing.minimum_request_credits):'')+'" placeholder="0.1" oninput="llsSetTokenPricingField(\'minimum_request_credits\',this.value)"></div>'
+    + '<div><label>'+escapeHtml(llsX('pricingVersion'))+'</label><input value="'+llsEsc((draft.token_pricing&&draft.token_pricing.version)||'')+'" placeholder="2026-08-23-v1" oninput="llsSetTokenPricingField(\'version\',this.value)"></div></div>'
     + '</div>'
     + '<div class="actions" style="margin-top:10px"><button class="btn-ghost" type="button" onclick="closeLLSProviderDialog()">' + escapeHtml(llsX('cancel')) + '</button><button class="btn-primary" type="button" onclick="saveLLSProviderDialog()">' + escapeHtml(llsX('saveProvider')) + '</button></div>'
     + '</div>';
@@ -2847,10 +3217,24 @@ function saveLLSProviderDialog() {
   }
   if ((model.provider_ids || []).indexOf(providerID) < 0) model.provider_ids.push(providerID);
   var cfg = llsProviderConfig(model, providerID);
+  if (providerID === 'maclaw_official') {
+    cfg.model = String(state.draft.model || 'official-mid').trim() || 'official-mid';
+  }
+  var billingMode = String(state.draft.billing_mode||'').trim();
+  var tp=state.draft.token_pricing||{};
+  for(var kk in tp){ if(tp.hasOwnProperty(kk) && (kk==='input_credits_per_10k'||kk==='output_credits_per_10k'||kk==='input_rmb_per_10k'||kk==='output_rmb_per_10k'||kk==='minimum_request_credits')){ if(tp[kk]!==''&&tp[kk]!==undefined){ var nn=Number(tp[kk]); if(!isFinite(nn)||nn<0){ showToast(llsX('billingInvalid'),'error'); return; } } } }
+  if(billingMode==='paid'){
+    var hasCredits = (tp.input_credits_per_10k!==undefined&&isFinite(tp.input_credits_per_10k)&&tp.input_credits_per_10k>0) || (tp.output_credits_per_10k!==undefined&&isFinite(tp.output_credits_per_10k)&&tp.output_credits_per_10k>0) || (tp.minimum_request_credits!==undefined&&isFinite(tp.minimum_request_credits)&&tp.minimum_request_credits>0);
+    if(!hasCredits){ showToast(llsX('billingPaidNeedsCredits'),'error'); return; }
+  }
+  cfg.billing_mode = billingMode;
   cfg.capability_tags = Array.from(new Set((state.draft.capability_tags || []).map(function(v) { return String(v || '').trim(); }).filter(Boolean)));
   cfg.priority = Number(state.draft.priority || 0) || 0;
   cfg.resolution_tier = Number(state.draft.resolution_tier || 0) || 0;
   cfg.credit_multiplier = Number(state.draft.credit_multiplier || 1) || 1;
+  var cleaned={}; for(var k in tp){ if(tp.hasOwnProperty(k)){ var val=tp[k]; if(val!==''&&val!==undefined&&val!==null){ if(k==='timezone'||k==='version'){ if(String(val).trim()) cleaned[k]=String(val).trim(); } else if(k==='price_schedule' && Array.isArray(val) && val.length){ try{ cleaned[k]=JSON.parse(JSON.stringify(val)); }catch(e){ cleaned[k]=val.slice(); } } else if(isFinite(Number(val))) cleaned[k]=Number(val); } } }
+  if(cleaned.price_schedule && !cleaned.timezone) cleaned.timezone='Asia/Shanghai';
+  cfg.token_pricing = cleaned;
   llsSyncModelProviderState(model);
   closeLLSProviderDialog();
   renderLLMServiceGroupDialog();
@@ -2902,6 +3286,7 @@ function renderLLMServiceGroupDialog() {
   var providerRef = llmServiceProviderOptions.length
     ? escapeHtml(llsX('createdProvidersPrefix')) + escapeHtml(llmServiceProviderOptions.map(llmServiceProviderDisplay).join(', '))
     : '<span class="hint">' + escapeHtml(llsX('noProvidersYet')) + '</span>';
+  var snap = llsSnapTrain();
   r.innerHTML = `
     <div class="item" style="border:none;box-shadow:none;padding:0;background:transparent">
       <div class="item-title">${escapeHtml(llmServiceGroupDialogMode === 'edit' ? llsX('editServiceGroup') : llsX('newServiceGroup'))}</div>
@@ -2913,7 +3298,9 @@ function renderLLMServiceGroupDialog() {
         <div style="grid-column:1 / -1"><label>${escapeHtml(lsx('description'))}</label><input value="${llsEsc(d.description)}" placeholder="${llsEsc(lsx('groupDescPlaceholder'))}" oninput="llsSetGroup('description',this.value)"></div>
         <div><label>${escapeHtml(llsX('accessPolicy'))}</label><select ${systemFree ? 'disabled' : ''} onchange="llsSetGroup('access_policy', this.value)"><option value="free"${llsNormalizeAccessPolicy(d.access_policy) === 'free' ? ' selected' : ''}>${escapeHtml(llsX('accessPolicyFree'))}</option><option value="grant_required"${llsNormalizeAccessPolicy(d.access_policy) === 'grant_required' ? ' selected' : ''}>${escapeHtml(llsX('accessPolicyGrantRequired'))}</option></select></div>
         <div><label>${escapeHtml(llsX('accessPolicyHint'))}</label><div class="hint" style="margin-top:8px">${escapeHtml(systemFree ? 'system-free is always free (no recharge)' : llsAccessPolicyHint(d.access_policy))}</div></div>
+        <div><label>${escapeHtml(llsX('groupKind'))}</label><select ${systemFree ? 'disabled' : ''} onchange="llsSetKind(this.value)"><option value="static"${d.kind !== 'dynamic' ? ' selected' : ''}>${escapeHtml(llsX('groupKindStatic'))}</option><option value="dynamic"${d.kind === 'dynamic' ? ' selected' : ''}>${escapeHtml(llsX('groupKindDynamic'))}</option></select></div>
       </div>
+      ${d.kind === 'dynamic' ? llsRenderWorkloadRoutes(d) + llsRenderDynamicCatalog(d) + llsRenderClassTrafficPanel(d) : ''}
       <div style="margin-top:10px">
         <div class="item-head">
           <div>
@@ -2929,13 +3316,251 @@ function renderLLMServiceGroupDialog() {
         <button class="btn-primary" type="button" onclick="saveLLMServiceGroupDialog()">${escapeHtml(llsX('saveGroup'))}</button>
       </div>
     </div>`;
+  if (d.kind === 'dynamic' && String(d.id || '').trim()) {
+    llsRestoreTrain(snap);
+    llsLoadClassTraffic(String(d.id).trim(), (snap && snap.win) || window._llsTrafficWin || '24h');
+    if (typeof loadLLMClassHead==='function') loadLLMClassHead();
+  }
 }
 function llsSetGroup(k, v) { if (!llmServiceGroupDraft) llmServiceGroupDraft = llsEmptyGroup(); llmServiceGroupDraft[k] = k === 'access_policy' ? llsNormalizeAccessPolicy(v) : String(v || '').trim(); if (k === 'access_policy') renderLLMServiceGroupDialog(); }
+function llsSetKind(v) {
+  if (!llmServiceGroupDraft) llmServiceGroupDraft = llsEmptyGroup();
+  llmServiceGroupDraft.kind = v === 'dynamic' ? 'dynamic' : 'static';
+  if (llmServiceGroupDraft.kind === 'dynamic' && !(llmServiceGroupDraft.routes || []).length) llmServiceGroupDraft.routes = llsDefaultDynamicRoutes();
+  renderLLMServiceGroupDialog();
+}
+function llsSetRouteField(i, k, v) {
+  if (!llmServiceGroupDraft) return;
+  llmServiceGroupDraft.routes = llmServiceGroupDraft.routes || [];
+  if (!llmServiceGroupDraft.routes[i]) llmServiceGroupDraft.routes[i] = { class: '', model: '', quality: '' };
+  llmServiceGroupDraft.routes[i][k] = String(v || '').trim();
+}
+function llsRenderWorkloadRoutes(d) {
+  var modelOptions = (d.models || []).map(function(m) { return String(m && m.name || '').trim(); }).filter(Boolean);
+  var rows = (d.routes || []).map(function(route, i) {
+    var opts = modelOptions.map(function(name) {
+      return '<option value="' + llsEsc(name) + '"' + (name === route.model ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+    }).join('');
+    return '<div class="row" style="grid-template-columns:1fr 1.2fr .8fr;gap:8px;margin-top:6px"><div class="mono">' + escapeHtml(route.class || '') + '</div>'
+      + '<select onchange="llsSetRouteField(' + i + ',\'model\',this.value)">' + opts + '</select>'
+      + '<select onchange="llsSetRouteField(' + i + ',\'quality\',this.value)"><option value=""' + (!route.quality ? ' selected' : '') + '>-</option><option value="high"' + (route.quality === 'high' ? ' selected' : '') + '>high</option><option value="mid"' + (route.quality === 'mid' ? ' selected' : '') + '>mid</option><option value="low"' + (route.quality === 'low' ? ' selected' : '') + '>low</option></select></div>';
+  }).join('');
+  return '<div style="margin-top:12px"><div class="item-title">' + escapeHtml(llsX('workloadRoutes')) + '</div><div class="item-meta">' + escapeHtml(llsX('workloadRoutesDesc')) + '</div>' + rows + '</div>';
+}
+function llsSetExposedModels(v) {
+  if (!llmServiceGroupDraft) llmServiceGroupDraft = llsEmptyGroup();
+  llmServiceGroupDraft.exposed_models = parseCSV(v);
+}
+function llsSetQualityFloor(v) {
+  if (!llmServiceGroupDraft) llmServiceGroupDraft = llsEmptyGroup();
+  llmServiceGroupDraft.quality_floor = String(v || '').trim();
+}
+function llsRenderDynamicCatalog(d) {
+  var names = (d && d.exposed_models || []).join(', ');
+  var floor = String(d && d.quality_floor || '').trim();
+  return '<div style="margin-top:12px"><div class="item-title">' + escapeHtml(llsX('exposedModels')) + '</div>'
+    + '<div class="item-meta">' + escapeHtml(llsX('exposedModelsDesc')) + '</div>'
+    + '<div class="grid2" style="margin-top:8px">'
+    + '<div><label>' + escapeHtml(llsX('exposedModels')) + '</label><input value="' + llsEsc(names) + '" placeholder="auto, official-high" oninput="llsSetExposedModels(this.value)"></div>'
+    + '<div><label>' + escapeHtml(llsX('qualityFloor')) + '</label><select onchange="llsSetQualityFloor(this.value)">'
+    + '<option value=""' + (!floor ? ' selected' : '') + '>' + escapeHtml(llsX('qualityFloorNone')) + '</option>'
+    + '<option value="high"' + (floor === 'high' ? ' selected' : '') + '>high</option>'
+    + '<option value="mid"' + (floor === 'mid' ? ' selected' : '') + '>mid</option>'
+    + '<option value="low"' + (floor === 'low' ? ' selected' : '') + '>low</option>'
+    + '</select></div></div></div>';
+}
+
+function llsSnapTrain(){
+  var box=document.querySelector('.llh-try');
+  function val(id){var el=document.getElementById(id);return el?el.value:'';}
+  var out=document.getElementById('llsTryRunOut');
+  return {
+    tryOpen:!!(box&&box.open),
+    tryText:val('llsTryRunText'),
+    tryWorkflow:val('llsTryWorkflow'),
+    tryPhase:val('llsTryPhase'),
+    tryTask:val('llsTryTask'),
+    tryOut:out?out.innerHTML:'',
+    win:window._llsTrafficWin||'24h',
+    headTestText:val('llsHeadTestText'),
+    headTestWorkflow:val('llsHeadTestWorkflow'),
+    headTestPhase:val('llsHeadTestPhase'),
+    headTestTask:val('llsHeadTestTask'),
+    headTestSlot:val('llsHeadTestSlot'),
+    headTestOut:(document.getElementById('llsHeadTestOut')||{}).innerHTML||''
+  };
+}
+function llsRestoreTrain(snap){
+  if(!snap)return;
+  var box=document.querySelector('.llh-try');
+  if(box)box.open=!!snap.tryOpen;
+  function set(id,v){var el=document.getElementById(id);if(el&&v!=null)el.value=v;}
+  set('llsTryRunText',snap.tryText);
+  set('llsTryWorkflow',snap.tryWorkflow);
+  set('llsTryPhase',snap.tryPhase);
+  set('llsTryTask',snap.tryTask);
+  var out=document.getElementById('llsTryRunOut');
+  if(out&&snap.tryOut)out.innerHTML=snap.tryOut;
+  set('llsHeadTestText',snap.headTestText);
+  set('llsHeadTestWorkflow',snap.headTestWorkflow);
+  set('llsHeadTestPhase',snap.headTestPhase);
+  set('llsHeadTestTask',snap.headTestTask);
+  set('llsHeadTestSlot',snap.headTestSlot);
+  var headOut=document.getElementById('llsHeadTestOut');
+  if(headOut&&snap.headTestOut)headOut.innerHTML=snap.headTestOut;
+}
+function llsClassHeadQS(groupId){
+  groupId=String(groupId||window._llsHeadGroupId||'').trim();
+  return groupId?('?group_id='+encodeURIComponent(groupId)):'';
+}
+function llsCachedHead(id){
+  return (window._llsHeadDataId===id && window._llsHeadData) ? window._llsHeadData : null;
+}
+function llsRenderClassHeadPanel(id){
+  window._llsHeadGroupId=String(id||'').trim();
+  var cached=llsCachedHead(window._llsHeadGroupId)?llsRenderClassHeadBody(llsCachedHead(window._llsHeadGroupId)):'';
+  return '<div id="llmClassHeadCard" class="llh-block"><div class="item-title">' + escapeHtml(llsX('classHeadTitle')) + '</div>'
+    + '<div class="hint">' + escapeHtml(llsX('classHeadDesc')) + '</div>'
+    + '<div id="llmClassHeadBody" class="hint" style="margin-top:10px">' + (cached || escapeHtml(llsX('classTrafficLoading'))) + '</div></div>';
+}
+function llsCachedTraffic(id){
+  var win=window._llsTrafficWin||'24h';
+  return (window._llsTrafficGroupId===id && window._llsTrafficDataWin===win && window._llsTrafficData) ? window._llsTrafficData : null;
+}
+function llsRenderClassTrafficPanel(d) {
+  var id = String(d && d.id || '').trim();
+  if (!id) return '';
+  var cached = llsCachedTraffic(id) ? llsFormatClassTrafficBoard(llsCachedTraffic(id)) : '';
+  return '<div id="llmClassTrainCard" class="llh-block"><div class="item-title">' + escapeHtml(llsX('classTrafficTitle')) + '</div>'
+    + '<div class="hint" style="margin-top:6px">' + escapeHtml(llsX('classTrafficDesc')) + '</div>'
+    + '<div class="llh-win">' + llsWinButtons(id) + '</div>'
+    + '<div id="llsClassTraffic" class="hint" style="margin-top:8px">' + (cached || escapeHtml(llsX('classTrafficLoading'))) + '</div>'
+    + '<details class="llh-try"><summary>' + escapeHtml(llsX('ruleTryRun')) + '</summary>'
+    + '<div class="hint">' + escapeHtml(llsX('ruleTryHint')) + '</div>'
+    + '<textarea id="llsTryRunText" rows="3" style="width:100%;margin-top:6px" aria-label="' + escapeHtml(llsX('ruleTryRun')) + '" placeholder="' + escapeHtml(llsX('tryPlaceholder')) + '" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key===\'Enter\'){event.preventDefault();llsTryClassify('+llsJsArg(id)+');}"></textarea>'
+    + '<div class="row" style="grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px">'
+    + '<input id="llsTryWorkflow" aria-label="' + escapeHtml(llsX('tryWorkflow')) + '" placeholder="' + escapeHtml(llsX('tryWorkflow')) + '">'
+    + '<input id="llsTryPhase" aria-label="' + escapeHtml(llsX('tryPhase')) + '" placeholder="' + escapeHtml(llsX('tryPhase')) + '">'
+    + '<input id="llsTryTask" aria-label="' + escapeHtml(llsX('tryTask')) + '" placeholder="' + escapeHtml(llsX('tryTask')) + '">'
+    + '</div>'
+    + '<button id="llsTryRunBtn" class="btn-ghost" type="button" style="margin-top:6px" onclick="llsTryClassify('+llsJsArg(id)+')">' + escapeHtml(llsX('tryRun')) + '</button>'
+    + '<div id="llsTryRunOut" class="hint" style="margin-top:8px"></div></details>'
+    + llsRenderClassHeadPanel(id) + '</div>';
+}
+function llsMarkTrafficWindow(windowName) {
+  var buttons = document.querySelectorAll('.lls-traffic-win');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].classList.toggle('is-active', buttons[i].getAttribute('data-win') === windowName);
+  }
+}
+function llsFormatClassTrafficBoard(data) {
+  var rows = (data && data.rows) || [];
+  var sources = (data && data.sources) || {};
+  var samples = (data && data.samples) || [];
+  var cell = 'padding:4px 6px;border-bottom:1px solid rgba(127,127,127,.2)';
+  var table = '<table class="lls-traffic" style="width:100%;margin-top:8px;border-collapse:collapse;font-size:12px"><thead><tr>'
+    + '<th align="left" style="' + cell + '">' + escapeHtml(llsX('classCol')) + '</th>'
+    + '<th align="right" style="' + cell + '">' + escapeHtml(llsX('classReq')) + '</th>'
+    + '<th align="right" style="' + cell + '">' + escapeHtml(llsX('classIn')) + '</th>'
+    + '<th align="right" style="' + cell + '">' + escapeHtml(llsX('classOut')) + '</th>'
+    + '<th align="right" style="' + cell + '">' + escapeHtml(llsX('classTokens')) + '</th>'
+    + '</tr></thead><tbody>';
+  if (!rows.length) {
+    table = '<div class="hint" style="margin-top:8px">' + escapeHtml(llsX('classTrafficEmpty')) + '</div>';
+  } else {
+    rows.forEach(function(row) {
+      var strong = row.class === 'total' ? 'font-weight:600' : '';
+      table += '<tr style="' + strong + '"><td style="' + cell + '">' + escapeHtml(row.class === 'total' ? llsX('classTotal') : llsClassLabel(row.class || '')) + '</td>'
+        + '<td align="right" style="' + cell + '">' + (row.requests || 0) + '</td>'
+        + '<td align="right" style="' + cell + '">' + (row.input_tokens || 0) + '</td>'
+        + '<td align="right" style="' + cell + '">' + (row.output_tokens || 0) + '</td>'
+        + '<td align="right" style="' + cell + '">' + (row.total_tokens || 0) + '</td></tr>';
+    });
+    table += '</tbody></table>';
+  }
+  var sourceKeys = Object.keys(sources);
+  var sourceTotal = 0;
+  sourceKeys.forEach(function(key) { sourceTotal += sources[key] || 0; });
+  var sourceHtml = '';
+  if (sourceKeys.length) {
+    sourceHtml = '<div class="llh-mix"><div class="item-meta">' + escapeHtml(llsX('classSourceMix')) + '</div>'
+      + '<div class="llh-chips">' + sourceKeys.sort().map(function(key) {
+        var n = sources[key] || 0;
+        var pct = sourceTotal ? Math.round(n * 1000 / sourceTotal) / 10 : 0;
+        return '<span class="llh-chip">' + escapeHtml(llsSourceLabel(key)) + ' ' + pct + '% <em>' + n + '</em></span>';
+      }).join('') + '</div></div>';
+  }
+  var sampleHtml = '<div class="llh-mix"><div class="item-meta">' + escapeHtml(llsX('noHintSamples')) + '</div>';
+  if (samples.length) {
+    sampleHtml += samples.map(function(sample) {
+      var when = sample.at ? String(sample.at).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '';
+      return '<div class="llh-sample"><span class="badge">' + escapeHtml(llsClassLabel(sample.class || '')) + '</span>'
+        + '<div class="llh-preview">' + escapeHtml((when ? when + ' · ' : '') + (sample.preview || '')) + '</div></div>';
+    }).join('');
+  } else {
+    sampleHtml += '<div class="hint">' + escapeHtml(llsX('noHintSamplesEmpty')) + '</div>';
+  }
+  return table + sourceHtml + sampleHtml + '</div>';
+}
+var _llsTrafficSeq=0;
+var _llsHeadSeq=0;
+var _llsTrySeq=0;
+async function llsLoadClassTraffic(id, windowName) {
+  var el = document.getElementById('llsClassTraffic');
+  if (!el) return;
+  windowName = windowName || window._llsTrafficWin || '24h';
+  var seq=++_llsTrafficSeq;
+  var same=window._llsTrafficGroupId===id && window._llsTrafficDataWin===windowName && !!el.querySelector('table,.llh-mix,.lls-traffic');
+  window._llsTrafficWin = windowName;
+  llsMarkTrafficWindow(windowName);
+  if(!same) el.textContent = llsX('classTrafficLoading');
+  try {
+    var data = await api('/api/admin/llm/class-traffic?service_group_id=' + encodeURIComponent(id) + '&window=' + encodeURIComponent(windowName));
+    if(seq!==_llsTrafficSeq)return;
+    window._llsTrafficData=data;
+    window._llsTrafficGroupId=id;
+    window._llsTrafficDataWin=windowName;
+    el.innerHTML = llsFormatClassTrafficBoard(data);
+  } catch (err) {
+    if(seq===_llsTrafficSeq) el.textContent = err && err.message || llsX('failed');
+  }
+}
+var _llsTryBusy=false;
+async function llsTryClassify(id) {
+  if(_llsTryBusy)return;
+  var text = (document.getElementById('llsTryRunText') && document.getElementById('llsTryRunText').value) || '';
+  var out = document.getElementById('llsTryRunOut');
+  if(!out)return;
+  var seq=++_llsTrySeq;
+  _llsTryBusy=true;
+  var btn=document.getElementById('llsTryRunBtn');
+  if(btn)btn.disabled=true;
+  out.textContent = llsX('classTrafficLoading');
+  try {
+    var headers = {};
+    var workflow = (document.getElementById('llsTryWorkflow') && document.getElementById('llsTryWorkflow').value || '').trim();
+    var phase = (document.getElementById('llsTryPhase') && document.getElementById('llsTryPhase').value || '').trim();
+    var task = (document.getElementById('llsTryTask') && document.getElementById('llsTryTask').value || '').trim();
+    if (workflow) headers['X-MaClaw-Workflow-Type'] = workflow;
+    if (phase) headers['X-MaClaw-Phase-Kind'] = phase;
+    if (task) headers['X-MaClaw-Task-Type'] = task;
+    var data = await api('/api/admin/llm/classify-preview?service_group_id=' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify({ headers: headers, body: { model: 'auto', messages: [{ role: 'user', content: text }] } }) });
+    if(seq!==_llsTrySeq)return;
+    out = document.getElementById('llsTryRunOut');
+    if (out) out.innerHTML = llsFmtTryResult(data);
+  } catch (err) {
+    if(seq===_llsTrySeq && (out=document.getElementById('llsTryRunOut'))) out.textContent = err && err.message || llsX('failed');
+  } finally {
+    _llsTryBusy=false;
+    btn=document.getElementById('llsTryRunBtn');
+    if(btn)btn.disabled=false;
+  }
+}
 function llsAddRow() { if (!llmServiceGroupDraft) llmServiceGroupDraft = llsEmptyGroup(); llmServiceGroupDraft.models.push({ name: 'auto', provider_ids: [], provider_configs: [], capability_tags: [], priority: 50, resolution_tier: 0, credit_multiplier: 1 }); renderLLMServiceGroupDialog(); }
 function llsRemoveRow(i) { if (llmServiceGroupDraft && llmServiceGroupDraft.models) { llmServiceGroupDraft.models.splice(i, 1); renderLLMServiceGroupDialog(); } }
 function llsSetRow(i, k, v) { if (llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]) llmServiceGroupDraft.models[i][k] = String(v || '').trim(); }
 function llsSetProviderNum(i, providerID, k, v) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var cfg = llsProviderConfig(m, providerID); if (!cfg) return; cfg[k] = k === 'credit_multiplier' ? (Number(v || 1) || 1) : (Number(v || 0) || 0); llsSyncModelProviderState(m); }
-function llsAddProvider(i) { var s = document.getElementById('llsProviderSel' + i); var id = normalizeLLMServiceProviderRef(s && s.value || ''); if (!id) { showToast(llsX('chooseProviderFirst'), 'info'); return; } var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; if ((m.provider_ids || []).indexOf(id) < 0) m.provider_ids.push(id); llsSyncModelProviderState(m); renderLLMServiceGroupDialog(); }
+function llsAddProvider(i) { var s = document.getElementById('llsProviderSel' + i); var id = normalizeLLMServiceProviderRef(s && s.value || ''); if (!id) { showToast(llsX('chooseProviderFirst'), 'info'); return; } var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; if ((m.provider_ids || []).indexOf(id) < 0) m.provider_ids.push(id); llsSyncModelProviderState(m); if (id === 'maclaw_official') { var cfg = llsProviderConfig(m, id); if (cfg && !cfg.model) cfg.model = 'official-mid'; } renderLLMServiceGroupDialog(); }
 function llsMoveProvider(i, id, delta) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var list = m.provider_ids || []; var from = list.indexOf(id); if (from < 0) return; var to = from + Number(delta || 0); if (to < 0 || to >= list.length) return; var item = list.splice(from, 1)[0]; list.splice(to, 0, item); m.provider_ids = list; llsSyncModelProviderState(m); renderLLMServiceGroupDialog(); }
 function llsRemoveProvider(i, id) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; m.provider_ids = (m.provider_ids || []).filter(function(v) { return v !== id; }); m.provider_configs = (m.provider_configs || []).filter(function(cfg) { return normalizeLLMServiceProviderRef(cfg && cfg.provider_id || '') !== normalizeLLMServiceProviderRef(id); }); llsSyncModelProviderState(m); renderLLMServiceGroupDialog(); }
 async function llsRemoveGroupById(id) { if (!llmServiceAdminCache || !id) return; if (isProtectedLLMServiceGroup(id)) { showToast(isSystemFreeLLMServiceGroup(id) ? 'system-free cannot be removed' : lsx('builtInDefaultCannotRemove'), 'info'); return; } var key = llmServiceGroupIDKey(id); var keep = function(x) { return llmServiceGroupIDKey(x) !== key; }; var snapshot = JSON.parse(JSON.stringify(llmServiceAdminCache)); snapshot.model_service_groups = (snapshot.model_service_groups || []).filter(function(g) { return keep(g && g.id); }); snapshot.global_service_group_ids = (snapshot.global_service_group_ids || []).filter(keep); snapshot.default_new_user_service_groups = (snapshot.default_new_user_service_groups || []).filter(keep); if (!(snapshot.default_new_user_service_groups || []).length) snapshot.default_new_user_service_groups = [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID]; snapshot.group_bindings = (snapshot.group_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; }); snapshot.user_bindings = (snapshot.user_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; }); try { var data = await api('/api/admin/llm/services?include_cards=false', { method: 'PUT', body: JSON.stringify(snapshot) }); llmServiceAdminCache = data || snapshot; if (llmServiceGroupIDKey(llmServiceSelectedGroupID) === key) llmServiceSelectedGroupID = ''; renderLLMServiceAdmin(); showToast(lsx('saveDone'), 'success'); } catch (err) { showToast(lsx('saveFailed', { error: err.message }), 'error'); } }
@@ -2982,4 +3607,488 @@ async function saveLLMServiceGroupDialog() {
   }
 }
 
-var _renderLLMServiceAdmin=renderLLMServiceAdmin;renderLLMServiceAdmin=function(){ensureLLMServiceGroupModalUI();ensureLLMServiceProviderModalUI();_renderLLMServiceAdmin();syncLLMServiceLegacyEditor()};
+var _renderLLMServiceAdmin=renderLLMServiceAdmin;renderLLMServiceAdmin=function(){ensureLLMServiceGroupModalUI();ensureLLMServiceProviderModalUI();_renderLLMServiceAdmin();syncLLMServiceLegacyEditor();if(typeof loadLLMClassHead==='function')loadLLMClassHead();};
+
+function llsHeadStatusLabel(status){
+  var map={
+    unused:{zh:'\u672a\u542f\u7528',en:'unused'},
+    training:{zh:'\u8bad\u7ec3\u4e2d',en:'training'},
+    shadow:{zh:'\u5f71\u5b50\u89c2\u5bdf',en:'shadow'},
+    canary:{zh:'\u91d1\u4e1d\u96c0',en:'canary'},
+    promoted:{zh:'\u5df2\u8f6c\u6b63',en:'promoted'},
+    gates_failed:{zh:'\u95e8\u7981\u672a\u8fc7',en:'gates failed'},
+    distributing:{zh:'\u5206\u53d1\u4e2d',en:'distributing'},
+    rolled_back:{zh:'\u5df2\u56de\u6eda',en:'rolled back'}
+  };
+  var entry=map[String(status||'unused')];
+  if(!entry)return String(status||'unused');
+  return currentLang==='zh'?entry.zh:entry.en;
+}
+function llsHeadStatusTone(status){
+  status=String(status||'unused');
+  if(status==='promoted')return 'ok';
+  if(status==='canary'||status==='shadow'||status==='training'||status==='distributing')return 'info';
+  if(status==='gates_failed'||status==='rolled_back')return 'warn';
+  return '';
+}
+function llsClassLabel(cls){
+  var map={plan:'classPlan',design:'classDesign',review:'classReview',doc_write:'classDocWrite',code:'classCode',ops:'classOps',balanced:'classBalanced',chat:'classChat',classify:'classClassify'};
+  var key=map[String(cls||'')];
+  return key?llsX(key):String(cls||'');
+}
+function llsSourceLabel(src){
+  var map={hint:'srcHint',workflow:'srcWorkflow',task_type:'srcTaskType',heuristic:'srcHeuristic',fallback:'srcFallback',head:'srcHead'};
+  return map[src]?llsX(map[src]):String(src||'');
+}
+function llsQualityLabel(q){
+  var map={high:'qualityHigh',mid:'qualityMid',low:'qualityLow'};
+  return map[q]?llsX(map[q]):String(q||'');
+}
+function llsResolvedLabel(n){
+  var map={'official-high':'tierHigh','official-mid':'tierMid','official-low':'tierLow'};
+  return map[n]?llsX(map[n]):String(n||'');
+}
+function llsWinLabel(win){
+  var map={'24h':'win24h','7d':'win7d','30d':'win30d'};
+  return map[win]?llsX(map[win]):win;
+}
+function llsWinButtons(id){
+  var cur=window._llsTrafficWin||'24h';
+  return ['24h','7d','30d'].map(function(win){
+    return '<button class="btn-ghost lls-traffic-win'+(cur===win?' is-active':'')+'" data-win="'+win+'" type="button" onclick="llsLoadClassTraffic('+llsJsArg(id)+','+llsJsArg(win)+')">'+escapeHtml(llsWinLabel(win))+'</button>';
+  }).join('');
+}
+function llsFrozenClasses(){
+  return ['plan','design','review','doc_write','code','ops','chat','classify'];
+}
+function llsParseGoldClass(raw){
+  raw=String(raw||'').trim();
+  if(!raw)return '';
+  var lower=raw.toLowerCase().replace(/\s+/g,'_');
+  var aliases={docs:'doc_write',doc:'doc_write',document:'doc_write'};
+  if(aliases[lower])return aliases[lower];
+  var keys=llsFrozenClasses();
+  var map={plan:'classPlan',design:'classDesign',review:'classReview',doc_write:'classDocWrite',code:'classCode',ops:'classOps',chat:'classChat',classify:'classClassify'};
+  for(var i=0;i<keys.length;i++){
+    if(lower===keys[i]||raw===llsX(map[keys[i]]))return keys[i];
+  }
+  return '';
+}
+function llsGoldSelect(sample){
+  var cur=String(sample&&sample.gold_class||'');
+  return '<select class="llh-gold" aria-label="'+escapeHtml(llsX('markGold'))+'" onchange="reviewLLMClassHead('+llsJsArg(sample&&sample.id||'')+',this.value)">'
+    +'<option value="">'+escapeHtml(llsX('goldPick'))+'</option>'
+    +llsFrozenClasses().map(function(k){return '<option value="'+k+'"'+(k===cur?' selected':'')+'>'+escapeHtml(llsClassLabel(k))+'</option>';}).join('')
+    +'</select>';
+}
+function llsAckLabel(st){
+  if(st==='acked')return llsX('ackAcked');
+  if(st==='pending')return llsX('ackPending');
+  return String(st||'');
+}
+function llsFmtTryResult(data){
+  if(!data||typeof data!=='object')return '<pre class="hint">'+escapeHtml(String(data||''))+'</pre>';
+  if(data.error)return '<div class="llh-callout is-err">'+escapeHtml(String(data.error))+'</div>';
+  var rows=[];
+  function add(label,value){if(value)rows.push('<div class="llh-try-row"><span>'+escapeHtml(label)+'</span><strong>'+escapeHtml(value)+'</strong></div>');}
+  add(llsX('tryClass'),llsClassLabel(data.class||data.routed_class||''));
+  add(llsX('trySource'),llsSourceLabel(data.class_source||''));
+  add(llsX('tryModel'),llsResolvedLabel(data.resolved_model||''));
+  add(llsX('tryQuality'),llsQualityLabel(data.quality||''));
+  if(data.rule_class)add(llsX('sampleRule'),llsClassLabel(data.rule_class));
+  if(data.head_class)add(llsX('sampleHead'),llsClassLabel(data.head_class)+(data.head_max_p?(' · '+(Number(data.head_max_p)*100).toFixed(0)+'%'):''));
+  if(data.capability_upgraded)add(llsX('tryUpgraded'),llsX('tryYes'));
+  return '<div class="llh-try-result">'+rows.join('')+'<details class="llh-try-json"><summary>'+escapeHtml(llsX('tryRaw'))+'</summary><pre class="hint">'+escapeHtml(JSON.stringify(data,null,2))+'</pre></details></div>';
+}
+function llsPipeLabel(mode){
+  var map={off:'pipeOff',shadow:'pipeShadow',canary:'pipeCanary',on:'pipeOn'};
+  return map[mode]?llsX(map[mode]):mode;
+}
+function llsGateLabel(key){
+  var map={review_coverage:'gateReviewCoverage',accuracy:'gateAccuracy',recall:'gateRecall',two_windows:'gateTwoWindows',artifact:'gateArtifact'};
+  return map[key]?llsX(map[key]):key;
+}
+function llsHeadSuggestion(raw){
+  raw=String(raw||'').trim();
+  if(!raw)return '';
+  if(/gates green/i.test(raw))return llsX('headReady');
+  if(/gates not met/i.test(raw))return llsX('headNotReady');
+  if(/shadow before canary/i.test(raw))return llsX('headNeedShadow');
+  if(/ready serving head/i.test(raw))return llsX('headNeedServing');
+  if(/completed serving distribute/i.test(raw))return llsX('headNeedDistribute');
+  return raw;
+}
+function llsHeadIsUnused(data){
+  return String(data&&data.status||'unused')==='unused'
+    &&!(data&&data.version)&&!(data&&data.reviews)&&!(data&&data.human_reviews)&&!(data&&data.artifact_ready);
+}
+function llsHeadDistributing(data){
+  if(!data)return false;
+  if(String(data.distribute_status||'')==='distributing')return true;
+  var ack=data.distribute_ack||{};
+  return Object.keys(ack).some(function(id){return String(ack[id]||'')!=='acked';});
+}
+function llsHeadCallout(data){
+  if(llsHeadIsUnused(data)){
+    if((data.samples||[]).length)return {text:llsX('headHasSamples'),tone:'info'};
+    return {text:llsX(llsIsOfficialGroup(window._llsHeadGroupId)?'headUnusedOfficial':'headUnused'),tone:'info'};
+  }
+  if(String(data&&data.status||'unused')==='unused'&&data&&data.artifact_ready){
+    return {text:llsX('headAdoptReady'),tone:'info'};
+  }
+  var text=llsHeadSuggestion(data&&data.suggestion);
+  if(!text)return null;
+  return {text:text,tone:(data.gates&&data.gates.can_promote)?'ok':'warn'};
+}
+function llsFmtPct(v){v=Number(v||0);return (v*100).toFixed(1)+'%';}
+function llsRenderClassHeadBody(data){
+  if(!data)return '<div class="hint">'+escapeHtml(llsX('headNoData'))+'</div>';
+  var gates=data.gates||{};
+  var pipe=String(data.pipeline||'off');
+  var dist=String(data.distribute_status||'').trim();
+  var gid=String(window._llsHeadGroupId||'');
+  var items=[['review_coverage',gates.review_coverage],['accuracy',gates.accuracy],['recall',gates.recall],['two_windows',gates.two_windows],['artifact',gates.artifact]];
+  var gateHtml=items.map(function(item){
+    return '<span class="badge '+(item[1]?'ok':'warn')+'">'+escapeHtml(llsGateLabel(item[0]))+'</span>';
+  }).join('');
+  var canPromote=!!gates.can_promote;
+  var serving=!!data.artifact_ready;
+  var distributing=llsHeadDistributing(data);
+  var pipeline=['off','shadow','canary','on'].map(function(mode){
+    var upgrading=(mode==='canary'&&pipe!=='canary'&&pipe!=='on')||(mode==='on'&&pipe!=='on');
+    var locked=(mode==='shadow'&&pipe==='off'&&!serving)||(upgrading&&(!canPromote||pipe==='off'||distributing));
+    var lockKey=mode==='shadow'?'headNeedServing':(pipe==='off'?'headNeedShadow':(distributing?'headNeedDistribute':'headNotReady'));
+    var cls='llh-pipe'+(pipe===mode?' is-active':'')+(mode==='on'&&pipe==='on'?' is-live':'')+(locked?' is-locked':'');
+    return '<button class="'+cls+'" type="button" aria-pressed="'+(pipe===mode?'true':'false')+'"'+(locked?' title="'+escapeHtml(llsX(lockKey))+'"':'')+' onclick="setLLMClassHeadPipeline(\''+mode+'\')">'+escapeHtml(llsPipeLabel(mode))+'</button>';
+  }).join('');
+  var samples=(data.samples||[]).slice(0,8).map(function(sample){
+    return '<div class="llh-sample"><div class="llh-sample-main"><div class="llh-tags">'
+      +'<span class="badge">'+escapeHtml(llsX('sampleRule')+' · '+llsClassLabel(sample.rule_class||'-'))+'</span>'
+      +'<span class="badge'+(sample.gold_class?' ok':'')+'">'+escapeHtml(llsX('sampleGold')+' · '+(sample.gold_class?llsClassLabel(sample.gold_class):'\u2014'))+'</span>'
+      +(sample.head_class?'<span class="badge info">'+escapeHtml(llsX('sampleHead')+' · '+llsClassLabel(sample.head_class))+'</span>':'')
+      +'</div><div class="llh-preview">'+escapeHtml(sample.preview||'')+'</div></div>'
+      +(sample.id?llsGoldSelect(sample):'')+'</div>';
+  }).join('');
+  var showEval=!!(data.version||data.reviews||data.human_reviews||data.artifact_ready);
+  var canTrain=!!(data.version||data.artifact_ready||data.reviews||data.human_reviews||(data.samples||[]).length);
+  var canRollback=!!data.previous_version&&!distributing;
+  var ack=data.distribute_ack||{};
+  var ackRows=Object.keys(ack).map(function(id){return '<div class="llh-ack"><span class="mono">'+escapeHtml(id)+'</span><span class="badge '+(ack[id]==='acked'?'ok':'warn')+'">'+escapeHtml(llsAckLabel(ack[id]))+'</span></div>';}).join('');
+  var nodes=data.cluster_nodes||[];
+  if(data.trainer_node_id&&nodes.indexOf(data.trainer_node_id)<0)nodes=nodes.concat([data.trainer_node_id]);
+  var opts='<option value="">'+escapeHtml(llsX('trainerEmpty'))+'</option>'
+    +nodes.map(function(id){return '<option value="'+escapeHtml(id)+'"'+(id===data.trainer_node_id?' selected':'')+'>'+escapeHtml(id)+'</option>';}).join('');
+  var callout=llsHeadCallout(data);
+  return '<div class="llh-dash">'
+    +'<div class="llh-status"><span class="badge '+llsHeadStatusTone(data.status)+'">'+escapeHtml(llsHeadStatusLabel(data.status||'unused'))+'</span>'
+    +(data.version?'<span>'+escapeHtml(llsX('headVersion'))+' v'+escapeHtml(String(data.version))+'</span>':'')
+    +(data.previous_version?'<span class="hint">'+escapeHtml(llsX('headPrevious'))+' v'+escapeHtml(String(data.previous_version))+'</span>':'')
+    +(dist&&dist!=='local'?'<span class="hint">'+escapeHtml(llsX('distribute'))+' '+escapeHtml(dist)+'</span>':'')
+    +(data.local_node_id&&data.local_node_id!=='local'?'<span class="hint">'+escapeHtml(llsX('headLocal'))+' '+escapeHtml(data.local_node_id)+'</span>':'')+'</div>'
+    +llsFmtHeadVersions(data)
+    +'<div class="llh-steps">'+pipeline+'</div>'
+    +'<div class="llh-tools">'
+    +'<button class="btn-primary" type="button"'+(canTrain?'':' disabled title="'+escapeHtml(llsX(llsIsOfficialGroup(gid)?'trainNeedDataOfficial':'trainNeedData'))+'"')+' onclick="trainLLMClassHead()">'+escapeHtml(llsX('trainThisGroup'))+'</button>'
+    +(llsIsOfficialGroup(gid)?'':'<button class="btn-ghost" type="button" onclick="pullOfficialClassHead()">'+escapeHtml(llsX('pullOfficial'))+'</button>')
+    +'<button class="btn-ghost" type="button" onclick="loadLLMClassHead()">'+escapeHtml(llsX('refreshHead'))+'</button>'
+    +'<button class="btn-ghost" type="button"'+(data.artifact_ready?'':' disabled')+' onclick="distributeLLMClassHead()">'+escapeHtml(llsX('distribute'))+'</button>'
+    +'<button class="btn-ghost" type="button"'+(canRollback?'':' disabled')+' onclick="rollbackLLMClassHead()">'+escapeHtml(llsX('rollBack'))+'</button></div>'
+    +(nodes.length||data.trainer_node_id?'<div class="llh-trainer"><label for="llmClassHeadTrainer">'+escapeHtml(llsX('headTrainer'))+'</label>'
+    +'<select id="llmClassHeadTrainer">'+opts+'</select>'
+    +'<button class="btn-ghost" type="button" onclick="setLLMClassHeadTrainer()">'+escapeHtml(llsX('applyTrainer'))+'</button></div>':'')
+    +(callout?'<div class="llh-callout is-'+callout.tone+'">'+escapeHtml(callout.text)+'</div>':'')
+    +(data.last_train_error?'<div class="llh-callout is-err">'+escapeHtml(llsX('headLastError'))+' · '+escapeHtml(data.last_train_error)+'</div>':'')
+    +(showEval?'<div class="llh-metrics">'
+    +'<div class="llh-metric"><label>'+escapeHtml(llsX('headAccuracy'))+'</label><strong>'+escapeHtml(llsFmtPct(data.accuracy))+'</strong></div>'
+    +'<div class="llh-metric"><label>'+escapeHtml(llsX('headPlanRecall'))+'</label><strong>'+escapeHtml(llsFmtPct(data.plan_recall))+'</strong></div>'
+    +'<div class="llh-metric"><label>'+escapeHtml(llsX('headRuleAgreement'))+'</label><strong>'+escapeHtml(llsFmtPct(data.rule_agreement))+'</strong></div>'
+    +'<div class="llh-metric"><label>'+escapeHtml(llsX('headReviews'))+'</label><strong>'+(data.reviews||0)+'<span> / '+escapeHtml(llsX('headHuman'))+' '+(data.human_reviews||0)+'</span></strong></div>'
+    +'</div>'
+    +'<div class="item-meta">'+escapeHtml(llsX('headGates'))+' '+(gates.passed||0)+'/'+(gates.total||5)+'</div>'
+    +'<div class="llh-gates">'+gateHtml+'</div>':'')
+    +(ackRows?'<div class="llh-mix"><div class="item-meta">'+escapeHtml(llsX('headAck'))+'</div>'+ackRows+'</div>':'')
+    +(samples?'<div class="llh-mix"><div class="item-title">'+escapeHtml(llsX('headSamples'))+'</div>'+samples+'</div>':'')
+    +llsFmtHeadTest(data)
+    +'</div>';
+}
+function llsHeadRoleLabel(role){
+  var key='headRole_'+String(role||'history');
+  var label=llsX(key);
+  return label===key?String(role||'history'):label;
+}
+function llsHeadSourceLabel(src){
+  var key='headSource_'+String(src||'');
+  var label=llsX(key);
+  return label===key?(src||'\u2014'):label;
+}
+function llsFmtHeadVersions(data){
+  var versions=(data&&data.versions)||[];
+  if(!versions.length && !(data&&data.store_key))return '';
+  var rows=versions.map(function(item){
+    return '<tr><td><span class="badge'+(item.role==='current'?' ok':(item.role==='previous'?' info':''))+'">'+escapeHtml(llsHeadRoleLabel(item.role))+'</span></td>'
+      +'<td class="mono">v'+escapeHtml(String(item.version||0))+'</td>'
+      +'<td>'+escapeHtml(item.trained_at||'\u2014')+'</td>'
+      +'<td>'+escapeHtml(llsHeadSourceLabel(item.source))+'</td>'
+      +'<td>'+escapeHtml(item.tau!=null?Number(item.tau).toFixed(2):'\u2014')+'</td>'
+      +'<td>'+escapeHtml(item.retired_at||'\u2014')+'</td></tr>';
+  }).join('');
+  return '<div class="llh-versions"><div class="item-meta">'+escapeHtml(llsX('headVersions'))+'</div>'
+    +(data.store_key?'<div class="hint">'+escapeHtml(llsX('headVersionPath'))+' <span class="mono">'+escapeHtml(data.store_key)+'</span></div>':'')
+    +(rows?'<table class="llh-version-table"><thead><tr><th>'+escapeHtml(llsX('headRole'))+'</th><th>'+escapeHtml(llsX('headVersion'))+'</th><th>'+escapeHtml(llsX('headTrainedAt'))+'</th><th>'+escapeHtml(llsX('headSource'))+'</th><th>'+escapeHtml(llsX('headTau'))+'</th><th>'+escapeHtml(llsX('headRetired'))+'</th></tr></thead><tbody>'+rows+'</tbody></table>':'')
+    +'</div>';
+}
+function llsFmtHeadTest(data){
+  var versions=(data&&data.versions)||[];
+  var live=versions.filter(function(item){return item.role==='current'||item.role==='previous';});
+  if(!live.length)return '<div class="llh-test"><div class="item-meta">'+escapeHtml(llsX('headTest'))+'</div><div class="hint">'+escapeHtml(llsX('headNoVersion'))+'</div></div>';
+  var opts=live.map(function(item){
+    return '<option value="'+escapeHtml(item.role)+'">'+escapeHtml(llsHeadRoleLabel(item.role)+' v'+item.version)+'</option>';
+  }).join('');
+  return '<div class="llh-test"><div class="item-meta">'+escapeHtml(llsX('headTest'))+'</div>'
+    +'<div class="hint">'+escapeHtml(llsX('headTestHint'))+'</div>'
+    +'<textarea id="llsHeadTestText" rows="3" style="width:100%;margin-top:6px" aria-label="'+escapeHtml(llsX('headTest'))+'" placeholder="'+escapeHtml(llsX('tryPlaceholder'))+'" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key===\'Enter\'){event.preventDefault();scoreLLMClassHead();}"></textarea>'
+    +'<div class="row" style="grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px">'
+    +'<input id="llsHeadTestWorkflow" aria-label="'+escapeHtml(llsX('tryWorkflow'))+'" placeholder="'+escapeHtml(llsX('tryWorkflow'))+'">'
+    +'<input id="llsHeadTestPhase" aria-label="'+escapeHtml(llsX('tryPhase'))+'" placeholder="'+escapeHtml(llsX('tryPhase'))+'">'
+    +'<input id="llsHeadTestTask" aria-label="'+escapeHtml(llsX('tryTask'))+'" placeholder="'+escapeHtml(llsX('tryTask'))+'">'
+    +'</div>'
+    +'<div class="llh-tools" style="margin-top:8px"><label for="llsHeadTestSlot">'+escapeHtml(llsX('headTestSlot'))+'</label>'
+    +'<select id="llsHeadTestSlot">'+opts+'</select>'
+    +'<button id="llsHeadTestBtn" class="btn-secondary" type="button" onclick="scoreLLMClassHead()"'+((data&&data.embedder_ready)?'':' disabled')+'>'+escapeHtml(llsX('headTestRun'))+'</button>'
+    +(live.length>1?'<button id="llsHeadTestCompareBtn" class="btn-ghost" type="button" onclick="scoreLLMClassHead(true)"'+((data&&data.embedder_ready)?'':' disabled')+'>'+escapeHtml(llsX('headTestCompare'))+'</button>':'')
+    +'</div>'
+    +((data&&data.embedder_ready)?'':'<div class="hint">'+escapeHtml(llsX('headEmbedderOff'))+'</div>')
+    +'<div id="llsHeadTestOut" class="hint" style="margin-top:8px"></div></div>';
+}
+function llsFmtHeadScore(data){
+  if(!data||typeof data!=='object')return '<pre class="hint">'+escapeHtml(String(data||''))+'</pre>';
+  if(data.error)return '<div class="llh-callout is-err">'+escapeHtml(String(data.error))+'</div>';
+  var rows=[];
+  function add(label,value){if(value)rows.push('<div class="llh-try-row"><span>'+escapeHtml(label)+'</span><strong>'+escapeHtml(value)+'</strong></div>');}
+  add(llsX('headVersion'), data.version?('v'+data.version+' · '+llsHeadRoleLabel(data.slot)):'');
+  add(llsX('headVersionPath'), data.store_key||'');
+  add(llsX('sampleRule'), llsClassLabel(data.rule_class||'')+(data.rule_source?(' · '+llsSourceLabel(data.rule_source)):''));
+  add(llsX('sampleHead'), llsClassLabel(data.head_class||'')+(data.head_max_p?(' · '+(Number(data.head_max_p)*100).toFixed(0)+'%'):''));
+  add(llsX('headIfLive'), llsClassLabel(data.if_live_class||'')+(data.if_live_source?(' · '+llsSourceLabel(data.if_live_source)):''));
+  add(llsX('headWouldRewrite'), data.head_eligible===false?llsX('headProtected'):(data.would_rewrite?llsX('headWouldRewrite'):llsX('headNoRewrite')));
+  add(llsX('tryModel'), data.resolved_model||'');
+  add(llsX('tryQuality'), data.quality||'');
+  var probs=data.head_probs||{};
+  var probHtml=Object.keys(probs).sort(function(a,b){return Number(probs[b]||0)-Number(probs[a]||0);}).slice(0,8).map(function(cls){
+    return '<span class="llh-chip">'+escapeHtml(llsClassLabel(cls))+' <em>'+(Number(probs[cls]||0)*100).toFixed(1)+'%</em></span>';
+  }).join('');
+  return '<div class="llh-try-result">'+rows.join('')+(probHtml?'<div class="llh-chips">'+probHtml+'</div>':'')
+    +'<details class="llh-try-json"><summary>'+escapeHtml(llsX('tryRaw'))+'</summary><pre class="hint">'+escapeHtml(JSON.stringify(data,null,2))+'</pre></details></div>';
+}
+async function scoreLLMClassHead(compare){
+  var out=document.getElementById('llsHeadTestOut');
+  if(!out)return;
+  var slot=(document.getElementById('llsHeadTestSlot')&&document.getElementById('llsHeadTestSlot').value)||'current';
+  var text=(document.getElementById('llsHeadTestText')&&document.getElementById('llsHeadTestText').value)||'';
+  if(!String(text).trim()){out.textContent=llsX('headNeedText');return;}
+  var headers={};
+  var workflow=(document.getElementById('llsHeadTestWorkflow')&&document.getElementById('llsHeadTestWorkflow').value||'').trim();
+  var phase=(document.getElementById('llsHeadTestPhase')&&document.getElementById('llsHeadTestPhase').value||'').trim();
+  var task=(document.getElementById('llsHeadTestTask')&&document.getElementById('llsHeadTestTask').value||'').trim();
+  if(workflow)headers['X-MaClaw-Workflow-Type']=workflow;
+  if(phase)headers['X-MaClaw-Phase-Kind']=phase;
+  if(task)headers['X-MaClaw-Task-Type']=task;
+  var btn=document.getElementById('llsHeadTestBtn');
+  var cmp=document.getElementById('llsHeadTestCompareBtn');
+  if(btn)btn.disabled=true;
+  if(cmp)cmp.disabled=true;
+  out.textContent=llsX('classTrafficLoading');
+  function post(nextSlot){
+    return api('/api/admin/llm/class-head/score'+llsClassHeadQS(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:nextSlot,text:text,headers:headers})});
+  }
+  try{
+    var html;
+    if(compare){
+      var pair=await Promise.all([post('current'),post('previous')]);
+      html=llsFmtHeadScore(pair[0])+llsFmtHeadScore(pair[1]);
+    }else{
+      html=llsFmtHeadScore(await post(slot));
+    }
+    out=document.getElementById('llsHeadTestOut');
+    if(out)out.innerHTML=html;
+  }catch(err){
+    if((out=document.getElementById('llsHeadTestOut')))out.textContent=String(err&&err.message||err);
+  }finally{
+    var ready=!!(window._llsHeadData&&window._llsHeadData.embedder_ready);
+    btn=document.getElementById('llsHeadTestBtn');
+    cmp=document.getElementById('llsHeadTestCompareBtn');
+    if(btn)btn.disabled=!ready;
+    if(cmp)cmp.disabled=!ready;
+  }
+}
+async function loadLLMClassHead(){
+  var el=document.getElementById('llmClassHeadBody');
+  if(!el)return;
+  var seq=++_llsHeadSeq;
+  var gid=String(window._llsHeadGroupId||'').trim();
+  var snap=llsSnapTrain();
+  if(!el.querySelector('.llh-dash'))el.textContent=llsX('classTrafficLoading');
+  try{
+    var data=await api('/api/admin/llm/class-head'+llsClassHeadQS());
+    if(seq!==_llsHeadSeq||String(window._llsHeadGroupId||'')!==gid)return;
+    window._llsHeadPipeline=data&&data.pipeline;
+    window._llsHeadData=data;
+    window._llsHeadDataId=gid;
+    el.innerHTML=llsRenderClassHeadBody(data);
+    llsRestoreTrain(snap);
+  }catch(err){
+    if(seq===_llsHeadSeq) el.textContent=String(err&&err.message||err);
+  }
+}
+var _llsTrainBusy=false;
+var _llsHeadBusy=false;
+function llsHeadActing(){return _llsHeadBusy||_llsTrainBusy;}
+function llsCancelPromote(){
+  var el=document.getElementById('llsPromoteForm');
+  if(el)el.remove();
+}
+function llsShowPromoteForm(mode){
+  llsCancelPromote();
+  var steps=document.querySelector('#llmClassHeadBody .llh-steps');
+  if(!steps)return;
+  var box=document.createElement('div');
+  box.id='llsPromoteForm';
+  box.className='llh-promote';
+  box.innerHTML='<div class="llh-callout is-warn">'+escapeHtml(llsX('headNotReady'))+'</div>'
+    +'<form onsubmit="llsConfirmPromote('+llsJsArg(mode)+');return false;">'
+    +'<div class="llh-promote-grid">'
+    +'<label class="llh-field"><span>'+escapeHtml(llsX('headPromptReason'))+'</span><input id="llsPromoteReason" maxlength="200" required autocomplete="off"></label>'
+    +'<label class="llh-field"><span>'+escapeHtml(llsX('headPromptOverride'))+'</span><input id="llsPromoteToken" maxlength="16" required autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="PROMOTE"></label>'
+    +'</div>'
+    +'<div class="llh-tools"><button class="btn-primary" type="submit">'+escapeHtml(llsX('promoteGo'))+'</button>'
+    +'<button class="btn-ghost" type="button" onclick="llsCancelPromote()">'+escapeHtml(llsX('cancel'))+'</button></div></form>';
+  steps.insertAdjacentElement('afterend',box);
+  box.addEventListener('keydown',function(ev){if(ev.key==='Escape'){ev.preventDefault();llsCancelPromote();}});
+  var reason=document.getElementById('llsPromoteReason');
+  if(reason)reason.focus();
+}
+async function llsPostPipeline(mode,override,reason){
+  if(llsHeadActing())return;
+  _llsHeadBusy=true;
+  try{
+    await api('/api/admin/llm/class-head/pipeline'+llsClassHeadQS(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode,override:override||'',reason:reason||''})});
+  }catch(err){
+    showToast(String(err&&err.message||err),'error');
+  }finally{
+    _llsHeadBusy=false;
+  }
+  loadLLMClassHead();
+}
+async function llsConfirmPromote(mode){
+  var reason=String((document.getElementById('llsPromoteReason')||{}).value||'').trim();
+  var token=String((document.getElementById('llsPromoteToken')||{}).value||'').trim();
+  if(!reason){showToast(llsX('headPromptReason'),'error');return;}
+  if(token.toUpperCase()!=='PROMOTE'){showToast(llsX('promoteNeed'),'error');return;}
+  llsCancelPromote();
+  await llsPostPipeline(mode,'PROMOTE',reason);
+}
+window.llsCancelPromote=llsCancelPromote;
+window.llsConfirmPromote=llsConfirmPromote;
+async function trainLLMClassHead(){
+  if(llsHeadActing())return;
+  _llsTrainBusy=true;
+  var btn=document.querySelector('#llmClassHeadBody .llh-tools .btn-primary');
+  if(btn){btn.disabled=true;btn.textContent=llsX('training');}
+  try{
+    await api('/api/admin/llm/class-head/train'+llsClassHeadQS(),{method:'POST',body:'{}'});
+  }catch(err){
+    _llsTrainBusy=false;
+    showToast(String(err&&err.message||err),'error');
+    loadLLMClassHead();
+    return;
+  }
+  setTimeout(function(){_llsTrainBusy=false;loadLLMClassHead();},800);
+}
+async function setLLMClassHeadPipeline(mode){
+  if(llsHeadActing())return;
+  var current=(window._llsHeadData&&window._llsHeadData.pipeline)||window._llsHeadPipeline;
+  function norm(v){v=String(v||'').toLowerCase().trim();return (v==='shadow'||v==='canary'||v==='on')?v:'off';}
+  if(norm(current)===norm(mode)){llsCancelPromote();return;}
+  var canPromote=!!(window._llsHeadData&&window._llsHeadData.gates&&window._llsHeadData.gates.can_promote);
+  if(mode==='shadow'&&norm(current)==='off'&&!(window._llsHeadData&&window._llsHeadData.artifact_ready)){
+    showToast(llsX('headNeedServing'),'error');return;
+  }
+  if(mode==='canary'||mode==='on'){
+    if(norm(current)==='off'){showToast(llsX('headNeedShadow'),'error');return;}
+    if(llsHeadDistributing(window._llsHeadData)&&(norm(current)!=='on'||mode==='on')){showToast(llsX('headNeedDistribute'),'error');return;}
+    if(!canPromote){llsShowPromoteForm(mode);return;}
+    if(mode==='on'&&!window.confirm(llsX('confirmLive')))return;
+  }
+  llsCancelPromote();
+  await llsPostPipeline(mode,'','');
+}
+async function pullOfficialClassHead(){
+  if(llsHeadActing())return;
+  _llsHeadBusy=true;
+  try{
+    await api('/api/admin/llm/class-head/pull-official'+llsClassHeadQS(),{method:'POST',body:'{}'});
+  }catch(err){
+    showToast(String(err&&err.message||err),'error');
+  }finally{
+    _llsHeadBusy=false;
+  }
+  loadLLMClassHead();
+}
+async function rollbackLLMClassHead(){
+  if(llsHeadActing())return;
+  var pipe=window._llsHeadData&&window._llsHeadData.pipeline;
+  if(window._llsHeadData&&!window._llsHeadData.previous_version&&(pipe==='off'||!pipe))return;
+  if(llsHeadDistributing(window._llsHeadData)){showToast(llsX('headNeedDistribute'),'error');return;}
+  _llsHeadBusy=true;
+  try{
+    await api('/api/admin/llm/class-head/rollback'+llsClassHeadQS(),{method:'POST',body:'{}'});
+  }catch(err){
+    showToast(String(err&&err.message||err),'error');
+  }finally{
+    _llsHeadBusy=false;
+  }
+  loadLLMClassHead();
+}
+async function reviewLLMClassHead(sampleId,goldPrefill){
+  if(llsHeadActing()){loadLLMClassHead();return;}
+  if(!String(goldPrefill||'').trim()){loadLLMClassHead();return;}
+  var gold=llsParseGoldClass(goldPrefill);
+  if(!gold){showToast(llsX('goldInvalid'),'error');loadLLMClassHead();return;}
+  _llsHeadBusy=true;
+  try{
+    await api('/api/admin/llm/class-head/review'+llsClassHeadQS(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sample_id:sampleId,gold_class:gold})});
+  }catch(err){
+    showToast(String(err&&err.message||err),'error');
+  }finally{
+    _llsHeadBusy=false;
+  }
+  loadLLMClassHead();
+}
+window.loadLLMClassHead=loadLLMClassHead;
+window.scoreLLMClassHead=scoreLLMClassHead;
+window.trainLLMClassHead=trainLLMClassHead;
+window.setLLMClassHeadPipeline=setLLMClassHeadPipeline;
+window.pullOfficialClassHead=pullOfficialClassHead;
+window.rollbackLLMClassHead=rollbackLLMClassHead;
+async function setLLMClassHeadTrainer(){
+  if(llsHeadActing())return;
+  var sel=document.getElementById('llmClassHeadTrainer');
+  var node=sel?sel.value:'';
+  _llsHeadBusy=true;
+  try{await api('/api/admin/llm/class-head/trainer'+llsClassHeadQS(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:node})});}
+  catch(err){showToast(String(err&&err.message||err),'error');}
+  finally{_llsHeadBusy=false;}
+  loadLLMClassHead();
+}
+async function distributeLLMClassHead(){
+  if(llsHeadActing())return;
+  if(window._llsHeadData&&!window._llsHeadData.artifact_ready)return;
+  _llsHeadBusy=true;
+  try{await api('/api/admin/llm/class-head/distribute'+llsClassHeadQS(),{method:'POST',body:'{}'});}
+  catch(err){showToast(String(err&&err.message||err),'error');}
+  finally{_llsHeadBusy=false;}
+  loadLLMClassHead();
+}
+window.reviewLLMClassHead=reviewLLMClassHead;
+window.setLLMClassHeadTrainer=setLLMClassHeadTrainer;
+window.distributeLLMClassHead=distributeLLMClassHead;

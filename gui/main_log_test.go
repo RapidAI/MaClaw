@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,6 +51,165 @@ func TestDetailAwareLogWriterDropsUnimportantLinesWhenDetailDisabled(t *testing.
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("stderr mirror should drop unimportant line, got %q", got)
+	}
+}
+
+// The user sees semantic_capability_unmet in the UI, and this line carries the
+// only cause record. Losing it to the detail gate leaves the rejection
+// undiagnosable after the fact.
+func TestDetailAwareLogWriterKeepsSemanticPlanRejectWhenDetailDisabled(t *testing.T) {
+	setLogDetailForTest(t, false)
+
+	var file bytes.Buffer
+	writer := &detailAwareLogWriter{file: &file, stderr: nil}
+
+	line := `[semantic-routing] plan rejected user="desktop-user:x" reason=semantic route has unmet needs` + "\n"
+	if _, err := writer.Write([]byte(line)); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if got := file.String(); !strings.Contains(got, "unmet needs") {
+		t.Fatalf("host reject reason was dropped: %q", got)
+	}
+}
+
+func TestDetailAwareLogWriterIgnoresGenericPlanRejectedWording(t *testing.T) {
+	setLogDetailForTest(t, false)
+
+	var file bytes.Buffer
+	writer := &detailAwareLogWriter{file: &file, stderr: nil}
+
+	if _, err := writer.Write([]byte("the user said the plan rejected yesterday\n")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if got := file.String(); got != "" {
+		t.Fatalf("generic wording should not bypass the detail gate: %q", got)
+	}
+}
+
+func TestUsableLogDirRejectsSymlinkAndNonDir(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "missing-logs")
+	if err := usableLogDir(missing); err != nil {
+		t.Fatalf("missing dir should be creatable: %v", err)
+	}
+	if err := usableLogDir(""); err == nil {
+		t.Fatal("empty dir should be rejected")
+	}
+	filePath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := usableLogDir(filePath); err == nil {
+		t.Fatal("file path should be rejected")
+	}
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "logs")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := usableLogDir(link); err == nil {
+		t.Fatal("symlink log dir should be rejected")
+	}
+}
+
+func TestOpenLogSinksRefusesSymlinkFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "external.log")
+	if err := os.WriteFile(target, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "maclaw.log")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Cleanup(closeLogSinks)
+	if openLogSinks(dir, false) {
+		t.Fatal("openLogSinks followed a maclaw.log symlink")
+	}
+	body, err := os.ReadFile(target)
+	if err != nil || string(body) != "external" {
+		t.Fatalf("symlink target was written: %q err=%v", body, err)
+	}
+}
+
+func TestTruncateBugReportDiagnosticFileRefusesSymlink(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "external.log")
+	if err := os.WriteFile(target, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "active.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := truncateBugReportDiagnosticFile(link); err == nil {
+		t.Fatal("truncate followed a symlink")
+	}
+	body, err := os.ReadFile(target)
+	if err != nil || string(body) != "external" {
+		t.Fatalf("symlink target was truncated: %q err=%v", body, err)
+	}
+}
+
+func TestOpenLogSinksKeepsMaclawLogWhenRegistrationLogIsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "external-registration.log")
+	if err := os.WriteFile(target, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "registration.log")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Cleanup(closeLogSinks)
+	if !openLogSinks(dir, false) {
+		t.Fatal("openLogSinks should keep maclaw.log when only registration.log is a symlink")
+	}
+	log.Printf("[semantic-routing] plan rejected user=%q reason=%v", "user-1", "semantic route has unmet needs")
+	body, err := os.ReadFile(filepath.Join(dir, "maclaw.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "plan rejected") {
+		t.Fatalf("maclaw.log missing reject line: %s", body)
+	}
+	external, err := os.ReadFile(target)
+	if err != nil || string(external) != "external" {
+		t.Fatalf("registration.log symlink target was written: %q err=%v", external, err)
+	}
+}
+
+func TestOpenLogSinksRefusesSymlinkDir(t *testing.T) {
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "logs")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Cleanup(closeLogSinks)
+	if openLogSinks(link, false) {
+		t.Fatal("openLogSinks followed a logs symlink")
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "keep.txt" {
+		t.Fatalf("symlink target was written: %v", entries)
+	}
+}
+
+func TestDetailAwareLogWriterKeepsBugReportLinesWhenDetailDisabled(t *testing.T) {
+	setLogDetailForTest(t, false)
+
+	var file bytes.Buffer
+	writer := &detailAwareLogWriter{file: &file, stderr: nil}
+
+	line := `[bug-report] diagnostics cleared; log sinks reopened` + "\n"
+	if _, err := writer.Write([]byte(line)); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if got := file.String(); !strings.Contains(got, "log sinks reopened") {
+		t.Fatalf("bug-report line was dropped: %q", got)
 	}
 }
 

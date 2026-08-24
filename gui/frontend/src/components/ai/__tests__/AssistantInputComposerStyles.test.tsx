@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { getAssistantInputComposerStyles } from "../AssistantInputComposerStyles";
+import { ASSISTANT_COMPOSER_RADIUS, getAssistantInputComposerStyles } from "../AssistantInputComposerStyles";
 import { overlayTheme } from "../aiAssistantPanelTheme";
 
 const base = {
@@ -31,7 +31,7 @@ describe("getAssistantInputComposerStyles", () => {
         expect(inputBarStyle.margin).toBe("0 10px 0 10px");
         // Safe-area moves to the footer bar; composer keeps a fixed inner pad only.
         expect(inputBarStyle.paddingBottom).toBe("6px");
-        expect(inputBarStyle.borderRadius).toBe("14px 14px 0 0");
+        expect(inputBarStyle.borderRadius).toBe(`${ASSISTANT_COMPOSER_RADIUS} ${ASSISTANT_COMPOSER_RADIUS} 0 0`);
         expect(inputBarStyle.borderBottom).toBe("none");
     });
 
@@ -41,17 +41,22 @@ describe("getAssistantInputComposerStyles", () => {
             inline: false,
             flushBottom: false,
         });
-        expect(inputBarStyle.borderRadius).toBe("14px");
+        expect(inputBarStyle.borderRadius).toBe(ASSISTANT_COMPOSER_RADIUS);
         expect(inputBarStyle.borderBottom).toBeUndefined();
     });
 
-    it("uses no outer margin for inline composers", () => {
+    it("uses a rounded workbench field for inline composers", () => {
         const { inputBarStyle } = getAssistantInputComposerStyles({
             ...base,
             inline: true,
-            flushBottom: true,
+            flushBottom: false,
         });
         expect(inputBarStyle.margin).toBeUndefined();
-        expect(inputBarStyle.borderTop).toContain("1px solid");
+        expect(inputBarStyle.boxShadow).toBeUndefined();
+        expect(inputBarStyle.width).toBe("100%");
+        expect(inputBarStyle.borderRadius).toBe(ASSISTANT_COMPOSER_RADIUS);
+        expect(inputBarStyle.border).toContain("1.5px solid");
+        // Mid-page welcome field must not inherit the window safe-area inset.
+        expect(inputBarStyle.paddingBottom).toBe("6px");
     });
 });

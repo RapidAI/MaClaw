@@ -25,6 +25,7 @@ static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_initialized;
 static bool s_stopping;
 static volatile bool s_initializing;
+static bool s_system_sleep_preparing;
 static uint32_t s_active_calls;
 /* Persistence already reports Device API status. Keep legacy ESP-IDF error
  * values local to the migration helper below; Weather Cache callers never
@@ -55,7 +56,7 @@ static TickType_t weather_stop_remaining_ticks(TickType_t started, TickType_t bu
 static bool admission_enter(void) {
     bool admitted = false;
     taskENTER_CRITICAL(&s_lifecycle_lock);
-    if (s_initialized && !s_stopping) {
+    if (s_initialized && !s_stopping && !s_system_sleep_preparing) {
         ++s_active_calls;
         admitted = true;
     }
@@ -143,6 +144,7 @@ device_status_t weather_cache_service_init(void) {
         return DEVICE_STATUS_BUSY;
     }
     s_initialized = true;
+    s_system_sleep_preparing = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
     return DEVICE_STATUS_OK;
@@ -160,6 +162,7 @@ device_status_t weather_cache_service_deinit(uint32_t timeout_ms) {
     const bool already_stopped = !s_initialized && !s_stopping;
     s_initialized = false;
     s_stopping = true;
+    s_system_sleep_preparing = false;
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     if (already_stopped) return DEVICE_STATUS_OK;
     for (;;) {
@@ -182,6 +185,38 @@ bool weather_cache_service_is_initialized(void) {
                              !__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE);
     taskEXIT_CRITICAL(&s_lifecycle_lock);
     return initialized;
+}
+
+device_status_t weather_cache_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t budget = weather_stop_timeout_ticks(timeout_ms);
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    const bool ready = s_initialized && !s_stopping &&
+                       !s_system_sleep_preparing &&
+                       !__atomic_load_n(&s_initializing, __ATOMIC_ACQUIRE);
+    if (ready) s_system_sleep_preparing = true;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
+    if (!ready) return DEVICE_STATUS_BUSY;
+
+    for (;;) {
+        taskENTER_CRITICAL(&s_lifecycle_lock);
+        const uint32_t active_calls = s_active_calls;
+        taskEXIT_CRITICAL(&s_lifecycle_lock);
+        if (active_calls == 0) return DEVICE_STATUS_OK;
+        if (weather_stop_remaining_ticks(started, budget) == 0) {
+            /* Do not reopen cache persistence while a pre-fence read/write
+             * is still in flight. Power owns the only transaction ABORT. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+void weather_cache_service_abort_system_sleep_prepare(void) {
+    taskENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_initialized && !s_stopping) s_system_sleep_preparing = false;
+    taskEXIT_CRITICAL(&s_lifecycle_lock);
 }
 
 device_status_t weather_cache_service_load(weather_cache_snapshot_t *out_snapshot) {

@@ -3886,7 +3886,9 @@ func (s *Store) insertPreparedEntryLocked(entry Entry, hash string, now time.Tim
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = now
 	}
-	entry.UpdatedAt = now
+	if entry.UpdatedAt.IsZero() {
+		entry.UpdatedAt = now
+	}
 	entry.ContentHash = hash
 	if entry.AccessCount == 0 {
 		entry.AccessCount = 1
@@ -4852,7 +4854,7 @@ func (s *Store) evictLRU() {
 	var protectedEntries []Entry
 	var evictable []Entry
 	for _, e := range s.entries {
-		if e.Category.IsProtected() || e.Pinned {
+		if e.Category.IsProtected() || e.Pinned || IsDurableTaskManagementEntry(&e) {
 			protectedEntries = append(protectedEntries, e)
 		} else {
 			evictable = append(evictable, e)

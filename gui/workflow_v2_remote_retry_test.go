@@ -49,27 +49,23 @@ func TestFormatTaskRunResultsReport(t *testing.T) {
 		{TaskIndex: 1, Title: "ok", Status: v2.TaskPassed},
 		{TaskIndex: 2, Title: "bad", Status: v2.TaskFailed, Error: "err"},
 	})
-	if !strings.Contains(report, "通过: 1") || !strings.Contains(report, "失败: 1") {
-		t.Fatalf("report = %s", report)
+	if strings.Contains(report, "## ") || strings.Contains(report, "执行报告") {
+		t.Fatalf("report should be engineer prose, got %s", report)
 	}
-	if !strings.Contains(report, "T2 bad") {
-		t.Fatalf("missing task line: %s", report)
+	if !strings.Contains(report, "bad") || !strings.Contains(report, "err") {
+		t.Fatalf("missing failed step: %s", report)
 	}
 	setAgentViewLang("en")
 	enReport := formatTaskRunResultsReport([]v2.TaskRunResult{
 		{TaskIndex: 1, Title: "ok", Status: v2.TaskPassed},
 	})
-	if !strings.Contains(enReport, "Passed: 1") {
+	if strings.Contains(enReport, "## ") || !strings.Contains(enReport, "Finished ok.") {
 		t.Fatalf("en report = %s", enReport)
 	}
-	if !strings.Contains(enReport, "— passed") {
-		t.Fatalf("en status label missing: %s", enReport)
-	}
-	// Cancelled report must not double-header.
 	cancelled := formatTaskRunResultsReportEx([]v2.TaskRunResult{
 		{TaskIndex: 1, Title: "x", Status: v2.TaskSkipped, Error: "cancelled"},
 	}, true)
-	if strings.Count(cancelled, "##") != 1 || !strings.Contains(cancelled, "cancelled") {
+	if strings.Contains(cancelled, "## ") || !strings.Contains(cancelled, "Stopped") || !strings.Contains(cancelled, "x") {
 		t.Fatalf("cancelled report = %s", cancelled)
 	}
 }

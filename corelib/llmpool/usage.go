@@ -17,28 +17,32 @@ type UsageQuerier interface {
 
 // UsageFilter specifies query parameters for usage statistics.
 type UsageFilter struct {
-	HubID      string `json:"hub_id,omitempty"`
-	TenantID   string `json:"tenant_id,omitempty"`
-	Model      string `json:"model,omitempty"`
-	ProviderID string `json:"provider_id,omitempty"`
-	Period     string `json:"period,omitempty"`      // "daily" / "weekly" / "monthly"
-	StartDate  string `json:"start_date,omitempty"`  // "2026-01-01"
-	EndDate    string `json:"end_date,omitempty"`    // "2026-01-31"
-	Limit      int    `json:"limit,omitempty"`
+	HubID          string `json:"hub_id,omitempty"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	Model          string `json:"model,omitempty"`
+	ProviderID     string `json:"provider_id,omitempty"`
+	ServiceGroupID string `json:"service_group_id,omitempty"`
+	WorkloadClass  string `json:"workload_class,omitempty"`
+	Period         string `json:"period,omitempty"`     // "daily" / "weekly" / "monthly"
+	StartDate      string `json:"start_date,omitempty"` // "2026-01-01"
+	EndDate        string `json:"end_date,omitempty"`   // "2026-01-31"
+	Limit          int    `json:"limit,omitempty"`
 }
 
 // UsageSummary represents aggregated usage for a time period.
 type UsageSummary struct {
-	HubID        string  `json:"hub_id,omitempty"`
-	TenantID     string  `json:"tenant_id,omitempty"`
-	Model        string  `json:"model,omitempty"`
-	ProviderID   string  `json:"provider_id,omitempty"`
-	Period       string  `json:"period"`
-	PeriodStart  string  `json:"period_start"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	TotalCredits float64 `json:"total_credits"`
-	TotalRequests int64  `json:"total_requests"`
-	CacheHits    int64   `json:"cache_hits"`
-	CacheHitRate float64 `json:"cache_hit_rate"`
+	HubID          string  `json:"hub_id,omitempty"`
+	TenantID       string  `json:"tenant_id,omitempty"`
+	Model          string  `json:"model,omitempty"`
+	ProviderID     string  `json:"provider_id,omitempty"`
+	ServiceGroupID string  `json:"service_group_id,omitempty"`
+	WorkloadClass  string  `json:"workload_class,omitempty"`
+	Period         string  `json:"period"`
+	PeriodStart    string  `json:"period_start"`
+	InputTokens    int64   `json:"input_tokens"`
+	OutputTokens   int64   `json:"output_tokens"`
+	TotalCredits   float64 `json:"total_credits"`
+	TotalRequests  int64   `json:"total_requests"`
+	CacheHits      int64   `json:"cache_hits"`
+	CacheHitRate   float64 `json:"cache_hit_rate"`
 }

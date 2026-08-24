@@ -1,0 +1,50 @@
+{
+  "category": "concurrent_idempotency",
+  "category_id": 12,
+  "title": "concurrent idempotency",
+  "design_ref": "10.1 item 12",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "one-deliver",
+      "title": "One deliver need yields one selection",
+      "needs": [
+        {
+          "id": "deliver",
+          "capability": "artifact.deliver.current_channel",
+          "qualifiers": {
+            "format": "file"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "deliver_adapter",
+            "effects": [
+              "external_effect"
+            ],
+            "capabilities": [
+              {
+                "capability": "artifact.deliver.current_channel",
+                "qualifiers": {
+                  "format": "file"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "deliver",
+            "capability": "artifact.deliver.current_channel",
+            "phase": "delivery"
+          }
+        ]
+      },
+      "notes": "CAS/no-resend is in semantic_outbox_fencing_test.go."
+    }
+  ]
+}

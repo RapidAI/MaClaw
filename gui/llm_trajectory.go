@@ -32,17 +32,18 @@ type TrajectoryEntry struct {
 
 // TrajectorySession holds all entries for a single agent loop session.
 type TrajectorySession struct {
-	SessionID       string        `json:"session_id"`
-	ParentSessionID string        `json:"parent_session_id,omitempty"`
-	Kind            string        `json:"kind,omitempty"` // main | shared | coding_subagent | btw_subagent
-	StartTime       string        `json:"start_time"`
-	EndTime         string        `json:"end_time,omitempty"`
-	Provider        string        `json:"provider"`
-	Model           string        `json:"model"`
-	Protocol        string        `json:"protocol"`
-	UserID          string        `json:"user_id"`
-	Platform        string        `json:"platform"`
-	Tools           []interface{} `json:"tools,omitempty"`
+	SessionID        string        `json:"session_id"`
+	ParentSessionID  string        `json:"parent_session_id,omitempty"`
+	Kind             string        `json:"kind,omitempty"` // main | shared | coding_subagent | btw_subagent
+	StartTime        string        `json:"start_time"`
+	EndTime          string        `json:"end_time,omitempty"`
+	Provider         string        `json:"provider"`
+	Model            string        `json:"model"`
+	Protocol         string        `json:"protocol"`
+	UserID           string        `json:"user_id"`
+	Platform         string        `json:"platform"`
+	ExperienceDomain string        `json:"experience_domain,omitempty"` // learned-skill pool this session feeds: coding | general
+	Tools            []interface{} `json:"tools,omitempty"`
 	// Outcome metadata (filled via SetOutcome before Flush when available).
 	Status        string            `json:"status,omitempty"` // success | error | cancelled | hard_exit | paused
 	Error         string            `json:"error,omitempty"`
@@ -128,6 +129,21 @@ func (r *TrajectoryRecorder) StartSessionWithMeta(sessionID, provider, model, pr
 		Tools:           toolsCopy,
 		Entries:         make([]TrajectoryEntry, 0, 16),
 	}
+}
+
+// SetExperienceDomain records which learned-skill pool this session feeds.
+// Callers resolve it from the loop kind and session owner, which the recorder
+// itself cannot interpret.
+func (r *TrajectoryRecorder) SetExperienceDomain(domain string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.session == nil {
+		return
+	}
+	r.session.ExperienceDomain = corelib.NormalizeSkillExperienceDomain(domain)
 }
 
 // SetKind sets the session kind (main/shared/coding_subagent/...).

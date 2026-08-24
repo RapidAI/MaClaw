@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -147,16 +148,27 @@ func ConnectCDP(wsURL string) (*CDPClient, error) {
 	return c, nil
 }
 
-// IsAlive checks if the CDP connection is still functional by sending a
-// lightweight Browser.getVersion command with a short timeout.
+// IsAlive reports whether the CDP websocket is still open and can answer a
+// cheap Browser.getVersion probe. Do not call this while holding session
+// mutexes; use isClosed() for a non-blocking snapshot.
 func (c *CDPClient) IsAlive() bool {
-	select {
-	case <-c.closed:
+	if c == nil || c.isClosed() {
 		return false
-	default:
 	}
 	_, err := c.Send("Browser.getVersion", nil, 2*time.Second)
 	return err == nil
+}
+
+func (c *CDPClient) isClosed() bool {
+	if c == nil {
+		return true
+	}
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 // keepAlive sends periodic WebSocket pings to prevent idle disconnection.
@@ -186,7 +198,44 @@ func (c *CDPClient) keepAlive() {
 }
 
 // Send sends a CDP command and waits for the response (up to timeout).
+// unobservedOutcomeError marks a command that reached the browser but whose
+// answer never came back. It wraps the underlying error rather than replacing
+// it so every existing message and log line stays exactly as it was.
+type unobservedOutcomeError struct{ err error }
+
+func (e *unobservedOutcomeError) Error() string { return e.err.Error() }
+
+func (e *unobservedOutcomeError) Unwrap() error { return e.err }
+
+func outcomeUnobserved(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &unobservedOutcomeError{err: err}
+}
+
+// IsOutcomeUnobserved reports whether a command was written to the browser
+// without a readable answer, leaving any effect it carried neither confirmed
+// nor ruled out.
+//
+// Only this package can separate the two sides of the write, and the text
+// cannot: "cdp connection closed" names both a connection that was already
+// gone before the command was serialized and one that died while the answer
+// was in flight. Those are opposite facts. A caller that guesses from the
+// string will eventually call a dispatched navigation a definite failure,
+// which tells the model nothing happened and invites it to repeat an effect
+// that may already hold.
+func IsOutcomeUnobserved(err error) bool {
+	var unobserved *unobservedOutcomeError
+	return errors.As(err, &unobserved)
+}
+
 func (c *CDPClient) Send(method string, params interface{}, timeout time.Duration) (json.RawMessage, error) {
+	return c.SendOn("", method, params, timeout)
+}
+
+// SendOn sends a CDP command on an attached flattened target session.
+func (c *CDPClient) SendOn(sessionID, method string, params interface{}, timeout time.Duration) (json.RawMessage, error) {
 	// Early exit if connection is already closed.
 	select {
 	case <-c.closed:
@@ -202,6 +251,9 @@ func (c *CDPClient) Send(method string, params interface{}, timeout time.Duratio
 	}
 	if params != nil {
 		msg["params"] = params
+	}
+	if sessionID != "" {
+		msg["sessionId"] = sessionID
 	}
 
 	ch := make(chan json.RawMessage, 1)
@@ -227,6 +279,9 @@ func (c *CDPClient) Send(method string, params interface{}, timeout time.Duratio
 		return nil, fmt.Errorf("write cdp: %w", err)
 	}
 
+	// Past this point the command is on the wire. Losing the answer is no
+	// longer the same fact as never having sent it: the browser may have
+	// carried the command out regardless.
 	select {
 	case result := <-ch:
 		// Check for CDP protocol error encoded by readLoop.
@@ -235,9 +290,9 @@ func (c *CDPClient) Send(method string, params interface{}, timeout time.Duratio
 		}
 		return result, nil
 	case <-time.After(timeout):
-		return nil, fmt.Errorf("cdp timeout: %s (id=%d)", method, id)
+		return nil, outcomeUnobserved(fmt.Errorf("cdp timeout: %s (id=%d)", method, id))
 	case <-c.closed:
-		return nil, fmt.Errorf("cdp connection closed")
+		return nil, outcomeUnobserved(fmt.Errorf("cdp connection closed"))
 	}
 }
 
@@ -268,6 +323,9 @@ func parseCDPProtocolError(result json.RawMessage) error {
 
 // Events returns the channel for receiving CDP events.
 func (c *CDPClient) Events() <-chan CDPEvent {
+	if c == nil {
+		return nil
+	}
 	return c.events
 }
 

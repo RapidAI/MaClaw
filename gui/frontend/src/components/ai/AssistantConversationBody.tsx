@@ -108,6 +108,7 @@ interface AssistantConversationBodyProps {
     renderedProgressMessages: ReactNode;
     showProcessingState: boolean;
     showThinkingState: boolean;
+    busyAccessory?: ReactNode;
     theme: Theme;
     thinkingText: string;
 }
@@ -126,6 +127,7 @@ export function AssistantConversationBody({
     renderedProgressMessages,
     showProcessingState,
     showThinkingState,
+    busyAccessory,
     theme: t,
     thinkingText,
 }: AssistantConversationBodyProps) {
@@ -178,6 +180,7 @@ export function AssistantConversationBody({
                     {renderedProgressMessages}
                 </>
             )}
+            {ready && !onboardingIncomplete ? busyAccessory : null}
             {showThinkingState && <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{thinkingText}</div>}
             {showProcessingState && <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{processingText}</div>}
         </>

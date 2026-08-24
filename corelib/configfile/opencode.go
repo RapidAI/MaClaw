@@ -20,6 +20,50 @@ func OpencodeConfigPath() string {
 	return filepath.Join(OpencodeConfigDir(), "opencode.json")
 }
 
+// OpencodeConfigJSONCPath returns ~/.config/opencode/opencode.jsonc
+func OpencodeConfigJSONCPath() string {
+	return filepath.Join(OpencodeConfigDir(), "opencode.jsonc")
+}
+
+// OpencodeAuthPath returns the primary OpenCode credential file
+// (~/.local/share/opencode/auth.json, or $XDG_DATA_HOME/opencode/auth.json).
+func OpencodeAuthPath() string {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); xdg != "" {
+		return filepath.Join(xdg, "opencode", "auth.json")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "opencode", "auth.json")
+}
+
+// OpencodeAuthCandidates returns likely OpenCode auth.json locations.
+func OpencodeAuthCandidates() []string {
+	seen := map[string]struct{}{}
+	var paths []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	add(OpencodeAuthPath())
+	if appdata := strings.TrimSpace(os.Getenv("APPDATA")); appdata != "" {
+		add(filepath.Join(appdata, "opencode", "auth.json"))
+	}
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		add(filepath.Join(local, "opencode", "auth.json"))
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		add(filepath.Join(home, ".opencode", "auth.json"))
+	}
+	return paths
+}
+
 // WriteOpencodeConfig writes ~/.config/opencode/opencode.json with provider config.
 //
 // OpenCode uses AI SDK provider format in opencode.json:

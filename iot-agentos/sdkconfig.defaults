@@ -46,6 +46,13 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 # or fail to resolve an individual public NTP endpoint.
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
 
+# The temporary provisioning SoftAP is a local captive network only.  It may
+# coexist with this device's station during pairing recovery, but AP clients
+# must never be routed/NATed to the station or Hub backhaul.
+# CONFIG_LWIP_IP_FORWARD is not set
+# CONFIG_LWIP_IPV4_NAPT is not set
+# CONFIG_LWIP_IPV4_NAPT_PORTMAP is not set
+
 # A cached 256x256 RGB565+A8 pet frame is 192 KiB. SPIFFS reclaims one 4 KiB
 # block per GC run, so the default limit of 10 cannot replace even one frame
 # after a pet switch. Keep this bounded above the 48-run per-frame minimum.

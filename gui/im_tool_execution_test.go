@@ -10,6 +10,98 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+func TestPromoteMCPNestedArgsFromCallEnvelopeCopiesTopLevelQuery(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"query"},
+		"properties": map[string]interface{}{
+			"query":       map[string]interface{}{"type": "string"},
+			"max_results": map[string]interface{}{"type": "integer"},
+		},
+	}
+	got := promoteMCPNestedArgsFromCallEnvelope(map[string]interface{}{
+		"server_id":                      "ews",
+		"tool_name":                      "find_person",
+		"query":                          "王展毅",
+		"max_results":                    float64(99),
+		registeredToolPolicyOwnerIDField: "owner",
+	}, map[string]interface{}{"max_results": float64(50)}, schema)
+	if got["query"] != "王展毅" {
+		t.Fatalf("query = %#v, want 王展毅", got["query"])
+	}
+	if got["max_results"] != float64(50) {
+		t.Fatalf("nested max_results should win, got %#v", got["max_results"])
+	}
+	if _, ok := got[registeredToolPolicyOwnerIDField]; ok {
+		t.Fatal("internal envelope fields must not be promoted")
+	}
+}
+
+func TestPromoteMCPNestedArgsFromCallEnvelopeTopLevelWinsOverBlankNested(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"required":   []interface{}{"query"},
+		"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+	}
+	got := promoteMCPNestedArgsFromCallEnvelope(map[string]interface{}{
+		"server_id": "ews",
+		"tool_name": "find_person",
+		"query":     "王展毅",
+	}, map[string]interface{}{"query": "  "}, schema)
+	if got["query"] != "王展毅" {
+		t.Fatalf("top-level query should replace blank nested query, got %#v", got["query"])
+	}
+}
+
+func TestMCPToolArgumentsFromAnyDoesNotAliasInputMap(t *testing.T) {
+	src := map[string]interface{}{"tool_name": "find_person", "query": "王展毅"}
+	got, err := mcpToolArgumentsFromAny(src)
+	if err != nil {
+		t.Fatalf("mcpToolArgumentsFromAny: %v", err)
+	}
+	got["tool_name"] = "other"
+	if src["tool_name"] != "find_person" {
+		t.Fatal("parsing arguments must not mutate the caller map")
+	}
+}
+
+func TestPromoteMCPNestedArgsFromCallEnvelopeSkipsBlankQuery(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"required":   []interface{}{"query"},
+		"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+	}
+	got := promoteMCPNestedArgsFromCallEnvelope(map[string]interface{}{
+		"server_id": "ews",
+		"tool_name": "find_person",
+		"query":     "   ",
+	}, map[string]interface{}{}, schema)
+	if _, ok := got["query"]; ok {
+		t.Fatalf("blank top-level query must not be promoted, got %#v", got)
+	}
+}
+
+func TestInferRegisteredToolOutcomeRecognizesMCPError(t *testing.T) {
+	if inferRegisteredToolOutcome("[MCP ERROR] server=ews tool=find_person code=validation\nRequired parameter 'query' (string) is missing") != toolOutcomeFailed {
+		t.Fatal("MCP validation text must be a failed tool outcome")
+	}
+	if inferRegisteredToolOutcome("MCP call failed: runtime owner is missing; isolated runtime will not fall back to desktop owner") != toolOutcomeFailed {
+		t.Fatal("MCP runtime-owner failure must be a failed tool outcome")
+	}
+	for _, text := range []string{
+		"MCP 调用失败: unknown server。可先用 list_mcp_tools 查看 Name (ID)",
+		"MCP 调用被拒绝: \"ssh\" 是 MaClaw 内置工具，不是 MCP Server。",
+		"缺少 server_id 或 tool_name 参数；server_id 支持 MCP Server 的 ID 或 Name",
+		"arguments JSON 解析失败: unexpected end of JSON",
+		"本地 MCP Manager 未初始化",
+		"MCP Registry 未初始化",
+	} {
+		if inferRegisteredToolOutcome(text) != toolOutcomeFailed {
+			t.Fatalf("MCP failure %q must be a failed tool outcome", text)
+		}
+	}
+}
+
 func TestNormalizeAgentLoopToolArgumentsJSON(t *testing.T) {
 	if got := normalizeAgentLoopToolArgumentsJSON(""); got != "{}" {
 		t.Fatalf("empty args normalize to %q, want {}", got)

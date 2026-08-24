@@ -23,7 +23,7 @@ func ListAnthropicModelsWithSDK(ctx context.Context, cfg corelib.MaclawLLMConfig
 	if client == nil {
 		client = http.DefaultClient
 	}
-	anthropicClient := anthropic.NewClient(anthropicSDKOptions(cfg, client)...)
+	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, client)...)
 	page, err := anthropicClient.Models.List(ctx, anthropic.ModelListParams{})
 	if err != nil {
 		if status, raw := anthropicSDKErrorStatusAndRaw(err); raw != "" {
@@ -46,12 +46,10 @@ func ListAnthropicModelsWithSDK(ctx context.Context, cfg corelib.MaclawLLMConfig
 }
 
 func anthropicSDKMessage(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client) (*Response, int, []byte, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client = HTTPClientForRequestContext(ctx, client)
 	body = anthropicSDKBodyWithoutStream(body)
 	var response *http.Response
-	anthropicClient := anthropic.NewClient(anthropicSDKOptions(cfg, client)...)
+	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, client)...)
 	msg, err := anthropicClient.Messages.New(
 		ctx,
 		anthropic.MessageNewParams{},
@@ -79,14 +77,12 @@ func anthropicSDKMessage(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 	return resp, status, responseBody, parseErr
 }
 
-func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback) (*Response, int, []byte, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
+func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
+	client = HTTPClientForRequestContext(ctx, client)
 	body = anthropicSDKBodyWithoutStream(body)
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithCapture(client, capture)
-	anthropicClient := anthropic.NewClient(anthropicSDKOptions(cfg, streamClient)...)
+	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, streamClient)...)
 	stream := anthropicClient.Messages.NewStreaming(ctx, anthropic.MessageNewParams{}, anthropicopt.WithRequestBody("application/json", body))
 
 	var rawSSE strings.Builder
@@ -100,14 +96,18 @@ func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		rawSSE.WriteString("data: ")
 		rawSSE.WriteString(raw)
 		rawSSE.WriteString("\n\n")
-		emitAnthropicSDKTextDelta(raw, contentFilter.Write)
+		emitAnthropicSDKDeltas(raw, contentFilter.Write, onReasoning)
 	}
 	if err := stream.Err(); err != nil {
+		contentFilter.Flush()
 		body := capture.body()
 		if len(body) == 0 {
 			if raw := anthropicSDKRawJSON(err); raw != "" {
 				body = []byte(raw)
 			}
+		}
+		if resp := assembleAnthropicPartialSSE(rawSSE.String()); resp != nil {
+			return resp, capture.statusCode(), body, err
 		}
 		return nil, capture.statusCode(), body, err
 	}
@@ -118,12 +118,39 @@ func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	}
 	if raw := capture.body(); len(raw) > 0 && json.Valid(raw) {
 		resp, err := parseAnthropicResponseBody(raw)
-		if err == nil && onToken != nil && len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {
-			onToken(resp.Choices[0].Message.Content)
+		if err == nil && len(resp.Choices) > 0 {
+			if onToken != nil && resp.Choices[0].Message.Content != "" {
+				onToken(resp.Choices[0].Message.Content)
+			}
+			if onReasoning != nil && resp.Choices[0].Message.ReasoningContent != "" {
+				onReasoning(resp.Choices[0].Message.ReasoningContent)
+			}
 		}
 		return resp, capture.statusCode(), raw, err
 	}
 	return &Response{Choices: []Choice{{Message: Message{Role: "assistant"}, FinishReason: "stop"}}}, capture.statusCode(), nil, nil
+}
+
+func assembleAnthropicPartialSSE(raw string) *Response {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	// Keep a visible prefix even when parse also returns a read error.
+	resp, _ := parseAnthropicSSEStream(strings.NewReader(raw), nil)
+	if !anthropicResponseHasVisibleDelta(resp) {
+		return nil
+	}
+	return resp
+}
+
+func anthropicResponseHasVisibleDelta(resp *Response) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return false
+	}
+	msg := resp.Choices[0].Message
+	return strings.TrimSpace(msg.Content) != "" ||
+		strings.TrimSpace(msg.ReasoningContent) != "" ||
+		len(msg.ToolCalls) > 0
 }
 
 func anthropicSDKBodyWithoutStream(body []byte) []byte {
@@ -138,23 +165,40 @@ func anthropicSDKBodyWithoutStream(body []byte) []byte {
 	return body
 }
 
-func emitAnthropicSDKTextDelta(raw string, onToken TokenCallback) {
-	if onToken == nil {
+func emitAnthropicSDKDeltas(raw string, onToken TokenCallback, onReasoning TokenCallback) {
+	if onToken == nil && onReasoning == nil {
 		return
 	}
 	var event struct {
 		Type  string `json:"type"`
 		Delta struct {
-			Type string `json:"type,omitempty"`
-			Text string `json:"text,omitempty"`
+			Type     string `json:"type,omitempty"`
+			Text     string `json:"text,omitempty"`
+			Thinking string `json:"thinking,omitempty"`
 		} `json:"delta,omitempty"`
+		ContentBlock *struct {
+			Type     string `json:"type"`
+			Text     string `json:"text,omitempty"`
+			Thinking string `json:"thinking,omitempty"`
+		} `json:"content_block,omitempty"`
 	}
-	if json.Unmarshal([]byte(raw), &event) == nil && event.Type == "content_block_delta" && event.Delta.Type == "text_delta" && event.Delta.Text != "" {
+	if json.Unmarshal([]byte(raw), &event) != nil {
+		return
+	}
+	if event.Type == "content_block_start" && event.ContentBlock != nil {
+		appendAnthropicThinking(nil, onReasoning, anthropicThinkingBlockText(event.ContentBlock.Type, event.ContentBlock.Thinking, event.ContentBlock.Text))
+		return
+	}
+	if event.Type != "content_block_delta" {
+		return
+	}
+	if onToken != nil && event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 		onToken(event.Delta.Text)
 	}
+	appendAnthropicThinking(nil, onReasoning, anthropicDeltaThinkingText(event.Delta.Type, event.Delta.Thinking, event.Delta.Text))
 }
 
-func anthropicSDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []anthropicopt.RequestOption {
+func anthropicSDKOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, client *http.Client) []anthropicopt.RequestOption {
 	opts := []anthropicopt.RequestOption{
 		anthropicopt.WithBaseURL(anthropicSDKBaseURL(cfg.URL)),
 		anthropicopt.WithAPIKey(cfg.Key),
@@ -165,6 +209,17 @@ func anthropicSDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []ant
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {
 		opts = append(opts, anthropicopt.WithHeader(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent())))
+	}
+	for key, value := range WorkloadHintHeaderValues(cfg) {
+		opts = append(opts, anthropicopt.WithHeader(key, value))
+	}
+	// A caller deadline (caption's 6s callCtx, agent-loop timeout) already
+	// bounds the request. Layering WithRequestTimeout (floored at 240s) races
+	// context cancel the same way http.Client.Timeout did.
+	if ctx != nil {
+		if _, ok := ctx.Deadline(); ok {
+			return opts
+		}
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, anthropicopt.WithRequestTimeout(time.Duration(timeout)*time.Second))

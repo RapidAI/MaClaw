@@ -42,10 +42,25 @@ func DoResponsesAPIRequestStream(
 	onText TokenCallback,
 	onReasoning TokenCallback,
 ) (*Response, error) {
-	req, _, endpoint, err := NewResponsesAPIRequest(ctx, cfg, messages, ResponsesAPIRequestOptions{
-		Stream: true,
-		Tools:  tools,
-	})
+	return DoResponsesAPIRequestStreamWithOptions(ctx, cfg, messages, tools, client, onText, onReasoning, ResponsesAPIRequestOptions{Stream: true, Tools: tools})
+}
+
+// DoResponsesAPIRequestStreamWithOptions preserves owner-selected invocation
+// controls at the same final serialization path as the non-streaming builder.
+func DoResponsesAPIRequestStreamWithOptions(
+	ctx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	client *http.Client,
+	onText TokenCallback,
+	onReasoning TokenCallback,
+	opts ResponsesAPIRequestOptions,
+) (*Response, error) {
+	client = HTTPClientForRequestContext(ctx, client)
+	opts.Stream = true
+	opts.Tools = tools
+	req, _, endpoint, err := NewResponsesAPIRequest(ctx, cfg, messages, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -81,6 +96,12 @@ func DoResponsesAPIRequestStream(
 	items := make(map[int]*responsesStreamItem)
 	var usage *Usage
 	finishReason := ""
+	// Responses stream events carry the provider-issued response object inside
+	// their lifecycle envelope. Keep that ID on the assembled internal response
+	// just as ParseNonStreamResponsesAPIBody does. It is provider evidence, not
+	// a locally generated request/loop identifier; callers that need stronger
+	// correlation still have to validate their transport lifecycle separately.
+	responseID := ""
 	seenEvent := false
 
 	emitReasoningSummary := func(summary string) {
@@ -116,6 +137,16 @@ func DoResponsesAPIRequestStream(
 		seenEvent = true
 		if payload == "[DONE]" {
 			break
+		}
+		if eventResponseID := responsesStreamResponseID(payload); eventResponseID != "" {
+			if responseID == "" {
+				responseID = eventResponseID
+			} else if responseID != eventResponseID {
+				// One SSE request must not silently merge two provider response
+				// identities. Returning an error is safer than binding tool calls
+				// from an ambiguous wire stream to either response.
+				return nil, fmt.Errorf("Responses API stream response ID changed: %q -> %q", responseID, eventResponseID)
+			}
 		}
 
 		switch strings.TrimSpace(eventType) {
@@ -265,7 +296,7 @@ func DoResponsesAPIRequestStream(
 completed:
 	if err := scanner.Err(); err != nil {
 		if textBuf.Len() > 0 || reasoningBuf.Len() > 0 || len(items) > 0 {
-			return responsesStreamPartialResponse(textBuf.String(), reasoningBuf.String(), items, usage, finishReason), fmt.Errorf("Responses API SSE stream read error: %w", err)
+			return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), fmt.Errorf("Responses API SSE stream read error: %w", err)
 		}
 		return nil, fmt.Errorf("Responses API SSE stream read error: %w", err)
 	}
@@ -273,10 +304,22 @@ completed:
 		return nil, fmt.Errorf("Responses API stream contained no SSE events from %s", endpoint)
 	}
 
-	return responsesStreamPartialResponse(textBuf.String(), reasoningBuf.String(), items, usage, finishReason), nil
+	return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), nil
 }
 
-func responsesStreamPartialResponse(text, reasoning string, items map[int]*responsesStreamItem, usage *Usage, finishReason string) *Response {
+func responsesStreamResponseID(payload string) string {
+	var event struct {
+		Response struct {
+			ID string `json:"id"`
+		} `json:"response"`
+	}
+	if json.Unmarshal([]byte(payload), &event) != nil {
+		return ""
+	}
+	return strings.TrimSpace(event.Response.ID)
+}
+
+func responsesStreamPartialResponse(responseID, text, reasoning string, items map[int]*responsesStreamItem, usage *Usage, finishReason string) *Response {
 	msg := Message{Role: "assistant", Content: StripAllExtra(text), ReasoningContent: reasoning}
 	indices := make([]int, 0, len(items))
 	for index := range items {
@@ -296,7 +339,7 @@ func responsesStreamPartialResponse(text, reasoning string, items map[int]*respo
 		}
 	}
 	finishReason, truncatedTools, truncatedArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
-	return &Response{Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedArgs}}, Usage: usage}
+	return &Response{ResponseID: strings.TrimSpace(responseID), Choices: []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedArgs}}, Usage: usage}
 }
 
 func responsesStreamDisplaySummary(item responsesAPIOutputItem) string {

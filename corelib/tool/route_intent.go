@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 // RouteIntent is a structured rewrite of the user message used only for tool
@@ -13,12 +15,6 @@ type RouteIntent struct {
 	Intent string `json:"intent,omitempty"`
 	// QueryForRoute is an expanded retrieval query for BM25/hybrid.
 	QueryForRoute string `json:"query_for_route,omitempty"`
-	// ToolFamilies maps to known tool groups (recording, browser, ssh, …).
-	ToolFamilies []string `json:"tool_families,omitempty"`
-	// MustInclude tool names to pin into this turn's tool list.
-	MustInclude []string `json:"must_include,omitempty"`
-	// MustExclude tool names to suppress this turn.
-	MustExclude []string `json:"must_exclude,omitempty"`
 	// Confidence in [0,1]. Below MinRouteIntentConfidence the intent is ignored.
 	Confidence float64 `json:"confidence,omitempty"`
 }
@@ -31,10 +27,17 @@ type RouteOptions struct {
 	// Used by ACP Mode B so editor turns stay responsive; BM25/hybrid still run.
 	SkipUnifiedClassifier bool
 	// PreferEmbeddingOnly uses L2 only for optional tool affinity. It is for the
-	// first-response path: an unavailable or inconclusive embedder simply keeps
-	// conditional tools filtered instead of delaying the main agent with L3.
-	// Explicit execution gates retain their own stronger classification policy.
+	// first-response path: an unavailable or inconclusive embedder falls back to
+	// an already-cached full classification for the same message (a pure cache
+	// read), and otherwise keeps conditional tools filtered instead of delaying
+	// the main agent with L3. Explicit execution gates retain their own
+	// stronger classification policy.
 	PreferEmbeddingOnly bool
+	// PreResolved carries the current turn's already-computed UIC
+	// classification (e.g. RuntimeContext.SemanticIntent). When present and
+	// the UIC path runs, it is used directly: no new classification — neither
+	// embedding-only nor full fusion — is started for this route call.
+	PreResolved *intent.ClassificationResult
 }
 
 // MinRouteIntentConfidence is the floor below which a rewrite is ignored.
@@ -43,20 +46,6 @@ const MinRouteIntentConfidence = 0.45
 // MinCandidateRouteScore skips zero/noise candidates instead of padding the
 // budget with irrelevant tools (computer_*, etc.).
 const MinCandidateRouteScore = 1e-6
-
-// Known tool families → concrete tool names. Only names present in allTools
-// are applied at route time.
-var toolFamilyMembers = map[string][]string{
-	"recording": {"record_audio", "asr", "send_file", "tts", "ask_user"},
-	"audio":     {"record_audio", "asr", "tts"},
-	"browser":   {"browser"},
-	"ssh":       {"ssh"},
-	"office":    {"office", "generate_pdf", "send_file"},
-	"search":    {"web_search", "web_fetch", "download_file", "session_search", "memory"},
-	"files":     {"read_file", "write_file", "edit_file", "list_directory", "bash", "download_file"},
-	"memory":    {"memory"},
-	"coding":    {"bash", "read_file", "write_file", "edit_file", "ripgrep", "Glob"},
-}
 
 // ShouldAttemptRouteIntentRewrite reports whether a short/ambiguous message
 // is worth a lightweight LLM rewrite before tool routing.
@@ -136,10 +125,6 @@ func normalizeRouteIntent(intent *RouteIntent) *RouteIntent {
 	}
 	intent.Intent = strings.TrimSpace(strings.ToLower(intent.Intent))
 	intent.QueryForRoute = strings.TrimSpace(intent.QueryForRoute)
-	// Families are lowercase keys; tool names keep case (Glob, FileRead, …).
-	intent.ToolFamilies = compactUniqueStrings(intent.ToolFamilies, true)
-	intent.MustInclude = compactUniqueStrings(intent.MustInclude, false)
-	intent.MustExclude = compactUniqueStrings(intent.MustExclude, false)
 	if intent.Confidence < 0 {
 		intent.Confidence = 0
 	}
@@ -147,7 +132,7 @@ func normalizeRouteIntent(intent *RouteIntent) *RouteIntent {
 		intent.Confidence = 1
 	}
 	// Empty useful payload → ignore.
-	if intent.QueryForRoute == "" && len(intent.MustInclude) == 0 && len(intent.ToolFamilies) == 0 {
+	if intent.QueryForRoute == "" {
 		return nil
 	}
 	// Models often omit confidence; treat missing (0) as mid-high trust when
@@ -158,32 +143,6 @@ func normalizeRouteIntent(intent *RouteIntent) *RouteIntent {
 	return intent
 }
 
-// compactUniqueStrings trims, optionally lowercases, and de-duplicates
-// case-insensitively while preserving the first-seen spelling.
-func compactUniqueStrings(in []string, lower bool) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		if lower {
-			s = strings.ToLower(s)
-		}
-		key := strings.ToLower(s)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, s)
-	}
-	return out
-}
-
 // Usable reports whether the intent should influence routing.
 func (intent *RouteIntent) Usable() bool {
 	if intent == nil {
@@ -192,15 +151,14 @@ func (intent *RouteIntent) Usable() bool {
 	if intent.Confidence < MinRouteIntentConfidence {
 		return false
 	}
-	return intent.QueryForRoute != "" || len(intent.MustInclude) > 0 || len(intent.ToolFamilies) > 0
+	return intent.QueryForRoute != ""
 }
 
-// HasStrongLocalRouteSignal is true when lexical detectors already pin tools
-// with high confidence, so an LLM rewrite is unnecessary latency.
+// HasStrongLocalRouteSignal is retained for callers that can supply a trusted
+// structured intent, but free-form wording is never a route authority.
 func HasStrongLocalRouteSignal(userMessage string) bool {
-	return isExplicitRecordAudioRequest(userMessage) ||
-		isExplicitScreenshotRequest(userMessage) ||
-		isExplicitGitRequest(userMessage)
+	_ = userMessage
+	return false
 }
 
 // SearchQuery returns the text to feed BM25/hybrid (falls back to userMessage).
@@ -209,89 +167,6 @@ func (intent *RouteIntent) SearchQuery(userMessage string) string {
 		return intent.QueryForRoute
 	}
 	return userMessage
-}
-
-// ExpandPins returns tool names to force-include this turn, intersected with
-// availableTools when non-nil (case-insensitive match → canonical spelling).
-func (intent *RouteIntent) ExpandPins(availableTools map[string]bool) []string {
-	if intent == nil || !intent.Usable() {
-		return nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	add := func(name string) {
-		name = resolveAvailableToolName(name, availableTools)
-		if name == "" || seen[name] {
-			return
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	for _, name := range intent.MustInclude {
-		add(name)
-	}
-	for _, fam := range intent.ToolFamilies {
-		for _, name := range toolFamilyMembers[fam] {
-			add(name)
-		}
-		// Also allow family name itself as a tool (e.g. "browser", "office").
-		add(fam)
-	}
-	// Intent label shortcuts when model omits must_include.
-	switch intent.Intent {
-	case "start_recording", "meeting_recording", "record_audio", "long_form_recording":
-		add("record_audio")
-	case "transcribe_audio", "asr":
-		add("asr")
-	case "browser":
-		add("browser")
-	case "ssh":
-		add("ssh")
-	}
-	return out
-}
-
-// ExpandExcludes returns tool names to suppress this turn.
-func (intent *RouteIntent) ExpandExcludes(availableTools map[string]bool) []string {
-	if intent == nil || !intent.Usable() {
-		return nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, name := range intent.MustExclude {
-		name = resolveAvailableToolName(name, availableTools)
-		if name == "" || seen[name] {
-			continue
-		}
-		// Never exclude core safety/file surface via rewrite mistakes.
-		if CoreToolNames[name] && name != "record_audio" && name != "asr" && name != "tts" {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	return out
-}
-
-// resolveAvailableToolName returns the canonical tool name present in
-// availableTools (case-insensitive). If availableTools is nil, returns trimmed name.
-func resolveAvailableToolName(name string, availableTools map[string]bool) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return ""
-	}
-	if availableTools == nil {
-		return name
-	}
-	if availableTools[name] {
-		return name
-	}
-	for k := range availableTools {
-		if strings.EqualFold(k, name) {
-			return k
-		}
-	}
-	return ""
 }
 
 // availableToolNameSet builds a set of tool names from OpenAI-style defs.

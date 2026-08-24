@@ -180,7 +180,7 @@ func (a *ConversationArchiver) callLLMForSummary(cfg corelib.MaclawLLMConfig, co
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "memory-maintenance"})
-	result, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), messages, client, 30*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -228,7 +228,7 @@ func (c *archiverLLMCaller) ChatCallContext(ctx context.Context, messages []map[
 		ifaces[i] = m
 	}
 	client := &http.Client{Timeout: 60 * time.Second}
-	result, err := doSimpleLLMRequest(ctx, cfg, ifaces, client, 60*time.Second)
+	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), ifaces, client, 60*time.Second)
 	if err != nil {
 		return "", err
 	}

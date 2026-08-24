@@ -46,17 +46,26 @@ func TestRoute_MatchingRoute_OverridesModel(t *testing.T) {
 func TestRoute_FullOverride(t *testing.T) {
 	r := NewModelRouter(map[string]ModelRoute{
 		"reasoning": {
-			Model:    "deepseek-coder",
-			URL:      "https://deepseek.example.com/v1",
-			Key:      "ds-key",
-			Protocol: "openai",
-			Provider: "DeepSeek",
+			Model:         "deepseek-coder",
+			URL:           "https://deepseek.example.com/v1",
+			Key:           "ds-key",
+			Protocol:      "openai",
+			Provider:      "DeepSeek",
+			ContextLength: 400_000,
 		},
 	})
-	primary := corelib.MaclawLLMConfig{URL: "https://api.example.com", Model: "gpt-4", Key: "key1", Protocol: "openai"}
+	primary := corelib.MaclawLLMConfig{URL: "https://api.example.com", Model: "gpt-4", Key: "key1", Protocol: "openai", ContextLength: 32_000}
 	got := r.Route(TaskReasoning, primary)
-	if got.Model != "deepseek-coder" || got.URL != "https://deepseek.example.com/v1" || got.Key != "ds-key" || got.ProviderName != "DeepSeek" {
+	if got.Model != "deepseek-coder" || got.URL != "https://deepseek.example.com/v1" || got.Key != "ds-key" || got.ProviderName != "DeepSeek" || got.ContextLength != 400_000 {
 		t.Errorf("full override failed: %+v", got)
+	}
+}
+
+func TestRoute_ContextLengthInheritsPrimaryWhenRouteDoesNotDeclareIt(t *testing.T) {
+	r := NewModelRouter(map[string]ModelRoute{"fast": {Model: "small"}})
+	primary := corelib.MaclawLLMConfig{Model: "large", ContextLength: 400_000}
+	if got := r.Route(TaskFast, primary); got.ContextLength != primary.ContextLength {
+		t.Fatalf("route without context length changed primary budget: %+v", got)
 	}
 }
 
@@ -87,7 +96,7 @@ func TestRouteWithAux_ExplicitRouteTakesPrecedence(t *testing.T) {
 func TestRouteWithAux_FallsBackToAuxForLightweightTasks(t *testing.T) {
 	r := NewModelRouter(map[string]ModelRoute{}) // no explicit routes
 	primary := corelib.MaclawLLMConfig{URL: "https://primary.com", Model: "gpt-4", Key: "pk", ThinkingMode: "disabled", ReasoningEffort: "minimal"}
-	aux := corelib.AuxiliaryLLMConfig{URL: "https://aux.com", Key: "ak", Model: "aux-model", Protocol: "openai"}
+	aux := corelib.AuxiliaryLLMConfig{URL: "https://aux.com", Key: "ak", Model: "aux-model", Protocol: "openai", ContextLength: 200_000}
 
 	for _, task := range []TaskType{TaskIntent, TaskFast, TaskSummary} {
 		got := r.RouteWithAux(task, primary, aux)
@@ -97,6 +106,18 @@ func TestRouteWithAux_FallsBackToAuxForLightweightTasks(t *testing.T) {
 		if got.ThinkingMode != "disabled" || got.ReasoningEffort != "minimal" {
 			t.Errorf("task %s lost global reasoning controls: %+v", task, got)
 		}
+		if got.ContextLength != 200_000 {
+			t.Errorf("task %s auxiliary context = %d, want 200000", task, got.ContextLength)
+		}
+	}
+}
+
+func TestRouteWithAux_InheritsPrimaryContextWhenAuxDoesNotDeclareIt(t *testing.T) {
+	r := NewModelRouter(nil)
+	primary := corelib.MaclawLLMConfig{URL: "https://primary.com", Model: "gpt-4", Key: "pk", ContextLength: 400_000}
+	aux := corelib.AuxiliaryLLMConfig{URL: "https://aux.com", Key: "ak", Model: "aux-model"}
+	if got := r.RouteWithAux(TaskFast, primary, aux); got.ContextLength != primary.ContextLength {
+		t.Fatalf("aux without context length changed primary budget: %+v", got)
 	}
 }
 

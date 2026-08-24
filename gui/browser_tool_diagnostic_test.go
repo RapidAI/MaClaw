@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 var browserDiagLogMu sync.Mutex
@@ -100,6 +102,56 @@ func TestBrowserDiagFileDeliveryMarksOnlyRolePrefixAsBrowserPrefix(t *testing.T)
 	}
 	if !strings.Contains(got, "textHasRolePrefix=false") {
 		t.Fatalf("inline Browser mention should not be marked as role prefix, got %q", got)
+	}
+}
+
+func TestEmitFinalToolSurfaceDiagnosticsUsesExplainTraceOnManaged(t *testing.T) {
+	surface := &semanticCallSurface{plan: tool.ToolPlan{
+		ID: "plan-1", SnapshotDigest: "snap-1",
+		Trace: tool.ExplainTrace{
+			PlanID: "plan-1", SnapshotDigest: "snap-1",
+			Events: []tool.TraceEvent{{
+				Stage: tool.TraceStageSemantics, Subject: "information.search.web",
+				Event: "recognized", ReasonCode: "need_required",
+			}},
+		},
+	}}
+	got := captureBrowserDiagLog(t, func() {
+		emitFinalToolSurfaceDiagnostics([]map[string]interface{}{toolDef("invoke_lookup", "lookup", nil, nil)}, surface, 0)
+	})
+	if !strings.Contains(got, "[explain-trace] plan=plan-1") {
+		t.Fatalf("managed surface must emit explain-trace: %q", got)
+	}
+	if strings.Contains(got, "[browser-diag] CP4") {
+		t.Fatalf("managed surface without soup leak must not emit CP4: %q", got)
+	}
+	if strings.Contains(got, "invoke_lookup") {
+		t.Fatalf("explain-trace leaked a function name: %q", got)
+	}
+}
+
+func TestEmitFinalToolSurfaceDiagnosticsKeepsBrowserDiagOnLegacy(t *testing.T) {
+	got := captureBrowserDiagLog(t, func() {
+		emitFinalToolSurfaceDiagnostics([]map[string]interface{}{toolDef("browser", "browser", nil, nil)}, nil, 0)
+	})
+	if !strings.Contains(got, "[browser-diag] CP4_FinalToolList") {
+		t.Fatalf("legacy path must keep CP4: %q", got)
+	}
+	if strings.Contains(got, "[explain-trace]") {
+		t.Fatalf("legacy path should not emit explain-trace: %q", got)
+	}
+}
+
+func TestEmitFinalToolSurfaceDiagnosticsSoupLeakKeepsCompatLayer(t *testing.T) {
+	surface := &semanticCallSurface{plan: tool.ToolPlan{Trace: tool.ExplainTrace{
+		PlanID: "plan-leak",
+		Events: []tool.TraceEvent{{Stage: tool.TraceStageSemantics, Subject: "information.search.web", Event: "recognized", ReasonCode: "need_required"}},
+	}}}
+	got := captureBrowserDiagLog(t, func() {
+		emitFinalToolSurfaceDiagnostics([]map[string]interface{}{toolDef("browser", "browser", nil, nil)}, surface, 0)
+	})
+	if !strings.Contains(got, "[explain-trace]") || !strings.Contains(got, "[browser-diag] CP4") {
+		t.Fatalf("soup leak must keep explain-trace and CP4: %q", got)
 	}
 }
 

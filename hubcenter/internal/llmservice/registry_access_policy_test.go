@@ -196,3 +196,12 @@ func TestRegistryNormalizesLegacyProviderIDsToProviderConfigs(t *testing.T) {
 		t.Fatalf("provider_ids = %+v, want unique provider ids", model.ProviderIDs)
 	}
 }
+
+func TestRequiresGrantAccessPolicyMatchesProxyNormalization(t *testing.T) {
+	if !RequiresGrantAccessPolicy(AccessPolicyGrantRequired) || !RequiresGrantAccessPolicy("GRANT_REQUIRED") {
+		t.Fatal("grant_required should require grant")
+	}
+	if RequiresGrantAccessPolicy("") || RequiresGrantAccessPolicy(AccessPolicyFree) || RequiresGrantAccessPolicy("unknown") {
+		t.Fatal("empty, free, and unknown policies should not require grant")
+	}
+}

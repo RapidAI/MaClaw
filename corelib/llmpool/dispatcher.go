@@ -31,6 +31,14 @@ type DispatchProviderRoute struct {
 	OriginalIndex    int
 }
 
+// ScoredProviderRoute is a dispatch route plus the capability/priority score
+// used to keep same-band load balancing from mixing failover tiers.
+type ScoredProviderRoute struct {
+	Route          DispatchProviderRoute
+	Score          int
+	ResolutionTier int
+}
+
 // OrderProviders selects and sorts providers for a given request body,
 // scoring by capability match, resolution tier, credit cost, and priority.
 // This is the shared dispatcher logic used by both Hub and HubCenter.
@@ -47,19 +55,25 @@ func OrderProviders(body map[string]any, model *DispatchModel) []string {
 }
 
 func OrderProviderRoutes(body map[string]any, model *DispatchModel) []DispatchProviderRoute {
+	scored := OrderScoredProviderRoutes(body, model)
+	if len(scored) == 0 {
+		return nil
+	}
+	ordered := make([]DispatchProviderRoute, 0, len(scored))
+	for _, item := range scored {
+		ordered = append(ordered, item.Route)
+	}
+	return ordered
+}
+
+func OrderScoredProviderRoutes(body map[string]any, model *DispatchModel) []ScoredProviderRoute {
 	routes := dispatchRoutes(model)
 	if len(routes) == 0 {
 		return nil
 	}
 
-	type scoredProvider struct {
-		route          DispatchProviderRoute
-		score          int
-		resolutionTier int
-	}
-
 	capabilityNeeds := DetectCapabilityNeeds(body)
-	scored := make([]scoredProvider, 0, len(routes))
+	scored := make([]ScoredProviderRoute, 0, len(routes))
 
 	for _, route := range routes {
 		score := 0
@@ -79,34 +93,29 @@ func OrderProviderRoutes(body map[string]any, model *DispatchModel) []DispatchPr
 		priority := routePriority(model, route)
 		score += priority
 
-		scored = append(scored, scoredProvider{
-			route:          normalizeDispatchRoute(model, route),
-			score:          score,
-			resolutionTier: normalizedResolutionTier(routeResolutionTier(model, route)),
+		scored = append(scored, ScoredProviderRoute{
+			Route:          normalizeDispatchRoute(model, route),
+			Score:          score,
+			ResolutionTier: normalizedResolutionTier(routeResolutionTier(model, route)),
 		})
 	}
 
 	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score != scored[j].score {
-			return scored[i].score > scored[j].score
+		if scored[i].Score != scored[j].Score {
+			return scored[i].Score > scored[j].Score
 		}
-		if scored[i].resolutionTier != scored[j].resolutionTier {
-			return scored[i].resolutionTier < scored[j].resolutionTier
+		if scored[i].ResolutionTier != scored[j].ResolutionTier {
+			return scored[i].ResolutionTier < scored[j].ResolutionTier
 		}
-		if scored[i].route.CreditMultiplier != scored[j].route.CreditMultiplier {
-			return scored[i].route.CreditMultiplier < scored[j].route.CreditMultiplier
+		if scored[i].Route.CreditMultiplier != scored[j].Route.CreditMultiplier {
+			return scored[i].Route.CreditMultiplier < scored[j].Route.CreditMultiplier
 		}
-		if scored[i].route.Priority != scored[j].route.Priority {
-			return scored[i].route.Priority > scored[j].route.Priority
+		if scored[i].Route.Priority != scored[j].Route.Priority {
+			return scored[i].Route.Priority > scored[j].Route.Priority
 		}
-		return scored[i].route.OriginalIndex < scored[j].route.OriginalIndex
+		return scored[i].Route.OriginalIndex < scored[j].Route.OriginalIndex
 	})
-
-	ordered := make([]DispatchProviderRoute, 0, len(scored))
-	for _, item := range scored {
-		ordered = append(ordered, item.route)
-	}
-	return ordered
+	return scored
 }
 
 // DetectCapabilityNeeds analyzes an OpenAI-compatible request body and
@@ -284,7 +293,23 @@ func extractRequestText(body map[string]any) string {
 	if input, ok := body["input"]; ok {
 		parts = append(parts, flattenAnyText(input))
 	}
+	if prompt, ok := body["prompt"].(string); ok {
+		parts = append(parts, prompt)
+	}
 	return strings.Join(parts, " ")
+}
+
+// RequestTextPreview returns a compact, truncated view of request text for rule-board samples.
+func RequestTextPreview(body map[string]any, maxRunes int) string {
+	text := strings.Join(strings.Fields(extractRequestText(body)), " ")
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "…"
 }
 
 func flattenAnyText(v any) string {

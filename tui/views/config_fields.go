@@ -25,6 +25,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
@@ -112,7 +113,7 @@ var (
 	workDirProfileOpts   = []string{"default_workspace", "current_directory", "home_directory", "custom"}
 	maxIterationOpts     = []string{"30", "60", "100", "150", "300"}
 	contextLengthOpts    = []string{"32000", "64000", "110000", "200000", "400000"}
-	llmModelChoiceOpts   = []string{"auto", "glm-5-turbo", "GLM-5.2", "deepseek-v4-flash", "kimi-for-coding", "MiniMax-M2.7", "astron-code-latest", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"}
+	llmModelChoiceOpts   = []string{"auto", "glm-5-turbo", corelib.ZhipuCodingDefaultModel, "deepseek-v4-flash", "kimi-for-coding", "MiniMax-M2.7", "astron-code-latest", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"}
 	auxLLMProfileOpts    = []string{"off", "same_as_primary", "custom"}
 	imChannelProfileOpts = []string{"off", "weixin", "telegram", "qq", "lansenger"}
 	proxyPortOpts        = []string{"7890", "8080", "1080", "3128"}
@@ -134,8 +135,9 @@ type llmProviderPreset struct {
 
 var llmProviderPresets = []llmProviderPreset{
 	{Name: "DeepSeek", URL: "https://api.deepseek.com/v1", Model: "deepseek-v4-flash", Protocol: "openai", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
-	{Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", Protocol: "anthropic", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
+	{Name: "Zhipu GLM Coding", URL: "https://open.bigmodel.cn/api/anthropic", Model: corelib.ZhipuCodingDefaultModel, Protocol: "anthropic", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "OpenCode", URL: configfile.OpenCodeZenBaseURL, Model: configfile.OpenCodeZenDefaultModel, Protocol: "openai", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: configfile.ExternalAgentTypeOpenCode, AuthType: "apikey"},
 	{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "Xfyun Astron", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
 	{Name: "OpenAI API Key", URL: "https://api.openai.com/v1", Model: "gpt-4o", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
@@ -195,7 +197,8 @@ func currentLLMPresetName(c *corelib.AppConfig) string {
 		if p.IsCustom {
 			continue
 		}
-		if strings.TrimRight(c.MaclawLLMUrl, "/") == strings.TrimRight(p.URL, "/") && c.MaclawLLMModel == p.Model {
+		if strings.TrimRight(c.MaclawLLMUrl, "/") == strings.TrimRight(p.URL, "/") &&
+			corelib.MigrateZhipuCodingModel(p.Name, c.MaclawLLMModel) == p.Model {
 			return p.Name
 		}
 	}
@@ -212,13 +215,13 @@ func applyLLMProviderPreset(c *corelib.AppConfig, name string) {
 	}
 	if preset.Name == "" {
 		for _, provider := range c.MaclawLLMProviders {
-			if provider.Name != name {
+			if !corelib.MaclawLLMProviderNameEqual(provider.Name, name) {
 				continue
 			}
 			c.MaclawLLMCurrentProvider = provider.Name
 			c.MaclawLLMUrl = strings.TrimRight(provider.URL, "/")
 			c.MaclawLLMKey = provider.Key
-			c.MaclawLLMModel = provider.Model
+			c.MaclawLLMModel = corelib.MigrateZhipuCodingModel(provider.Name, provider.Model)
 			c.MaclawLLMProtocol = provider.Protocol
 			if c.MaclawLLMProtocol == "" {
 				c.MaclawLLMProtocol = "openai"
@@ -252,20 +255,23 @@ func applyLLMProviderPreset(c *corelib.AppConfig, name string) {
 
 	found := false
 	for i := range c.MaclawLLMProviders {
-		if c.MaclawLLMProviders[i].Name == providerName {
-			if !preset.IsCustom {
-				c.MaclawLLMProviders[i].URL = strings.TrimRight(preset.URL, "/")
-				c.MaclawLLMProviders[i].Model = preset.Model
-			}
-			c.MaclawLLMProviders[i].Protocol = c.MaclawLLMProtocol
-			c.MaclawLLMProviders[i].ContextLength = c.MaclawLLMContextLength
-			c.MaclawLLMProviders[i].TimeoutSec = c.MaclawLLMTimeoutSec
-			c.MaclawLLMProviders[i].AgentType = preset.AgentType
-			c.MaclawLLMProviders[i].AuthType = preset.AuthType
-			c.MaclawLLMProviders[i].IsCustom = preset.IsCustom
-			found = true
-			break
+		if !corelib.MaclawLLMProviderNameEqual(c.MaclawLLMProviders[i].Name, providerName) {
+			continue
 		}
+		providerName = c.MaclawLLMProviders[i].Name
+		c.MaclawLLMCurrentProvider = providerName
+		if !preset.IsCustom {
+			c.MaclawLLMProviders[i].URL = strings.TrimRight(preset.URL, "/")
+			c.MaclawLLMProviders[i].Model = preset.Model
+		}
+		c.MaclawLLMProviders[i].Protocol = c.MaclawLLMProtocol
+		c.MaclawLLMProviders[i].ContextLength = c.MaclawLLMContextLength
+		c.MaclawLLMProviders[i].TimeoutSec = c.MaclawLLMTimeoutSec
+		c.MaclawLLMProviders[i].AgentType = preset.AgentType
+		c.MaclawLLMProviders[i].AuthType = preset.AuthType
+		c.MaclawLLMProviders[i].IsCustom = preset.IsCustom
+		found = true
+		break
 	}
 	if !found {
 		c.MaclawLLMProviders = append(c.MaclawLLMProviders, corelib.MaclawLLMProvider{
@@ -296,7 +302,7 @@ func llmModelOptionsFromConfig(c *corelib.AppConfig) []string {
 	}
 	values = appendUniqueOption(values, c.MaclawLLMModel)
 	for _, p := range c.MaclawLLMProviders {
-		if strings.TrimSpace(p.Name) == strings.TrimSpace(c.MaclawLLMCurrentProvider) {
+		if corelib.MaclawLLMProviderNameEqual(p.Name, c.MaclawLLMCurrentProvider) {
 			continue
 		}
 		values = appendUniqueOption(values, p.Model)
@@ -340,21 +346,23 @@ func syncCurrentLLMProvider(c *corelib.AppConfig) {
 	}
 	if strings.TrimSpace(c.MaclawLLMKey) == "" {
 		for _, provider := range c.MaclawLLMProviders {
-			if strings.TrimSpace(provider.Name) == name {
+			if corelib.MaclawLLMProviderNameEqual(provider.Name, name) {
 				c.MaclawLLMKey = strings.TrimSpace(provider.Key)
 				break
 			}
 		}
 	}
 	applyMissingLLMPresetDefaults(c, name)
+	c.MaclawLLMModel = corelib.MigrateZhipuCodingModel(name, c.MaclawLLMModel)
 	for i := range c.MaclawLLMProviders {
-		if c.MaclawLLMProviders[i].Name == name {
+		if corelib.MaclawLLMProviderNameEqual(c.MaclawLLMProviders[i].Name, name) {
 			c.MaclawLLMProviders[i].URL = c.MaclawLLMUrl
 			c.MaclawLLMProviders[i].Key = c.MaclawLLMKey
 			c.MaclawLLMProviders[i].Model = c.MaclawLLMModel
 			c.MaclawLLMProviders[i].Protocol = c.MaclawLLMProtocol
 			c.MaclawLLMProviders[i].ContextLength = c.MaclawLLMContextLength
 			c.MaclawLLMProviders[i].TimeoutSec = c.MaclawLLMTimeoutSec
+			c.MaclawLLMCurrentProvider = c.MaclawLLMProviders[i].Name
 			return
 		}
 	}
@@ -372,7 +380,7 @@ func syncCurrentLLMProvider(c *corelib.AppConfig) {
 
 func applyMissingLLMPresetDefaults(c *corelib.AppConfig, name string) {
 	for _, preset := range llmProviderPresets {
-		if preset.Name != name || preset.IsCustom {
+		if !corelib.MaclawLLMProviderNameEqual(preset.Name, name) || preset.IsCustom {
 			continue
 		}
 		if strings.TrimSpace(c.MaclawLLMUrl) == "" {
@@ -561,12 +569,12 @@ func currentAuxLLMProfile(c *corelib.AppConfig) string {
 		return "off"
 	}
 	aux := c.AuxiliaryLLM
-	if strings.TrimSpace(aux.URL) == "" && strings.TrimSpace(aux.Key) == "" && strings.TrimSpace(aux.Model) == "" && strings.TrimSpace(aux.Protocol) == "" {
+	if strings.TrimSpace(aux.URL) == "" && strings.TrimSpace(aux.Key) == "" && strings.TrimSpace(aux.Model) == "" && strings.TrimSpace(aux.Protocol) == "" && aux.ContextLength <= 0 {
 		return "off"
 	}
 	primaryKey := currentLLMProviderKey(c)
 	primaryConfigured := strings.TrimSpace(c.MaclawLLMUrl) != "" || primaryKey != "" || strings.TrimSpace(c.MaclawLLMModel) != "" || strings.TrimSpace(c.MaclawLLMProtocol) != ""
-	if primaryConfigured && sameConfigEndpoint(aux.URL, c.MaclawLLMUrl) && strings.TrimSpace(aux.Key) == primaryKey && strings.TrimSpace(aux.Model) == strings.TrimSpace(c.MaclawLLMModel) && normalizedLLMProtocol(aux.Protocol) == normalizedLLMProtocol(c.MaclawLLMProtocol) {
+	if primaryConfigured && sameConfigEndpoint(aux.URL, c.MaclawLLMUrl) && strings.TrimSpace(aux.Key) == primaryKey && strings.TrimSpace(aux.Model) == strings.TrimSpace(c.MaclawLLMModel) && normalizedLLMProtocol(aux.Protocol) == normalizedLLMProtocol(c.MaclawLLMProtocol) && aux.ContextLength == c.MaclawLLMContextLength {
 		return "same_as_primary"
 	}
 	return "custom"
@@ -578,10 +586,11 @@ func applyAuxLLMProfile(c *corelib.AppConfig, profile string) {
 		c.AuxiliaryLLM = corelib.AuxiliaryLLMConfig{}
 	case "same_as_primary":
 		c.AuxiliaryLLM = corelib.AuxiliaryLLMConfig{
-			URL:      strings.TrimRight(strings.TrimSpace(c.MaclawLLMUrl), "/"),
-			Key:      currentLLMProviderKey(c),
-			Model:    strings.TrimSpace(c.MaclawLLMModel),
-			Protocol: normalizedLLMProtocol(c.MaclawLLMProtocol),
+			URL:           strings.TrimRight(strings.TrimSpace(c.MaclawLLMUrl), "/"),
+			Key:           currentLLMProviderKey(c),
+			Model:         strings.TrimSpace(c.MaclawLLMModel),
+			Protocol:      normalizedLLMProtocol(c.MaclawLLMProtocol),
+			ContextLength: c.MaclawLLMContextLength,
 		}
 	case "custom":
 		if strings.TrimSpace(c.AuxiliaryLLM.URL) == "" {
@@ -595,6 +604,9 @@ func applyAuxLLMProfile(c *corelib.AppConfig, profile string) {
 		}
 		if strings.TrimSpace(c.AuxiliaryLLM.Protocol) == "" {
 			c.AuxiliaryLLM.Protocol = normalizedLLMProtocol(c.MaclawLLMProtocol)
+		}
+		if c.AuxiliaryLLM.ContextLength <= 0 {
+			c.AuxiliaryLLM.ContextLength = c.MaclawLLMContextLength
 		}
 	}
 }
@@ -929,6 +941,12 @@ var allConfigFields = []ConfigFieldDef{
 		Get: func(c *corelib.AppConfig) string { return c.AuxiliaryLLM.Protocol },
 		Set: func(c *corelib.AppConfig, v string) { c.AuxiliaryLLM.Protocol = v },
 	},
+	{
+		Key: "aux_llm_context_length", Tab: CfgTabLLM, Section: "aux_llm",
+		DescKey: i18n.MsgTUIConfigDescLLMContextLength, Options: contextLengthOpts,
+		Get: intGet(func(c *corelib.AppConfig) int { return c.AuxiliaryLLM.ContextLength }),
+		Set: intSet(func(c *corelib.AppConfig, v int) { c.AuxiliaryLLM.ContextLength = v }),
+	},
 
 	// ---- Tab 2: IM ----
 	{
@@ -942,6 +960,16 @@ var allConfigFields = []ConfigFieldDef{
 		DescKey: i18n.MsgTUIConfigDescQQBotEnabled, Options: boolOpts, Default: "false",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.QQBotEnabled }),
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.QQBotEnabled = v }),
+	},
+	{
+		Key: "qqbot_qr_login", Tab: CfgTabIM, Section: "qqbot",
+		DescKey: i18n.MsgTUIConfigDescQQBotQRLogin, Options: []string{"unbound", "bound"}, Default: "unbound", ReadOnly: true,
+		Get: func(c *corelib.AppConfig) string {
+			if strings.TrimSpace(c.QQBotAppID) != "" && strings.TrimSpace(c.QQBotAppSecret) != "" {
+				return "bound"
+			}
+			return "unbound"
+		},
 	},
 	{
 		Key: "qqbot_app_id", Tab: CfgTabIM, Section: "qqbot",

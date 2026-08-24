@@ -1,28 +1,41 @@
-# Computer Use（文本模型优先）
+# Computer Use
 
-MacLaw Computer Use 让 Agent 操作本机桌面 GUI。与 Codex Desktop 不同：**不要求聊天模型支持多模态**。
+MacLaw Computer Use 让 Agent 操作本机桌面 GUI。感知路径按**当前聊天模型是否支持视觉**分流：
+
+- **模型支持视觉 / 图片**：`computer_observe` 把截图交给 LLM 看，模型用 `computer_click x,y` 点截图像素。不跑 OmniParser / OCR / Caption。
+- **模型不支持视觉**：保持文本优先——本地 OmniParser YOLO + OCR + 可选 a11y 生成 `eN` SoM，截图不发给聊天模型。OCR/无障碍仍空白的框，若在 **设置 → 大语言模型 → 模型分配** 配置了 Caption 模型，则裁剪后交给该视觉模型补短标签。
 
 ## 架构
 
 ```
-截屏（仅本地）
-  → OmniParser YOLO（corelib/yolo）检测可交互区域
-  → OCR 贴文字标签 + 全文摘要
-  → 可选 Accessibility 树
-  → 纯文本 SoM（e0..eN）交给 LLM
-LLM 输出 computer_click(ref=e3) 等
-  → Session 解析中心坐标 → InputSimulator
+支持视觉的 LLM:
+  截屏 →（可选缩小）→ 作为图片发给 LLM
+  LLM 输出 computer_click(x,y) → 映射回屏幕坐标 → InputSimulator
+
+文本模型:
+  截屏（仅本地）
+    → OmniParser YOLO 检测可交互区域
+    → OCR 贴文字标签 + 全文摘要
+    → 前台窗口 Accessibility 树（可传 window= 指定应用）
+    → 可选 Caption 模型：只给仍无标签的框补 name/type（聊天模型看不到这些裁剪图）
+    → 纯文本 SoM（e0..eN）交给 LLM
+  LLM 输出 computer_click(ref=e3) → Session 解析中心坐标（含屏幕 origin/DPI）→ 优先 UIA/AX 语义操作，失败再 InputSimulator
 ```
+
+默认 `computer_observe` **裁剪前台窗口**（可加 `window=` 指定标题；四周约 8px 边距）。传入 `screen_index=N` 才截整块显示器，`screen_index=-1` 才拼接全部显示器。点击坐标按截图 origin/DPI 映射到虚拟桌面。Windows 截屏走 GDI `BitBlt`（失败再回退 PowerShell）。每个聊天标签页有独立 CU Session；操作员 Pause/Stop/Reset 作用于全部标签。动作后约 80ms settle，Windows/macOS 再短时 `WaitForIdle`；若前台窗口族与 observe 时的 `crop=` 对不上，则作废 refs 并要求重新 observe。
 
 ## 工具
 
 | 工具 | 作用 |
 |------|------|
-| `computer_observe` | 本地感知 → **纯文本**元素列表（无 base64 图） |
-| `computer_click` | `ref=eN` 点击（默认禁止裸像素） |
+| `computer_observe` | 默认裁剪前台窗口；视觉模型附加带 SoM 框的截图；文本模型纯文本 eN（无 base64） |
+| `computer_click` | 视觉：`x,y` 截图像素或 `ref=eN`；文本：`ref=eN`（默认禁止裸像素） |
 | `computer_type` | 输入；可选先 `ref` 聚焦 |
 | `computer_key` | 快捷键 |
 | `computer_scroll` | 滚动 |
+| `computer_select` | 选择列表/标签/树节点（UIA SelectionItem，失败再点击） |
+| `computer_scroll_into_view` | 把 `ref` 滚进可视区 |
+| `computer_drag` | 从 `from_ref` 拖到 `to_ref` |
 | `computer_wait` | 等待 / UI 稳定 |
 | `computer_focus` | 按窗口标题子串前置前台 |
 | `computer_find` | 按关键词查找屏幕文本/元素（含无元素覆盖的 OCR 文本），命中即分配可点击 ref |
@@ -45,6 +58,7 @@ LLM 输出 computer_click(ref=e3) 等
 |------|------|
 | `computer_use_enabled` | 总开关（默认 true） |
 | `screen_parsing_enabled` | OmniParser YOLO（默认 true；关则 observe 仍可用 a11y/OCR） |
+| Caption 模型（LLM 设置 → 模型分配） | 可选视觉模型；仅当聊天模型不支持视觉、且 observe 仍有未标注框时调用。未配置则保持 OCR/a11y/启发式标签 |
 
 Wails：`GetComputerUseEnabled` / `SetComputerUseEnabled` / `GetComputerUseStatus`，以及既有的 Screen Parsing 开关。
 
@@ -72,11 +86,11 @@ API：`ComputerUsePause` / `ComputerUseResume` / `ComputerUseStop` / `ComputerUs
 
 ## 对模型的要求
 
-- 默认假设模型是 **text-only**：看不到截图。
-- 必须先 `computer_observe`，再用 `ref`，动作后再次 observe。
-- observe 传 `window`（应用标题子串）才会合并该应用的 a11y 元素（列表项、文本节点）。
-- 定位指定的人/文字先 `computer_find query=...`；长列表用 `computer_scroll` + 重新 find 翻页，或优先用应用内搜索框。
-- 不要臆造像素坐标。
+- **视觉模型**：先 `computer_observe`（截图上会画 a11y SoM 框），可用 `computer_click x,y` 或 `ref=eN`，动作后再 observe。
+- **文本模型**：必须先 `computer_observe`，再用 `ref`，动作后再次 observe。observe 默认枚举**前台窗口**的 a11y 树；传 `window`（应用标题子串）可指定其它应用。元素类型会标成 button/edit/icon 等，而不是一律 interactable。
+- 命中 Office / 资源管理器 / 浏览器 / IM 窗口时，observe 会给出 `adapter=` 提示：文档走 office_read，网页走 browser_*，IM 先搜搜索框。
+- 定位指定的人/文字：视觉模型直接看图；文本模型先 `computer_find query=...`。长列表用 `computer_scroll` + 重新 observe，或优先用应用内搜索框。
+- 文本模型不要臆造像素坐标。
 
 ## 权重
 
@@ -87,10 +101,11 @@ OmniParser 权重路径由 `yoloModelPath()` 解析（见 `gui/app_yolo_model.go
 | 层 | 以前 | 现在 |
 |----|------|------|
 | Windows 输入 | 每次 PowerShell + Add-Type | **user32 原生** |
+| Windows 截屏 | PowerShell `CopyFromScreen` | **GDI BitBlt**（`NativeScreenshotRect`；失败回退 PS） |
 | Windows a11y | 每次启动 PS 加载 UIAutomation | **优先 C# sidecar**（安装包/`dist` 预置 `maclaw-uia-sidecar.exe`；缺失时用 `csc` 自动编译）；失败回退常驻 PowerShell。UI 显示 `a11y=csharp` / `powershell` |
 | macOS 输入 | 每次 `python3 -c` | **常驻 python+Quartz sidecar**（失败回退 one-shot） |
 | 窗口前置 | 无 | `computer_focus` / `accessibility.FocusWindow` |
-| 动作后 | 无 | 自动 settle ~180ms |
+| 动作后 | 无 | 自动 settle（约 80ms；Windows/macOS 另做短时 UI idle 观察） |
 
 ## 启动预热与自检
 
@@ -101,7 +116,7 @@ OmniParser 权重路径由 `yoloModelPath()` 解析（见 `gui/app_yolo_model.go
 | 聊天区 | **Computer Use 准备** 横幅：缺权重 / 权限 / **最近 observe 失败**；**按 issue 关闭**（`dismissed_ids`）；可 Smoke / 自检 |
 | 观察失败 | `computer_observe` 失败返回 **Guidance** 文案；事件 `computer-use:error`；`GetComputerUseLastError` |
 | 冒烟 | 自检内嵌 `smoke`（截屏 + a11y）；`ComputerUseSmokeCheck` 可选 YOLO |
-| 耗时 | observe / smoke 事件含 `timing_ms`（screenshot/yolo/a11y/ocr/commit）与 `total_ms`；`GetComputerUseLastObserveMetrics` / status.`last_observe` |
+| 耗时 | observe / smoke 事件含 `timing_ms`（screenshot/yolo/a11y/ocr/caption/commit）与 `total_ms`；`GetComputerUseLastObserveMetrics` / status.`last_observe` |
 | 操作员面板 | last error + 耗时 + **历史 n/avg/min/max + sparkline**；**Smoke / E2E / E2E+ / 导出** |
 | 设置页 | 自检 / 隐私设置 / **导出诊断** / **E2E 冒烟** / **E2E 交互** |
 | 诊断导出 | 手动导出完整包（含 SelfCheckUIA）；**E2E 失败静默导出**用 light 路径（不重编译 sidecar） |

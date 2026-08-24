@@ -432,10 +432,16 @@ requireFile('gui/frontend/src/components/settings/SettingsTabsRail.tsx');
 requireFile('gui/frontend/src/components/settings/GeneralSettingsPanel.tsx');
 requireFile('gui/frontend/src/components/settings/UISettingsPanel.tsx');
 requireFile('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx');
+requireFile('gui/frontend/src/components/settings/CodingKnowledgeSection.tsx');
+requireFile('gui/frontend/src/components/settings/codingKnowledgeHelpers.ts');
+requireFile('gui/frontend/src/components/settings/CodingKnowledgeDialogs.tsx');
 requireFile('gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx');
 requireFile('gui/frontend/src/components/settings/SystemSettingsPanel.tsx');
+requireFile('gui/frontend/src/components/settings/systemSettingsDiagnostics.ts');
 requireFile('gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx');
 requireFile('gui/frontend/src/components/settings/ProxySettingsPanel.tsx');
+requireFile('gui/frontend/src/components/settings/ProxySettingsFields.tsx');
+requireFile('gui/frontend/src/components/settings/proxySettingsHelpers.ts');
 requireFile('gui/frontend/src/components/settings/ProxyScopeSettings.tsx');
 requireFile('gui/frontend/src/components/settings/IMSettingsPanel.tsx');
 requireFile('gui/frontend/src/components/settings/IMSubTabs.tsx');
@@ -465,6 +471,8 @@ requireFile('gui/frontend/src/components/pages/RemoteSessionsPage.tsx');
 requireFile('gui/frontend/src/components/pages/SkillsPage.tsx');
 requireFile('gui/frontend/src/components/pages/MCPPage.tsx');
 requireFile('gui/frontend/src/components/pages/GossipPage.tsx');
+requireFile('gui/frontend/src/components/remote/LLMConfigOAuthFields.tsx');
+requireFile('gui/frontend/src/components/remote/LLMConfigDialogSaveError.tsx');
 requireFile('gui/frontend/src/components/AboutPanel.tsx');
 requireFile('gui/frontend/src/components/MemoryHealthDialog.tsx');
 requireFile('gui/frontend/src/components/SecurityEventsDialog.tsx');
@@ -481,6 +489,7 @@ requireFile('gui/frontend/src/components/modals/RemoteActivationDialog.tsx');
 requireFile('gui/frontend/src/components/modals/ProviderSelectorDialog.tsx');
 requireFile('gui/frontend/src/components/modals/ConfirmDialog.tsx');
 requireFile('gui/frontend/src/components/ai/aiAssistantMarkdown.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantReplyCopyButton.tsx');
 requireFile('gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx');
 requireFile('gui/frontend/src/components/ai/aiAssistantI18n.ts');
 requireFile('gui/frontend/src/components/ai/ProjectSearchPanel.tsx');
@@ -489,6 +498,8 @@ requireFile('gui/frontend/src/components/ai/useTTSReadback.ts');
 requireFile('gui/frontend/src/components/ai/aiAssistantPanelTypes.ts');
 requireFile('gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts');
 requireFile('gui/frontend/src/components/ai/useAssistantOutputScroll.ts');
+requireFile('gui/frontend/src/components/ai/assistantOutputScrollLogic.ts');
+requireFile('gui/frontend/src/components/ai/assistantOutputScrollFollow.ts');
 requireFile('gui/frontend/src/components/ai/useAssistantThemeMode.ts');
 requireFile('gui/frontend/src/components/ai/assistantThemeStorage.ts');
 requireFile('gui/frontend/src/components/ai/useResizableAssistantInput.ts');
@@ -496,11 +507,13 @@ requireFile('gui/frontend/src/components/ai/useAssistantInputHistory.ts');
 requireFile('gui/frontend/src/components/ai/usePastedImageAttachments.ts');
 requireFile('gui/frontend/src/components/ai/useGroupDiscussionControls.ts');
 requireFile('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx');
+requireFile('gui/frontend/src/components/ai/AttachmentImagePreview.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantConversationBody.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantInputActions.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantTitleBar.tsx');
+requireFile('gui/frontend/src/components/ai/AssistantTitleBarNotifications.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantInputComposer.tsx');
 requireFile('gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx');
@@ -520,10 +533,15 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 340],
   ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 480],
   ['gui/frontend/src/components/settings/CodingKnowledgeSection.tsx', 520],
+  ['gui/frontend/src/components/settings/codingKnowledgeHelpers.ts', 80],
+  ['gui/frontend/src/components/settings/CodingKnowledgeDialogs.tsx', 100],
   ['gui/frontend/src/components/settings/programmingToolsConfig.ts', 80],
   ['gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 180],
+  ['gui/frontend/src/components/settings/systemSettingsDiagnostics.ts', 30],
   ['gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 80],
   ['gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 160],
+  ['gui/frontend/src/components/settings/ProxySettingsFields.tsx', 120],
+  ['gui/frontend/src/components/settings/proxySettingsHelpers.ts', 40],
   ['gui/frontend/src/components/settings/ProxyScopeSettings.tsx', 100],
   ['gui/frontend/src/components/settings/IMSettingsPanel.tsx', 220],
   ['gui/frontend/src/components/settings/IMSubTabs.tsx', 100],
@@ -541,8 +559,9 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 6300],
-  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1700],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 6500],
+  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1900],
+  ['gui/frontend/src/components/ai/AssistantReplyCopyButton.tsx', 180],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
   ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 320],
@@ -551,16 +570,20 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 160],
   ['gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
   ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 120],
+  ['gui/frontend/src/components/ai/assistantOutputScrollLogic.ts', 120],
+  ['gui/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
   ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
   ['gui/frontend/src/components/ai/useAssistantInputHistory.ts', 100],
   ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 340],
   ['gui/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
-  ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 260],
+  ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 280],
+  ['gui/frontend/src/components/ai/AttachmentImagePreview.tsx', 340],
   ['gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 250],
   ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 520],
   ['gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 100],
   ['gui/frontend/src/components/ai/AssistantTitleBar.tsx', 220],
+  ['gui/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 180],
   ['gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
   ['gui/frontend/src/components/ai/AssistantInputComposer.tsx', 240],
   ['gui/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],
@@ -573,8 +596,13 @@ const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 3000],
   // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
   ['gui/frontend/src/components/remote/SkillsManagementPanelView.tsx', 5700],
-  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 2600],
+  ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 2650],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1600],
+  ['gui/frontend/src/components/remote/LLMConfigProviderLimitsFields.tsx', 90],
+  ['gui/frontend/src/components/remote/LLMConfigDialogFooter.tsx', 80],
+  ['gui/frontend/src/components/remote/LLMConfigDialogSaveError.tsx', 40],
+  ['gui/frontend/src/components/remote/LLMConfigApiKeyFields.tsx', 80],
+  ['gui/frontend/src/components/remote/LLMConfigOAuthFields.tsx', 120],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
   ['gui/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];
@@ -673,6 +701,7 @@ requireExcludes(appRel, 'confirmDialog.message}</p>', 'inline confirm dialog bod
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function renderContentWithCodeBlocks', 'inline AI markdown/code-block renderer; use components/ai/aiAssistantMarkdown.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function renderMessage', 'inline AI message renderer; use components/ai/aiAssistantMarkdown.tsx');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'renderMessage } from "./aiAssistantMarkdown"', 'AI markdown renderer import');
+requireIncludes('gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 'from "./AssistantReplyCopyButton"', 'AI reply copy button import');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'const lightTheme', 'inline AI panel theme; use components/ai/aiAssistantPanelTheme.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'function AssistantInputIcon', 'inline AI input icons; use components/ai/aiAssistantPanelTheme.tsx');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./aiAssistantPanelTheme"', 'AI panel theme import');
@@ -702,6 +731,8 @@ requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'prevMsgC
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'scrollTimerRef', 'inline AI output scroll debounce; use components/ai/useAssistantOutputScroll.ts');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'setInputAreaHeight', 'inline AI input resize state; use components/ai/useResizableAssistantInput.ts');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantOutputScroll"', 'AI output scroll hook import');
+requireIncludes('gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 'from "./assistantOutputScrollLogic"', 'AI output scroll logic import');
+requireIncludes('gui/frontend/src/components/ai/assistantOutputScrollLogic.ts', 'from "./assistantOutputScrollFollow"', 'AI output scroll follow import');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useResizableAssistantInput"', 'AI input resize hook import');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'historyEdits', 'inline AI input history edits; use components/ai/useAssistantInputHistory.ts');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'SavePastedImage', 'inline pasted image saving; use components/ai/usePastedImageAttachments.ts');
@@ -711,7 +742,7 @@ requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-pending-attachments"', 'inline AI pending attachments strip; use components/ai/AssistantAttachmentsStrip.tsx');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantAttachmentsStrip"', 'AI attachments strip import');
 requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'title={att.filePath}', 'pasted image path tooltip');
-requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'thumbnailDataUrl', 'pasted image thumbnail rendering');
+requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'AttachmentImageThumbnail', 'pasted image thumbnail rendering');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-docs-bar"', 'old left-side AI workflow docs bar');
 requireExcludes('gui/frontend/src/components/ai/AssistantInputStack.tsx', 'AssistantWorkflowDocsBar', 'old left-side workflow docs bar wiring');
 requireIncludes('gui/frontend/src/components/ai/WorkflowDocPreview.tsx', 'WorkflowProgressBoard', 'right-side workflow progress board');
@@ -742,6 +773,7 @@ requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-title-bar"', 'inline AI title bar; use components/ai/AssistantTitleBar.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'ai-titlebar-window-group', 'inline AI titlebar window controls; use components/ai/AssistantTitleBar.tsx');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantTitleBar"', 'AI title bar import');
+requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'from "./AssistantTitleBarNotifications"', 'AI title bar notifications import');
 requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-title-bar"', 'AI title bar wrapper');
 requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-titlebar-tools-group"', 'AI title bar tool group');
 requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-hide-toggle"', 'AI hide window control');
@@ -844,12 +876,14 @@ requireIncludes('gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 
 requireIncludes('gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 'workstation_mode', 'workstation mode toggle');
 requireIncludes('gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 'audio_input_device_id', 'audio input device setting');
 requireIncludes('gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 'SystemDiagnosticsTable', 'diagnostics table wiring');
+requireIncludes('gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 'buildSystemDiagnostics', 'system diagnostics helper wiring');
 requireIncludes('gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', '<table', 'diagnostics table rendering');
 requireIncludes('gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 'var(--theme-surface-muted)', 'diagnostics table dark-mode surface');
 requireIncludes('gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 'export const ProxySettingsPanel', 'proxy settings export');
 requireIncludes('gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 'default_proxy_enabled', 'proxy enabled setting');
 requireIncludes('gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 'SaveProxyConfig', 'proxy save backend wiring');
 requireIncludes('gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 'ProxyScopeSettings', 'proxy scope settings wiring');
+requireIncludes('gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 'ProxySettingsFields', 'proxy form fields wiring');
 requireIncludes('gui/frontend/src/components/settings/ProxyScopeSettings.tsx', 'default_proxy_scope_maclaw', 'proxy Maclaw scope setting');
 requireIncludes('gui/frontend/src/components/settings/ProxyScopeSettings.tsx', 'default_proxy_scope_coding_tools', 'proxy coding tools scope setting');
 requireIncludes('gui/frontend/src/components/settings/ProxyScopeSettings.tsx', 'default_proxy_scope_agent', 'proxy agent scope setting');

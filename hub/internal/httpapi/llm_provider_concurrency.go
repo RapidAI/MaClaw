@@ -34,6 +34,13 @@ func (c *providerConcurrencyController) snapshot(providerID string, maxConcurren
 	return c.inner.Snapshot(providerID, maxConcurrency, maxQueueWaiters, queueTimeoutMS)
 }
 
+func (c *providerConcurrencyController) atCapacity(providerID string, maxConcurrency int) bool {
+	if c == nil || maxConcurrency <= 0 {
+		return false
+	}
+	return c.snapshot(providerID, maxConcurrency, 0, 0).InFlight >= maxConcurrency
+}
+
 func (c *providerConcurrencyController) reset() {
 	c.inner.Reset()
 }

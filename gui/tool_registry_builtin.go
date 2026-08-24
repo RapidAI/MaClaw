@@ -38,9 +38,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			Required:          required,
 			Source:            "builtin",
 			ExecutionContract: defaultExplicitExecutionContractMetadata(name),
-			// discover_tool can activate conditional tools. It must receive the
-			// current owner so its activation cannot use shared last-loop state.
-			RuntimePolicyOwnerArg: name == "discover_tool",
+			// Owner-scoped tools must receive the current runtime owner rather than
+			// consulting a shared last-loop fallback. session_search uses it both
+			// for transcript ownership and task-identity isolation.
+			RuntimePolicyOwnerArg: name == "discover_tool" || name == "session_search",
 			// Keep platform-aware IM tools on the originating channel. This must
 			// live in registry metadata as well as the legacy fallback allowlist:
 			// registry lookups otherwise suppress runtime-platform injection.
@@ -109,8 +110,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("list_providers", "List configured providers for a coding tool.",
 		ToolCategoryBuiltin, []string{"provider", "list", "model"},
 		map[string]interface{}{
-			"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
-		}, []string{"tool"},
+			"coding_tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
+		}, []string{"coding_tool"},
 		func(args map[string]interface{}) string { return h.toolListProviders(args) })
 
 	reg("send_input", "Send text input to a remote coding session.",
@@ -149,6 +150,20 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 		}, []string{"session_id"},
 		func(args map[string]interface{}) string { return h.toolKillSession(args) })
+	// The coding-session administration entries share one outcome contract.
+	// They operate on host-owned session/project state and the host observes
+	// the outcome synchronously, so the sensitive family crosses the builtin
+	// local mutation receipt boundary. These entries stay annotated for
+	// unmanaged/legacy turns. The managed catalog unpublished this soup in
+	// favor of semantic_inspect_trusted_session.
+	for _, name := range []string{
+		"list_sessions", "project_manage", "list_providers", "send_input",
+		"get_session_output", "get_session_events", "interrupt_session", "kill_session",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilitySessionManageCoding, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectSensitive})
+	}
 
 	reg("screenshot", "Capture a screenshot and send it to the user.",
 		ToolCategoryBuiltin, []string{"session", "screenshot", "capture"},
@@ -157,6 +172,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"display":    map[string]string{"type": "integer", "description": "显示器编号（可选，0=主屏，1=第二屏/扩展屏，不传则截取所有屏幕拼图）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolScreenshot(args) })
+	annotateSemanticTool(registry, "screenshot", []tool.CapabilityProvision{{
+		Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
+	annotateSemanticArtifacts(registry, "screenshot", nil, []tool.ArtifactContract{{Kind: "image", MIMEType: "image/png", Required: true}})
 
 	// --- MCP tools ---
 	reg("list_mcp_tools", "列出已注册的 MCP Server 及其工具",
@@ -180,6 +199,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"arguments": map[string]string{"type": "object", "description": "Tool arguments as a JSON object."},
 		}, []string{"server_id", "tool_name"},
 		func(args map[string]interface{}) string { return h.toolCallMCPTool(args) })
+	markSemanticControlPlane(registry, "call_mcp_tool")
 
 	reg("passthrough_task", "管理直通任务注册表。用于帮用户创建、修改、删除、查看可通过 /run 从 AI 助手或 IM 通道直接执行的应急脚本任务；此工具只管理注册表，不执行脚本。保存成功后会返回 /run 运行示例和可发到 IM 的 /runctl save 注册命令。",
 		ToolCategoryBuiltin, []string{"passthrough", "run", "emergency", "recovery", "script"},
@@ -216,6 +236,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"limit":       map[string]string{"type": "integer", "description": "audit 返回条数，默认 10，最多 50。"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolPassthroughTask(args) })
+	// passthrough_task mutates the host-local passthrough registry (it never
+	// executes the scripts itself), so it shares the local shell family and its
+	// builtin local mutation receipt boundary.
+	annotateSemanticTool(registry, "passthrough_task", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityShellExecuteLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Merged skill management tool (progress-aware for run action) ---
 	regCtxP("manage_skill", skill.ManageSkillDescription(),
@@ -249,6 +275,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolManageSkill(ctx, args, onProgress)
 		})
+	markSemanticControlPlane(registry, "manage_skill")
 
 	// Legacy backward-compat aliases (handler only, no definition generation)
 	reg("list_skills", "", ToolCategoryBuiltin, nil, nil, nil,
@@ -282,6 +309,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			},
 		}, []string{"tasks"},
 		func(args map[string]interface{}) string { return h.toolParallelExecute(args) })
+	// Sub-agent delegation creates and drives host-owned sub-agent sessions
+	// whose outcome the host observes directly, so the sensitive family uses
+	// the builtin local mutation receipt boundary.
+	annotateSemanticTool(registry, "parallel_execute", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAgentDelegateSubtask, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	reg("recommend_tool", "根据任务描述推荐最合适的编程工具",
 		ToolCategoryBuiltin, []string{"recommend", "select", "tool"},
@@ -307,6 +340,13 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"input_type": map[string]string{"type": "string", "description": "期望的回答类型: choice/text/confirm（默认 text）"},
 		}, []string{"question"},
 		func(args map[string]interface{}) string { return h.toolAskUser(args) })
+	// ask_user is catalog-registered only. No user utterance reliably signals
+	// "the agent should ask me a question" — clarification is a model-decided
+	// interaction move, not an intent — so no UIC label or rule maps to this
+	// read-only capability and it can never be materialized by managed routing.
+	annotateSemanticTool(registry, "ask_user", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityInteractionAskUser, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	// --- Long-form interactive recording (meeting / discussion capture) ---
 	reg("record_audio", "【仅桌面】打开交互式长时录音界面（波形+暂停/停止）并等待用户结束录音。IM 通道不支持会议/长时录音（平台语音过短）。用户当前消息已明确要求开始录音/会议录音时立即调用，不要二次确认、不要搜已有音频文件。仅当意图含糊时再澄清。用户停止后，下一条消息会带上音频路径与时长等摘要，再继续转写/纪要或投递音频文件。若生成会议纪要，必须同时 send_file 投递原始音频（可点击路径，便于用户备份）。",
@@ -317,6 +357,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"hint":    map[string]string{"type": "string", "description": "可选：给用户的额外提示"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolRecordAudio(args) })
+	// Microphone capture is a host-local sensitive action whose completion the
+	// host observes directly (interactive recorder UI), so it uses the builtin
+	// local mutation receipt boundary rather than an external-effect receipt.
+	annotateSemanticTool(registry, "record_audio", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAudioCaptureMicrophone, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Task management tool ---
 	reg("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度、依赖关系和子任务分配。",
@@ -332,6 +378,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"delegate_to": map[string]string{"type": "string", "description": "委派目标"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolTask(args) })
+	// These entries stay annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_administer_trusted_task.
+	annotateSemanticTool(registry, "task", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityTaskTrackLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Goal management tool (persistent long-running objectives) ---
 	reg("goal", "管理持久化长时间运行目标（action: create/complete/fail/get）。创建目标后系统自动持续推进直到达成或预算耗尽。只在用户明确要求时创建目标，不要从普通任务中推断。",
@@ -347,6 +398,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"reason":              map[string]string{"type": "string", "description": "失败原因（fail 时使用）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolGoal(args) })
+	// These entries stay annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_administer_trusted_goal.
+	annotateSemanticTool(registry, "goal", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityGoalManageLongRunning, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Sub-agent delegation tool ---
 	reg("delegate_task", "将任务委派给专业子 Agent 处理。coding_workflow 会同步运行内部 CodingSubAgent 完成编码任务，不返回占位激活文本；help 用于使用帮助。",
@@ -357,6 +413,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"project_path": map[string]string{"type": "string", "description": "target project path for coding_workflow (optional)"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolDelegateTask(args) })
+	// delegate_task shares the sub-agent delegation outcome contract.
+	// spawn_coding_agent stays unannotated: it is a coding-workbench internal
+	// tool, not a delegatable outcome. group_discussion belongs to the same
+	// family but is registered in tools_group_discussion.go outside this
+	// slice's file scope; its one-line annotation is a reported follow-up.
+	annotateSemanticTool(registry, "delegate_task", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAgentDelegateSubtask, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Craft tool (needs progress callback) ---
 	regCtxP("craft_tool", "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
@@ -388,6 +452,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(ctx context.Context, args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolBash(ctx, args, onProgress)
 		})
+	// Legacy soup kept for non-UIC shortcuts. Managed shell turns unpublish
+	// this entry and use semantic_execute_trusted_shell.
+	annotateSemanticTool(registry, "bash", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityShellExecuteLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	reg("read_file", "读取本机文件内容（小文件自动全量返回；大文件自动返回结构摘要+预览，可用 start_line 精准读取特定段落）",
 		ToolCategoryBuiltin, []string{"file", "read"},
@@ -397,6 +466,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"start_line": map[string]string{"type": "integer", "description": "起始行号（从 1 开始，可选。指定后跳过自适应策略，从该行开始精确读取）"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolReadFile(args) })
+	// read_file / list_directory / read_tool_result stay annotated for
+	// unmanaged/legacy turns. The managed catalog unpublished this soup in
+	// favor of semantic_read_trusted_file.
+	annotateSemanticTool(registry, "read_file", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSReadLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	reg("read_tool_result", "分段回读被截断的工具完整输出（使用 [tool_result_handle] 的 id）。大日志/网页/bash 输出被投影为预览后，用此工具按 offset/limit 读取细节。",
 		ToolCategoryBuiltin, []string{"file", "read", "tool_result", "handle"},
@@ -406,6 +481,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"limit":  map[string]string{"type": "integer", "description": "返回最大字节数（默认 6000，最大 32768）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolReadToolResult(args) })
+	annotateSemanticTool(registry, "read_tool_result", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSReadLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	reg("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分）",
 		ToolCategoryBuiltin, []string{"file", "write"},
@@ -417,6 +495,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"doc_type": map[string]string{"type": "string", "description": workflowDocTypeSchemaDescription()},
 		}, []string{"path", "content"},
 		func(args map[string]interface{}) string { return h.toolWriteFile(args) })
+	// write_file / edit_file stay annotated for unmanaged/legacy turns. The
+	// managed catalog unpublished this soup in favor of semantic_write_trusted_file.
+	annotateSemanticTool(registry, "write_file", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSWriteLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	reg("edit_file", "修改已有文件的首选工具（搜索替换模式，token 开销极小）。old_string 必须精确匹配文件原文（含缩进），建议包含修改点前后 1-2 行确保唯一匹配。修改已有文件时优先用此工具，不要用 write_file 重写整个文件。",
 		ToolCategoryBuiltin, []string{"file", "edit", "replace"},
@@ -427,6 +510,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"replace_all": map[string]string{"type": "boolean", "description": "是否替换全部匹配，默认 false"},
 		}, []string{"path", "old_string", "new_string"},
 		func(args map[string]interface{}) string { return h.toolEditFile(args) })
+	annotateSemanticTool(registry, "edit_file", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSWriteLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	reg("edit_lines", "按行号精确编辑文件（替换/插入/删除指定行）。比 edit_file 更精确——用行号定位，不怕重复内容。先用 read_file 查看行号，再用此工具编辑。",
 		ToolCategoryBuiltin, []string{"file", "edit", "line", "patch"},
@@ -438,6 +524,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"content":    map[string]interface{}{"type": "string", "description": "新内容（replace/insert 时必填，delete 时忽略）"},
 		}, []string{"path", "operation", "start_line"},
 		func(args map[string]interface{}) string { return h.toolEditLines(args) })
+	annotateSemanticTool(registry, "edit_lines", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSWriteLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	reg("list_directory", "列出本机目录内容",
 		ToolCategoryBuiltin, []string{"file", "directory", "list"},
@@ -445,6 +534,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"path": map[string]string{"type": "string", "description": "目录路径（可选；省略或相对路径时基于当前 Project directory / 工作目录，不要默认用户主目录）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolListDirectory(args) })
+	annotateSemanticTool(registry, "list_directory", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSReadLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	reg("send_file", "读取本机文件并交付：桌面端默认展示在当前对话；已在微信/飞书通道中则发回本对话即等于发到该通道",
 		ToolCategoryBuiltin, []string{"file", "send", "share"},
@@ -461,6 +553,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"user_id":       map[string]string{"type": "string", "description": "精确私聊 ID 或 self"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolSendFile(args) })
+	// send_file also sends a local file into an IM conversation, which is an
+	// external effect without a trusted receipt boundary in this slice: it is
+	// catalog-registered under message.send.im and stays unmanaged. The
+	// managed current-channel delivery outcome remains owned by the
+	// receipt-aware channel delivery adapter.
+	annotateSemanticTool(registry, "send_file", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMessageSendIM, Qualifiers: map[string]string{"format": "file"}, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
 
 	reg("send_to_im", "桌面端把文件发到绑定 IM；已在微信/飞书通道中时用 send_file 发回本对话即可，勿报发送器未配置",
 		ToolCategoryBuiltin, []string{"file", "send", "share", "wechat", "im", "feishu"},
@@ -476,6 +576,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"doc_type":    map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolSendToIM(args) })
+	// send_to_im keeps its S2a current-channel delivery provision and
+	// additionally provides message.send.im: one tool may carry several
+	// capability provisions in a single annotation (the web_search
+	// dual-qualifier precedent). Both families are external effects with no
+	// trusted receipt boundary here, so the tool stays catalog-only.
+	annotateSemanticTool(registry, "send_to_im", []tool.CapabilityProvision{
+		{Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "file"}, Quality: 1},
+		{Capability: tool.CapabilityMessageSendIM, Qualifiers: map[string]string{"format": "file"}, Quality: 1},
+	}, []tool.EffectClass{tool.EffectExternalEffect})
 
 	reg("open", "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",
 		ToolCategoryBuiltin, []string{"open", "launch", "browse"},
@@ -483,6 +592,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"target": map[string]string{"type": "string", "description": "要打开的文件路径、目录路径或 URL"},
 		}, []string{"target"},
 		func(args map[string]interface{}) string { return h.toolOpen(args) })
+	// Launching via the OS handler is a host-local sensitive action the host
+	// observes synchronously, so it crosses the builtin local mutation
+	// receipt boundary.
+	annotateSemanticTool(registry, "open", []tool.CapabilityProvision{{
+		Capability: tool.CapabilitySystemLaunchLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- 后台任务管理工具 ---
 	regP("async_wait", "管理本机后台任务（与 bash(background=true) 配合使用）",
@@ -504,6 +619,38 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字）"},
 		}, []string{"text"},
 		func(args map[string]interface{}) string { return h.toolTTS(args) })
+	// Catalog registration only: speech synthesis hands audio to the channel
+	// playback path, an external effect with no trusted receipt boundary, so
+	// no intent rule maps to this capability in this slice.
+	annotateSemanticTool(registry, "tts", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAudioSynthesizeSpeech, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
+
+	// Local playback only. The managed surface selects this adapter on
+	// desktop/tui; IM voice send stays on the unmapped tts tool until a
+	// trusted voice receipt exists. Schema is text-only: no channel or destination.
+	reg("tts_local", "将文本合成为语音并在本机桌面或终端播放。不能发送语音气泡，也不能指定通道或投递目标。",
+		ToolCategoryBuiltin, []string{"tts", "speech", "朗读", "本机语音"},
+		map[string]interface{}{
+			"text": map[string]string{"type": "string", "description": "要在本机朗读的文本"},
+		}, []string{"text"},
+		func(args map[string]interface{}) string { return h.toolTTSLocal(args) })
+	annotateSemanticTool(registry, "tts_local", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAudioSynthesizeLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectLocalMutation})
+
+	// Render-only speech artifact. Managed voice delivery consumes this
+	// ArtifactRef; the handler never returns voice_base64 or channel targets.
+	reg("tts_render", "将文本合成为语音产物。不播放、不发送，也不能指定通道或投递目标。",
+		ToolCategoryBuiltin, []string{"tts", "speech", "语音产物"},
+		map[string]interface{}{
+			"text": map[string]string{"type": "string", "description": "要合成的文本"},
+		}, []string{"text"},
+		func(args map[string]interface{}) string { return h.toolTTSRender(args) })
+	annotateSemanticTool(registry, "tts_render", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAudioRenderSpeech, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectLocalMutation})
+	annotateSemanticArtifacts(registry, "tts_render", nil, []tool.ArtifactContract{{Kind: "audio", MIMEType: "audio/wav", Required: true}})
 
 	// --- ASR speech recognition (local SenseVoice) ---
 	reg("asr", audioconv.ASRToolDescription(),
@@ -517,6 +664,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"speakers":       map[string]string{"type": "integer", "description": "known_speakers 的别名"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolASR(args) })
+	annotateSemanticTool(registry, "asr", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityAudioTranscribeSpeech, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	// --- Long-term memory (unified) ---
 	memoryTool := corememory.ToolDefinitionSchema()
@@ -524,6 +674,14 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		ToolCategoryBuiltin, memoryTool.Tags,
 		memoryTool.Properties, memoryTool.Required,
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
+	// The memory store is host-local state whose mutation the host observes
+	// directly, so the family crosses the builtin local mutation receipt
+	// boundary.
+	// These entries stay annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_administer_trusted_memory.
+	annotateSemanticTool(registry, "memory", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMemoryManageAgent, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Experience learning governance ---
 	reg("experience_learning", "Inspect and record experience-learning governance without executing changes. Actions include snapshot pointing to governance_summary, governance_summary.memory carrying the memory maintenance, governance_summary.routing_self_evolution carrying the routing_signals and tool_recovery_governance, tool_recovery provider/model/wire_api filters, governance_summary.a2a_discussion carrying read-only A2A trace inspection handoffs, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance handoffs, memory_candidates, trace_details exposing read-only non_executing_boundary, build_*_draft helpers, build_blocked_skill_draft repair/evidence draft, record_followup, record_review, record_draft_review, and record_blocked_skill_draft_review. Responses expose recommended_focus_context, recommended_tool_call, governance_focus_context, and non_executing=true boundaries. This tool must never approve reviews, rewrite memory, change routing, retry execution, change credentials, write files, execute tools, notify users, or install skills by itself.",
@@ -554,6 +712,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"limit":                   map[string]string{"type": "integer", "description": "Maximum number of rows or summaries to return."},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolExperienceLearning(args) })
+	// experience_learning is intentionally NOT a semantic provider in this
+	// slice: its legacy `tool` filter parameter collides with the reserved
+	// invocation-field vocabulary, so the closed canonical schema rejects it
+	// (parameter_schema_invalid), exactly like query_audit_log's `tool_name`.
+	// governance.inspect.experience gains a catalog provider once that
+	// parameter is renamed through a governed contract change.
 
 	// --- Active context compression (inspired by GenericAgent's working checkpoint) ---
 	reg("compress_context", "主动压缩当前对话上下文。完成子任务后调用，将详细工具调用历史替换为摘要，释放 context 空间。",
@@ -570,12 +734,17 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "操作: create/list/launch"},
 			"name":         map[string]string{"type": "string", "description": "模板名称（create/launch 时必填）"},
-			"tool":         map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
+			"coding_tool":  map[string]string{"type": "string", "description": "工具名称（create 时必填）"},
 			"project_path": map[string]string{"type": "string", "description": "项目路径（create 时可选）"},
 			"model_config": map[string]string{"type": "string", "description": "模型配置（create 时可选）"},
 			"yolo_mode":    map[string]string{"type": "boolean", "description": "是否开启 Yolo 模式（create 时可选）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolManageTemplate(args) })
+	// These entries stay annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_administer_trusted_template.
+	annotateSemanticTool(registry, "manage_template", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityTemplateManageSession, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Merged tool: manage_config (get/set/batch/schema/export/import) ---
 	reg("manage_config", "配置管理（action: get/set/batch/schema/export/import）。get 获取配置，set 修改单项，batch 批量修改，schema 列出可配置项，export 导出，import 导入。",
@@ -594,7 +763,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("switch_llm_provider", "换脑子：查看或切换 MaClaw 自身使用的 LLM 服务商。当用户说'换智谱'、'换minimax'、'用智谱想一下'、'换个模型'时切换；当用户问'现在用的什么模型'、'当前脑子是啥'、'你现在用的哪个服务商'时查询。不传 provider 返回当前服务商和可选列表；传入名称则立即切换。",
 		ToolCategoryBuiltin, []string{"llm", "provider", "switch", "model", "brain"},
 		map[string]interface{}{
-			"provider": map[string]string{"type": "string", "description": "服务商名称，如 智谱、MiniMax、Custom1。支持模糊匹配，不区分大小写。不传则列出所有可用服务商。"},
+			"llm_vendor": map[string]string{"type": "string", "description": "服务商名称，如 智谱、MiniMax、Custom1。支持模糊匹配，不区分大小写。不传则列出所有可用服务商。"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolSwitchLLMProvider(args) })
 
@@ -604,6 +773,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"nickname": map[string]string{"type": "string", "description": "新昵称（如 安妮、小明）"},
 		}, []string{"nickname"},
 		func(args map[string]interface{}) string { return h.toolSetNickname(args) })
+	// Catalog registration only: updating the Hub profile is an external
+	// effect without a trusted receipt boundary in this slice, so no intent
+	// rule maps to message.send.im and the tool stays unmanaged.
+	annotateSemanticTool(registry, "set_nickname", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMessageSendIM, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
 
 	// --- Agent self-management ---
 	reg("set_max_iterations", fmt.Sprintf("调整最大推理轮数。设置后会持久化保存，后续对话也会生效。当你判断任务复杂需要更多轮次时调用此工具扩展上限，任务简单时可缩减。范围 %d-%d。", config.MinAgentIterations, config.MaxAgentIterationsCap),
@@ -637,6 +812,34 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"user_id":          map[string]string{"type": "string", "description": "delivery 简写：私聊 ID 或 self"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolManageSchedule(args) })
+	// Legacy merged entry: still annotated as schedule.manage.local /
+	// external_effect for unmanaged turns. The managed surface selects
+	// schedule_administer instead and never calls this handler.
+	annotateSemanticTool(registry, "manage_schedule", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityScheduleManageLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
+
+	reg("schedule_administer", "管理本机定时任务（仅 list/create/update/delete/pause/resume）。不能绑定渠道投递，也不能 list_targets 或立即外发。到点发给当前群/人由独立的 schedule.dispatch 选择登记，不写进本工具参数。",
+		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "list", "create", "delete", "update", "pause", "resume"},
+		map[string]interface{}{
+			"action":           map[string]string{"type": "string", "description": "操作: list/create/update/delete/pause/resume"},
+			"id":               map[string]string{"type": "string", "description": "任务 ID（update/delete/pause/resume 时必填）"},
+			"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填）"},
+			"task_action":      map[string]string{"type": "string", "description": "到时要在本机执行的操作（create/update）"},
+			"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
+			"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
+			"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日...6=周六）"},
+			"day_of_month":     map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31）"},
+			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
+			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
+			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolAdministerScheduledTask(args) })
+	// These entries stay annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_administer_trusted_schedule.
+	annotateSemanticTool(registry, "schedule_administer", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityScheduleAdministerLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectLocalMutation})
 
 	// --- Immediate IM message (proactive push, independent of schedule) ---
 	reg("im_message", "即时向 IM 通道发文本或文件（蓝信群/人、微信/Telegram/QQ 最近会话）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file，有 query/群名则 list）。用户说「给蓝信某群发…」「推送到微信」时用本工具，不要用 manage_schedule 绕路。send 需 text + group_name/group_id/user_id。send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
@@ -657,6 +860,13 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"delivery":         map[string]string{"type": "object", "description": "可选完整投递配置 {channel,targets:[...]}"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolIMMessage(args) })
+	// Catalog registration only: pushing a message/file to an IM channel is
+	// an external effect without a trusted receipt boundary in this slice, so
+	// no intent rule maps to message.send.im and the tool stays unmanaged.
+	annotateSemanticTool(registry, "im_message", []tool.CapabilityProvision{
+		{Capability: tool.CapabilityMessageSendIM, Qualifiers: map[string]string{"format": "text"}, Quality: 1},
+		{Capability: tool.CapabilityMessageSendIM, Qualifiers: map[string]string{"format": "file"}, Quality: 1},
+	}, []tool.EffectClass{tool.EffectExternalEffect})
 
 	// --- Audit log query tool (Phase 2 upgrade) ---
 	reg("query_audit_log", "查询安全审计日志，可按时间范围、工具名、风险等级筛选",
@@ -669,6 +879,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"limit":      map[string]string{"type": "integer", "description": "最多返回条数（默认 20）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolQueryAuditLog(args) })
+	// query_audit_log is intentionally NOT a semantic provider: its legacy
+	// `tool_name` filter parameter collides with the reserved invocation-field
+	// vocabulary. Managed security.audit.read is the host-owned
+	// semantic_read_trusted_audit adapter. session_search stays annotated for
+	// unmanaged/legacy turns and is unpublished from the managed catalog.
 
 	// --- Session search tool (cross-session FTS5 full-text search) ---
 	reg("session_search", "搜索历史对话记录。在所有已保存的会话中进行全文搜索，返回匹配的会话片段、时间戳、主题和平台信息。",
@@ -678,6 +893,9 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 10）"},
 		}, []string{"query"},
 		func(args map[string]interface{}) string { return h.toolSessionSearch(args) })
+	annotateSemanticTool(registry, "session_search", []tool.CapabilityProvision{{
+		Capability: tool.CapabilitySecurityAuditRead, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	// --- User model management tool (dialectic user modeling) ---
 	reg("manage_user_model", "管理用户画像。查看、修正或重置用户偏好维度。",
@@ -688,15 +906,28 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"value":     map[string]string{"type": "string", "description": "新值（correct 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolManageUserModel(args) })
+	// These entries stay annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_administer_trusted_config.
+	for _, name := range []string{"manage_config", "switch_llm_provider", "set_max_iterations", "manage_user_model"} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityConfigManageSelf, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectSensitive})
+	}
 
 	// --- Web search & fetch tools ---
-	reg("web_search", "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。搜索 API 失效或额度耗尽时自动降级为搜索引擎页面抓取（内置反爬升级链，无需任何 API key）；抓取端点全部失败时用真实浏览器兜底搜索 Bing/Google。",
+	// web_search stays annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_search_trusted_web.
+	reg("web_search", "搜索互联网内容，查询天气、新闻、汇率、股价等实时信息。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。搜索 API 失效或额度耗尽时自动降级为搜索引擎页面抓取（内置反爬升级链，无需任何 API key）；抓取端点全部失败时用真实浏览器兜底搜索 Bing/Google。",
 		ToolCategoryBuiltin, []string{"web", "search", "internet", "google", "query", "network"},
 		map[string]interface{}{
 			"query":       map[string]string{"type": "string", "description": "搜索关键词"},
 			"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8，最大 20）"},
 		}, []string{"query"},
 		func(args map[string]interface{}) string { return h.toolWebSearch(args) })
+	annotateSemanticTool(registry, "web_search", []tool.CapabilityProvision{
+		{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "reference"}, Quality: 1},
+		{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "current"}, Quality: 1},
+	}, []tool.EffectClass{tool.EffectReadOnly})
 
 	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。抓取与下载都内置反爬升级：遇 Cloudflare/403 拦截自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie，后者需先用 browser 工具打开过该网站）。下载过程日志见 ~/.maclaw/logs/download.log。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
 		ToolCategoryBuiltin, []string{"web", "fetch", "download", "url", "browse", "network"},
@@ -713,6 +944,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"via_browser":         map[string]string{"type": "boolean", "description": "让浏览器亲自下载该 URL（可选，需配合 save_path；用于 HTTP 级下载全部被反爬拦截时）"},
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolWebFetch(args) })
+	// web_fetch stays annotated for unmanaged/legacy turns. The managed
+	// catalog unpublished this soup in favor of semantic_fetch_trusted_web.
+	annotateSemanticTool(registry, "web_fetch", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityInformationFetchWeb, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	reg("download_file", "将 HTTP/HTTPS URL 下载到当前工作目录（顶栏 working_directory / 项目工作区）。通用文件与 PDF 下载的首选工具；返回绝对路径。不要为简单下载去 Hub 安装 wget/curl/Paper Fetch。内置反爬升级链：被 Cloudflare/403 拦截时自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie）；网络错误与 429/5xx 自动退避重试。终极手段：via_browser=true 让浏览器亲自下载（真实内核 cookie/指纹/JS 环境，可过强反爬与内联 PDF）。下载过程日志见 ~/.maclaw/logs/download.log。",
 		ToolCategoryBuiltin, []string{"download", "file", "http", "https", "pdf", "url", "wget", "curl", "fetch"},
@@ -727,9 +963,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"via_browser":         map[string]string{"type": "boolean", "description": "让浏览器亲自下载该 URL（可选；浏览器内核发起请求，带其 cookie/指纹，内联 PDF 也会强制存盘；用于 HTTP 级下载全部被反爬拦截时）"},
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolDownloadFile(args) })
+	// Downloading writes a local artifact: a host-local sensitive mutation
+	// whose outcome the host observes directly, so it crosses the builtin
+	// local mutation receipt boundary.
+	annotateSemanticTool(registry, "download_file", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityArtifactAcquireRemote, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Unified office document tool ---
-	reg("office", "Office/PDF 文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。read_excel 仅接受 .xls/.xlsx/.csv，read_pptx 仅接受 .pptx；需读取其他 Office 格式文本时用 read_document。read_excel 默认最多返回 1000 行（max_rows 最大 5000），read_pptx 默认最多返回 100 页（max_slides 最大 500）；truncated=true 时可用 next_offset 作为 slide_offset 分段读取。读文档优先 read_document，禁止对二进制文件用 read_file。仅当失败不属于 error_class=encrypted、error_class=malformed、error_class=source_changed、error_class=input_too_large、error_class=output_too_large 时，才可用 craft_tool 处理不支持格式；这些安全、版本或资源拒绝必须按工具提示处理，不得用其他解析器绕过。",
+	reg("office", "Office/PDF/文本数据文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx，以及 .txt/.md/.json/.xml/.yaml/.yml/.log）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。read_excel 仅接受 .xls/.xlsx/.csv，read_pptx 仅接受 .pptx；需读取其他 Office 格式文本时用 read_document。read_excel 默认最多返回 1000 行（max_rows 最大 5000），read_pptx 默认最多返回 100 页（max_slides 最大 500）；truncated=true 时可用 next_offset 作为 slide_offset 分段读取。读文档优先 read_document，禁止对二进制文件用 read_file。仅当失败不属于 error_class=encrypted、error_class=malformed、error_class=source_changed、error_class=input_too_large、error_class=output_too_large 时，才可用 craft_tool 处理不支持格式；这些安全、版本或资源拒绝必须按工具提示处理，不得用其他解析器绕过。",
 		ToolCategoryBuiltin, []string{"office", "pdf", "doc", "docx", "excel", "xlsx", "xls", "csv", "pptx", "ppt", "document", "spreadsheet", "presentation", "word"},
 		map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/generate_pdf"},
@@ -739,7 +981,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"phase_id":     map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
 			"file_path":    map[string]string{"type": "string", "description": "文件路径（read_* / write_excel 时必填；也可用 path）"},
 			"path":         map[string]string{"type": "string", "description": "file_path 别名"},
-			"max_chars":    map[string]string{"type": "integer", "description": "read_document 可选：本段最大字符数（默认 120000）"},
+			"max_chars":    map[string]string{"type": "integer", "description": "read_document 可选：本段最大字符数（默认 30000）"},
 			"offset":       map[string]string{"type": "integer", "description": "read_document 可选：从全文的字符偏移继续读（配合 truncated 结果中的 next_offset）"},
 			"line_numbers": map[string]string{"type": "boolean", "description": "read_document 可选：为每行加 L1:/L2: 行号前缀（跨 offset 连续）"},
 			"sheet":        map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
@@ -750,6 +992,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"data":         map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolOffice(args) })
+	// Legacy office soup. Managed spreadsheet writes unpublish this entry
+	// and use semantic_write_trusted_office.
+	annotateSemanticTool(registry, "office", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityDocumentWriteOffice, Qualifiers: map[string]string{"format": "spreadsheet"}, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- MIS structured data and AgentView transaction workspace ---
 	reg("mis_data", "Structured MIS data tool for semantic business intents, business actions, and local AgentView transaction workspace.",
@@ -770,6 +1017,38 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"dry_run":             map[string]string{"type": "boolean", "description": "Validate business action execution without committing."},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolMISData(args) })
+	annotateSemanticTool(registry, "mis_data", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityBusinessDataMIS, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
+
+	// The query half of the same integration. It reaches the same backend, so
+	// this is a narrower projection rather than a second implementation: the
+	// open `data` payload and dry_run are gone because neither means anything
+	// to a read, and semanticManagedInvocationRefusal holds this adapter to
+	// the read action list.
+	//
+	// It exists as its own capability so that a lookup does not have to be
+	// granted the ability to mutate, and so the restricted workflow states
+	// that deny business-data mutation still allow the lookup.
+	reg("mis_query", "Read-only structured MIS queries: discovery, records, views, dashboards, reports and approval inspection. Cannot change business data.",
+		ToolCategoryBuiltin, []string{"mis", "data", "business", "query", "structured", "read"},
+		map[string]interface{}{
+			"action":              map[string]string{"type": "string", "description": "Read action name, such as query_records, get_record, list_datasets, run_report or resolve_intent."},
+			"query":               map[string]string{"type": "string", "description": "Natural-language business intent query for resolve_intent."},
+			"domain":              map[string]string{"type": "string", "description": "Optional MIS domain filter."},
+			"business_action_id":  map[string]string{"type": "string", "description": "Business action id for get_business_action or transaction filtering."},
+			"dataset_id":          map[string]string{"type": "string", "description": "Dataset/business object id for data actions or transaction filtering."},
+			"object_role":         map[string]string{"type": "string", "description": "Semantic MaClaw App object role, such as expense_report or employee. Record actions resolve it to dataset_id when dataset_id is omitted."},
+			"app_id":              map[string]string{"type": "string", "description": "MaClaw App id used when resolving object_role bindings."},
+			"blueprint_id":        map[string]string{"type": "string", "description": "MaClaw App blueprint id used when resolving object_role bindings."},
+			"require_initialized": map[string]string{"type": "boolean", "description": "For resolve_object_role, require that the mapped dataset has already been installed/initialized."},
+			"record_id":           map[string]string{"type": "string", "description": "Record id for record-level reads."},
+			"limit":               map[string]string{"type": "integer", "description": "Optional result limit."},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolMISData(args) })
+	annotateSemanticTool(registry, "mis_query", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityBusinessDataRead, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
 
 	// --- PDF generation tool - backward-compatible alias ---
 	reg("generate_pdf", "生成 PDF 文档并发送给用户。将 Markdown 内容渲染为专业排版的 PDF 文件。参数 title 用作 PDF 封面标题，doc_type 可选用于文件名前缀分类。",
@@ -784,6 +1063,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			args["action"] = "generate_pdf"
 			return h.toolOffice(args)
 		})
+	annotateSemanticTool(registry, "generate_pdf", []tool.CapabilityProvision{{
+		Capability: "document.generate.file", Qualifiers: map[string]string{"format": "pdf"}, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectLocalMutation})
+	annotateSemanticArtifacts(registry, "generate_pdf", nil, []tool.ArtifactContract{{Kind: "document", MIMEType: "application/pdf", Required: true}})
 
 	// --- SSH remote server tools ---
 	reg("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。长命令自动转后台模式，支持 SFTP 文件传输。",
@@ -808,6 +1091,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"remote_path":     map[string]string{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolSSH(args) })
+	// Legacy ssh soup. Managed remote-host turns unpublish this entry and
+	// use semantic_execute_trusted_ssh when a session is bound.
+	annotateSemanticTool(registry, "ssh", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityShellExecuteRemoteHost, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
 
 	// --- Backward compatibility aliases for merged tools ---
 	// These allow old tool names to still work if the LLM uses them.
@@ -835,4 +1123,76 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	alias("list_scheduled_tasks", func(args map[string]interface{}) string { return h.toolListScheduledTasks() })
 	alias("delete_scheduled_task", func(args map[string]interface{}) string { return h.toolDeleteScheduledTask(args) })
 	alias("update_scheduled_task", func(args map[string]interface{}) string { return h.toolUpdateScheduledTask(args) })
+
+	// The backward-compat aliases mirror the merged entries they delegate to.
+	// Config/template aliases share the managed sensitive families; schedule
+	// aliases stay catalog-only external like manage_schedule.
+	for _, name := range []string{
+		"get_config", "update_config", "batch_update_config",
+		"list_config_schema", "export_config", "import_config",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityConfigManageSelf, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectSensitive})
+	}
+	for _, name := range []string{"create_template", "list_templates", "launch_template"} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityTemplateManageSession, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectSensitive})
+	}
+	for _, name := range []string{
+		"create_scheduled_task", "list_scheduled_tasks",
+		"delete_scheduled_task", "update_scheduled_task",
+	} {
+		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
+			Capability: tool.CapabilityScheduleManageLocal, Quality: 1,
+		}}, []tool.EffectClass{tool.EffectExternalEffect})
+	}
+}
+
+// annotateSemanticTool attaches a governed capability provision at the same
+// registration boundary as the handler/schema. It deliberately does not make
+// any decision about when the implementation is exposed.
+func annotateSemanticTool(registry *ToolRegistry, name string, provisions []tool.CapabilityProvision, effects []tool.EffectClass) {
+	if registry == nil {
+		return
+	}
+	registered, ok := registry.Get(name)
+	if !ok {
+		return
+	}
+	registered.CapabilityProvisions = provisions
+	registered.SemanticEffects = effects
+	_ = registry.Register(*registered)
+}
+
+// annotateSemanticArtifacts keeps tool implementation and ArtifactRef contracts
+// at the same registration boundary as capability/effect declarations.
+func annotateSemanticArtifacts(registry *ToolRegistry, name string, consumes, produces []tool.ArtifactContract) {
+	if registry == nil {
+		return
+	}
+	registered, ok := registry.Get(name)
+	if !ok {
+		return
+	}
+	registered.SemanticConsumes = consumes
+	registered.SemanticProduces = produces
+	_ = registry.Register(*registered)
+}
+
+// markSemanticControlPlane documents compatibility gateways that must never
+// become semantic task providers. They remain callable only through their
+// dedicated management/execution adapters while migration removes them from
+// ordinary agent surfaces.
+func markSemanticControlPlane(registry *ToolRegistry, name string) {
+	if registry == nil {
+		return
+	}
+	registered, ok := registry.Get(name)
+	if !ok {
+		return
+	}
+	registered.SemanticCatalogState = SemanticCatalogFixedControlPlane
+	_ = registry.Register(*registered)
 }

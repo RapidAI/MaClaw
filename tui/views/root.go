@@ -155,6 +155,14 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 		}
 		activeCmd := m.updateActiveTab(msg)
 		return m, tea.Batch(onboardingCmd, activeCmd, sbCmd)
+	case ConfigQQBotQRMsg, ConfigQQBotPollResultMsg, ConfigQQBotTickMsg:
+		var configCmd tea.Cmd
+		m.Config, configCmd = m.Config.Update(msg)
+		if m.tab == TabConfig {
+			return m, tea.Batch(configCmd, sbCmd)
+		}
+		activeCmd := m.updateActiveTab(msg)
+		return m, tea.Batch(configCmd, activeCmd, sbCmd)
 	case ToolSkillSearchResultMsg, ToolSkillInstallResultMsg, ToolOperationResultMsg:
 		var toolCmd tea.Cmd
 		m.Tools, toolCmd = m.Tools.Update(msg)

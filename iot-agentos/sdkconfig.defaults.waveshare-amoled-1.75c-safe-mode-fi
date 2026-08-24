@@ -1,0 +1,5 @@
+# Dedicated non-release Waveshare 1.75C SAFE_MODE proof artifact.
+# The post-local-ready injection verifies the common input/alarm/feedback
+# contract while preserving profile-private round display details.
+CONFIG_MACLAW_TEST_BUILD=y
+CONFIG_MACLAW_SAFE_MODE_TEST_LOCAL_READY_FAILURE=y

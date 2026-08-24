@@ -200,3 +200,79 @@ func TestApplyReasoningControlsResponsesDoesNotRequestSummaryWhenDisabled(t *tes
 		t.Fatalf("disabled Responses request must not ask for a summary: %#v", body)
 	}
 }
+
+func TestApplyReasoningControlsGLM53DoesNotDisableThinking(t *testing.T) {
+	for _, api := range []ReasoningAPIKind{ReasoningAPIChat, ReasoningAPIAnthropic} {
+		body := map[string]interface{}{"thinking": map[string]interface{}{"type": "disabled"}}
+		ApplyReasoningControls(
+			MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3", ThinkingMode: "disabled"},
+			body,
+			api,
+		)
+		thinking, _ := body["thinking"].(map[string]interface{})
+		if thinking["type"] != "enabled" {
+			t.Fatalf("api=%s glm-5.3 thinking = %#v, want type=enabled", api, body["thinking"])
+		}
+	}
+
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "disabled"}}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3[1m]", ThinkingMode: "disabled"},
+		body,
+		ReasoningAPIChat,
+	)
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("glm-5.3[1m] thinking = %#v, want type=enabled", body["thinking"])
+	}
+
+	body = map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "GLM-5.2", ThinkingMode: "disabled"},
+		body,
+		ReasoningAPIChat,
+	)
+	thinking, _ = body["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("glm-5.2 thinking = %#v, want type=disabled", body["thinking"])
+	}
+
+	body = map[string]interface{}{"thinking": map[string]interface{}{"type": "disabled"}}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3", ThinkingMode: ""},
+		body,
+		ReasoningAPIChat,
+	)
+	thinking, _ = body["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("auto glm-5.3 leftover disabled thinking = %#v, want type=enabled", body["thinking"])
+	}
+}
+
+func TestApplyReasoningControlsAutoEnablesAlwaysOnThinking(t *testing.T) {
+	body := map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://open.bigmodel.cn/api/anthropic", Model: "glm-5.3"},
+		body,
+		ReasoningAPIAnthropic,
+	)
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] == nil {
+		t.Fatalf("auto glm-5.3 empty Anthropic body = %#v, want thinking.enabled with budget", body)
+	}
+}
+
+func TestCoerceAlwaysOnThinkingMode(t *testing.T) {
+	got := CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3", ThinkingMode: "off"})
+	if got.ThinkingMode != "enabled" {
+		t.Fatalf("off = %q, want enabled", got.ThinkingMode)
+	}
+	got = CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3", ThinkingMode: ""})
+	if got.ThinkingMode != "" {
+		t.Fatalf("auto overwritten: %q", got.ThinkingMode)
+	}
+	got = CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "claude-sonnet", ThinkingMode: "disabled"})
+	if got.ThinkingMode != "disabled" {
+		t.Fatalf("unrelated model coerced: %q", got.ThinkingMode)
+	}
+}

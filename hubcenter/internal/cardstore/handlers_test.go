@@ -19,6 +19,7 @@ import (
 	"time"
 
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 )
 
 func TestAdminDeleteArchivedOrderHandlerDeletesArchivedPendingOrder(t *testing.T) {
@@ -647,6 +648,95 @@ func signAlipayTestValues(t *testing.T, values url.Values, key *rsa.PrivateKey) 
 	}
 	return base64.StdEncoding.EncodeToString(sig)
 }
+func TestPublicListOrdersHandlerIgnoresActiveCardsFilter(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}})
+	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/orders?active_cards=1", nil)
+	rr := httptest.NewRecorder()
+
+	ListOrdersHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if orderRepo.lastFilter.ActiveCardsOnly || orderRepo.lastFilter.IncludeArchived {
+		t.Fatalf("public list filter = %+v, want active_cards ignored", orderRepo.lastFilter)
+	}
+}
+
+func TestAdminListOrdersHandlerHonorsActiveCardsFilter(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}})
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/cardstore/orders?active_cards=1", nil)
+	rr := httptest.NewRecorder()
+
+	AdminListOrdersHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !orderRepo.lastFilter.ActiveCardsOnly || !orderRepo.lastFilter.IncludeArchived || orderRepo.lastFilter.ArchivedOnly {
+		t.Fatalf("admin list filter = %+v, want active cards including archived", orderRepo.lastFilter)
+	}
+}
+
+func TestAdminRebindOrderServiceGroupHandlerUpdatesGroup(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{
+			{ID: "g1", Name: "Group 1", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+			{ID: "g2", Name: "Group 2", AccessPolicy: llmservice.AccessPolicyGrantRequired},
+		}, "g2"
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/cardstore/orders/HC-ACTIVE/service-group", strings.NewReader(`{"service_group_id":"g2"}`))
+	req.SetPathValue("orderNo", "HC-ACTIVE")
+	rr := httptest.NewRecorder()
+
+	AdminRebindOrderServiceGroupHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got PurchaseOrder
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ServiceGroupID != "g2" {
+		t.Fatalf("service_group_id = %q", got.ServiceGroupID)
+	}
+}
+
+func TestExtractPathParamReadsOrderNoBeforeServiceGroupAction(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/cardstore/orders/HC-ACTIVE/service-group", nil)
+	if got := extractPathParam(req, "orderNo"); got != "HC-ACTIVE" {
+		t.Fatalf("extractPathParam = %q, want HC-ACTIVE", got)
+	}
+}
+
+func TestAdminRebindOrderServiceGroupHandlerRejectsExpiredCard(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-EXPIRED": expiredSoldOrder("HC-EXPIRED", "g1", now)}}
+	authRepo := &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-EXPIRED": expiredSoldAuth("HC-EXPIRED", "g1", now)}}
+	svc := NewService(nil, orderRepo, authRepo)
+	svc.SetServiceGroupCatalog(func(context.Context) ([]ServiceGroupRecord, string) {
+		return []ServiceGroupRecord{{ID: "g2", Name: "Group 2"}}, "g2"
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/cardstore/orders/HC-EXPIRED/service-group", strings.NewReader(`{"use_default":true}`))
+	req.SetPathValue("orderNo", "HC-EXPIRED")
+	rr := httptest.NewRecorder()
+
+	AdminRebindOrderServiceGroupHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+}
+
 func testRSAPrivateKeyPEM(t *testing.T) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 1024)

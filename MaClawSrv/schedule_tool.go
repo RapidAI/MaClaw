@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -92,9 +94,53 @@ func srvScheduleIntArg(args map[string]interface{}, key string, def int) int {
 		return int(n)
 	case float64:
 		return int(n)
-	default:
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+		if f, err := n.Float64(); err == nil {
+			return int(f)
+		}
+	case string:
+		raw := strings.TrimSpace(n)
+		if i, err := strconv.Atoi(raw); err == nil {
+			return i
+		}
+		if f, err := strconv.ParseFloat(raw, 64); err == nil {
+			return int(f)
+		}
+	}
+	return def
+}
+
+func srvScheduleBoolArg(args map[string]interface{}, key string, def bool) bool {
+	if args == nil {
 		return def
 	}
+	v, ok := args[key]
+	if !ok || v == nil {
+		return def
+	}
+	switch n := v.(type) {
+	case bool:
+		return n
+	case float64:
+		return n != 0
+	case int:
+		return n != 0
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i != 0
+		}
+	case string:
+		switch strings.ToLower(strings.TrimSpace(n)) {
+		case "true", "1", "yes":
+			return true
+		case "false", "0", "no":
+			return false
+		}
+	}
+	return def
 }
 
 func srvToolListScheduleDeliveryTargets(svc *agentservice.Service, args map[string]interface{}) string {
@@ -149,8 +195,8 @@ func parseSrvScheduleDelivery(args map[string]interface{}) (*scheduler.TaskDeliv
 		channel = scheduler.DeliveryChannelLansenger
 	}
 	d := &scheduler.TaskDelivery{Enabled: true, Channel: channel, On: scheduler.DeliveryOnSuccess}
-	if b, ok := args["fail_on_error"].(bool); ok {
-		d.FailOnError = b
+	if _, ok := args["fail_on_error"]; ok {
+		d.FailOnError = srvScheduleBoolArg(args, "fail_on_error", false)
 	}
 	if userID != "" && groupID == "" && groupName == "" {
 		d.Targets = []scheduler.DeliveryTarget{{Kind: scheduler.DeliveryKindUser, UserID: userID}}
@@ -168,7 +214,7 @@ func parseSrvScheduleDelivery(args map[string]interface{}) (*scheduler.TaskDeliv
 				}
 			}
 		}
-		if b, ok := args["mention_all"].(bool); ok && b {
+		if srvScheduleBoolArg(args, "mention_all", false) {
 			tg.MentionAll = true
 		}
 		d.Targets = []scheduler.DeliveryTarget{tg}
@@ -218,14 +264,20 @@ func srvToolCreateScheduledTask(svc *agentservice.Service, mgr *scheduler.Manage
 	if name == "" || taskAction == "" {
 		return "缺少 name 或 task_action 参数（task_action 为到点要执行的内容）"
 	}
+	intervalMin := srvScheduleIntArg(args, "interval_minutes", 0)
 	hour := srvScheduleIntArg(args, "hour", -1)
+	if intervalMin > 0 && hour < 0 {
+		hour = 0
+	}
 	if hour < 0 || hour > 23 {
 		return "hour 必须在 0-23 之间"
 	}
 	minute := srvScheduleIntArg(args, "minute", 0)
+	if minute < 0 || minute > 59 {
+		return "minute 必须在 0-59 之间"
+	}
 	dow := srvScheduleIntArg(args, "day_of_week", -1)
 	dom := srvScheduleIntArg(args, "day_of_month", -1)
-	intervalMin := srvScheduleIntArg(args, "interval_minutes", 0)
 
 	t := scheduler.ScheduledTask{
 		Name:            name,

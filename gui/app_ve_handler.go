@@ -17,10 +17,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
-	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // VEMessageHandler processes incoming A2A messages when this maclaw instance
@@ -630,8 +630,9 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	// the final round (doLLMRequestWithToolsStream emits deltas in real-time).
 	// Only send fullResponse as a local chunk if no streaming occurred (e.g. the
 	// streaming path fell back to non-streaming, or the loop produced text without
-	// ever calling onToken).
-	fullResponse = visibleVEStreamDelta(fullResponse)
+	// ever calling onToken). Assembled text must be tofu-sanitized, not treated
+	// as a single stream token — a leading U+0001 would otherwise drop the reply.
+	fullResponse = textutil.SanitizeVisibleChatText(fullResponse)
 	if strings.TrimSpace(fullResponse) != "" {
 		if atomic.LoadInt32(&streamingStarted) == 0 {
 			// No streaming occurred — send final text locally for immediate display
@@ -655,19 +656,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 // deltas in the shared agent loop; VE chat has no separate reasoning panel, so
 // showing either the marker (as a square glyph) or its private content is wrong.
 func visibleVEStreamDelta(delta string) string {
-	if strings.HasPrefix(delta, "\x01") {
-		return ""
-	}
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\n', '\r', '\t':
-			return r
-		}
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return -1
-		}
-		return r
-	}, delta)
+	return textutil.VisibleChatStreamDelta(delta)
 }
 
 // runAgentForVE runs the AI agent for a VE session.
@@ -762,6 +751,15 @@ func (c *veAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.llmCfg
 }
 
+func (c *veAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return c.GetLLMConfig(), agent.RouteDecision{}, false
+	}
+	cfg, d := (&IMMessageHandler{app: c.app}).applyTurnModelRoute(c.llmCfg, userText, nil, nil)
+	c.llmCfg = cfg
+	return cfg, agentRouteFromModelRoute(d, cfg), true
+}
+
 func (c *veAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
 	baseCtx := context.Background()
 	if c != nil && c.ctx != nil {
@@ -836,7 +834,7 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	hasKnowledge := c.veKnowledgeAvailable()
 	if hasKnowledge {
 		sb.WriteString("- You may search the local knowledge base with knowledge_search, knowledge_image_search, and knowledge_context_pack.\n")
-		sb.WriteString("- The knowledge base is the preferred source for saved pages, documents, notes, and structured knowledge.\n")
+		sb.WriteString("- Use those tools for saved pages, documents, and notes. Do not search the knowledge base first for live data or a specified URL.\n")
 	}
 
 	allowedDirs := c.getVEAllowedDirectories()
@@ -854,19 +852,13 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	sb.WriteString("- Do not reveal passwords, tokens, API keys, private keys, or other sensitive credentials.\n")
 	sb.WriteString("- If sensitive information is unavailable or not approved, say that you cannot provide it.\n")
 
-	prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
 	if hasKnowledge {
 		sb.WriteString("\n## Knowledge Base Rules\n")
-		sb.WriteString("- Prefer the auto-recalled knowledge base context below when relevant, and cite sources when possible.\n")
-		sb.WriteString("- If auto recall is insufficient, call knowledge_search or knowledge_context_pack.\n")
+		sb.WriteString("- The current task does not pre-load knowledge-base bodies. The catalog is a pointer, not a fact.\n")
+		sb.WriteString("- When knowledge_search or knowledge_context_pack is in the tool list, call it to pull warehouse text and cite the source. Do not pretend you already read the knowledge base.\n")
 		sb.WriteString("- When the user asks to find, view, show, select, or compare saved images, call knowledge_image_search. If it returns a [KB_IMAGE:...] marker, copy that exact marker unchanged onto its own line so the chat can render the image.\n")
 		sb.WriteString("- Distinguish knowledge-base information from general model knowledge.\n")
-		sb.WriteString("- If the knowledge base has no relevant information, say that and then supplement with general knowledge.\n")
-		c.appendVEKnowledgeAutoRecall(&sb, userText, prior)
-	}
-	// Enterprise digital assets (Hub one-way sync) even when personal KB is empty.
-	if c.app != nil {
-		c.app.AppendEnterpriseKnowledgeAutoRecall(&sb, userText, prior)
+		sb.WriteString("- If the knowledge base has no relevant information, say so. Do not invent facts from training data.\n")
 	}
 
 	if len(allowedDirs) > 0 {
@@ -887,86 +879,9 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	return sb.String()
 }
 
-// appendVEKnowledgeAutoRecall searches the knowledge base using the user message
-// and injects top results into the system prompt for VE sessions.
-// Thresholds / inject counts / headers match IM + TUI via corelib/agent constants.
-func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string) {
-	if msg == "" || c.app == nil {
-		return
-	}
-	minScore := agent.KnowledgeAutoRecallScoreThreshold
-	if cfg, err := c.app.LoadConfig(); err == nil {
-		if !cfg.IsKnowledgeAutoRecallEnabled() {
-			return
-		}
-		minScore = cfg.EffectiveKnowledgeAutoRecallMinScore()
-	}
-
-	query := agent.ExpandKnowledgeAutoRecallQuery(msg, priorUserMessages)
-
-	store, cleanupStore := getAutoRecallStoreForAppUse(c.app, true)
-	defer cleanupStore()
-	if store == nil {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	results, err := store.Search(ctx, knowledge.SearchOptions{
-		Query: query,
-		Limit: agent.KnowledgeAutoRecallSearchLimit,
-	})
-	if err != nil {
-		log.Printf("[ve_knowledge_auto_recall] search error: %v", err)
-		return
-	}
-	if len(results) == 0 {
-		// Caller only invokes when the KB has sources — hint deeper tool search.
-		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
-		return
-	}
-
-	topScore := results[0].Score
-	maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
-	if maxInject == 0 {
-		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
-		return
-	}
-
-	b.WriteString(agent.KnowledgeAutoRecallHeader)
-
-	injected := 0
-	for _, r := range results {
-		if injected >= maxInject {
-			break
-		}
-		if r.Score < minScore {
-			break
-		}
-		// Use the shared label boundary: image imports can retain an absolute
-		// local URI, while this text is injected straight into the model prompt.
-		source := knowledge.FormatSourceLabel(r)
-		text := knowledgeAutoRecallSnippet(r)
-		if text == "" {
-			continue
-		}
-		if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
-			text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
-		}
-		b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
-		injected++
-	}
-}
-
-// appendVEMemoryRecall performs proactive recall from the machine owner's memory
-// store and injects relevant entries into the VE system prompt. This bridges the
-// gap between the knowledge base (structured documents) and the memory system
-// (accumulated facts, project knowledge, user preferences, task artifacts).
-//
-// Without this, the VE can only access knowledge base content but not memories
-// like personal facts or SSH server credentials that the owner's maclaw has learned.
-func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, msg string) {
+// appendVEMemoryRecall writes the owner identity catalog (user facts) only.
+// Warehouse memory bodies are pulled with the memory tool, not injected.
+func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, _ string) {
 	if c.app == nil {
 		return
 	}
@@ -986,11 +901,6 @@ func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, msg string) 
 	// UserFactSummary). VE must also inject them to answer personal questions.
 	b.WriteString(memStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## Owner Information")))
 
-	// --- Dynamic memory context: index plus optional proactive recall. ---
-	// Compact auto-extracted document bodies so VE recall embeds intent+paths only.
-	promptContext, _ := memStore.ProactiveContextForPrompt(agent.CompactQueryForEmbedding(msg), corememory.VEProactivePromptOptions())
-	b.WriteString(promptContext)
-
 }
 
 func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -1001,7 +911,12 @@ func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} 
 	// When VEAllowedDirectories is configured, filterToolsForVEWithConfig conditionally
 	// unblocks send_file, list_directory, and read_file (Requirements 4.1, 4.2, 6.1).
 	if c.app != nil {
-		handler := c.app.ensureLocalIMHandler()
+		// Reuse an already-wired handler when present. This avoids bootstrapping
+		// Hub infrastructure inside a tool call and keeps the callback testable.
+		handler := c.app.imHandler
+		if handler == nil {
+			handler = c.app.ensureLocalIMHandler()
+		}
 		if handler != nil && handler.registry != nil {
 			allTools := NewDynamicToolBuilder(handler.registry).BuildAll()
 			allowedDirs := c.getVEAllowedDirectories()
@@ -1160,8 +1075,20 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	// This gives VE access to knowledge_search, knowledge_context_pack, memory(recall),
 	// web_search, web_fetch, discover_tool, and any future read-only tools automatically.
 	if c.app != nil {
-		handler := c.app.ensureLocalIMHandler()
+		// Reuse an already-wired handler when present. This avoids bootstrapping
+		// Hub infrastructure inside a tool call and keeps the callback testable.
+		handler := c.app.imHandler
+		if handler == nil {
+			handler = c.app.ensureLocalIMHandler()
+		}
 		if handler != nil && handler.registry != nil {
+			// The registry is shared with interactive IM loops, but this VE loop
+			// owns a routed model snapshot. Carry its trusted effective context to
+			// the unified office reader instead of letting that reader fall back to
+			// the desktop's current primary model.
+			if strings.EqualFold(strings.TrimSpace(name), "office") {
+				args[registeredToolContextTokensField] = c.GetLLMConfig().EffectiveContextTokens()
+			}
 			tool, ok := handler.registry.Get(name)
 			if ok && tool.HandlerCtx != nil {
 				ctx := c.ctx

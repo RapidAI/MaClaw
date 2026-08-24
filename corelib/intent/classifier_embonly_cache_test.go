@@ -3,6 +3,7 @@ package intent
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,5 +97,66 @@ func TestClassifyEmbeddingOnlyCacheBounded(t *testing.T) {
 	}
 	if got := uic.embOnlyCount.Load(); got > embOnlyCacheMaxEntries {
 		t.Fatalf("cache count %d exceeds bound %d", got, embOnlyCacheMaxEntries)
+	}
+}
+
+type warmupFailureEmbedder struct{ embOnlyTestEmbedder }
+
+func (e *warmupFailureEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	return nil, fmt.Errorf("anchor batch unavailable")
+}
+
+func TestAnchorWarmupFailureDoesNotExposePartialLayer2(t *testing.T) {
+	emb := &warmupFailureEmbedder{embOnlyTestEmbedder: embOnlyTestEmbedder{hit: "天气"}}
+	uic := New(Config{Embedder: emb})
+	deadline := time.Now().Add(time.Second)
+	for uic.Ready() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if uic.Ready() {
+		t.Fatal("failed anchor warmup must not mark Layer 2 ready")
+	}
+	if got := uic.ClassifyEmbeddingOnly(MessageContext{Text: "北京天气"}); !got.Degraded || got.Primary != LabelUnknown {
+		t.Fatalf("embedding-only result=%+v, want unavailable Layer 2", got)
+	}
+}
+
+type blockedWarmupEmbedder struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (e *blockedWarmupEmbedder) Embed(string) ([]float32, error) { return []float32{1, 0}, nil }
+func (e *blockedWarmupEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	e.startOnce.Do(func() { close(e.started) })
+	<-e.release
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		vectors[i] = []float32{1, 0}
+	}
+	return vectors, nil
+}
+func (e *blockedWarmupEmbedder) Dim() int { return 2 }
+func (e *blockedWarmupEmbedder) Close()   {}
+
+func TestSetEmbedderDiscardsStaleAnchorWarmup(t *testing.T) {
+	old := &blockedWarmupEmbedder{started: make(chan struct{}), release: make(chan struct{})}
+	uic := New(Config{Embedder: old})
+	select {
+	case <-old.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial warmup did not start")
+	}
+
+	current := &embOnlyTestEmbedder{hit: "天气"}
+	uic.SetEmbedder(current)
+	waitUICReadyForTest(t, uic)
+	close(old.release)
+	// Let the stale warmup attempt its publication, then verify the active
+	// classifier still uses the replacement embedder and its anchors.
+	time.Sleep(20 * time.Millisecond)
+	if got := uic.ClassifyEmbeddingOnly(MessageContext{Text: "北京天气"}); got.Degraded {
+		t.Fatalf("replacement embedder was displaced by stale warmup: %+v", got)
 	}
 }

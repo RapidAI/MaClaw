@@ -48,6 +48,14 @@ type IMSettingsPanelProps = {
     setWeixinQRWaiting: Dispatch<SetStateAction<boolean>>;
     weixinQRError: string;
     setWeixinQRError: Dispatch<SetStateAction<string>>;
+    qqBotQRCode: string;
+    setQQBotQRCode: Dispatch<SetStateAction<string>>;
+    qqBotQRLoading: boolean;
+    setQQBotQRLoading: Dispatch<SetStateAction<boolean>>;
+    qqBotQRWaiting: boolean;
+    setQQBotQRWaiting: Dispatch<SetStateAction<boolean>>;
+    qqBotQRError: string;
+    setQQBotQRError: Dispatch<SetStateAction<string>>;
 };
 
 /** Parent mounts this panel only when the IM settings tab is active. */
@@ -90,6 +98,14 @@ export const IMSettingsPanel = ({
     setWeixinQRWaiting,
     weixinQRError,
     setWeixinQRError,
+    qqBotQRCode,
+    setQQBotQRCode,
+    qqBotQRLoading,
+    setQQBotQRLoading,
+    qqBotQRWaiting,
+    setQQBotQRWaiting,
+    qqBotQRError,
+    setQQBotQRError,
 }: IMSettingsPanelProps) => (
     <div className="settings-content settings-panel im-settings-panel">
         <IMProgressHintSettings
@@ -110,6 +126,14 @@ export const IMSettingsPanel = ({
                 qqBotLocalMode={qqBotLocalMode}
                 setQQBotLocalModeState={setQQBotLocalModeState}
                 setIMAuditPlatform={setIMAuditPlatform}
+                qqBotQRCode={qqBotQRCode}
+                setQQBotQRCode={setQQBotQRCode}
+                qqBotQRLoading={qqBotQRLoading}
+                setQQBotQRLoading={setQQBotQRLoading}
+                qqBotQRWaiting={qqBotQRWaiting}
+                setQQBotQRWaiting={setQQBotQRWaiting}
+                qqBotQRError={qqBotQRError}
+                setQQBotQRError={setQQBotQRError}
             />
         )}
 

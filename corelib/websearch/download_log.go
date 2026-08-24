@@ -85,6 +85,21 @@ func LogDownloadf(format string, args ...interface{}) {
 	dlogf(format, args...)
 }
 
+// CloseDownloadLogger releases the shared download log file handle. It is
+// intended for tests and process shutdown: the next dlogf call re-opens the
+// file, mirroring the rotation path. On Windows an open handle prevents
+// removing the log's directory (e.g. testing.TempDir cleanup).
+func CloseDownloadLogger() {
+	dlMu.Lock()
+	defer dlMu.Unlock()
+	if dlFile != nil {
+		_ = dlFile.Close()
+	}
+	dlFile = nil
+	dlLogger = nil
+	dlOnce = sync.Once{}
+}
+
 // resetDownloadLoggerForTest redirects the download log to a fresh file under
 // dir and returns a restore function. Used by tests to keep go-test output out
 // of the real ~/.maclaw/logs/download.log.

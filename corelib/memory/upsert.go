@@ -97,6 +97,8 @@ type UpsertByTagsOptions struct {
 	Boundary           *MemoryBoundary
 	DefaultDerivedKind string
 	DefaultBoundary    *MemoryBoundary
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 	MergeExistingTags  func(existing, desired []string) []string
 }
 
@@ -187,6 +189,8 @@ func (s *Store) UpsertEntryByTags(opts UpsertByTagsOptions) (UpsertResult, error
 		RelatedEdges: append([]RelatedEdge(nil), opts.RelatedEdges...),
 		DerivedKind:  derivedKind,
 		Boundary:     cloneMemoryBoundary(boundary),
+		CreatedAt:    opts.CreatedAt,
+		UpdatedAt:    opts.UpdatedAt,
 	}
 	if duplicate := s.findUpsertDuplicateByContent(entry); duplicate != nil {
 		entry = upsertDesiredForDuplicate(*duplicate, entry, opts.MergeExistingTags)
@@ -347,6 +351,9 @@ func (s *Store) updateEntryFromUpsert(id string, desired Entry) error {
 	updated.CompactForm = ""
 	updated.ContentHash = computeContentHash(desired.Content)
 	updated.Stale = false
+	if updated.Status == StatusDormant && IsDurableTaskManagementEntry(&updated) {
+		updated.Status = StatusActive
+	}
 	if err := s.UpdateEntriesByID([]Entry{updated}); err != nil {
 		return fmt.Errorf("memory_store: persist updated entry: %w", err)
 	}

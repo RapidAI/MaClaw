@@ -19,7 +19,7 @@
 - 解绑立即撤销该 client 的全部 token、队列和临时媒体，不影响同一 GUI 下其他设备。
 - 保持现有配对、握手、incoming、outgoing、ack、音频/音量/欢迎语协议兼容。
 
-本期不支持设备改名、跨 GUI 转移、共享一个 client 给多个用户、Hub 多节点实时状态同步。设备转移通过“旧 GUI 解绑，设备重新配对”完成。
+本期不支持设备改名、共享一个 client 给多个用户、Hub 多节点实时状态同步。跨 GUI 设备转移由新 MaClaw 签发的一次性配对码显式授权，不要求旧 GUI 在线或先解绑。
 
 ## 3. 身份、凭据与持久化
 
@@ -43,7 +43,7 @@
 
 安全边界：列表响应永远不返回 token；删除按当前已认证 GUI 的 `MachineID + ClientID` 双重约束执行，不能删除其他 machine 的设备。
 
-`clientId` 仍是当前协议中的物理身份声明，尚无硬件证明。为避免持有另一 GUI 有效配对码的一方用同名 `clientId` 静默抢占设备，Hub 拒绝将已绑定的 `clientId` 直接配到另一个 `MachineID`（HTTP 409 `client_id_already_bound`）。设备转移必须先由旧 GUI 显式解绑，再使用新配对码绑定。相同 GUI 内对同一 `clientId` 重新配对仍会轮换 token。
+`clientId` 仍是当前协议中的物理身份声明，尚无硬件证明。一个有效的一次性配对码是将该 `clientId` 转移到签发该码的 MaClaw 的显式授权：Hub 撤销同一 `clientId` 的所有旧 bearer、旧队列和旧临时媒体，再写入新 owner 的凭据。相同 GUI 内重配同样轮换 token。该规则对 Bread Compact、EchoEar-2ST、Fangtang-4G 和 Waveshare 一致，设备端不按板型实现“旧 owner 先解绑”的分支。
 
 配对请求先规范化并校验 `clientId`（最多 128 个协议字符），再尝试兑换配对码。一次性配对码只在新 token 成功持久化之后消费；若凭据存储暂时失败，ESP32 可使用同一码安全重试。并发兑换由 Hub 在提交 token 前再次确认配对码仍存在，确保至多一个请求成功。相同设备重配成功时，同时清除旧消息队列和旧 token 创建的临时媒体。
 

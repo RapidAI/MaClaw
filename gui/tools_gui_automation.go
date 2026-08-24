@@ -616,9 +616,14 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 		return "", fmt.Errorf("screenshot is blank — display may be off or locked")
 	}
 
-	// Non-macOS: permission check + shell command.
 	if !EnsureScreenRecordingPermission() {
 		return "", fmt.Errorf("screen recording permission not granted")
+	}
+
+	if runtime.GOOS == "windows" {
+		if b64, err := captureDesktopScreenshotNative(screenIndex); err == nil && b64 != "" && !remote.IsBlankImage(b64) {
+			return b64, nil
+		}
 	}
 
 	var cmdStr string
@@ -700,6 +705,16 @@ func guiIntArg(args map[string]interface{}, key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func guiIntArgPresent(args map[string]interface{}, key string, fallback int) (int, bool) {
+	if args == nil {
+		return fallback, false
+	}
+	if _, ok := args[key]; !ok {
+		return fallback, false
+	}
+	return guiIntArg(args, key, fallback), true
 }
 
 // formatElementTree recursively formats an accessibility element tree

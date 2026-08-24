@@ -1053,6 +1053,7 @@ export namespace corelib {
 	    key?: string;
 	    protocol?: string;
 	    provider?: string;
+	    context_length?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ModelRouteConfig(source);
@@ -1065,6 +1066,7 @@ export namespace corelib {
 	        this.key = source["key"];
 	        this.protocol = source["protocol"];
 	        this.provider = source["provider"];
+	        this.context_length = source["context_length"];
 	    }
 	}
 	export class AuxiliaryLLMConfig {
@@ -1072,6 +1074,7 @@ export namespace corelib {
 	    key: string;
 	    model: string;
 	    protocol?: string;
+	    context_length?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AuxiliaryLLMConfig(source);
@@ -1083,6 +1086,7 @@ export namespace corelib {
 	        this.key = source["key"];
 	        this.model = source["model"];
 	        this.protocol = source["protocol"];
+	        this.context_length = source["context_length"];
 	    }
 	}
 	export class KnowledgeVisionLLMConfig {
@@ -2057,6 +2061,7 @@ export namespace corelib {
 	    timeout_sec?: number;
 	    max_output_tokens?: number;
 	    models?: string[];
+	    import_source?: string;
 	    connection_test_passed?: boolean;
 	    is_custom?: boolean;
 	    is_hub_service?: boolean;
@@ -2086,6 +2091,7 @@ export namespace corelib {
 	        this.timeout_sec = source["timeout_sec"];
 	        this.max_output_tokens = source["max_output_tokens"];
 	        this.models = source["models"];
+	        this.import_source = source["import_source"];
 	        this.connection_test_passed = source["connection_test_passed"];
 	        this.is_custom = source["is_custom"];
 	        this.is_hub_service = source["is_hub_service"];
@@ -2292,6 +2298,7 @@ export namespace corelib {
 	    external_skill_dirs?: string[];
 	    skill_evolution_repair_cooldown_hours?: number;
 	    skill_evolution_enabled?: boolean;
+	    embed_hw_accel?: boolean;
 	    skill_auto_upload_enabled?: boolean;
 	    skill_auto_upload_min_successes?: number;
 	    memory_auto_compress: boolean;
@@ -2561,6 +2568,7 @@ export namespace corelib {
 	        this.external_skill_dirs = source["external_skill_dirs"];
 	        this.skill_evolution_repair_cooldown_hours = source["skill_evolution_repair_cooldown_hours"];
 	        this.skill_evolution_enabled = source["skill_evolution_enabled"];
+	        this.embed_hw_accel = source["embed_hw_accel"];
 	        this.skill_auto_upload_enabled = source["skill_auto_upload_enabled"];
 	        this.skill_auto_upload_min_successes = source["skill_auto_upload_min_successes"];
 	        this.memory_auto_compress = source["memory_auto_compress"];
@@ -7662,6 +7670,9 @@ export namespace main {
 		registration_method: string;
 		invitee_credits: number;
 		duration_days: number;
+		registration_status: string;
+		registered_identity: string;
+		registered_identity_type: string;
 
 		static createFrom(source: any = {}) {
 			return new ReferralHandoffClaimResult(source);
@@ -7675,6 +7686,9 @@ export namespace main {
 			this.registration_method = source["registration_method"];
 			this.invitee_credits = source["invitee_credits"];
 			this.duration_days = source["duration_days"];
+			this.registration_status = source["registration_status"];
+			this.registered_identity = source["registered_identity"];
+			this.registered_identity_type = source["registered_identity_type"];
 		}
 	}
 
@@ -8779,6 +8793,7 @@ export namespace main {
 	    session_high_risk_access: boolean;
 	    session_plan?: string;
 	    execution_plan?: string;
+	    requirement_restatement?: string;
 	    plan_mode?: string;
 	    pending_approval?: boolean;
 	    step_statuses?: codingWorkbenchStepStatus[];
@@ -8835,6 +8850,7 @@ export namespace main {
 	        this.session_high_risk_access = source["session_high_risk_access"];
 	        this.session_plan = source["session_plan"];
 	        this.execution_plan = source["execution_plan"];
+	        this.requirement_restatement = source["requirement_restatement"];
 	        this.plan_mode = source["plan_mode"];
 	        this.pending_approval = source["pending_approval"];
 	        this.step_statuses = this.convertValues(source["step_statuses"], codingWorkbenchStepStatus);
@@ -11720,6 +11736,7 @@ export namespace main {
 	    window_start?: string;
 	    window_end?: string;
 	    credits_used?: number;
+	    rolling?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new HubLLMPeriodUsageWindow(source);
@@ -11730,6 +11747,7 @@ export namespace main {
 	        this.window_start = source["window_start"];
 	        this.window_end = source["window_end"];
 	        this.credits_used = source["credits_used"];
+	        this.rolling = source["rolling"];
 	    }
 	}
 	export class HubLLMPeriodUsage {
@@ -11794,6 +11812,8 @@ export namespace main {
 	    card_order_id?: string;
 	    starts_at: string;
 	    expires_at: string;
+	    permanent?: boolean;
+	    rolling_five_hour?: boolean;
 	    active: boolean;
 	    status?: string;
 	    status_reason?: string;
@@ -11819,6 +11839,8 @@ export namespace main {
 	        this.card_order_id = source["card_order_id"];
 	        this.starts_at = source["starts_at"];
 	        this.expires_at = source["expires_at"];
+	        this.permanent = source["permanent"];
+	        this.rolling_five_hour = source["rolling_five_hour"];
 	        this.active = source["active"];
 	        this.status = source["status"];
 	        this.status_reason = source["status_reason"];
@@ -12915,6 +12937,84 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class DigitalAssetContributeRequest {
+	    hub_url: string;
+	    hub_token: string;
+	    library_id: string;
+	    title: string;
+	    summary: string;
+	    source_ids: string[];
+	    redact_sensitive: boolean;
+	    experience_ids: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new DigitalAssetContributeRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hub_url = source["hub_url"];
+	        this.hub_token = source["hub_token"];
+	        this.library_id = source["library_id"];
+	        this.title = source["title"];
+	        this.summary = source["summary"];
+	        this.source_ids = source["source_ids"];
+	        this.redact_sensitive = source["redact_sensitive"];
+	        this.experience_ids = source["experience_ids"];
+	    }
+	}
+	export class DigitalAssetContributableLibrary {
+	    id: string;
+	    name: string;
+	    description: string;
+	    library_kind: string;
+
+	    static createFrom(source: any = {}) {
+	        return new DigitalAssetContributableLibrary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.library_kind = source["library_kind"];
+	    }
+	}
+	export class DigitalAssetSubmissionView {
+	    id: string;
+	    library_id: string;
+	    kind: string;
+	    status: string;
+	    title: string;
+	    summary: string;
+	    item_count: number;
+	    review_note: string;
+	    reviewed_at: string;
+	    created_at: string;
+	    updated_at: string;
+	    preview_titles: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new DigitalAssetSubmissionView(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.library_id = source["library_id"];
+	        this.kind = source["kind"];
+	        this.status = source["status"];
+	        this.title = source["title"];
+	        this.summary = source["summary"];
+	        this.item_count = source["item_count"];
+	        this.review_note = source["review_note"];
+	        this.reviewed_at = source["reviewed_at"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.preview_titles = source["preview_titles"];
+	    }
 	}
 	export class KnowledgeHubShareRequest {
 	    hub_url: string;

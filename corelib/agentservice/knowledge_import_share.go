@@ -11,11 +11,23 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
+
+const (
+	srvKnowledgeExportMaxNodesPerSource = 5000
+	srvKnowledgeExportMaxSourceBytes    = 16 * 1024 * 1024
+	srvKnowledgeExportMaxPackageBytes   = 40 * 1024 * 1024
+)
+
+type knowledgeSourceNodeReader interface {
+	ListNodesBySource(ctx context.Context, sourceID string, limit int) ([]knowledge.DocumentNode, error)
+}
 
 // shareImportHTTPClient is a shared HTTP client for Hub knowledge share operations.
 // Uses TLS-skip transport because Hub servers commonly use self-signed certificates.
@@ -277,6 +289,177 @@ func (c *coreAgentCallbacks) executeKnowledgeImportPackage(args map[string]inter
 	return string(resultJSON)
 }
 
+func (c *coreAgentCallbacks) executeKnowledgeExport(args map[string]interface{}) string {
+	if c.knowledgeStore == nil {
+		return "Error: knowledge base is not configured"
+	}
+	description := strings.TrimSpace(stringArg(args, "description"))
+	if description == "" {
+		return "Error: description is required"
+	}
+	if strings.TrimSpace(c.workspace) == "" {
+		return "Error: no workspace configured for this instance"
+	}
+	title := strings.TrimSpace(stringArg(args, "title"))
+	if title == "" {
+		title = fmt.Sprintf("Knowledge export %s", time.Now().UTC().Format("2006-01-02"))
+	}
+	output := firstNonEmpty(stringArg(args, "output_path"), stringArg(args, "path"))
+	if output == "" {
+		output = fmt.Sprintf("knowledge-export-%d.knowledge.json", time.Now().UnixNano())
+	} else if strings.ToLower(filepath.Ext(output)) == "" {
+		output += ".knowledge.json"
+	}
+	absPath, err := c.resolveWorkspacePath(output)
+	if err != nil {
+		return "Error: " + err.Error()
+	}
+	sourceIDs := compactUniqueStrings(toStringSlice(args["source_ids"]))
+	includeDisabled := boolArg(args, "include_disabled", false)
+	listOpts := knowledge.ListSourcesOptions{
+		TenantID:        c.principal.TenantID,
+		OwnerID:         c.principal.UserID,
+		SourceIDs:       sourceIDs,
+		IncludeDisabled: includeDisabled,
+		Limit:           5000,
+	}
+	if !includeDisabled {
+		listOpts.Status = "active"
+	}
+	ctx, cancel := context.WithTimeout(c.parentContext(), 60*time.Second)
+	defer cancel()
+	sources, err := c.knowledgeStore.ListSources(ctx, listOpts)
+	if err != nil {
+		return fmt.Sprintf("Error: list sources failed: %v", err)
+	}
+	if len(sources) == 0 {
+		return "Error: no knowledge sources match the export request"
+	}
+	nodeReader, _ := c.knowledgeStore.(knowledgeSourceNodeReader)
+	remaining := srvKnowledgeExportMaxPackageBytes
+	pkgSources := make([]sharePackageSource, 0, len(sources))
+	for _, src := range sources {
+		if err := ctx.Err(); err != nil {
+			return fmt.Sprintf("Error: knowledge export timed out or was cancelled: %v", err)
+		}
+		item := sharePackageSource{
+			ID:           src.ID,
+			Kind:         src.Kind,
+			URI:          src.URI,
+			CanonicalURI: src.CanonicalURI,
+			Title:        src.Title,
+			TopicHint:    src.TopicHint,
+			Labels:       src.Labels,
+		}
+		if remaining <= 0 {
+			item.ContentTruncated = true
+			pkgSources = append(pkgSources, item)
+			continue
+		}
+		content, truncated, readErr := exportKnowledgeSourceNodeContent(ctx, nodeReader, src, remaining)
+		if readErr != nil {
+			return fmt.Sprintf("Error: knowledge export timed out or was cancelled: %v", readErr)
+		}
+		item.Content = content
+		item.ContentTruncated = truncated
+		remaining -= len(content)
+		if remaining < 0 {
+			remaining = 0
+		}
+		pkgSources = append(pkgSources, item)
+	}
+	pkg := sharePackage{
+		Manifest: sharePackageManifest{
+			Format:          "maclaw.knowledge.package",
+			Version:         1,
+			PackageID:       fmt.Sprintf("kxp_%d", time.Now().UnixNano()),
+			Title:           title,
+			Description:     description,
+			SourceCount:     len(pkgSources),
+			ContentChecksum: computePackageContentChecksum(pkgSources),
+		},
+		Sources: pkgSources,
+	}
+	raw, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("Error: failed to encode knowledge package: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	if err := os.WriteFile(absPath, raw, 0o644); err != nil {
+		return fmt.Sprintf("Error: write export failed: %v", err)
+	}
+	return fmt.Sprintf("Exported knowledge package (%d sources) to %s", len(pkgSources), absPath)
+}
+
+func exportKnowledgeSourceNodeContent(ctx context.Context, reader knowledgeSourceNodeReader, source knowledge.Source, remainingBudget int) (string, bool, error) {
+	if reader == nil || remainingBudget <= 0 || strings.TrimSpace(source.ID) == "" {
+		return "", false, nil
+	}
+	nodes, err := reader.ListNodesBySource(ctx, source.ID, srvKnowledgeExportMaxNodesPerSource)
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return "", false, ctx.Err()
+		}
+		return "", false, nil
+	}
+	if len(nodes) == 0 {
+		return "", false, nil
+	}
+	truncated := source.NodeCount > len(nodes) && len(nodes) >= srvKnowledgeExportMaxNodesPerSource
+	limit := srvKnowledgeExportMaxSourceBytes
+	if remainingBudget < limit {
+		limit = remainingBudget
+	}
+	var b strings.Builder
+	used := 0
+	for _, node := range nodes {
+		text := strings.TrimSpace(node.Text)
+		if text == "" {
+			continue
+		}
+		separator := 0
+		if used > 0 {
+			separator = 2
+		}
+		available := limit - used - separator
+		if available <= 0 {
+			truncated = true
+			break
+		}
+		if len(text) > available {
+			text = truncateUTF8Bytes(text, available)
+			truncated = true
+		}
+		if text == "" {
+			break
+		}
+		if used > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(text)
+		used += separator + len(text)
+		if truncated {
+			break
+		}
+	}
+	return b.String(), truncated, nil
+}
+
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return strings.TrimSpace(s[:maxBytes])
+}
+
 // --- Share link resolution helpers (mirrors MaClawSrv/http_knowledge.go logic) ---
 
 // convertPkgSources converts internal package source structs to the canonical
@@ -305,6 +488,7 @@ type sharePackageManifest struct {
 	Version         int    `json:"version"`
 	PackageID       string `json:"package_id"`
 	Title           string `json:"title,omitempty"`
+	Description     string `json:"description,omitempty"`
 	SourceCount     int    `json:"source_count,omitempty"`
 	ContentChecksum string `json:"content_checksum,omitempty"` // SHA-256 of all source content concatenated; empty = no verification available
 }

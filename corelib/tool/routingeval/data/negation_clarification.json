@@ -1,0 +1,54 @@
+{
+  "category": "negation_clarification",
+  "category_id": 2,
+  "title": "negation and clarification needs do not materialize tools",
+  "design_ref": "10.1 item 2",
+  "format_note": "NeedAvoid is ignored. NeedInquire is clarification_required. Neither exposes a provider.",
+  "samples": [
+    {
+      "id": "avoid-does-not-select",
+      "title": "Avoid polarity does not expose a capture provider",
+      "mode": "needs",
+      "labels": [
+        {"label": "capture_screen", "polarity": "avoid"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "capture_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}}]
+          }
+        ]
+      },
+      "expected": {
+        "needs": [
+          {"capability": "visual.capture.desktop", "qualifiers": {"display": "primary"}, "polarity": "avoid"}
+        ],
+        "no_selections": true
+      }
+    },
+    {
+      "id": "inquire-clarification-required",
+      "title": "Inquire polarity is clarification_required",
+      "needs": [
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}, "polarity": "inquire"}
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          {"need_id": "generate", "reason": "clarification_required"}
+        ]
+      }
+    }
+  ]
+}

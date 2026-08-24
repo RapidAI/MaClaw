@@ -5,6 +5,7 @@ const App = {
   endpoint: localStorage.getItem("mis_endpoint") || location.origin,
   token: localStorage.getItem("mis_token") || "",
   tenant: localStorage.getItem("mis_tenant") || "default",
+  datasetId: localStorage.getItem("mis_dataset") || "",
   currentPage: "overview",
   _navGen: 0,
   _sidebarOpen: false,
@@ -12,27 +13,29 @@ const App = {
   _cmdIndex: 0,
   _cmdItems: [],
   _setupInitialized: null,
+  _caps: null,
+  _datasets: null,
 
   PAGE_META: {
-    overview: { title: "总览", group: "总览" },
-    quickstart: { title: "快速操作", group: "总览" },
-    domains: { title: "业务域", group: "数据建模" },
-    datasets: { title: "数据集", group: "数据建模" },
-    fields: { title: "字段", group: "数据建模" },
-    relationships: { title: "关联", group: "数据建模" },
-    records: { title: "记录", group: "数据操作" },
-    actions: { title: "业务动作", group: "数据操作" },
-    inbox: { title: "收件箱", group: "数据操作" },
+    overview: { title: "用户视图", group: "工作" },
+    inbox: { title: "待办", group: "工作" },
+    records: { title: "记录", group: "工作" },
+    actions: { title: "业务动作", group: "工作" },
+    domains: { title: "业务应用", group: "应用" },
+    quickstart: { title: "开通应用", group: "应用" },
+    views: { title: "视图", group: "分析" },
+    dashboards: { title: "仪表盘", group: "分析" },
+    reports: { title: "报表", group: "分析" },
+    datasets: { title: "数据集", group: "建模" },
+    fields: { title: "字段", group: "建模" },
+    relationships: { title: "关联", group: "建模" },
     connectors: { title: "连接器", group: "集成" },
-    views: { title: "视图", group: "集成" },
-    dashboards: { title: "仪表盘", group: "集成" },
-    reports: { title: "报表", group: "集成" },
-    apikeys: { title: "API 密钥", group: "安全与治理" },
-    admins: { title: "管理员", group: "安全与治理" },
-    quality: { title: "质量检查", group: "安全与治理" },
-    backups: { title: "备份", group: "安全与治理" },
-    audit: { title: "审计", group: "安全与治理" },
-    ops: { title: "运维", group: "安全与治理" },
+    apikeys: { title: "API 密钥", group: "治理" },
+    admins: { title: "管理员", group: "治理" },
+    quality: { title: "质量检查", group: "治理" },
+    backups: { title: "备份", group: "治理" },
+    audit: { title: "审计", group: "治理" },
+    ops: { title: "运维", group: "治理" },
   },
 
   // === Initialization ===
@@ -43,8 +46,11 @@ const App = {
     this.bindLangSwitch();
     this.bindMobileNav();
     this.bindCommandPalette();
+    this.bindHashRoute();
+    this.bindDatasetPicker();
     this.syncTenantChip();
     this.syncLangButtons();
+    this.applyHashRoute();
 
     // Prefill tenant input
     const tenantInput = document.getElementById("loginTenant");
@@ -187,7 +193,8 @@ const App = {
   showApp() {
     document.getElementById("loginScreen").classList.add("hidden");
     document.getElementById("appShell").classList.remove("hidden");
-    this.navigate(this.currentPage);
+    this.refreshDatasetPicker();
+    this.navigate(this.currentPage, this.hashState().params);
   },
 
   bindLogin() {
@@ -298,7 +305,8 @@ const App = {
     this._sidebarOpen = false;
   },
 
-  navigate(page) {
+  navigate(page, params) {
+    if (params && params.dataset) this.setDataset(params.dataset);
     this.currentPage = page;
     this._navGen++;
     document.querySelectorAll(".nav-item[data-page]").forEach(el => {
@@ -308,6 +316,7 @@ const App = {
     const ctx = document.getElementById("pageContext");
     if (ctx) ctx.textContent = meta ? (meta.group + " / " + meta.title) : page;
     document.title = (meta ? meta.title + " · " : "") + "MaClawDataSrv MIS";
+    this.writeHash(page, Object.assign({}, params || {}, this.datasetId ? { dataset: this.datasetId } : {}));
 
     const container = document.getElementById("pageContainer");
     const renderer = PageModules[page];
@@ -319,6 +328,42 @@ const App = {
       container.appendChild(this.comingSoon(page));
     }
     try { container.focus({ preventScroll: true }); } catch (_) { /* ignore */ }
+  },
+
+  bindHashRoute() {
+    window.addEventListener("hashchange", () => {
+      if (document.getElementById("appShell")?.classList.contains("hidden")) return;
+      const state = this.hashState();
+      if (!state.page) {
+        if (state.params.dataset && state.params.dataset !== this.datasetId) {
+          this.setDataset(state.params.dataset);
+        }
+        return;
+      }
+      if (this.PAGE_META[state.page]) this.navigate(state.page, state.params);
+    });
+  },
+
+  applyHashRoute() {
+    const state = this.hashState();
+    if (state.params.dataset) this.setDataset(state.params.dataset);
+    if (state.page && this.PAGE_META[state.page]) this.currentPage = state.page;
+  },
+
+  hashState() {
+    const raw = (location.hash || "").replace(/^#/, "");
+    const qIndex = raw.indexOf("?");
+    const page = (qIndex >= 0 ? raw.slice(0, qIndex) : raw).trim();
+    const query = qIndex >= 0 ? raw.slice(qIndex + 1) : "";
+    const params = {};
+    if (query) new URLSearchParams(query).forEach((v, k) => { params[k] = v; });
+    return { page, params };
+  },
+
+  writeHash(page, params) {
+    const qs = this.qs(params);
+    const next = "#" + page + qs;
+    if (location.hash !== next) history.replaceState(null, "", next);
   },
 
   navGuard() {
@@ -473,7 +518,10 @@ const App = {
     const headers = { ...(options.headers || {}) };
     if (options.body) headers["Content-Type"] = "application/json";
     if (this.token) headers["Authorization"] = "Bearer " + this.token;
-    if (this.tenant) headers["X-Tenant"] = this.tenant;
+    if (this.tenant) {
+      headers["X-MaClaw-Tenant-ID"] = this.tenant;
+      headers["X-Tenant"] = this.tenant;
+    }
     const resp = await fetch(url, { ...options, headers });
     if (resp.status === 401) { this.logout(); throw new Error("会话过期，请重新登录"); }
     const ct = resp.headers.get("content-type") || "";
@@ -490,7 +538,7 @@ const App = {
     const el = document.getElementById("serviceStatus");
     if (!el) return;
     try {
-      await this.api("/health");
+      await this.publicApi("/health");
       el.textContent = "服务在线";
       el.className = "status-dot online";
     } catch (e) {
@@ -503,9 +551,10 @@ const App = {
   toast(msg, type = "ok") {
     const stack = document.getElementById("toastStack");
     const el = document.createElement("div");
+    if (type === "danger" || type === "warn") type = "err";
     el.className = "toast " + type;
     el.textContent = msg;
-    stack.appendChild(el);
+    if (stack) stack.appendChild(el);
     setTimeout(() => el.remove(), 4000);
   },
 
@@ -639,6 +688,291 @@ const App = {
     const wrap = h("div", { class: "table-wrap" });
     wrap.appendChild(tbl);
     return wrap;
+  },
+
+  listItems(data, ...keys) {
+    if (!data) return [];
+    if (Array.isArray(data.items)) return data.items;
+    for (const key of keys) {
+      if (Array.isArray(data[key])) return data[key];
+    }
+    if (Array.isArray(data)) return data;
+    return [];
+  },
+
+  qs(params) {
+    const u = new URLSearchParams();
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      const s = String(v).trim();
+      if (s !== "") u.set(k, s);
+    });
+    const out = u.toString();
+    return out ? "?" + out : "";
+  },
+
+  setDataset(id) {
+    this.datasetId = String(id || "").trim();
+    if (this.datasetId) localStorage.setItem("mis_dataset", this.datasetId);
+    else localStorage.removeItem("mis_dataset");
+    this.syncDatasetPicker();
+  },
+
+  async loadDatasets(force) {
+    if (this._datasets && !force) return this._datasets;
+    const data = await this.api("/api/v1/data/datasets?limit=200");
+    this._datasets = this.listItems(data, "datasets");
+    return this._datasets;
+  },
+
+  async loadFields(datasetId) {
+    const id = datasetId || this.datasetId;
+    if (!id) return [];
+    const data = await this.api("/api/v1/data/datasets/" + encodeURIComponent(id) + "/fields?limit=200");
+    return this.listItems(data, "fields");
+  },
+
+  async capabilities(force) {
+    if (this._caps && !force) return this._caps;
+    this._caps = await this.api("/api/v1/data/capabilities");
+    return this._caps;
+  },
+
+  invalidateCache() {
+    this._datasets = null;
+    this._caps = null;
+  },
+
+  datasetLabel(ds) {
+    if (!ds) return "-";
+    return ds.title || ds.name || ds.id || "-";
+  },
+
+  fieldLabel(field) {
+    if (!field) return "-";
+    return field.title || field.key || field.name || "-";
+  },
+
+  fieldKey(field) {
+    return (field && (field.key || field.name || field.id)) || "";
+  },
+
+  fieldEnum(field) {
+    const cfg = (field && field.config) || {};
+    const raw = cfg.values || cfg.enum || cfg.options || [];
+    return Array.isArray(raw) ? raw.map(v => (typeof v === "object" ? (v.value || v.id || "") : String(v))).filter(Boolean) : [];
+  },
+
+  fmtTime(v) {
+    if (!v) return "-";
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
+  },
+
+  fmtBytes(n) {
+    const num = Number(n);
+    if (!Number.isFinite(num) || num <= 0) return "-";
+    if (num < 1024) return num + " B";
+    if (num < 1048576) return (num / 1024).toFixed(1) + " KB";
+    return (num / 1048576).toFixed(1) + " MB";
+  },
+
+  preview(value, max) {
+    if (value == null || value === "") return "-";
+    if (typeof value === "object") {
+      try { value = JSON.stringify(value); } catch (_) { value = String(value); }
+    }
+    const s = String(value);
+    const limit = max || 48;
+    return s.length > limit ? s.slice(0, limit) + "…" : s;
+  },
+
+  parseJSON(text, fallback) {
+    const raw = String(text || "").trim();
+    if (!raw) return fallback;
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      if (fallback !== undefined) return fallback;
+      throw new Error("JSON 无效");
+    }
+  },
+
+  val(id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || "").trim() : "";
+  },
+
+  setVal(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value == null ? "" : value;
+  },
+
+  async refreshDatasetPicker() {
+    const select = document.getElementById("datasetPicker");
+    if (!select) return;
+    try {
+      const items = await this.loadDatasets();
+      const current = this.datasetId;
+      select.innerHTML = "";
+      select.appendChild(this.html("option", { value: "" }, "选择当前表…"));
+      items.forEach(ds => {
+        const opt = this.html("option", { value: ds.id }, this.datasetLabel(ds) + " · " + ds.id);
+        if (ds.id === current) opt.selected = true;
+        select.appendChild(opt);
+      });
+      if (current && !items.some(ds => ds.id === current)) {
+        const opt = this.html("option", { value: current }, current);
+        opt.selected = true;
+        select.appendChild(opt);
+      }
+    } catch (_) {
+      /* picker stays empty until auth/network recovers */
+    }
+  },
+
+  syncDatasetPicker() {
+    const select = document.getElementById("datasetPicker");
+    if (select && select.value !== this.datasetId) select.value = this.datasetId || "";
+  },
+
+  bindDatasetPicker() {
+    const select = document.getElementById("datasetPicker");
+    if (!select || select.dataset.bound) return;
+    select.dataset.bound = "1";
+    select.addEventListener("change", () => {
+      this.setDataset(select.value);
+      if (this.currentPage === "records" || this.currentPage === "fields" || this.currentPage === "relationships") {
+        this.navigate(this.currentPage, { dataset: this.datasetId });
+      }
+    });
+  },
+
+  datasetSelect(id, label) {
+    const h = this.html;
+    const select = h("select", { id });
+    select.appendChild(h("option", { value: "" }, "选择业务表…"));
+    (this._datasets || []).forEach(ds => {
+      const opt = h("option", { value: ds.id }, this.datasetLabel(ds) + " · " + ds.id);
+      if (ds.id === this.datasetId) opt.selected = true;
+      select.appendChild(opt);
+    });
+    const alive = this.navGuard();
+    this.loadDatasets().then(items => {
+      if (!alive()) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      const keep = el.value || this.datasetId;
+      el.innerHTML = "";
+      el.appendChild(h("option", { value: "" }, "选择业务表…"));
+      items.forEach(ds => {
+        const opt = h("option", { value: ds.id }, this.datasetLabel(ds) + " · " + ds.id);
+        if (ds.id === keep) opt.selected = true;
+        el.appendChild(opt);
+      });
+    }).catch(() => {});
+    return h("div", { class: "form-field" },
+      h("label", { for: id }, label || "业务表"),
+      select
+    );
+  },
+
+  fieldControls(fields, values, prefix) {
+    const h = this.html;
+    const wrap = h("div", { class: "field-grid", id: (prefix || "rec") + "FieldGrid" });
+    (fields || []).forEach(field => {
+      const key = this.fieldKey(field);
+      if (!key) return;
+      const fid = (prefix || "rec") + "__" + key;
+      const value = values && values[key] != null ? values[key] : "";
+      const enums = this.fieldEnum(field);
+      let control;
+      if (enums.length) {
+        control = h("select", { id: fid });
+        control.appendChild(h("option", { value: "" }, field.required ? "请选择" : "（空）"));
+        enums.forEach(opt => control.appendChild(h("option", { value: opt }, opt)));
+        control.value = String(value);
+      } else if (field.type === "boolean") {
+        control = h("select", { id: fid },
+          h("option", { value: "" }, "（空）"),
+          h("option", { value: "true" }, "是"),
+          h("option", { value: "false" }, "否")
+        );
+        if (value === true || value === "true") control.value = "true";
+        else if (value === false || value === "false") control.value = "false";
+      } else if (field.type === "number" || field.type === "integer") {
+        control = h("input", { id: fid, type: "number", step: field.type === "integer" ? "1" : "any", value: value === "" ? "" : String(value) });
+      } else if (field.type === "date") {
+        control = h("input", { id: fid, type: "date", value: String(value).slice(0, 10) });
+      } else if (field.type === "datetime") {
+        control = h("input", { id: fid, type: "datetime-local", value: String(value).slice(0, 16) });
+      } else {
+        const ph = field.type === "record_ref" ? "关联记录 ID" : "";
+        control = h("input", { id: fid, type: field.sensitive ? "password" : "text", value: String(value), placeholder: ph, spellcheck: "false" });
+      }
+      const hint = [field.type || "string", field.required ? "必填" : "", field.sensitive ? "敏感" : ""].filter(Boolean).join(" · ");
+      wrap.appendChild(h("div", { class: "form-field" },
+        h("label", { for: fid }, this.fieldLabel(field)),
+        control,
+        h("div", { class: "field-hint" }, hint)
+      ));
+    });
+    return wrap;
+  },
+
+  collectFieldValues(fields, prefix) {
+    const out = {};
+    (fields || []).forEach(field => {
+      const key = this.fieldKey(field);
+      if (!key) return;
+      const el = document.getElementById((prefix || "rec") + "__" + key);
+      if (!el) return;
+      const raw = String(el.value || "").trim();
+      if (raw === "") return;
+      if (field.type === "number" || field.type === "integer") {
+        const n = Number(raw);
+        if (!Number.isNaN(n)) out[key] = n;
+        return;
+      }
+      if (field.type === "boolean") {
+        out[key] = raw === "true";
+        return;
+      }
+      out[key] = raw;
+    });
+    return out;
+  },
+
+  resultCard(title, data) {
+    const h = this.html;
+    const pre = h("pre", { class: "result-json" }, typeof data === "string" ? data : JSON.stringify(data, null, 2));
+    return h("div", { class: "card result-card" },
+      h("div", { class: "card-header" }, h("h3", {}, title)),
+      pre
+    );
+  },
+
+  async download(path, options) {
+    const opts = options || {};
+    const url = this.endpoint.replace(/\/$/, "") + path;
+    const headers = {};
+    if (this.token) headers.Authorization = "Bearer " + this.token;
+    if (this.tenant) headers["X-MaClaw-Tenant-ID"] = this.tenant;
+    if (opts.body) headers["Content-Type"] = "application/json";
+    const resp = await fetch(url, { method: opts.method || "GET", headers, body: opts.body });
+    if (resp.status === 401) { this.logout(); throw new Error("会话过期，请重新登录"); }
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.error || ("HTTP " + resp.status));
+    }
+    const blob = await resp.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = opts.filename || "download";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
   }
 };
 

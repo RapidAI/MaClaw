@@ -95,6 +95,10 @@ func CreateOrderHandler(svc *Service) http.HandlerFunc {
 // ListOrdersHandler lists orders for a hub/tenant.
 // GET /api/cardstore/orders?hub_id=X&tenant_id=Y&status=Z&statuses=A,B&offset=0&limit=20
 func ListOrdersHandler(svc *Service) http.HandlerFunc {
+	return listOrdersHandler(svc, false)
+}
+
+func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit, _ := strconv.Atoi(q.Get("limit"))
@@ -115,6 +119,10 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 				strings.EqualFold(q.Get("include_archived"), "true"),
 			Limit:  limit,
 			Offset: offset,
+		}
+		if allowActiveCards {
+			filter.ActiveCardsOnly = q.Get("active_cards") == "1" || strings.EqualFold(q.Get("active_cards"), "true") ||
+				q.Get("valid_cards") == "1" || strings.EqualFold(q.Get("valid_cards"), "true")
 		}
 		alipay := alipayConfigForRequest(r, svc)
 		orders, total, err := svc.ListOrdersWithAlipayConfig(r.Context(), filter, alipay)
@@ -344,7 +352,7 @@ func AdminConfirmOrderHandler(svc *Service, getAdminEmail func(*http.Request) st
 // AdminListOrdersHandler lists all orders (admin view with all filters).
 // GET /api/admin/cardstore/orders?...
 func AdminListOrdersHandler(svc *Service) http.HandlerFunc {
-	return ListOrdersHandler(svc) // same logic, admin auth handled by middleware
+	return listOrdersHandler(svc, true)
 }
 
 // AdminArchiveOrderHandler archives an order so it leaves the active order queue.
@@ -378,6 +386,32 @@ func AdminRestoreArchivedOrderHandler(svc *Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "restored"})
+	}
+}
+
+// AdminRebindOrderServiceGroupHandler changes the bound service group of a usable sold card.
+// PUT /api/admin/cardstore/orders/:orderNo/service-group
+func AdminRebindOrderServiceGroupHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orderNo := extractPathParam(r, "orderNo")
+		if orderNo == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "orderNo is required"})
+			return
+		}
+		var req struct {
+			ServiceGroupID string `json:"service_group_id"`
+			UseDefault     bool   `json:"use_default"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		order, err := svc.RebindOrderServiceGroup(r.Context(), orderNo, strings.TrimSpace(req.ServiceGroupID), req.UseDefault)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, order)
 	}
 }
 
@@ -419,16 +453,30 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func extractPathParam(r *http.Request, name string) string {
-	// Go 1.22+ routing: use PathValue
-	if v := r.PathValue(name); v != "" {
+	if r == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(r.PathValue(name)); v != "" {
 		return v
 	}
-	// Fallback: extract last path segment
-	parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 0 {
+		return ""
 	}
-	return ""
+	last := parts[len(parts)-1]
+	if isOrderActionSegment(last) && len(parts) >= 2 {
+		return parts[len(parts)-2]
+	}
+	return last
+}
+
+func isOrderActionSegment(segment string) bool {
+	switch strings.ToLower(strings.TrimSpace(segment)) {
+	case "confirm", "archive", "restore", "service-group":
+		return true
+	default:
+		return false
+	}
 }
 
 func generateCardTypeID(period string, credits float64) string {

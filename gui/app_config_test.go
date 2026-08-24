@@ -1947,7 +1947,7 @@ func TestPatchConfigFieldsModelRoutes(t *testing.T) {
 
 	patched, err := app.PatchConfigFields(map[string]interface{}{
 		"model_routes": map[string]interface{}{
-			"reasoning": map[string]interface{}{"model": "reason-model"},
+			"reasoning": map[string]interface{}{"model": "reason-model", "context_length": 400_000},
 			"vision":    map[string]interface{}{"model": "vision-model"},
 			"empty":     map[string]interface{}{"model": ""}, // dropped
 		},
@@ -1957,6 +1957,9 @@ func TestPatchConfigFieldsModelRoutes(t *testing.T) {
 	}
 	if patched.ModelRoutes["reasoning"].Model != "reason-model" {
 		t.Fatalf("%+v", patched.ModelRoutes)
+	}
+	if patched.ModelRoutes["reasoning"].ContextLength != 400_000 {
+		t.Fatalf("reasoning context=%d", patched.ModelRoutes["reasoning"].ContextLength)
 	}
 	if patched.ModelRoutes["vision"].Model != "vision-model" {
 		t.Fatalf("%+v", patched.ModelRoutes)

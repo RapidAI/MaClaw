@@ -38,11 +38,13 @@ func TestProperty_BM25TextExcludesBody(t *testing.T) {
 	})
 }
 
-// Feature: skillrouter-body-aware-retrieval, Property 4: Embedding 文本包含 BodySummary
-// For any RegisteredTool with non-empty BodySummary, buildEmbeddingText() contains BodySummary.
-// When BodySummary is empty, output contains only name + description.
+// Feature: skillrouter-body-aware-retrieval, Property 4: Embedding 文本不含 BodySummary
+// For any RegisteredTool, buildEmbeddingText() is exactly name + description.
+// BodySummary is long, templated parameter documentation; embedding it collapses
+// the vector space (shared boilerplate dominates mean pooling), so body content
+// reaches ranking only through the LLM reranker's CandidateSummary.
 // **Validates: Requirements 7.1, 7.3**
-func TestProperty_EmbeddingTextContainsBodySummary(t *testing.T) {
+func TestProperty_EmbeddingTextExcludesBodySummary(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		name := rapid.StringMatching(`[a-z_]{3,15}`).Draw(t, "name")
 		desc := rapid.StringMatching(`[a-zA-Z ]{5,30}`).Draw(t, "desc")
@@ -66,15 +68,12 @@ func TestProperty_EmbeddingTextContainsBodySummary(t *testing.T) {
 
 		embText := router.buildEmbeddingText(name, desc)
 
-		if hasBody && tool.BodySummary != "" {
-			if !strings.Contains(embText, tool.BodySummary) {
-				t.Fatalf("embedding text should contain BodySummary\n  embText: %q\n  bodySummary: %q", embText, tool.BodySummary)
-			}
-		} else {
-			expected := name + " " + desc
-			if embText != expected {
-				t.Fatalf("embedding text should be name+desc when no body\n  got: %q\n  want: %q", embText, expected)
-			}
+		expected := name + " " + desc
+		if embText != expected {
+			t.Fatalf("embedding text should be name+desc regardless of body\n  got: %q\n  want: %q", embText, expected)
+		}
+		if tool.BodySummary != "" && strings.Contains(embText, tool.BodySummary) {
+			t.Fatalf("embedding text should not contain BodySummary\n  embText: %q\n  bodySummary: %q", embText, tool.BodySummary)
 		}
 	})
 }

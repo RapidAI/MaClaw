@@ -201,6 +201,7 @@ func TestClampLLMEndpointUserRateLimitMaxWaitMS(t *testing.T) {
 }
 
 func TestForwardAuthorizedModelRequestWithCacheProviderCircuitBreakerAndRecovery(t *testing.T) {
+	llmservice.ResetRequestProviderWRR()
 	globalProviderResilience.reset()
 	defer globalProviderResilience.reset()
 

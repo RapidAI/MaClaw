@@ -5,7 +5,7 @@
 //   csc /nologo /t:exe /out:maclaw-uia-sidecar.exe ^
 //       /r:UIAutomationClient.dll /r:UIAutomationTypes.dll /r:WindowsBase.dll Program.cs
 //
-// Ops: ping | enum | find  (same shape as the PowerShell fallback sidecar)
+// Ops: ping | enum | find | invoke_at | set_value_at | select_at | expand_at | scroll_into_view_at | focus_at
 
 using System;
 using System.Collections.Generic;
@@ -39,7 +39,7 @@ namespace MaclawUIASidecar
                         string window = JsonMini.GetString(req, "window");
                         int depth = JsonMini.GetInt(req, "depth", 3);
                         if (depth < 1) depth = 1;
-                        if (depth > 5) depth = 5;
+                        if (depth > 8) depth = 8;
                         var els = EnumWindows(window, depth);
                         WriteOk(new Dictionary<string, object> { { "elements", els } });
                     }
@@ -50,6 +50,41 @@ namespace MaclawUIASidecar
                         string name = JsonMini.GetString(req, "name");
                         var el = FindEl(window, role, name);
                         WriteOk(new Dictionary<string, object> { { "element", el } });
+                    }
+                    else if (op == "invoke_at")
+                    {
+                        int x = JsonMini.GetInt(req, "x", 0);
+                        int y = JsonMini.GetInt(req, "y", 0);
+                        var r = InvokeAt(x, y);
+                        WriteOk(r);
+                    }
+                    else if (op == "set_value_at")
+                    {
+                        int x = JsonMini.GetInt(req, "x", 0);
+                        int y = JsonMini.GetInt(req, "y", 0);
+                        string text = JsonMini.GetString(req, "text");
+                        var r = SetValueAt(x, y, text);
+                        WriteOk(r);
+                    }
+                    else if (op == "select_at")
+                    {
+                        var r = PatternAt(JsonMini.GetInt(req, "x", 0), JsonMini.GetInt(req, "y", 0), "select");
+                        WriteOk(r);
+                    }
+                    else if (op == "expand_at")
+                    {
+                        var r = PatternAt(JsonMini.GetInt(req, "x", 0), JsonMini.GetInt(req, "y", 0), "expand");
+                        WriteOk(r);
+                    }
+                    else if (op == "scroll_into_view_at")
+                    {
+                        var r = PatternAt(JsonMini.GetInt(req, "x", 0), JsonMini.GetInt(req, "y", 0), "scroll");
+                        WriteOk(r);
+                    }
+                    else if (op == "focus_at")
+                    {
+                        var r = PatternAt(JsonMini.GetInt(req, "x", 0), JsonMini.GetInt(req, "y", 0), "focus");
+                        WriteOk(r);
                     }
                     else
                     {
@@ -165,6 +200,10 @@ namespace MaclawUIASidecar
                 { "width", (int)rect.Width },
                 { "height", (int)rect.Height },
             };
+            string autoId = SafeAutomationId(el);
+            if (!string.IsNullOrEmpty(autoId)) node["automation_id"] = autoId;
+            var pats = CollectPatterns(el);
+            if (pats.Count > 0) node["patterns"] = pats;
             if (depth > 1)
             {
                 var kids = new List<object>();
@@ -186,6 +225,138 @@ namespace MaclawUIASidecar
         {
             try { return el.Current.Name ?? ""; }
             catch { return ""; }
+        }
+
+        static string SafeAutomationId(AutomationElement el)
+        {
+            try { return el.Current.AutomationId ?? ""; }
+            catch { return ""; }
+        }
+
+        static List<object> CollectPatterns(AutomationElement el)
+        {
+            var pats = new List<object>();
+            object dummy;
+            try { if (el.TryGetCurrentPattern(InvokePattern.Pattern, out dummy)) pats.Add("invoke"); } catch { }
+            try { if (el.TryGetCurrentPattern(ValuePattern.Pattern, out dummy)) pats.Add("value"); } catch { }
+            try { if (el.TryGetCurrentPattern(TogglePattern.Pattern, out dummy)) pats.Add("toggle"); } catch { }
+            try { if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out dummy)) pats.Add("select"); } catch { }
+            try { if (el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out dummy)) pats.Add("expand"); } catch { }
+            return pats;
+        }
+
+        static Dictionary<string, object> InvokeAt(int x, int y)
+        {
+            AutomationElement el = null;
+            try { el = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+            catch { }
+            if (el == null)
+                return new Dictionary<string, object> { { "invoked", false }, { "strategy", "none" } };
+            object pat;
+            try
+            {
+                if (el.TryGetCurrentPattern(InvokePattern.Pattern, out pat))
+                {
+                    ((InvokePattern)pat).Invoke();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "invoke" } };
+                }
+            }
+            catch { }
+            try
+            {
+                if (el.TryGetCurrentPattern(TogglePattern.Pattern, out pat))
+                {
+                    ((TogglePattern)pat).Toggle();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "toggle" } };
+                }
+            }
+            catch { }
+            try
+            {
+                if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pat))
+                {
+                    ((SelectionItemPattern)pat).Select();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "select" } };
+                }
+            }
+            catch { }
+            try
+            {
+                if (el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pat))
+                {
+                    var ep = (ExpandCollapsePattern)pat;
+                    if (ep.Current.ExpandCollapseState == ExpandCollapseState.Collapsed)
+                        ep.Expand();
+                    else
+                        ep.Collapse();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "expand" } };
+                }
+            }
+            catch { }
+            return new Dictionary<string, object> { { "invoked", false }, { "strategy", "none" } };
+        }
+
+        static Dictionary<string, object> SetValueAt(int x, int y, string text)
+        {
+            AutomationElement el = null;
+            try { el = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+            catch { }
+            if (el == null)
+                return new Dictionary<string, object> { { "set", false }, { "strategy", "none" } };
+            object pat;
+            try
+            {
+                if (el.TryGetCurrentPattern(ValuePattern.Pattern, out pat))
+                {
+                    var vp = pat as ValuePattern;
+                    if (vp != null && !vp.Current.IsReadOnly)
+                    {
+                        vp.SetValue(text ?? "");
+                        return new Dictionary<string, object> { { "set", true }, { "strategy", "set_value" } };
+                    }
+                }
+            }
+            catch { }
+            return new Dictionary<string, object> { { "set", false }, { "strategy", "none" } };
+        }
+
+        static Dictionary<string, object> PatternAt(int x, int y, string kind)
+        {
+            AutomationElement el = null;
+            try { el = AutomationElement.FromPoint(new System.Windows.Point(x, y)); }
+            catch { }
+            if (el == null)
+                return new Dictionary<string, object> { { "invoked", false }, { "strategy", "none" } };
+            object pat;
+            try
+            {
+                if (kind == "select" && el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pat))
+                {
+                    ((SelectionItemPattern)pat).Select();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "select" } };
+                }
+                if (kind == "expand" && el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pat))
+                {
+                    var ep = (ExpandCollapsePattern)pat;
+                    if (ep.Current.ExpandCollapseState == ExpandCollapseState.Collapsed)
+                        ep.Expand();
+                    else
+                        ep.Collapse();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "expand" } };
+                }
+                if (kind == "scroll" && el.TryGetCurrentPattern(ScrollItemPattern.Pattern, out pat))
+                {
+                    ((ScrollItemPattern)pat).ScrollIntoView();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "scroll_into_view" } };
+                }
+                if (kind == "focus")
+                {
+                    el.SetFocus();
+                    return new Dictionary<string, object> { { "invoked", true }, { "strategy", "focus" } };
+                }
+            }
+            catch { }
+            return new Dictionary<string, object> { { "invoked", false }, { "strategy", "none" } };
         }
 
         static ControlType MapRole(string role)

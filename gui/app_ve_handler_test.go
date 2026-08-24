@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"pgregory.net/rapid"
 )
 
@@ -54,6 +56,12 @@ func TestVisibleVEStreamDeltaDropsReasoningMarkersAndControls(t *testing.T) {
 	}
 	if got := visibleVEStreamDelta("\x01\x00private reasoning"); got != "" {
 		t.Fatalf("reasoning delta with controls = %q, want empty", got)
+	}
+	if got := visibleVEStreamDelta("I am \uEB90Kate"); got != "I am Kate" {
+		t.Fatalf("pua delta = %q", got)
+	}
+	if got := textutil.SanitizeVisibleChatText("\x01visible answer"); got != "visible answer" {
+		t.Fatalf("assembled text = %q, want kept after stripping sentinel", got)
 	}
 }
 
@@ -113,6 +121,37 @@ func TestVEAgentCallbacksLLMRequestContextCarriesOwnerTrace(t *testing.T) {
 	}
 }
 
+func TestVEAgentCallbacksOfficeUsesLoopContextBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "long.txt")
+	body := strings.Repeat("文", agent.DocumentReadMaxRunesForContext(400_000)+1)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	seenContext := 0
+	handler := &IMMessageHandler{registry: NewToolRegistry()}
+	if err := handler.registry.Register(RegisteredTool{
+		Name: "office",
+		Handler: func(args map[string]interface{}) string {
+			seenContext = runtimeContextTokensFromToolArgs(args)
+			return agent.ToolReadDocumentWithContext(args, seenContext)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{imHandler: handler}
+	cb := &veAgentCallbacks{app: app, llmCfg: corelib.MaclawLLMConfig{ContextLength: 400_000}}
+	out := cb.ExecuteTool("office", fmt.Sprintf(`{"action":"read_document","file_path":%q}`, path))
+
+	if seenContext != 320_000 {
+		t.Fatalf("VE office context = %d, want 320000", seenContext)
+	}
+	wantChars := agent.DocumentReadMaxRunesForContext(320_000)
+	if !strings.Contains(out, "# chars: "+strconv.Itoa(wantChars)) {
+		t.Fatalf("VE office page did not use routed context (want chars=%d): %q", wantChars, out[:min(len(out), 500)])
+	}
+}
+
 func TestVEKnowledgePromptAdvertisesImageSearchAndDisplay(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
@@ -142,6 +181,9 @@ func TestVEKnowledgePromptAdvertisesImageSearchAndDisplay(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("VE knowledge prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, agent.KnowledgeAutoRecallHeader) || strings.Contains(prompt, agent.EnterpriseKnowledgeAutoRecallHeader) {
+		t.Fatal("VE must not dump knowledge auto-recall bodies")
 	}
 }
 

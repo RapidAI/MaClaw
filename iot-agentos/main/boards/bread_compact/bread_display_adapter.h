@@ -12,8 +12,8 @@
 #include "boards/compact_display_animation.h"
 #include "boards/compact_startup_art.h"
 
-#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD
-#error "Bread display adapter may only be included by the Bread Compact profile"
+#if !CONFIG_MACLAW_BOARD_BREAD_COMPACT_WIFI_LCD && !CONFIG_MACLAW_BOARD_REFERENCE_FAKE
+#error "Bread display adapter may only be included by Bread Compact or the CI reference profile"
 #endif
 
 #ifndef MACLAW_COMPACT_DISPLAY_ADAPTER_IMPLEMENTATION
@@ -202,10 +202,13 @@ static bool compact_display_adapter_color_transfer_done(
     return task_woken == pdTRUE;
 }
 
-static inline esp_err_t compact_display_adapter_wait_for_transfer_idle(void) {
+static inline esp_err_t compact_display_adapter_wait_for_transfer_idle(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
     if (!s_bread_display_transfer_pending) return ESP_OK;
     if (!s_bread_display_transfer_done) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_bread_display_transfer_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+    if (ticks == 0) ticks = 1;
+    if (xSemaphoreTake(s_bread_display_transfer_done, ticks) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     return s_bread_display_transfer_pending ? ESP_ERR_INVALID_STATE : ESP_OK;
@@ -220,7 +223,7 @@ static inline bool compact_display_adapter_ready(void) {
  * requests a normalized display transition. */
 static inline esp_err_t compact_display_enter_display_off(void) {
     if (!s_bread_display_panel) return ESP_ERR_INVALID_STATE;
-    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(1000),
                         "bread_display", "pending transfer before display off");
     /* The backlight is the user-visible power boundary on this LCD.  Turn it
      * off before the optional controller low-power command: a pending/failed
@@ -240,7 +243,7 @@ static inline esp_err_t compact_display_enter_display_off(void) {
 
 static inline esp_err_t compact_display_wake_from_display_off(unsigned brightness) {
     if (!s_bread_display_panel || brightness > 100) return ESP_ERR_INVALID_ARG;
-    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(1000),
                         "bread_display", "pending transfer before display wake");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_bread_display_panel, true),
                         "bread_display", "panel on");
@@ -347,7 +350,7 @@ static inline esp_err_t compact_display_adapter_draw_bitmap_sync(
      * Never queue a new transfer until that exact controller-owned source has
      * completed: otherwise its delayed callback could satisfy the new wait
      * and let the renderer reuse a framebuffer still read by SPI DMA. */
-    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(),
+    ESP_RETURN_ON_ERROR(compact_display_adapter_wait_for_transfer_idle(1000),
                         "bread_display", "previous transfer still pending");
     while (xSemaphoreTake(transfer_done, 0) == pdTRUE) {}
     s_bread_display_transfer_pending = true;

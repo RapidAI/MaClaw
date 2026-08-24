@@ -14,10 +14,10 @@ import (
 // AuthSyncClient periodically syncs tenant authorization status from HubCenter.
 // Runs as a background goroutine integrated into Hub's heartbeat cycle.
 type AuthSyncClient struct {
-	client       *MaClawProviderClient
-	accessCtrl   *TenantLLMAccessControl
-	tenantIDs    func() []string // returns current tenant IDs to sync
-	interval     time.Duration
+	client     *MaClawProviderClient
+	accessCtrl *TenantLLMAccessControl
+	tenantIDs  func() []string // returns current tenant IDs to sync
+	interval   time.Duration
 
 	mu       sync.Mutex
 	lastSync time.Time
@@ -41,15 +41,33 @@ func NewAuthSyncClient(
 
 // Start begins the background sync loop.
 func (s *AuthSyncClient) Start() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.cancel()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
-	go s.syncLoop(ctx)
+	s.mu.Unlock()
+	go func() {
+		s.doSync(ctx)
+		s.syncLoop(ctx)
+	}()
 }
 
 // Stop terminates the background sync loop.
 func (s *AuthSyncClient) Stop() {
-	if s.cancel != nil {
-		s.cancel()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	cancel := s.cancel
+	s.cancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 

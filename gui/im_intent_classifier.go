@@ -43,6 +43,7 @@ type llmIntentClassification struct {
 }
 
 func classifyTaskIntent(text string) taskIntentResult {
+	text = semanticUserIntentText(text)
 	if uic := unifiedClassifierPtr.Load(); uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
 		return taskIntentResultFromUnifiedClassification(result)
@@ -78,6 +79,7 @@ func classifyTaskIntentWithoutSemantic(text string) taskIntentResult {
 }
 
 func (h *IMMessageHandler) classifyTaskIntentForSessionGuard(text string) taskIntentResult {
+	text = semanticUserIntentText(text)
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		// Session creation is a later tool-level capability decision, not a
 		// reason to make the current turn wait for tree/LLM classification.
@@ -99,6 +101,7 @@ func shouldConsiderExecutionConfirmation(freshTask bool, msg IMUserMessage, trim
 }
 
 func (h *IMMessageHandler) classifyTaskIntentForExecution(userID, text string, attachments []MessageAttachment, httpClient *http.Client) taskIntentResult {
+	text = semanticUserIntentText(text)
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		// This is on the path before the main Agent's first request. A full UIC
 		// call can escalate an unavailable or ambiguous embedding to L3 and hold
@@ -222,6 +225,7 @@ func summarizeAttachmentNames(attachments []MessageAttachment) []string {
 }
 
 func (h *IMMessageHandler) requestIntentClassification(cfg corelib.MaclawLLMConfig, userID string, messages []interface{}, httpClient *http.Client) (llmIntentClassification, error) {
+	cfg = attachLightweightHubHint(cfg, llm.TaskIntent)
 	if cfg.IsResponsesAPI() || cfg.IsResponsesWebSocket() {
 		return h.requestIntentClassificationResponses(cfg, userID, messages, httpClient)
 	}

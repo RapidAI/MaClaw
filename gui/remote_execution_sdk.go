@@ -21,22 +21,56 @@ import (
 // sdkDiagLog writes diagnostic messages to <MaclawBaseDir>/logs/sdk_diag.log.
 // Gated by corelib.IsLogDetailEnabled() — only writes when the user
 // enables "日志详情" in settings.
-var sdkDiagLog = func() *os.File {
-	dir := corelib.MaclawLogsDir()
-	_ = os.MkdirAll(dir, 0o755)
-	f, err := os.OpenFile(filepath.Join(dir, "sdk_diag.log"),
+var (
+	sdkDiagMu  sync.Mutex
+	sdkDiagLog = openSDKDiagLog()
+)
+
+func openSDKDiagLog() *os.File {
+	return openSDKDiagLogAt(corelib.MaclawLogsDir())
+}
+
+func openSDKDiagLogAt(dir string) *os.File {
+	if err := prepareLogDir(dir); err != nil {
+		return nil
+	}
+	path := filepath.Join(dir, "sdk_diag.log")
+	if err := rejectSymlinkFile(path); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(path,
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil
 	}
 	return f
-}()
+}
+
+func reopenSDKDiagLogAt(dir string) {
+	swapSDKDiagLog(openSDKDiagLogAt(dir))
+}
+
+func closeSDKDiagLog() {
+	swapSDKDiagLog(nil)
+}
+
+func swapSDKDiagLog(next *os.File) {
+	sdkDiagMu.Lock()
+	previous := sdkDiagLog
+	sdkDiagLog = next
+	sdkDiagMu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+}
 
 func sdkDiag(format string, args ...interface{}) {
 	if !corelib.IsLogDetailEnabled() {
 		return
 	}
 	msg := fmt.Sprintf(time.Now().Format("15:04:05.000")+" "+format+"\n", args...)
+	sdkDiagMu.Lock()
+	defer sdkDiagMu.Unlock()
 	if sdkDiagLog != nil {
 		_, _ = sdkDiagLog.WriteString(msg)
 	}

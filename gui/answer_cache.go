@@ -330,11 +330,12 @@ func canonicalAnswerCacheStrings(values []string) []string {
 }
 
 type answerCacheExpertPolicy struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	SystemPrompt string   `json:"system_prompt"`
-	Tools        []string `json:"tools,omitempty"`
-	Skills       []string `json:"skills,omitempty"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	SystemPrompt    string                 `json:"system_prompt"`
+	Tools           []string               `json:"tools,omitempty"`
+	Skills          []string               `json:"skills,omitempty"`
+	CapabilityRules []ExpertCapabilityRule `json:"capability_rules,omitempty"`
 }
 
 type answerCacheBindingScope struct {
@@ -422,11 +423,12 @@ func answerCacheScopeRaw(msg IMUserMessage, profileID string, expertDef *ExpertD
 		expertPolicy := answerCacheExpertPolicy{}
 		if expertDef != nil {
 			expertPolicy = answerCacheExpertPolicy{
-				ID:           strings.TrimSpace(expertDef.ID),
-				Name:         strings.TrimSpace(expertDef.Name),
-				SystemPrompt: expertDef.SystemPrompt,
-				Tools:        canonicalAnswerCacheStrings(expertDef.Tools),
-				Skills:       canonicalAnswerCacheStrings(expertDef.Skills),
+				ID:              strings.TrimSpace(expertDef.ID),
+				Name:            strings.TrimSpace(expertDef.Name),
+				SystemPrompt:    expertDef.SystemPrompt,
+				Tools:           canonicalAnswerCacheStrings(expertDef.Tools),
+				Skills:          canonicalAnswerCacheStrings(expertDef.Skills),
+				CapabilityRules: cloneExpertCapabilityRules(expertDef.CapabilityRules),
 			}
 		}
 		encoded, _ := json.Marshal(answerCacheBindingScope{

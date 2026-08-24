@@ -29,6 +29,9 @@ const (
 	browserToolActionClickAt      browserToolAction = "click_at"
 	browserToolActionSetFiles     browserToolAction = "set_files"
 	browserToolActionInfo         browserToolAction = "info"
+	browserToolActionHover        browserToolAction = "hover"
+	browserToolActionPress        browserToolAction = "press"
+	browserToolActionDialog       browserToolAction = "dialog"
 	browserToolActionOCR          browserToolAction = "ocr"
 	browserToolActionTaskRun      browserToolAction = "task_run"
 	browserToolActionTaskStatus   browserToolAction = "task_status"
@@ -89,6 +92,12 @@ func normalizeBrowserToolAction(action string) browserToolAction {
 		return browserToolActionSetFiles
 	case browserToolActionInfo:
 		return browserToolActionInfo
+	case browserToolActionHover:
+		return browserToolActionHover
+	case browserToolActionPress:
+		return browserToolActionPress
+	case browserToolActionDialog:
+		return browserToolActionDialog
 	case browserToolActionOCR:
 		return browserToolActionOCR
 	case browserToolActionTaskRun:
@@ -145,6 +154,9 @@ var mergedBrowserSupportedActions = []browserToolAction{
 	browserToolActionClose,
 	browserToolActionSetFiles,
 	browserToolActionInfo,
+	browserToolActionHover,
+	browserToolActionPress,
+	browserToolActionDialog,
 	browserToolActionTaskRun,
 	browserToolActionTaskStatus,
 	browserToolActionTaskVerify,

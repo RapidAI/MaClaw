@@ -146,6 +146,7 @@ func TestProperty9_LoadProjectContext_TaskArtifactPopulatesRecentProgress(t *tes
 
 	// Save a task_artifact entry tagged with the project path.
 	entry := memory.Entry{
+		Title:    "Requirements analysis",
 		Content:  "Completed requirements analysis for the game engine module.",
 		Category: memory.CategoryTaskArtifact,
 		Tags:     []string{projectPath},
@@ -160,8 +161,11 @@ func TestProperty9_LoadProjectContext_TaskArtifactPopulatesRecentProgress(t *tes
 	if summary.RecentProgress == "" {
 		t.Error("RecentProgress should be populated when task_artifact entries exist for the project")
 	}
-	if !strings.Contains(summary.RecentProgress, "Completed requirements") {
-		t.Errorf("RecentProgress = %q, want to contain task artifact content", summary.RecentProgress)
+	if !strings.Contains(summary.RecentProgress, "Requirements analysis") {
+		t.Errorf("RecentProgress = %q, want catalog title", summary.RecentProgress)
+	}
+	if strings.Contains(summary.RecentProgress, "Completed requirements") {
+		t.Errorf("RecentProgress = %q, must not dump warehouse body", summary.RecentProgress)
 	}
 }
 
@@ -235,6 +239,15 @@ func TestLoadProjectContextIncludesSceneRecentArtifacts(t *testing.T) {
 	}
 	if artifact.SourceHint != "full: read_file" {
 		t.Fatalf("RecentArtifacts[0].SourceHint = %q, want full: read_file", artifact.SourceHint)
+	}
+	if artifact.Preview != "" {
+		t.Fatalf("RecentArtifacts[0].Preview = %q, want empty catalog pointer", artifact.Preview)
+	}
+	if !strings.Contains(summary.RecentProgress, "Scene Context Design") {
+		t.Fatalf("RecentProgress = %q, want catalog title", summary.RecentProgress)
+	}
+	if strings.Contains(summary.RecentProgress, "Keep full design") {
+		t.Fatalf("RecentProgress = %q, must not dump warehouse body", summary.RecentProgress)
 	}
 	foundSource := false
 	for _, path := range summary.KeyArtifacts {

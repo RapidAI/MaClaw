@@ -34,6 +34,14 @@ esp_err_t compact_peripheral_adapter_init(void);
  * the shared compact renderer sees only this bounded lifecycle contract. */
 esp_err_t compact_peripheral_adapter_stop_background_tasks(uint32_t timeout_ms);
 
+/* Reversible future-MCU-sleep boundary for the profile-owned ADC/GPIO
+ * monitor. It parks the retained task at a no-sample point; after admission
+ * has closed, including an ACK timeout, only the owning Power transaction's
+ * ABORT wakes the same generation. Neither operation deinitializes the ADC
+ * nor changes board rails. */
+esp_err_t compact_peripheral_adapter_prepare_system_sleep(uint32_t timeout_ms);
+void compact_peripheral_adapter_abort_system_sleep_prepare(void);
+
 /* Reads the profile-owned normalized telemetry snapshot.  The board facade
  * forwards this narrow value contract to Platform Power; it never observes
  * the ADC, charge GPIO, worker handles or synchronization primitive. */

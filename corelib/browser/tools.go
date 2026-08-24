@@ -2,9 +2,11 @@ package browser
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -29,6 +31,9 @@ func RegisterTools(registry *tool.Registry) {
 				"allowed_domains":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "允许访问的域名列表"},
 				"blocked_domains":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "禁止访问的域名列表"},
 				"allow_cross_origin_navigation": map[string]interface{}{"type": "boolean", "description": "是否允许跨域导航"},
+				"allow_popup":                   map[string]interface{}{"type": "boolean", "description": "是否允许弹出新标签，默认 false"},
+				"allow_download":                map[string]interface{}{"type": "boolean", "description": "是否允许页面触发下载，默认 false"},
+				"allow_upload":                  map[string]interface{}{"type": "boolean", "description": "是否允许 set_files 上传，默认 false"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				policy := policyFromArgs(args)
@@ -39,10 +44,8 @@ func RegisterTools(registry *tool.Registry) {
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
-				if startURL := strings.TrimSpace(strArg(args, "start_url", "")); startURL != "" {
-					if _, err := agentSession.Navigate(startURL); err != nil {
-						return marshalBrowserResult(false, err.Error(), map[string]interface{}{"session_id": agentSession.ID})
-					}
+				if err := agentSession.OpenURL(strArg(args, "start_url", "")); err != nil {
+					return marshalBrowserResult(false, err.Error(), map[string]interface{}{"session_id": agentSession.ID})
 				}
 				state := agentSession.State()
 				modeLabel := "persistent (login/cookies preserved)"
@@ -92,13 +95,14 @@ func RegisterTools(registry *tool.Registry) {
 			InputSchema: map[string]interface{}{
 				"session_id":         map[string]interface{}{"type": "string", "description": "browser session id"},
 				"include_screenshot": map[string]interface{}{"type": "boolean", "description": "Ignored; screenshots disabled, default false"},
+				"query":              map[string]interface{}{"type": "string", "description": "可选：只保留 name/text/role 匹配该词的 refs"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
-				obs, err := agentSession.Observe(boolArg(args, "include_screenshot", false))
+				obs, err := agentSession.ObserveFiltered(strArg(args, "query", ""))
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
@@ -115,6 +119,7 @@ func RegisterTools(registry *tool.Registry) {
 			InputSchema: map[string]interface{}{
 				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
 				"url":        map[string]interface{}{"type": "string", "description": "要访问的 URL"},
+				"expect":     map[string]interface{}{"type": "string", "description": "可选后置条件，如 url_contains:login"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
@@ -122,10 +127,7 @@ func RegisterTools(registry *tool.Registry) {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
 				result, err := agentSession.Navigate(strArg(args, "url", ""))
-				if err != nil {
-					return marshalBrowserResult(false, err.Error(), nil)
-				}
-				return marshalBrowserResult(true, result.Display, result.Data)
+				return marshalActionResult(agentSession, result, err, ParseExpect(strArg(args, "expect", "")))
 			},
 		},
 		{
@@ -141,6 +143,7 @@ func RegisterTools(registry *tool.Registry) {
 				"ref":         map[string]interface{}{"type": "string", "description": "观察返回的 ref，例如 @e1"},
 				"selector":    map[string]interface{}{"type": "string", "description": "可选 CSS selector"},
 				"text":        map[string]interface{}{"type": "string", "description": "Visible text fallback when ref/selector is empty"},
+				"expect":      map[string]interface{}{"type": "string", "description": "可选后置条件，如 url_contains:cart 或 text:成功"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
@@ -156,10 +159,7 @@ func RegisterTools(registry *tool.Registry) {
 				} else {
 					result, err = agentSession.Click(snapshotID, ref, selector)
 				}
-				if err != nil {
-					return marshalBrowserResult(false, err.Error(), nil)
-				}
-				return marshalBrowserResult(true, result.Display, result.Data)
+				return marshalActionResult(agentSession, result, err, ParseExpect(strArg(args, "expect", "")))
 			},
 		},
 		{
@@ -179,17 +179,16 @@ func RegisterTools(registry *tool.Registry) {
 					"type":        "string",
 					"description": "plain (default) or markdown. Use markdown for rich editors/article publishing so Markdown renders as headings/lists/bold instead of raw text.",
 				},
+				"append": map[string]interface{}{"type": "boolean", "description": "true 时追加输入，不清空现有内容"},
+				"expect": map[string]interface{}{"type": "string", "description": "可选后置条件"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
-				result, err := agentSession.TypeContent(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), strArg(args, "text", ""), strArg(args, "content_format", ""))
-				if err != nil {
-					return marshalBrowserResult(false, err.Error(), nil)
-				}
-				return marshalBrowserResult(true, result.Display, result.Data)
+				result, err := agentSession.TypeContentAppend(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), strArg(args, "text", ""), strArg(args, "content_format", ""), boolArg(args, "append", false))
+				return marshalActionResult(agentSession, result, err, ParseExpect(strArg(args, "expect", "")))
 			},
 		},
 		{
@@ -212,10 +211,7 @@ func RegisterTools(registry *tool.Registry) {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
 				result, err := agentSession.Wait(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), intArg(args, "duration_ms", 1000))
-				if err != nil {
-					return marshalBrowserResult(false, err.Error(), nil)
-				}
-				return marshalBrowserResult(true, result.Display, result.Data)
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
 			},
 		},
 		{
@@ -234,10 +230,7 @@ func RegisterTools(registry *tool.Registry) {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
 				result, err := agentSession.Refresh()
-				if err != nil {
-					return marshalBrowserResult(false, err.Error(), nil)
-				}
-				return marshalBrowserResult(true, result.Display, result.Data)
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
 			},
 		},
 		{
@@ -256,10 +249,7 @@ func RegisterTools(registry *tool.Registry) {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
 				result, err := agentSession.Back()
-				if err != nil {
-					return marshalBrowserResult(false, err.Error(), nil)
-				}
-				return marshalBrowserResult(true, result.Display, result.Data)
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
 			},
 		},
 		{
@@ -319,10 +309,8 @@ func RegisterTools(registry *tool.Registry) {
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
-				if startURL := strings.TrimSpace(strArg(args, "start_url", "")); startURL != "" {
-					if _, err := agentSession.Navigate(startURL); err != nil {
-						return marshalBrowserResult(false, err.Error(), map[string]interface{}{"session_id": agentSession.ID})
-					}
+				if err := agentSession.OpenURL(strArg(args, "start_url", "")); err != nil {
+					return marshalBrowserResult(false, err.Error(), map[string]interface{}{"session_id": agentSession.ID})
 				}
 				state := agentSession.State()
 				return marshalBrowserResult(true, fmt.Sprintf("browser session ready %s", agentSession.ID), map[string]interface{}{
@@ -338,52 +326,50 @@ func RegisterTools(registry *tool.Registry) {
 		},
 		{
 			Name:        "browser_scroll",
-			Description: "滚动页面。delta_y 正值向下滚动，负值向上。",
+			Description: "滚动页面。可带 ref 滚到元素；delta_y 正值向下滚动，负值向上。",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "web", "scroll", "浏览器", "滚动", "网页"},
 			Priority:    3,
 			Required:    []string{"session_id"},
 			InputSchema: map[string]interface{}{
-				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
-				"delta_x":    map[string]interface{}{"type": "integer", "description": "水平滚动像素（默认 0）"},
-				"delta_y":    map[string]interface{}{"type": "integer", "description": "垂直滚动像素（默认 500）"},
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "可选 ref，滚到该元素"},
+				"selector":    map[string]interface{}{"type": "string", "description": "可选 CSS selector"},
+				"delta_x":     map[string]interface{}{"type": "integer", "description": "水平滚动像素（默认 0）"},
+				"delta_y":     map[string]interface{}{"type": "integer", "description": "垂直滚动像素（默认 500）"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := requireAgentSessionFromArgs(args)
 				if err != nil {
 					return sessionError(err)
 				}
-				sess := agentSession.session
-				dx := intArg(args, "delta_x", 0)
-				dy := intArg(args, "delta_y", 500)
-				if err := sess.Scroll(dx, dy); err != nil {
-					return fmt.Sprintf("滚动失败: %s", err)
-				}
-				return fmt.Sprintf("已滚动 dx=%d dy=%d", dx, dy)
+				result, err := agentSession.ScrollBy(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), intArg(args, "delta_x", 0), intArg(args, "delta_y", 500))
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
 			},
 		},
 		{
 			Name:        "browser_select",
-			Description: "在 <select> 下拉框中选择指定值。",
+			Description: "在 <select> 下拉框中选择指定值，优先 ref。",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "web", "select", "浏览器", "选择", "下拉", "网页"},
 			Priority:    3,
-			Required:    []string{"session_id", "selector", "value"},
+			Required:    []string{"session_id", "value"},
 			InputSchema: map[string]interface{}{
-				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
-				"selector":   map[string]interface{}{"type": "string", "description": "CSS 选择器"},
-				"value":      map[string]interface{}{"type": "string", "description": "要选择的 option value"},
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "观察返回的 ref"},
+				"selector":    map[string]interface{}{"type": "string", "description": "CSS 选择器（无 ref 时使用）"},
+				"value":       map[string]interface{}{"type": "string", "description": "要选择的 option value"},
+				"expect":      map[string]interface{}{"type": "string", "description": "可选后置条件"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := requireAgentSessionFromArgs(args)
 				if err != nil {
 					return sessionError(err)
 				}
-				sess := agentSession.session
-				if err := sess.Select(strArg(args, "selector", ""), strArg(args, "value", "")); err != nil {
-					return fmt.Sprintf("选择失败: %s", err)
-				}
-				return "已选择"
+				result, err := agentSession.SelectOption(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), strArg(args, "value", ""))
+				return marshalActionResult(agentSession, result, err, ParseExpect(strArg(args, "expect", "")))
 			},
 		},
 		{
@@ -470,32 +456,90 @@ func RegisterTools(registry *tool.Registry) {
 		},
 		{
 			Name:        "browser_set_files",
-			Description: "给 file input 元素设置本地文件路径，绕过文件对话框。用于自动化文件上传。",
+			Description: "给 file input 元素设置本地文件路径，绕过文件对话框。需要 session_start 时 allow_upload=true。",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "web", "upload", "file", "浏览器", "上传", "文件", "网页"},
 			Priority:    4,
-			Required:    []string{"session_id", "selector"},
+			Required:    []string{"session_id"},
 			InputSchema: map[string]interface{}{
-				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
-				"selector":   map[string]interface{}{"type": "string", "description": "file input 的 CSS 选择器，如 input[type=file]"},
-				"files":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "本地文件路径"},
-				"file_paths": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "files 参数别名"},
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "file input 的 ref"},
+				"selector":    map[string]interface{}{"type": "string", "description": "file input 的 CSS 选择器，如 input[type=file]"},
+				"files":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "本地文件路径"},
+				"file_paths":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "files 参数别名"},
 			},
 			Handler: func(args map[string]interface{}) string {
 				agentSession, err := requireAgentSessionFromArgs(args)
 				if err != nil {
 					return sessionError(err)
 				}
-				sess := agentSession.session
-				sel := strArg(args, "selector", "")
 				files := browserFilesArg(args)
-				if len(files) == 0 {
-					return "缺少 files 参数"
+				result, err := agentSession.SetFilesOn(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""), files)
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
+			},
+		},
+		{
+			Name:        "browser_hover",
+			Description: "将鼠标移到 ref/selector 上，用于展开菜单。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "hover", "menu", "浏览器", "悬停"},
+			Priority:    4,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id":  map[string]interface{}{"type": "string", "description": "browser session id"},
+				"snapshot_id": map[string]interface{}{"type": "string", "description": "可选 snapshot id"},
+				"ref":         map[string]interface{}{"type": "string", "description": "观察返回的 ref"},
+				"selector":    map[string]interface{}{"type": "string", "description": "可选 CSS selector"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := requireAgentSessionFromArgs(args)
+				if err != nil {
+					return sessionError(err)
 				}
-				if err := sess.SetFiles(sel, files); err != nil {
-					return fmt.Sprintf("设置文件失败: %s", err)
+				result, err := agentSession.Hover(strArg(args, "snapshot_id", ""), strArg(args, "ref", ""), strArg(args, "selector", ""))
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
+			},
+		},
+		{
+			Name:        "browser_press",
+			Description: "发送按键：Enter / Escape / Tab / 方向键 / 常见快捷键。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "press", "keyboard", "浏览器", "按键"},
+			Priority:    4,
+			Required:    []string{"session_id", "key"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"key":        map[string]interface{}{"type": "string", "description": "Enter, Escape, Tab, ArrowDown 等"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := requireAgentSessionFromArgs(args)
+				if err != nil {
+					return sessionError(err)
 				}
-				return fmt.Sprintf("已设置 %d 个文件到 %s", len(files), sel)
+				result, err := agentSession.Press(strArg(args, "key", ""))
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
+			},
+		},
+		{
+			Name:        "browser_dialog",
+			Description: "处理当前 JavaScript alert/confirm/prompt。",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "dialog", "alert", "浏览器", "对话框"},
+			Priority:    4,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"accept":     map[string]interface{}{"type": "boolean", "description": "true 接受，false 取消，默认 true"},
+				"text":       map[string]interface{}{"type": "string", "description": "prompt 输入文本"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := requireAgentSessionFromArgs(args)
+				if err != nil {
+					return sessionError(err)
+				}
+				result, err := agentSession.HandleDialog(boolArg(args, "accept", true), strArg(args, "text", ""))
+				return marshalActionResult(agentSession, result, err, ExpectSpec{})
 			},
 		},
 		{
@@ -550,6 +594,74 @@ func marshalBrowserResult(ok bool, display string, data map[string]interface{}) 
 	}
 	encoded, _ := json.Marshal(payload)
 	return string(encoded)
+}
+
+func marshalActionResult(s *BrowserAgentSession, result *BrowserActionResult, err error, expect ExpectSpec) string {
+	if err != nil {
+		extra := map[string]interface{}{}
+		var amb *AmbiguousElementError
+		if errors.As(err, &amb) && amb != nil {
+			extra["refs"] = compactElementRefs(amb.Refs)
+		}
+		if len(extra) == 0 {
+			extra = nil
+		}
+		return marshalBrowserResult(false, llmSafeBrowserError(err), extra)
+	}
+	if s != nil {
+		result = s.applyGoalClassContract(result, expect)
+		result = s.applyExpect(result, expect)
+	}
+	if result == nil {
+		return marshalBrowserResult(false, "empty browser action result", nil)
+	}
+	if result.Status == "ask" {
+		req := result.AskUser
+		if req == nil {
+			req = captchaAskUserRequest("")
+		}
+		return agent.AskUserResultMarker(req)
+	}
+	if s != nil {
+		s.rememberSubmitClickIfOK(result.submitRememberKey, result)
+	}
+	ok := result.Status == "ok" || result.Status == ""
+	data := result.Data
+	if !ok {
+		data = compactFailureDataFromResult(result)
+	}
+	data = attachLastExpectLedger(s, data)
+	return marshalBrowserResult(ok, result.Display, data)
+}
+
+func llmSafeBrowserError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	stalePrefix := func() string {
+		if i := strings.Index(msg, " is stale"); i > 0 && (strings.HasPrefix(msg, "ref ") || strings.HasPrefix(msg, "text ")) {
+			return msg[:i+len(" is stale")] + "; run observe again to get fresh refs"
+		}
+		return ""
+	}
+	switch {
+	case strings.Contains(msg, "element not found"):
+		if prefix := stalePrefix(); prefix != "" {
+			return prefix
+		}
+		return "element not found; run observe again and click by ref"
+	case strings.Contains(msg, "wait for selector timed out"):
+		if prefix := stalePrefix(); prefix != "" {
+			return prefix
+		}
+		return "wait timed out; run observe again"
+	case strings.Contains(msg, "option not found"):
+		return "option not found; use the option's visible label or value from observe"
+	case strings.Contains(msg, "element occluded"):
+		return "element occluded; run observe again and click by ref"
+	}
+	return msg
 }
 
 func policyFromArgs(args map[string]interface{}) BrowserPolicy {

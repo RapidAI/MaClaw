@@ -286,6 +286,38 @@ func remoteIsolateMergeFrameComplete(output, markerStart, markerEnd string) bool
 	return false
 }
 
+func (r *remoteCodingIsolate) hasChanges(h *IMMessageHandler) (dirty bool, ok bool) {
+	if r == nil || !r.created || h == nil || strings.TrimSpace(r.IsolateDir) == "" {
+		return false, false
+	}
+	out := h.sshExec(map[string]interface{}{
+		"session_id": r.SessionID,
+		"command": fmt.Sprintf(
+			`set -e; cd %s; if [ -n "$(git status --porcelain)" ]; then echo "__MACLAW_ISO_DIRTY__"; else echo "__MACLAW_ISO_CLEAN__"; fi`,
+			remoteShellQuote(r.IsolateDir),
+		),
+		"wait_seconds": float64(20),
+	})
+	if strings.Contains(out, "__MACLAW_ISO_DIRTY__") {
+		return true, true
+	}
+	if strings.Contains(out, "__MACLAW_ISO_CLEAN__") {
+		return false, true
+	}
+	return false, false
+}
+
+func isolatedRemoteWorkerShouldKeepIsolate(iso *remoteCodingIsolate, h *IMMessageHandler, res *RemoteCodingSubAgentResult) bool {
+	if res != nil && (len(res.FilesModified) > 0 || len(res.FilesCreated) > 0) {
+		return true
+	}
+	dirty, probed := iso.hasChanges(h)
+	if !probed {
+		return true
+	}
+	return dirty
+}
+
 func (r *remoteCodingIsolate) cleanup(h *IMMessageHandler) {
 	if r == nil || !r.created || h == nil {
 		return

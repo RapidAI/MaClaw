@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -27,24 +28,30 @@ const DefaultLLMProviderInputPricePerMTokensRMB = corelib.DefaultLLMInputPricePe
 const DefaultLLMProviderOutputPricePerMTokensRMB = corelib.DefaultLLMOutputPricePerMTokensRMB
 
 type LLMProvider struct {
-	ID                       string  `json:"id"`
-	Name                     string  `json:"name"`
-	APIURL                   string  `json:"api_url"`
-	APIKey                   string  `json:"api_key"`
-	Model                    string  `json:"model"`
-	Protocol                 string  `json:"protocol,omitempty"`
-	WireAPI                  string  `json:"wire_api,omitempty"`
-	AgentType                string  `json:"agent_type,omitempty"`
-	MaxConcurrency           int     `json:"max_concurrency,omitempty"`
-	MaxQueueWaiters          int     `json:"max_queue_waiters,omitempty"`
-	QueueTimeoutMS           int     `json:"queue_timeout_ms,omitempty"`
-	UpstreamTimeoutSec       int     `json:"upstream_timeout_sec,omitempty"`
-	CircuitBreakerThreshold  int     `json:"circuit_breaker_threshold,omitempty"`
-	CircuitBreakerCooldownMS int     `json:"circuit_breaker_cooldown_ms,omitempty"`
-	FailureBackoffBaseMS     int     `json:"failure_backoff_base_ms,omitempty"`
-	FailureBackoffMaxMS      int     `json:"failure_backoff_max_ms,omitempty"`
-	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
-	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
+	ID                       string                           `json:"id"`
+	Name                     string                           `json:"name"`
+	APIURL                   string                           `json:"api_url"`
+	APIKey                   string                           `json:"api_key"`
+	Model                    string                           `json:"model"`
+	Protocol                 string                           `json:"protocol,omitempty"`
+	WireAPI                  string                           `json:"wire_api,omitempty"`
+	AgentType                string                           `json:"agent_type,omitempty"`
+	MaxConcurrency           int                              `json:"max_concurrency,omitempty"`
+	MaxQueueWaiters          int                              `json:"max_queue_waiters,omitempty"`
+	QueueTimeoutMS           int                              `json:"queue_timeout_ms,omitempty"`
+	UpstreamTimeoutSec       int                              `json:"upstream_timeout_sec,omitempty"`
+	CircuitBreakerThreshold  int                              `json:"circuit_breaker_threshold,omitempty"`
+	CircuitBreakerCooldownMS int                              `json:"circuit_breaker_cooldown_ms,omitempty"`
+	FailureBackoffBaseMS     int                              `json:"failure_backoff_base_ms,omitempty"`
+	FailureBackoffMaxMS      int                              `json:"failure_backoff_max_ms,omitempty"`
+	InputPricePerMTokensRMB  float64                          `json:"input_price_per_m_tokens_rmb,omitempty"`
+	OutputPricePerMTokensRMB float64                          `json:"output_price_per_m_tokens_rmb,omitempty"`
+	// TokenPricing is the directional Credits price (per 10k tokens) used as
+	// the default for service-group routes that do not price themselves.
+	TokenPricing             llmpool.TokenPricing             `json:"token_pricing,omitempty"`
+	Timezone                 string                           `json:"timezone,omitempty"`
+	CreditMultiplier         float64                          `json:"credit_multiplier,omitempty"`
+	CreditMultiplierSchedule []llmpool.CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
 }
 
 type LLMProviderRegistry struct {
@@ -123,8 +130,31 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 		}
 		reg.Providers[i].InputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(reg.Providers[i].InputPricePerMTokensRMB, DefaultLLMProviderInputPricePerMTokensRMB)
 		reg.Providers[i].OutputPricePerMTokensRMB = corelib.NormalizeLLMTokenPricePerMTokensRMB(reg.Providers[i].OutputPricePerMTokensRMB, DefaultLLMProviderOutputPricePerMTokensRMB)
+		if llmpool.ValidateRouteBilling(llmpool.BillingModeFree, reg.Providers[i].TokenPricing) != nil {
+			// Drop invalid pricing shapes (negative/NaN or malformed schedule)
+			// so a bad save can never poison billing resolution.
+			reg.Providers[i].TokenPricing = llmpool.TokenPricing{}
+		}
+		policy := llmpool.NormalizeProviderBillingPolicy(llmpool.ProviderBillingPolicy{
+			ProviderID:               reg.Providers[i].ID,
+			Timezone:                 reg.Providers[i].Timezone,
+			CreditMultiplier:         reg.Providers[i].CreditMultiplier,
+			CreditMultiplierSchedule: reg.Providers[i].CreditMultiplierSchedule,
+		})
+		reg.Providers[i].Timezone = policy.Timezone
+		reg.Providers[i].CreditMultiplier = policy.CreditMultiplier
+		reg.Providers[i].CreditMultiplierSchedule = policy.CreditMultiplierSchedule
 	}
 	return reg
+}
+
+func (p LLMProvider) BillingPolicy() llmpool.ProviderBillingPolicy {
+	return llmpool.ProviderBillingPolicy{
+		ProviderID:               strings.TrimSpace(p.ID),
+		Timezone:                 p.Timezone,
+		CreditMultiplier:         p.CreditMultiplier,
+		CreditMultiplierSchedule: append([]llmpool.CreditMultiplierWindow(nil), p.CreditMultiplierSchedule...),
+	}
 }
 
 func LoadLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRepository) (*LLMProviderRegistry, error) {

@@ -70,7 +70,7 @@
   #marketplaceCapabilitiesList .item:hover,#marketplaceSearchResults .item:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(31,34,48,.09);border-color:rgba(37,99,235,.16)}
   .user-referral-fields{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-top:14px}.user-referral-fields>div:last-child{grid-column:span 2}.user-referral-toggle{display:flex;align-items:center;gap:8px;align-self:end;min-height:38px;font-weight:650}.user-referral-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.user-referral-card{padding:14px;border:1px solid #e2e6ed;border-radius:12px;background:#fff;display:grid;gap:8px}.user-referral-card__contact{font-weight:750;color:#262b36;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-referral-card__id{font-size:11px;color:#707684;overflow:hidden;text-overflow:ellipsis}.user-referral-card__count{border:0;background:#fff0f2;color:#bc4051;border-radius:8px;padding:8px;text-align:left;font:inherit;font-weight:700;cursor:pointer}.user-referral-card__count:hover{background:#fce2e6}.user-referral-card dl{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0}.user-referral-card dt{font-size:10px;color:#707684}.user-referral-card dd{margin:2px 0 0;font-weight:700;font-size:13px}.user-referral-card__time{font-size:11px;color:#707684;line-height:1.45}.user-referral-detail-modal{width:min(1040px,calc(100% - 40px))}.user-referral-detail-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.user-referral-invitee{border:1px solid #e2e6ed;border-radius:10px;padding:12px;display:grid;gap:6px;min-height:100px}.user-referral-invitee strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-referral-invitee span,.user-referral-invitee time{font-size:11px;color:#707684;line-height:1.35}.user-referral-invitee__grants{display:grid;gap:4px;margin:2px 0 0}.user-referral-invitee__grants div{display:flex;justify-content:space-between;gap:6px}.user-referral-invitee__grants dt,.user-referral-invitee__grants dd{margin:0;font-size:10px;line-height:1.35}.user-referral-invitee__grants dt{color:#707684}.user-referral-invitee__grants dd{font-weight:700;color:#374151;text-align:right}.user-referral-history{font-size:10px;color:#596170}.user-referral-history summary{cursor:pointer;font-weight:700}.user-referral-history ol{margin:5px 0 0;padding-left:16px;display:grid;gap:4px}.user-referral-history li{display:grid;gap:2px}.user-referral-history time{font-size:10px}.user-referral-history em{font-style:normal;line-height:1.3}.user-referral-review-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.user-referral-review-card{display:grid;gap:7px;padding:12px;border:1px solid #f0d59d;border-radius:10px;background:#fffbf2}.user-referral-review-card strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151}.user-referral-review-card small{font-size:11px;line-height:1.4;color:#6b7280}.user-referral-review-card .badge{justify-self:start}.user-referral-review-card .actions{margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}.user-referral-review-card .actions button{min-height:30px;height:30px;padding:0 9px;font-size:11px;box-shadow:none}@media (max-width:980px){.user-referral-grid,.user-referral-detail-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.user-referral-review-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.user-referral-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:620px){.user-referral-grid,.user-referral-detail-grid,.user-referral-review-grid,.user-referral-fields{grid-template-columns:1fr}.user-referral-fields>div:last-child{grid-column:auto}}
   </style>
-  <link rel="stylesheet" href="/admin/professional.css?v=referral-panel-isolation-20260813-1">
+  <link rel="stylesheet" href="/admin/professional.css?v=class-train-ui-20260819-8">
 </head>
 <body>
   <!-- Toast stack -->
@@ -243,6 +243,7 @@
           <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
           <button data-tab="userreferrals" onclick="openTab('userreferrals')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"></path><path d="M2 8h20v4H2z"></path><path d="M12 8v12"></path><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"></path><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"></path></svg></span><div class="nav-copy"><span id="navUserReferrals" data-i18n="navUserReferrals">User referrals</span><small id="navUserReferralsDesc" data-i18n="navUserReferralsDesc">Rewards and activity</small></div></div></button>
           <button data-tab="security" onclick="openTab('security')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 6 6v5c0 4.2 2.6 7.8 6 10 3.4-2.2 6-5.8 6-10V6l-6-3Z"></path><path d="m9.5 12 1.7 1.7 3.3-3.4"></path></svg></span><div class="nav-copy"><span id="navSecurity" data-i18n="navSecurity"></span><small id="navSecurityDesc" data-i18n="navSecurityDesc"></small></div></div></button>
+          <button data-tab="httpthreat" onclick="openTab('httpthreat')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4z"></path><path d="M8 7v10"></path><path d="M4 12h16"></path></svg></span><div class="nav-copy"><span id="navHTTPThreat" data-i18n="httpThreatTabTitle">HTTP Threat Head</span><small id="navHTTPThreatDesc" data-i18n="httpThreatNavDesc">Rules plus generalization head</small></div></div></button>
           <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
           <button data-tab="pwarequests" onclick="openTab('pwarequests')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 7h4"></path><path d="M12 17h.01"></path></svg></span><div class="nav-copy"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></div></div></button>
           <button data-tab="approvalroles" onclick="openTab('approvalroles')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16"></path><path d="M7 6v14"></path><path d="M17 6v14"></path><path d="M4 20h16"></path><path d="M9.5 11.5 11 13l3.5-3.5"></path></svg></span><div class="nav-copy"><span id="navApprovalRoles" data-i18n="approvalRolesTabTitle"></span><small id="navApprovalRolesDesc" data-i18n="approvalRolesTabSubtitle"></small></div></div></button>
@@ -258,7 +259,7 @@
           <div class="nav-group-label" id="nav-group-label-capabilities" data-i18n="navGroupCapabilities">Capabilities</div>
           <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
           <button data-tab="knowledge" onclick="openTab('knowledge')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h9l5 5v9H5z"></path><path d="M14 5v5h5"></path><path d="M8 13h8"></path><path d="M8 16h5"></path></svg></span><div class="nav-copy"><span data-i18n="knowledgeTabTitle"></span><small data-i18n="knowledgeNavDesc"></small></div></div></button>
-          <button data-tab="digital-assets" onclick="openTab('digital-assets')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h7v10H4z"></path><path d="M13 7h7v4h-7z"></path><path d="M13 13h7v4h-7z"></path></svg></span><div class="nav-copy"><span data-i18n="digitalAssetsTabTitle">Digital Assets</span><small data-i18n="digitalAssetsNavDesc">Enterprise knowledge</small></div></div></button>
+          <button data-tab="digital-assets" onclick="openTab('digital-assets')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h7v10H4z"></path><path d="M13 7h7v4h-7z"></path><path d="M13 13h7v4h-7z"></path></svg></span><div class="nav-copy"><span id="navDigitalAssets" data-i18n="digitalAssetsTabTitle">Digital Assets</span><small id="navDigitalAssetsDesc" data-i18n="digitalAssetsNavDesc">Enterprise knowledge libraries</small></div></div></button>
         </div>
         <div class="nav-group" data-nav-group="models" role="group" aria-labelledby="nav-group-label-models">
           <div class="nav-group-label" id="nav-group-label-models" data-i18n="navGroupModels">Models & Commerce</div>
@@ -1333,6 +1334,33 @@
         </div>
       </section>
 
+      <section id="tab-httpthreat" class="panel card">
+        <div class="head">
+          <div><h3 id="httpThreatTitle" data-i18n="httpThreatTabTitle">HTTP Threat Head</h3><div class="desc" id="httpThreatSubtitle" data-i18n="httpThreatTabSubtitle">Label weak-rule HTTP samples, train a candidate head, then shadow before canary/on.</div></div>
+          <button class="btn-ghost" type="button" onclick="loadHTTPThreatTab()" data-i18n="reload">Reload</button>
+        </div>
+        <div id="httpThreatStatus" class="item" style="padding:12px"></div>
+        <div class="item" style="padding:12px;margin-top:12px">
+          <div class="item-title" id="httpThreatObserveTitle">Bypass observation</div>
+          <div class="item-meta" id="httpThreatObserveNote">Observation only. Agreement is not a promote gate.</div>
+          <div id="httpThreatObserve" style="margin-top:8px"></div>
+        </div>
+        <div class="item" style="padding:12px;margin-top:12px">
+          <div class="item-title" id="httpThreatQueueTitle">Review queue</div>
+          <div id="httpThreatQueue" style="margin-top:8px"></div>
+        </div>
+        <div class="item" style="padding:12px;margin-top:12px">
+          <div class="item-title" id="httpThreatAuditTitle">Disposition audit</div>
+          <div class="item-meta" id="httpThreatAuditNote">Recent detect actions. Mark business false positives here. Does not change serving.</div>
+          <div id="httpThreatAudit" style="margin-top:8px"></div>
+        </div>
+        <div class="item" style="padding:12px;margin-top:12px">
+          <div class="item-title" id="httpThreatRulesTitle">Rule ops</div>
+          <div class="item-meta" id="httpThreatRulesNote">Hits and rule-id to class map. Training stays on the head page above. Remap voids auto gold only.</div>
+          <div id="httpThreatRules" style="margin-top:8px"></div>
+        </div>
+      </section>
+
       <!-- Tab: Approval Roles -->
       <section id="tab-approvalroles" class="panel card approval-role-page">
         <div class="head">
@@ -1553,7 +1581,7 @@
       <!-- Tab: Digital Assets (enterprise knowledge libraries) -->
       <section id="tab-digital-assets" class="panel card">
         <div class="head">
-          <div><h3 data-i18n="digitalAssetsTabTitle">Digital Assets</h3><div class="desc" data-i18n="digitalAssetsTabSubtitle"></div></div>
+          <div><h3 data-i18n="digitalAssetsTabTitle">Digital Assets</h3><div class="desc" data-i18n="digitalAssetsTabSubtitle">Tenant enterprise knowledge libraries, ACL, import and client sync.</div></div>
           <div style="display:flex;gap:8px">
             <button class="btn-primary" type="button" onclick="createDigitalAssetLibrary()" data-i18n="digitalAssetsCreate">New library</button>
             <button class="btn-ghost" type="button" onclick="loadDigitalAssetLibraries({refreshGroups:true})" data-i18n="digitalAssetsReload">Reload</button>

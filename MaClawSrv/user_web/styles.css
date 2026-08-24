@@ -72,6 +72,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .badge.ok { border-color: rgba(8, 116, 67, .26); color: var(--ok); background: #ecfdf3; }
 .badge.error { border-color: rgba(180, 35, 24, .26); color: var(--danger); background: var(--danger-soft); }
 .content { display: grid; gap: 18px; max-width: 1560px; margin: 0 auto; }
+.sign-in-panel { max-width: 480px; }
+.workbench-panel { min-width: 0; }
 
 .assistant-layout { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); gap: 18px; align-items: stretch; }
 .panel, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-card); }

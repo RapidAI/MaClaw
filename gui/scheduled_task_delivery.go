@@ -11,10 +11,27 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
-// deliverScheduledTaskResult pushes the agent result according to task.Delivery.
-// No-op when delivery is inactive or ShouldDeliver is false.
+// deliverScheduledTaskResult pushes the agent result according to task.Delivery
+// for legacy jobs, or through a CAS-claimed per-run DeliveryRecord when a
+// host-owned schedule.dispatch binding exists. Managed creates never write
+// Delivery; missing bindings stay a no-op and must not SendMedia.
 // Returns a non-nil error only when delivery was attempted and at least one target failed.
 func (a *App) deliverScheduledTaskResult(task *scheduler.ScheduledTask, resultText string, runErr error) error {
+	if a == nil || task == nil {
+		return nil
+	}
+	if task.Delivery != nil && task.Delivery.Active() {
+		return a.deliverLegacyScheduledTaskResult(task, resultText, runErr)
+	}
+	if store := a.scheduleDispatchBindingStore(); store != nil {
+		if binding, ok := store.Get(task.ID); ok && semanticTrustedDispatchDestination(binding.DestinationID) {
+			return a.deliverManagedScheduleDispatch(context.Background(), task, resultText, runErr)
+		}
+	}
+	return nil
+}
+
+func (a *App) deliverLegacyScheduledTaskResult(task *scheduler.ScheduledTask, resultText string, runErr error) error {
 	if a == nil || task == nil || task.Delivery == nil || !task.Delivery.Active() {
 		return nil
 	}

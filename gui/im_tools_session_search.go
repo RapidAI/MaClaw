@@ -35,6 +35,9 @@ func (h *IMMessageHandler) getSessionStore() *session.Store {
 //   - query (string, required): the search query
 //   - max_results (int, optional, default 10): maximum number of results
 func (h *IMMessageHandler) toolSessionSearch(args map[string]interface{}) string {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
 	query := stringVal(args, "query")
 	if query == "" {
 		return "缺少 query 参数"
@@ -53,13 +56,32 @@ func (h *IMMessageHandler) toolSessionSearch(args map[string]interface{}) string
 			}
 		}
 	}
+	// A model-controlled result count should not turn an accidental broad query
+	// into a large transcript injection. The normal UI asks for at most ten.
+	const maxSessionSearchResults = 20
+	if maxResults > maxSessionSearchResults {
+		maxResults = maxSessionSearchResults
+	}
 
 	store := h.getSessionStore()
 	if store == nil {
 		return "session search store 未初始化"
 	}
+	ownerID := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrent(args)
+	if ownerID == "" {
+		return "session search owner is missing; refusing an unscoped cross-session search"
+	}
+	anchor, anchored := taskIdentityAnchorFromToolArgs(args)
+	if !anchored {
+		anchor, anchored = h.taskIdentityAnchorForUser(ownerID)
+	}
+	if anchored && len(anchor.SourcePaths) > 0 && !taskAnchorAllowsCrossTaskRecall(sessionSearchUserText(args)) {
+		return "[system rejected] 当前任务已绑定对象和源文件。请先重读当前来源完成续写/浓缩；只有用户明确要求搜索历史会话时，才能检索其它任务。"
+	}
 
-	results, err := store.Search(query, maxResults)
+	// Never search another user's transcripts. This used to call Search(),
+	// which made any old desktop task eligible as a substitute source.
+	results, err := store.SearchOwned(query, ownerID, maxResults)
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %v", err)
 	}
@@ -84,4 +106,26 @@ func (h *IMMessageHandler) toolSessionSearch(args map[string]interface{}) string
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// sessionSearchUserText only accepts dispatcher-injected current-turn text.
+// Direct legacy callers can still perform an owned search when no source-bound
+// task is active, but cannot smuggle an authorization flag into a bound task.
+func sessionSearchUserText(args map[string]interface{}) string {
+	if args == nil {
+		return ""
+	}
+	text, _ := args["_user_text"].(string)
+	return text
+}
+
+func taskIdentityAnchorFromToolArgs(args map[string]interface{}) (taskIdentityAnchor, bool) {
+	if args == nil {
+		return taskIdentityAnchor{}, false
+	}
+	anchor, ok := args["_task_identity_anchor"].(taskIdentityAnchor)
+	if !ok || (anchor.Subject == "" && len(anchor.SourcePaths) == 0) {
+		return taskIdentityAnchor{}, false
+	}
+	return anchor, true
 }

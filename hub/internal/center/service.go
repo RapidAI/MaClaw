@@ -156,11 +156,13 @@ type deviceCredentialBackupResponse struct {
 }
 
 type syncUserLinkRequest struct {
-	HubSecret  string `json:"hub_secret"`
-	TenantID   string `json:"tenant_id,omitempty"`
-	Email      string `json:"email"`
-	IsDefault  bool   `json:"is_default"`
-	ReplaceAll bool   `json:"replace_all,omitempty"`
+	HubSecret                    string `json:"hub_secret"`
+	TenantID                     string `json:"tenant_id,omitempty"`
+	Email                        string `json:"email"`
+	PreviousEmail                string `json:"previous_email,omitempty"`
+	TenantAdminInventoryRevision string `json:"tenant_admin_inventory_revision,omitempty"`
+	IsDefault                    bool   `json:"is_default"`
+	ReplaceAll                   bool   `json:"replace_all,omitempty"`
 }
 
 type syncUserUsageRequest struct {
@@ -234,15 +236,16 @@ type Service struct {
 	admins   TenantAdminLister
 	sessions UserUsageSummarizer
 
-	mu                     sync.Mutex
-	heartbeatStarted       bool
-	heartbeatCancel        context.CancelFunc
-	usageBackfills         int
-	recorder               *diagnostics.FailureEventRecorder
-	credentialRecovery     func(context.Context)
-	credentialMu           sync.Mutex
-	configPath             string
-	managedIndustryExperts *industryexpert.SyncService
+	mu                           sync.Mutex
+	heartbeatStarted             bool
+	heartbeatCancel              context.CancelFunc
+	usageBackfills               int
+	recorder                     *diagnostics.FailureEventRecorder
+	credentialRecovery           func(context.Context)
+	credentialMu                 sync.Mutex
+	configPath                   string
+	managedIndustryExperts       *industryexpert.SyncService
+	authorizationPayloadListener func(map[string]json.RawMessage)
 }
 
 // SetManagedIndustryExpertSync installs the optional managed catalogue puller.
@@ -251,6 +254,29 @@ func (s *Service) SetManagedIndustryExpertSync(sync *industryexpert.SyncService)
 	s.mu.Lock()
 	s.managedIndustryExperts = sync
 	s.mu.Unlock()
+}
+
+// SetAuthorizationPayloadListener receives HubCenter heartbeat authorization
+// maps (including llm_compute.provider_billing) as soon as they arrive.
+func (s *Service) SetAuthorizationPayloadListener(fn func(map[string]json.RawMessage)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.authorizationPayloadListener = fn
+	s.mu.Unlock()
+}
+
+func (s *Service) notifyAuthorizationPayloads(payloads map[string]json.RawMessage) {
+	if s == nil || len(payloads) == 0 {
+		return
+	}
+	s.mu.Lock()
+	fn := s.authorizationPayloadListener
+	s.mu.Unlock()
+	if fn != nil {
+		fn(payloads)
+	}
 }
 
 func NewService(cfg *config.Config, settings SystemSettingsRepository) *Service {
@@ -1612,6 +1638,83 @@ func (s *Service) SyncUserRoute(ctx context.Context, email string, tenantIDOpt .
 	return s.syncUserRouteInternal(ctx, email, false, tenantIDOpt...)
 }
 
+// SyncTenantAdminRoute registers a tenant-administrator identity separately
+// from ordinary user routing. previousEmail is used after an email change to
+// remove the superseded administrator inventory entry for the same tenant.
+func (s *Service) SyncTenantAdminRoute(ctx context.Context, email, tenantID string, previousEmailOpt ...string) error {
+	email = normalizeEmail(email)
+	tenantID = strings.TrimSpace(tenantID)
+	if email == "" || tenantID == "" {
+		return nil
+	}
+	previousEmail := ""
+	if len(previousEmailOpt) > 0 {
+		previousEmail = normalizeEmail(previousEmailOpt[0])
+	}
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return fmt.Errorf("hub center registration is missing or incomplete")
+	}
+	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	if err != nil {
+		return err
+	}
+	if len(baseURLs) == 0 {
+		return fmt.Errorf("hub center base url is required")
+	}
+	payload, err := json.Marshal(syncUserLinkRequest{
+		HubSecret:                    record.HubSecret,
+		TenantID:                     tenantID,
+		Email:                        email,
+		PreviousEmail:                previousEmail,
+		TenantAdminInventoryRevision: s.tenantAdminInventoryRevision(ctx),
+	})
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for _, baseURL := range baseURLs {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/tenant-admin-links/sync", bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			if record.LastBaseURL != baseURL {
+				record.LastBaseURL = baseURL
+				_ = s.saveRegistration(context.Background(), record)
+			}
+			return nil
+		}
+		var apiErr centerErrorPayload
+		_ = json.Unmarshal(body, &apiErr)
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = fmt.Sprintf("hub center tenant-admin route sync failed with status %d", resp.StatusCode)
+		}
+		lastErr = errors.New(message)
+	}
+	if lastErr != nil {
+		s.recordFailure(ctx, "sync", "tenant_admin_route_sync_failed", lastErr.Error(), record.HubID, email, nil)
+	}
+	return lastErr
+}
+
 // SyncUserRouteReplaceAll is like SyncUserRoute but instructs HubCenter to remove
 // ALL existing routes for this email (across all hubs/tenants) before creating
 // the new one. Used after invitation-code enrollment to ensure the user is fully
@@ -2054,7 +2157,10 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			tenantAdminEmails := map[string][]string{}
 			tenantAdminCounts := map[string]int{}
 			for _, admin := range admins {
-				if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") || !strings.EqualFold(strings.TrimSpace(admin.Status), "active") {
+				if admin == nil || !strings.EqualFold(strings.TrimSpace(admin.Scope), "tenant") {
+					continue
+				}
+				if !strings.EqualFold(strings.TrimSpace(admin.Status), "active") {
 					continue
 				}
 				tenantID := strings.TrimSpace(admin.TenantID)
@@ -2067,6 +2173,7 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 			}
 			caps["tenant_admin_emails"] = tenantAdminEmails
 			caps["tenant_admin_counts"] = tenantAdminCounts
+			caps["tenant_admin_inventory_revision"] = s.tenantAdminInventoryRevision(ctx)
 		}
 	}
 	if s != nil && s.tenants != nil {
@@ -2115,6 +2222,13 @@ func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 		}
 	}
 	return caps
+}
+
+// tenantAdminInventoryRevision timestamps construction of an authoritative
+// tenant-administrator inventory message. HubCenter uses it to reject delayed
+// sync calls and heartbeats that describe an older administrator set.
+func (s *Service) tenantAdminInventoryRevision(ctx context.Context) string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
 func (s *Service) sendHeartbeat(ctx context.Context) error {
@@ -2244,7 +2358,11 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			if managedIndustryExperts != nil {
 				managedIndustryExperts.SyncAll(ctx)
 			}
-			return s.saveRegistration(context.Background(), record)
+			if err := s.saveRegistration(context.Background(), record); err != nil {
+				return err
+			}
+			s.notifyAuthorizationPayloads(okResp.Authorizations)
+			return nil
 		}
 
 		var apiErr centerErrorPayload

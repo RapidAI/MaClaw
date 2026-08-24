@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -22,18 +23,31 @@ const registeredToolApprovalIDField = "_tool_approval_id"
 const registeredToolPolicyOwnerIDField = "_runtime_policy_owner_id"
 const registeredToolRuntimePlatformField = "_runtime_platform"
 
+// registeredToolContextTokensField is injected only by the local execution
+// dispatcher after model-supplied arguments have been parsed and sanitized.
+// It is never part of a tool schema and must not be accepted from the model.
+const registeredToolContextTokensField = "_runtime_context_tokens"
+
 // archiveExternalApprovalTokenField is populated only in the in-memory copy
 // of a pending approval. It is deliberately not part of the archive schema.
 const archiveExternalApprovalTokenField = "_archive_external_approval_token"
 
 type registeredToolPendingApproval struct {
-	ID            string
-	ToolName      string
-	Args          map[string]interface{}
-	SessionID     string
-	PolicyOwnerID string
-	Risk          security.RiskAssessment
-	CreatedAt     time.Time
+	ID               string
+	ToolName         string
+	Args             map[string]interface{}
+	SessionID        string
+	PolicyOwnerID    string
+	AuditPrincipalID string
+	Risk             security.RiskAssessment
+	CreatedAt        time.Time
+}
+
+func (a registeredToolPendingApproval) trustedAuditPrincipal() string {
+	if id := strings.TrimSpace(a.AuditPrincipalID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(a.PolicyOwnerID)
 }
 
 var registeredToolApprovalStore = struct {
@@ -77,8 +91,9 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 	if action != security.PolicyAsk {
 		return false
 	}
-	approval := storeRegisteredToolPendingApproval(name, args, sessionID, policyOwnerID, risk)
-	h.firewall.recordAudit(name, args, risk, security.PolicyAsk, "agent_view_approval_pending", sessionID)
+	principal := trustedAuditPrincipalFromSecurityContext(ctx, policyOwnerID)
+	approval := storeRegisteredToolPendingApprovalForPrincipal(name, args, sessionID, policyOwnerID, principal, risk)
+	h.firewall.recordAudit(name, args, risk, security.PolicyAsk, "agent_view_approval_pending", sessionID, principal)
 	return h.app.emitAgentView(buildRegisteredToolApprovalAgentView(approval))
 }
 
@@ -98,7 +113,8 @@ func (h *IMMessageHandler) emitArchiveExternalApprovalIfNeeded(args map[string]i
 		sessionID = strings.TrimSpace(ctx.SessionID)
 	}
 	risk := security.RiskAssessment{Level: security.RiskHigh, Reason: "启动已安装的外部解压程序", Factors: []string{"external_archive_program", "requires_explicit_user_approval"}}
-	approval := storeRegisteredToolPendingApproval("archive", args, sessionID, policyOwnerID, risk)
+	principal := trustedAuditPrincipalFromSecurityContext(ctx, policyOwnerID)
+	approval := storeRegisteredToolPendingApprovalForPrincipal("archive", args, sessionID, policyOwnerID, principal, risk)
 	registeredToolApprovalStore.Lock()
 	item := registeredToolApprovalStore.items[approval.ID]
 	item.Args[archiveExternalApprovalTokenField] = token
@@ -106,7 +122,7 @@ func (h *IMMessageHandler) emitArchiveExternalApprovalIfNeeded(args map[string]i
 	registeredToolApprovalStore.archiveExternalTokens[token] = true
 	registeredToolApprovalStore.Unlock()
 	if h.firewall != nil {
-		h.firewall.recordAudit("archive", args, risk, security.PolicyAsk, "external_archive_approval_pending", sessionID)
+		h.firewall.recordAudit("archive", args, risk, security.PolicyAsk, "external_archive_approval_pending", sessionID, principal)
 	}
 	pending, ok := getRegisteredToolPendingApproval(approval.ID)
 	if !ok {
@@ -262,7 +278,7 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 	if !boolFromAny(data["approved"]) {
 		deleteRegisteredToolPendingApproval(approvalID)
 		if h != nil && h.firewall != nil {
-			h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyAsk, "agent_view_approval_rejected", approval.SessionID)
+			h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyAsk, "agent_view_approval_rejected", approval.SessionID, approval.trustedAuditPrincipal())
 		}
 		return &IMAgentResponse{Text: "Tool execution was rejected.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
@@ -272,7 +288,7 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 	}
 	if h != nil && h.firewall != nil && approval.SessionID != "" {
 		h.firewall.ApproveForSession(approval.SessionID, approval.ToolName)
-		h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyUserOverride, "agent_view_approval_approved", approval.SessionID)
+		h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyUserOverride, "agent_view_approval_approved", approval.SessionID, approval.trustedAuditPrincipal())
 	}
 	// Keep the action-scoped archive token alive just long enough for the
 	// immediately following execution gateway to consume it.  Rejected and
@@ -280,7 +296,16 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 	removeRegisteredToolPendingApprovalPreservingExecutionToken(approvalID)
 	dataBytes, _ := json.Marshal(approval.Args)
 	defer revokeArchiveExternalApproval(approval.Args)
-	result := h.executeToolDetailedWithPolicyUserText(approval.PolicyOwnerID, approval.ToolName, string(dataBytes), "", nil).Text
+	result := h.executeToolDetailedWithRuntimeContext(
+		withTrustedAuditPrincipal(context.Background(), approval.trustedAuditPrincipal()),
+		approval.PolicyOwnerID,
+		strings.TrimSpace(approval.PolicyOwnerID) != "",
+		"",
+		approval.ToolName,
+		string(dataBytes),
+		"",
+		nil,
+	).Text
 	if h != nil && h.app != nil && h.registry != nil {
 		if tool, ok := h.registry.Get(approval.ToolName); ok && tool != nil {
 			h.app.emitAgentView(buildRegisteredToolResultAgentView(*tool, result))
@@ -1225,19 +1250,29 @@ func buildRegisteredToolResultAgentView(tool RegisteredTool, result string) map[
 }
 
 func storeRegisteredToolPendingApproval(toolName string, args map[string]interface{}, sessionID, policyOwnerID string, risk security.RiskAssessment) registeredToolPendingApproval {
+	return storeRegisteredToolPendingApprovalForPrincipal(toolName, args, sessionID, policyOwnerID, "", risk)
+}
+
+func storeRegisteredToolPendingApprovalForPrincipal(toolName string, args map[string]interface{}, sessionID, policyOwnerID, auditPrincipalID string, risk security.RiskAssessment) registeredToolPendingApproval {
 	registeredToolApprovalStore.Lock()
 	defer registeredToolApprovalStore.Unlock()
 	pruneRegisteredToolPendingApprovals(30 * time.Minute)
 	registeredToolApprovalStore.next++
 	id := fmt.Sprintf("tool-approval-%d", registeredToolApprovalStore.next)
+	policyOwnerID = strings.TrimSpace(policyOwnerID)
+	auditPrincipalID = strings.TrimSpace(auditPrincipalID)
+	if auditPrincipalID == "" {
+		auditPrincipalID = policyOwnerID
+	}
 	item := registeredToolPendingApproval{
-		ID:            id,
-		ToolName:      strings.TrimSpace(toolName),
-		Args:          cloneMISInterfaceMap(args),
-		SessionID:     strings.TrimSpace(sessionID),
-		PolicyOwnerID: strings.TrimSpace(policyOwnerID),
-		Risk:          risk,
-		CreatedAt:     time.Now(),
+		ID:               id,
+		ToolName:         strings.TrimSpace(toolName),
+		Args:             cloneMISInterfaceMap(args),
+		SessionID:        strings.TrimSpace(sessionID),
+		PolicyOwnerID:    policyOwnerID,
+		AuditPrincipalID: auditPrincipalID,
+		Risk:             risk,
+		CreatedAt:        time.Now(),
 	}
 	registeredToolApprovalStore.items[id] = item
 	return item

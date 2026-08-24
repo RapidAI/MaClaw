@@ -100,6 +100,28 @@ func ParseAskUserResult(result string) (*AskUserRequest, bool) {
 	return &req, true
 }
 
+func FormatAskedUserHistoryResult(req *AskUserRequest) string {
+	if req == nil {
+		return "Asked user"
+	}
+	out := "Asked user: " + req.Question
+	if extra := strings.TrimSpace(req.Context); extra != "" {
+		out += "\n" + extra
+	}
+	return out
+}
+
+func FormatPendingAskUserAnswerHint(question, answer, context string) string {
+	hint := fmt.Sprintf(
+		"[Context hint] The user is answering your previous clarification question, not starting a new request.\nAssistant question: %s\nUser answer: %s\nInterpret it as supplementary or corrective information for the current task.",
+		question, answer,
+	)
+	if extra := strings.TrimSpace(context); extra != "" {
+		hint += "\nQuestion context: " + extra
+	}
+	return hint
+}
+
 // FormatAskUserForDisplay formats an AskUserRequest for text-based display
 // (used in TUI and IM gateways that don't support interactive cards).
 func FormatAskUserForDisplay(req *AskUserRequest) string {

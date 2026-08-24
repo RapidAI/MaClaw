@@ -12,7 +12,7 @@ const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])[ 
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])[ \\t]+${digitalEmployeeCapabilityIconPattern}[ \\t]*`, "gu");
 // Protect path-like spans before escaped-newline rewriting. Without this,
 // Windows/home paths containing "\n…" (e.g. \notes, ~\name) get a hard line break.
-const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)|(~[/\\][^\n\r\s*?"<>|]+)/g;
+const markdownSensitiveSpanPattern = /(\\\([^\r\n]*?\\\))|(\$(?!\$)[^\r\n$]+\$(?!\$))|(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)|(~[/\\][^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
 const bareHeadingMarkerLinePattern = /^(#{1,6})(?:\s+#{1,6})*$/;
 // Include GFM "+" and common unicode bullets so bare-heading attach refuses list
@@ -21,6 +21,114 @@ const markdownBlockStructureLinePattern =
     /^(?:#{1,6}\s+|>\s+|(?:[-*+]|\u2022|\u00b7)\s+|\d+[.)]\s+|[-*_]{3,}\s*$|\[KB_IMAGE:)/;
 const markdownTableStructureLinePattern = /^\|.*\|$|^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/;
 const compactHeadingMarkerPattern = /([^#\n\s])\s*(#{2,6})(?=[^\s#\d.,;:!?，。；：！？、)\]）}])/gu;
+
+type ProtectedDisplayMathSegment = { text: string; math: boolean };
+
+type MarkdownFenceSegment = { text: string; fenced: boolean };
+
+/**
+ * Split Markdown into source and fenced-code segments without mistaking a
+ * shorter run of backticks (or tildes) for the closer of a longer fence.
+ */
+function splitMarkdownFenceSegments(content: string): MarkdownFenceSegment[] {
+    const segments: MarkdownFenceSegment[] = [];
+    let source = "";
+    let fence = "";
+    let fenced = "";
+
+    const pushSource = () => {
+        if (source) segments.push({ text: source, fenced: false });
+        source = "";
+    };
+    const pushFence = () => {
+        if (fenced) segments.push({ text: fenced, fenced: true });
+        fenced = "";
+    };
+
+    for (const line of content.match(/.*(?:\r\n|\n|\r|$)/g) || []) {
+        if (!line) continue;
+        const marker = line.trimStart().match(/^(`{3,}|~{3,})([^\r\n]*)/);
+        if (!fence) {
+            if (marker) {
+                pushSource();
+                fence = marker[1];
+                fenced = line;
+            } else {
+                source += line;
+            }
+            continue;
+        }
+
+        fenced += line;
+        if (
+            marker
+            && marker[1][0] === fence[0]
+            && marker[1].length >= fence.length
+            && !marker[2].trim()
+        ) {
+            pushFence();
+            fence = "";
+        }
+    }
+
+    // An unfinished streaming fence remains opaque until its closer arrives.
+    if (fence) pushFence();
+    else pushSource();
+    return segments;
+}
+
+/**
+ * Keep display-math source intact while repairing conversational Markdown.
+ * In particular, TeX commands such as `\\newline` must never be mistaken for
+ * serialized line breaks before KaTeX sees them.
+ */
+function splitDisplayMathSegments(content: string): ProtectedDisplayMathSegment[] {
+    const segments: ProtectedDisplayMathSegment[] = [];
+    let source = "";
+    let delimiter: "$$" | "\\[" | "" = "";
+    let math = "";
+
+    const pushSource = () => {
+        if (source) segments.push({ text: source, math: false });
+        source = "";
+    };
+    const pushMath = () => {
+        if (math) segments.push({ text: math, math: true });
+        math = "";
+    };
+
+    for (const line of content.match(/.*(?:\r\n|\n|\r|$)/g) || []) {
+        if (!line) continue;
+        const trimmed = line.trim();
+        if (!delimiter) {
+            if (trimmed.startsWith("$$")) {
+                pushSource();
+                if (!(trimmed.endsWith("$$") && trimmed.length > 4)) delimiter = "$$";
+                math = line;
+                if (!delimiter) pushMath();
+            } else if (trimmed.startsWith("\\[")) {
+                pushSource();
+                if (!(trimmed.endsWith("\\]") && trimmed.length > 4)) delimiter = "\\[";
+                math = line;
+                if (!delimiter) pushMath();
+            } else {
+                source += line;
+            }
+            continue;
+        }
+
+        math += line;
+        const closeDelimiter = delimiter === "$$" ? "$$" : "\\]";
+        if (trimmed.endsWith(closeDelimiter)) {
+            pushMath();
+            delimiter = "";
+        }
+    }
+
+    if (delimiter) pushMath();
+    else pushSource();
+    return segments;
+}
 
 function hasMultipleCapabilityIcons(text: string): boolean {
     const matches = text.match(digitalEmployeeCapabilityIconScanPattern);
@@ -122,10 +230,10 @@ function stripListMarkerForHeadingAttach(line: string): string | null {
  * fenced code blocks. Prevents corrupting code content (e.g., YAML lists).
  */
 export function normalizeInlineListMarkers(content: string): string {
-    const parts = content.split(/(```[\s\S]*?```|```[\s\S]*$)/);
-    for (let i = 0; i < parts.length; i++) {
-        if (i % 2 === 1) {
-            parts[i] = parts[i]
+    const parts = splitMarkdownFenceSegments(content);
+    for (const part of parts) {
+        if (part.fenced) {
+            part.text = part.text
                 .replace(/^(```[^\n\r\\]*)\\r\\n/, "$1\n")
                 .replace(/^(```[^\n\r\\]*)\\n/, "$1\n")
                 .replace(/^(```[^\n\r\\]*)\\r/, "$1\n")
@@ -136,8 +244,11 @@ export function normalizeInlineListMarkers(content: string): string {
         }
         // Count dense capability lists on the original segment — after the first
         // pictograph is rewritten, fewer than 2 remain and mid-list items would be skipped.
-        const denseCapabilityList = hasMultipleCapabilityIcons(parts[i]);
-        let normalized = withMarkdownSensitiveSpansProtected(parts[i], (segment) => {
+        const displayMathSegments = splitDisplayMathSegments(part.text);
+        part.text = displayMathSegments.map((displayMathSegment) => {
+            if (displayMathSegment.math) return displayMathSegment.text;
+            const denseCapabilityList = hasMultipleCapabilityIcons(displayMathSegment.text);
+            let normalized = withMarkdownSensitiveSpansProtected(displayMathSegment.text, (segment) => {
             let out = segment
                 .replace(escapedNewlinePattern, "\n")
                 .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
@@ -157,25 +268,59 @@ export function normalizeInlineListMarkers(content: string): string {
                 out = out.replace(capabilityIconMidSentencePattern, "$1\n- ");
             }
             return out;
-        });
-        normalized = normalizeCompactPipeTables(normalized);
-        parts[i] = normalized;
+            });
+            return normalizeCompactPipeTables(normalized);
+        }).join("");
     }
-    return parts.join("");
+    return parts.map((part) => part.text).join("");
 }
 
 export function attachBareHeadingMarkers(lines: string[]): string[] {
     const attached: string[] = [];
     let inCodeBlock = false;
+    let codeFenceMarker = "";
+    let displayMathDelimiter: "$$" | "\\[" | "" = "";
     for (let index = 0; index < lines.length; index++) {
         const line = lines[index];
-        if (/^```/.test(line.trimStart())) {
-            inCodeBlock = !inCodeBlock;
+        const trimmed = line.trim();
+        if (displayMathDelimiter) {
+            attached.push(line);
+            const closeDelimiter = displayMathDelimiter === "$$" ? "$$" : "\\]";
+            if (trimmed.endsWith(closeDelimiter)) displayMathDelimiter = "";
+            continue;
+        }
+        const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
+        if (fenceMatch) {
+            const marker = fenceMatch[1];
+            if (!inCodeBlock) {
+                inCodeBlock = true;
+                codeFenceMarker = marker;
+            } else if (
+                marker[0] === codeFenceMarker[0]
+                && marker.length >= codeFenceMarker.length
+                && !fenceMatch[2].trim()
+            ) {
+                inCodeBlock = false;
+                codeFenceMarker = "";
+            }
             attached.push(line);
             continue;
         }
         if (inCodeBlock) {
             attached.push(line);
+            continue;
+        }
+
+        // Keep TeX source opaque, but resume ordinary heading repair as soon
+        // as a complete display formula ends.
+        if (trimmed.startsWith("$$")) {
+            attached.push(line);
+            if (!(trimmed.endsWith("$$") && trimmed.length > 4)) displayMathDelimiter = "$$";
+            continue;
+        }
+        if (trimmed.startsWith("\\[")) {
+            attached.push(line);
+            if (!(trimmed.endsWith("\\]") && trimmed.length > 4)) displayMathDelimiter = "\\[";
             continue;
         }
 

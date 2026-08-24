@@ -1,0 +1,78 @@
+{
+  "category": "expert_policy_deny",
+  "category_id": 26,
+  "title": "policy deny of generate does not expand to legacy tools",
+  "design_ref": "10.1 item 26 / invariants 2-3",
+  "format_note": "Planner-level expert/policy constraint. office and bash adapters in the catalog must not become a fallback. This is not an executor or host-protocol test.",
+  "samples": [
+    {
+      "id": "deny-generate-does-not-select-office-or-shell",
+      "title": "Policy deny of document.generate.file leaves generate unmet and does not select office or bash",
+      "needs": [{"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+      "constraints": [
+        {"id": "expert-deny-generate", "capability": "document.generate.file", "effect": "deny", "authority": "policy"}
+      ],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "office_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "document.write.office"}]
+          },
+          {
+            "adapter": "bash_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "shell.execute.local"}]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [{"need_id": "generate", "reason": "policy_denied"}]
+      }
+    },
+    {
+      "id": "deny-generate-keeps-search-without-legacy",
+      "title": "Search still plans when generate is policy-denied; bash is not a substitute",
+      "needs": [
+        {"id": "search", "capability": "information.search.web", "qualifiers": {"freshness": "current"}},
+        {"id": "generate", "capability": "document.generate.file", "qualifiers": {"format": "pdf"}}
+      ],
+      "constraints": [
+        {"id": "expert-deny-generate", "capability": "document.generate.file", "effect": "deny", "authority": "policy"}
+      ],
+      "catalog": {
+        "coverage": {"state": "complete"},
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{"capability": "information.search.web", "qualifiers": {"freshness": "current"}}]
+          },
+          {
+            "adapter": "generate_adapter",
+            "effects": ["local_mutation"],
+            "capabilities": [{"capability": "document.generate.file", "qualifiers": {"format": "pdf"}}],
+            "produces": [{"kind": "document", "mime_type": "application/pdf", "required": true}]
+          },
+          {
+            "adapter": "bash_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{"capability": "shell.execute.local"}]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [{"need_id": "search", "capability": "information.search.web", "adapter": "search_adapter"}],
+        "unmet": [{"need_id": "generate", "reason": "policy_denied"}]
+      }
+    }
+  ]
+}

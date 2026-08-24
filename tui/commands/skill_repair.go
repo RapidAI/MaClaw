@@ -187,6 +187,7 @@ func repairLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig
 	if llmCfg.Key == "" && strings.TrimSpace(cfg.RemoteViewerToken) != "" {
 		llmCfg.Key = strings.TrimSpace(cfg.RemoteViewerToken)
 	}
+	llmCfg.Model = corelib.MigrateZhipuCodingModel(llmCfg.ProviderName, llmCfg.Model)
 	return llmCfg
 }
 

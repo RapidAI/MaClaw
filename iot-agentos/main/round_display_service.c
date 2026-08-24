@@ -33,6 +33,12 @@ static volatile bool s_round_display_animation_stop_requested;
 static bool s_round_display_animation_completed;
 static round_display_service_animation_fn_t s_round_display_animation_entry;
 static void *s_round_display_animation_context;
+/* A completed DMA fence alone cannot stop the next decorative frame from
+ * being submitted by the retained round animator. Keep the reversible park
+ * wholly below the selected Display profile: Platform Display receives only
+ * a value result and no round-screen/controller/RTOS detail escapes. */
+static bool s_round_display_animation_system_sleep_preparing;
+static SemaphoreHandle_t s_round_display_animation_system_sleep_quiesced;
 
 static void round_display_service_test_delay(uint32_t delay_ms) {
     if (delay_ms == 0) return;
@@ -57,6 +63,21 @@ uint32_t round_display_service_pet_animation_frame_ms(void) {
     return round_display_adapter_pet_animation_frame_ms();
 }
 
+static bool round_display_service_park_for_system_sleep(void) {
+    if (!s_round_display_animation_lock) return true;
+    for (;;) {
+        bool preparing = false;
+        SemaphoreHandle_t quiesced = NULL;
+        (void)xSemaphoreTake(s_round_display_animation_lock, portMAX_DELAY);
+        preparing = s_round_display_animation_system_sleep_preparing;
+        quiesced = s_round_display_animation_system_sleep_quiesced;
+        (void)xSemaphoreGive(s_round_display_animation_lock);
+        if (!preparing) return !s_round_display_animation_stop_requested;
+        if (quiesced) xSemaphoreGive(quiesced);
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    }
+}
+
 static void round_display_service_animation_task(void *arg) {
     (void)arg;
     /* xTaskCreate may schedule this task before its creator receives the
@@ -69,7 +90,9 @@ static void round_display_service_animation_task(void *arg) {
     }
     s_round_display_animation_owner = xTaskGetCurrentTaskHandle();
     round_display_service_animation_fn_t entry = s_round_display_animation_entry;
-    if (entry) entry(s_round_display_animation_context);
+    if (round_display_service_park_for_system_sleep() && entry) {
+        entry(s_round_display_animation_context);
+    }
     /* The task must not publish a completion while the stopper still has a
      * notification target for it.  The lifecycle lock serializes this final
      * hand-off with stop/start and prevents a recycled task handle from being
@@ -96,6 +119,14 @@ static void round_display_service_animation_task(void *arg) {
                  "test: delaying animation cleanup for %lu ms while lifecycle lock held",
                  (unsigned long)post_completion_delay_ms);
         round_display_service_test_delay(post_completion_delay_ms);
+    }
+    /* A generation can finish after PREPARE snapshots it as active but
+     * before it reaches its next animation wait. Completion is itself a
+     * renderer-safe boundary, so acknowledge the same transaction rather
+     * than making PREPARE time out waiting for a nonexistent next wait. */
+    if (s_round_display_animation_system_sleep_preparing &&
+        s_round_display_animation_system_sleep_quiesced) {
+        (void)xSemaphoreGive(s_round_display_animation_system_sleep_quiesced);
     }
     s_round_display_animation_owner = NULL;
     s_round_display_animation_completed = true;
@@ -149,6 +180,59 @@ esp_err_t round_display_service_wake_from_display_off(void) {
     if (err == ESP_OK) s_round_display_off = false;
     return err;
 }
+esp_err_t round_display_service_wait_for_scanout_idle(uint32_t timeout_ms) {
+    return round_display_adapter_wait_for_transfer_idle(timeout_ms);
+}
+esp_err_t round_display_service_prepare_system_sleep(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    const TickType_t started = xTaskGetTickCount();
+    TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    if (budget == 0) budget = 1;
+    ESP_RETURN_ON_ERROR(round_display_service_animation_lock_take(timeout_ms), "round_display",
+                        "system-sleep animation lifecycle lock timeout");
+    if (s_round_display_animation_system_sleep_preparing) {
+        (void)xSemaphoreGive(s_round_display_animation_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_round_display_animation_system_sleep_quiesced) {
+        s_round_display_animation_system_sleep_quiesced = xSemaphoreCreateBinary();
+        if (!s_round_display_animation_system_sleep_quiesced) {
+            (void)xSemaphoreGive(s_round_display_animation_lock);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    while (xSemaphoreTake(s_round_display_animation_system_sleep_quiesced, 0) == pdTRUE) {
+    }
+    const bool active = s_round_display_animation_task != NULL &&
+                        !s_round_display_animation_completed;
+    s_round_display_animation_system_sleep_preparing = true;
+    if (active) xTaskNotifyGive(s_round_display_animation_task);
+    (void)xSemaphoreGive(s_round_display_animation_lock);
+    if (!active) return ESP_OK;
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    const TickType_t remaining = elapsed >= budget ? 0 : budget - elapsed;
+    if (remaining == 0 ||
+        xSemaphoreTake(s_round_display_animation_system_sleep_quiesced, remaining) != pdTRUE) {
+        /* Preserve the animation admission fence until the owning Power
+         * transaction performs reverse-order ABORT. Reopening here could
+         * issue a late renderer/controller operation while sibling rollback
+         * is still in progress. */
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+void round_display_service_abort_system_sleep_prepare(void) {
+    if (!s_round_display_animation_lock ||
+        xSemaphoreTake(s_round_display_animation_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return;
+    if (s_round_display_animation_system_sleep_preparing) {
+        s_round_display_animation_system_sleep_preparing = false;
+        if (s_round_display_animation_task && !s_round_display_animation_completed) {
+            xTaskNotifyGive(s_round_display_animation_task);
+        }
+    }
+    (void)xSemaphoreGive(s_round_display_animation_lock);
+}
 esp_err_t round_display_service_draw_bitmap_sync(int x0, int y0, int x1, int y1,
                                                   const void *pixels) {
     return round_display_adapter_draw_bitmap_sync(x0, y0, x1, y1, pixels);
@@ -188,6 +272,10 @@ esp_err_t round_display_service_start_animation(round_display_service_animation_
     if (!entry) return ESP_ERR_INVALID_ARG;
     ESP_RETURN_ON_ERROR(round_display_service_animation_lock_take(1000), "round_display",
                         "animation lifecycle lock timeout");
+    if (s_round_display_animation_system_sleep_preparing) {
+        (void)xSemaphoreGive(s_round_display_animation_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_round_display_animation_task) {
         (void)xSemaphoreGive(s_round_display_animation_lock);
         return ESP_ERR_INVALID_STATE;
@@ -235,7 +323,8 @@ esp_err_t round_display_service_start_animation(round_display_service_animation_
 bool round_display_service_animation_wait_ms(uint32_t timeout_ms) {
     if (!s_round_display_animation_task || timeout_ms == 0) return false;
     (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms));
-    return !s_round_display_animation_stop_requested;
+    return !s_round_display_animation_stop_requested &&
+           round_display_service_park_for_system_sleep();
 }
 
 bool round_display_service_animation_running(void) {

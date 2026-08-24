@@ -119,7 +119,7 @@ var bridgeInstallMu sync.Mutex
 // GetBridgeChannelsHandler returns the list of known channels and their current config.
 func GetBridgeChannelsHandler(system store.SystemSettingsRepository, bridgeDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
+		system := scopedSystemSettingsForRequest(r, system)
 		saved := loadChannelStates(r, system)
 		type channelResp struct {
 			KnownChannel
@@ -148,7 +148,7 @@ func GetBridgeChannelsHandler(system store.SystemSettingsRepository, bridgeDir s
 // package if needed, and regenerates the bridge config.json.
 func SaveBridgeChannelHandler(system store.SystemSettingsRepository, bridgeDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
+		system := scopedSystemSettingsForRequest(r, system)
 		var req struct {
 			ID      string            `json:"id"`
 			Enabled bool              `json:"enabled"`
@@ -237,7 +237,7 @@ func SaveBridgeChannelHandler(system store.SystemSettingsRepository, bridgeDir s
 // BridgeStatusHandler checks if the bridge is reachable and returns its status.
 func BridgeStatusHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		system = scopedSystemSettingsForRequest(r, system)
+		system := scopedSystemSettingsForRequest(r, system)
 		cfg := loadOpenclawIMConfig(r, system)
 		webhookURL := cfg.WebhookURL
 		if webhookURL == "" {

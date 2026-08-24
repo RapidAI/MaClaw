@@ -1,0 +1,45 @@
+{
+  "category": "provider_readiness",
+  "category_id": 16,
+  "title": "provider readiness",
+  "design_ref": "10.1 item 16",
+  "format_note": "Planner-level invariant. Grant/host-call/crash/delivery details stay in the notes pointer.",
+  "samples": [
+    {
+      "id": "not-ready-search",
+      "title": "Unready search provider is unmet",
+      "needs": [
+        {
+          "id": "search",
+          "capability": "information.search.web",
+          "qualifiers": {
+            "freshness": "current"
+          }
+        }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "search_adapter",
+            "effects": [
+              "read_only"
+            ],
+            "capabilities": [
+              {
+                "capability": "information.search.web",
+                "qualifiers": {
+                  "freshness": "current"
+                }
+              }
+            ],
+            "ready": false
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true
+      },
+      "notes": "Readiness without install side effects."
+    }
+  ]
+}

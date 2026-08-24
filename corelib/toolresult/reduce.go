@@ -28,6 +28,8 @@ func StructuredPreview(toolName, content string, limit int) string {
 		return previewTerminal(content, limit)
 	case tool == "web_fetch":
 		return previewWebFetch(content, limit)
+	case tool == "computer_observe":
+		return previewComputerObserve(content, limit)
 	case strings.HasPrefix(tool, "browser"):
 		return previewHeadTail(content, limit, 0.45, 0.55)
 	case looksLikeDiff(content):
@@ -73,6 +75,129 @@ func previewHeadTail(s string, limit int, headFrac, tailFrac float64) string {
 	}
 	tailLen := budget - headLen
 	return utf8Prefix(s, headLen) + sep + utf8Suffix(s, tailLen)
+}
+
+// previewComputerObserve keeps meta/windows/OCR and a head+tail sample of eN
+// refs so a size cap cannot strip every click target. Older observes are
+// folded separately; this is only the overflow first cut.
+func previewComputerObserve(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	var meta []string
+	var elements []string
+	for _, line := range strings.Split(s, "\n") {
+		if isComputerObserveElementLine(strings.TrimSpace(line)) {
+			elements = append(elements, line)
+			continue
+		}
+		meta = append(meta, line)
+	}
+	if len(elements) == 0 {
+		return previewHeadTail(s, limit, 0.55, 0.45)
+	}
+	noteBudget := 64
+	elShare := limit * 2 / 5
+	if elShare < 128 {
+		elShare = limit / 3
+	}
+	if elShare < 64 {
+		elShare = limit / 2
+	}
+	metaBudget := limit - elShare - noteBudget
+	if metaBudget < 64 {
+		metaBudget = limit / 2
+		if metaBudget < 32 {
+			metaBudget = 32
+		}
+	}
+	metaText := strings.Join(meta, "\n")
+	if len(metaText) > metaBudget {
+		metaText = previewHeadTail(metaText, metaBudget, 0.55, 0.45)
+	}
+	elBudget := limit - len(metaText) - noteBudget - 1
+	if elBudget < 8 {
+		elBudget = 8
+	}
+	kept := sampleLinesHeadTail(elements, elBudget)
+	omitted := len(elements) - len(kept)
+	var b strings.Builder
+	b.WriteString(metaText)
+	if len(kept) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(strings.Join(kept, "\n"))
+	}
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\n... (%d observe elements omitted)", omitted)
+	}
+	out := b.String()
+	if out == "" {
+		return previewHeadTail(s, limit, 0.55, 0.45)
+	}
+	if len(out) > limit {
+		return previewHeadTail(out, limit, 0.6, 0.4)
+	}
+	return out
+}
+
+func isComputerObserveElementLine(trim string) bool {
+	return strings.HasPrefix(trim, "e") && strings.Contains(trim, "[") &&
+		(strings.Contains(trim, "bbox=") || strings.Contains(trim, "center="))
+}
+
+func sampleLinesHeadTail(lines []string, budget int) []string {
+	if budget < 8 || len(lines) == 0 {
+		return nil
+	}
+	total := 0
+	for _, line := range lines {
+		total += len(line) + 1
+	}
+	if total <= budget {
+		return append([]string(nil), lines...)
+	}
+	headBudget := budget * 2 / 3
+	if headBudget < 8 {
+		headBudget = budget / 2
+	}
+	tailBudget := budget - headBudget
+	var head []string
+	used := 0
+	for _, line := range lines {
+		need := len(line) + 1
+		if used+need > headBudget {
+			break
+		}
+		head = append(head, line)
+		used += need
+	}
+	var tailRev []string
+	usedT := 0
+	for i := len(lines) - 1; i >= len(head); i-- {
+		need := len(lines[i]) + 1
+		if usedT+need > tailBudget {
+			break
+		}
+		tailRev = append(tailRev, lines[i])
+		usedT += need
+	}
+	if len(tailRev) == 0 && len(lines) > len(head) {
+		last := lines[len(lines)-1]
+		need := len(last) + 1
+		for len(head) > 0 && used+need > budget {
+			used -= len(head[len(head)-1]) + 1
+			head = head[:len(head)-1]
+		}
+		if used+need <= budget {
+			tailRev = []string{last}
+		}
+	}
+	for i, j := 0, len(tailRev)-1; i < j; i, j = i+1, j-1 {
+		tailRev[i], tailRev[j] = tailRev[j], tailRev[i]
+	}
+	return append(head, tailRev...)
 }
 
 // previewWebFetch prefers keeping trailing integrity markers when present.

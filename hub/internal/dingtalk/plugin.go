@@ -882,15 +882,26 @@ func (p *Plugin) extractAttachments(msg *botMessageData) []im.MessageAttachment 
 		return nil
 	}
 
-	att := im.MessageAttachment{
-		Type:     attType,
-		FileName: fileName,
-		MimeType: mimeType,
-		Data:     base64.StdEncoding.EncodeToString(fileData),
-		Size:     int64(len(fileData)),
-	}
-	log.Printf("[dingtalk] downloaded %s: %s (%s, %d bytes)", attType, fileName, mimeType, len(fileData))
+	att := im.CanonicalizeTrustedHostAttachment(im.MessageAttachment{
+		Type:          attType,
+		FileName:      fileName,
+		MimeType:      mimeType,
+		Data:          base64.StdEncoding.EncodeToString(fileData),
+		Size:          int64(len(fileData)),
+		SourceMediaID: dingtalkTrustedSourceMediaID(msg),
+	})
+	log.Printf("[dingtalk] downloaded %s: %s (%s, %d bytes)", att.Type, att.FileName, att.MimeType, att.Size)
 	return []im.MessageAttachment{att}
+}
+
+func dingtalkTrustedSourceMediaID(msg *botMessageData) string {
+	if msg == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(msg.MsgID); id != "" {
+		return "dingtalk-media:" + id
+	}
+	return ""
 }
 
 // classifyMediaType returns (type, mimeType, fileName) based on msgtype.

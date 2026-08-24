@@ -34,6 +34,7 @@ func TestWorkflowCandidateLabels_DerivedFromDefinitions(t *testing.T) {
 	// Non-workflow labels should NOT be candidates.
 	nonWorkflow := []intent.IntentLabel{
 		intent.LabelDocumentDelivery,
+		intent.LabelDocumentOpen,
 		intent.LabelNonCoding,
 		intent.LabelSearch,
 		intent.LabelBugFix,

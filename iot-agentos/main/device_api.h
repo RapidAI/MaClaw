@@ -129,6 +129,9 @@ enum {
     DEVICE_CAPABILITY_DISPLAY             = 1u << 0,
     DEVICE_CAPABILITY_TOUCH_INPUT         = 1u << 1,
     DEVICE_CAPABILITY_PRIMARY_CONTROL     = 1u << 2,
+    /* A locally discoverable route to the shared 0..100 output-volume
+     * operation. A profile may implement it with dedicated keys or an Input
+     * HAL gesture; application policy must not infer which one exists. */
     DEVICE_CAPABILITY_VOLUME_CONTROL      = 1u << 3,
     DEVICE_CAPABILITY_OUTPUT_VOLUME       = 1u << 4,
     DEVICE_CAPABILITY_AUDIO_CAPTURE       = 1u << 5,
@@ -146,14 +149,15 @@ enum {
     DEVICE_CAPABILITY_MOTION_SENSOR        = 1u << 13,
 };
 
-#define DEVICE_PROFILE_ABI_VERSION 1u
+#define DEVICE_PROFILE_ABI_VERSION 3u
 
 /* Every production MaClaw AgentOS board carries this complete business
  * baseline.  Optional capability bits describe the local adaptation, never a
  * product feature subset. */
 #define DEVICE_CAPABILITY_REQUIRED_BASELINE \
-    (DEVICE_CAPABILITY_DISPLAY | DEVICE_CAPABILITY_PRIMARY_CONTROL | \
-     DEVICE_CAPABILITY_OUTPUT_VOLUME | DEVICE_CAPABILITY_AUDIO_CAPTURE | \
+     (DEVICE_CAPABILITY_DISPLAY | DEVICE_CAPABILITY_PRIMARY_CONTROL | \
+      DEVICE_CAPABILITY_VOLUME_CONTROL | DEVICE_CAPABILITY_OUTPUT_VOLUME | \
+      DEVICE_CAPABILITY_AUDIO_CAPTURE | \
      DEVICE_CAPABILITY_AUDIO_PLAYBACK | DEVICE_CAPABILITY_OFFLINE_WAKE_WORD | \
      DEVICE_CAPABILITY_PERSISTENT_STORAGE | DEVICE_CAPABILITY_DISPLAY_OFF)
 
@@ -177,6 +181,44 @@ typedef enum {
 } device_input_source_t;
 
 /*
+ * A profile may expose more than one physical way to restore a panel that is
+ * in DISPLAY_OFF.  This is deliberately distinct from the normal primary
+ * interaction: for example, a round touch product can use its touch surface
+ * as the primary command control while still allowing its physical activation
+ * key to wake the display.  The app receives this already-normalized fact and
+ * never infers it from a board, GPIO, touch controller, or gesture timing.
+ */
+typedef uint8_t device_input_source_flags_t;
+
+#define DEVICE_INPUT_SOURCE_FLAG(source) \
+    ((device_input_source_flags_t)(1u << (unsigned)(source)))
+
+#define DEVICE_INPUT_SOURCE_WAKE_MASK \
+    (DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_TOUCH) | \
+     DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_PRIMARY_CONTROL) | \
+     DEVICE_INPUT_SOURCE_FLAG(DEVICE_INPUT_SOURCE_AUXILIARY_CONTROL))
+
+/*
+ * Wake sources are a separate electrical capability from normal input events.
+ * A board adapter maps its pins and controller IRQs into these values; shared
+ * policy never sees GPIO numbers, active levels or RTC-domain restrictions.
+ */
+typedef uint32_t device_wake_source_flags_t;
+
+enum {
+    DEVICE_WAKE_SOURCE_TIMER = 1u << 0,
+    DEVICE_WAKE_SOURCE_PRIMARY_CONTROL = 1u << 1,
+    DEVICE_WAKE_SOURCE_TOUCH = 1u << 2,
+    DEVICE_WAKE_SOURCE_AUXILIARY_CONTROL = 1u << 3,
+    DEVICE_WAKE_SOURCE_CHARGER = 1u << 4,
+};
+
+#define DEVICE_WAKE_SOURCE_KNOWN_MASK \
+    (DEVICE_WAKE_SOURCE_TIMER | DEVICE_WAKE_SOURCE_PRIMARY_CONTROL | \
+     DEVICE_WAKE_SOURCE_TOUCH | DEVICE_WAKE_SOURCE_AUXILIARY_CONTROL | \
+     DEVICE_WAKE_SOURCE_CHARGER)
+
+/*
  * Returned by value so callers cannot retain a mutable board-owned pointer.
  * Width/height describe the renderer's logical viewport, rather than panel
  * controller RAM (for example Fangtang's 80-line GRAM offset is not exposed).
@@ -190,6 +232,14 @@ typedef struct {
     device_capability_flags_t capabilities;
     device_input_source_t primary_interaction_source;
     const char *primary_interaction_label;
+    /* Short, profile-owned wording for the common local volume route. It is
+     * presentation metadata only: the business layer still receives exactly
+     * the same normalized volume intents on every hardware profile. */
+    const char *volume_interaction_hint;
+    /* Physical sources that may restore DISPLAY_OFF. This describes only
+     * panel wake eligibility; completed-gesture business meaning remains in
+     * App Intent Service. */
+    device_input_source_flags_t display_wake_sources;
 } device_profile_t;
 
 /* Reads the immutable profile compiled into this image. */
@@ -315,13 +365,40 @@ typedef struct {
  * Power is modeled explicitly even though the currently proven common state
  * is DISPLAY_OFF only.  DISPLAY_OFF means panel/backlight off while the MCU,
  * network, alarms and offline wake-word remain active; it must never be
- * presented as light or deep sleep.  Future LIGHT_SLEEP/DEEP_SLEEP states
- * require their own verified wake-source and lifecycle contracts.
+ * presented as light or deep sleep.  The remaining values name future Power
+ * Service targets only: their presence in this enum does not publish support.
  */
 typedef enum {
     DEVICE_POWER_STATE_ACTIVE = 0,
     DEVICE_POWER_STATE_DISPLAY_OFF,
+    DEVICE_POWER_STATE_MODEM_SLEEP,
+    DEVICE_POWER_STATE_LIGHT_SLEEP,
+    DEVICE_POWER_STATE_DEEP_SLEEP,
 } device_power_state_t;
+
+/*
+ * Board profiles may state a candidate wake matrix before its electrical
+ * path is safe to publish. `candidate_sources` is useful for diagnostics and
+ * HIL planning only.  Product policy must use `verified_sources`: a zero
+ * value means the requested depth must not be entered.  In this transition
+ * phase only DISPLAY_OFF has verified sources; Light/Deep Sleep deliberately
+ * remain unverified until their complete PREPARE/COMMIT/resume path and HIL
+ * evidence exist for the selected hardware revision.
+ */
+#define DEVICE_WAKE_CAPABILITY_ABI_VERSION 1u
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    device_power_state_t target_state;
+    device_wake_source_flags_t candidate_sources;
+    device_wake_source_flags_t verified_sources;
+} device_wake_depth_capability_t;
+
+/* Returns one board-independent power-depth/wake-source observation. This
+ * is a query API, not permission to arm a wake GPIO or enter MCU sleep. */
+device_status_t device_wake_get_depth_capability(
+    device_power_state_t target_state,
+    device_wake_depth_capability_t *out_capability);
 
 /* A by-value observation of the only currently supported power transition.
  * `display_off_armed` means an application idle deadline is pending; it does
@@ -331,6 +408,31 @@ typedef struct {
     device_power_state_t state;
     bool display_off_armed;
 } device_power_snapshot_t;
+
+/*
+ * A future MCU sleep request is observable as a serialized transaction rather
+ * than a collection of unrelated adapter calls.  The current firmware can
+ * only reach ACTIVE/DISPLAY_OFF; LIGHT/DEEP values are reported here solely
+ * while a request is being prepared and must return to IDLE on every failed
+ * preflight or rollback.
+ */
+typedef enum {
+    DEVICE_POWER_TRANSITION_IDLE = 0,
+    DEVICE_POWER_TRANSITION_PREPARING,
+    DEVICE_POWER_TRANSITION_COMMITTING,
+    DEVICE_POWER_TRANSITION_ROLLING_BACK,
+    DEVICE_POWER_TRANSITION_RESUMING,
+} device_power_transition_phase_t;
+
+#define DEVICE_POWER_TRANSITION_ABI_VERSION 1u
+typedef struct {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t generation;
+    device_power_state_t target_state;
+    device_power_transition_phase_t phase;
+    device_status_t last_status;
+} device_power_transition_snapshot_t;
 
 /* Optional physical telemetry. A profile without calibrated battery hardware
  * reports available=false; callers must never infer battery state from a
@@ -348,6 +450,18 @@ device_status_t device_power_init(void);
  * power internals directly. */
 device_status_t device_power_deinit(uint32_t timeout_ms);
 
+/*
+ * Requests a verified MCU sleep depth.  It is intentionally separate from
+ * DISPLAY_OFF's UI-owned idle deadline: callers cannot bypass foreground
+ * leases, wake validation or the Power Service transaction by treating a
+ * panel-off request as system sleep.  Until a board publishes a non-zero
+ * verified wake matrix and an actual Power HAL resume path, LIGHT/DEEP_SLEEP
+ * return DEVICE_STATUS_UNAVAILABLE without changing hardware state.
+ */
+device_status_t device_power_request_state(device_power_state_t target_state);
+bool device_power_get_transition_snapshot(
+    device_power_transition_snapshot_t *out_snapshot);
+
 /* Acquires/releases a shared foreground lease.  The Power Service refuses a
  * pending DISPLAY_OFF commit while at least one valid lease is active. */
 device_status_t device_power_lease_acquire(device_power_lease_owner_t owner,
@@ -356,21 +470,23 @@ void device_power_lease_release(device_power_lease_t lease);
 bool device_power_lease_get_snapshot(device_power_lease_snapshot_t *out_snapshot);
 
 /* Arms/cancels the application-owned idle deadline for DISPLAY_OFF. A zero
- * delay is invalid; callers must cancel before publishing foreground work. */
+ * delay is invalid; callers must cancel before publishing foreground work.
+ * Cancellation returns an observed scheduler result; non-OK means a prior
+ * deadline could still reach the panel and must not be treated as cancelled. */
 device_status_t device_power_schedule_display_off(uint32_t idle_after_ms);
-void device_power_cancel_display_off(void);
+device_status_t device_power_cancel_display_off(void);
 
 /* Consumes a local physical wake only when the panel was off. It deliberately
  * preserves each adapter's existing first-contact semantics. */
-bool device_power_wake_display_from_user(void);
+device_status_t device_power_wake_display_from_user(void);
 
 /* Restores a DISPLAY_OFF panel for an approved domain deadline.  This does
  * not impersonate touch/button input and is not a LIGHT/DEEP_SLEEP wake API. */
-bool device_power_wake_display_from_schedule(void);
+device_status_t device_power_wake_display_from_schedule(void);
 /* Restores a DISPLAY_OFF panel for a remote management action such as a
  * non-zero GUI brightness update.  This is not a physical input wake and
  * must not start voice capture or alter manual-wake scheduling policy. */
-bool device_power_wake_display_from_remote_control(void);
+device_status_t device_power_wake_display_from_remote_control(void);
 
 /* Returns the Power Service's serialized observation of the panel/backlight
  * state and any pending display-off deadline. */
@@ -429,7 +545,7 @@ bool device_connectivity_is_active_cellular(void);
 /* Transport adapters publish readiness after their own bounded start/recovery
  * work. App/domain code queries a single selected-uplink observation; it does
  * not read a Wi-Fi event group or a board-specific modem readiness value. */
-bool device_connectivity_initialize(void);
+device_status_t device_connectivity_initialize(void);
 /* Stops the hardware-neutral Connectivity Service state.  It neither stops
  * Wi-Fi/SoftAP/DHCP/DNS nor deinitializes ESP-NETIF, SNTP, or a modem; those
  * physical resources remain the Connectivity composition root's transaction. */
@@ -514,6 +630,13 @@ typedef struct {
     void *stream_buffer;
     uint32_t stream_buffer_size;
 } device_connectivity_stream_request_t;
+
+/* Logical network-request admission is owned by Connectivity Service.  It is
+ * deliberately transport-neutral: Wi-Fi HTTP remains in the composition
+ * root while cellular HTTP remains profile-private below Platform
+ * Connectivity.  Callers must pair an accepted request with end. */
+device_status_t device_connectivity_begin_network_request(void);
+void device_connectivity_end_network_request(void);
 
 device_status_t device_connectivity_cellular_http_request(
     const device_connectivity_http_request_t *request);
@@ -653,11 +776,11 @@ typedef void (*device_input_cb_t)(const device_input_event_t *event,
  *
  * This is deliberately a lifecycle operation rather than a board-init hook:
  * application code must not register a board callback or know which physical
- * controller produced the input.  The service is currently boot-lifetime;
- * Stop is supported for coordinated shutdown.  Re-starting after a stop is
- * intentionally unavailable until every board adapter also implements a real
- * scan-task deinit/join lifecycle; this prevents duplicate GPIO/touch scanner
- * tasks from being silently created.
+ * controller produced the input. Stop is supported for coordinated shutdown.
+ * After a successful scanner stop/join, a later start installs a fresh event
+ * generation on the already boot-initialized input hardware. If that join
+ * fails or times out, restart stays unavailable/fail-closed so an old scanner
+ * can never publish into a new queue generation.
  */
 device_status_t device_input_start(device_input_cb_t on_input, void *context);
 
@@ -679,7 +802,14 @@ void device_input_set_command_cancel_enabled(bool enabled);
 // touch surface, button, rotary input, or future accessibility switch.
 bool device_input_is_primary_interaction_source(device_input_source_t source);
 
+/* Returns whether a normalized physical source may restore the display from
+ * DISPLAY_OFF. It does not itself wake the panel or start an interaction. */
+bool device_input_is_display_wake_source(device_input_source_t source);
+
 // A short, profile-local noun for user-facing prompts (for example "激活键"
 // or "屏幕"). The caller owns the surrounding workflow text; this accessor
 // supplies no board ID, GPIO, or gesture policy.
 const char *device_input_primary_interaction_label(void);
+/* Returns profile-owned, bounded user copy for the local volume route. This
+ * is deliberately not a board ID, GPIO, coordinate, or gesture API. */
+const char *device_input_volume_interaction_hint(void);

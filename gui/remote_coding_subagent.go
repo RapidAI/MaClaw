@@ -49,6 +49,10 @@ type RemoteCodingSubAgent struct {
 	sessionID  string // SSH session ID (already connected)
 	workDir    string // remote working directory
 	projectDir string // remote project directory (within workDir)
+	// workspaceWasEmptyAtStart is captured before project bootstrap and before
+	// the model can create files. It gives remote greenfield tasks the same
+	// authoritative context evidence as local coding tasks.
+	workspaceWasEmptyAtStart bool
 
 	// Callbacks
 	onToken    func(string)
@@ -107,6 +111,26 @@ type RemoteCodingSubAgent struct {
 	// Runtime cancellation can stop its current model/SSH wait without tying
 	// normal parent handoff completion to child cancellation.
 	executionCtx context.Context
+	// nestedLoopRelease belongs to a fresh, restricted child LoopContext. It
+	// never releases or mutates the parent LoopContext.
+	nestedLoopRelease func()
+	// dynamicLifecycleOwner is populated only by a qualified D1 composition;
+	// until then it is inert and remote Coding remains on S0.5.
+	dynamicLifecycleOwner codingDynamicLifecycleOwner
+
+	// See CodingSubAgent.dynamicInvocationIdentity. SSH sessionID identifies a
+	// remote transport, not a semantic task/session identity, so it cannot be
+	// used to populate this field.
+	dynamicInvocationIdentity *trustedCodingInvocationIdentity
+	// See CodingSubAgent.verifiedInvocationIdentity. This is an ingress-only
+	// carrier until it is bound to the fresh runtime Attempt; SSH transport
+	// fields must never populate it.
+	verifiedInvocationIdentity *trustedCodingInvocationIdentity
+	// R1b relation inputs are populated only by an authenticated host ingress.
+	// SSH/session transport values must never fill them.
+	verifiedTaskRelationService *codingTaskRelationService
+	verifiedTaskSubject         verifiedCodingSubject
+	verifiedTaskHandle          *verifiedCodingTaskHandle
 }
 
 // ExecuteReadOnlyChild implements the shared corelib child executor contract
@@ -120,11 +144,13 @@ func (r *RemoteCodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskCancelled, Summary: "remote read-only child policy or context is unavailable"}
 	}
 	child := *r
+	defer child.releaseNestedLoopContext()
 	// RunReadOnlyChild owns this fresh Attempt. Retain the bounded runtime
 	// binding so SSH calls use the child's cancellation context and the
 	// callback can observe a cancellation/lease transition while it is live.
 	child.runtimeAttempt = &request.Attempt
 	child.executionCtx = ctx
+	child.prepareAdmittedReadOnlyChildSemanticState(request)
 	result := child.executeTask(request.Task.RequestedWork, codingSpawnRolePromptHint(child.role))
 	if result == nil {
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "remote read-only child returned no result"}
@@ -142,6 +168,31 @@ func (r *RemoteCodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request
 	return codingruntime.ChildTaskResult{TaskID: request.Task.TaskID, AttemptID: request.Attempt.AttemptID, Status: status, Summary: result.Summary, EvidenceDigest: digest}
 }
 
+// prepareAdmittedReadOnlyChildSemanticState mirrors the local adapter. SSH is
+// transport only; the parent relation is consumed at admission and no parent
+// identity/handle remains reachable while the child model runs.
+func (r *RemoteCodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codingruntime.ExecutionRequest) {
+	if r == nil {
+		return
+	}
+	service, subject, handle := r.verifiedTaskRelationService, r.verifiedTaskSubject, r.verifiedTaskHandle
+	r.dynamicInvocationIdentity = nil
+	r.verifiedInvocationIdentity = nil
+	r.verifiedTaskRelationService = nil
+	r.verifiedTaskSubject = verifiedCodingSubject{}
+	r.verifiedTaskHandle = nil
+	if service != nil && handle != nil {
+		if childHandle, issueErr := service.IssueChildCodingTurn(subject, *handle, time.Now().UTC(), time.Hour); issueErr == nil {
+			if identity, ok := bindVerifiedCodingTaskHandle(service, subject, &childHandle, r.runtimeStore, request); ok {
+				r.dynamicInvocationIdentity = identity
+			}
+		}
+	}
+	if r.dynamicInvocationIdentity == nil {
+		r.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(r.runtimeStore, request)
+	}
+}
+
 var remoteSourcePreviewSessionSeq atomic.Uint64
 
 // RemoteCodingSubAgentResult is the outcome of a remote task execution.
@@ -154,20 +205,25 @@ type RemoteCodingSubAgentResult struct {
 	RuntimeTaskID string
 	// RuntimeHandoff is true only for an explicit waiting_child parent handoff.
 	// It lets the workflow offer a fresh child-result review, not a retry.
-	RuntimeHandoff bool
-	Iterations     int
-	ToolCalls      int
-	InputTokens    int
-	OutputTokens   int
-	EstCostRMB     float64
-	RouteModel     string
-	RouteSource    string
-	RouteTask      string
-	RouteReason    string
-	FilesModified  []string
-	FilesCreated   []string
-	Localization   *CodingSubAgentLocalizationEvidence
-	CommandsRun    []CodingSubAgentCommandResult
+	RuntimeHandoff      bool
+	Iterations          int
+	ToolCalls           int
+	InputTokens         int
+	OutputTokens        int
+	EstCostRMB          float64
+	RouteModel          string
+	RouteSource         string
+	RouteTask           string
+	RouteReason         string
+	FilesModified       []string
+	FilesCreated        []string
+	Localization        *CodingSubAgentLocalizationEvidence
+	CommandsRun         []CodingSubAgentCommandResult
+	QualityStatus       codingSubAgentQualityStatus
+	QualitySummary      string
+	ExplorationSummary  string
+	VerificationSummary string
+	VerifiedNoChange    bool
 }
 
 // NewRemoteCodingSubAgent creates a SubAgent bound to an existing SSH session.
@@ -187,6 +243,22 @@ func NewRemoteCodingSubAgent(
 		projectDir: projectDir,
 		loopCtx:    loopCtx,
 	}
+}
+
+func (r *RemoteCodingSubAgent) setVerifiedCodingInvocationIdentity(identity *trustedCodingInvocationIdentity) {
+	if r == nil || identity == nil || !identity.complete() {
+		return
+	}
+	copy := *identity
+	r.verifiedInvocationIdentity = &copy
+}
+
+func (r *RemoteCodingSubAgent) setVerifiedCodingTaskRelation(service *codingTaskRelationService, subject verifiedCodingSubject, handle verifiedCodingTaskHandle) {
+	if r == nil || service == nil || !validVerifiedCodingSubject(subject) || !handle.complete() {
+		return
+	}
+	copy := handle
+	r.verifiedTaskRelationService, r.verifiedTaskSubject, r.verifiedTaskHandle = service, subject, &copy
 }
 
 // SetCallbacks configures optional streaming and progress callbacks.
@@ -218,6 +290,19 @@ func (r *RemoteCodingSubAgent) SetSourcePreviewEnabled(enabled bool) {
 // remote bash commands blocked by coding guardrails.
 func (r *RemoteCodingSubAgent) SetHighRiskApprovalCallback(callback ScopeApprovalCallback, fullAccess bool) {
 	r.setHighRiskApprovalCallback(callback, fullAccess, true, false)
+}
+
+// setNestedRemoteWorkerApproval creates a fresh approval state for one
+// isolated worker. A parent SSH approval is not transferable to a child,
+// including when both agents happen to use the same transport session.
+func (r *RemoteCodingSubAgent) setNestedRemoteWorkerApproval(callback ScopeApprovalCallback) {
+	if r == nil || r.nestDepth == 0 || r.role != codingRoleWorker {
+		return
+	}
+	r.setHighRiskApprovalCallback(callback, false, true, false)
+	if r.highRiskApproval != nil {
+		r.highRiskApproval.approveDir(r.projectDir)
+	}
 }
 
 func (r *RemoteCodingSubAgent) setHighRiskApprovalCallback(callback ScopeApprovalCallback, fullAccess bool, explicit bool, preserveFullAccess bool) {
@@ -287,6 +372,15 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if r == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding subagent is nil"}
 	}
+	// The remote transport does not issue semantic identity. It may only use a
+	// one-shot desktop ingress already attached to the host-owned LoopContext.
+	// Nested children call executeTask directly and therefore keep the parent
+	// relation for IssueChildCodingTurn instead of receiving a new root here.
+	if r.mayReadDesktopCodingIngress() && r.handler != nil && r.handler.app != nil && r.loopCtx != nil {
+		if service, subject, handle, ok := r.handler.app.nextDesktopCodingTaskRelation(r.loopCtx.CodingTaskIngressToken, r.loopCtx.UserID); ok {
+			r.setVerifiedCodingTaskRelation(service, subject, handle)
+		}
+	}
 	// Keep turn-specific routing state on an execution-local copy. A caller may
 	// retain and reuse this agent across turns, and concurrent calls must not let
 	// one repository question narrow another implementation task's tool surface.
@@ -312,17 +406,31 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding runtime requires an existing SSH session with a pinned host key and absolute project directory"}
 	}
 	var unregisterRuntimeCancellation func()
-	result, attempt, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, newGUIRemoteWorkspaceProber(r.handler, r.sessionID, r.projectDir, remoteTarget), r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, func(request codingruntime.ExecutionRequest) {
+	result, _, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, newGUIRemoteWorkspaceProber(r.handler, r.sessionID, r.projectDir, remoteTarget), r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, func(request codingruntime.ExecutionRequest) {
 		execution.runtimeStore = store
 		attempt := request.Attempt
 		execution.runtimeAttempt = &attempt
+		// An SSH connection and runtime ledger are transport/recovery facts, not
+		// semantic authorization. Register only a verified host ingress identity
+		// and resolve that durable anchor; otherwise dynamic Skill/MCP remains
+		// unavailable.
+		if identity, ok := bindVerifiedCodingTaskHandle(execution.verifiedTaskRelationService, execution.verifiedTaskSubject, execution.verifiedTaskHandle, store, request); ok {
+			execution.dynamicInvocationIdentity = identity
+		} else {
+			_ = registerTrustedCodingInvocationIdentity(store, request, execution.verifiedInvocationIdentity)
+			execution.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
+		}
 		if r.loopCtx != nil {
 			unregisterRuntimeCancellation = r.loopCtx.RegisterCancelHookForContext(ctx, func() {
+				execution.dynamicLifecycleOwner.close(codingBoundDynamicRequestRuntimeClosed)
 				// The live SSH call observes LoopContext cancellation. Persist the
 				// matching ledger cancellation as well so no queued/read-only
 				// descendant can run after this remote parent was stopped.
 				_, _ = store.CancelTask(request.Task.TaskID, time.Now().UTC())
 				cancelGUIAdmittedChildExecutions(request.Task.TaskID)
+				if r.handler != nil && r.handler.app != nil && execution.verifiedTaskHandle != nil {
+					r.handler.app.revokeDesktopCodingTaskRelation(r.loopCtx.UserID)
+				}
 			})
 		}
 	}, func() *RemoteCodingSubAgentResult {
@@ -331,15 +439,14 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if unregisterRuntimeCancellation != nil {
 		unregisterRuntimeCancellation()
 	}
-	execution.runtimeStore, execution.runtimeAttempt = nil, nil
+	execution.runtimeStore, execution.runtimeAttempt, execution.dynamicInvocationIdentity, execution.verifiedInvocationIdentity = nil, nil, nil, nil
+	execution.verifiedTaskRelationService, execution.verifiedTaskHandle = nil, nil
+	execution.verifiedTaskSubject = verifiedCodingSubject{}
 	if ledgerErr != nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "coding execution ledger failed: " + ledgerErr.Error()}
 	}
 	if result != nil && strings.EqualFold(result.Status, "waiting_child") {
 		result.RuntimeHandoff = true
-	}
-	if result != nil && attempt != nil {
-		result.Summary = strings.TrimSpace(result.Summary + "\n\nExecution attempt: " + attempt.AttemptID)
 	}
 	if result != nil && strings.EqualFold(result.Status, "success") && r.handler != nil {
 		persistLocalizationExperience(r.handler.app, r.codingKB, r.projectDir, taskDescription, result.Localization, result.CommandsRun, result.RuntimeTaskID)
@@ -347,7 +454,17 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	return result
 }
 
+// mayReadDesktopCodingIngress is deliberately root-only. A child gets a fresh
+// turn through runtime admission, never by observing or consuming its
+// parent's one-shot desktop ingress token.
+func (r *RemoteCodingSubAgent) mayReadDesktopCodingIngress() bool {
+	return r != nil && r.nestDepth == 0 && r.verifiedTaskHandle == nil
+}
+
 func resolveRemoteCodingRequestFlags(kind codingRequestKind, taskDescription string) (readOnlyInquiry, operationalRequest bool) {
+	if codingRequestLooksExplicitWorkspaceClear(normalizeCodingWorkspaceClearText(taskDescription)) {
+		return false, false
+	}
 	switch kind {
 	case codingRequestInquiry:
 		return true, false
@@ -376,7 +493,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding project context is incomplete"}
 	}
 	if r.nestDepth == 0 && !r.readOnlyInquiry && !r.operationalRequest {
-		bootstrapCommand := "mkdir -p -- " + remoteShellQuote(r.projectDir) + "; __maclaw_bootstrap_status=$?; printf '\\nEXIT: %s\\n' \"$__maclaw_bootstrap_status\""
+		bootstrapCommand := remoteCodingWorkspaceBootstrapCommand(r.projectDir)
 		bootstrapResult := ""
 		if r.runtimeAttempt != nil {
 			expected := guiRemoteCodingTargetIdentity(r.handler, r.sessionID, r.projectDir)
@@ -400,13 +517,22 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 			log.Printf("[remote-source-preview] project bootstrap failed session=%q project=%q result=%q", r.sessionID, r.projectDir, truncateRunesV2(bootstrapResult, 300))
 			return &RemoteCodingSubAgentResult{Status: "failed", Error: "无法创建或访问远程项目目录", Summary: bootstrapResult}
 		}
+		r.workspaceWasEmptyAtStart = remoteCodingWorkspaceWasEmptyFromBootstrap(bootstrapResult)
 		log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	}
 	cb := &remoteCodingCallbacks{
-		agent:       r,
-		task:        taskDescription,
-		taskContext: taskContext,
+		agent:                    r,
+		task:                     taskDescription,
+		taskContext:              taskContext,
+		workspaceWasEmptyAtStart: r.workspaceWasEmptyAtStart,
 	}
+	cb.tryAttachQualifiedDynamicLifecycleRelay()
+	cb.registerDynamicLifecycleOwner()
+	terminalReason := codingBoundDynamicRequestRuntimeClosed
+	if r.nestDepth > 0 {
+		terminalReason = codingBoundDynamicRequestNestedExit
+	}
+	defer cb.closeDynamicLifecycleOwner(terminalReason)
 
 	userText := taskDescription
 	userContent := remoteCodingUserContent(r, userText)
@@ -426,12 +552,12 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		parentSessionID,
 		r.cfg,
 		cb.BuildSystemPrompt(userText, true),
-		cb.BuildTools(userText),
+		cb.trajectoryToolSurfaceSnapshot(userText),
 	)
 	if traj != nil {
 		defer flushSubAgentTrajectory(traj)
 	}
-	hooks := r.buildRemoteCodingLoopHooks()
+	hooks := r.buildRemoteCodingLoopHooks(cb)
 	result := codingagent.Run(cb, userText, userContent, nil, r.httpClient, hooks)
 	finishSubAgentTrajectory(traj, result)
 	if r.handler != nil {
@@ -448,6 +574,47 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		out.Summary = appendCodingAgentTodoTurnNote(out.Summary, cb.todos.snapshot())
 	}
 	return out
+}
+
+const (
+	remoteCodingWorkspaceEmptyMarker   = "__MACLAW_WORKSPACE_EMPTY__="
+	remoteCodingWorkspaceUnknownMarker = "2"
+)
+
+// remoteCodingWorkspaceBootstrapCommand observes the directory before mkdir
+// creates it, then prints a machine-readable marker plus the normal EXIT line.
+// The probe records an unknown state when find cannot inspect an existing
+// directory, so an inaccessible workspace is never trusted as greenfield.
+func remoteCodingWorkspaceBootstrapCommand(projectDir string) string {
+	quotedProjectDir := remoteShellQuote(projectDir)
+	return strings.Join([]string{
+		"if [ -d " + quotedProjectDir + " ]; then",
+		"  __maclaw_workspace_entries=$(find " + quotedProjectDir + " -mindepth 1 -maxdepth 1 -print -quit)",
+		"  __maclaw_workspace_probe_status=$?",
+		"  if [ \"$__maclaw_workspace_probe_status\" -ne 0 ]; then",
+		"    printf '" + remoteCodingWorkspaceEmptyMarker + remoteCodingWorkspaceUnknownMarker + "\\n'",
+		"  elif [ -n \"$__maclaw_workspace_entries\" ]; then",
+		"    printf '" + remoteCodingWorkspaceEmptyMarker + "0\\n'",
+		"  else",
+		"    printf '" + remoteCodingWorkspaceEmptyMarker + "1\\n'",
+		"  fi",
+		"else",
+		"  printf '" + remoteCodingWorkspaceEmptyMarker + "1\\n'",
+		"fi",
+		"mkdir -p -- " + quotedProjectDir,
+		"__maclaw_bootstrap_status=$?",
+		"printf '\\nEXIT: %s\\n' \"$__maclaw_bootstrap_status\"",
+	}, "\n")
+}
+
+func remoteCodingWorkspaceWasEmptyFromBootstrap(result string) bool {
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(remoteCodingStripSimpleANSI(strings.TrimRight(line, "\r")))
+		if strings.HasPrefix(line, remoteCodingWorkspaceEmptyMarker) {
+			return strings.TrimSpace(strings.TrimPrefix(line, remoteCodingWorkspaceEmptyMarker)) == "1"
+		}
+	}
+	return false
 }
 
 // normalizeUserFacingTaskOutcome keeps the implementation engine name out of
@@ -488,7 +655,24 @@ func remoteCodingUserContent(r *RemoteCodingSubAgent, userText string) interface
 	if protocol == "" {
 		protocol = "openai"
 	}
-	return agent.BuildUserContent(userText, r.loopCtx.CodingAttachments, protocol, cfg.SupportsVision, imageTextFromAttachment, nil)
+	return agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(
+		userText,
+		r.loopCtx.CodingAttachments,
+		protocol,
+		cfg.SupportsVision,
+		imageTextFromAttachment,
+		nil,
+		"",
+		remoteCodingOfficeReadConfig(r),
+		cfg.EffectiveContextTokens(),
+	)
+}
+
+func remoteCodingOfficeReadConfig(r *RemoteCodingSubAgent) agent.OfficeReadConfig {
+	if r != nil && r.handler != nil && r.handler.app != nil {
+		return guiOfficeReadConfig(r.handler.app.peekConfigOrEmpty())
+	}
+	return agent.OfficeReadConfig{}
 }
 
 func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCodingSubAgentResult {
@@ -561,21 +745,34 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		if result.Status == "success" && (result.ToolCalls == 0 || (len(filesRead) == 0 && len(searchesRun) == 0 && len(commandsRun) == 0)) {
 			result.Status = "failed"
 			result.Error = "repository inquiry completed without inspection evidence"
+			result.QualityStatus = codingSubAgentQualityFailed
+			result.QualitySummary = result.Error
 			return result
 		}
 		if result.Status == "success" {
-			result.Summary = strings.TrimSpace(result.Summary) + "\n\n[repository inquiry] read-only inspection evidence gathered; no files changed."
+			result.QualityStatus = codingSubAgentQualityPassed
+			result.QualitySummary = "repository inquiry: inspection evidence gathered"
 		}
 		return result
 	}
 	if c != nil && c.agent != nil && c.agent.operationalRequest {
+		if codingRequestLooksExplicitWorkspaceClear(normalizeCodingWorkspaceClearText(c.task)) {
+			result.Status = "failed"
+			result.Error = "workspace clear must not pass as operational launch/build"
+			result.QualityStatus = codingSubAgentQualityFailed
+			result.QualitySummary = result.Error
+			return result
+		}
 		if result.Status == "success" {
 			if status, summary, _ := summarizeRemoteOperationalQuality(commandsRun, result.ToolCalls); status != codingSubAgentQualityPassed {
 				result.Status = "failed"
 				result.Error = compactSubAgentErrorSummary(summary)
+				result.QualityStatus = status
+				result.QualitySummary = result.Error
 				return result
 			}
-			result.Summary = strings.TrimSpace(result.Summary) + "\n\n[operational request] launch/build command evidence gathered; no source changes were requested. Build output, if any, may have been generated by the command."
+			result.QualityStatus = codingSubAgentQualityPassed
+			result.QualitySummary = "operational request: launch/build command evidence gathered"
 		}
 		return result
 	}
@@ -589,6 +786,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	// plan step. Code and build-config edits still require fresh verification.
 	verificationFiles, verificationLastEditSeq := c.remoteVerificationRelevantEdits(filesModified)
 	verificationStatus, verificationSummary := summarizeSubAgentVerification(verificationFiles, commandsRun, verificationLastEditSeq)
+	createdFileContextSummary := summarizeSubAgentCreatedFileContextEvidence(filesCreated, filesRead, searchesRun, nil, c.workspaceWasEmptyAtStart)
 	// Multi-step plan scaffold/init steps create incomplete skeletons and must
 	// not be failed for missing build/test verification. Only relax MISSING when
 	// post-edit re-read confirmation already passed (structure evidence exists).
@@ -602,7 +800,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	}
 	diffStatus, diffSummary := summarizeRemoteDiffSelfCheck(filesModified, commandsRun, lastEditSeq)
 	noChangeSummary := summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead, searchesRun, commandsRun, nil)
-	failedCommands := unresolvedFailedSubAgentCommands(filterPostEditSubAgentCommands(commandsRun, lastEditSeq))
+	failedCommands := dropInspectOnlyInventoryFailures(unresolvedFailedSubAgentCommands(filterPostEditSubAgentCommands(commandsRun, lastEditSeq)))
 	commandSummary := ""
 	if len(failedCommands) > 0 && verificationStatus != codingSubAgentQualityFailed {
 		commandSummary = summarizeFailedSubAgentCommandWarning(failedCommands)
@@ -610,12 +808,10 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			commandSummary = "remote coding subagent left failed post-edit commands unresolved"
 		}
 	}
-	result.Summary = appendSubAgentExplorationSummary(result.Summary, explorationStatus, explorationSummary)
-	result.Summary = appendRemoteConfirmationSummary(result.Summary, confirmationStatus, confirmationSummary)
-	result.Summary = appendSubAgentVerificationSummary(result.Summary, verificationStatus, verificationSummary)
-	result.Summary = appendRemoteDiffSelfCheckSummary(result.Summary, diffStatus, diffSummary)
-	result.Summary = appendRemoteNoChangeEvidenceSummary(result.Summary, noChangeSummary)
-	result.Summary = appendRemoteCommandFailureSummary(result.Summary, commandSummary)
+	result.ExplorationSummary = explorationSummary
+	result.VerificationSummary = verificationSummary
+	result.QualityStatus = codingSubAgentQualityPassed
+	result.QualitySummary = "remote coding quality gates passed"
 	if result.Status != "success" {
 		// A task can be satisfied without a write when the requested artifact
 		// already exists and a remote compile/run check proves it works. Do not
@@ -629,21 +825,35 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			log.Printf("[remote-coding] accepting verified no-change completion despite terminal loop failure: %s", compactSubAgentErrorSummary(result.Error))
 			result.Status = "success"
 			result.Error = ""
-			result.Summary = appendRemoteVerifiedNoChangeAcceptance(result.Summary)
+			result.VerifiedNoChange = true
+			result.QualityStatus = codingSubAgentQualityPassed
+			result.QualitySummary = "verified no-change acceptance"
 			return result
+		}
+		result.QualityStatus = codingSubAgentQualityFailed
+		if result.QualitySummary == "remote coding quality gates passed" {
+			result.QualitySummary = compactSubAgentErrorSummary(result.Error)
 		}
 		return result
 	}
 	if strings.TrimSpace(noChangeSummary) != "" {
 		result.Status = "failed"
 		result.Error = compactSubAgentErrorSummary(noChangeSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
+		return result
+	}
+	if strings.TrimSpace(createdFileContextSummary) != "" {
+		result.Status = "failed"
+		result.Error = compactSubAgentErrorSummary(createdFileContextSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	if len(filesModified) == 0 && len(filesCreated) == 0 && verificationStatus == codingSubAgentQualityPassed && diffStatus == codingSubAgentQualityPassed {
-		// The requested behavior was checked by an actual remote acceptance
-		// command and a clean diff/status inspection. This is the sole marker
-		// consumed by the Runtime adapter for a no-change completion.
-		result.Summary = appendRemoteVerifiedNoChangeAcceptance(result.Summary)
+		result.VerifiedNoChange = true
+		result.QualityStatus = codingSubAgentQualityPassed
+		result.QualitySummary = "verified no-change acceptance"
 	}
 	if explorationStatus == codingSubAgentQualityMissing {
 		result.Status = "failed"
@@ -651,11 +861,15 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			explorationSummary = "remote coding subagent edited existing files without reading or searching first"
 		}
 		result.Error = compactSubAgentErrorSummary(explorationSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	if issue := summarizeLocalizationQuality(c.task+"\n"+c.taskContext, existingModified, c.localization.snapshot(), c.searchesRun); issue != "" {
 		result.Status = "failed"
 		result.Error = compactSubAgentErrorSummary(issue)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	if confirmationStatus == codingSubAgentQualityMissing {
@@ -664,6 +878,8 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			confirmationSummary = "remote coding subagent did not re-read modified files after editing"
 		}
 		result.Error = compactSubAgentErrorSummary(confirmationSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	switch verificationStatus {
@@ -673,6 +889,8 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			verificationSummary = "remote coding subagent verification did not pass after file changes"
 		}
 		result.Error = compactSubAgentErrorSummary(verificationSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	switch diffStatus {
@@ -682,11 +900,15 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 			diffSummary = "remote coding subagent did not run a usable git diff/status self-check after file changes"
 		}
 		result.Error = compactSubAgentErrorSummary(diffSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	if strings.TrimSpace(commandSummary) != "" {
 		result.Status = "failed"
 		result.Error = compactSubAgentErrorSummary(commandSummary)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 	}
 	return result
 }
@@ -712,18 +934,19 @@ func (c *remoteCodingCallbacks) applyRemoteInspectionRoleOutcome(
 	if result.ToolCalls == 0 || !hasInspection {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("remote %s subagent completed without inspection evidence (ssh_read_file/ssh_bash/ssh_list_dir)", role)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
 	if strings.TrimSpace(result.Summary) == "" {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("remote %s subagent returned empty summary", role)
+		result.QualityStatus = codingSubAgentQualityFailed
+		result.QualitySummary = result.Error
 		return result
 	}
-	// Soft-append a note so the parent spawn aggregator knows this was inspection-only.
-	note := fmt.Sprintf("\n[%s] inspection-only role: skipped write-oriented verification gates", role)
-	if !strings.Contains(result.Summary, note) {
-		result.Summary = strings.TrimSpace(result.Summary) + note
-	}
+	result.QualityStatus = codingSubAgentQualityPassed
+	result.QualitySummary = fmt.Sprintf("%s inspection-only role: skipped write-oriented verification gates", role)
 	return result
 }
 
@@ -1263,7 +1486,50 @@ func (c *remoteCodingCallbacks) completeRemotePostEditAudit() {
 		return
 	}
 	c.completeRemotePostEditReads()
+	c.completeRemoteVerificationRecovery()
 	c.completeRemoteDiffSelfCheck()
+}
+
+// completeRemoteVerificationRecovery closes the same evidence gap as the
+// local post-loop verifier. A successful compile wrapped only to print its
+// status is useful diagnostic evidence but not an auditable acceptance proof;
+// rerun the extracted compiler/test command once through ssh_bash so the
+// remote quality gate observes a direct exit status.
+func (c *remoteCodingCallbacks) completeRemoteVerificationRecovery() {
+	if c == nil || c.ShouldStop() {
+		return
+	}
+	if command, workingDir := recoverableSubAgentVerification(c.commandsRun, c.lastEditSeq); command != "" {
+		result := c.runRemoteAuditableVerification(command, workingDir)
+		if remoteCodingToolOutcome(result) != "success" {
+			log.Printf("[remote-subagent] recovered verification failed: command=%q result=%q", compactCodingSubAgentLogText(command, 300), compactRemoteCodingResultTail(result, 800))
+		}
+	}
+}
+
+// runRemoteAuditableVerification is intentionally synchronous even for a
+// command normally classified as long-running. Background SSH tasks report
+// only that they started, not their final exit status, which cannot repair a
+// verification-audit gap. The bounded direct SSH route records the command
+// and its authoritative EXIT marker in the shared audit ledger.
+func (c *remoteCodingCallbacks) runRemoteAuditableVerification(command, workingDir string) string {
+	if c == nil {
+		return "remote coding subagent: callbacks unavailable"
+	}
+	if strings.TrimSpace(workingDir) == "" {
+		workingDir = c.defaultRemoteWorkingDir()
+	} else {
+		workingDir = c.resolvePath(workingDir)
+	}
+	if msg, recordAsFailure := c.guardRemoteShellCommand(command, workingDir); msg != "" {
+		if recordAsFailure {
+			c.trackRemoteCommand(command, workingDir, msg, false)
+		}
+		return msg
+	}
+	result := c.execSSH(remoteBashCommandWithExitMarker(workingDir, command), 600)
+	c.trackRemoteCommand(command, workingDir, result, remoteCodingToolOutcome(result) == "success")
+	return result
 }
 
 func (c *remoteCodingCallbacks) completeRemotePostEditReads() {
@@ -1606,6 +1872,8 @@ type remoteCodingCallbacks struct {
 	task        string
 	taskContext string
 
+	workspaceWasEmptyAtStart bool
+
 	eventSeq       uint64
 	firstReadSeq   uint64
 	firstSearchSeq uint64
@@ -1625,14 +1893,51 @@ type remoteCodingCallbacks struct {
 	localExtSelected bool
 	localExtSkills   []codingSubAgentSkillMatch
 	localExtMCP      []codingSubAgentMCPToolMatch
+	dynamicSurface   *codingDynamicSurface
+	// See codingSubAgentCallbacks.dynamicLifecycleRelay. It stays nil until a
+	// separately reviewed remote callback composition is actually qualified.
+	dynamicLifecycleRelay *codingBoundDynamicRequestLifecycleRelay
+	// See codingSubAgentCallbacks.llmReplanRevision. Local and remote Coding
+	// share this host-owned watermark so steering retires predecessor surfaces.
+	llmReplanRevision atomic.Int64
+
+	// Remote maintains a separate S0 compatibility belt: SSH/workdir names
+	// must never be admitted from local request-surface state or vice versa.
+	staticCompatibilitySurfaceMu sync.RWMutex
+	staticCompatibilitySurface   map[string]struct{}
+	staticCompatibilityRevision  uint64
+	staticCompatibilityLast      codingStaticCompatibilitySurfaceObservation
+	// This S0.5 terminal bit is only a local ambiguous-delivery containment
+	// fence, never SSH/provider correlation or durable authorization.
+	staticCompatibilityQuarantined bool
+	// See codingSubAgentCallbacks.staticCompatibilityEpoch. This is an
+	// in-process replacement fence for the remote legacy belt, never a remote
+	// SSH/provider correlation value or durable authorization token.
+	staticCompatibilityEpoch string
 
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
+
+	noteMu     sync.Mutex
+	noteBuf    strings.Builder
+	lastNoteAt time.Time
 }
 
 type remoteCodingFileAuditEvent struct {
 	Path string
 	Seq  uint64
+}
+
+// tryAttachQualifiedDynamicLifecycleRelay mirrors the local callback boundary.
+// Remote SSH identity never contributes to this decision: only a verified
+// semantic ingress plus an app-owned reviewed qualification could attach the
+// future S1-C lifecycle owner. Today qualification is disabled, so this leaves
+// the S0.5 remote static belt unchanged.
+func (c *remoteCodingCallbacks) tryAttachQualifiedDynamicLifecycleRelay() {
+	if c == nil || c.agent == nil || c.agent.handler == nil || c.agent.dynamicInvocationIdentity == nil {
+		return
+	}
+	c.dynamicLifecycleRelay = newQualifiedCodingBoundDynamicRequestLifecycleRelay(c.agent.handler, c.agent.dynamicInvocationIdentity, c.agent.cfg)
 }
 
 func (c *remoteCodingCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
@@ -1660,6 +1965,18 @@ func (c *remoteCodingCallbacks) RouteTurn(userText string) (corelib.MaclawLLMCon
 		return cfg, decision, true
 	}
 	h := c.agent.handler
+	if isHubManagedTurnConfig(h, cfg) {
+		var loopCtx *LoopContext
+		if c.agent != nil {
+			loopCtx = c.agent.loopCtx
+		}
+		cfg = attachHubWorkloadHints(cfg, llm.TaskReasoning, loopCtx)
+		decision.Model = cfg.Model
+		decision.Provider = cfg.ProviderName
+		decision.Reason = "remote coding subagent; hub-managed skip desktop cost-route"
+		c.agent.cfg = cfg
+		return cfg, decision, true
+	}
 	if h.app == nil || h.app.ohModules.modelRouter == nil {
 		return cfg, decision, true
 	}
@@ -1673,6 +1990,7 @@ func (c *remoteCodingCallbacks) RouteTurn(userText string) (corelib.MaclawLLMCon
 			decision.Reason = "remote coding subagent → reasoning route"
 		}
 	}
+	c.agent.cfg = cfg
 	return cfg, decision, true
 }
 
@@ -1697,6 +2015,13 @@ func (c *remoteCodingCallbacks) GetMaxIterations() int {
 }
 
 func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	// See the local callback: remote HTTP/SSE has the same missing
+	// transport-owned correlation, so the model must see a prompt that exactly
+	// matches the filtered request surface rather than the richer direct-host
+	// SSH surface returned by BuildTools.
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		return buildUncorrelatedRemoteCodingCompatibilityPrompt(c)
+	}
 	projectDir, workDir, taskContext := "", "", ""
 	nestDepth := 0
 	role := codingRoleWorker
@@ -1731,6 +2056,7 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	// In-agent plan/checklist (not workbench multi-task orchestration).
 	if !inspectionRole && !(c != nil && c.agent != nil && (c.agent.readOnlyInquiry || c.agent.operationalRequest)) {
 		prompt += codingAgentTodoPromptSection
+		prompt += codingAgentTodoControlPlanePromptSection
 	}
 
 	// Inject knowledge from coding experience store + general knowledge store.
@@ -1739,18 +2065,84 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 			prompt += sections
 		}
 	}
-	// Skills/MCP for root + nested workers only (inspection roles stay lean).
+	// Dynamic local extensions are a request-surface capability, not prompt
+	// decoration. Until the durable identity/catalog/plan path is ready, do not
+	// enumerate candidates the model cannot invoke.
 	if !inspectionRole && c != nil && !(c.agent != nil && (c.agent.readOnlyInquiry || c.agent.operationalRequest)) {
-		prompt += "\n## 本地扩展能力\n远程改码通过 SSH 工具完成；本机 Skill / MCP 仍可调用（manage_skill / call_mcp_tool），用于文档、浏览器自动化等辅助能力。\n"
-		c.ensureLocalWorkbenchExtensions()
-		if section := buildCodingSubAgentSkillSection(c.localExtSkills); section != "" {
-			prompt += section
-		}
-		if section := buildCodingSubAgentMCPSection(c.localExtMCP); section != "" {
-			prompt += section
+		if c.codingDynamicCapabilityPromptAvailable() {
+			prompt += "\n## 本地扩展能力\n远程改码通过 SSH 工具完成；本机 Skill / MCP 会作为本轮受限别名出现，用于文档、浏览器自动化等辅助能力。\n"
+			c.ensureLocalWorkbenchExtensions()
+			if section := buildCodingSubAgentSkillSection(c.localExtSkills); section != "" {
+				prompt += section
+			}
+			if section := buildCodingSubAgentMCPSection(c.localExtMCP); section != "" {
+				prompt += section
+			}
+		} else {
+			prompt += codingDynamicCapabilityUnavailableNotice()
 		}
 	}
+	if c != nil && c.agent != nil && c.agent.highRiskApproval != nil && c.agent.highRiskApproval.highRiskApproved() {
+		prompt += "\n当前权限：完全控制。用户明确要求的项目内高危命令将由宿主自动放行；仍须调用工具发起该命令，不要只回复拒绝。\n"
+	}
 	return prompt
+}
+
+func (c *remoteCodingCallbacks) usesUncorrelatedStaticCompatibilityModelSurface() bool {
+	// Remote Coding has no Horizon exception. This is a transport property, not
+	// a classification of the task or remote target.
+	return c != nil
+}
+
+// trajectoryToolSurfaceSnapshot is audit-only. It must not call
+// BuildToolsForModelRequest because that method advances the callback-local
+// replacement revision; RunLoop alone owns real request rendering.
+func (c *remoteCodingCallbacks) trajectoryToolSurfaceSnapshot(userText string) []map[string]interface{} {
+	tools := c.BuildTools(userText)
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		return filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostRemote, tools)
+	}
+	return tools
+}
+
+func buildUncorrelatedRemoteCodingCompatibilityPrompt(c *remoteCodingCallbacks) string {
+	projectDir, workDir, taskContext := "", "", ""
+	includeTodo := true
+	if c != nil {
+		taskContext = c.taskContext
+		if c.agent != nil {
+			projectDir = c.agent.projectDir
+			workDir = c.agent.workDir
+			if c.agent.readOnlyInquiry || (c.agent.nestDepth > 0 &&
+				(c.agent.role == codingRoleExplorer || c.agent.role == codingRoleReviewer)) {
+				includeTodo = false
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString(`# Remote Coding compatibility mode
+
+This request is running on the temporary uncorrelated Coding compatibility surface. Use only the definitions actually included with this request.
+
+## Available posture
+- Gather remote repository evidence with read-only definitions that are present (for example ssh_read_file, ssh_list_dir, ssh_check_task, code_navigation, and approved knowledge/research lookups).
+- If the project has .codegraph/, prefer code_navigation / CodeGraph before broad searching.
+- Do not claim that a remote file was changed, a remote command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
+- For an implementation or operational request, inspect the code, explain the temporary safe-mode blocker, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
+`)
+	if includeTodo {
+		b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+`)
+	}
+	if strings.TrimSpace(projectDir) != "" || strings.TrimSpace(workDir) != "" {
+		b.WriteString(fmt.Sprintf("\n## Environment\n- Remote project directory: %s\n- Working directory: %s\n", projectDir, workDir))
+	}
+	if strings.TrimSpace(taskContext) != "" {
+		b.WriteString("\n## Task context\n")
+		b.WriteString(taskContext)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func (c *remoteCodingCallbacks) ensureLocalWorkbenchExtensions() {
@@ -1782,6 +2174,7 @@ func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbac
 		task:            &TaskItem{Index: 1, Title: c.task, Description: c.task},
 		matchedSkills:   c.localExtSkills,
 		matchedMCPTools: c.localExtMCP,
+		dynamicSurface:  c.dynamicSurface,
 	}
 }
 
@@ -1791,7 +2184,7 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	if c == nil {
 		// Keep the callback contract nil-safe. This is used by lightweight
 		// prompt/tool-surface checks before a concrete remote agent is bound.
-		return append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+		return cloneCodingSubAgentToolDefinitions(append(tools, buildCodingFullEnvExtraToolDefinitions()...))
 	}
 	// Append knowledge search tools when stores are available.
 	if c != nil && c.agent != nil && c.agent.codingKB != nil {
@@ -1801,17 +2194,16 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
 	}
 	if c.agent != nil && c.agent.readOnlyInquiry {
-		return filterRemoteCodingInquiryTools(tools)
+		return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingInquiryTools(tools)))
 	}
 	if c.agent != nil && c.agent.operationalRequest {
-		return filterRemoteCodingOperationalTools(tools)
+		return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingOperationalTools(tools)))
 	}
 	// Full workbench extras (local research helpers) available during remote coding too.
 	tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
-	// /goal lifecycle on pure remote coding root (not nested inspection agents).
-	if c != nil && c.agent != nil && c.agent.nestDepth == 0 {
-		tools = append(tools, buildCodingGoalToolDefinition())
-	}
+	// Goal lifecycle is host/orchestrator-owned until a durable expected-version
+	// CAS contract exists. It is intentionally absent from the remote legacy
+	// model surface as well.
 
 	role := codingRoleWorker
 	if c != nil && c.agent != nil && c.agent.role != "" {
@@ -1819,15 +2211,8 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	}
 	inspectionRole := c != nil && c.agent != nil && c.agent.nestDepth > 0 &&
 		(role == codingRoleExplorer || role == codingRoleReviewer)
-	if !inspectionRole {
-		c.ensureLocalWorkbenchExtensions()
-		if len(c.localExtSkills) > 0 {
-			tools = append(tools, buildManageSkillToolDefinition())
-		}
-		if len(c.localExtMCP) > 0 {
-			tools = append(tools, buildCallMCPToolDefinition())
-		}
-	}
+		// Dynamic Skill/MCP aliases are materialized per actual model request by
+		// BuildToolsForModelRequest, never cached with the remote tool surface.
 	// Codex-style nested subagents on pure remote coding workbench root.
 	if c != nil && c.agent != nil && c.agent.canSpawnRemoteCodingAgent() {
 		tools = append(tools, buildSpawnCodingAgentToolDefinition())
@@ -1839,17 +2224,234 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	if c != nil && c.agent != nil {
 		tools = filterRemoteCodingToolsForRole(tools, c.agent)
 	}
-	return tools
+	return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, tools))
+}
+
+func (c *remoteCodingCallbacks) setStaticCompatibilitySurface(definitions []map[string]interface{}) uint64 {
+	if c == nil {
+		return 0
+	}
+	c.staticCompatibilitySurfaceMu.Lock()
+	c.staticCompatibilitySurface = codingStaticCompatibilitySurfaceNames(definitions)
+	// See the local Coding callback: RunLoop has already issued the current
+	// request epoch before asking us to render. Preserve it while replacing only
+	// this request's definitions; the successor's BeginToolSurfaceEpoch call
+	// advances the fence before its own render.
+	c.staticCompatibilityRevision++
+	revision := c.staticCompatibilityRevision
+	c.staticCompatibilitySurfaceMu.Unlock()
+	// See the local callback: this is an in-process control-plane CAS fence,
+	// not an SSH/provider identity or durable task revision.
+	c.todos.bindControlPlaneRevision(revision)
+	return revision
+}
+
+func (c *remoteCodingCallbacks) recordStaticCompatibilitySurface(definitions []map[string]interface{}, revision uint64) {
+	if c == nil {
+		return
+	}
+	posture := codingRequestImplementation
+	var handler *IMMessageHandler
+	userID := ""
+	if c.agent != nil {
+		handler = c.agent.handler
+		if c.agent.readOnlyInquiry {
+			posture = codingRequestInquiry
+		} else if c.agent.operationalRequest {
+			posture = codingRequestOperational
+		}
+		if c.agent.loopCtx != nil {
+			userID = c.agent.loopCtx.UserID
+		}
+	}
+	// Remote catalog/binding migration is S2 work. Explicitly recording
+	// not_prepared makes the absence observable without inventing a local plan.
+	observation := newCodingStaticCompatibilitySurfaceObservation(codingStaticCompatibilityHostRemote, revision, posture, definitions, nil, nil)
+	c.staticCompatibilitySurfaceMu.Lock()
+	c.staticCompatibilityLast = observation
+	c.staticCompatibilitySurfaceMu.Unlock()
+	recordCodingStaticCompatibilitySurfaceObservation(handler, userID, observation)
+}
+
+func (c *remoteCodingCallbacks) lastStaticCompatibilitySurfaceObservation() codingStaticCompatibilitySurfaceObservation {
+	if c == nil {
+		return codingStaticCompatibilitySurfaceObservation{}
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	observation := c.staticCompatibilityLast
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	observation.RenderedToolNames = append([]string(nil), observation.RenderedToolNames...)
+	observation.OmittedReasons = append([]string(nil), observation.OmittedReasons...)
+	observation.UnmetReasons = append([]string(nil), observation.UnmetReasons...)
+	observation.LegacyOnlyCapabilities = append([]string(nil), observation.LegacyOnlyCapabilities...)
+	observation.ShadowOnlyCapabilities = append([]string(nil), observation.ShadowOnlyCapabilities...)
+	return observation
+}
+
+func (c *remoteCodingCallbacks) staticCompatibilityToolAllowed(name string) bool {
+	if c == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	c.staticCompatibilitySurfaceMu.RLock()
+	if c.staticCompatibilityQuarantined {
+		c.staticCompatibilitySurfaceMu.RUnlock()
+		return false
+	}
+	if c.staticCompatibilitySurface == nil {
+		c.staticCompatibilitySurfaceMu.RUnlock()
+		return true
+	}
+	_, allowed := c.staticCompatibilitySurface[name]
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	return allowed
+}
+
+func (c *remoteCodingCallbacks) beginStaticCompatibilitySurfaceEpoch() string {
+	if c == nil {
+		return ""
+	}
+	nonce := codingDynamicSurfaceNonce()
+	if nonce == "random_unavailable" {
+		return ""
+	}
+	epoch := "remote-coding-static:" + nonce
+	c.staticCompatibilitySurfaceMu.Lock()
+	defer c.staticCompatibilitySurfaceMu.Unlock()
+	// Match the local callback and RunLoop ordering: first requests have no
+	// predecessor surface, yet must still receive their request epoch before
+	// rendering. Quarantine is terminal and remains the only rejection here.
+	if c.staticCompatibilityQuarantined {
+		return ""
+	}
+	c.staticCompatibilityEpoch = epoch
+	return epoch
+}
+
+// Empty contexts preserve the direct host/test compatibility path. Real model
+// dispatch gets a non-empty request-instance epoch from RunLoop. This fence is
+// not a substitute for provider response correlation or a durable grant.
+func (c *remoteCodingCallbacks) staticCompatibilityExecutionEpochAllowed(epoch string) bool {
+	if c == nil {
+		return false
+	}
+	epoch = strings.TrimSpace(epoch)
+	if epoch == "" {
+		return true
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	allowed := !c.staticCompatibilityQuarantined && c.staticCompatibilityEpoch != "" && epoch == c.staticCompatibilityEpoch
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	return allowed
+}
+
+func (c *remoteCodingCallbacks) staticCompatibilitySurfaceQuarantined() bool {
+	if c == nil {
+		return true
+	}
+	c.staticCompatibilitySurfaceMu.RLock()
+	quarantined := c.staticCompatibilityQuarantined
+	c.staticCompatibilitySurfaceMu.RUnlock()
+	return quarantined
+}
+
+func (c *remoteCodingCallbacks) quarantineStaticCompatibilitySurface() {
+	if c == nil {
+		return
+	}
+	c.staticCompatibilitySurfaceMu.Lock()
+	c.staticCompatibilityQuarantined = true
+	c.staticCompatibilitySurface = map[string]struct{}{}
+	c.staticCompatibilityEpoch = ""
+	c.staticCompatibilitySurfaceMu.Unlock()
 }
 
 func (c *remoteCodingCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
 }
 
-// ExecuteToolStructured keeps advisory knowledge retrieval fail-open. A stale
-// or unavailable local knowledge index must not be interpreted as a failed
-// remote coding operation by the shared agent loop.
+func (c *remoteCodingCallbacks) BuildToolsForModelRequest(userText string, iteration int) []map[string]interface{} {
+	_ = userText
+	_ = iteration
+	if c.staticCompatibilitySurfaceQuarantined() {
+		return nil
+	}
+	tools := c.BuildTools("")
+	// Remote workspace writes/commands are external effects. Keep them out of
+	// the uncorrelated S0.5 static belt until an S1-C adapter binds calls to a
+	// real provider response and journal; S3 control-plane names stay separate.
+	tools = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostRemote, tools)
+	revision := c.setStaticCompatibilitySurface(tools)
+	tools = annotateCodingTodoDefinitionForControlPlane(tools, revision, c.todos.controlPlaneSnapshot().Version)
+	c.recordStaticCompatibilitySurface(tools, revision)
+	return tools
+}
+
+func (c *remoteCodingCallbacks) ContainToolSurfaceAmbiguousDelivery() bool {
+	return true
+}
+
+func (c *remoteCodingCallbacks) OnToolSurfaceAttemptStarted(agent.ToolCallExecutionContext) {}
+
+func (c *remoteCodingCallbacks) OnToolSurfaceAttemptFinished(_ agent.ToolCallExecutionContext, delivery agent.ToolSurfaceDeliveryState) {
+	if delivery == agent.ToolSurfaceAmbiguousDelivery {
+		c.quarantineStaticCompatibilitySurface()
+	}
+}
+
+func (c *remoteCodingCallbacks) BeginToolSurfaceEpoch(iteration int) string {
+	if c.dynamicLifecycleRelaySnapshot() != nil {
+		return "remote-coding-dynamic:" + codingDynamicSurfaceNonce()
+	}
+	_ = iteration
+	return c.beginStaticCompatibilitySurfaceEpoch()
+}
+
+func (c *remoteCodingCallbacks) ExecuteToolCallWithContext(name, argsJSON, callID string, execution agent.ToolCallExecutionContext) agent.ToolExecutionResult {
+	if relay := c.dynamicLifecycleRelaySnapshot(); relay != nil {
+		// Dynamic composition never falls back to the remote name dispatcher.
+		// A terminal/missing holder must remain stale even if a legacy SSH name
+		// happens to be visible in another request surface.
+		return relay.ExecuteToolCallWithContext(name, argsJSON, callID, execution)
+	}
+	if isLegacyCodingDynamicGateway(name) {
+		return rejectedCodingDynamicModelGateway()
+	}
+	if isCodingDynamicInvocationAlias(name) {
+		return rejectedCodingDynamicModelGateway()
+	}
+	if !c.staticCompatibilityToolAllowed(name) {
+		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	if !c.staticCompatibilityExecutionEpochAllowed(execution.SurfaceEpoch) {
+		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	_ = callID
+	// Do not re-enter the epoch-less compatibility API after this request-bound
+	// admission check. That API remains for host-owned maintenance only; model
+	// dispatch reaches the canonical executor directly from this context-aware
+	// boundary.
+	return c.executeRemoteToolStructuredCanonical(name, argsJSON)
+}
+
+// ExecuteToolStructured is an epoch-less compatibility entry for host-owned
+// maintenance and tests. RunLoop model dispatch must instead use
+// ExecuteToolCallWithContext, which validates the request surface before
+// invoking executeRemoteToolStructuredCanonical.
 func (c *remoteCodingCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
+	if isLegacyCodingDynamicGateway(name) {
+		return rejectedCodingDynamicModelGateway()
+	}
+	if !c.staticCompatibilityToolAllowed(name) {
+		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	return c.executeRemoteToolStructuredCanonical(name, argsJSON)
+}
+
+// executeRemoteToolStructuredCanonical keeps advisory knowledge retrieval
+// fail-open. A stale or unavailable local knowledge index must not be
+// interpreted as a failed remote coding operation by the shared agent loop.
+func (c *remoteCodingCallbacks) executeRemoteToolStructuredCanonical(name, argsJSON string) agent.ToolExecutionResult {
 	result := c.executeRemoteTool(name, argsJSON)
 	if remoteCodingExecutionOutcome(name, result) != "success" {
 		return agent.ToolExecutionResult{Result: result, Outcome: agent.ToolExecutionOutcomeError}
@@ -1862,6 +2464,29 @@ func (c *remoteCodingCallbacks) ExecuteToolStructured(name, argsJSON string) age
 // unavailable envelope is useful guidance, rather than an execution failure.
 func remoteCodingExecutionOutcome(name, result string) string {
 	if remoteCodingKnowledgeUnavailableResult(name, result) {
+		return "success"
+	}
+	if strings.EqualFold(strings.TrimSpace(name), codingSubAgentSpawnToolName) {
+		return remoteCodingSpawnToolOutcome(result)
+	}
+	return remoteCodingToolOutcome(result)
+}
+
+// remoteCodingSpawnToolOutcome classifies spawn_coding_agent from its header,
+// not from child summaries. A successful worker report may mention "error:"
+// after a merged fix; the SSH-log heuristic must not flip that to failed.
+func remoteCodingSpawnToolOutcome(result string) string {
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return "failed"
+	}
+	if strings.HasPrefix(text, "错误") {
+		return "failed"
+	}
+	if strings.HasPrefix(text, "spawn_coding_agent") && strings.Contains(text, " completed:") {
+		return "success"
+	}
+	if strings.Contains(text, "admitted read-only child") {
 		return "success"
 	}
 	return remoteCodingToolOutcome(result)
@@ -1890,6 +2515,7 @@ func (c *remoteCodingCallbacks) OnToken(delta string) {
 	if c != nil && c.agent != nil && c.agent.onToken != nil {
 		c.agent.onToken(delta)
 	}
+	c.emitAssistantNoteDelta(delta)
 }
 
 func (c *remoteCodingCallbacks) OnProgress(text string) {
@@ -1899,19 +2525,61 @@ func (c *remoteCodingCallbacks) OnProgress(text string) {
 }
 
 func (c *remoteCodingCallbacks) OnToolCall(name string) {
-	if c != nil && c.agent != nil && c.agent.onProgress != nil {
-		// Emit a structured CodingAgentEvent so the frontend renders the same
-		// tool activity panel as the local CodingSubAgent.
-		event := CodingAgentEvent{
-			Version: 1,
-			Agent:   codingAgentNameCoding.String(),
-			Event:   codingAgentEventKindToolStarted.String(),
-			Phase:   codingAgentEventPhaseRunning.String(),
-			Detail:  strings.TrimSpace(name),
-			Title:   c.userFacingActivityTitle(),
-		}
-		emitCodingAgentEvent(c.agent.onProgress, event)
+	// Tool start/finish progress is emitted in executeRemoteTool so the event
+	// can include the command/path from the parsed arguments.
+}
+
+func (c *remoteCodingCallbacks) emitRemoteToolStartedEvent(name, argsJSON string) {
+	if c == nil || c.agent == nil || c.agent.onProgress == nil {
+		return
 	}
+	event := CodingAgentEvent{
+		Version: 1,
+		Agent:   codingAgentNameCoding.String(),
+		Event:   codingAgentEventKindToolStarted.String(),
+		Phase:   codingAgentEventPhaseRunning.String(),
+		Detail:  strings.TrimSpace(name),
+		Title:   c.userFacingActivityTitle(),
+		Command: remoteCodingToolEventCommand(strings.ToLower(strings.TrimSpace(name)), argsJSON),
+		Files:   codingToolEventFiles(name, argsJSON, remoteCodingDisplayRoot(c)),
+	}
+	emitCodingAgentEvent(c.agent.onProgress, event)
+}
+
+func (c *remoteCodingCallbacks) emitAssistantNoteDelta(delta string) {
+	if c == nil || c.agent == nil || c.agent.onProgress == nil {
+		return
+	}
+	if strings.TrimSpace(delta) == "" {
+		return
+	}
+	c.noteMu.Lock()
+	c.noteBuf.WriteString(delta)
+	text := strings.TrimSpace(c.noteBuf.String())
+	ready := codingAssistantNoteReady(text, delta)
+	if !ready || (!c.lastNoteAt.IsZero() && time.Since(c.lastNoteAt) < 800*time.Millisecond) {
+		c.noteMu.Unlock()
+		return
+	}
+	text = compactCodingAssistantNote(text)
+	if text == "" {
+		c.noteBuf.Reset()
+		c.noteMu.Unlock()
+		return
+	}
+	c.noteBuf.Reset()
+	c.lastNoteAt = time.Now()
+	c.noteMu.Unlock()
+	event := CodingAgentEvent{
+		Version: 1,
+		Agent:   codingAgentNameCoding.String(),
+		Event:   codingAgentEventKindAssistantNote.String(),
+		Phase:   codingAgentEventPhaseRunning.String(),
+		Title:   c.userFacingActivityTitle(),
+		Detail:  text,
+		Summary: text,
+	}
+	emitCodingAgentEvent(c.agent.onProgress, event)
 }
 
 func (c *remoteCodingCallbacks) OnToolResult(name string) {}
@@ -1956,7 +2624,19 @@ func (c *remoteCodingCallbacks) LLMRequestContext(iteration int) (context.Contex
 		loopCtx = c.agent.loopCtx
 		executionCtx = c.agent.executionCtx
 	}
-	return codingLoopLLMRequestContext(executionCtx, loopCtx, "remote-coding-subagent", iteration)
+	ctx, finish, err := codingLoopLLMRequestContext(executionCtx, loopCtx, "remote-coding-subagent", iteration)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ctx, finish, nil
+}
+
+func (c *remoteCodingCallbacks) LLMReplanRequested() bool {
+	return c != nil && c.agent != nil && c.agent.loopCtx != nil && c.agent.loopCtx.ReplanRequestedSince(c.llmReplanRevision.Load())
+}
+
+func (c *remoteCodingCallbacks) TryFinalizeLLMResponse() bool {
+	return c == nil || c.agent == nil || c.agent.loopCtx == nil || c.agent.loopCtx.TrySealReplans(c.llmReplanRevision.Load())
 }
 
 // --- Tool Execution ---
@@ -1965,6 +2645,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	startedAt := time.Now()
 	canonicalName := strings.ToLower(strings.TrimSpace(name))
 	var normalizedArgsJSON string
+	c.emitRemoteToolStartedEvent(name, argsJSON)
 
 	// Defer tool_finished event emission — guarantees pairing with tool_started
 	// regardless of early returns (parse errors, nil handler, etc.)
@@ -1981,9 +2662,11 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				Detail:     strings.TrimSpace(name),
 				Title:      c.userFacingActivityTitle(),
 				Command:    remoteCodingToolEventCommand(canonicalName, normalizedArgsJSON),
+				Files:      codingToolEventFiles(canonicalName, firstNonEmptySubAgentString(normalizedArgsJSON, argsJSON), remoteCodingDisplayRoot(c)),
 				Outcome:    outcome,
 				DurationMS: duration.Milliseconds(),
 			}
+			attachCodingToolFileChanges(&event, canonicalName, firstNonEmptySubAgentString(normalizedArgsJSON, argsJSON), nil)
 			if outcome != "success" {
 				summary := result
 				if len([]rune(summary)) > 180 {
@@ -2043,18 +2726,12 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		result = c.executeRemoteKnowledgeImageSearch(normalizedArgsJSON)
 		return result
 	case "manage_skill":
-		if local := c.localWorkbenchCallbacks(); local != nil {
-			result = local.executeManageSkill(args).Text
-			return result
-		}
-		result = "manage_skill unavailable"
+		// See the local CodingSubAgent path: a model-visible legacy selector
+		// must not bypass ToolPlan/grant/journal admission.
+		result = "[system rejected] catalog_incomplete"
 		return result
 	case "call_mcp_tool":
-		if local := c.localWorkbenchCallbacks(); local != nil {
-			result = local.executeCallMCPTool(args).Text
-			return result
-		}
-		result = "call_mcp_tool unavailable"
+		result = "[system rejected] catalog_incomplete"
 		return result
 	case "web_search":
 		if c.agent.handler != nil {
@@ -2107,7 +2784,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	}
 
 	if !remoteCodingToolRequiresSSHHandler(canonicalName) {
-		result = fmt.Sprintf("unknown tool: %s (supports: ssh_*, spawn_coding_agent, goal, todo_write, manage_skill, call_mcp_tool, knowledge search)", name)
+		result = fmt.Sprintf("unknown tool: %s (supports: ssh_*, spawn_coding_agent, goal, todo_write, knowledge search, and only request-listed managed extension aliases)", name)
 		return result
 	}
 	if c.agent.handler == nil {
@@ -2157,11 +2834,12 @@ func (c *remoteCodingCallbacks) executeRemoteTodoWrite(argsJSON string) string {
 	if c.agent != nil {
 		handler = c.agent.handler
 	}
-	text, outcome := executeCodingAgentTodoWrite(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
+	revision := c.currentControlPlaneRevision()
+	text, outcome := executeCodingAgentTodoWriteForControlPlane(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
 		if handler != nil && userID != "" {
 			publishCodingAgentTodosToUI(handler, userID, items)
 		}
-	})
+	}, revision, revision != 0)
 	if outcome == codingToolOutcomeSuccess {
 		text = annotateTodoChecklistForOrchestratedPlan(handler, userID, text)
 	}
@@ -2674,6 +3352,15 @@ func (s *remoteHighRiskApprovalState) configure(callback ScopeApprovalCallback, 
 	s.pathFullAccess = fullAccess
 }
 
+func (s *remoteHighRiskApprovalState) highRiskApproved() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.highRiskFullAccess
+}
+
 // grantHighRiskFullAccess enables high-risk bash auto-allow without changing path trust.
 func (s *remoteHighRiskApprovalState) grantHighRiskFullAccess() {
 	if s == nil {
@@ -2853,6 +3540,86 @@ func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection strin
 		s.mu.Lock()
 		s.highRiskFullAccess = true
 		s.mu.Unlock()
+		return ""
+	default:
+		return rejection
+	}
+}
+
+// guardRemoteShellCommand runs the ssh_bash guardrails for one command and
+// returns the rejection the caller must surface, or "" when the command may
+// execute. The ordering mirrors the local coding subagent: hard blocks come
+// before anything the user can wave through, and a command the user already
+// allowed is not queued up for a second prompt from a later guardrail.
+//
+// recordAsFailure reports whether the rejection belongs in the run evidence as
+// a failed command. A high-risk refusal is deliberately left out: the user
+// already saw and answered it on the approval channel.
+func (c *remoteCodingCallbacks) guardRemoteShellCommand(command, workDir string) (rejection string, recordAsFailure bool) {
+	// A read-only inquiry stays a hard block. Its run report states that the
+	// turn modified nothing purely from the request kind, so approving a
+	// command past this guardrail would make the report claim something untrue.
+	if c != nil && c.agent != nil && c.agent.readOnlyInquiry {
+		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+			return msg, true
+		}
+	}
+	// A run/build/demo guardrail decides what runs without asking, not what may
+	// run at all, so the user gets the final say instead of the agent
+	// dead-ending and inventing a reason for the refusal.
+	approved := false
+	if c != nil && c.agent != nil && c.agent.operationalRequest {
+		if guarded := rejectCodingOperationalShellCommand(command); guarded != "" {
+			if msg := c.agent.highRiskApproval.checkTaskModeGuard(command, workDir, guarded); msg != "" {
+				return msg, true
+			}
+			// The user allowed this exact command, so a later guardrail must
+			// not raise a second prompt for the same call.
+			approved = true
+		}
+	}
+	// Hard block silenced git self-checks (no high-risk approval bypass).
+	if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
+		return c.userFacingSafetyActorMessage(msg), true
+	}
+	if msg := rejectDisallowedCodingBashCommand(command); msg != "" && !approved {
+		msg = c.userFacingSafetyActorMessage(msg)
+		if c == nil || c.agent == nil {
+			return msg, false
+		}
+		if hasOnlyDirectoryCreationShellMutation(strings.ToLower(strings.Join(strings.Fields(command), " "))) {
+			return c.requireRemoteShellDirectoryWriteApproval(command, workDir, msg), false
+		}
+		return c.agent.highRiskApproval.check(command, workDir, msg), false
+	}
+	return "", false
+}
+
+// checkTaskModeGuard asks before running a command that a task-mode guardrail
+// turned down. Unlike check it neither consults nor grants the sticky
+// high-risk allowance: answering "allow risky commands" is a statement about
+// danger, not about widening what a run/build turn is, so each widening stays
+// an explicit per-command decision the user actually sees.
+func (s *remoteHighRiskApprovalState) checkTaskModeGuard(command, workingDir, rejection string) string {
+	if s == nil {
+		return rejection
+	}
+	s.mu.Lock()
+	callback := s.callback
+	s.mu.Unlock()
+	if callback == nil {
+		return rejection
+	}
+	switch callback(ScopeApprovalRequest{
+		ToolName:    remoteSSHBashToolName,
+		Path:        command,
+		ProjectPath: workingDir,
+		Directory:   workingDir,
+		Kind:        remoteHighRiskApprovalKind,
+		Message:     rejection,
+		AutoAllow:   false,
+	}) {
+	case ScopeApprovalAllowOnce, ScopeApprovalFullAccess:
 		return ""
 	default:
 		return rejection
@@ -3362,36 +4129,11 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 	} else {
 		workDir = c.resolvePath(workDir)
 	}
-	if c != nil && c.agent != nil && c.agent.readOnlyInquiry {
-		if msg := rejectCodingInquiryShellCommand(command); msg != "" {
+	if msg, recordAsFailure := c.guardRemoteShellCommand(command, workDir); msg != "" {
+		if recordAsFailure {
 			c.trackRemoteCommand(command, workDir, msg, false)
-			return msg
 		}
-	}
-	if c != nil && c.agent != nil && c.agent.operationalRequest {
-		if msg := rejectCodingOperationalShellCommand(command); msg != "" {
-			c.trackRemoteCommand(command, workDir, msg, false)
-			return msg
-		}
-	}
-	// Hard block silenced git self-checks (no high-risk approval bypass).
-	if msg := rejectSilencedGitSelfCheckCommand(command); msg != "" {
-		msg = c.userFacingSafetyActorMessage(msg)
-		c.trackRemoteCommand(command, workDir, msg, false)
 		return msg
-	}
-	if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
-		msg = c.userFacingSafetyActorMessage(msg)
-		if c == nil || c.agent == nil {
-			return msg
-		}
-		if hasOnlyDirectoryCreationShellMutation(strings.ToLower(strings.Join(strings.Fields(command), " "))) {
-			if approvalMsg := c.requireRemoteShellDirectoryWriteApproval(command, workDir, msg); approvalMsg != "" {
-				return approvalMsg
-			}
-		} else if approvalMsg := c.agent.highRiskApproval.check(command, workDir, msg); approvalMsg != "" {
-			return approvalMsg
-		}
 	}
 
 	fullCmd := fmt.Sprintf("cd %s && %s", remoteShellQuote(workDir), command)
@@ -3479,6 +4221,17 @@ func (c *remoteCodingCallbacks) defaultRemoteWorkingDir() string {
 		return workDir
 	}
 	return "."
+}
+
+func remoteCodingDisplayRoot(c *remoteCodingCallbacks) string {
+	if c == nil {
+		return ""
+	}
+	root := strings.TrimSpace(c.defaultRemoteWorkingDir())
+	if root == "" || root == "." {
+		return ""
+	}
+	return root
 }
 
 func (c *remoteCodingCallbacks) sshCheckTask(args map[string]interface{}) string {
@@ -3793,15 +4546,15 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 9. 路径可以是相对路径（相对于项目目录）或绝对路径
 10. ssh_read_file 默认只返回前 200 行；继续读取时用返回提示里的 offset 分片查看
 11. 长时间训练命令会自动作为后台任务运行，返回 task_id；必须用 ssh_check_task 跟进直到得到明确状态/exit_code
-12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或本任务放行
-13. 最终回复必须说明：修改/创建的文件、实际运行的验证命令及结果、diff/status 自检结果、剩余风险或未验证项
+12. 如确实需要运行被安全策略拦截的 ssh_bash 命令，等待用户确认；用户可选择本次放行或本任务放行。当前任务原文明确要求清空/删除项目目录内文件，或明确要求改写 Git 工作区时，必须调用 ssh_bash 发起该命令，不要只回复文字拒绝。
+13. 最终回复用工程师口吻：先给结果，再点名改过的路径和实际跑过的验证事实。不要写质量审计/探索状态/验证状态/验证结果/涉及文件/执行报告标题，没有真实风险时不要写 remaining risk。
 
 ## 严禁行为
 - 不要删除项目根目录或关键系统文件
 - 不要修改 /etc、/usr 等系统目录
 - 不要在未读取文件的情况下盲目覆盖
-- 不要用 ssh_bash 执行 git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f 等会改写工作区或历史的命令
-- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向写文件、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写
+- 不要擅自用 ssh_bash 执行 git reset/checkout/restore/switch/merge/rebase/stash/add/commit/apply/clean -f 等会改写工作区或历史的命令
+- 不要用 ssh_bash 执行 rm -r/rm -rf、shell 重定向写文件、sed -i、perl -pi、touch/mkdir/cp/mv、脚本内写文件等绕过审计的文件改写。若当前任务原文明确要求清空或删除项目目录内文件，必须调用 ssh_bash（working_dir 限定在项目目录）；宿主会请求确认，或在完全控制下自动放行。禁止只回复文字拒绝。
 - 不要对 git status/diff/log 自检命令做 2>/dev/null 或 >/dev/null（会掩盖“不是 Git 仓库”等关键信息并触发质量门误判）
 `)
 	if taskContext != "" {
@@ -3849,6 +4602,7 @@ Rules:
 3. Do not edit source files or dependency configuration, generate a plan, create tests, or start a TDD/task-number workflow. Normal build output created by the launch/build command is allowed.
 4. For a long-running process, use an appropriate timeout/background task and report whether it started successfully.
 5. Lead with the result, then report the command and exit code/key output. State that no source changes were requested; mention any generated build output when observed.
+6. If the current task text explicitly asks to clear or delete files inside the project directory, call ssh_bash so the host can prompt or honor Full Control. Do not refuse in prose, and do not run an unrelated existing binary instead.
 `, projectDir, workDir)
 }
 
@@ -4204,26 +4958,32 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 		return ""
 	}
 
-	// 1. Coding knowledge (experiences)
+	// 1. Coding knowledge (experiences), plus read-only enterprise technical assets.
+	var pack knowledge.ContextPackResult
 	if c.agent.codingKB != nil {
-		pack, err := c.agent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
+		if got, err := c.agent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
 			Query:       taskQuery,
 			Language:    "python", // paper reproduction is predominantly Python
 			ProjectPath: c.agent.projectDir,
 			MaxItems:    4,
 			MaxChars:    1500,
 			MaxTokens:   750,
-		})
-		if err == nil && len(pack.Items) > 0 {
-			b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
-			b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-			for _, item := range pack.Items {
-				text := item.Text
-				if len([]rune(text)) > 300 {
-					text = string([]rune(text)[:300]) + "..."
-				}
-				b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, text))
+		}); err == nil {
+			pack = got
+		}
+	}
+	if c.agent.handler != nil && c.agent.handler.app != nil {
+		pack = c.agent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, "python", c.agent.projectDir, 4)
+	}
+	if len(pack.Items) > 0 {
+		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
+		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
+		for _, item := range pack.Items {
+			text := item.Text
+			if len([]rune(text)) > 300 {
+				text = string([]rune(text)[:300]) + "..."
 			}
+			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, text))
 		}
 	}
 
@@ -4275,6 +5035,10 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 		Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
 		Limit:       5,
 	})
+	if c.agent.handler != nil && c.agent.handler.app != nil {
+		experiences = c.agent.handler.app.mergeEnterpriseCodingSearch(ctx, experiences, query, "python", c.agent.projectDir, 5)
+		err = nil
+	}
 	if err != nil {
 		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err)
 	}

@@ -5,8 +5,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
 func findModel(t *testing.T) string {
@@ -181,6 +184,7 @@ func BenchmarkEmbed_Short(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer() // Close/unmap is not Embed
 }
 
 // BenchmarkEmbed_Medium benchmarks a medium-length text (~50 tokens).
@@ -200,6 +204,7 @@ func BenchmarkEmbed_Medium(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	b.StopTimer() // Close/unmap is not Embed
 }
 
 // BenchmarkEmbedBatch benchmarks batch embedding of 8 texts.
@@ -228,4 +233,147 @@ func BenchmarkEmbedBatch(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func TestEmbedBatchDoesNotMutateMatMulParallel(t *testing.T) {
+	tensor.SetMatMulMaxParallel(7)
+	defer tensor.SetMatMulMaxParallel(0)
+	path := findModel(t)
+	emb, err := NewGemmaEmbedder(path, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer emb.Close()
+	if _, err := emb.EmbedBatch([]string{"hello", "world", "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if tensor.MatMulMaxParallelForTest() != 7 {
+		t.Fatalf("EmbedBatch mutated process-global cap to %d", tensor.MatMulMaxParallelForTest())
+	}
+}
+
+func TestEmbedBatchMatchesSerialCosine(t *testing.T) {
+	path := findModel(t)
+	emb, err := NewGemmaEmbedder(path, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer emb.Close()
+	texts := []string{"hello world", "machine learning", "attention mechanism"}
+	batched, err := emb.EmbedBatch(texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, text := range texts {
+		serial, err := emb.Embed(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cos := cosine32(batched[i], serial)
+		if cos < 0.999 {
+			t.Fatalf("%q packed-vs-serial cosine=%g want >=0.999", text, cos)
+		}
+	}
+}
+
+func TestEmbedTokenStates_WidthIsModelDim(t *testing.T) {
+	path := findModel(t)
+	emb, err := NewGemmaEmbedder(path, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer emb.Close()
+	states, seq, dim, err := emb.EmbedTokenStates("hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dim != 768 {
+		t.Fatalf("EmbedTokenStates dim=%d want model dim 768 (not MRL 256)", dim)
+	}
+	if seq <= 0 {
+		t.Fatal("empty token sequence")
+	}
+	if len(states) != seq*dim {
+		t.Fatalf("states len=%d want seq*dim=%d", len(states), seq*dim)
+	}
+	pooled, err := emb.Embed("hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pooled) != 256 {
+		t.Fatalf("Embed dim=%d want 256", len(pooled))
+	}
+}
+
+func TestFusionOffVsOnCosine(t *testing.T) {
+	path := findModel(t)
+	on, err := NewGemmaEmbedder(path, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer on.Close()
+	off, err := NewGemmaEmbedder(path, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer off.Close()
+	off.fusionOff = true
+	raw, err := os.ReadFile(filepath.Join("testdata", "embed_gate_zh.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			texts = append(texts, line)
+		}
+	}
+	if len(texts) == 0 {
+		t.Fatal("empty gate corpus")
+	}
+	for _, text := range texts {
+		a, err := on.Embed(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bvec, err := off.Embed(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(a) != 256 || len(bvec) != 256 {
+			t.Fatalf("%q dim on=%d off=%d want 256", text, len(a), len(bvec))
+		}
+		var na, nb float64
+		for i := range a {
+			na += float64(a[i]) * float64(a[i])
+			nb += float64(bvec[i]) * float64(bvec[i])
+		}
+		na, nb = math.Sqrt(na), math.Sqrt(nb)
+		if math.Abs(na-1) > 1e-3 || math.Abs(nb-1) > 1e-3 {
+			t.Fatalf("%q L2 on=%.6f off=%.6f want 1±1e-3", text, na, nb)
+		}
+		cos := cosine32(a, bvec)
+		t.Logf("%q dim=%d L2_on=%.4f L2_off=%.4f cosine=%.6f", text, len(a), na, nb, cos)
+		if cos < 0.999 {
+			t.Fatalf("%q cosine=%g want >=0.999", text, cos)
+		}
+	}
+}
+
+func cosine32(a, b []float32) float64 {
+	var dot, na, nb float64
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }

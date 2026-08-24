@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -970,11 +971,22 @@ func coerceInt(v interface{}) (int, bool) {
 	case float64:
 		return int(n), true
 	case json.Number:
-		i, err := n.Int64()
-		if err != nil {
-			return 0, false
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
 		}
-		return int(i), true
+		if f, err := n.Float64(); err == nil {
+			return int(f), true
+		}
+		return 0, false
+	case string:
+		raw := strings.TrimSpace(n)
+		if i, err := strconv.Atoi(raw); err == nil {
+			return i, true
+		}
+		if f, err := strconv.ParseFloat(raw, 64); err == nil {
+			return int(f), true
+		}
+		return 0, false
 	default:
 		return 0, false
 	}

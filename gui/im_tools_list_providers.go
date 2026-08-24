@@ -6,7 +6,10 @@ import (
 )
 
 func (h *IMMessageHandler) toolListProviders(args map[string]interface{}) string {
-	toolName, _ := args["tool"].(string)
+	toolName, _ := args["coding_tool"].(string)
+	if toolName == "" {
+		toolName, _ = args["tool"].(string)
+	}
 	if toolName == "" {
 		return "缺少 tool 参数"
 	}

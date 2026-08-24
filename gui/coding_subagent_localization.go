@@ -69,9 +69,18 @@ type CodingSubAgentLocalizationEvidence struct {
 type codingSubAgentLocalizationState struct {
 	mu       sync.Mutex
 	evidence *CodingSubAgentLocalizationEvidence
+	// revision is a callback-local control-plane generation. It is deliberately
+	// not a provider response/tool-call identity and is never persisted or used
+	// as a grant/journal key. It only prevents evidence accepted for an older
+	// rendered static surface from authorizing an edit after replacement.
+	revision uint64
 }
 
 func (s *codingSubAgentLocalizationState) set(e CodingSubAgentLocalizationEvidence) {
+	s.setForRevision(e, 0)
+}
+
+func (s *codingSubAgentLocalizationState) setForRevision(e CodingSubAgentLocalizationEvidence, revision uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	copy := normalizeLocalizationEvidence(e)
@@ -81,6 +90,7 @@ func (s *codingSubAgentLocalizationState) set(e CodingSubAgentLocalizationEviden
 	copy.Candidates = rankLocalizationCandidates(copy.Candidates)
 	copy.ReportedAt = time.Now().UTC()
 	s.evidence = &copy
+	s.revision = revision
 }
 
 func localizationCandidatesFromOutput(output string) []CodingSubAgentLocalizationCandidate {
@@ -111,6 +121,24 @@ func (s *codingSubAgentLocalizationState) snapshot() *CodingSubAgentLocalization
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.evidence == nil {
+		return nil
+	}
+	out := normalizeLocalizationEvidence(*s.evidence)
+	out.ReportedAt = s.evidence.ReportedAt
+	return &out
+}
+
+// snapshotForRevision returns evidence only when it was accepted for the same
+// callback-local rendered-surface generation. Revision zero is the explicit
+// direct-host compatibility path; it never becomes evidence for a later model
+// request because the first rendered surface is revision one.
+func (s *codingSubAgentLocalizationState) snapshotForRevision(revision uint64) *CodingSubAgentLocalizationEvidence {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.evidence == nil || s.revision != revision {
 		return nil
 	}
 	out := normalizeLocalizationEvidence(*s.evidence)
@@ -1681,20 +1709,20 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 			localizationResearchDebugSummary(text, &e, searches), compactCodingSubAgentLogText(err.Error(), 500))
 		return codingToolExecutionResult{Text: "invalid localization research evidence: " + err.Error(), Outcome: codingToolOutcomeFailed}
 	}
-	c.localization.set(e)
+	revision := c.storeLocalizationForCurrentControlPlaneRevision(e)
 	log.Printf("[coding-localization] report accepted task=%d root=%q symbol=%q candidates=%d confidence=%.2f %s",
 		taskDisplayNumber(c.task), compactCodingSubAgentLogText(e.RootCauseFile, 240), compactCodingSubAgentLogText(e.RootCauseSymbol, 160),
 		len(e.Candidates), e.Confidence, localizationResearchDebugSummary(text, &e, searches))
-	accepted := c.localization.snapshot()
+	accepted := c.localization.snapshotForRevision(revision)
 	out, _ := json.MarshalIndent(accepted, "", "  ")
-	return codingToolExecutionResult{Text: "localization evidence accepted\n" + string(out), Outcome: codingToolOutcomeSuccess}
+	return codingToolExecutionResult{Text: fmt.Sprintf("localization evidence accepted (control_plane_revision=%d)\n%s", revision, string(out)), Outcome: codingToolOutcomeSuccess}
 }
 
 func (c *codingSubAgentCallbacks) requireLocalizationBeforeExistingBugEdit(path string, created bool) string {
-	if c == nil || created || c.task == nil || !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
+	if c == nil || created || c.task == nil || (c.subagent != nil && c.subagent.horizonPosture) || !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		return ""
 	}
-	e := c.localization.snapshot()
+	e := c.localizationForCurrentControlPlaneRevision()
 	if err := validateLocalizationEvidence(e, c.displayProjectPath(path)); err != nil {
 		log.Printf("[coding-localization] edit blocked stage=evidence task=%d path=%q error=%q",
 			taskDisplayNumber(c.task), compactCodingSubAgentLogText(c.displayProjectPath(path), 300), compactCodingSubAgentLogText(err.Error(), 500))
@@ -1728,14 +1756,14 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 			localizationResearchDebugSummary(c.task+"\n"+c.taskContext, &e, c.searchesRun), compactCodingSubAgentLogText(err.Error(), 500))
 		return "invalid localization research evidence: " + err.Error()
 	}
-	c.localization.set(e)
+	revision := c.storeLocalizationForCurrentControlPlaneRevision(e)
 	log.Printf("[remote-localization] report accepted project=%q root=%q symbol=%q candidates=%d confidence=%.2f %s",
 		remoteLocalizationLogProject(c), compactCodingSubAgentLogText(e.RootCauseFile, 240),
 		compactCodingSubAgentLogText(e.RootCauseSymbol, 160), len(e.Candidates), e.Confidence,
 		localizationResearchDebugSummary(c.task+"\n"+c.taskContext, &e, c.searchesRun))
-	accepted := c.localization.snapshot()
+	accepted := c.localization.snapshotForRevision(revision)
 	out, _ := json.MarshalIndent(accepted, "", "  ")
-	return "localization evidence accepted\n" + string(out)
+	return fmt.Sprintf("localization evidence accepted (control_plane_revision=%d)\n%s", revision, string(out))
 }
 
 func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[string]interface{}, definitelyExisting bool) string {
@@ -1749,7 +1777,7 @@ func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[
 	// ssh_edit_file always targets an existing file. ssh_write_file may create a
 	// new file, but when localization already points elsewhere it must not bypass
 	// the root-cause gate by rewriting that existing target wholesale.
-	e := c.localization.snapshot()
+	e := c.localizationForCurrentControlPlaneRevision()
 	if !definitelyExisting && c.knownExisting != nil && !c.knownExisting[remoteCleanPath(c.resolvePath(path))] {
 		log.Printf("[remote-localization] edit exempt reason=new_file project=%q path=%q",
 			remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300))
@@ -1883,6 +1911,7 @@ func runLocalCodeNavigationWithPosition(root, operation, query, file string, lin
 		}
 		cmd := exec.CommandContext(ctx, bin, verb, arg)
 		cmd.Dir = root
+		hideCommandWindow(cmd)
 		data, err := cmd.CombinedOutput()
 		if err == nil && len(strings.TrimSpace(string(data))) > 0 {
 			return "codegraph", string(data), nil
@@ -1918,6 +1947,7 @@ func runLocalLSPNavigation(ctx context.Context, root, operation, query, file str
 		}
 		cmd := exec.CommandContext(ctx, "gopls", verb, fmt.Sprintf("%s:%d:%d", abs, line, column))
 		cmd.Dir = root
+		hideCommandWindow(cmd)
 		data, err := cmd.CombinedOutput()
 		if err == nil && strings.TrimSpace(string(data)) != "" {
 			return "gopls", string(data), true
@@ -1929,6 +1959,7 @@ func runLocalLSPNavigation(ctx context.Context, root, operation, query, file str
 	if _, err := exec.LookPath("lsp-cli"); err == nil {
 		cmd := exec.CommandContext(ctx, "lsp-cli", operation, "--file", abs, "--line", strconv.Itoa(line), "--column", strconv.Itoa(column), "--query", query)
 		cmd.Dir = root
+		hideCommandWindow(cmd)
 		data, err := cmd.CombinedOutput()
 		if err == nil && strings.TrimSpace(string(data)) != "" {
 			return "lsp-cli", string(data), true
@@ -1948,6 +1979,7 @@ func runLocalNavigationTextFallback(ctx context.Context, root, operation, query 
 	}
 	cmd := exec.CommandContext(ctx, rg, "-n", "--no-heading", "--color", "never", "-m", "80", pattern, ".")
 	cmd.Dir = root
+	hideCommandWindow(cmd)
 	data, err := cmd.CombinedOutput()
 	if err != nil && len(data) == 0 {
 		return "ripgrep", "", fmt.Errorf("no navigation matches for %q", query)
@@ -2023,6 +2055,10 @@ func localizationFocusedTestSuggestions(rootCauseFile, symbol string) []string {
 
 func persistLocalizationExperience(app *App, store *knowledge.CodingKnowledgeStore, projectPath, taskTitle string, e *CodingSubAgentLocalizationEvidence, commands []CodingSubAgentCommandResult, runtimeTaskID string) {
 	if store == nil || e == nil || validateLocalizationEvidence(e, "") != nil {
+		return
+	}
+	runtimeTaskID = strings.TrimSpace(runtimeTaskID)
+	if strings.HasPrefix(runtimeTaskID, "horizon:") || strings.HasPrefix(runtimeTaskID, "horizon-") {
 		return
 	}
 	if len(e.FocusedTests) == 0 {

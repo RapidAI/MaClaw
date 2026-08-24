@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { AdminNotification } from "./useNotifications";
 import type { Theme } from "./aiAssistantPanelTheme";
 
@@ -11,6 +12,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 export interface NotificationDetailProps {
   notification: AdminNotification;
   onBack: () => void;
+  onClose?: () => void;
   theme: Theme;
   lang?: string;
 }
@@ -33,7 +35,7 @@ const localizeText = (
 const CATEGORY_LABELS: Record<AdminNotification["category"], { en: string; zh: string }> = {
   system_announcement: { en: "System Announcement", zh: "系统公告" },
   feature_update: { en: "Feature Update", zh: "功能更新" },
-  security_alert: { en: "Security Alert", zh: "安全告警" },
+  security_alert: { en: "Security Alert", zh: "安全警报" },
   maintenance: { en: "Maintenance", zh: "运维通知" },
   custom: { en: "Custom", zh: "自定义" },
 };
@@ -58,6 +60,7 @@ const CATEGORY_COLORS: Record<AdminNotification["category"], string> = {
 export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   notification,
   onBack,
+  onClose,
   theme: t,
   lang,
 }) => {
@@ -66,6 +69,10 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   const catColor = CATEGORY_COLORS[notification.category] || CATEGORY_COLORS.custom;
 
   const formattedDate = formatDate(notification.created_at, lang);
+  const titleText = (notification.title || "").trim();
+  const bodyText = (notification.content || "").trim();
+  const hasDistinctBody = Boolean(bodyText) && bodyText !== titleText;
+  const markdownComponents = useMemo(() => buildMarkdownComponents(t), [t]);
 
   return (
     <div
@@ -82,6 +89,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
         style={{
           display: "flex",
           alignItems: "center",
+          justifyContent: "space-between",
           gap: "8px",
           padding: "10px 14px 8px",
           borderBottom: `1px solid ${t.divider}`,
@@ -97,11 +105,12 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
             cursor: "pointer",
             color: t.linkColor || t.headingColor,
             fontSize: "13px",
-            padding: "2px 6px",
+            padding: "4px 6px",
             borderRadius: "4px",
             display: "inline-flex",
             alignItems: "center",
             gap: "4px",
+            minHeight: "28px",
             transition: "opacity 0.15s ease",
           }}
           aria-label={localizeText(lang, "Back to list", "返回列表", "返回列表")}
@@ -109,6 +118,25 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           <span style={{ fontSize: "14px" }}>←</span>
           <span>{localizeText(lang, "Back", "返回", "返回")}</span>
         </button>
+        {onClose && (
+          <button
+            data-testid="notification-detail-close"
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: t.textMuted,
+              fontSize: "16px",
+              padding: "2px 6px",
+              lineHeight: 1,
+              minHeight: "28px",
+            }}
+            aria-label={localizeText(lang, "Close", "关闭", "關閉")}
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* Content area */}
@@ -199,25 +227,37 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           </span>
         </div>
 
-        {/* Markdown content */}
-        <div
-          data-testid="notification-detail-content"
-          className="notification-markdown-content"
-          style={{
-            fontSize: "13px",
-            lineHeight: 1.7,
-            color: t.text,
-            wordBreak: "break-word",
-            overflowWrap: "anywhere",
-          }}
-        >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={buildMarkdownComponents(t)}
+        {hasDistinctBody ? (
+          <div
+            data-testid="notification-detail-content"
+            className="notification-markdown-content"
+            style={{
+              fontSize: "13px",
+              lineHeight: 1.7,
+              color: t.text,
+              wordBreak: "break-word",
+              overflowWrap: "anywhere",
+            }}
           >
-            {notification.content}
-          </ReactMarkdown>
-        </div>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={markdownComponents}
+            >
+              {notification.content}
+            </ReactMarkdown>
+          </div>
+        ) : !bodyText ? (
+          <div
+            data-testid="notification-detail-content"
+            style={{
+              fontSize: "13px",
+              lineHeight: 1.7,
+              color: t.textMuted,
+            }}
+          >
+            {localizeText(lang, "No additional details.", "没有更多正文。", "沒有更多正文。")}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -230,20 +270,37 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
 function buildMarkdownComponents(t: Theme) {
   return {
     // Links open externally
-    a: ({ href, children, ...props }: any) => (
-      <a
-        {...props}
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          color: t.linkColor || t.headingColor,
-          textDecoration: "underline",
-        }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ href, children }: any) => {
+      const safeHref = typeof href === "string" && /^(https?:\/\/|mailto:)/i.test(href) ? href : "";
+      if (!safeHref) {
+        return (
+          <span style={{ color: t.linkColor || t.headingColor }}>
+            {children}
+          </span>
+        );
+      }
+      return (
+        <a
+          href={safeHref}
+          onClick={(event) => {
+            event.preventDefault();
+            BrowserOpenURL(safeHref);
+          }}
+          style={{
+            color: t.linkColor || t.headingColor,
+            textDecoration: "underline",
+            cursor: "pointer",
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
+    // Do not fetch remote images from announcement markdown.
+    img: ({ alt }: any) =>
+      alt ? (
+        <span style={{ color: t.textMuted, fontSize: "12px" }}>[{alt}]</span>
+      ) : null,
     // Code blocks
     code: ({ inline, children, ...props }: any) =>
       inline ? (

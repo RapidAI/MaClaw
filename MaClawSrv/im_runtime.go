@@ -16,11 +16,13 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/telegram"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 const srvIMSessionAgent = "default"
@@ -637,6 +639,9 @@ func (m *srvIMGatewayManager) handleIncomingMessage(parent context.Context, p ag
 		extra["asr_transcript"] = asrTranscript
 		extra["asr_source"] = "maclawsrv"
 	}
+	if dest := agentservice.TrustedChannelDestinationID(extra, map[string]string{"contact_id": contactID}); dest != "" {
+		extra["destination_id"] = dest
+	}
 	clientMessageID := strings.TrimSpace(msg.ClientEventID)
 	if clientMessageID == "" {
 		clientMessageID = srvIMMessageID(platform, contactID, time.Now(), text, msg.MediaType, msg.MediaName, msg.MediaBytes)
@@ -652,6 +657,9 @@ func (m *srvIMGatewayManager) handleIncomingMessage(parent context.Context, p ag
 		ClientSessionKey: platform + ":" + contactID,
 		ClientMessageID:  clientMessageID,
 	}
+	if att, ok := srvIMTrustedIncomingAttachment(platform, msg); ok {
+		sendInput.Attachments = []agent.MessageAttachment{att}
+	}
 	_, _, assistant, err := m.svc.SendMessage(ctx, p, instanceID, sendInput)
 	if errors.Is(err, agentservice.ErrInstanceNotFound) {
 		m.clearCachedInstanceID(p, platform)
@@ -666,9 +674,12 @@ func (m *srvIMGatewayManager) handleIncomingMessage(parent context.Context, p ag
 		m.reply(ctx, p, expected, msg, fmt.Sprintf("%s message failed: %s", platform, err.Error()))
 		return
 	}
-	if assistant != nil && strings.TrimSpace(assistant.Content) != "" {
-		m.reply(ctx, p, expected, msg, assistant.Content)
-		m.replyVoiceIfEnabled(ctx, p, expected, msg, assistant.Content, cfg, normalizeSrvIMMediaType(msg.MediaType) == "voice")
+	if assistant != nil {
+		text := textutil.SanitizeVisibleChatText(assistant.Content)
+		if strings.TrimSpace(text) != "" {
+			m.reply(ctx, p, expected, msg, text)
+			m.replyVoiceIfEnabled(ctx, p, expected, msg, text, cfg, normalizeSrvIMMediaType(msg.MediaType) == "voice")
+		}
 	}
 	_ = parent
 }

@@ -1,5 +1,7 @@
 package memory
 
+import "time"
+
 // TaskArtifactUpsertOptions describes a generated task artifact write.
 // It centralizes the CategoryTaskArtifact + ScopeProject convention shared by
 // GUI, TUI, and server-side integrations.
@@ -15,6 +17,8 @@ type TaskArtifactUpsertOptions struct {
 	RelatedIDs        []string
 	DerivedKind       string
 	Boundary          *MemoryBoundary
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 	MergeExistingTags func(existing, desired []string) []string
 }
 
@@ -53,6 +57,8 @@ func (s *Store) UpsertTaskArtifact(opts TaskArtifactUpsertOptions) (UpsertResult
 		Boundary:           opts.Boundary,
 		DefaultDerivedKind: derivedKind,
 		DefaultBoundary:    boundary,
+		CreatedAt:          opts.CreatedAt,
+		UpdatedAt:          opts.UpdatedAt,
 		MergeExistingTags:  opts.MergeExistingTags,
 	})
 }
