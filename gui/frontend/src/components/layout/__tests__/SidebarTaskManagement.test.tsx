@@ -6,11 +6,26 @@ import type { ComponentProps } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
 
-const { getProjectSceneMock, openFileOrShowInFolderMock, selectWorkingDirMock, eventsEmitMock } = vi.hoisted(() => ({
+const {
+    getProjectSceneMock,
+    openFileOrShowInFolderMock,
+    selectWorkingDirMock,
+    eventsEmitMock,
+    cloudWorkspaceEntitlementMock,
+    createCloudWorkspaceMock,
+    renameCloudWorkspaceMock,
+    deleteCloudWorkspaceMock,
+    restoreCloudWorkspaceMock,
+} = vi.hoisted(() => ({
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
     selectWorkingDirMock: vi.fn(),
     eventsEmitMock: vi.fn(),
+    cloudWorkspaceEntitlementMock: vi.fn().mockResolvedValue({ enabled: false }),
+    createCloudWorkspaceMock: vi.fn(),
+    renameCloudWorkspaceMock: vi.fn(),
+    deleteCloudWorkspaceMock: vi.fn(),
+    restoreCloudWorkspaceMock: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -20,6 +35,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetRemoteCodingTaskMeta: vi.fn().mockResolvedValue({ host: '10.0.0.8', user: 'ubuntu', port: 22, work_dir: '/app' }),
     UpdateRemoteCodingTaskMeta: vi.fn().mockResolvedValue(undefined),
     TestRemoteSSHConnection: vi.fn().mockResolvedValue('SSH ok'),
+    CloudWorkspaceEntitlement: cloudWorkspaceEntitlementMock,
+    CreateCloudWorkspace: createCloudWorkspaceMock,
+    RenameCloudWorkspace: renameCloudWorkspaceMock,
+    DeleteCloudWorkspace: deleteCloudWorkspaceMock,
+    RestoreCloudWorkspace: restoreCloudWorkspaceMock,
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -65,6 +85,12 @@ afterEach(async () => {
     selectWorkingDirMock.mockReset();
     getProjectSceneMock.mockReset();
     openFileOrShowInFolderMock.mockReset();
+    cloudWorkspaceEntitlementMock.mockReset();
+    cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
+    createCloudWorkspaceMock.mockReset();
+    renameCloudWorkspaceMock.mockReset();
+    deleteCloudWorkspaceMock.mockReset();
+    restoreCloudWorkspaceMock.mockReset();
     document.getElementById('App')?.remove();
 });
 
@@ -1483,5 +1509,170 @@ describe('SidebarTaskManagement', () => {
 
         resolveCreate();
         await waitFor(() => expect((createButton as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it('keeps the ungranted create dialog free of cloud workspace controls', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
+        renderTaskManagement();
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(screen.getByRole('dialog', { name: 'Create task' })).toBeTruthy();
+        await waitFor(() => expect(cloudWorkspaceEntitlementMock).toHaveBeenCalled());
+        expect(screen.queryByTestId('task-workspace-kind')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-create')).toBeNull();
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-workspace-hub-banner')).toBeNull();
+    });
+
+    it('shows a non-blocking Hub-down banner without faking cloud controls', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: false,
+            hub_unavailable: true,
+            banner: 'Hub 不可用，云端工作区暂不可用',
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(screen.getByTitle('创建任务'));
+
+        expect(screen.getByRole('dialog', { name: '创建任务' })).toBeTruthy();
+        expect((await screen.findByTestId('task-cloud-workspace-hub-banner')).textContent).toBe('Hub 不可用，云端工作区暂不可用');
+        expect(screen.queryByTestId('task-workspace-kind')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-create')).toBeNull();
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
+    });
+
+    it('shows local/cloud workspace controls when entitlement is granted', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 1,
+            workspaces: [{
+                id: 'cws_a',
+                name: '标书项目',
+                used_bytes: 2048,
+                updated_at: '2026-08-28T10:00:00Z',
+                lease_in_use: true,
+                lease_holder: 'other-pc',
+            }],
+            deleted: [],
+        });
+        const createTask = vi.fn();
+        renderTaskManagement({ lang: 'zh', createTask });
+
+        fireEvent.click(screen.getByTitle('创建任务'));
+        expect(await screen.findByTestId('task-workspace-kind')).toBeTruthy();
+        expect(screen.getByTestId('task-workspace-kind-local')).toBeTruthy();
+        expect(screen.getByTestId('task-workspace-kind-cloud')).toBeTruthy();
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('task-workspace-kind-cloud'));
+        expect(await screen.findByTestId('task-cloud-workspace-list')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-workspace-create')).toBeTruthy();
+        expect(document.getElementById('task-working-directory')).toBeNull();
+        expect(screen.getByText('标书项目')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-workspace-lease').textContent).toContain('占用中（其他设备');
+        expect((screen.getByRole('button', { name: '创建并打开' }) as HTMLButtonElement).disabled).toBe(false);
+
+        fireEvent.click(screen.getByRole('button', { name: '创建并打开' }));
+        await waitFor(() => {
+            expect(createTask).toHaveBeenCalledWith('新建任务', undefined, undefined, undefined, 'cws_a');
+        });
+    });
+
+    it('hides cloud workspace controls for remote coding even when granted', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 1,
+            workspaces: [{ id: 'cws_a', name: '标书项目' }],
+            deleted: [],
+        });
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        expect(await screen.findByTestId('task-workspace-kind')).toBeTruthy();
+        fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
+
+        expect(screen.queryByTestId('task-workspace-kind')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-create')).toBeNull();
+        expect(screen.getByTestId('remote-coding-fields')).toBeTruthy();
+        expect(createCloudWorkspaceMock).not.toHaveBeenCalled();
+
+        fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } });
+        fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/home/ubuntu/app' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+
+        expect(createTask).toHaveBeenCalledWith('New remote coding task', undefined, 'remote_coding_dev', {
+            host: '10.0.0.8',
+            port: 22,
+            user: 'ubuntu',
+            password: 's3cret',
+            workDir: '/home/ubuntu/app',
+        });
+        expect(createTask.mock.calls[0].length).toBe(4);
+    });
+
+    it('disables new cloud workspace when quota is reached', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 1,
+            used: 1,
+            workspaces: [{ id: 'cws_full', name: '已占用' }],
+            deleted: [],
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(screen.getByTitle('创建任务'));
+        fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
+        const createBtn = await screen.findByTestId('task-cloud-workspace-create') as HTMLButtonElement;
+        expect(createBtn.disabled).toBe(true);
+        expect(createBtn.title).toContain('配额');
+        fireEvent.click(createBtn);
+        expect(createCloudWorkspaceMock).not.toHaveBeenCalled();
+    });
+
+    it('restores a recently deleted cloud workspace', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 0,
+            workspaces: [],
+            deleted: [{
+                id: 'cws_dead',
+                name: '旧项目',
+                deleted_at: '2026-08-27T10:00:00Z',
+                purge_after: '2026-09-03T10:00:00Z',
+            }],
+        });
+        restoreCloudWorkspaceMock.mockResolvedValue({
+            id: 'cws_dead',
+            name: '旧项目',
+            used_bytes: 0,
+            updated_at: '2026-08-28T12:00:00Z',
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(screen.getByTitle('创建任务'));
+        fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
+        expect(await screen.findByTestId('task-cloud-workspace-deleted')).toBeTruthy();
+        expect(screen.getByText('旧项目')).toBeTruthy();
+        expect(screen.getByText('7 天内可恢复')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('task-cloud-workspace-restore'));
+        await waitFor(() => {
+            expect(restoreCloudWorkspaceMock).toHaveBeenCalledWith('cws_dead');
+        });
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: '创建并打开' }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        expect(screen.queryByTestId('task-cloud-workspace-deleted')).toBeNull();
     });
 });

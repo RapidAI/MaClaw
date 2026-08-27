@@ -71,6 +71,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
         workingDir?: string,
         mode?: 'coding_dev' | 'remote_coding_dev',
         remote?: { host: string; port: number; user: string; password: string; workDir: string },
+        workspaceId?: string,
     ) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;

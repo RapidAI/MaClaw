@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -3094,6 +3094,7 @@ function App() {
         workingDir?: string,
         mode?: 'coding_dev' | 'remote_coding_dev',
         remote?: { host: string; port: number; user: string; password: string; workDir: string; safety?: 'diagnosis' },
+        workspaceId?: string,
     ) => {
         const taskName = name.trim();
         if (!taskName) return;
@@ -3103,6 +3104,7 @@ function App() {
             let remoteHost: string | undefined;
             let remoteSafety: 'diagnosis' | undefined;
             const localWorkDir = (workingDir || '').trim();
+            const cloudWorkspaceId = (workspaceId || '').trim();
             const remotePort = Number.isInteger(remote?.port) && (remote?.port || 0) > 0 && (remote?.port || 0) < 65536
                 ? remote!.port
                 : 22;
@@ -3159,6 +3161,34 @@ function App() {
                         remote.workDir.trim(),
                     );
                 }
+            } else if (cloudWorkspaceId) {
+                agentMode = mode === 'coding_dev' ? 'coding_dev' : undefined;
+                created = await ResumeCloudWorkspaceTask(cloudWorkspaceId);
+                let cloudCreated = false;
+                if (!created?.project_path) {
+                    created = await CreateTaskWithCloudWorkspace(taskName, localWorkDir, mode || '', cloudWorkspaceId);
+                    cloudCreated = !!created?.project_path;
+                }
+                if (!created?.project_path) {
+                    throw new Error('创建云端工作区任务失败');
+                }
+                if (agentMode === 'coding_dev') {
+                    const cloudWorkDir = (created.working_dir || localWorkDir || '').trim();
+                    try {
+                        await PrepareLocalCodingEnvironment(created.project_path, cloudWorkDir);
+                    } catch (prepareError) {
+                        // Resume must keep the 1:1 task if coding-env arming fails.
+                        // Hide only a task we just created so a retry can bind a replacement.
+                        if (cloudCreated) {
+                            try {
+                                await HideTask(created.project_path);
+                            } catch (hideError) {
+                                console.warn("HideTask after prepare failure failed:", hideError);
+                            }
+                        }
+                        throw prepareError;
+                    }
+                }
             } else if (mode === 'coding_dev') {
                 agentMode = 'coding_dev';
                 created = await CreateTaskWithMode(taskName, localWorkDir, agentMode);
@@ -3202,7 +3232,7 @@ function App() {
                 newTaskContext: {
                     kind: 'new-task',
                     // Chat tasks may also be created against a chosen folder.
-                    workingDir: mode !== 'remote_coding_dev' ? localWorkDir : undefined,
+                    workingDir: mode !== 'remote_coding_dev' ? (created.working_dir || localWorkDir) : undefined,
                     remoteWorkDir: mode === 'remote_coding_dev' ? remote?.workDir.trim() : undefined,
                     remoteUser: mode === 'remote_coding_dev' ? remote?.user.trim() : undefined,
                     remotePort: mode === 'remote_coding_dev' ? remotePort : undefined,

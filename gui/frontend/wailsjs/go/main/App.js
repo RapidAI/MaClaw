@@ -450,6 +450,10 @@ export function CloseVESession(arg1) {
   return window['go']['main']['App']['CloseVESession'](arg1);
 }
 
+export function CloudWorkspaceEntitlement() {
+  return window['go']['main']['App']['CloudWorkspaceEntitlement']();
+}
+
 export function CodingKnowledgeCapacity() {
   return window['go']['main']['App']['CodingKnowledgeCapacity']();
 }
@@ -590,6 +594,10 @@ export function CorrectASRText(arg1) {
   return window['go']['main']['App']['CorrectASRText'](arg1);
 }
 
+export function CreateCloudWorkspace(arg1) {
+  return window['go']['main']['App']['CreateCloudWorkspace'](arg1);
+}
+
 export function CreateExpertTask(arg1, arg2) {
   return window['go']['main']['App']['CreateExpertTask'](arg1, arg2);
 }
@@ -658,6 +666,10 @@ export function CreateTaskWithMode(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateTaskWithMode'](arg1, arg2, arg3);
 }
 
+export function CreateTaskWithCloudWorkspace(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateTaskWithCloudWorkspace'](arg1, arg2, arg3, arg4);
+}
+
 export function CreateTemplate(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateTemplate'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -668,6 +680,10 @@ export function CreateVirtualRepositoryDirectory(arg1, arg2) {
 
 export function DecideMaclawAppApprovalInstance(arg1) {
   return window['go']['main']['App']['DecideMaclawAppApprovalInstance'](arg1);
+}
+
+export function DeleteCloudWorkspace(arg1) {
+  return window['go']['main']['App']['DeleteCloudWorkspace'](arg1);
 }
 
 export function DeleteComputerUseLogArtifact(arg1) {
@@ -3346,6 +3362,10 @@ export function PreflightMaclawAppSubmissionOneClick(arg1) {
   return window['go']['main']['App']['PreflightMaclawAppSubmissionOneClick'](arg1);
 }
 
+export function PrepareCloudWorkspace(arg1) {
+  return window['go']['main']['App']['PrepareCloudWorkspace'](arg1);
+}
+
 export function PrepareLocalCodingEnvironment(arg1, arg2) {
   return window['go']['main']['App']['PrepareLocalCodingEnvironment'](arg1, arg2);
 }
@@ -3598,6 +3618,10 @@ export function RemoveSupplementaryDoc(arg1) {
   return window['go']['main']['App']['RemoveSupplementaryDoc'](arg1);
 }
 
+export function RenameCloudWorkspace(arg1, arg2) {
+  return window['go']['main']['App']['RenameCloudWorkspace'](arg1, arg2);
+}
+
 export function RenameNLSkill(arg1, arg2) {
   return window['go']['main']['App']['RenameNLSkill'](arg1, arg2);
 }
@@ -3710,6 +3734,10 @@ export function RestartWeixin() {
   return window['go']['main']['App']['RestartWeixin']();
 }
 
+export function RestoreCloudWorkspace(arg1) {
+  return window['go']['main']['App']['RestoreCloudWorkspace'](arg1);
+}
+
 export function RestoreArchiveMemory(arg1) {
   return window['go']['main']['App']['RestoreArchiveMemory'](arg1);
 }
@@ -3740,6 +3768,10 @@ export function RestoreSkills(arg1) {
 
 export function RestoreWindowGeometry() {
   return window['go']['main']['App']['RestoreWindowGeometry']();
+}
+
+export function ResumeCloudWorkspaceTask(arg1) {
+  return window['go']['main']['App']['ResumeCloudWorkspaceTask'](arg1);
 }
 
 export function ResumeProject(arg1) {

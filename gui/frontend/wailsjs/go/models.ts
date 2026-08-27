@@ -8432,6 +8432,108 @@ export namespace main {
 	        this.created_at = source["created_at"];
 	    }
 	}
+	export class CloudWorkspaceDeletedWorkspace {
+	    id: string;
+	    name: string;
+	    used_bytes: number;
+	    updated_at: string;
+	    deleted_at: string;
+	    purge_after: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CloudWorkspaceDeletedWorkspace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.used_bytes = source["used_bytes"];
+	        this.updated_at = source["updated_at"];
+	        this.deleted_at = source["deleted_at"];
+	        this.purge_after = source["purge_after"];
+	    }
+	}
+	export class CloudWorkspaceEntitlement {
+	    enabled: boolean;
+	    quota: number;
+	    used: number;
+	    max_workspace_bytes: number;
+	    workspaces: CloudWorkspaceEntitlementWorkspace[];
+	    deleted: CloudWorkspaceDeletedWorkspace[];
+	    hub_unavailable: boolean;
+	    banner: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CloudWorkspaceEntitlement(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.quota = source["quota"];
+	        this.used = source["used"];
+	        this.max_workspace_bytes = source["max_workspace_bytes"];
+	        this.workspaces = this.convertValues(source["workspaces"], CloudWorkspaceEntitlementWorkspace);
+	        this.deleted = this.convertValues(source["deleted"], CloudWorkspaceDeletedWorkspace);
+	        this.hub_unavailable = source["hub_unavailable"];
+	        this.banner = source["banner"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+			        return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CloudWorkspaceEntitlementWorkspace {
+	    id: string;
+	    name: string;
+	    used_bytes: number;
+	    updated_at: string;
+	    lease_in_use: boolean;
+	    lease_holder: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CloudWorkspaceEntitlementWorkspace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.used_bytes = source["used_bytes"];
+	        this.updated_at = source["updated_at"];
+	        this.lease_in_use = source["lease_in_use"];
+	        this.lease_holder = source["lease_holder"];
+	    }
+	}
+	export class PreparedCloudWorkspace {
+	    local_path: string;
+	    workspace_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreparedCloudWorkspace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.local_path = source["local_path"];
+	        this.workspace_id = source["workspace_id"];
+	    }
+	}
 	export class CodeGenModelItem {
 	    id: string;
 	    name: string;

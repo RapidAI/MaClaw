@@ -4098,6 +4098,9 @@ func (a *App) HideTask(projectPath string) {
 		return
 	}
 	pi.SetHidden(projectPath, true)
+	// Soft-hide would leave ResumeCloudWorkspaceTask pointing at this path
+	// (the task dir still exists). Drop the 1:1 bind so a later open can create a replacement.
+	forgetCloudWorkspaceTaskByPath(projectPath)
 	log.Printf("[project_search] HideTask hidden path=%q", projectPath)
 	a.cancelProjectTaskLoop(projectPath)
 	a.emitProjectIndexChanged(projectPath)
