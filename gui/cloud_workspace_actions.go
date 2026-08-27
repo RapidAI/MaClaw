@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,23 +12,18 @@ import (
 	"time"
 )
 
-// PreparedCloudWorkspace is the mock PrepareCloudWorkspace result.
-// Real Hub checkout/sync lands in a later PR.
-type PreparedCloudWorkspace struct {
-	LocalPath   string `json:"local_path"`
-	WorkspaceID string `json:"workspace_id"`
-}
-
 var (
-	cloudWorkspaceDialogMu    sync.Mutex
-	cloudWorkspacePrepareDirs = map[string]string{}
-	cloudWorkspaceTaskByID    = map[string]ProjectSearchResult{}
+	cloudWorkspaceDialogMu sync.Mutex
+	cloudWorkspaceTaskByID = map[string]ProjectSearchResult{}
 )
 
 func resetCloudWorkspaceDialogMocks() {
+	cloudWorkspaceBackgroundDisabled = true
+	cloudWorkspaceConfirmStealFn = nil
+	cloudWorkspaceConfirmDiscardDirtyFn = nil
+	resetCloudWorkspaceMounts()
 	cloudWorkspaceDialogMu.Lock()
 	defer cloudWorkspaceDialogMu.Unlock()
-	cloudWorkspacePrepareDirs = map[string]string{}
 	cloudWorkspaceTaskByID = map[string]ProjectSearchResult{}
 }
 
@@ -50,6 +46,21 @@ func lookupCloudWorkspaceTask(workspaceID string) (ProjectSearchResult, bool) {
 	defer cloudWorkspaceDialogMu.Unlock()
 	result, ok := cloudWorkspaceTaskByID[workspaceID]
 	return result, ok
+}
+
+func lookupCloudWorkspaceTaskByPath(projectPath string) (ProjectSearchResult, bool) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return ProjectSearchResult{}, false
+	}
+	cloudWorkspaceDialogMu.Lock()
+	defer cloudWorkspaceDialogMu.Unlock()
+	for _, result := range cloudWorkspaceTaskByID {
+		if normalizeProjectSessionPath(result.ProjectPath) == projectPath {
+			return result, true
+		}
+	}
+	return ProjectSearchResult{}, false
 }
 
 func forgetCloudWorkspaceTaskByPath(projectPath string) {
@@ -211,40 +222,30 @@ func (a *App) RestoreCloudWorkspace(id string) (CloudWorkspaceEntitlementWorkspa
 	return row.toActive(), nil
 }
 
-// PrepareCloudWorkspace is a mock: returns a process-local temp dir. Real sync is a later PR.
-func (a *App) PrepareCloudWorkspace(workspaceID string) (PreparedCloudWorkspace, error) {
-	workspaceID = strings.TrimSpace(workspaceID)
-	if workspaceID == "" {
-		return PreparedCloudWorkspace{}, fmt.Errorf("workspace id is required")
-	}
-	cloudWorkspaceDialogMu.Lock()
-	defer cloudWorkspaceDialogMu.Unlock()
-	if existing := strings.TrimSpace(cloudWorkspacePrepareDirs[workspaceID]); existing != "" {
-		if info, err := os.Stat(existing); err == nil && info.IsDir() {
-			return PreparedCloudWorkspace{LocalPath: existing, WorkspaceID: workspaceID}, nil
-		}
-	}
-	dir, err := os.MkdirTemp("", "maclaw-cws-")
-	if err != nil {
-		return PreparedCloudWorkspace{}, err
-	}
-	cloudWorkspacePrepareDirs[workspaceID] = dir
-	return PreparedCloudWorkspace{LocalPath: dir, WorkspaceID: workspaceID}, nil
-}
-
-// CreateTaskWithCloudWorkspace creates a local task so Open works. Tagging/sync is a later PR.
+// CreateTaskWithCloudWorkspace prepares the cache mount then creates a task tagged cloud_workspace:{id}.
+// workingDir is ignored: PrepareCloudWorkspace returns LocalPath as the working directory.
 func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string) ProjectSearchResult {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return ProjectSearchResult{}
 	}
-	dir := strings.TrimSpace(workingDir)
-	if prepared, err := a.PrepareCloudWorkspace(workspaceID); err == nil && strings.TrimSpace(prepared.LocalPath) != "" {
-		dir = prepared.LocalPath
+	prepared, err := a.PrepareCloudWorkspace(workspaceID)
+	if err != nil || strings.TrimSpace(prepared.LocalPath) == "" {
+		log.Printf("[cloud_workspace] prepare failed id=%s err=%v", workspaceID, err)
+		return ProjectSearchResult{}
 	}
-	result := a.CreateTaskWithMode(name, dir, mode)
+	taskName := normalizeRecentTaskName(name)
+	if taskName == "" {
+		return ProjectSearchResult{}
+	}
+	tags := []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}
+	if normalized := NormalizeCreateTaskMode(mode); normalized != "" {
+		tags = append(tags, normalized)
+	}
+	result := a.createTaskRecordWithWorkingDir(taskName, "", tags, prepared.LocalPath, false)
 	if strings.TrimSpace(result.ProjectPath) != "" {
 		rememberCloudWorkspaceTask(workspaceID, result)
+		rememberCloudWorkspaceLocalPath(prepared.LocalPath, workspaceID)
 	}
 	return result
 }

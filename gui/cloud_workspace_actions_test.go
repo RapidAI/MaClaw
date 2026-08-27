@@ -90,10 +90,7 @@ func TestCreateCloudWorkspaceQuotaError(t *testing.T) {
 }
 
 func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
-	resetCloudWorkspaceDialogMocks()
-	t.Cleanup(resetCloudWorkspaceDialogMocks)
-
-	app := newProjectSearchTestApp(t)
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
 	prepared, err := app.PrepareCloudWorkspace("cws_demo")
 	if err != nil {
 		t.Fatalf("PrepareCloudWorkspace: %v", err)
@@ -124,6 +121,9 @@ func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 	if created.WorkingDir != prepared.LocalPath {
 		t.Fatalf("working_dir=%q want %q", created.WorkingDir, prepared.LocalPath)
 	}
+	if !projectRecordHasTagLike(created.Tags, cloudWorkspaceTag("cws_demo")) {
+		t.Fatalf("missing cloud_workspace tag: %v", created.Tags)
+	}
 
 	resumed := app.ResumeCloudWorkspaceTask("cws_demo")
 	if resumed.ProjectPath != created.ProjectPath {
@@ -137,10 +137,7 @@ func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 }
 
 func TestHideTaskDropsCloudWorkspaceResumeMap(t *testing.T) {
-	resetCloudWorkspaceDialogMocks()
-	t.Cleanup(resetCloudWorkspaceDialogMocks)
-
-	app := newProjectSearchTestApp(t)
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
 	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_hide")
 	if created.ProjectPath == "" {
 		t.Fatal("CreateTaskWithCloudWorkspace returned empty task")

@@ -4098,6 +4098,9 @@ func (a *App) HideTask(projectPath string) {
 		return
 	}
 	pi.SetHidden(projectPath, true)
+	// Push + DELETE lease before dropping the process map so HideTask always
+	// releases a cloud_workspace: task even if the frontend only closes the row.
+	a.releaseCloudWorkspaceForProjectPath(projectPath)
 	// Soft-hide would leave ResumeCloudWorkspaceTask pointing at this path
 	// (the task dir still exists). Drop the 1:1 bind so a later open can create a replacement.
 	forgetCloudWorkspaceTaskByPath(projectPath)
@@ -4120,6 +4123,7 @@ func (a *App) DeleteTask(projectPath string) error {
 		return fmt.Errorf("project path is required")
 	}
 	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
+	a.releaseCloudWorkspaceForProjectPath(projectPath)
 	// Directory updates and task deletion both mutate the same tab session files
 	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot
 	// recreate a deleted tab's directory override halfway through this cleanup.
@@ -4936,6 +4940,9 @@ func (a *App) CloseProjectTabSession(tabID string) {
 		}
 	}
 	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
+	if strings.TrimSpace(projectPath) != "" {
+		a.releaseCloudWorkspaceForProjectPath(projectPath)
+	}
 }
 
 // CloseAssistantTabSession releases the runtime-only directory binding for any
