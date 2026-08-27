@@ -6,11 +6,12 @@ import type { ComponentProps } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
 
-const { getProjectSceneMock, openFileOrShowInFolderMock, selectWorkingDirMock, eventsEmitMock } = vi.hoisted(() => ({
+const { getProjectSceneMock, openFileOrShowInFolderMock, selectWorkingDirMock, eventsEmitMock, cloudWorkspaceEntitlementMock } = vi.hoisted(() => ({
     getProjectSceneMock: vi.fn(),
     openFileOrShowInFolderMock: vi.fn(),
     selectWorkingDirMock: vi.fn(),
     eventsEmitMock: vi.fn(),
+    cloudWorkspaceEntitlementMock: vi.fn().mockResolvedValue({ enabled: false }),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -20,6 +21,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetRemoteCodingTaskMeta: vi.fn().mockResolvedValue({ host: '10.0.0.8', user: 'ubuntu', port: 22, work_dir: '/app' }),
     UpdateRemoteCodingTaskMeta: vi.fn().mockResolvedValue(undefined),
     TestRemoteSSHConnection: vi.fn().mockResolvedValue('SSH ok'),
+    CloudWorkspaceEntitlement: cloudWorkspaceEntitlementMock,
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -65,6 +67,8 @@ afterEach(async () => {
     selectWorkingDirMock.mockReset();
     getProjectSceneMock.mockReset();
     openFileOrShowInFolderMock.mockReset();
+    cloudWorkspaceEntitlementMock.mockReset();
+    cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
     document.getElementById('App')?.remove();
 });
 
@@ -1483,5 +1487,38 @@ describe('SidebarTaskManagement', () => {
 
         resolveCreate();
         await waitFor(() => expect((createButton as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it('keeps the ungranted create dialog free of cloud workspace controls', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
+        renderTaskManagement();
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(screen.getByRole('dialog', { name: 'Create task' })).toBeTruthy();
+        await waitFor(() => expect(cloudWorkspaceEntitlementMock).toHaveBeenCalled());
+        expect(screen.queryByTestId('task-workspace-kind')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-create')).toBeNull();
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-workspace-hub-banner')).toBeNull();
+    });
+
+    it('shows a non-blocking Hub-down banner without faking cloud controls', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: false,
+            hub_unavailable: true,
+            banner: 'Hub 不可用，云端工作区暂不可用',
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(screen.getByTitle('创建任务'));
+
+        expect(screen.getByRole('dialog', { name: '创建任务' })).toBeTruthy();
+        expect((await screen.findByTestId('task-cloud-workspace-hub-banner')).textContent).toBe('Hub 不可用，云端工作区暂不可用');
+        expect(screen.queryByTestId('task-workspace-kind')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-create')).toBeNull();
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
     });
 });

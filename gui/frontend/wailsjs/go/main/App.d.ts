@@ -238,6 +238,8 @@ export function CloseSurvey(arg1:string):Promise<string>;
 
 export function CloseVESession(arg1:string):Promise<void>;
 
+export function CloudWorkspaceEntitlement():Promise<main.CloudWorkspaceEntitlement>;
+
 export function CodingKnowledgeCapacity():Promise<main.CodingKnowledgeCapacityStatus>;
 
 export function CodingKnowledgeConfirm(arg1:string):Promise<void>;

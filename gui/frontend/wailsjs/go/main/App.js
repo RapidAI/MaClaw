@@ -450,6 +450,10 @@ export function CloseVESession(arg1) {
   return window['go']['main']['App']['CloseVESession'](arg1);
 }
 
+export function CloudWorkspaceEntitlement() {
+  return window['go']['main']['App']['CloudWorkspaceEntitlement']();
+}
+
 export function CodingKnowledgeCapacity() {
   return window['go']['main']['App']['CodingKnowledgeCapacity']();
 }

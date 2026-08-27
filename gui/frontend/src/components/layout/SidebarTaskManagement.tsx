@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { GetProjectScene, GetRemoteCodingTaskMeta, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { CloudWorkspaceEntitlement, GetProjectScene, GetRemoteCodingTaskMeta, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
@@ -474,6 +474,12 @@ export const SidebarTaskManagement = ({
     /** Preserve the welcome incident posture if SSH setup needs a manual retry. */
     const [remoteSafety, setRemoteSafety] = useState<OpenCreateCodingTaskDetail['remoteSafety']>();
     const [createError, setCreateError] = useState('');
+    /** Last Hub entitlement for this process session. Missing/false enabled hides cloud controls. */
+    const [cloudEntitlement, setCloudEntitlement] = useState<{
+        enabled?: boolean;
+        hub_unavailable?: boolean;
+        banner?: string;
+    } | null>(null);
     const [selectingWorkingDir, setSelectingWorkingDir] = useState(false);
     const [sceneDetailPath, setSceneDetailPath] = useState<string | null>(null);
     const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
@@ -512,6 +518,8 @@ export const SidebarTaskManagement = ({
     const editBackdropMouseDownRef = useRef(false);
     /** Bumps on each open so a stale GetRemoteCodingTaskMeta cannot overwrite a newer dialog. */
     const editRemoteFetchGenRef = useRef(0);
+    /** Drops stale CloudWorkspaceEntitlement results when the dialog is reopened. */
+    const entitlementFetchGenRef = useRef(0);
     const mountedRef = useRef(true);
     useEffect(() => {
         mountedRef.current = true;
@@ -676,6 +684,43 @@ export const SidebarTaskManagement = ({
         // this newer dialog.
         createTaskGenRef.current += 1;
         schedulePostOpenFocus(mode);
+        const entitlementGen = ++entitlementFetchGenRef.current;
+        void (async () => {
+            if (typeof CloudWorkspaceEntitlement !== 'function') return;
+            const applyEntitlement = (next: { enabled: boolean; hub_unavailable: boolean; banner: string }) => {
+                if (!mountedRef.current || entitlementFetchGenRef.current !== entitlementGen) return;
+                setCloudEntitlement(prev => {
+                    if (prev?.enabled === next.enabled && prev?.hub_unavailable === next.hub_unavailable && (prev?.banner || '') === next.banner) {
+                        return prev;
+                    }
+                    // Ungranted + Hub reachable matches the default (no cloud controls, no banner).
+                    if (!next.enabled && !next.hub_unavailable && prev == null) return prev;
+                    return next;
+                });
+            };
+            try {
+                const ent = await CloudWorkspaceEntitlement() as { enabled?: boolean; hub_unavailable?: boolean; banner?: string } | null;
+                applyEntitlement({
+                    enabled: !!ent?.enabled,
+                    hub_unavailable: !!ent?.hub_unavailable,
+                    banner: typeof ent?.banner === 'string' ? ent.banner : '',
+                });
+            } catch {
+                // Binding throw: keep last successful enabled; never fake a grant revocation.
+                if (!mountedRef.current || entitlementFetchGenRef.current !== entitlementGen) return;
+                setCloudEntitlement(prev => {
+                    const next = {
+                        enabled: prev?.enabled === true,
+                        hub_unavailable: true,
+                        banner: prev?.banner || '',
+                    };
+                    if (prev?.enabled === next.enabled && prev?.hub_unavailable === next.hub_unavailable && (prev?.banner || '') === next.banner) {
+                        return prev;
+                    }
+                    return next;
+                });
+            }
+        })();
     };
     const openCreateDialogRef = useRef(openCreateDialog);
     openCreateDialogRef.current = openCreateDialog;
@@ -1228,6 +1273,16 @@ export const SidebarTaskManagement = ({
                         <div data-testid="task-create-guidance" style={{ padding: '9px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 6%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', lineHeight: 1.5 }}>
                             {textForLang(lang, 'Set up the task environment now. Once it opens, enter your request directly in the AI assistant.', '先设置任务环境；创建后请直接在 AI 助手中输入任务命令。', '先設定任務環境；建立後請直接在 AI 助手中輸入任務命令。')}
                         </div>
+                        {cloudEntitlement?.hub_unavailable && (
+                            <div
+                                role="status"
+                                data-testid="task-cloud-workspace-hub-banner"
+                                style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, #d97706 48%, var(--theme-border))', background: 'color-mix(in srgb, #f59e0b 12%, transparent)', color: '#a16207', fontSize: '0.72rem', lineHeight: 1.45 }}
+                            >
+                                {cloudEntitlement.banner?.trim()
+                                    || textForLang(lang, 'Hub is unavailable; cloud workspaces are temporarily unavailable.', 'Hub 不可用，云端工作区暂不可用', 'Hub 不可用，雲端工作區暫不可用')}
+                            </div>
+                        )}
                         <div>
                             <div style={{ marginBottom: '6px', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Task type', '任务类型', '任務類型')}</div>
                             <div role="group" aria-label={textForLang(lang, 'Task type', '任务类型', '任務類型')} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '6px' }}>
