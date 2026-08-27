@@ -7,16 +7,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 const (
 	cloudWorkspaceEntitlementPath      = "/api/v1/cloud-workspaces/entitlement"
+	cloudWorkspaceCollectionPath       = "/api/v1/cloud-workspaces"
 	cloudWorkspaceResponseMaxSize      = 3 << 20
 	cloudWorkspaceRequestTimeout       = 30 * time.Second
 	cloudWorkspaceHubUnavailableBanner = "Hub 不可用，云端工作区暂不可用"
 )
+
+func cloudWorkspaceItemPath(id string) string {
+	return cloudWorkspaceCollectionPath + "/" + url.PathEscape(strings.TrimSpace(id))
+}
+
+func cloudWorkspaceRestorePath(id string) string {
+	return cloudWorkspaceItemPath(id) + "/restore"
+}
 
 // cloudWorkspaceHubRequest calls a Hub cloud-workspace API with the same
 // Bearer + X-Machine-ID headers as virtualRepositorySyncRequest.

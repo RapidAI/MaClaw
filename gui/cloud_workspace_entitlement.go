@@ -9,10 +9,12 @@ import (
 
 // CloudWorkspaceEntitlementWorkspace is one active row in the entitlement payload.
 type CloudWorkspaceEntitlementWorkspace struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	UsedBytes int64  `json:"used_bytes"`
-	UpdatedAt string `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	UsedBytes   int64  `json:"used_bytes"`
+	UpdatedAt   string `json:"updated_at"`
+	LeaseInUse  bool   `json:"lease_in_use,omitempty"`
+	LeaseHolder string `json:"lease_holder,omitempty"`
 }
 
 // CloudWorkspaceDeletedWorkspace is one soft-deleted row in the entitlement payload.

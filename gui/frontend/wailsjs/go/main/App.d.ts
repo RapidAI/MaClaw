@@ -310,6 +310,8 @@ export function CopyComputerUsePath(arg1:string):Promise<Record<string, any>>;
 
 export function CorrectASRText(arg1:string):Promise<string>;
 
+export function CreateCloudWorkspace(arg1:string):Promise<main.CloudWorkspaceEntitlementWorkspace>;
+
 export function CreateExpertTask(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
 
 export function EnsureAssistantTabTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ProjectSearchResult>;
@@ -344,11 +346,15 @@ export function CreateTask(arg1:string,arg2:string):Promise<main.ProjectSearchRe
 
 export function CreateTaskWithMode(arg1:string,arg2:string,arg3:string):Promise<main.ProjectSearchResult>;
 
+export function CreateTaskWithCloudWorkspace(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ProjectSearchResult>;
+
 export function CreateTemplate(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<void>;
 
 export function CreateVirtualRepositoryDirectory(arg1:string,arg2:string):Promise<void>;
 
 export function DecideMaclawAppApprovalInstance(arg1:main.MaclawAppApprovalDecisionInput):Promise<Record<string, any>>;
+
+export function DeleteCloudWorkspace(arg1:string):Promise<main.CloudWorkspaceDeletedWorkspace>;
 
 export function DeleteComputerUseLogArtifact(arg1:string):Promise<Record<string, any>>;
 
@@ -1685,6 +1691,8 @@ export function PreflightMaclawAppOneClickPublish(arg1:string):Promise<Record<st
 
 export function PreflightMaclawAppSubmissionOneClick(arg1:string):Promise<Record<string, any>>;
 
+export function PrepareCloudWorkspace(arg1:string):Promise<main.PreparedCloudWorkspace>;
+
 export function PrepareLocalCodingEnvironment(arg1:string,arg2:string):Promise<void>;
 
 export function PrepareRemoteCodingEnvironment(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
@@ -1810,6 +1818,8 @@ export function RemoveExternalSkillDir(arg1:string):Promise<void>;
 
 export function RemoveSupplementaryDoc(arg1:string):Promise<string>;
 
+export function RenameCloudWorkspace(arg1:string,arg2:string):Promise<main.CloudWorkspaceEntitlementWorkspace>;
+
 export function RenameNLSkill(arg1:string,arg2:string):Promise<void>;
 
 export function RenameTask(arg1:string,arg2:string):Promise<string>;
@@ -1866,6 +1876,8 @@ export function RestartThirdPartyGateway():Promise<string>;
 
 export function RestartWeixin():Promise<string>;
 
+export function RestoreCloudWorkspace(arg1:string):Promise<main.CloudWorkspaceEntitlementWorkspace>;
+
 export function RestoreArchiveMemory(arg1:string):Promise<void>;
 
 export function RestoreCodingWorkbenchCheckpoint(arg1:string):Promise<string>;
@@ -1881,6 +1893,8 @@ export function RestoreSkillYAMLBackup(arg1:string,arg2:number,arg3:boolean):Pro
 export function RestoreSkills(arg1:string):Promise<main.RestoreReport>;
 
 export function RestoreWindowGeometry():Promise<void>;
+
+export function ResumeCloudWorkspaceTask(arg1:string):Promise<main.ProjectSearchResult>;
 
 export function ResumeProject(arg1:string):Promise<string>;
 

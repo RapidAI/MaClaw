@@ -8503,6 +8503,8 @@ export namespace main {
 	    name: string;
 	    used_bytes: number;
 	    updated_at: string;
+	    lease_in_use: boolean;
+	    lease_holder: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CloudWorkspaceEntitlementWorkspace(source);
@@ -8514,6 +8516,22 @@ export namespace main {
 	        this.name = source["name"];
 	        this.used_bytes = source["used_bytes"];
 	        this.updated_at = source["updated_at"];
+	        this.lease_in_use = source["lease_in_use"];
+	        this.lease_holder = source["lease_holder"];
+	    }
+	}
+	export class PreparedCloudWorkspace {
+	    local_path: string;
+	    workspace_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreparedCloudWorkspace(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.local_path = source["local_path"];
+	        this.workspace_id = source["workspace_id"];
 	    }
 	}
 	export class CodeGenModelItem {
