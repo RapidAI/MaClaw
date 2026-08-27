@@ -160,6 +160,31 @@ func TestSweepDeletesUnreferencedEncAfterGrace(t *testing.T) {
 	}
 }
 
+func TestDeleteUnreferencedRowSkipsReferencedBlob(t *testing.T) {
+	svc, st, _ := newGCService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ws := seedLeasedWorkspace(t, st, now)
+	put, err := svc.Blobs.Put(ctx, "t1", "u1", ws.ID, []byte("live"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE cloud_workspace_objects SET ref_count = 1, created_at = ? WHERE sha256 = ?`, now.Add(-2*time.Hour).Format(time.RFC3339), put.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := st.DeleteUnreferencedRow(ctx, unreferencedObject{WorkspaceID: ws.ID, SHA256: put.SHA256, TenantID: "t1", UserID: "u1"})
+	if err != nil || deleted {
+		t.Fatalf("deleted=%v err=%v", deleted, err)
+	}
+	path, err := svc.Blobs.ObjectPath("t1", "u1", ws.ID, put.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("referenced enc removed: %v", err)
+	}
+}
+
 func TestSweepKeepsFreshUnreferencedAndDeletedWorkspaceObjects(t *testing.T) {
 	svc, st, _ := newGCService(t)
 	ctx := context.Background()
