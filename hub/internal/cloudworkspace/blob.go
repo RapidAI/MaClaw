@@ -21,7 +21,13 @@ var (
 	ErrDiskFull       = errors.New("insufficient disk space for cloud workspace object")
 )
 
-const objectFileExt = ".enc"
+const (
+	objectFileExt = ".enc"
+	// Design single-file cap (workspace quota is separate, up to 2–8 GiB).
+	defaultMaxObjectBytes int64 = 64 << 20
+	// AES-GCM disk blob is nonce (12) || ciphertext || tag (16).
+	gcmBlobOverhead int64 = 12 + 16
+)
 
 // BlobStore is the Hub-side content-addressed encrypted object store.
 // HTTP bodies (when added in PR5b) stay plaintext; Hub hashes then seals.
@@ -55,7 +61,11 @@ func (s *BlobStore) maxObjectBytes() int64 {
 	if s != nil && s.MaxObjectBytes > 0 {
 		return s.MaxObjectBytes
 	}
-	return defaultMaxWorkspaceBytes
+	return defaultMaxObjectBytes
+}
+
+func (s *BlobStore) maxCiphertextBytes() int64 {
+	return s.maxObjectBytes() + gcmBlobOverhead
 }
 
 func validPathSegment(s string) bool {
@@ -190,6 +200,9 @@ func (s *BlobStore) Get(_ context.Context, tenantID, userID, workspaceID, sha256
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.statObject(path); err != nil {
+		return nil, err
+	}
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -218,14 +231,27 @@ func (s *BlobStore) Has(_ context.Context, tenantID, userID, workspaceID, sha256
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(path)
-	if err == nil {
-		return true, nil
+	if _, err := s.statObject(path); err != nil {
+		if errors.Is(err, ErrBlobNotFound) {
+			return false, nil
+		}
+		return false, err
 	}
-	if os.IsNotExist(err) {
-		return false, nil
+	return true, nil
+}
+
+func (s *BlobStore) statObject(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrBlobNotFound
+		}
+		return nil, err
 	}
-	return false, err
+	if info.Size() > s.maxCiphertextBytes() {
+		return nil, ErrBlobTooLarge
+	}
+	return info, nil
 }
 
 func (s *BlobStore) recordObject(ctx context.Context, workspaceID, sha256hex string, sizeBytes int64) error {

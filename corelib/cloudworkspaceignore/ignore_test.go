@@ -67,6 +67,9 @@ func TestGoldenBuiltinAndCloudignore(t *testing.T) {
 
 		{path: ".maclaw/x", isDir: false, cloudignore: "!.maclaw\n!.maclaw/**\n", want: true, name: "force skip maclaw"},
 		{path: ".maclaw-cloud/x", isDir: false, cloudignore: "!.maclaw-cloud/\n!.maclaw-cloud/**\n", want: true, name: "force skip maclaw-cloud"},
+		{path: ".Maclaw-cloud/state", isDir: false, want: true, name: "force skip mixed-case maclaw-cloud"},
+		{path: ".MACLAW/x", isDir: false, want: true, name: "force skip mixed-case maclaw"},
+		{path: `src\.Maclaw-cloud\x`, isDir: false, want: true, name: "force skip mixed-case nested"},
 		{path: ".env", isDir: false, cloudignore: "!.env\n", want: false, name: "user can un-ignore env"},
 
 		{path: "secret.log", isDir: false, cloudignore: "*.log\n", want: true, name: "user glob"},

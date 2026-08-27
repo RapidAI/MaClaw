@@ -1185,7 +1185,6 @@ func RunMigrations(db *sql.DB) error {
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (workspace_id, sha256)
 	)`)
-	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_objects_ws ON cloud_workspace_objects(workspace_id)`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {

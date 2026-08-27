@@ -106,6 +106,9 @@ func TestBlobStoreGetCorruptAndTooLarge(t *testing.T) {
 		t.Fatalf("too large err=%v", err)
 	}
 	bs.MaxObjectBytes = 0
+	if bs.maxObjectBytes() != defaultMaxObjectBytes {
+		t.Fatalf("default max=%d want %d", bs.maxObjectBytes(), defaultMaxObjectBytes)
+	}
 	got, err := bs.Put(context.Background(), "t1", "u1", "cws_one", []byte("hello"))
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +122,31 @@ func TestBlobStoreGetCorruptAndTooLarge(t *testing.T) {
 	}
 	if _, err := bs.Get(context.Background(), "t1", "u1", "cws_one", got.SHA256); err != ErrBlobCorrupt {
 		t.Fatalf("corrupt err=%v", err)
+	}
+}
+
+func TestBlobStoreGetHasRefuseOversizedCiphertext(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(masterKeyEnv, "")
+	bs := &BlobStore{Root: root, KeyDir: filepath.Join(root, "keys"), MaxObjectBytes: 4}
+	sum := plaintextSHA256([]byte("x"))
+	path, err := bs.ObjectPath("t1", "u1", "cws_one", sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Larger than plaintext cap + GCM overhead, so Get must not ReadFile it.
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bs.Get(context.Background(), "t1", "u1", "cws_one", sum); err != ErrBlobTooLarge {
+		t.Fatalf("get oversized err=%v", err)
+	}
+	has, err := bs.Has(context.Background(), "t1", "u1", "cws_one", sum)
+	if has || err != ErrBlobTooLarge {
+		t.Fatalf("has oversized has=%v err=%v", has, err)
 	}
 }
 

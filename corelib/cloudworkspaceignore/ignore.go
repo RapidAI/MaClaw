@@ -152,7 +152,8 @@ func ReadCloudignore(root string) (string, error) {
 func forced(rel string) bool {
 	for _, seg := range strings.Split(rel, "/") {
 		for _, name := range ForcedNames {
-			if seg == name {
+			// Windows can surface .Maclaw-cloud; force-skip must not depend on case.
+			if strings.EqualFold(seg, name) {
 				return true
 			}
 		}
