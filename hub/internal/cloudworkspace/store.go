@@ -40,17 +40,6 @@ type CreateParams struct {
 	TenantMaxTotalBytes int64
 }
 
-func isBeginImmediateUnsupported(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "syntax") ||
-		strings.Contains(msg, "unrecognized") ||
-		strings.Contains(msg, "near \"immediate\"") ||
-		strings.Contains(msg, "unexpected")
-}
-
 func isUniqueConstraintError(err error) bool {
 	if err == nil {
 		return false
@@ -68,19 +57,11 @@ func (s *Store) withImmediate(ctx context.Context, fn func(queryer) error) error
 	}
 	defer conn.Close()
 
+	// SQLite-only: never fall back to DEFERRED. A second BeginTx while this
+	// Conn is held would block on MaxWriteOpenConns=1; DEFERRED would also
+	// re-open the COUNT+INSERT race IMMEDIATE is meant to close.
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		if !isBeginImmediateUnsupported(err) {
-			return err
-		}
-		tx, txErr := s.db.BeginTx(ctx, nil)
-		if txErr != nil {
-			return txErr
-		}
-		defer tx.Rollback()
-		if fnErr := fn(tx); fnErr != nil {
-			return fnErr
-		}
-		return tx.Commit()
+		return err
 	}
 	committed := false
 	defer func() {
