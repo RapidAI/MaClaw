@@ -12,6 +12,16 @@ export type RemoteCodingMetaFromTags = {
     workDir: string;
 };
 
+export function cloudWorkspaceIdFromTags(tags?: string[] | null): string {
+    if (!tags?.length) return "";
+    const prefix = "cloud_workspace:";
+    for (const raw of tags) {
+        const t = String(raw || "").trim();
+        if (t.startsWith(prefix)) return t.slice(prefix.length).trim();
+    }
+    return "";
+}
+
 export function agentModeFromTaskTags(tags?: string[] | null): PureCodingAgentMode | undefined {
     if (!tags?.length) return undefined;
     if (tags.includes("remote_coding_dev")) return "remote_coding_dev";

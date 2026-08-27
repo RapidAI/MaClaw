@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     agentModeFromTaskTags,
+    cloudWorkspaceIdFromTags,
     isCodingWorkflowSourceTags,
     isPureCodingTaskTags,
     isRemoteMaintenanceTaskTags,
@@ -9,6 +10,12 @@ import {
 } from "../codingTaskMode";
 
 describe("codingTaskMode", () => {
+    it("extracts cloud workspace id from tags", () => {
+        expect(cloudWorkspaceIdFromTags(["cloud_workspace:cws_demo", "coding_dev"])).toBe("cws_demo");
+        expect(cloudWorkspaceIdFromTags(["coding_dev"])).toBe("");
+        expect(cloudWorkspaceIdFromTags([])).toBe("");
+    });
+
     it("detects local and remote pure coding tags", () => {
         expect(agentModeFromTaskTags(["coding_dev"])).toBe("coding_dev");
         expect(agentModeFromTaskTags(["remote_coding_dev", "remote_host:10.0.0.1"])).toBe("remote_coding_dev");

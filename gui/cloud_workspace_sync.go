@@ -258,6 +258,9 @@ func (p *cloudWorkspaceProtocol) Push(ctx context.Context, root string) (*cloudW
 	if err != nil {
 		return nil, err
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = bindCloudWorkspaceTimeout(ctx, cloudWorkspaceEntriesTimeout(entries))
+	defer cancel()
 	remote, err := p.Transport.GetManifest(ctx)
 	if err != nil {
 		return nil, err
@@ -312,6 +315,9 @@ func (p *cloudWorkspaceProtocol) Pull(ctx context.Context, root string) (*cloudW
 	if remote == nil {
 		remote = &cloudWorkspaceManifest{Entries: []cloudWorkspaceManifestEntry{}}
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = bindCloudWorkspaceTimeout(ctx, cloudWorkspaceEntriesTimeout(remote.Entries))
+	defer cancel()
 	keep := make(map[string]struct{}, len(remote.Entries))
 	for _, e := range remote.Entries {
 		keep[e.Path] = struct{}{}

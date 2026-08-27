@@ -2746,6 +2746,12 @@ func (a *App) SuggestCurrentTaskName() string {
 // ResumeTask keeps a task-management named API for callers that should not
 // depend on the older project-search terminology.
 func (a *App) ResumeTask(taskPath string) string {
+	if id := a.lookupCloudWorkspaceIDForProject(taskPath); id != "" {
+		if _, err := a.PrepareCloudWorkspace(id); err != nil {
+			log.Printf("[cloud_workspace] ResumeTask prepare failed path=%q id=%s err=%v", taskPath, id, err)
+			return ""
+		}
+	}
 	return a.ResumeProject(taskPath)
 }
 

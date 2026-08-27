@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 var (
@@ -222,6 +224,62 @@ func (a *App) RestoreCloudWorkspace(id string) (CloudWorkspaceEntitlementWorkspa
 	return row.toActive(), nil
 }
 
+func (a *App) cloudWorkspaceTaskIsResumable(result ProjectSearchResult) bool {
+	path := normalizeProjectSessionPath(result.ProjectPath)
+	if path == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Clean(path)); err != nil {
+		return false
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return true
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return true
+	}
+	return !pi.IsHidden(path) && !pi.IsArchived(path)
+}
+
+func (a *App) findVisibleCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return ProjectSearchResult{}
+	}
+	if result, ok := lookupCloudWorkspaceTask(workspaceID); ok && a.cloudWorkspaceTaskIsResumable(result) {
+		return result
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+	want := cloudWorkspaceTag(workspaceID)
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, want)
+	}) {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		return projectRecordToSearchResult(pi, rec)
+	}
+	return ProjectSearchResult{}
+}
+
+func (a *App) bindPreparedCloudWorkspaceTask(workspaceID string, result ProjectSearchResult, localPath string) ProjectSearchResult {
+	if strings.TrimSpace(result.WorkingDir) == "" {
+		result.WorkingDir = localPath
+	}
+	rememberCloudWorkspaceTask(workspaceID, result)
+	rememberCloudWorkspaceLocalPath(localPath, workspaceID)
+	return result
+}
+
 // CreateTaskWithCloudWorkspace prepares the cache mount then creates a task tagged cloud_workspace:{id}.
 // workingDir is ignored: PrepareCloudWorkspace returns LocalPath as the working directory.
 func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string) ProjectSearchResult {
@@ -234,6 +292,9 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 		log.Printf("[cloud_workspace] prepare failed id=%s err=%v", workspaceID, err)
 		return ProjectSearchResult{}
 	}
+	if existing := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(existing.ProjectPath) != "" {
+		return a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
+	}
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
 		return ProjectSearchResult{}
@@ -244,20 +305,26 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	}
 	result := a.createTaskRecordWithWorkingDir(taskName, "", tags, prepared.LocalPath, false)
 	if strings.TrimSpace(result.ProjectPath) != "" {
-		rememberCloudWorkspaceTask(workspaceID, result)
-		rememberCloudWorkspaceLocalPath(prepared.LocalPath, workspaceID)
+		return a.bindPreparedCloudWorkspaceTask(workspaceID, result, prepared.LocalPath)
 	}
 	return result
 }
 
-// ResumeCloudWorkspaceTask returns the process-local task bound 1:1 to workspaceID, if any.
+// ResumeCloudWorkspaceTask returns the 1:1 task for workspaceID (process map or cloud_workspace: tag)
+// after re-running PrepareCloudWorkspace so tab/sidebar reopen holds the exclusive lease.
 func (a *App) ResumeCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
-	result, ok := lookupCloudWorkspaceTask(workspaceID)
-	if !ok || strings.TrimSpace(result.ProjectPath) == "" {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
 		return ProjectSearchResult{}
 	}
-	if _, err := os.Stat(filepath.Clean(result.ProjectPath)); err != nil {
+	existing := a.findVisibleCloudWorkspaceTask(workspaceID)
+	if strings.TrimSpace(existing.ProjectPath) == "" {
 		return ProjectSearchResult{}
 	}
-	return result
+	prepared, err := a.PrepareCloudWorkspace(workspaceID)
+	if err != nil || strings.TrimSpace(prepared.LocalPath) == "" {
+		log.Printf("[cloud_workspace] resume prepare failed id=%s err=%v", workspaceID, err)
+		return ProjectSearchResult{}
+	}
+	return a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
 }

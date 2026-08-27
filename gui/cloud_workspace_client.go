@@ -179,13 +179,97 @@ func (a *App) cloudWorkspaceRequestContext() (context.Context, context.CancelFun
 	return context.WithTimeout(parent, cloudWorkspaceRequestTimeout)
 }
 
+func cloudWorkspaceMaxObjectChunkCount() int64 {
+	n := cloudWorkspaceObjectMaxBytes / cloudWorkspaceChunkBytes
+	if cloudWorkspaceObjectMaxBytes%cloudWorkspaceChunkBytes != 0 {
+		n++
+	}
+	if n < 1 {
+		return 1
+	}
+	return int64(n)
+}
+
+// cloudWorkspaceSyncTimeout covers one max-size object at the spec formula
+// (direct PUT or 60s-per-chunk) plus a manifest round-trip.
+func cloudWorkspaceSyncTimeout() time.Duration {
+	direct := cloudWorkspaceTransferTimeout(cloudWorkspaceObjectMaxBytes)
+	chunked := time.Duration(cloudWorkspaceMaxObjectChunkCount()) * cloudWorkspaceChunkTimeout
+	d := direct
+	if chunked > d {
+		d = chunked
+	}
+	d += 60 * time.Second
+	if d < 60*time.Second {
+		return 60 * time.Second
+	}
+	return d
+}
+
+func cloudWorkspaceEntriesTimeout(entries []cloudWorkspaceManifestEntry) time.Duration {
+	var total int64
+	var chunks int64
+	for _, e := range entries {
+		if e.Size <= 0 {
+			continue
+		}
+		total += e.Size
+		if e.Size > cloudWorkspaceChunkBytes {
+			n := e.Size / cloudWorkspaceChunkBytes
+			if e.Size%cloudWorkspaceChunkBytes != 0 {
+				n++
+			}
+			chunks += n
+		}
+	}
+	d := cloudWorkspaceTransferTimeout(total)
+	if extra := time.Duration(chunks) * cloudWorkspaceChunkTimeout; extra > d {
+		d = extra
+	}
+	d += 60 * time.Second
+	if min := cloudWorkspaceSyncTimeout(); d < min {
+		return min
+	}
+	return d
+}
+
+// bindCloudWorkspaceTimeout applies the size-based budget without shrinking a
+// longer parent, and without extending the short OnShutdown deadline.
+func bindCloudWorkspaceTimeout(ctx context.Context, want time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if want <= 0 {
+		want = cloudWorkspaceSyncTimeout()
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remain := time.Until(deadline)
+		if remain <= cloudWorkspaceShutdownReleaseTimeout {
+			return context.WithCancel(ctx)
+		}
+		if remain >= want {
+			return context.WithCancel(ctx)
+		}
+	}
+	child, cancel := context.WithTimeout(context.WithoutCancel(ctx), want)
+	stop := context.AfterFunc(ctx, cancel)
+	return child, func() {
+		stop()
+		cancel()
+	}
+}
+
 func (a *App) cloudWorkspaceLongContext(timeout time.Duration) (context.Context, context.CancelFunc) {
 	parent := context.Background()
 	if a != nil && a.ctx != nil {
 		parent = a.ctx
 	}
 	if timeout <= 0 {
-		timeout = 2 * time.Minute
+		timeout = cloudWorkspaceSyncTimeout()
 	}
 	return context.WithTimeout(parent, timeout)
+}
+
+func (a *App) cloudWorkspaceSyncContext() (context.Context, context.CancelFunc) {
+	return a.cloudWorkspaceLongContext(cloudWorkspaceSyncTimeout())
 }

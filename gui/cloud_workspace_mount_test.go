@@ -25,9 +25,11 @@ type fakeCloudWorkspaceHub struct {
 	acquired           string
 	conflictUntilForce bool
 	forceCount         int
+	leaseAcquires      int
 	heartbeats         int
 	heartbeatStatus    int
 	deleted            bool
+	failPush           bool
 	revision           string
 	entries            []cloudWorkspaceManifestEntry
 	objects            map[string][]byte
@@ -84,6 +86,8 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		if h.forceCount == 0 && acquired == "" {
 			acquired = cloudWorkspaceAcquiredGranted
 		}
+		h.leaseAcquires++
+		h.deleted = false
 		_ = json.NewEncoder(w).Encode(cloudWorkspaceAcquireOutcome{
 			LeaseID:   h.leaseID,
 			ExpiresAt: "2099-01-01T00:00:00Z",
@@ -110,6 +114,11 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 		_ = json.NewEncoder(w).Encode(cloudWorkspaceManifest{Revision: h.revision, Entries: entries})
 	case r.Method == http.MethodPut && strings.HasSuffix(path, "/manifest"):
+		if h.failPush {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_FAILED", "message": "push failed"})
+			return
+		}
 		var req struct {
 			IfMatchRevision string                        `json:"if_match_revision"`
 			Entries         []cloudWorkspaceManifestEntry `json:"entries"`
@@ -214,6 +223,22 @@ func TestCloudWorkspaceTransferTimeout(t *testing.T) {
 	}
 	if cloudWorkspaceChunkTimeout != 60*time.Second {
 		t.Fatalf("chunk timeout=%v", cloudWorkspaceChunkTimeout)
+	}
+	direct := cloudWorkspaceTransferTimeout(cloudWorkspaceObjectMaxBytes)
+	if got := cloudWorkspaceSyncTimeout(); got < direct {
+		t.Fatalf("sync timeout %v < direct object timeout %v", got, direct)
+	}
+	chunked := time.Duration(cloudWorkspaceMaxObjectChunkCount()) * cloudWorkspaceChunkTimeout
+	if got := cloudWorkspaceSyncTimeout(); got < chunked {
+		t.Fatalf("sync timeout %v < chunked max-object budget %v", got, chunked)
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), cloudWorkspaceShutdownReleaseTimeout)
+	defer cancel()
+	bound, stop := bindCloudWorkspaceTimeout(shutdown, 10*time.Minute)
+	defer stop()
+	deadline, ok := bound.Deadline()
+	if !ok || time.Until(deadline) > cloudWorkspaceShutdownReleaseTimeout+time.Second {
+		t.Fatalf("shutdown context must not be extended, deadline=%v ok=%v", deadline, ok)
 	}
 }
 
@@ -517,6 +542,111 @@ func TestHeartbeat409MarksReadOnlyAndSkipsPush(t *testing.T) {
 	}
 	if !hub.deleted {
 		t.Fatal("release still DELETEs lease best-effort")
+	}
+}
+
+func TestResumeCloudWorkspaceTaskRePreparesAfterRelease(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_resume")
+	if created.ProjectPath == "" {
+		t.Fatal("empty task")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_resume", false); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if lookupHeldCloudWorkspace("cws_resume") != nil {
+		t.Fatal("lease should be released after tab-close")
+	}
+	hub.mu.Lock()
+	before := hub.leaseAcquires
+	hub.mu.Unlock()
+	resumed := app.ResumeCloudWorkspaceTask("cws_resume")
+	if resumed.ProjectPath != created.ProjectPath {
+		t.Fatalf("resume=%q want %q", resumed.ProjectPath, created.ProjectPath)
+	}
+	if lookupHeldCloudWorkspace("cws_resume") == nil {
+		t.Fatal("resume must re-Prepare and hold the lease")
+	}
+	hub.mu.Lock()
+	after := hub.leaseAcquires
+	hub.mu.Unlock()
+	if after <= before {
+		t.Fatalf("resume must POST /leases again, before=%d after=%d", before, after)
+	}
+}
+
+func TestResumeCloudWorkspaceTaskFindsTagAfterProcessMapClear(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_restart")
+	if created.ProjectPath == "" {
+		t.Fatal("empty task")
+	}
+	resetCloudWorkspaceMounts()
+	cloudWorkspaceDialogMu.Lock()
+	cloudWorkspaceTaskByID = map[string]ProjectSearchResult{}
+	cloudWorkspaceDialogMu.Unlock()
+	if _, ok := lookupCloudWorkspaceTask("cws_restart"); ok {
+		t.Fatal("process map should be empty after restart")
+	}
+	resumed := app.ResumeCloudWorkspaceTask("cws_restart")
+	if resumed.ProjectPath != created.ProjectPath {
+		t.Fatalf("tag resume=%q want %q", resumed.ProjectPath, created.ProjectPath)
+	}
+	again := app.CreateTaskWithCloudWorkspace("云端任务重复", "", "coding_dev", "cws_restart")
+	if again.ProjectPath != created.ProjectPath {
+		t.Fatalf("create must reuse 1:1 task, got %q want %q", again.ProjectPath, created.ProjectPath)
+	}
+}
+
+func TestHideTaskKeepsLeaseWhenPushFails(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_pushfail")
+	if created.ProjectPath == "" {
+		t.Fatal("empty task")
+	}
+	if err := os.WriteFile(filepath.Join(created.WorkingDir, "dirty.txt"), []byte("unsynced"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	hub.failPush = true
+	hub.mu.Unlock()
+	app.HideTask(created.ProjectPath)
+	hub.mu.Lock()
+	deleted := hub.deleted
+	hub.mu.Unlock()
+	if deleted {
+		t.Fatal("failed Push must not DELETE the lease")
+	}
+	if lookupHeldCloudWorkspace("cws_pushfail") == nil {
+		t.Fatal("failed Push must keep the held lease")
+	}
+}
+
+func TestResumeTaskPreparesCloudWorkspace(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_sidebar")
+	if created.ProjectPath == "" {
+		t.Fatal("empty task")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.releaseCloudWorkspace(ctx, "cws_sidebar", false); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if lookupHeldCloudWorkspace("cws_sidebar") != nil {
+		t.Fatal("expected released mount")
+	}
+	if got := app.ResumeTask(created.ProjectPath); got == "" {
+		t.Fatal("ResumeTask should succeed after re-Prepare")
+	}
+	if lookupHeldCloudWorkspace("cws_sidebar") == nil {
+		t.Fatal("sidebar ResumeTask must re-Prepare the lease")
 	}
 }
 

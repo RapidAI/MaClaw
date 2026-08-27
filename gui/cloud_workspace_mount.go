@@ -395,7 +395,7 @@ func (a *App) scheduleCloudWorkspacePush(mount *cloudWorkspaceHeldMount) {
 		if readOnly || strings.TrimSpace(root) == "" {
 			return
 		}
-		ctx, cancel := a.cloudWorkspaceLongContext(2 * time.Minute)
+		ctx, cancel := a.cloudWorkspaceSyncContext()
 		defer cancel()
 		if _, err := a.cloudWorkspaceProtocol(id).Push(ctx, root); err != nil {
 			log.Printf("[cloud_workspace] watch push failed workspace=%s err=%v", id, err)
@@ -553,14 +553,14 @@ func (a *App) releaseCloudWorkspaceForProjectPath(projectPath string) {
 	if id == "" {
 		return
 	}
-	ctx, cancel := a.cloudWorkspaceLongContext(2 * time.Minute)
+	ctx, cancel := a.cloudWorkspaceSyncContext()
 	defer cancel()
-	if err := a.releaseCloudWorkspace(ctx, id, true); err != nil {
+	if err := a.releaseCloudWorkspace(ctx, id, false); err != nil {
 		log.Printf("[cloud_workspace] release failed workspace=%s path=%q err=%v", id, projectPath, err)
 	}
 }
 
-func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, bestEffort bool) error {
+func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, deleteLeaseOnPushFail bool) error {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return nil
@@ -578,7 +578,7 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, bes
 	if !readOnly && strings.TrimSpace(root) != "" {
 		if _, err := a.cloudWorkspaceProtocol(workspaceID).Push(ctx, root); err != nil {
 			log.Printf("[cloud_workspace] release push failed workspace=%s err=%v", workspaceID, err)
-			if !bestEffort {
+			if !deleteLeaseOnPushFail {
 				storeCloudWorkspaceMount(mount)
 				a.startCloudWorkspaceHeartbeat(mount)
 				a.startCloudWorkspaceWatcher(mount)
@@ -587,7 +587,7 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, bes
 		}
 	}
 	if err := a.deleteCloudWorkspaceLease(ctx, workspaceID, leaseID); err != nil {
-		if !bestEffort {
+		if !deleteLeaseOnPushFail {
 			return err
 		}
 		log.Printf("[cloud_workspace] release delete lease failed workspace=%s err=%v", workspaceID, err)
@@ -597,7 +597,7 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, bes
 
 // ReleaseCloudWorkspace pushes the cache (unless stolen/read-only), writes state.json, then DELETE /leases/{id}.
 func (a *App) ReleaseCloudWorkspace(workspaceID string) error {
-	ctx, cancel := a.cloudWorkspaceLongContext(2 * time.Minute)
+	ctx, cancel := a.cloudWorkspaceSyncContext()
 	defer cancel()
 	return a.releaseCloudWorkspace(ctx, workspaceID, false)
 }
@@ -660,7 +660,7 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 	}
 
 	proto := a.cloudWorkspaceProtocol(workspaceID)
-	syncCtx, syncCancel := a.cloudWorkspaceLongContext(2 * time.Minute)
+	syncCtx, syncCancel := a.cloudWorkspaceSyncContext()
 	defer syncCancel()
 
 	acquired := strings.TrimSpace(outcome.Acquired)
