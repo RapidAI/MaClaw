@@ -1192,6 +1192,14 @@ func RunMigrations(db *sql.DB) error {
 	)`)
 	alterStmts = append(alterStmts, `CREATE UNIQUE INDEX IF NOT EXISTS idx_cws_lease_active
 		ON cloud_workspace_leases(workspace_id) WHERE released_at IS NULL`)
+	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS cloud_workspace_objects (
+		workspace_id TEXT NOT NULL,
+		sha256 TEXT NOT NULL,
+		size_bytes INTEGER NOT NULL,
+		ref_count INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (workspace_id, sha256)
+	)`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {
