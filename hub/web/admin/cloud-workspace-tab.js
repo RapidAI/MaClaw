@@ -99,8 +99,7 @@
     selectedDepts: [],
     deptFilter: '',
     preview: { department_count: 0, user_count: 0, over_quota_users: [] },
-    saving: false,
-    treeWired: false
+    saving: false
   };
 
   function cwsx(key, vars) {
@@ -181,7 +180,6 @@
     return safeNodes.reduce(function(out, node) {
       if (!node || typeof node !== 'object') return out;
       var id = String(node.id || '').trim();
-      // Do not render malformed, cyclic, or duplicate references received from the API.
       if (!id || path[id] || seen[id]) return out;
       var nextPath = Object.assign({}, path);
       nextPath[id] = true;
@@ -204,9 +202,13 @@
         return state.securityGroups;
       }
     }
-    if (state.securityGroupsLoaded && !opts.force) return state.securityGroups;
+    if (state.securityGroupsLoaded && !opts.force) {
+      if (opts.renderTree !== false) renderCwsAclPanel();
+      return state.securityGroups;
+    }
 
     state.securityGroupsLoading = true;
+    if (opts.renderTree !== false) renderCwsAclPanel();
     var pending = (async function() {
       try {
         var data = await api('/api/admin/security/groups');
@@ -270,8 +272,11 @@
   }
 
   function collectSelectedFromDom() {
+    var boxes = cardQueryAll('.cws-acl-tree-dept');
+    // No inputs means the tree is not mounted yet (loading/empty/error), not an empty selection.
+    if (!boxes.length) return state.selectedDepts;
     var depts = [];
-    cardQueryAll('.cws-acl-tree-dept').forEach(function(cb) {
+    boxes.forEach(function(cb) {
       if (cb.checked) depts.push(String(cb.value || '').trim());
     });
     state.selectedDepts = uniqueStrings(depts.filter(Boolean));
@@ -360,8 +365,6 @@
 
   function renderDepartmentTree(nodes, selectedDepts, depth, parentPath) {
     var currentDepth = Number(depth) || 0;
-    // The API tree is normalized on load; this guard also protects direct calls
-    // against an unexpectedly deep response.
     if (currentDepth > cwsMaxDepartmentTreeDepth) return '';
     return (Array.isArray(nodes) ? nodes : []).map(function(node) {
       var id = String(node && node.id || '').trim();

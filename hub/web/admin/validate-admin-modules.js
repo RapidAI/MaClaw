@@ -927,6 +927,14 @@ function assertCloudWorkspaceDepartmentTreeRender() {
   if (normalizedDepth !== 65) {
     fail('cloud-workspace-tab.js must cap an oversized department tree before rendering.');
   }
+  const loadGroups = extractNamedFunction(source, 'loadSecurityGroups');
+  if ((loadGroups.match(/if \(opts\.renderTree !== false\) renderCwsAclPanel\(\);/g) || []).length < 3) {
+    fail('cloud-workspace-tab.js loadSecurityGroups must re-render on cached hits and show loading before the groups fetch.');
+  }
+  const collect = extractNamedFunction(source, 'collectSelectedFromDom');
+  if (!collect.includes('if (!boxes.length) return state.selectedDepts;')) {
+    fail('cloud-workspace-tab.js must not clear selectedDepts when the department tree is not mounted.');
+  }
   const saveHandler = extractNamedFunction(source, 'saveTenantCloudWorkspaceSettings');
   ['mode === \'departments\' && !departmentIds.length', 'emptyDepartmentsWarn', 'quota > CWS_QUOTA_MAX'].forEach(function(marker) {
     if (!saveHandler.includes(marker)) {
