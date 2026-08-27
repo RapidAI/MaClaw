@@ -740,6 +740,45 @@
           </div>
           <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantMigrationSettings()" id="tenantMigrationSettingsSaveBtn"></button></div>
         </div>
+        <div class="item hidden" id="tenantCloudWorkspaceSettingsCard" style="margin-top:10px">
+          <div class="head" style="margin-bottom:10px">
+            <div><div class="item-title" id="tenantCloudWorkspaceSettingsTitle"></div><div class="item-meta" id="tenantCloudWorkspaceSettingsDesc"></div></div>
+            <button class="btn-ghost" type="button" onclick="loadTenantCloudWorkspaceSettings()" id="tenantCloudWorkspaceSettingsReloadBtn"></button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div>
+              <div class="item-meta" style="margin:0 0 6px;font-weight:600" id="tenantCloudWorkspaceModeLabel"></div>
+              <label style="display:flex;align-items:center;gap:8px;margin:0 0 6px;cursor:pointer;font-size:13px">
+                <input type="radio" name="tenantCloudWorkspaceMode" id="tenantCloudWorkspaceModeOff" value="off" onchange="tenantCloudWorkspaceModeChanged()">
+                <span id="tenantCloudWorkspaceModeOffLabel"></span>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;margin:0 0 6px;cursor:pointer;font-size:13px">
+                <input type="radio" name="tenantCloudWorkspaceMode" id="tenantCloudWorkspaceModeAllUsers" value="all_users" onchange="tenantCloudWorkspaceModeChanged()">
+                <span id="tenantCloudWorkspaceModeAllUsersLabel"></span>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;margin:0 0 0;cursor:pointer;font-size:13px">
+                <input type="radio" name="tenantCloudWorkspaceMode" id="tenantCloudWorkspaceModeDepartments" value="departments" onchange="tenantCloudWorkspaceModeChanged()">
+                <span id="tenantCloudWorkspaceModeDepartmentsLabel"></span>
+              </label>
+            </div>
+            <div id="tenantCloudWorkspaceDepartmentsBox" hidden aria-hidden="true">
+              <div class="item-meta" style="margin:0 0 6px;font-weight:600" id="tenantCloudWorkspaceDepartmentsLabel"></div>
+              <div class="item-meta" style="margin:0 0 8px" id="tenantCloudWorkspaceDepartmentsHint"></div>
+              <div id="tenantCloudWorkspaceSelectedDepartments" class="item-meta" aria-live="polite" style="margin:0 0 8px;font-weight:600"></div>
+              <div id="tenantCloudWorkspaceDeptTree"></div>
+              <div id="tenantCloudWorkspaceEmptyWarn" class="item-meta" style="margin-top:8px;color:var(--warning,#b45309);display:none"></div>
+            </div>
+            <div class="grid3">
+              <div><label for="tenantCloudWorkspaceQuota" id="tenantCloudWorkspaceQuotaLabel"></label><input id="tenantCloudWorkspaceQuota" type="number" min="1" max="10" step="1" value="5"></div>
+              <div><label for="tenantCloudWorkspaceMaxMiB" id="tenantCloudWorkspaceMaxMiBLabel"></label><input id="tenantCloudWorkspaceMaxMiB" type="number" min="256" max="8192" step="1" value="2048"></div>
+              <div><label for="tenantCloudWorkspaceTenantGiB" id="tenantCloudWorkspaceTenantGiBLabel"></label><input id="tenantCloudWorkspaceTenantGiB" type="number" min="1" max="1024" step="1" value="50"></div>
+            </div>
+            <div class="item-meta" id="tenantCloudWorkspaceSettingsHint"></div>
+            <div class="item-meta" id="tenantCloudWorkspacePreview"></div>
+            <div class="item-meta" id="tenantCloudWorkspaceOverQuota" style="color:var(--warning,#b45309);display:none"></div>
+          </div>
+          <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveTenantCloudWorkspaceSettings()" id="tenantCloudWorkspaceSettingsSaveBtn"></button></div>
+        </div>
         <div class="item hidden" id="tenantDigitalAssetsSettingsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
             <div><div class="item-title" id="tenantDigitalAssetsSettingsTitle"></div><div class="item-meta" id="tenantDigitalAssetsSettingsDesc"></div></div>
@@ -1618,6 +1657,7 @@
 <script defer src="/admin/user-referrals-tab.js"></script>
 <script defer src="/admin/pwa-tab.js"></script>
 <script defer src="/admin/system-tab.js"></script>
+<script defer src="/admin/cloud-workspace-tab.js"></script>
 <script defer src="/admin/compute-tab.js"></script>
 <script defer src="/admin/maclaw-compute-module.js"></script>
 <script defer src="/admin/card-store-tab.js"></script>

@@ -34,6 +34,7 @@ This folder now uses a thin-shell structure.
 - invitation-tab.js: recharge/invitation code management
 - pwa-tab.js: PWA approvals and pending logins
 - system-tab.js: mail, TLS, admin profile/password
+- cloud-workspace-tab.js: tenant cloud-workspace settings card and org-tree picker
 - compute-tab.js: compute placeholders
 - llm-provider-tab.js: provider management
 - llm-service-tabs.js: model service groups/cards/defaults

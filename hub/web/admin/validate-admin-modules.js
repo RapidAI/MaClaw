@@ -27,6 +27,7 @@ const expectedScripts = [
 	'user-referrals-tab.js',
   'pwa-tab.js',
   'system-tab.js',
+  'cloud-workspace-tab.js',
   'compute-tab.js',
   'llm-provider-tab.js',
   'llm-service-tabs.js',
@@ -58,7 +59,8 @@ const expectedExports = {
   'usage-stats-tab.js': ['loadUsageStats'],
   'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare'],
   'admin-ui.js': ['confirmDialog', 'promptDialog', 'dismissActiveDialog', 'isDialogOpen', 'admin-ui-dialog-overlay', 'mountDialogSession', 'DIALOG_Z_INDEX', '20000', 'bindModalOverlayDismiss', 'isImeComposing', 'skipDismiss'],
-  'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'stopDigitalAssetsForUnauthorizedScope', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy', 'downloadBackup', 'backupFilename', 'global.URL.createObjectURL', 'Authorization', 'res.status === 401', 'global.logoutAdmin']
+  'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'stopDigitalAssetsForUnauthorizedScope', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy', 'downloadBackup', 'backupFilename', 'global.URL.createObjectURL', 'Authorization', 'res.status === 401', 'global.logoutAdmin'],
+  'cloud-workspace-tab.js': ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', 'renderDepartmentTree', 'renderCwsAclPanel', 'normalizeSecurityGroupTree', 'loadSecurityGroups', 'unknownSelectedDepartments', 'cwsMaxDepartmentTreeDepth', 'cws-acl-tree', 'cws-acl-tree-dept', 'cws-acl-tree-branch', 'cws-acl-tree-children', 'cws-acl-tree-toolbar', '/api/admin/security/groups', '/api/admin/cloud-workspaces/settings', 'department_ids', 'max_workspace_bytes', 'tenant_max_total_bytes', 'tenantCloudWorkspaceQuota', 'CWS_QUOTA_MAX', 'emptyDepartmentsWarn']
 };
 
 function fail(message) {
@@ -270,7 +272,7 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js must guard direct registration verification calls.');
     }
   });
-  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn', 'id="tenantDigitalAssetsSettingsCard"', 'tenantDigitalAssetsEnabledToggle', 'tenantDigitalAssetsSyncToggle'].forEach(function(marker) {
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn', 'id="tenantDigitalAssetsSettingsCard"', 'tenantDigitalAssetsEnabledToggle', 'tenantDigitalAssetsSyncToggle', 'id="tenantCloudWorkspaceSettingsCard"', 'tenantCloudWorkspaceQuota', 'tenantCloudWorkspaceMaxMiB', 'tenantCloudWorkspaceTenantGiB', 'tenantCloudWorkspaceModeOff', 'tenantCloudWorkspaceModeAllUsers', 'tenantCloudWorkspaceModeDepartments'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
@@ -311,6 +313,24 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js must guard ' + name + ' to tenant admins.');
     }
   });
+  const cloudWorkspace = read('cloud-workspace-tab.js');
+  ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', '/api/admin/cloud-workspaces/settings', 'CWS_I18N', 'canManageTenantCloudWorkspace'].forEach(function(marker) {
+    if (!cloudWorkspace.includes(marker)) {
+      fail('cloud-workspace-tab.js is missing tenant cloud workspace settings marker: ' + marker);
+    }
+  });
+  ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings'].forEach(function(name) {
+    const handler = extractNamedFunction(cloudWorkspace, name);
+    if (!handler.includes('if (!canManageTenantCloudWorkspace()) return null;')) {
+      fail('cloud-workspace-tab.js must guard ' + name + ' to tenant admins.');
+    }
+  });
+  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !(hasProfile && tenantAdmin))")) {
+    fail('tenant-tab.js must show cloud workspace settings only to tenant admins.');
+  }
+  if (!admin.includes('loadTenantCloudWorkspaceSettings')) {
+    fail('admin.js must load tenant cloud workspace settings in the tenant system scope.');
+  }
   ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'getTenantSystemFreeCache', 'setTenantSystemFreeCache', 'fetchTenantSystemFreeStatus', 'formatTenantSystemFreeDetail', 'renderTenantSystemFreeStatus', 'applyTenantSystemFreeStatusUI', '/api/admin/llm/system-free', '/api/admin/llm/system-free/test', 'testTenantSystemFreeLLM', 'openSystemFreeServiceGroup', 'skipPeer', 'systemFreeConfigToasted', 'tenantSystemFreeTestInflight'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant system-free LLM marker: ' + marker);
@@ -340,7 +360,7 @@ function assertTenantAdminUIHooks() {
     }
   });
   const bootstrap = read('admin-bootstrap.js');
-  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
+  ['Promise.allSettled', 'loadTenants', 'loadCenterStatus', 'loadMailConfig', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantCloudWorkspaceSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs'].forEach(function(marker) {
     if (!bootstrap.includes(marker)) {
       fail('admin-bootstrap.js is missing scoped refresh marker: ' + marker);
     }
@@ -827,6 +847,90 @@ function assertDigitalAssetDepartmentTreeRender() {
   ['restricted && selected > digitalAssetsMaxAclDepartments', 'changedCheckbox.checked = false', 'digitalAssetsMaxAclDepartments'].forEach(function(marker) {
     if (!selectionHandler.includes(marker)) {
       fail('digital-assets-tab.js must prevent selecting departments over the ACL limit: ' + marker);
+    }
+  });
+}
+
+function assertCloudWorkspaceDepartmentTreeRender() {
+  const source = read('cloud-workspace-tab.js');
+  const html = fs.readFileSync(indexPath, 'utf8');
+  const css = read('professional.css');
+  const adminUi = read('admin-ui.js');
+  const digitalAssets = read('digital-assets-tab.js');
+  const ve = read('ve-tab.js');
+  if (!source.includes('function canManageTenantCloudWorkspace()')) {
+    fail('cloud-workspace-tab.js must define a tenant-admin scope guard.');
+  }
+  if (adminUi.includes('renderDepartmentTree') || adminUi.includes('cws-acl-tree')) {
+    fail('admin-ui.js must not own the cloud-workspace department tree.');
+  }
+  if (ve.includes('cws-acl-tree') || ve.includes('renderCwsAclPanel')) {
+    fail('ve-tab.js must not share the cloud-workspace department tree.');
+  }
+  if (!digitalAssets.includes('function renderDepartmentTree(')) {
+    fail('digital-assets-tab.js must keep its own renderDepartmentTree copy.');
+  }
+  if (!source.includes('function renderDepartmentTree(')) {
+    fail('cloud-workspace-tab.js must keep an independent renderDepartmentTree copy.');
+  }
+  if (/<textarea/i.test(source) || /<textarea/i.test(html.slice(html.indexOf('id="tenantCloudWorkspaceSettingsCard"'), html.indexOf('id="tenantDigitalAssetsSettingsCard"')))) {
+    fail('cloud workspace settings must not use a textarea to paste department IDs.');
+  }
+  if (!html.includes('id="tenantCloudWorkspaceQuota" type="number" min="1" max="10"')) {
+    fail('index.html must hard-cap cloud workspace quota at 10.');
+  }
+  ['cws-acl-tree', 'cws-acl-tree-toolbar', 'cws-acl-tree-children', 'cws-acl-tree-dept-row', '--cws-acl-tree-depth'].forEach(function(marker) {
+    if (!css.includes(marker)) {
+      fail('professional.css is missing cloud-workspace tree marker: ' + marker);
+    }
+  });
+  const normalizeTree = extractNamedFunction(source, 'normalizeSecurityGroupTree');
+  const renderTree = extractNamedFunction(source, 'renderDepartmentTree');
+  const panel = extractNamedFunction(source, 'renderCwsAclPanel');
+  if (!renderTree.includes("}).join('');")) {
+    fail('cloud-workspace-tab.js renderDepartmentTree must return rendered HTML text.');
+  }
+  if (/\bknownRows\.join\(/.test(panel)) {
+    fail('cloud-workspace-tab.js must not call join() on knownRows; it is already rendered HTML text.');
+  }
+  if (!panel.includes("+ knownRows")) {
+    fail('cloud-workspace-tab.js must append rendered department tree HTML directly.');
+  }
+  ['normalizeSecurityGroupTree', 'seenIDs', 'cwsMaxDepartmentTreeDepth', "Array.isArray(node.children) ? node.children : []", 'unknownSelectedDepartments', 'deptUnknown'].forEach(function(marker) {
+    if (!source.includes(marker)) {
+      fail('cloud-workspace-tab.js is missing department tree resilience marker: ' + marker);
+    }
+  });
+  const sandbox = {};
+  vm.runInNewContext('var cwsMaxDepartmentTreeDepth = 64;\n' + normalizeTree + '\nthis.normalizeSecurityGroupTree = normalizeSecurityGroupTree;', sandbox, { filename: 'cloud-workspace-tab.js:normalizeSecurityGroupTree' });
+  const normalized = sandbox.normalizeSecurityGroupTree([
+    { id: 'root', name: 'Root', children: [{ id: 'child', name: 'Child', children: [{ id: 'root', name: 'Cycle' }] }] },
+    { id: 'child', name: 'Duplicate' },
+    { id: '  ', name: 'Malformed' },
+    { id: 'other', name: 'Other', children: 'not-an-array' }
+  ]);
+  if (normalized.length !== 2 || normalized[0].children.length !== 1 || normalized[0].children[0].children.length !== 0 || normalized[1].id !== 'other') {
+    fail('cloud-workspace-tab.js must remove malformed, cyclic, and duplicate department tree nodes.');
+  }
+  let deepTree = { id: 'node-0' };
+  let cursor = deepTree;
+  for (let i = 1; i <= 70; i += 1) {
+    cursor.children = [{ id: 'node-' + i }];
+    cursor = cursor.children[0];
+  }
+  let normalizedDepth = 0;
+  let deepCursor = sandbox.normalizeSecurityGroupTree([deepTree])[0];
+  while (deepCursor) {
+    normalizedDepth += 1;
+    deepCursor = deepCursor.children[0];
+  }
+  if (normalizedDepth !== 65) {
+    fail('cloud-workspace-tab.js must cap an oversized department tree before rendering.');
+  }
+  const saveHandler = extractNamedFunction(source, 'saveTenantCloudWorkspaceSettings');
+  ['mode === \'departments\' && !departmentIds.length', 'emptyDepartmentsWarn', 'quota > CWS_QUOTA_MAX'].forEach(function(marker) {
+    if (!saveHandler.includes(marker)) {
+      fail('cloud-workspace-tab.js must reject empty department mode and over-quota input: ' + marker);
     }
   });
 }
@@ -1318,7 +1422,7 @@ assertUserReferralNavigationI18nLifecycle();
 // Legacy modules may still contain pre-existing localized source. Keep the
 // invitation module in the same ASCII-only contract as the other modern admin
 // modules (Chinese copy must be expressed with \u escapes).
-['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1'].forEach(assertAscii);
+['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js'].forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
@@ -1337,6 +1441,7 @@ assertMaclawAppEvidenceReviewMarkers();
 assertUsageRankingEmailFilter();
 assertUsageStatsSubtabState();
 assertDigitalAssetDepartmentTreeRender();
+assertCloudWorkspaceDepartmentTreeRender();
 assertDigitalAssetRoutesTenantScoped();
 assertAdminAssetsNoStore();
 assertUserReferralPanelIsolation();
