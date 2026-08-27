@@ -47,12 +47,19 @@ type Settings struct {
 	UpdatedAt           string   `json:"updated_at"`
 }
 
+// OverQuotaUser is one user whose active workspace count exceeds the current quota.
+type OverQuotaUser struct {
+	SN    string `json:"sn"`
+	Used  int    `json:"used"`
+	Quota int    `json:"quota"`
+}
+
 // Preview is the admin GET payload's live org-tree stats.
 type Preview struct {
-	DepartmentCount int      `json:"department_count"`
-	UserCount       int      `json:"user_count"`
-	OverQuotaUsers  []string `json:"over_quota_users"`
-	UsedBytes       int64    `json:"used_bytes"`
+	DepartmentCount int             `json:"department_count"`
+	UserCount       int             `json:"user_count"`
+	OverQuotaUsers  []OverQuotaUser `json:"over_quota_users"`
+	UsedBytes       int64           `json:"used_bytes"`
 }
 
 // SettingsView is the admin GET/PUT response (settings plus preview).
@@ -80,10 +87,12 @@ type OrgPreviewer interface {
 
 // Service loads tenant settings and evaluates cloud-workspace grants.
 type Service struct {
-	System store.SystemSettingsRepository
-	Users  UserDirectory
-	Groups GroupLookup
-	Org    OrgPreviewer
+	System     store.SystemSettingsRepository
+	Users      UserDirectory
+	Groups     GroupLookup
+	Org        OrgPreviewer
+	Workspaces *Store
+	Now        func() time.Time
 }
 
 // NewService wires system settings, users, and security group lookups.
@@ -116,7 +125,7 @@ func DefaultSettings() Settings {
 }
 
 func emptyPreview() Preview {
-	return Preview{OverQuotaUsers: []string{}}
+	return Preview{OverQuotaUsers: []OverQuotaUser{}}
 }
 
 func clampQuota(q int) int {
@@ -248,10 +257,33 @@ func (s *Service) SaveTenantSettings(ctx context.Context, tenantID string, setti
 	return prepared, nil
 }
 
+func (s *Service) now() time.Time {
+	if s != nil && s.Now != nil {
+		return s.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (s *Service) fillUsagePreview(ctx context.Context, tenantID string, settings Settings, preview *Preview) {
+	if s == nil || s.Workspaces == nil || preview == nil {
+		return
+	}
+	if n, err := s.Workspaces.TenantUsedBytes(ctx, tenantID); err == nil {
+		preview.UsedBytes = n
+	}
+	if users, err := s.Workspaces.ListOverQuotaUsers(ctx, tenantID, settings.Quota); err == nil && users != nil {
+		preview.OverQuotaUsers = users
+	}
+}
+
 // BuildPreview computes department/user counts from the org tree when mode=departments.
 func (s *Service) BuildPreview(ctx context.Context, tenantID string, settings Settings) Preview {
 	preview := emptyPreview()
-	if s == nil || s.Org == nil || settings.Mode != ModeDepartments || len(settings.DepartmentIDs) == 0 {
+	if s == nil {
+		return preview
+	}
+	s.fillUsagePreview(ctx, tenantID, settings, &preview)
+	if s.Org == nil || settings.Mode != ModeDepartments || len(settings.DepartmentIDs) == 0 {
 		return preview
 	}
 	ctx = security.WithTenant(ctx, tenantID)

@@ -18,12 +18,12 @@ func resolveCloudWorkspaceTenant(r *http.Request) string {
 
 func cloudWorkspaceView(svc *cloudworkspace.Service, r *http.Request, settings cloudworkspace.Settings) cloudworkspace.SettingsView {
 	tenantID := resolveCloudWorkspaceTenant(r)
-	preview := cloudworkspace.Preview{OverQuotaUsers: []string{}}
+	preview := cloudworkspace.Preview{OverQuotaUsers: []cloudworkspace.OverQuotaUser{}}
 	if svc != nil {
 		preview = svc.BuildPreview(r.Context(), tenantID, settings)
 	}
 	if preview.OverQuotaUsers == nil {
-		preview.OverQuotaUsers = []string{}
+		preview.OverQuotaUsers = []cloudworkspace.OverQuotaUser{}
 	}
 	return cloudworkspace.SettingsView{Settings: settings, Preview: preview}
 }

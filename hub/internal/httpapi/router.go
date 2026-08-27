@@ -372,8 +372,16 @@ func NewRouter(
 		mux.HandleFunc("GET /api/digital-assets/libraries/{id}/sync/packages/{rev}", DigitalAssetSyncPackageHandler(digitalAssetSvc, identity))
 	}
 	cloudWorkspaceSvc := cloudworkspace.NewService(system, platformUsers, securitySvc)
+	if hubDB != nil {
+		cloudWorkspaceSvc.Workspaces = cloudworkspace.NewStore(hubDB)
+	}
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireTenantAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireTenantAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces", CloudWorkspaceCreateHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}", CloudWorkspaceRenameHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}", CloudWorkspaceDeleteHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/restore", CloudWorkspaceRestoreHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
 	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))

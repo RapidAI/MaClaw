@@ -1160,6 +1160,23 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_das_tenant_status ON digital_asset_submissions(tenant_id, status, updated_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_das_tenant_submitter ON digital_asset_submissions(tenant_id, submitter_user_id, updated_at DESC)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_das_tenant_library ON digital_asset_submissions(tenant_id, library_id, status)`)
+	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS cloud_workspaces (
+		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		name_norm TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'active',
+		used_bytes INTEGER NOT NULL DEFAULT 0,
+		file_count INTEGER NOT NULL DEFAULT 0,
+		manifest_revision TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		deleted_at TEXT
+	)`)
+	alterStmts = append(alterStmts, `CREATE UNIQUE INDEX IF NOT EXISTS idx_cws_user_name ON cloud_workspaces(tenant_id, user_id, name_norm) WHERE status != 'deleted'`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_user_status ON cloud_workspaces(tenant_id, user_id, status)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_tenant_status ON cloud_workspaces(tenant_id, status)`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {

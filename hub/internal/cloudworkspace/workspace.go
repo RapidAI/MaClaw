@@ -1,0 +1,240 @@
+package cloudworkspace
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+)
+
+const (
+	StatusActive  = "active"
+	StatusDeleted = "deleted"
+
+	idPrefix          = "cws_"
+	maxNameRunes      = 64
+	defaultNamePrefix = "工作区 "
+	RestoreWindow     = 7 * 24 * time.Hour
+)
+
+var (
+	ErrUnavailable   = errors.New("cloud workspace store is unavailable")
+	ErrNotFound      = errors.New("cloud workspace not found")
+	ErrQuota         = errors.New("cloud workspace quota exceeded")
+	ErrTenantDisk    = errors.New("cloud workspace tenant disk exceeded")
+	ErrNameTaken     = errors.New("cloud workspace name taken")
+	ErrInvalidName   = errors.New("invalid cloud workspace name")
+	ErrRestoreWindow = errors.New("cloud workspace restore window expired")
+
+	defaultNamePattern = regexp.MustCompile(`^工作区 ([1-9][0-9]*)$`)
+)
+
+// Workspace is one cloud_workspaces row.
+type Workspace struct {
+	ID               string
+	TenantID         string
+	UserID           string
+	Name             string
+	NameNorm         string
+	Status           string
+	UsedBytes        int64
+	FileCount        int
+	ManifestRevision string
+	CreatedAt        string
+	UpdatedAt        string
+	DeletedAt        string
+}
+
+func newWorkspaceID() string {
+	return idPrefix + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
+func normalizeName(name string) string {
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(name)))
+}
+
+func validateDisplayName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("%w: name is required", ErrInvalidName)
+	}
+	n := utf8.RuneCountInString(name)
+	if n < 1 || n > maxNameRunes {
+		return "", fmt.Errorf("%w: name must be 1–%d characters", ErrInvalidName, maxNameRunes)
+	}
+	return name, nil
+}
+
+func nextDefaultName(existing []string) string {
+	used := make(map[int]struct{}, len(existing))
+	for _, name := range existing {
+		m := defaultNamePattern.FindStringSubmatch(name)
+		if len(m) != 2 {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 {
+			continue
+		}
+		used[n] = struct{}{}
+	}
+	for i := 1; ; i++ {
+		if _, ok := used[i]; !ok {
+			return defaultNamePrefix + strconv.Itoa(i)
+		}
+	}
+}
+
+func purgeAfter(deletedAt string) string {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(deletedAt))
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Add(RestoreWindow).Format(time.RFC3339)
+}
+
+func restoreDeadline(deletedAt string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(deletedAt))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC().Add(RestoreWindow), true
+}
+
+// EntitlementWorkspace is one active row in the entitlement payload.
+type EntitlementWorkspace struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	UsedBytes int64  `json:"used_bytes"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// EntitlementDeletedWorkspace is one soft-deleted row in the entitlement payload.
+type EntitlementDeletedWorkspace struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	UsedBytes  int64  `json:"used_bytes"`
+	UpdatedAt  string `json:"updated_at"`
+	DeletedAt  string `json:"deleted_at"`
+	PurgeAfter string `json:"purge_after"`
+}
+
+// Entitlement is GET /api/v1/cloud-workspaces/entitlement.
+type Entitlement struct {
+	Enabled           bool                          `json:"enabled"`
+	Quota             int                           `json:"quota"`
+	Used              int                           `json:"used"`
+	MaxWorkspaceBytes int64                         `json:"max_workspace_bytes"`
+	Workspaces        []EntitlementWorkspace        `json:"workspaces"`
+	Deleted           []EntitlementDeletedWorkspace `json:"deleted"`
+}
+
+func emptyEntitlement(settings Settings) Entitlement {
+	return Entitlement{
+		Quota:             settings.Quota,
+		MaxWorkspaceBytes: settings.MaxWorkspaceBytes,
+		Workspaces:        []EntitlementWorkspace{},
+		Deleted:           []EntitlementDeletedWorkspace{},
+	}
+}
+
+// EntitlementFor returns the caller's grant plus their own workspace rows.
+func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrincipal) (Entitlement, error) {
+	if s == nil {
+		return emptyEntitlement(DefaultSettings()), nil
+	}
+	tenantID := store.NormalizeTenantID(principal.TenantID)
+	settings := s.LoadTenantSettings(ctx, tenantID)
+	out := emptyEntitlement(settings)
+	granted, err := s.granted(ctx, principal, settings)
+	if err != nil {
+		return Entitlement{}, err
+	}
+	out.Enabled = granted
+	if s.Workspaces == nil {
+		return out, nil
+	}
+	rows, err := s.Workspaces.ListOwned(ctx, tenantID, strings.TrimSpace(principal.UserID))
+	if err != nil {
+		return Entitlement{}, err
+	}
+	for _, ws := range rows {
+		if ws == nil {
+			continue
+		}
+		switch ws.Status {
+		case StatusActive:
+			out.Used++
+			out.Workspaces = append(out.Workspaces, EntitlementWorkspace{
+				ID:        ws.ID,
+				Name:      ws.Name,
+				UsedBytes: ws.UsedBytes,
+				UpdatedAt: ws.UpdatedAt,
+			})
+		case StatusDeleted:
+			out.Deleted = append(out.Deleted, EntitlementDeletedWorkspace{
+				ID:         ws.ID,
+				Name:       ws.Name,
+				UsedBytes:  ws.UsedBytes,
+				UpdatedAt:  ws.UpdatedAt,
+				DeletedAt:  ws.DeletedAt,
+				PurgeAfter: purgeAfter(ws.DeletedAt),
+			})
+		}
+	}
+	return out, nil
+}
+
+// CreateWorkspace inserts an active workspace under quota in one IMMEDIATE transaction.
+func (s *Service) CreateWorkspace(ctx context.Context, principal auth.MachinePrincipal, name string) (*Workspace, error) {
+	if s == nil || s.Workspaces == nil {
+		return nil, ErrUnavailable
+	}
+	settings := s.LoadTenantSettings(ctx, principal.TenantID)
+	return s.Workspaces.Create(ctx, CreateParams{
+		TenantID:            principal.TenantID,
+		UserID:              principal.UserID,
+		Name:                name,
+		Quota:               settings.Quota,
+		TenantMaxTotalBytes: settings.TenantMaxTotalBytes,
+	}, s.now())
+}
+
+// RenameWorkspace changes the display name of an active owned workspace.
+func (s *Service) RenameWorkspace(ctx context.Context, principal auth.MachinePrincipal, id, name string) (*Workspace, error) {
+	if s == nil || s.Workspaces == nil {
+		return nil, ErrUnavailable
+	}
+	name, err := validateDisplayName(name)
+	if err != nil {
+		return nil, err
+	}
+	return s.Workspaces.Rename(ctx, principal.TenantID, principal.UserID, id, name, normalizeName(name), s.now())
+}
+
+// SoftDeleteWorkspace marks an active owned workspace deleted and frees quota.
+func (s *Service) SoftDeleteWorkspace(ctx context.Context, principal auth.MachinePrincipal, id string) (*Workspace, error) {
+	if s == nil || s.Workspaces == nil {
+		return nil, ErrUnavailable
+	}
+	return s.Workspaces.SoftDelete(ctx, principal.TenantID, principal.UserID, id, s.now())
+}
+
+// RestoreWorkspace undeletes a workspace within 7 days if quota allows.
+func (s *Service) RestoreWorkspace(ctx context.Context, principal auth.MachinePrincipal, id string) (*Workspace, error) {
+	if s == nil || s.Workspaces == nil {
+		return nil, ErrUnavailable
+	}
+	settings := s.LoadTenantSettings(ctx, principal.TenantID)
+	return s.Workspaces.Restore(ctx, principal.TenantID, principal.UserID, id, settings.Quota, s.now())
+}
