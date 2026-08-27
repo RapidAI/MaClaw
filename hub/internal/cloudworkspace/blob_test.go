@@ -181,3 +181,40 @@ func TestBlobStoreWrongAADCannotOpenCopiedBlob(t *testing.T) {
 		t.Fatalf("cross-workspace copy err=%v", err)
 	}
 }
+
+func TestBlobStorePutExpectedAndChunks(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	root := t.TempDir()
+	t.Setenv(masterKeyEnv, "")
+	bs := &BlobStore{Root: root, KeyDir: filepath.Join(root, "keys"), DB: st.db}
+	ctx := context.Background()
+	plain := []byte("0123456789abcdef")
+	sum := plaintextSHA256(plain)
+	if _, err := bs.PutExpected(ctx, "t1", "u1", "cws_one", sum, []byte("nope")); err != ErrBlobHashMismatch {
+		t.Fatalf("mismatch err=%v", err)
+	}
+	if err := bs.PutChunk(ctx, "t1", "u1", "cws_one", sum, 0, plain[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if err := bs.PutChunk(ctx, "t1", "u1", "cws_one", sum, 1, plain[8:]); err != nil {
+		t.Fatal(err)
+	}
+	got, err := bs.AssembleChunks("t1", "u1", "cws_one", sum)
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("assemble=%q err=%v", got, err)
+	}
+	res, err := bs.PutExpected(ctx, "t1", "u1", "cws_one", sum, got)
+	if err != nil || res.SHA256 != sum {
+		t.Fatalf("put=%+v err=%v", res, err)
+	}
+	if err := bs.RemovePart("t1", "u1", "cws_one", sum); err != nil {
+		t.Fatal(err)
+	}
+	wrong := plaintextSHA256([]byte("other"))
+	if err := bs.PutChunk(ctx, "t1", "u1", "cws_one", wrong, 0, []byte("aaaa")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bs.AssembleChunks("t1", "u1", "cws_one", wrong); err != ErrBlobHashMismatch {
+		t.Fatalf("bad complete err=%v", err)
+	}
+}

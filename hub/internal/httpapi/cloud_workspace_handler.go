@@ -62,13 +62,32 @@ func writeCloudWorkspaceError(w http.ResponseWriter, err error) {
 		writeCloudWorkspaceInUse(w, err)
 	case errors.Is(err, cloudworkspace.ErrNotFound), errors.Is(err, cloudworkspace.ErrRestoreWindow):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace not found")
+	case errors.Is(err, cloudworkspace.ErrBlobNotFound):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace object not found")
 	case errors.Is(err, cloudworkspace.ErrQuota):
 		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_QUOTA", "cloud workspace quota exceeded")
+	case errors.Is(err, cloudworkspace.ErrWorkspaceSize):
+		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_SIZE", "cloud workspace size exceeded")
 	case errors.Is(err, cloudworkspace.ErrTenantDisk):
 		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_TENANT_DISK", "tenant cloud workspace disk quota exceeded")
+	case errors.Is(err, cloudworkspace.ErrLeaseRequired):
+		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_LEASE_REQUIRED", "cloud workspace lease required")
 	case errors.Is(err, cloudworkspace.ErrNameTaken):
 		writeError(w, http.StatusConflict, "CLOUD_WORKSPACE_NAME_TAKEN", "cloud workspace name is already in use")
-	case errors.Is(err, cloudworkspace.ErrInvalidName):
+	case errors.Is(err, cloudworkspace.ErrRevisionConflict):
+		writeError(w, http.StatusConflict, "CLOUD_WORKSPACE_REVISION_CONFLICT", "cloud workspace revision conflict")
+	case errors.Is(err, cloudworkspace.ErrVolumeFull), errors.Is(err, cloudworkspace.ErrDiskFull):
+		writeError(w, http.StatusInsufficientStorage, "CLOUD_WORKSPACE_VOLUME_FULL", "cloud workspace volume is full")
+	case errors.Is(err, cloudworkspace.ErrInvalidName),
+		errors.Is(err, cloudworkspace.ErrInvalidPath),
+		errors.Is(err, cloudworkspace.ErrInvalidBlobKey),
+		errors.Is(err, cloudworkspace.ErrBlobHashMismatch),
+		errors.Is(err, cloudworkspace.ErrObjectMissing),
+		errors.Is(err, cloudworkspace.ErrTooManyEntries),
+		errors.Is(err, cloudworkspace.ErrIncompleteChunks),
+		errors.Is(err, cloudworkspace.ErrInvalidChunkIndex),
+		errors.Is(err, cloudworkspace.ErrContentLength),
+		errors.Is(err, cloudworkspace.ErrBlobTooLarge):
 		writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
 	case errors.Is(err, cloudworkspace.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "cloud workspace store is unavailable")

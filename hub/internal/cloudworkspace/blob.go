@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,14 +24,21 @@ var (
 
 const (
 	objectFileExt = ".enc"
-	// Design single-file cap (workspace quota is separate, up to 2–8 GiB).
-	defaultMaxObjectBytes int64 = 64 << 20
+	objectPartExt = ".part"
+	// MaxObjectBytes is the single-file plaintext cap (workspace quota is separate).
+	MaxObjectBytes int64 = 64 << 20
+	// MaxChunkBytes is the per-chunk plaintext cap for staged uploads.
+	MaxChunkBytes int64 = 8 << 20
+	// VolumeReserveBytes is the free-space floor before admitting a write.
+	VolumeReserveBytes    int64 = 1 << 30
+	maxChunkCount               = 16
+	defaultMaxObjectBytes       = MaxObjectBytes
 	// AES-GCM disk blob is nonce (12) || ciphertext || tag (16).
 	gcmBlobOverhead int64 = 12 + 16
 )
 
 // BlobStore is the Hub-side content-addressed encrypted object store.
-// HTTP bodies (when added in PR5b) stay plaintext; Hub hashes then seals.
+// HTTP bodies stay plaintext; Hub hashes then seals.
 // Writes that mutate a workspace still require a lease; this type is the
 // library only.
 type BlobStore struct {
@@ -79,7 +87,8 @@ func validPathSegment(s string) bool {
 	return true
 }
 
-func validSHA256Hex(s string) bool {
+// ValidSHA256Hex reports whether s is a lowercase 64-char hex digest.
+func ValidSHA256Hex(s string) bool {
 	if len(s) != 64 {
 		return false
 	}
@@ -91,6 +100,8 @@ func validSHA256Hex(s string) bool {
 	}
 	return true
 }
+
+func validSHA256Hex(s string) bool { return ValidSHA256Hex(s) }
 
 func (s *BlobStore) workspaceDir(tenantID, userID, workspaceID string) (string, error) {
 	if s == nil || strings.TrimSpace(s.Root) == "" {
@@ -265,4 +276,131 @@ func (s *BlobStore) recordObject(ctx context.Context, workspaceID, sha256hex str
 		workspaceID, sha256hex, sizeBytes, ts,
 	)
 	return err
+}
+
+// PartDir is {objects}/{sha256}.part for plaintext chunk staging.
+func (s *BlobStore) PartDir(tenantID, userID, workspaceID, sha256hex string) (string, error) {
+	if !validSHA256Hex(sha256hex) {
+		return "", ErrInvalidBlobKey
+	}
+	dir, err := s.ObjectsDir(tenantID, userID, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sha256hex+objectPartExt), nil
+}
+
+// PutExpected seals plaintext only when sha256(body) equals expectedSHA.
+func (s *BlobStore) PutExpected(ctx context.Context, tenantID, userID, workspaceID, expectedSHA string, plaintext []byte) (PutResult, error) {
+	if !validSHA256Hex(expectedSHA) {
+		return PutResult{}, ErrInvalidBlobKey
+	}
+	if plaintextSHA256(plaintext) != expectedSHA {
+		return PutResult{}, ErrBlobHashMismatch
+	}
+	return s.Put(ctx, tenantID, userID, workspaceID, plaintext)
+}
+
+// PutChunk writes one plaintext slice to objects/{sha256}.part/{index}.
+func (s *BlobStore) PutChunk(_ context.Context, tenantID, userID, workspaceID, sha256hex string, index int, data []byte) error {
+	if !validSHA256Hex(sha256hex) {
+		return ErrInvalidBlobKey
+	}
+	if index < 0 || index >= maxChunkCount {
+		return ErrInvalidChunkIndex
+	}
+	if len(data) == 0 {
+		return ErrInvalidChunkIndex
+	}
+	if int64(len(data)) > MaxChunkBytes {
+		return ErrBlobTooLarge
+	}
+	if int64(len(data)) > s.maxObjectBytes() {
+		return ErrBlobTooLarge
+	}
+	dir, err := s.PartDir(tenantID, userID, workspaceID, sha256hex)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if avail, err := archiveutil.AvailableBytes(dir); err == nil && avail < int64(len(data))+4096 {
+		return ErrDiskFull
+	}
+	return fileutil.AtomicWriteFile(filepath.Join(dir, strconv.Itoa(index)), data, 0o600)
+}
+
+// RemovePart deletes the chunk staging directory if it exists.
+func (s *BlobStore) RemovePart(tenantID, userID, workspaceID, sha256hex string) error {
+	dir, err := s.PartDir(tenantID, userID, workspaceID, sha256hex)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+// AssembleChunks concatenates contiguous staged slices and verifies the digest.
+// On hash mismatch the staging directory is deleted.
+func (s *BlobStore) AssembleChunks(tenantID, userID, workspaceID, sha256hex string) ([]byte, error) {
+	if !validSHA256Hex(sha256hex) {
+		return nil, ErrInvalidBlobKey
+	}
+	dir, err := s.PartDir(tenantID, userID, workspaceID, sha256hex)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrIncompleteChunks
+		}
+		return nil, err
+	}
+	present := map[int]struct{}{}
+	maxIdx := -1
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n, convErr := strconv.Atoi(e.Name())
+		if convErr != nil || n < 0 || strconv.Itoa(n) != e.Name() {
+			continue
+		}
+		present[n] = struct{}{}
+		if n > maxIdx {
+			maxIdx = n
+		}
+	}
+	if maxIdx < 0 {
+		return nil, ErrIncompleteChunks
+	}
+	var total int64
+	parts := make([][]byte, maxIdx+1)
+	for i := 0; i <= maxIdx; i++ {
+		if _, ok := present[i]; !ok {
+			return nil, ErrIncompleteChunks
+		}
+		raw, readErr := os.ReadFile(filepath.Join(dir, strconv.Itoa(i)))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if int64(len(raw)) > MaxChunkBytes {
+			return nil, ErrBlobTooLarge
+		}
+		total += int64(len(raw))
+		if total > s.maxObjectBytes() {
+			return nil, ErrBlobTooLarge
+		}
+		parts[i] = raw
+	}
+	out := make([]byte, 0, total)
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	if plaintextSHA256(out) != sha256hex {
+		_ = os.RemoveAll(dir)
+		return nil, ErrBlobHashMismatch
+	}
+	return out, nil
 }

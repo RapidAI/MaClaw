@@ -343,6 +343,28 @@ func (s *Store) Release(ctx context.Context, tenantID, userID, workspaceID, leas
 	})
 }
 
+func assertLeaseHeld(ctx context.Context, q queryer, workspaceID, machineID string, now time.Time) error {
+	lease, err := getActiveLease(ctx, q, workspaceID)
+	if err != nil {
+		return err
+	}
+	if lease == nil || strings.TrimSpace(lease.MachineID) != strings.TrimSpace(machineID) || leaseExpired(lease.ExpiresAt, now) {
+		return ErrLeaseRequired
+	}
+	return nil
+}
+
+func requireActiveOwned(ctx context.Context, q queryer, tenantID, userID, id string) (*Workspace, error) {
+	ws, err := getOwned(ctx, q, tenantID, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	if ws.Status != StatusActive {
+		return nil, ErrNotFound
+	}
+	return ws, nil
+}
+
 // ListActiveLeases returns unreleased leases for the user, keyed by workspace ID.
 func (s *Store) ListActiveLeases(ctx context.Context, tenantID, userID string) (map[string]*Lease, error) {
 	if s == nil || s.db == nil {

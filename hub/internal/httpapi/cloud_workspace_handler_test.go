@@ -62,6 +62,7 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 			t.Fatal(err)
 		}
 	}
+	blobRoot := filepath.Join(t.TempDir(), "cws-blobs")
 	svc := &cloudworkspace.Service{
 		System: memoryCloudWorkspaceSettings{},
 		Users: cloudWorkspaceUserDir{
@@ -70,6 +71,7 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 		},
 		Groups:     &fakeCloudWorkspaceOrg{},
 		Workspaces: cloudworkspace.NewStore(provider.Write),
+		Blobs:      &cloudworkspace.BlobStore{Root: blobRoot, KeyDir: filepath.Join(blobRoot, "keys"), DB: provider.Write},
 	}
 	if mode != "" {
 		if _, err := svc.SaveTenantSettings(context.Background(), "t1", cloudworkspace.Settings{
@@ -98,6 +100,12 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases", CloudWorkspaceAcquireLeaseHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/{lease_id}/heartbeat", CloudWorkspaceHeartbeatLeaseHandler(svc, authn))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/leases/{lease_id}", CloudWorkspaceReleaseLeaseHandler(svc, authn))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspaceGetManifestHandler(svc, authn))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspacePutManifestHandler(svc, authn))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspaceGetObjectHandler(svc, authn))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspacePutObjectHandler(svc, authn))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}/chunks/{index}", CloudWorkspacePutObjectChunkHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/objects/{sha256}/complete", CloudWorkspaceCompleteObjectHandler(svc, authn))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", GetCloudWorkspaceSettingsAdminHandler(svc))
 	return svc, mux, authn
 }

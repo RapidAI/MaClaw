@@ -92,6 +92,7 @@ type Service struct {
 	Groups     GroupLookup
 	Org        OrgPreviewer
 	Workspaces *Store
+	Blobs      *BlobStore
 	Now        func() time.Time
 }
 

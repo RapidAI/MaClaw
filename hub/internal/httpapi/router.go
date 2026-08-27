@@ -374,6 +374,8 @@ func NewRouter(
 	cloudWorkspaceSvc := cloudworkspace.NewService(system, platformUsers, securitySvc)
 	if hubDB != nil {
 		cloudWorkspaceSvc.Workspaces = cloudworkspace.NewStore(hubDB)
+		blobRoot := filepath.Join(runtimeDataDir, "cloud-workspaces")
+		cloudWorkspaceSvc.Blobs = &cloudworkspace.BlobStore{Root: blobRoot, KeyDir: blobRoot, DB: hubDB}
 	}
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireTenantAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireTenantAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
@@ -385,6 +387,12 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases", CloudWorkspaceAcquireLeaseHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/{lease_id}/heartbeat", CloudWorkspaceHeartbeatLeaseHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/leases/{lease_id}", CloudWorkspaceReleaseLeaseHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspaceGetManifestHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspacePutManifestHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspaceGetObjectHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspacePutObjectHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}/chunks/{index}", CloudWorkspacePutObjectChunkHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/objects/{sha256}/complete", CloudWorkspaceCompleteObjectHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
 	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))
