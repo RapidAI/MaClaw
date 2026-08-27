@@ -141,13 +141,21 @@ func (s *Service) purgeExpiredDeleted(ctx context.Context, now time.Time) (int, 
 }
 
 func (s *Service) purgeOneDeleted(ctx context.Context, ws *Workspace, now time.Time) error {
-	if err := s.Workspaces.HardDeleteExpired(ctx, ws.ID, now); err != nil {
-		return err
-	}
 	if s.Blobs == nil {
 		return ErrUnavailable
 	}
-	return s.Blobs.RemoveWorkspace(ws.TenantID, ws.UserID, ws.ID)
+	ok, err := s.Workspaces.IsExpiredDeleted(ctx, ws.ID, now)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	// Files first so a blob failure leaves the row for the next hourly retry.
+	if err := s.Blobs.RemoveWorkspace(ws.TenantID, ws.UserID, ws.ID); err != nil {
+		return err
+	}
+	return s.Workspaces.HardDeleteExpired(ctx, ws.ID, now)
 }
 
 func (s *Service) purgeUnreferenced(ctx context.Context, now time.Time) (int, error) {
@@ -159,12 +167,7 @@ func (s *Service) purgeUnreferenced(ctx context.Context, now time.Time) (int, er
 	}
 	purged := 0
 	for _, obj := range objs {
-		if err := s.Workspaces.DeleteUnreferenced(ctx, obj, cutoff, func() error {
-			if s.Blobs == nil {
-				return ErrUnavailable
-			}
-			return s.Blobs.RemoveObjectFile(obj.TenantID, obj.UserID, obj.WorkspaceID, obj.SHA256)
-		}); err != nil {
+		if err := s.purgeOneUnreferenced(ctx, obj, cutoff); err != nil {
 			log.Printf("[cloud-workspace] gc_failed workspace_id=%s sha256=%s err=%v", obj.WorkspaceID, obj.SHA256, err)
 			s.recordFailure(ctx, obj.TenantID, obj.WorkspaceID, EventGCFailed, err.Error(), map[string]any{
 				"step": "purge_unreferenced", "sha256": obj.SHA256,
@@ -175,6 +178,23 @@ func (s *Service) purgeUnreferenced(ctx context.Context, now time.Time) (int, er
 		log.Printf("[cloud-workspace] gc unreferenced workspace_id=%s sha256=%s", obj.WorkspaceID, obj.SHA256)
 	}
 	return purged, nil
+}
+
+func (s *Service) purgeOneUnreferenced(ctx context.Context, obj unreferencedObject, cutoff time.Time) error {
+	ok, err := s.Workspaces.StillUnreferenced(ctx, obj, cutoff)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	if s.Blobs == nil {
+		return ErrUnavailable
+	}
+	if err := s.Blobs.RemoveObjectFile(obj.TenantID, obj.UserID, obj.WorkspaceID, obj.SHA256); err != nil {
+		return err
+	}
+	return s.Workspaces.DeleteUnreferencedRow(ctx, obj)
 }
 
 func (s *Service) purgeStaleParts(now time.Time) (int, error) {
@@ -210,6 +230,29 @@ func (s *Store) ListDeletedBefore(ctx context.Context, cutoff time.Time) ([]*Wor
 		out = append(out, ws)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) IsExpiredDeleted(ctx context.Context, id string, now time.Time) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, ErrUnavailable
+	}
+	ws, err := scanWorkspace(s.db.QueryRowContext(ctx,
+		`SELECT `+workspaceCols+` FROM cloud_workspaces WHERE id = ?`, strings.TrimSpace(id),
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if ws.Status != StatusDeleted {
+		return false, nil
+	}
+	deadline, ok := restoreDeadline(ws.DeletedAt)
+	if !ok || now.UTC().Before(deadline) {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *Store) HardDeleteExpired(ctx context.Context, id string, now time.Time) error {
@@ -279,35 +322,33 @@ func (s *Store) ListUnreferenced(ctx context.Context, cutoff time.Time) ([]unref
 	return out, rows.Err()
 }
 
-func (s *Store) DeleteUnreferenced(ctx context.Context, obj unreferencedObject, cutoff time.Time, removeFile func() error) error {
+func (s *Store) StillUnreferenced(ctx context.Context, obj unreferencedObject, cutoff time.Time) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, ErrUnavailable
+	}
+	var ref int
+	var status string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT o.ref_count, w.status FROM cloud_workspace_objects o
+		JOIN cloud_workspaces w ON w.id = o.workspace_id
+		WHERE o.workspace_id = ? AND o.sha256 = ? AND o.created_at < ?`,
+		obj.WorkspaceID, obj.SHA256, cutoff.UTC().Format(time.RFC3339),
+	).Scan(&ref, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return ref == 0 && status != StatusDeleted, nil
+}
+
+func (s *Store) DeleteUnreferencedRow(ctx context.Context, obj unreferencedObject) error {
 	if s == nil || s.db == nil {
 		return ErrUnavailable
 	}
-	ts := cutoff.UTC().Format(time.RFC3339)
 	return s.withImmediate(ctx, func(q queryer) error {
-		var ref int
-		var status string
-		err := q.QueryRowContext(ctx, `
-			SELECT o.ref_count, w.status FROM cloud_workspace_objects o
-			JOIN cloud_workspaces w ON w.id = o.workspace_id
-			WHERE o.workspace_id = ? AND o.sha256 = ? AND o.created_at < ?`,
-			obj.WorkspaceID, obj.SHA256, ts,
-		).Scan(&ref, &status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if ref != 0 || status == StatusDeleted {
-			return nil
-		}
-		if removeFile != nil {
-			if err := removeFile(); err != nil {
-				return err
-			}
-		}
-		_, err = q.ExecContext(ctx,
+		_, err := q.ExecContext(ctx,
 			`DELETE FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ? AND ref_count = 0`,
 			obj.WorkspaceID, obj.SHA256,
 		)

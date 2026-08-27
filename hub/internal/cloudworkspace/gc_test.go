@@ -295,6 +295,19 @@ func TestSweepRecordsGCFailed(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	ws := seedLeasedWorkspace(t, st, now)
+	put, err := svc.Blobs.Put(ctx, "t1", "u1", ws.ID, []byte("keep-until-retry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReplaceManifest(ctx, "t1", "u1", ws.ID, "m1", "", []ManifestEntry{
+		{Path: "a.txt", SHA256: put.SHA256, Size: put.SizeBytes},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	base, err := svc.Blobs.workspaceDir("t1", "u1", ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", ws.ID, now); err != nil {
 		t.Fatal(err)
 	}
@@ -302,9 +315,24 @@ func TestSweepRecordsGCFailed(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, `UPDATE cloud_workspaces SET deleted_at = ? WHERE id = ?`, deletedAt, ws.ID); err != nil {
 		t.Fatal(err)
 	}
+	root := svc.Blobs.Root
 	svc.Blobs.Root = ""
-	if _, err := svc.Sweep(ctx, now); err != nil {
+	got, err := svc.Sweep(ctx, now)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if got.PurgedWorkspaces != 0 {
+		t.Fatalf("purged=%d want 0 on blob failure", got.PurgedWorkspaces)
+	}
+	if _, err := st.GetOwned(ctx, "t1", "u1", ws.ID); err != nil {
+		t.Fatalf("row dropped after blob failure: %v", err)
+	}
+	if _, err := os.Stat(base); err != nil {
+		t.Fatalf("workspace dir dropped after blob failure: %v", err)
+	}
+	used, err := st.TenantUsedBytes(ctx, "t1")
+	if err != nil || used != put.SizeBytes {
+		t.Fatalf("quota dropped after blob failure used=%d err=%v", used, err)
 	}
 	items, _, err := hub.FailureLogs.List(ctx, store.FailureEventLogFilter{Category: FailureCategory, Limit: 20})
 	if err != nil {
@@ -319,6 +347,21 @@ func TestSweepRecordsGCFailed(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected gc_failed log, got %+v", items)
+	}
+
+	svc.Blobs.Root = root
+	got, err = svc.Sweep(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PurgedWorkspaces != 1 {
+		t.Fatalf("retry purged=%d want 1", got.PurgedWorkspaces)
+	}
+	if _, err := st.GetOwned(ctx, "t1", "u1", ws.ID); err != ErrNotFound {
+		t.Fatalf("row still present after retry err=%v", err)
+	}
+	if _, err := os.Stat(base); !os.IsNotExist(err) {
+		t.Fatalf("workspace dir still present after retry err=%v", err)
 	}
 }
 
