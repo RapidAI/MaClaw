@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
@@ -29,6 +30,17 @@ type fakeCloudWorkspaceOrg struct {
 }
 
 func (f *fakeCloudWorkspaceOrg) GetUserGroupID(ctx context.Context, email string) (string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if f == nil || f.members == nil || email == "" {
+		return "", nil
+	}
+	for groupID, members := range f.members {
+		for _, member := range members {
+			if strings.ToLower(strings.TrimSpace(member)) == email {
+				return groupID, nil
+			}
+		}
+	}
 	return "", nil
 }
 

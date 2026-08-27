@@ -237,3 +237,20 @@ func TestPreview_DepartmentsCountsDescendantsAndUsers(t *testing.T) {
 		t.Fatalf("preview when not departments: %+v", preview)
 	}
 }
+
+func TestPreview_RootSelectionSkipsUnassigned(t *testing.T) {
+	groups := orgTree()
+	groups.members["root"] = []string{"root@x.com", "lone@x.com"}
+	groups.userGroup["root@x.com"] = "root"
+	svc := newTestService(nil, groups)
+	preview := svc.BuildPreview(context.Background(), "t1", Settings{
+		Mode:          ModeDepartments,
+		DepartmentIDs: []string{"root"},
+	})
+	if preview.DepartmentCount != 4 {
+		t.Fatalf("department_count=%d want 4 (root+eng+backend+sales)", preview.DepartmentCount)
+	}
+	if preview.UserCount != 4 {
+		t.Fatalf("user_count=%d want 4 (assigned only, not lone@x.com)", preview.UserCount)
+	}
+}

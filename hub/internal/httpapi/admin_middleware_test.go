@@ -919,6 +919,8 @@ func TestDigitalAssetAdminRoutesRequireTenantAdmin(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/admin/digital-assets/settings", nil},
 		{http.MethodPut, "/api/admin/digital-assets/settings", map[string]any{"enabled": true}},
+		{http.MethodGet, "/api/admin/cloud-workspaces/settings", nil},
+		{http.MethodPut, "/api/admin/cloud-workspaces/settings", map[string]any{"mode": "off"}},
 		{http.MethodGet, "/api/admin/digital-assets/libraries", nil},
 		{http.MethodPost, "/api/admin/digital-assets/libraries", map[string]any{"name": "Global Library"}},
 		{http.MethodPatch, "/api/admin/digital-assets/libraries/missing", map[string]any{"name": "Global Library"}},
@@ -968,6 +970,10 @@ func TestDigitalAssetAdminRoutesRequireTenantAdmin(t *testing.T) {
 	tenantAllowed := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/digital-assets/settings", nil, loginPayload.AccessToken)
 	if tenantAllowed.Code != http.StatusOK {
 		t.Fatalf("tenant admin digital assets settings status = %d body=%s", tenantAllowed.Code, tenantAllowed.Body.String())
+	}
+	tenantCws := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/cloud-workspaces/settings", nil, loginPayload.AccessToken)
+	if tenantCws.Code != http.StatusOK {
+		t.Fatalf("tenant admin cloud workspace settings status = %d body=%s", tenantCws.Code, tenantCws.Body.String())
 	}
 	tenantQueryDenied := doHubAdminJSONRequest(t, ctx.handler, http.MethodGet, "/api/admin/digital-assets/libraries?tenant_id=tenant_other", nil, loginPayload.AccessToken)
 	if tenantQueryDenied.Code != http.StatusForbidden {

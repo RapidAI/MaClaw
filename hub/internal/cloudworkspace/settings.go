@@ -48,7 +48,6 @@ type Settings struct {
 }
 
 // Preview is the admin GET payload's live org-tree stats.
-// over_quota_users and used_bytes are filled by later workspace-usage PRs.
 type Preview struct {
 	DepartmentCount int      `json:"department_count"`
 	UserCount       int      `json:"user_count"`
@@ -272,6 +271,21 @@ func (s *Service) BuildPreview(ctx context.Context, tenantID string, settings Se
 			email = strings.ToLower(strings.TrimSpace(email))
 			if email == "" {
 				continue
+			}
+			// ListGroupMembers(root) also appends unassigned users; skip those so
+			// user_count matches Granted (empty GetUserGroupID is always deny).
+			if s.Groups != nil {
+				gid, err := s.Groups.GetUserGroupID(ctx, email)
+				if err != nil {
+					continue
+				}
+				gid = strings.TrimSpace(gid)
+				if gid == "" {
+					continue
+				}
+				if _, ok := idSet[gid]; !ok {
+					continue
+				}
 			}
 			emails[email] = struct{}{}
 		}
