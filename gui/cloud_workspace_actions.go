@@ -52,6 +52,20 @@ func lookupCloudWorkspaceTask(workspaceID string) (ProjectSearchResult, bool) {
 	return result, ok
 }
 
+func forgetCloudWorkspaceTaskByPath(projectPath string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return
+	}
+	cloudWorkspaceDialogMu.Lock()
+	defer cloudWorkspaceDialogMu.Unlock()
+	for id, result := range cloudWorkspaceTaskByID {
+		if normalizeProjectSessionPath(result.ProjectPath) == projectPath {
+			delete(cloudWorkspaceTaskByID, id)
+		}
+	}
+}
+
 type cloudWorkspaceHubRow struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`

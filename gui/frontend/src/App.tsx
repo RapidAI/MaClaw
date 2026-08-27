@@ -3164,8 +3164,10 @@ function App() {
             } else if (cloudWorkspaceId) {
                 agentMode = mode === 'coding_dev' ? 'coding_dev' : undefined;
                 created = await ResumeCloudWorkspaceTask(cloudWorkspaceId);
+                let cloudCreated = false;
                 if (!created?.project_path) {
                     created = await CreateTaskWithCloudWorkspace(taskName, localWorkDir, mode || '', cloudWorkspaceId);
+                    cloudCreated = !!created?.project_path;
                 }
                 if (!created?.project_path) {
                     throw new Error('创建云端工作区任务失败');
@@ -3175,10 +3177,14 @@ function App() {
                     try {
                         await PrepareLocalCodingEnvironment(created.project_path, cloudWorkDir);
                     } catch (prepareError) {
-                        try {
-                            await HideTask(created.project_path);
-                        } catch (hideError) {
-                            console.warn("HideTask after prepare failure failed:", hideError);
+                        // Resume must keep the 1:1 task if coding-env arming fails.
+                        // Hide only a task we just created so a retry can bind a replacement.
+                        if (cloudCreated) {
+                            try {
+                                await HideTask(created.project_path);
+                            } catch (hideError) {
+                                console.warn("HideTask after prepare failure failed:", hideError);
+                            }
                         }
                         throw prepareError;
                     }

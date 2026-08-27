@@ -136,6 +136,36 @@ func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 	}
 }
 
+func TestHideTaskDropsCloudWorkspaceResumeMap(t *testing.T) {
+	resetCloudWorkspaceDialogMocks()
+	t.Cleanup(resetCloudWorkspaceDialogMocks)
+
+	app := newProjectSearchTestApp(t)
+	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_hide")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithCloudWorkspace returned empty task")
+	}
+	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != created.ProjectPath {
+		t.Fatalf("resume before hide=%q want %q", got.ProjectPath, created.ProjectPath)
+	}
+
+	app.HideTask(created.ProjectPath)
+	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != "" {
+		t.Fatalf("resume after hide=%q, want empty so a replacement can be created", got.ProjectPath)
+	}
+
+	replacement := app.CreateTaskWithCloudWorkspace("云端任务重试", "", "coding_dev", "cws_hide")
+	if replacement.ProjectPath == "" {
+		t.Fatal("replacement CreateTaskWithCloudWorkspace returned empty task")
+	}
+	if replacement.ProjectPath == created.ProjectPath {
+		t.Fatalf("replacement reused hidden path %q", replacement.ProjectPath)
+	}
+	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != replacement.ProjectPath {
+		t.Fatalf("resume after replacement=%q want %q", got.ProjectPath, replacement.ProjectPath)
+	}
+}
+
 func TestCloudWorkspaceMutateRejectsMissingID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
