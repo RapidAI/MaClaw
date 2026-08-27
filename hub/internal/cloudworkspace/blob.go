@@ -164,6 +164,106 @@ func (s *BlobStore) RemoveStaging(tenantID, userID, workspaceID string) error {
 	return os.RemoveAll(dir)
 }
 
+// RemoveWorkspace deletes objects, staging, sidecars, and the manifest dir.
+func (s *BlobStore) RemoveWorkspace(tenantID, userID, workspaceID string) error {
+	base, err := s.workspaceDir(tenantID, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	_ = os.RemoveAll(filepath.Join(base, sidecarDirName))
+	_ = os.RemoveAll(filepath.Join(base, manifestDirName))
+	objects, err := s.ObjectsDir(tenantID, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	_ = os.RemoveAll(objects)
+	_ = os.RemoveAll(filepath.Join(base, "staging"))
+	return os.RemoveAll(base)
+}
+
+// RemoveObjectFile deletes {sha256}.enc if present.
+func (s *BlobStore) RemoveObjectFile(tenantID, userID, workspaceID, sha256hex string) error {
+	path, err := s.ObjectPath(tenantID, userID, workspaceID, sha256hex)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func latestModTime(path string) (time.Time, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	latest := info.ModTime()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return latest, nil
+		}
+		return time.Time{}, err
+	}
+	for _, e := range entries {
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if fi.ModTime().After(latest) {
+			latest = fi.ModTime()
+		}
+	}
+	return latest, nil
+}
+
+func staleDir(path string, now time.Time, maxAge time.Duration) bool {
+	mt, err := latestModTime(path)
+	if err != nil {
+		return false
+	}
+	return !mt.After(now.Add(-maxAge))
+}
+
+// RemoveStaleParts deletes incomplete objects/{sha256}.part and staging dirs older than maxAge.
+func (s *BlobStore) RemoveStaleParts(now time.Time, maxAge time.Duration) (int, error) {
+	if s == nil || strings.TrimSpace(s.Root) == "" {
+		return 0, nil
+	}
+	now = now.UTC()
+	if maxAge <= 0 {
+		maxAge = StagingGrace
+	}
+	removed := 0
+	err := filepath.WalkDir(s.Root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		switch {
+		case name == "staging" || strings.HasSuffix(name, objectPartExt):
+			if !staleDir(path, now, maxAge) {
+				return filepath.SkipDir
+			}
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			removed++
+			return filepath.SkipDir
+		default:
+			return nil
+		}
+	})
+	return removed, err
+}
+
 // Put hashes plaintext, seals it with a per-workspace DEK, and writes {sha256}.enc.
 func (s *BlobStore) Put(ctx context.Context, tenantID, userID, workspaceID string, plaintext []byte) (PutResult, error) {
 	if int64(len(plaintext)) > s.maxObjectBytes() {

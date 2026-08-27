@@ -71,7 +71,7 @@ func CloudWorkspaceGetManifestHandler(svc *cloudworkspace.Service, identity veMa
 		}
 		out, err := svc.GetManifest(r.Context(), *principal, id)
 		if err != nil {
-			writeCloudWorkspaceError(w, err)
+			writeCloudWorkspaceSyncError(w, r, svc, principal.TenantID, id, err)
 			return
 		}
 		if out == nil {
@@ -103,7 +103,7 @@ func CloudWorkspacePutManifestHandler(svc *cloudworkspace.Service, identity veMa
 		}
 		out, err := svc.PutManifest(r.Context(), *principal, id, req.IfMatchRevision, req.Entries)
 		if err != nil {
-			writeCloudWorkspaceError(w, err)
+			writeCloudWorkspaceSyncError(w, r, svc, principal.TenantID, id, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -123,9 +123,10 @@ func CloudWorkspaceGetObjectHandler(svc *cloudworkspace.Service, identity veMach
 		}
 		plain, err := svc.GetObject(r.Context(), *principal, id, sha)
 		if err != nil {
-			writeCloudWorkspaceError(w, err)
+			writeCloudWorkspaceSyncError(w, r, svc, principal.TenantID, id, err)
 			return
 		}
+		cloudworkspace.ObserveSyncBytesDown(int64(len(plain)))
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(plain)
@@ -150,9 +151,10 @@ func CloudWorkspacePutObjectHandler(svc *cloudworkspace.Service, identity veMach
 		}
 		got, err := svc.PutObject(r.Context(), *principal, id, sha, body)
 		if err != nil {
-			writeCloudWorkspaceError(w, err)
+			writeCloudWorkspaceSyncError(w, r, svc, principal.TenantID, id, err)
 			return
 		}
+		cloudworkspace.ObserveSyncBytesUp(int64(len(body)))
 		writeCloudWorkspaceObjectMeta(w, got)
 	}
 }
@@ -180,9 +182,10 @@ func CloudWorkspacePutObjectChunkHandler(svc *cloudworkspace.Service, identity v
 			return
 		}
 		if err := svc.PutObjectChunk(r.Context(), *principal, id, sha, index, body); err != nil {
-			writeCloudWorkspaceError(w, err)
+			writeCloudWorkspaceSyncError(w, r, svc, principal.TenantID, id, err)
 			return
 		}
+		cloudworkspace.ObserveSyncBytesUp(int64(len(body)))
 		writeJSON(w, http.StatusOK, map[string]any{"sha256": sha, "index": index, "size": len(body)})
 	}
 }
@@ -200,7 +203,7 @@ func CloudWorkspaceCompleteObjectHandler(svc *cloudworkspace.Service, identity v
 		}
 		got, err := svc.CompleteObject(r.Context(), *principal, id, sha)
 		if err != nil {
-			writeCloudWorkspaceError(w, err)
+			writeCloudWorkspaceSyncError(w, r, svc, principal.TenantID, id, err)
 			return
 		}
 		writeCloudWorkspaceObjectMeta(w, got)

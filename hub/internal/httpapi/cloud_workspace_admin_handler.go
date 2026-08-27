@@ -77,3 +77,14 @@ func PutCloudWorkspaceSettingsAdminHandler(svc *cloudworkspace.Service, audit st
 		writeJSON(w, http.StatusOK, cloudWorkspaceView(svc, r, settings))
 	}
 }
+
+// GetCloudWorkspaceMetricsAdminHandler GET /api/admin/cloud-workspaces/metrics
+func GetCloudWorkspaceMetricsAdminHandler(svc *cloudworkspace.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeJSON(w, http.StatusOK, cloudworkspace.Metrics{})
+			return
+		}
+		writeJSON(w, http.StatusOK, svc.CollectMetrics(r.Context()))
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
+	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
@@ -377,8 +378,13 @@ func NewRouter(
 		blobRoot := filepath.Join(runtimeDataDir, "cloud-workspaces")
 		cloudWorkspaceSvc.Blobs = &cloudworkspace.BlobStore{Root: blobRoot, KeyDir: blobRoot, DB: hubDB}
 	}
+	if failureLogs != nil {
+		cloudWorkspaceSvc.Failures = diagnostics.NewFailureEventRecorder(failureLogs)
+	}
+	cloudWorkspaceSvc.StartHourlyGC()
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireTenantAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireTenantAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireTenantAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces", CloudWorkspaceCreateHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}", CloudWorkspaceRenameHandler(cloudWorkspaceSvc, identity))
