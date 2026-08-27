@@ -35,6 +35,7 @@ var (
 	ErrNameTaken     = errors.New("cloud workspace name taken")
 	ErrInvalidName   = errors.New("invalid cloud workspace name")
 	ErrRestoreWindow = errors.New("cloud workspace restore window expired")
+	ErrInUse         = errors.New("cloud workspace in use")
 
 	defaultNamePattern = regexp.MustCompile(`^工作区 ([1-9][0-9]*)$`)
 )
@@ -111,12 +112,22 @@ func restoreDeadline(deletedAt string) (time.Time, bool) {
 	return t.UTC().Add(RestoreWindow), true
 }
 
+// EntitlementLease is the exclusive-lease snapshot on an entitlement workspace.
+type EntitlementLease struct {
+	Held        bool   `json:"held"`
+	MachineID   string `json:"machine_id"`
+	MachineName string `json:"machine_name"`
+	IsSelf      bool   `json:"is_self"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
 // EntitlementWorkspace is one active row in the entitlement payload.
 type EntitlementWorkspace struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	UsedBytes int64  `json:"used_bytes"`
-	UpdatedAt string `json:"updated_at"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	UsedBytes int64             `json:"used_bytes"`
+	UpdatedAt string            `json:"updated_at"`
+	Lease     *EntitlementLease `json:"lease,omitempty"`
 }
 
 // EntitlementDeletedWorkspace is one soft-deleted row in the entitlement payload.
@@ -168,6 +179,11 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 	if err != nil {
 		return Entitlement{}, err
 	}
+	leases, err := s.Workspaces.ListActiveLeases(ctx, tenantID, strings.TrimSpace(principal.UserID))
+	if err != nil {
+		return Entitlement{}, err
+	}
+	now := s.now()
 	for _, ws := range rows {
 		if ws == nil {
 			continue
@@ -175,12 +191,22 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 		switch ws.Status {
 		case StatusActive:
 			out.Used++
-			out.Workspaces = append(out.Workspaces, EntitlementWorkspace{
+			item := EntitlementWorkspace{
 				ID:        ws.ID,
 				Name:      ws.Name,
 				UsedBytes: ws.UsedBytes,
 				UpdatedAt: ws.UpdatedAt,
-			})
+			}
+			if lease := leases[ws.ID]; lease != nil {
+				item.Lease = &EntitlementLease{
+					Held:        !leaseExpired(lease.ExpiresAt, now),
+					MachineID:   lease.MachineID,
+					MachineName: lease.MachineName,
+					IsSelf:      lease.MachineID == principal.MachineID,
+					ExpiresAt:   lease.ExpiresAt,
+				}
+			}
+			out.Workspaces = append(out.Workspaces, item)
 		case StatusDeleted:
 			out.Deleted = append(out.Deleted, EntitlementDeletedWorkspace{
 				ID:         ws.ID,
@@ -227,7 +253,7 @@ func (s *Service) SoftDeleteWorkspace(ctx context.Context, principal auth.Machin
 	if s == nil || s.Workspaces == nil {
 		return nil, ErrUnavailable
 	}
-	return s.Workspaces.SoftDelete(ctx, principal.TenantID, principal.UserID, id, s.now())
+	return s.Workspaces.SoftDelete(ctx, principal.TenantID, principal.UserID, principal.MachineID, id, s.now())
 }
 
 // RestoreWorkspace undeletes a workspace within 7 days if quota allows.

@@ -334,30 +334,53 @@ func (s *Store) Rename(ctx context.Context, tenantID, userID, id, name, nameNorm
 }
 
 // SoftDelete marks an active owned workspace deleted.
-func (s *Store) SoftDelete(ctx context.Context, tenantID, userID, id string, now time.Time) (*Workspace, error) {
+// This machine's lease is released first; another machine's unexpired lease is 409.
+func (s *Store) SoftDelete(ctx context.Context, tenantID, userID, machineID, id string, now time.Time) (*Workspace, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrUnavailable
 	}
 	tenantID = store.NormalizeTenantID(tenantID)
 	userID = strings.TrimSpace(userID)
+	machineID = strings.TrimSpace(machineID)
 	id = strings.TrimSpace(id)
 	ts := now.UTC().Format(time.RFC3339)
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE cloud_workspaces SET status = ?, deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = ?`,
-		StatusDeleted, ts, ts, id, tenantID, userID, StatusActive,
-	)
+	var out *Workspace
+	err := s.withImmediate(ctx, func(q queryer) error {
+		ws, err := getOwned(ctx, q, tenantID, userID, id)
+		if err != nil {
+			return err
+		}
+		if ws.Status != StatusActive {
+			return ErrNotFound
+		}
+		lease, err := getActiveLease(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		if lease != nil {
+			if lease.MachineID != machineID && !leaseExpired(lease.ExpiresAt, now) {
+				return newInUseError(lease)
+			}
+			if err := releaseLease(ctx, q, lease.ID, ts, ""); err != nil {
+				return err
+			}
+		}
+		if _, err := q.ExecContext(ctx,
+			`UPDATE cloud_workspaces SET status = ?, deleted_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = ?`,
+			StatusDeleted, ts, ts, id, tenantID, userID, StatusActive,
+		); err != nil {
+			return err
+		}
+		ws.Status = StatusDeleted
+		ws.DeletedAt = ts
+		ws.UpdatedAt = ts
+		out = ws
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return nil, ErrNotFound
-	}
-	ws, err := s.GetOwned(ctx, tenantID, userID, id)
-	if err != nil {
-		return nil, err
-	}
-	return ws, nil
+	return out, nil
 }
 
 // Restore undeletes a workspace within the 7-day window if quota allows.

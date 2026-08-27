@@ -40,8 +40,26 @@ func requireCloudWorkspaceGrant(w http.ResponseWriter, r *http.Request, svc *clo
 	return true
 }
 
+func writeCloudWorkspaceInUse(w http.ResponseWriter, err error) {
+	payload := map[string]any{
+		"error":               "CLOUD_WORKSPACE_IN_USE",
+		"holder_machine_id":   "",
+		"holder_machine_name": "",
+		"expires_at":          "",
+	}
+	var inUse *cloudworkspace.InUseError
+	if errors.As(err, &inUse) && inUse != nil {
+		payload["holder_machine_id"] = inUse.HolderMachineID
+		payload["holder_machine_name"] = inUse.HolderMachineName
+		payload["expires_at"] = inUse.ExpiresAt
+	}
+	writeJSON(w, http.StatusConflict, payload)
+}
+
 func writeCloudWorkspaceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, cloudworkspace.ErrInUse):
+		writeCloudWorkspaceInUse(w, err)
 	case errors.Is(err, cloudworkspace.ErrNotFound), errors.Is(err, cloudworkspace.ErrRestoreWindow):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace not found")
 	case errors.Is(err, cloudworkspace.ErrQuota):

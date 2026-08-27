@@ -53,6 +53,15 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 			t.Fatal(err)
 		}
 	}
+	for _, m := range []*store.Machine{
+		{ID: "m1", TenantID: "t1", UserID: "u1", Name: "pc-m1", Hostname: "DESKTOP-M1", Platform: "windows", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "m1b", TenantID: "t1", UserID: "u1", Name: "pc-m1b", Hostname: "DESKTOP-M1B", Platform: "windows", Status: "online", CreatedAt: now, UpdatedAt: now},
+		{ID: "m2", TenantID: "t1", UserID: "u2", Name: "pc-m2", Hostname: "DESKTOP-M2", Platform: "windows", Status: "online", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := hub.Machines.Create(context.Background(), m); err != nil {
+			t.Fatal(err)
+		}
+	}
 	svc := &cloudworkspace.Service{
 		System: memoryCloudWorkspaceSettings{},
 		Users: cloudWorkspaceUserDir{
@@ -75,6 +84,7 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 		token: "secret",
 		principals: map[string]*auth.MachinePrincipal{
 			"m1":      {TenantID: "t1", UserID: "u1", MachineID: "m1"},
+			"m1b":     {TenantID: "t1", UserID: "u1", MachineID: "m1b"},
 			"m2":      {TenantID: "t1", UserID: "u2", MachineID: "m2"},
 			"m-empty": {TenantID: "t1", UserID: "", MachineID: "m-empty"},
 		},
@@ -85,6 +95,9 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}", CloudWorkspaceRenameHandler(svc, authn))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}", CloudWorkspaceDeleteHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/restore", CloudWorkspaceRestoreHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases", CloudWorkspaceAcquireLeaseHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/{lease_id}/heartbeat", CloudWorkspaceHeartbeatLeaseHandler(svc, authn))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/leases/{lease_id}", CloudWorkspaceReleaseLeaseHandler(svc, authn))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", GetCloudWorkspaceSettingsAdminHandler(svc))
 	return svc, mux, authn
 }

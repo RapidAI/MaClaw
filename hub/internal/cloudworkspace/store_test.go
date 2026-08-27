@@ -12,6 +12,21 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
+func insertTestMachine(t *testing.T, st *Store, id, userID, hostname string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := st.db.Exec(`INSERT INTO machines (id, tenant_id, user_id, name, platform, hostname, machine_token_hash, status, created_at, updated_at)
+		VALUES (?, 't1', ?, ?, 'windows', ?, 'hash', 'online', ?, ?)`,
+		id, userID, id, hostname, now, now,
+	); err != nil {
+		t.Fatalf("insert machine %s: %v", id, err)
+	}
+}
+
+func acquireParams(workspaceID, machineID string) AcquireParams {
+	return AcquireParams{TenantID: "t1", UserID: "u1", WorkspaceID: workspaceID, MachineID: machineID}
+}
+
 func newTestWorkspaceStore(t *testing.T) (*Store, *store.Store) {
 	t.Helper()
 	provider, err := sqlite.NewProvider(sqlite.Config{
@@ -69,7 +84,7 @@ func TestStoreSoftDeleteFreesQuotaAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SoftDelete(ctx, "t1", "u1", ws.ID, now.Add(time.Second)); err != nil {
+	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", ws.ID, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	other, err := st.Create(ctx, CreateParams{TenantID: "t1", UserID: "u1", Name: "B", Quota: 1, TenantMaxTotalBytes: 1 << 30}, now.Add(2*time.Second))
@@ -80,7 +95,7 @@ func TestStoreSoftDeleteFreesQuotaAndRestore(t *testing.T) {
 	if err != ErrQuota {
 		t.Fatalf("restore over quota err=%v", err)
 	}
-	if _, err := st.SoftDelete(ctx, "t1", "u1", other.ID, now.Add(4*time.Second)); err != nil {
+	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", other.ID, now.Add(4*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := st.Restore(ctx, "t1", "u1", ws.ID, 1, now.Add(5*time.Second))
@@ -100,7 +115,7 @@ func TestStoreRestoreWindowExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SoftDelete(ctx, "t1", "u1", ws.ID, now); err != nil {
+	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", ws.ID, now); err != nil {
 		t.Fatal(err)
 	}
 	_, err = st.Restore(ctx, "t1", "u1", ws.ID, 1, now.Add(RestoreWindow))
@@ -120,7 +135,7 @@ func TestStoreTenantDiskIncludesDeleted(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, `UPDATE cloud_workspaces SET used_bytes = 10 WHERE id = ?`, ws.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SoftDelete(ctx, "t1", "u1", ws.ID, now.Add(time.Second)); err != nil {
+	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", ws.ID, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	_, err = st.Create(ctx, CreateParams{TenantID: "t1", UserID: "u1", Name: "B", Quota: 5, TenantMaxTotalBytes: 10}, now.Add(2*time.Second))
@@ -203,7 +218,7 @@ func TestEntitlementForDisabledStillListsOwnRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SoftDelete(ctx, "t1", "u1", ws.ID, now.Add(time.Second)); err != nil {
+	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", ws.ID, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	svc := &Service{
