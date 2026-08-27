@@ -14,6 +14,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
+	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
@@ -370,6 +371,9 @@ func NewRouter(
 		mux.HandleFunc("POST /api/digital-assets/sync/pull", DigitalAssetSyncPullHandler(digitalAssetSvc, identity))
 		mux.HandleFunc("GET /api/digital-assets/libraries/{id}/sync/packages/{rev}", DigitalAssetSyncPackageHandler(digitalAssetSvc, identity))
 	}
+	cloudWorkspaceSvc := cloudworkspace.NewService(system, platformUsers, securitySvc)
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireTenantAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
+	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireTenantAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
 	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
 	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))
