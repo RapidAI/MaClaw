@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -218,5 +219,53 @@ func TestCloudWorkspaceChunkComplete(t *testing.T) {
 	get := doCloudWorkspaceBytes(t, h, http.MethodGet, base, "m1", nil)
 	if get.Code != http.StatusOK || !bytes.Equal(get.Body.Bytes(), plain) {
 		t.Fatalf("get=%d %q", get.Code, get.Body.Bytes())
+	}
+}
+
+func TestCloudWorkspaceSidecarLeaseGrantAndAllowlist(t *testing.T) {
+	svc, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	id := createCloudWorkspace(t, h, "m1", "A")
+	body := []byte(`{"name":"标书","mode":"coding_dev","tag":"cloud_workspace:` + id + `"}`)
+	path := "/api/v1/cloud-workspaces/" + id + "/sidecars/" + cloudworkspace.SidecarTask
+	if rec := doCloudWorkspaceBytes(t, h, http.MethodPut, path, "m1", body); rec.Code != http.StatusForbidden || cloudWorkspaceErrCode(t, rec) != "CLOUD_WORKSPACE_LEASE_REQUIRED" {
+		t.Fatalf("put without lease=%d %s", rec.Code, rec.Body.String())
+	}
+	acquireCloudWorkspaceLease(t, h, id, "m1")
+	if rec := doCloudWorkspaceBytes(t, h, http.MethodPut, path, "m1", body); rec.Code != http.StatusOK {
+		t.Fatalf("put=%d %s", rec.Code, rec.Body.String())
+	}
+	got := doCloudWorkspaceBytes(t, h, http.MethodGet, path, "m1", nil)
+	if got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), body) {
+		t.Fatalf("get=%d %q", got.Code, got.Body.Bytes())
+	}
+	missing := doCloudWorkspaceBytes(t, h, http.MethodGet, "/api/v1/cloud-workspaces/"+id+"/sidecars/"+cloudworkspace.SidecarSession, "m1", nil)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing session=%d %s", missing.Code, missing.Body.String())
+	}
+	bad := doCloudWorkspaceBytes(t, h, http.MethodPut, "/api/v1/cloud-workspaces/"+id+"/sidecars/secret.json", "m1", []byte("{}"))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("allowlist=%d %s", bad.Code, bad.Body.String())
+	}
+	other := doCloudWorkspaceBytes(t, h, http.MethodGet, path, "m2", nil)
+	if other.Code != http.StatusNotFound && other.Code != http.StatusForbidden {
+		t.Fatalf("non-owner=%d %s", other.Code, other.Body.String())
+	}
+	disk, err := svc.Blobs.SidecarPath("t1", "u1", id, cloudworkspace.SidecarTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(disk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, body) {
+		t.Fatal("hub sidecar leaked plaintext")
+	}
+	if _, err := svc.SaveTenantSettings(context.Background(), "t1", cloudworkspace.Settings{Mode: cloudworkspace.ModeOff, Quota: 5}); err != nil {
+		t.Fatal(err)
+	}
+	denied := doCloudWorkspaceBytes(t, h, http.MethodGet, path, "m1", nil)
+	if denied.Code != http.StatusForbidden || cloudWorkspaceErrCode(t, denied) != "CLOUD_WORKSPACE_FORBIDDEN" {
+		t.Fatalf("grant revoked=%d %s", denied.Code, denied.Body.String())
 	}
 }

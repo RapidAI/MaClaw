@@ -106,6 +106,8 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspacePutObjectHandler(svc, authn))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}/chunks/{index}", CloudWorkspacePutObjectChunkHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/objects/{sha256}/complete", CloudWorkspaceCompleteObjectHandler(svc, authn))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspaceGetSidecarHandler(svc, authn))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspacePutSidecarHandler(svc, authn))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", GetCloudWorkspaceSettingsAdminHandler(svc))
 	return svc, mux, authn
 }

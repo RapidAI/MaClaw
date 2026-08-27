@@ -87,7 +87,8 @@ func writeCloudWorkspaceError(w http.ResponseWriter, err error) {
 		errors.Is(err, cloudworkspace.ErrIncompleteChunks),
 		errors.Is(err, cloudworkspace.ErrInvalidChunkIndex),
 		errors.Is(err, cloudworkspace.ErrContentLength),
-		errors.Is(err, cloudworkspace.ErrBlobTooLarge):
+		errors.Is(err, cloudworkspace.ErrBlobTooLarge),
+		errors.Is(err, cloudworkspace.ErrInvalidSidecarName):
 		writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
 	case errors.Is(err, cloudworkspace.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "cloud workspace store is unavailable")

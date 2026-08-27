@@ -62,6 +62,10 @@ func cloudWorkspaceObjectCompletePath(id, sha256hex string) string {
 	return cloudWorkspaceObjectPath(id, sha256hex) + "/complete"
 }
 
+func cloudWorkspaceSidecarPath(id, name string) string {
+	return cloudWorkspaceItemPath(id) + "/sidecars/" + url.PathEscape(strings.TrimSpace(name))
+}
+
 // cloudWorkspaceTransferTimeout is max(60s, 30s + sizeBytes/262144).
 // Object uploads must not reuse virtualRepositorySyncRequest's 30s cap.
 func cloudWorkspaceTransferTimeout(sizeBytes int64) time.Duration {

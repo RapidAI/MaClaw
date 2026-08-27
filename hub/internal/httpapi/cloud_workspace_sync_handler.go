@@ -206,3 +206,58 @@ func CloudWorkspaceCompleteObjectHandler(svc *cloudworkspace.Service, identity v
 		writeCloudWorkspaceObjectMeta(w, got)
 	}
 }
+
+func requireCloudWorkspaceSidecarName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name, err := cloudworkspace.ValidateSidecarName(strings.TrimSpace(r.PathValue("name")))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
+		return "", false
+	}
+	return name, true
+}
+
+// CloudWorkspaceGetSidecarHandler GET /api/v1/cloud-workspaces/{id}/sidecars/{name}
+func CloudWorkspaceGetSidecarHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, id, ok := beginCloudWorkspaceSync(w, r, svc, identity)
+		if !ok {
+			return
+		}
+		name, ok := requireCloudWorkspaceSidecarName(w, r)
+		if !ok {
+			return
+		}
+		plain, err := svc.GetSidecar(r.Context(), *principal, id, name)
+		if err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(plain)
+	}
+}
+
+// CloudWorkspacePutSidecarHandler PUT /api/v1/cloud-workspaces/{id}/sidecars/{name}
+func CloudWorkspacePutSidecarHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, id, ok := beginCloudWorkspaceSync(w, r, svc, identity)
+		if !ok {
+			return
+		}
+		name, ok := requireCloudWorkspaceSidecarName(w, r)
+		if !ok {
+			return
+		}
+		body, err := readCloudWorkspacePlaintext(r, cloudworkspace.MaxSidecarBytes)
+		if err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		if err := svc.PutSidecar(r.Context(), *principal, id, name, body); err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"name": name, "size": len(body)})
+	}
+}

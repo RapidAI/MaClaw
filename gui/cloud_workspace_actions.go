@@ -293,8 +293,11 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 		return ProjectSearchResult{}
 	}
 	if existing := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(existing.ProjectPath) != "" {
-		return a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
+		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
+		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
+		return bound
 	}
+	name, mode = a.cloudWorkspaceTaskIdentity(workspaceID, name, mode)
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
 		return ProjectSearchResult{}
@@ -305,7 +308,9 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	}
 	result := a.createTaskRecordWithWorkingDir(taskName, "", tags, prepared.LocalPath, false)
 	if strings.TrimSpace(result.ProjectPath) != "" {
-		return a.bindPreparedCloudWorkspaceTask(workspaceID, result, prepared.LocalPath)
+		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, result, prepared.LocalPath)
+		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
+		return bound
 	}
 	return result
 }
@@ -326,5 +331,7 @@ func (a *App) ResumeCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
 		log.Printf("[cloud_workspace] resume prepare failed id=%s err=%v", workspaceID, err)
 		return ProjectSearchResult{}
 	}
-	return a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
+	bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
+	a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
+	return bound
 }

@@ -393,6 +393,8 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspacePutObjectHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}/chunks/{index}", CloudWorkspacePutObjectChunkHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/objects/{sha256}/complete", CloudWorkspaceCompleteObjectHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspaceGetSidecarHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspacePutSidecarHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
 	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))

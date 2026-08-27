@@ -4474,6 +4474,12 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	// Check if session already exists on disk — if so, just return a welcome-back message.
 	existing, err := persist.LoadSession(tabID)
 	if err == nil && existing != nil {
+		if pending := takeCloudWorkspacePendingSession(projectPath); pending != nil {
+			mergeCloudWorkspaceTabSession(existing, pending, tabID, projectPath)
+			if saveErr := persist.SaveSession(existing); saveErr != nil {
+				log.Printf("[CreateProjectTabSession] restore sidecar session failed: %v", saveErr)
+			}
+		}
 		// An existing session owns its tab-local override. Restore it before the
 		// tab can render or dispatch a message.
 		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
@@ -4543,6 +4549,9 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		InputText:    "",
 		CreatedAt:    now.UTC().Format(time.RFC3339),
 		LastActiveAt: now.UTC().Format(time.RFC3339),
+	}
+	if pending := takeCloudWorkspacePendingSession(projectPath); pending != nil {
+		mergeCloudWorkspaceTabSession(session, pending, tabID, projectPath)
 	}
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[CreateProjectTabSession] SaveSession failed: %v", err)

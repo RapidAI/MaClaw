@@ -34,6 +34,7 @@ type fakeCloudWorkspaceHub struct {
 	entries            []cloudWorkspaceManifestEntry
 	objects            map[string][]byte
 	chunks             map[string]map[int][]byte
+	sidecars           map[string][]byte
 }
 
 func cloudWorkspaceSHA256Hex(body []byte) string {
@@ -49,6 +50,9 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 	if h.chunks == nil {
 		h.chunks = map[string]map[int][]byte{}
+	}
+	if h.sidecars == nil {
+		h.sidecars = map[string][]byte{}
 	}
 	if h.leaseID == "" {
 		h.leaseID = "cwl_testlease"
@@ -130,6 +134,26 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 			h.entries = []cloudWorkspaceManifestEntry{}
 		}
 		_ = json.NewEncoder(w).Encode(cloudWorkspaceManifest{Revision: h.revision, Entries: h.entries})
+	case strings.Contains(path, "/sidecars/"):
+		name := sidecarNameFromPath(path)
+		switch r.Method {
+		case http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			h.sidecars[name] = append([]byte(nil), body...)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": name, "size": len(body)})
+		case http.MethodGet:
+			body, ok := h.sidecars[name]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": "NOT_FOUND", "message": "sidecar not found"})
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		default:
+			http.NotFound(w, r)
+		}
 	case strings.Contains(path, "/objects/") && strings.Contains(path, "/chunks/"):
 		sha := objectSHAFromPath(path)
 		idx := chunkIndexFromPath(path)
@@ -165,6 +189,15 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func sidecarNameFromPath(path string) string {
+	const marker = "/sidecars/"
+	i := strings.Index(path, marker)
+	if i < 0 {
+		return ""
+	}
+	return path[i+len(marker):]
 }
 
 func objectSHAFromPath(path string) string {

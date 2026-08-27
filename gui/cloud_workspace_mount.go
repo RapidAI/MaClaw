@@ -87,6 +87,7 @@ func resetCloudWorkspaceMounts() {
 	for _, mount := range mounts {
 		stopCloudWorkspaceMount(mount)
 	}
+	resetCloudWorkspaceSidecarState()
 }
 
 func cloudWorkspaceTag(workspaceID string) string {
@@ -397,7 +398,7 @@ func (a *App) scheduleCloudWorkspacePush(mount *cloudWorkspaceHeldMount) {
 		}
 		ctx, cancel := a.cloudWorkspaceSyncContext()
 		defer cancel()
-		if _, err := a.cloudWorkspaceProtocol(id).Push(ctx, root); err != nil {
+		if _, err := a.pushCloudWorkspace(ctx, id, root); err != nil {
 			log.Printf("[cloud_workspace] watch push failed workspace=%s err=%v", id, err)
 		}
 	})
@@ -576,7 +577,7 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 	leaseID := mount.LeaseID
 	mount.mu.Unlock()
 	if !readOnly && strings.TrimSpace(root) != "" {
-		if _, err := a.cloudWorkspaceProtocol(workspaceID).Push(ctx, root); err != nil {
+		if _, err := a.pushCloudWorkspace(ctx, workspaceID, root); err != nil {
 			log.Printf("[cloud_workspace] release push failed workspace=%s err=%v", workspaceID, err)
 			if !deleteLeaseOnPushFail {
 				storeCloudWorkspaceMount(mount)
@@ -665,7 +666,7 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 
 	acquired := strings.TrimSpace(outcome.Acquired)
 	if acquired == cloudWorkspaceAcquiredRenewed {
-		if _, err := proto.Push(syncCtx, localPath); err != nil {
+		if _, err := a.pushCloudWorkspace(syncCtx, workspaceID, localPath); err != nil {
 			releaseLease()
 			return PreparedCloudWorkspace{}, err
 		}
@@ -699,6 +700,7 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 			releaseLease()
 			return PreparedCloudWorkspace{}, err
 		}
+		a.fetchCloudWorkspaceSidecars(syncCtx, workspaceID)
 	}
 
 	mount := &cloudWorkspaceHeldMount{
