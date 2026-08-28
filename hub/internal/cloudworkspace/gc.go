@@ -22,7 +22,6 @@ const (
 	// StagingGrace drops incomplete objects/{sha256}.part and staging dirs.
 	StagingGrace = time.Hour
 
-	sidecarDirName  = "sidecars"
 	manifestDirName = "manifest"
 )
 
