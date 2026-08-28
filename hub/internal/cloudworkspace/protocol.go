@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/cloudworkspaceignore"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
 
@@ -238,8 +239,12 @@ func (p *Protocol) Pull(ctx context.Context, root string) (*Manifest, error) {
 	}
 	keep := make(map[string]struct{}, len(remote.Entries))
 	for _, e := range remote.Entries {
-		keep[e.Path] = struct{}{}
-		dest := filepath.Join(root, filepath.FromSlash(e.Path))
+		cleaned, err := ValidateManifestPath(e.Path)
+		if err != nil {
+			return nil, err
+		}
+		keep[cleaned] = struct{}{}
+		dest := filepath.Join(root, filepath.FromSlash(cleaned))
 		if info, err := os.Stat(dest); err == nil && info.Mode().IsRegular() {
 			sum, size, err := hashFile(dest)
 			if err == nil && sum == e.SHA256 && size == e.Size {
@@ -249,6 +254,10 @@ func (p *Protocol) Pull(ctx context.Context, root string) (*Manifest, error) {
 		data, err := p.Transport.GetObject(ctx, e.SHA256)
 		if err != nil {
 			return nil, err
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != e.SHA256 {
+			return nil, ErrBlobHashMismatch
 		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return nil, err
@@ -261,6 +270,7 @@ func (p *Protocol) Pull(ctx context.Context, root string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	matcher := cloudworkspaceignore.NewMatcher(cloudignore)
 	err = filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -273,7 +283,7 @@ func (p *Protocol) Pull(ctx context.Context, root string) (*Manifest, error) {
 		if rel == "." {
 			return nil
 		}
-		if ShouldIgnore(rel, d.IsDir(), cloudignore) {
+		if matcher.ShouldIgnore(rel, d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

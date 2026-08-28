@@ -59,11 +59,18 @@ func (s *Service) RecordSyncFailed(ctx context.Context, tenantID, workspaceID, m
 	s.recordFailure(ctx, tenantID, workspaceID, EventSyncFailed, message, nil)
 }
 
-// StartHourlyGC runs Sweep immediately then once per hour.
+// StartHourlyGC runs Sweep immediately then once per hour. Repeat calls are no-ops.
 func (s *Service) StartHourlyGC() {
 	if s == nil || s.Workspaces == nil {
 		return
 	}
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+	if s.gcStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	s.gcStop = stop
 	go func() {
 		run := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -76,10 +83,29 @@ func (s *Service) StartHourlyGC() {
 		run()
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			run()
+		for {
+			select {
+			case <-ticker.C:
+				run()
+			case <-stop:
+				return
+			}
 		}
 	}()
+}
+
+// StopHourlyGC stops the background sweeper started by StartHourlyGC.
+func (s *Service) StopHourlyGC() {
+	if s == nil {
+		return
+	}
+	s.gcMu.Lock()
+	stop := s.gcStop
+	s.gcStop = nil
+	s.gcMu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
 }
 
 // Sweep purges expired soft-deletes, unreferenced blobs, stale staging, then recalcs usage.

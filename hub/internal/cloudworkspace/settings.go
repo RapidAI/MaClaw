@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
@@ -96,6 +97,9 @@ type Service struct {
 	Blobs      *BlobStore
 	Failures   *diagnostics.FailureEventRecorder
 	Now        func() time.Time
+
+	gcMu   sync.Mutex
+	gcStop chan struct{}
 }
 
 // NewService wires system settings, users, and security group lookups.

@@ -435,3 +435,22 @@ func TestCollectMetricsTenantsAndVolume(t *testing.T) {
 		t.Fatalf("volume_free_bytes=%d", got.VolumeFreeBytes)
 	}
 }
+
+func TestStartHourlyGCIdempotentAndStop(t *testing.T) {
+	svc, _, _ := newGCService(t)
+	svc.StartHourlyGC()
+	svc.StartHourlyGC()
+	if svc.gcStop == nil {
+		t.Fatal("gcStop should be set after start")
+	}
+	first := svc.gcStop
+	svc.StartHourlyGC()
+	if svc.gcStop != first {
+		t.Fatal("second start must not replace the stopper")
+	}
+	svc.StopHourlyGC()
+	if svc.gcStop != nil {
+		t.Fatal("gcStop should be cleared after stop")
+	}
+	svc.StopHourlyGC()
+}

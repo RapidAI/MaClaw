@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +29,27 @@ const (
 // cloudWorkspaceLocalState is {cache}/.maclaw-cloud/state.json.
 type cloudWorkspaceLocalState struct {
 	LastPushedRevision string `json:"last_pushed_revision"`
+}
+
+func cloudWorkspaceSafeRelPath(p string) (string, bool) {
+	p = strings.TrimSpace(p)
+	if p == "" || strings.ContainsAny(p, `\:`) || strings.ContainsRune(p, 0) {
+		return "", false
+	}
+	if path.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+		return "", false
+	}
+	cleaned := path.Clean("/" + p)
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "" || cleaned == "." || cleaned == ".." || cleaned != p {
+		return "", false
+	}
+	for _, seg := range strings.Split(cleaned, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", false
+		}
+	}
+	return cleaned, true
 }
 
 type cloudWorkspaceManifestEntry struct {
@@ -320,8 +342,12 @@ func (p *cloudWorkspaceProtocol) Pull(ctx context.Context, root string) (*cloudW
 	defer cancel()
 	keep := make(map[string]struct{}, len(remote.Entries))
 	for _, e := range remote.Entries {
-		keep[e.Path] = struct{}{}
-		dest := filepath.Join(root, filepath.FromSlash(e.Path))
+		cleaned, ok := cloudWorkspaceSafeRelPath(e.Path)
+		if !ok {
+			return nil, fmt.Errorf("invalid cloud workspace path %q", e.Path)
+		}
+		keep[cleaned] = struct{}{}
+		dest := filepath.Join(root, filepath.FromSlash(cleaned))
 		if info, err := os.Stat(dest); err == nil && info.Mode().IsRegular() {
 			sum, size, err := hashCloudWorkspaceFile(dest)
 			if err == nil && sum == e.SHA256 && size == e.Size {
@@ -331,6 +357,10 @@ func (p *cloudWorkspaceProtocol) Pull(ctx context.Context, root string) (*cloudW
 		data, err := p.Transport.GetObject(ctx, e.SHA256, e.Size)
 		if err != nil {
 			return nil, err
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != e.SHA256 {
+			return nil, fmt.Errorf("cloud workspace object hash mismatch")
 		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return nil, err

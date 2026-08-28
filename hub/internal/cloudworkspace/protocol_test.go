@@ -118,6 +118,43 @@ func TestProtocolRenewedPushesWithoutPull(t *testing.T) {
 	}
 }
 
+type pullStubTransport struct {
+	man *Manifest
+	obj map[string][]byte
+}
+
+func (p pullStubTransport) GetManifest(context.Context) (*Manifest, error) { return p.man, nil }
+func (p pullStubTransport) PutManifest(context.Context, string, []ManifestEntry) (*Manifest, error) {
+	return nil, ErrUnavailable
+}
+func (p pullStubTransport) GetObject(_ context.Context, sha string) ([]byte, error) {
+	return p.obj[sha], nil
+}
+func (p pullStubTransport) PutObject(context.Context, string, []byte) error { return ErrUnavailable }
+func (p pullStubTransport) PutChunk(context.Context, string, int, []byte) error {
+	return ErrUnavailable
+}
+func (p pullStubTransport) CompleteObject(context.Context, string) error { return ErrUnavailable }
+
+func TestProtocolPullRejectsDotDotPath(t *testing.T) {
+	p := &Protocol{Transport: pullStubTransport{
+		man: &Manifest{Revision: "1", Entries: []ManifestEntry{{Path: "../secret.txt", SHA256: "abc", Size: 1}}},
+	}}
+	if _, err := p.Pull(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("pull must reject .. path")
+	}
+}
+
+func TestProtocolPullRejectsHashMismatch(t *testing.T) {
+	p := &Protocol{Transport: pullStubTransport{
+		man: &Manifest{Revision: "1", Entries: []ManifestEntry{{Path: "a.txt", SHA256: "00", Size: 4}}},
+		obj: map[string][]byte{"00": []byte("nope")},
+	}}
+	if _, err := p.Pull(context.Background(), t.TempDir()); err != ErrBlobHashMismatch {
+		t.Fatalf("err=%v want ErrBlobHashMismatch", err)
+	}
+}
+
 func TestProtocolChunkedPut(t *testing.T) {
 	svc, ws, principal := newTestSyncEnv(t)
 	p := &Protocol{
