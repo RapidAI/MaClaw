@@ -109,6 +109,7 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspaceGetSidecarHandler(svc, authn))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspacePutSidecarHandler(svc, authn))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", GetCloudWorkspaceSettingsAdminHandler(svc))
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", GetCloudWorkspaceMetricsAdminHandler(svc))
 	return svc, mux, authn
 }
 

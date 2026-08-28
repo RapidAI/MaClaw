@@ -56,7 +56,61 @@ func writeCloudWorkspaceInUse(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusConflict, payload)
 }
 
+func observeCloudWorkspaceError(err error) {
+	switch {
+	case errors.Is(err, cloudworkspace.ErrInUse):
+		cloudworkspace.ObserveLeaseConflict()
+	case errors.Is(err, cloudworkspace.ErrQuota),
+		errors.Is(err, cloudworkspace.ErrWorkspaceSize),
+		errors.Is(err, cloudworkspace.ErrTenantDisk),
+		errors.Is(err, cloudworkspace.ErrVolumeFull),
+		errors.Is(err, cloudworkspace.ErrDiskFull):
+		cloudworkspace.ObserveQuotaRejection()
+	}
+}
+
+func cloudWorkspaceIsSyncFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, cloudworkspace.ErrInUse),
+		errors.Is(err, cloudworkspace.ErrNotFound),
+		errors.Is(err, cloudworkspace.ErrRestoreWindow),
+		errors.Is(err, cloudworkspace.ErrBlobNotFound),
+		errors.Is(err, cloudworkspace.ErrQuota),
+		errors.Is(err, cloudworkspace.ErrWorkspaceSize),
+		errors.Is(err, cloudworkspace.ErrTenantDisk),
+		errors.Is(err, cloudworkspace.ErrLeaseRequired),
+		errors.Is(err, cloudworkspace.ErrNameTaken),
+		errors.Is(err, cloudworkspace.ErrRevisionConflict),
+		errors.Is(err, cloudworkspace.ErrVolumeFull),
+		errors.Is(err, cloudworkspace.ErrDiskFull),
+		errors.Is(err, cloudworkspace.ErrInvalidName),
+		errors.Is(err, cloudworkspace.ErrInvalidPath),
+		errors.Is(err, cloudworkspace.ErrInvalidBlobKey),
+		errors.Is(err, cloudworkspace.ErrBlobHashMismatch),
+		errors.Is(err, cloudworkspace.ErrObjectMissing),
+		errors.Is(err, cloudworkspace.ErrTooManyEntries),
+		errors.Is(err, cloudworkspace.ErrIncompleteChunks),
+		errors.Is(err, cloudworkspace.ErrInvalidChunkIndex),
+		errors.Is(err, cloudworkspace.ErrContentLength),
+		errors.Is(err, cloudworkspace.ErrBlobTooLarge):
+		return false
+	default:
+		return true
+	}
+}
+
+func writeCloudWorkspaceSyncError(w http.ResponseWriter, r *http.Request, svc *cloudworkspace.Service, tenantID, workspaceID string, err error) {
+	writeCloudWorkspaceError(w, err)
+	if svc != nil && cloudWorkspaceIsSyncFailure(err) {
+		svc.RecordSyncFailed(r.Context(), tenantID, workspaceID, err.Error())
+	}
+}
+
 func writeCloudWorkspaceError(w http.ResponseWriter, err error) {
+	observeCloudWorkspaceError(err)
 	switch {
 	case errors.Is(err, cloudworkspace.ErrInUse):
 		writeCloudWorkspaceInUse(w, err)

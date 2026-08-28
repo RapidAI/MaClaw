@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -93,6 +94,7 @@ type Service struct {
 	Org        OrgPreviewer
 	Workspaces *Store
 	Blobs      *BlobStore
+	Failures   *diagnostics.FailureEventRecorder
 	Now        func() time.Time
 }
 
