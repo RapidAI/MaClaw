@@ -121,6 +121,18 @@ func cloudWorkspaceAPIError(status int, data []byte) error {
 		return fmt.Errorf("云端工作区名称已存在")
 	case "CLOUD_WORKSPACE_FORBIDDEN":
 		return fmt.Errorf("未开通云端工作区")
+	case "CLOUD_WORKSPACE_LEASE_REQUIRED":
+		return fmt.Errorf("云端工作区租约无效，请重新打开")
+	case "CLOUD_WORKSPACE_REVISION_CONFLICT":
+		return fmt.Errorf("云端工作区版本冲突，请重试")
+	case "CLOUD_WORKSPACE_VOLUME_FULL":
+		return fmt.Errorf("云端工作区存储空间不足")
+	case "CLOUD_WORKSPACE_SIZE":
+		return fmt.Errorf("已超过单个云端工作区容量")
+	case "CLOUD_WORKSPACE_TENANT_DISK":
+		return fmt.Errorf("已超过租户云端工作区总容量")
+	case "CLOUD_WORKSPACE_IN_USE":
+		return fmt.Errorf("云端工作区占用中（其他设备）")
 	case "NOT_FOUND":
 		return fmt.Errorf("云端工作区不存在或已超过 7 天恢复期限")
 	case "INVALID_INPUT":

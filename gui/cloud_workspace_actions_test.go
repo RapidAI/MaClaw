@@ -192,6 +192,25 @@ func TestCloudWorkspaceMutateRejectsMissingID(t *testing.T) {
 	}
 }
 
+func TestCloudWorkspaceAPIErrorChineseCodes(t *testing.T) {
+	cases := map[string]string{
+		"CLOUD_WORKSPACE_QUOTA":             "配额",
+		"CLOUD_WORKSPACE_FORBIDDEN":         "未开通",
+		"CLOUD_WORKSPACE_LEASE_REQUIRED":    "租约",
+		"CLOUD_WORKSPACE_REVISION_CONFLICT": "版本冲突",
+		"CLOUD_WORKSPACE_VOLUME_FULL":       "存储空间",
+		"CLOUD_WORKSPACE_SIZE":              "容量",
+		"CLOUD_WORKSPACE_TENANT_DISK":       "总容量",
+		"CLOUD_WORKSPACE_IN_USE":            "占用中",
+	}
+	for code, want := range cases {
+		err := cloudWorkspaceAPIError(409, []byte(`{"code":"`+code+`","message":"english"}`))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("code=%s err=%v want substring %q", code, err, want)
+		}
+	}
+}
+
 func TestDecodeCloudWorkspaceHubRowJSON(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"id": "cws_1", "name": "n", "used_bytes": 12, "updated_at": "t",

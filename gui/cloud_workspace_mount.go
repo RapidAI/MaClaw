@@ -549,6 +549,23 @@ func lookupHeldCloudWorkspace(workspaceID string) *cloudWorkspaceHeldMount {
 	return cloudWorkspaceMounts[workspaceID]
 }
 
+func heldWritableCloudWorkspacePath(workspaceID string) (string, bool) {
+	mount := lookupHeldCloudWorkspace(workspaceID)
+	if mount == nil {
+		return "", false
+	}
+	mount.mu.Lock()
+	defer mount.mu.Unlock()
+	if mount.ReadOnly {
+		return "", false
+	}
+	path := strings.TrimSpace(mount.LocalPath)
+	if path == "" {
+		return "", false
+	}
+	return path, true
+}
+
 func (a *App) lookupCloudWorkspaceIDForProject(projectPath string) string {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
@@ -662,8 +679,11 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 	if workspaceID == "" {
 		return PreparedCloudWorkspace{}, fmt.Errorf("workspace id is required")
 	}
-	cloudWorkspacePrepareMu.Lock()
-	defer cloudWorkspacePrepareMu.Unlock()
+	if !force {
+		if path, ok := heldWritableCloudWorkspacePath(workspaceID); ok {
+			return PreparedCloudWorkspace{LocalPath: path, WorkspaceID: workspaceID}, nil
+		}
+	}
 
 	tenantID := a.cloudWorkspaceTenantID()
 	localPath := normalizeProjectSessionPath(a.cloudWorkspaceCachePath(tenantID, workspaceID))
@@ -671,6 +691,7 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		return PreparedCloudWorkspace{}, err
 	}
 
+	// Steal/dirty dialogs must not hold prepareMu or they block every other workspace.
 	leaseCtx, leaseCancel := a.cloudWorkspaceRequestContext()
 	defer leaseCancel()
 	outcome, err := a.acquireCloudWorkspaceLease(leaseCtx, workspaceID, force)
@@ -680,14 +701,12 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 			if !a.confirmCloudWorkspaceSteal(inUse.HolderMachineName) {
 				return PreparedCloudWorkspace{}, inUse
 			}
+			force = true
 			forceCtx, forceCancel := a.cloudWorkspaceRequestContext()
 			defer forceCancel()
 			outcome, err = a.acquireCloudWorkspaceLease(forceCtx, workspaceID, true)
-			if err != nil {
-				return PreparedCloudWorkspace{}, err
-			}
-			force = true
-		} else {
+		}
+		if err != nil {
 			return PreparedCloudWorkspace{}, err
 		}
 	}
@@ -701,29 +720,26 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		LocalPath:   localPath,
 		TenantID:    tenantID,
 	}
-	// Heartbeat must run during Pull/Push: a max-size sync can exceed LeaseTTL.
+	// Heartbeat must run during dialogs and Pull/Push: a max-size sync can exceed LeaseTTL.
 	a.startCloudWorkspaceHeartbeat(mount)
+	acquired := strings.TrimSpace(outcome.Acquired)
 	failPrepare := func(err error) (PreparedCloudWorkspace, error) {
 		stopCloudWorkspaceMount(mount)
-		ctx, cancel := a.cloudWorkspaceRequestContext()
-		defer cancel()
-		_ = a.deleteCloudWorkspaceLease(ctx, workspaceID, outcome.LeaseID)
+		if acquired != cloudWorkspaceAcquiredRenewed {
+			ctx, cancel := a.cloudWorkspaceRequestContext()
+			defer cancel()
+			_ = a.deleteCloudWorkspaceLease(ctx, workspaceID, outcome.LeaseID)
+		}
 		return PreparedCloudWorkspace{}, err
 	}
 
 	proto := a.cloudWorkspaceProtocol(workspaceID)
-	syncCtx, syncCancel := a.cloudWorkspaceSyncContext()
-	defer syncCancel()
-
-	acquired := strings.TrimSpace(outcome.Acquired)
-	if acquired == cloudWorkspaceAcquiredRenewed {
-		if _, err := a.pushCloudWorkspace(syncCtx, workspaceID, localPath); err != nil {
-			return failPrepare(err)
-		}
-	} else {
-		remote, err := proto.Transport.GetManifest(syncCtx)
-		if err != nil {
-			return failPrepare(err)
+	if acquired != cloudWorkspaceAcquiredRenewed {
+		peekCtx, peekCancel := a.cloudWorkspaceSyncContext()
+		remote, remoteErr := proto.Transport.GetManifest(peekCtx)
+		peekCancel()
+		if remoteErr != nil {
+			return failPrepare(remoteErr)
 		}
 		dirty, dirtyErr := cloudWorkspaceCacheDirty(localPath, remote, force)
 		if dirtyErr != nil {
@@ -732,6 +748,27 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		if dirty && !a.confirmCloudWorkspaceDiscardDirty() {
 			return failPrepare(fmt.Errorf("已取消打开云端工作区"))
 		}
+	}
+
+	cloudWorkspacePrepareMu.Lock()
+	defer cloudWorkspacePrepareMu.Unlock()
+	if !force {
+		if path, ok := heldWritableCloudWorkspacePath(workspaceID); ok {
+			stopCloudWorkspaceMount(mount)
+			return PreparedCloudWorkspace{LocalPath: path, WorkspaceID: workspaceID}, nil
+		}
+	}
+
+	syncCtx, syncCancel := a.cloudWorkspaceSyncContext()
+	defer syncCancel()
+	if acquired == cloudWorkspaceAcquiredRenewed {
+		if _, err := proto.Push(syncCtx, localPath); err != nil {
+			return failPrepare(err)
+		}
+		if err := a.flushCloudWorkspaceSidecars(syncCtx, workspaceID); err != nil {
+			log.Printf("[cloud_workspace] prepare sidecar flush failed workspace=%s err=%v", workspaceID, err)
+		}
+	} else {
 		pulled, err := proto.Pull(syncCtx, localPath)
 		if err != nil {
 			return failPrepare(err)
@@ -739,8 +776,6 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		rev := ""
 		if pulled != nil {
 			rev = pulled.Revision
-		} else if remote != nil {
-			rev = remote.Revision
 		}
 		if err := writeCloudWorkspaceLocalState(localPath, rev); err != nil {
 			return failPrepare(err)

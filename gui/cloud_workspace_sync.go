@@ -492,6 +492,9 @@ func (t *cloudWorkspaceHTTPTransport) GetObject(ctx context.Context, sha256hex s
 	if status >= 300 {
 		return nil, cloudWorkspaceAPIError(status, data)
 	}
+	if sizeBytes > 0 && int64(len(data)) != sizeBytes {
+		return nil, fmt.Errorf("cloud workspace object size mismatch")
+	}
 	return data, nil
 }
 

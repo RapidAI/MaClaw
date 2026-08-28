@@ -388,6 +388,49 @@ func TestPrepareRenewedSkipsPullAndPushesLocal(t *testing.T) {
 	}
 }
 
+func TestPrepareReusesHeldWritableMount(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	first, err := app.PrepareCloudWorkspace("cws_reuse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	before := hub.leaseAcquires
+	hub.mu.Unlock()
+	second, err := app.PrepareCloudWorkspace("cws_reuse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.LocalPath != first.LocalPath {
+		t.Fatalf("path=%q want %q", second.LocalPath, first.LocalPath)
+	}
+	hub.mu.Lock()
+	after := hub.leaseAcquires
+	hub.mu.Unlock()
+	if after != before {
+		t.Fatalf("second prepare must not re-acquire, before=%d after=%d", before, after)
+	}
+}
+
+func TestPrepareRenewedPushFailKeepsLease(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredRenewed, failPush: true}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	_, err := app.PrepareCloudWorkspace("cws_renew_fail")
+	if err == nil {
+		t.Fatal("expected push failure")
+	}
+	hub.mu.Lock()
+	deleted := hub.deleted
+	hub.mu.Unlock()
+	if deleted {
+		t.Fatal("same-machine renew must not DELETE the lease when push fails")
+	}
+	if lookupHeldCloudWorkspace("cws_renew_fail") != nil {
+		t.Fatal("failed prepare must not store a mount")
+	}
+}
+
 func TestPrepareStealForceOnlyAfterConfirm(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{conflictUntilForce: true, acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
