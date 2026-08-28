@@ -31,6 +31,33 @@ func newManifestRevision() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
+func manifestTreesEqual(a, b []ManifestEntry) bool {
+	if a == nil {
+		a = []ManifestEntry{}
+	}
+	if b == nil {
+		b = []ManifestEntry{}
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	type key struct {
+		path string
+		sha  string
+		size int64
+	}
+	have := make(map[key]struct{}, len(a))
+	for _, e := range a {
+		have[key{path: e.Path, sha: e.SHA256, size: e.Size}] = struct{}{}
+	}
+	for _, e := range b {
+		if _, ok := have[key{path: e.Path, sha: e.SHA256, size: e.Size}]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeEntries(entries []ManifestEntry) ([]ManifestEntry, error) {
 	if len(entries) > MaxManifestEntries {
 		return nil, ErrTooManyEntries
@@ -164,6 +191,10 @@ func (s *Store) ReplaceManifest(ctx context.Context, tenantID, userID, workspace
 		old, err := listManifestEntries(ctx, q, workspaceID)
 		if err != nil {
 			return err
+		}
+		if manifestTreesEqual(old, entries) {
+			out = &Manifest{Revision: ws.ManifestRevision, Entries: old}
+			return nil
 		}
 		var used int64
 		for _, e := range entries {

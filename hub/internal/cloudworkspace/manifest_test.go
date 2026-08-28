@@ -65,6 +65,14 @@ func TestReplaceManifestUpdatesUsageAndRefCount(t *testing.T) {
 		t.Fatalf("stale err=%v", err)
 	}
 
+	same, err := st.ReplaceManifest(ctx, "t1", "u1", ws.ID, "m1", first.Revision, first.Entries, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same.Revision != first.Revision {
+		t.Fatalf("unchanged tree must keep revision, got %q want %q", same.Revision, first.Revision)
+	}
+
 	second, err := st.ReplaceManifest(ctx, "t1", "u1", ws.ID, "m1", first.Revision, []ManifestEntry{
 		{Path: "a.txt", SHA256: putA.SHA256, Size: putA.SizeBytes},
 		{Path: "a2.txt", SHA256: putA.SHA256, Size: putA.SizeBytes},

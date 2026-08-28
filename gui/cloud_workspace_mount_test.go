@@ -388,6 +388,31 @@ func TestPrepareRenewedSkipsPullAndPushesLocal(t *testing.T) {
 	}
 }
 
+func TestPushUnchangedTreeKeepsRevision(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "a.txt"), []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	first, err := app.pushCloudWorkspace(ctx, "cws_stable", prepared.LocalPath)
+	if err != nil || first == nil || first.Revision == "" {
+		t.Fatalf("first push=%+v err=%v", first, err)
+	}
+	second, err := app.pushCloudWorkspace(ctx, "cws_stable", prepared.LocalPath)
+	if err != nil || second == nil {
+		t.Fatalf("second push=%+v err=%v", second, err)
+	}
+	if second.Revision != first.Revision {
+		t.Fatalf("noop push bumped revision %q -> %q", first.Revision, second.Revision)
+	}
+}
+
 func TestPrepareReusesHeldWritableMount(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
@@ -416,6 +441,13 @@ func TestPrepareReusesHeldWritableMount(t *testing.T) {
 func TestPrepareRenewedPushFailKeepsLease(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredRenewed, failPush: true}
 	app := newCloudWorkspaceMountTestApp(t, hub)
+	root := normalizeProjectSessionPath(app.cloudWorkspaceCachePath("tenant_acme", "cws_renew_fail"))
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dirty.txt"), []byte("local"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := app.PrepareCloudWorkspace("cws_renew_fail")
 	if err == nil {
 		t.Fatal("expected push failure")

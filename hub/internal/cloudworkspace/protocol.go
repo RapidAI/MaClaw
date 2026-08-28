@@ -194,6 +194,12 @@ func (p *Protocol) Push(ctx context.Context, root string) (*Manifest, error) {
 	for _, e := range remote.Entries {
 		have[e.SHA256] = struct{}{}
 	}
+	if manifestTreesEqual(entries, remote.Entries) {
+		if err := writeLocalState(root, remote.Revision); err != nil {
+			return nil, err
+		}
+		return remote, nil
+	}
 	uploaded := map[string]struct{}{}
 	for _, e := range entries {
 		if _, ok := have[e.SHA256]; ok {

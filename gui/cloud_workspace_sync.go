@@ -294,6 +294,12 @@ func (p *cloudWorkspaceProtocol) Push(ctx context.Context, root string) (*cloudW
 	for _, e := range remote.Entries {
 		have[e.SHA256] = struct{}{}
 	}
+	if cloudWorkspaceTreesEqual(entries, remote.Entries) {
+		if err := writeCloudWorkspaceLocalState(root, remote.Revision); err != nil {
+			return nil, err
+		}
+		return remote, nil
+	}
 	uploaded := map[string]struct{}{}
 	for _, e := range entries {
 		if _, ok := have[e.SHA256]; ok {

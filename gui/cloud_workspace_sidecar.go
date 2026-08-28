@@ -139,6 +139,17 @@ func (a *App) cloudWorkspaceTaskProjectPath(workspaceID string) string {
 	return normalizeProjectSessionPath(a.findVisibleCloudWorkspaceTask(workspaceID).ProjectPath)
 }
 
+func (a *App) putCloudWorkspaceSidecarLimited(ctx context.Context, workspaceID, name string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if int64(len(data)) > cloudWorkspaceSidecarMaxBytes {
+		log.Printf("[cloud_workspace] skip oversized sidecar workspace=%s name=%s size=%d", workspaceID, name, len(data))
+		return nil
+	}
+	return a.putCloudWorkspaceSidecar(ctx, workspaceID, name, data)
+}
+
 func (a *App) putCloudWorkspaceSidecar(ctx context.Context, workspaceID, name string, data []byte) error {
 	if a == nil || len(data) == 0 {
 		return nil
@@ -343,20 +354,18 @@ func (a *App) flushCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 	}
 	ownerID := projectSessionOwnerID(projectPath)
 	if data := readCloudWorkspaceSidecarFile(stickyCodingMemoryFilePath(ownerID)); len(data) > 0 {
-		if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarWorkbench, data); err != nil {
+		if err := a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarWorkbench, data); err != nil {
 			return err
 		}
 	}
 	if data := readCloudWorkspaceSidecarFile(codingExecCheckpointFilePath(ownerID, projectPath)); len(data) > 0 {
-		if int64(len(data)) > cloudWorkspaceSidecarMaxBytes {
-			log.Printf("[cloud_workspace] skip oversized checkpoint sidecar workspace=%s size=%d", workspaceID, len(data))
-		} else if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarCheckpoint, data); err != nil {
+		if err := a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarCheckpoint, data); err != nil {
 			return err
 		}
 	}
 	if session := a.collectCloudWorkspaceTabSession(projectPath); session != nil {
 		if raw := marshalCloudWorkspaceSessionSidecar(session); len(raw) > 0 {
-			if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession, raw); err != nil {
+			if err := a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarSession, raw); err != nil {
 				return err
 			}
 		}
