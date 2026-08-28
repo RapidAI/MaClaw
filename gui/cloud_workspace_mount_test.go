@@ -551,10 +551,7 @@ func TestAddCloudWorkspaceWatchRecursiveSkipsIgnoredDirs(t *testing.T) {
 func TestCreateTaskWithCloudWorkspaceTagsExplicitID(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("云端任务", `D:\not\from\this\path`, "coding_dev", "cws_demo")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", `D:\not\from\this\path`, "coding_dev", "cws_demo")
 	if !projectRecordHasTagLike(created.Tags, cloudWorkspaceTag("cws_demo")) {
 		t.Fatalf("missing cloud_workspace tag: %v", created.Tags)
 	}
@@ -573,10 +570,7 @@ func TestCreateTaskWithCloudWorkspaceTagsExplicitID(t *testing.T) {
 func TestHideTaskReleasesCloudWorkspaceLease(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_hide")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_hide")
 	if lookupHeldCloudWorkspace("cws_hide") == nil {
 		t.Fatal("expected held mount")
 	}
@@ -590,7 +584,7 @@ func TestHideTaskReleasesCloudWorkspaceLease(t *testing.T) {
 	if !deleted {
 		t.Fatal("hide should DELETE lease")
 	}
-	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != "" {
+	if got := mustResumeCloudWorkspaceTask(t, app, "cws_hide"); got.ProjectPath != "" {
 		t.Fatalf("resume after hide=%q", got.ProjectPath)
 	}
 }
@@ -635,10 +629,7 @@ func TestHeartbeat409MarksReadOnlyAndSkipsPush(t *testing.T) {
 func TestResumeCloudWorkspaceTaskRePreparesAfterRelease(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_resume")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_resume")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := app.releaseCloudWorkspace(ctx, "cws_resume", false); err != nil {
@@ -650,7 +641,7 @@ func TestResumeCloudWorkspaceTaskRePreparesAfterRelease(t *testing.T) {
 	hub.mu.Lock()
 	before := hub.leaseAcquires
 	hub.mu.Unlock()
-	resumed := app.ResumeCloudWorkspaceTask("cws_resume")
+	resumed := mustResumeCloudWorkspaceTask(t, app, "cws_resume")
 	if resumed.ProjectPath != created.ProjectPath {
 		t.Fatalf("resume=%q want %q", resumed.ProjectPath, created.ProjectPath)
 	}
@@ -668,10 +659,7 @@ func TestResumeCloudWorkspaceTaskRePreparesAfterRelease(t *testing.T) {
 func TestResumeCloudWorkspaceTaskFindsTagAfterProcessMapClear(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_restart")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_restart")
 	resetCloudWorkspaceMounts()
 	cloudWorkspaceDialogMu.Lock()
 	cloudWorkspaceTaskByID = map[string]ProjectSearchResult{}
@@ -679,11 +667,11 @@ func TestResumeCloudWorkspaceTaskFindsTagAfterProcessMapClear(t *testing.T) {
 	if _, ok := lookupCloudWorkspaceTask("cws_restart"); ok {
 		t.Fatal("process map should be empty after restart")
 	}
-	resumed := app.ResumeCloudWorkspaceTask("cws_restart")
+	resumed := mustResumeCloudWorkspaceTask(t, app, "cws_restart")
 	if resumed.ProjectPath != created.ProjectPath {
 		t.Fatalf("tag resume=%q want %q", resumed.ProjectPath, created.ProjectPath)
 	}
-	again := app.CreateTaskWithCloudWorkspace("云端任务重复", "", "coding_dev", "cws_restart")
+	again := mustCreateCloudWorkspaceTask(t, app, "云端任务重复", "", "coding_dev", "cws_restart")
 	if again.ProjectPath != created.ProjectPath {
 		t.Fatalf("create must reuse 1:1 task, got %q want %q", again.ProjectPath, created.ProjectPath)
 	}
@@ -692,10 +680,7 @@ func TestResumeCloudWorkspaceTaskFindsTagAfterProcessMapClear(t *testing.T) {
 func TestHideTaskKeepsLeaseWhenPushFails(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_pushfail")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_pushfail")
 	if err := os.WriteFile(filepath.Join(created.WorkingDir, "dirty.txt"), []byte("unsynced"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -714,13 +699,45 @@ func TestHideTaskKeepsLeaseWhenPushFails(t *testing.T) {
 	}
 }
 
+func TestCreateTaskWithCloudWorkspaceReturnsPrepareError(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{conflictUntilForce: true, acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	cloudWorkspaceConfirmStealFn = func(string) bool { return false }
+	_, err := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_busy")
+	if err == nil || !strings.Contains(err.Error(), "占用") {
+		t.Fatalf("create should surface in-use error, got %v", err)
+	}
+}
+
+func TestPrepareSendsHeartbeatDuringSync(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	cloudWorkspaceBackgroundDisabled = false
+	cloudWorkspaceHeartbeatIntervalValue = time.Hour
+	t.Cleanup(func() {
+		cloudWorkspaceBackgroundDisabled = true
+		cloudWorkspaceHeartbeatIntervalValue = cloudWorkspaceHeartbeatInterval
+	})
+	if _, err := app.PrepareCloudWorkspace("cws_hb"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.Lock()
+		n := hub.heartbeats
+		hub.mu.Unlock()
+		if n >= 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("prepare must heartbeat before Pull/Push finishes")
+}
+
 func TestResumeTaskPreparesCloudWorkspace(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_sidebar")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_sidebar")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := app.releaseCloudWorkspace(ctx, "cws_sidebar", false); err != nil {

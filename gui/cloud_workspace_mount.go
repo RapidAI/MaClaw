@@ -325,24 +325,33 @@ func (a *App) startCloudWorkspaceHeartbeat(mount *cloudWorkspaceHeldMount) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		beat := func() bool {
+			hbCtx, hbCancel := context.WithTimeout(context.Background(), cloudWorkspaceRequestTimeout)
+			data, status, err := a.cloudWorkspaceHubRequest(hbCtx, http.MethodPost, cloudWorkspaceLeaseHeartbeatPath(workspaceID, leaseID), nil)
+			hbCancel()
+			if err != nil {
+				log.Printf("[cloud_workspace] heartbeat failed workspace=%s err=%v", workspaceID, err)
+				return true
+			}
+			if status == http.StatusConflict {
+				applyCloudWorkspaceStolen(mount)
+				return false
+			}
+			if status >= 300 {
+				log.Printf("[cloud_workspace] heartbeat status=%d workspace=%s body=%s", status, workspaceID, strings.TrimSpace(string(data)))
+			}
+			return true
+		}
+		if !beat() {
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				hbCtx, hbCancel := context.WithTimeout(context.Background(), cloudWorkspaceRequestTimeout)
-				data, status, err := a.cloudWorkspaceHubRequest(hbCtx, http.MethodPost, cloudWorkspaceLeaseHeartbeatPath(workspaceID, leaseID), nil)
-				hbCancel()
-				if err != nil {
-					log.Printf("[cloud_workspace] heartbeat failed workspace=%s err=%v", workspaceID, err)
-					continue
-				}
-				if status == http.StatusConflict {
-					applyCloudWorkspaceStolen(mount)
+				if !beat() {
 					return
-				}
-				if status >= 300 {
-					log.Printf("[cloud_workspace] heartbeat status=%d workspace=%s body=%s", status, workspaceID, strings.TrimSpace(string(data)))
 				}
 			}
 		}
@@ -607,7 +616,7 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 	leaseID := mount.LeaseID
 	mount.mu.Unlock()
 	if !readOnly && strings.TrimSpace(root) != "" {
-		if _, err := a.pushCloudWorkspace(ctx, workspaceID, root); err != nil {
+		if _, err := a.cloudWorkspaceProtocol(workspaceID).Push(ctx, root); err != nil {
 			log.Printf("[cloud_workspace] release push failed workspace=%s err=%v", workspaceID, err)
 			if !deleteLeaseOnPushFail {
 				storeCloudWorkspaceMount(mount)
@@ -615,6 +624,8 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 				a.startCloudWorkspaceWatcher(mount)
 				return err
 			}
+		} else if err := a.flushCloudWorkspaceSidecars(ctx, workspaceID); err != nil {
+			log.Printf("[cloud_workspace] release sidecar flush failed workspace=%s err=%v", workspaceID, err)
 		}
 	}
 	if err := a.deleteCloudWorkspaceLease(ctx, workspaceID, leaseID); err != nil {
@@ -684,10 +695,20 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		return PreparedCloudWorkspace{}, fmt.Errorf("cloud workspace lease acquire failed")
 	}
 
-	releaseLease := func() {
+	mount := &cloudWorkspaceHeldMount{
+		WorkspaceID: workspaceID,
+		LeaseID:     outcome.LeaseID,
+		LocalPath:   localPath,
+		TenantID:    tenantID,
+	}
+	// Heartbeat must run during Pull/Push: a max-size sync can exceed LeaseTTL.
+	a.startCloudWorkspaceHeartbeat(mount)
+	failPrepare := func(err error) (PreparedCloudWorkspace, error) {
+		stopCloudWorkspaceMount(mount)
 		ctx, cancel := a.cloudWorkspaceRequestContext()
 		defer cancel()
 		_ = a.deleteCloudWorkspaceLease(ctx, workspaceID, outcome.LeaseID)
+		return PreparedCloudWorkspace{}, err
 	}
 
 	proto := a.cloudWorkspaceProtocol(workspaceID)
@@ -697,28 +718,23 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 	acquired := strings.TrimSpace(outcome.Acquired)
 	if acquired == cloudWorkspaceAcquiredRenewed {
 		if _, err := a.pushCloudWorkspace(syncCtx, workspaceID, localPath); err != nil {
-			releaseLease()
-			return PreparedCloudWorkspace{}, err
+			return failPrepare(err)
 		}
 	} else {
 		remote, err := proto.Transport.GetManifest(syncCtx)
 		if err != nil {
-			releaseLease()
-			return PreparedCloudWorkspace{}, err
+			return failPrepare(err)
 		}
 		dirty, dirtyErr := cloudWorkspaceCacheDirty(localPath, remote, force)
 		if dirtyErr != nil {
-			releaseLease()
-			return PreparedCloudWorkspace{}, dirtyErr
+			return failPrepare(dirtyErr)
 		}
 		if dirty && !a.confirmCloudWorkspaceDiscardDirty() {
-			releaseLease()
-			return PreparedCloudWorkspace{}, fmt.Errorf("已取消打开云端工作区")
+			return failPrepare(fmt.Errorf("已取消打开云端工作区"))
 		}
 		pulled, err := proto.Pull(syncCtx, localPath)
 		if err != nil {
-			releaseLease()
-			return PreparedCloudWorkspace{}, err
+			return failPrepare(err)
 		}
 		rev := ""
 		if pulled != nil {
@@ -727,20 +743,12 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 			rev = remote.Revision
 		}
 		if err := writeCloudWorkspaceLocalState(localPath, rev); err != nil {
-			releaseLease()
-			return PreparedCloudWorkspace{}, err
+			return failPrepare(err)
 		}
 		a.fetchCloudWorkspaceSidecars(syncCtx, workspaceID)
 	}
 
-	mount := &cloudWorkspaceHeldMount{
-		WorkspaceID: workspaceID,
-		LeaseID:     outcome.LeaseID,
-		LocalPath:   localPath,
-		TenantID:    tenantID,
-	}
 	storeCloudWorkspaceMount(mount)
-	a.startCloudWorkspaceHeartbeat(mount)
 	a.startCloudWorkspaceWatcher(mount)
 	return PreparedCloudWorkspace{LocalPath: localPath, WorkspaceID: workspaceID}, nil
 }

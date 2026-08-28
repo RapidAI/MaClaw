@@ -134,7 +134,7 @@ func writeCloudWorkspaceLocalState(root, revision string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, cloudWorkspaceCacheStateFile), raw, 0o600)
+	return atomicWriteFile(filepath.Join(dir, cloudWorkspaceCacheStateFile), raw)
 }
 
 // scanCloudWorkspaceLocal walks root with corelib ignore rules and returns slash paths.
@@ -365,7 +365,7 @@ func (p *cloudWorkspaceProtocol) Pull(ctx context.Context, root string) (*cloudW
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(dest, data, 0o600); err != nil {
+		if err := atomicWriteFile(dest, data); err != nil {
 			return nil, err
 		}
 	}

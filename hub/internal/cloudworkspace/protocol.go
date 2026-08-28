@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/cloudworkspaceignore"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
 
@@ -129,7 +130,7 @@ func writeLocalState(root, revision string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, cacheStateFile), raw, 0o600)
+	return fileutil.AtomicWriteFile(filepath.Join(dir, cacheStateFile), raw, 0o600)
 }
 
 // ReadLocalState returns last_pushed_revision, or empty if missing.
@@ -262,7 +263,7 @@ func (p *Protocol) Pull(ctx context.Context, root string) (*Manifest, error) {
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(dest, data, 0o600); err != nil {
+		if err := fileutil.AtomicWriteFile(dest, data, 0o600); err != nil {
 			return nil, err
 		}
 	}

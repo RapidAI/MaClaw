@@ -282,25 +282,28 @@ func (a *App) bindPreparedCloudWorkspaceTask(workspaceID string, result ProjectS
 
 // CreateTaskWithCloudWorkspace prepares the cache mount then creates a task tagged cloud_workspace:{id}.
 // workingDir is ignored: PrepareCloudWorkspace returns LocalPath as the working directory.
-func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string) ProjectSearchResult {
+func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string) (ProjectSearchResult, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, fmt.Errorf("workspace id is required")
 	}
 	prepared, err := a.PrepareCloudWorkspace(workspaceID)
-	if err != nil || strings.TrimSpace(prepared.LocalPath) == "" {
+	if err != nil {
 		log.Printf("[cloud_workspace] prepare failed id=%s err=%v", workspaceID, err)
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, err
+	}
+	if strings.TrimSpace(prepared.LocalPath) == "" {
+		return ProjectSearchResult{}, fmt.Errorf("cloud workspace cache path is empty")
 	}
 	if existing := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(existing.ProjectPath) != "" {
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
 		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
-		return bound
+		return bound, nil
 	}
 	name, mode = a.cloudWorkspaceTaskIdentity(workspaceID, name, mode)
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, fmt.Errorf("task name is required")
 	}
 	tags := []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}
 	if normalized := NormalizeCreateTaskMode(mode); normalized != "" {
@@ -310,28 +313,31 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	if strings.TrimSpace(result.ProjectPath) != "" {
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, result, prepared.LocalPath)
 		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
-		return bound
+		return bound, nil
 	}
-	return result
+	return result, fmt.Errorf("创建云端工作区任务失败")
 }
 
 // ResumeCloudWorkspaceTask returns the 1:1 task for workspaceID (process map or cloud_workspace: tag)
 // after re-running PrepareCloudWorkspace so tab/sidebar reopen holds the exclusive lease.
-func (a *App) ResumeCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
+func (a *App) ResumeCloudWorkspaceTask(workspaceID string) (ProjectSearchResult, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, nil
 	}
 	existing := a.findVisibleCloudWorkspaceTask(workspaceID)
 	if strings.TrimSpace(existing.ProjectPath) == "" {
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, nil
 	}
 	prepared, err := a.PrepareCloudWorkspace(workspaceID)
-	if err != nil || strings.TrimSpace(prepared.LocalPath) == "" {
+	if err != nil {
 		log.Printf("[cloud_workspace] resume prepare failed id=%s err=%v", workspaceID, err)
-		return ProjectSearchResult{}
+		return ProjectSearchResult{}, err
+	}
+	if strings.TrimSpace(prepared.LocalPath) == "" {
+		return ProjectSearchResult{}, fmt.Errorf("cloud workspace cache path is empty")
 	}
 	bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
 	a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
-	return bound
+	return bound, nil
 }

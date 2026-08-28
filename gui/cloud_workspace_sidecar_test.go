@@ -11,10 +11,7 @@ import (
 func TestCloudWorkspaceSidecarFlushOnRelease(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("标书项目", "", "coding_dev", "cws_sidecar")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "标书项目", "", "coding_dev", "cws_sidecar")
 	sticky := []byte(`{"kind":"local","goal":"finish bid"}`)
 	checkpoint := []byte(`{"tasks":[{"title":"impl"}]}`)
 	if err := os.WriteFile(filepath.Join(created.ProjectPath, stickyCodingMemoryFileName), sticky, 0o644); err != nil {
@@ -105,10 +102,7 @@ func TestCloudWorkspaceSidecarRestoreOnCreateTask(t *testing.T) {
 		},
 	}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("dialog-name", "", "", "cws_restore")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "dialog-name", "", "", "cws_restore")
 	if created.Name != "跨设备任务" {
 		t.Fatalf("name=%q", created.Name)
 	}
@@ -156,10 +150,7 @@ func TestCloudWorkspaceSidecarRestoreOnCreateTask(t *testing.T) {
 func TestCloudWorkspaceSidecarFlushOnTabClose(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("标书项目", "", "coding_dev", "cws_tabclose")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "标书项目", "", "coding_dev", "cws_tabclose")
 	if notice := app.CreateProjectTabSession("tab-close", created.ProjectPath); notice == "" {
 		t.Fatal("expected tab session")
 	}
@@ -192,10 +183,7 @@ func TestCloudWorkspaceSidecarSkipsOversizedCheckpoint(t *testing.T) {
 
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
-	created := app.CreateTaskWithCloudWorkspace("标书项目", "", "coding_dev", "cws_bigcp")
-	if created.ProjectPath == "" {
-		t.Fatal("empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "标书项目", "", "coding_dev", "cws_bigcp")
 	if err := os.WriteFile(filepath.Join(created.ProjectPath, codingExecCheckpointFileName), []byte("0123456789abcdef"), 0o644); err != nil {
 		t.Fatal(err)
 	}

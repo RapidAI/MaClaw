@@ -89,6 +89,27 @@ func TestCreateCloudWorkspaceQuotaError(t *testing.T) {
 	}
 }
 
+func mustCreateCloudWorkspaceTask(t *testing.T, app *App, name, workingDir, mode, workspaceID string) ProjectSearchResult {
+	t.Helper()
+	created, err := app.CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID)
+	if err != nil {
+		t.Fatalf("CreateTaskWithCloudWorkspace: %v", err)
+	}
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithCloudWorkspace returned empty task")
+	}
+	return created
+}
+
+func mustResumeCloudWorkspaceTask(t *testing.T, app *App, workspaceID string) ProjectSearchResult {
+	t.Helper()
+	got, err := app.ResumeCloudWorkspaceTask(workspaceID)
+	if err != nil {
+		t.Fatalf("ResumeCloudWorkspaceTask: %v", err)
+	}
+	return got
+}
+
 func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
 	prepared, err := app.PrepareCloudWorkspace("cws_demo")
@@ -110,14 +131,11 @@ func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 		t.Fatalf("expected reused dir, got %q vs %q", again.LocalPath, prepared.LocalPath)
 	}
 
-	if got := app.ResumeCloudWorkspaceTask("cws_demo"); got.ProjectPath != "" {
+	if got := mustResumeCloudWorkspaceTask(t, app, "cws_demo"); got.ProjectPath != "" {
 		t.Fatalf("resume before create=%+v", got)
 	}
 
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_demo")
-	if created.ProjectPath == "" {
-		t.Fatalf("CreateTaskWithCloudWorkspace returned empty task")
-	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_demo")
 	if created.WorkingDir != prepared.LocalPath {
 		t.Fatalf("working_dir=%q want %q", created.WorkingDir, prepared.LocalPath)
 	}
@@ -125,12 +143,15 @@ func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 		t.Fatalf("missing cloud_workspace tag: %v", created.Tags)
 	}
 
-	resumed := app.ResumeCloudWorkspaceTask("cws_demo")
+	resumed := mustResumeCloudWorkspaceTask(t, app, "cws_demo")
 	if resumed.ProjectPath != created.ProjectPath {
 		t.Fatalf("resume=%q want %q", resumed.ProjectPath, created.ProjectPath)
 	}
 
-	empty := app.CreateTaskWithCloudWorkspace("x", "", "", "")
+	empty, err := app.CreateTaskWithCloudWorkspace("x", "", "", "")
+	if err == nil {
+		t.Fatal("empty workspace id should error")
+	}
 	if empty.ProjectPath != "" {
 		t.Fatalf("empty workspace id should not create: %+v", empty)
 	}
@@ -138,27 +159,21 @@ func TestPrepareAndCreateTaskWithCloudWorkspaceMock(t *testing.T) {
 
 func TestHideTaskDropsCloudWorkspaceResumeMap(t *testing.T) {
 	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
-	created := app.CreateTaskWithCloudWorkspace("云端任务", "", "coding_dev", "cws_hide")
-	if created.ProjectPath == "" {
-		t.Fatal("CreateTaskWithCloudWorkspace returned empty task")
-	}
-	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != created.ProjectPath {
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_hide")
+	if got := mustResumeCloudWorkspaceTask(t, app, "cws_hide"); got.ProjectPath != created.ProjectPath {
 		t.Fatalf("resume before hide=%q want %q", got.ProjectPath, created.ProjectPath)
 	}
 
 	app.HideTask(created.ProjectPath)
-	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != "" {
+	if got := mustResumeCloudWorkspaceTask(t, app, "cws_hide"); got.ProjectPath != "" {
 		t.Fatalf("resume after hide=%q, want empty so a replacement can be created", got.ProjectPath)
 	}
 
-	replacement := app.CreateTaskWithCloudWorkspace("云端任务重试", "", "coding_dev", "cws_hide")
-	if replacement.ProjectPath == "" {
-		t.Fatal("replacement CreateTaskWithCloudWorkspace returned empty task")
-	}
+	replacement := mustCreateCloudWorkspaceTask(t, app, "云端任务重试", "", "coding_dev", "cws_hide")
 	if replacement.ProjectPath == created.ProjectPath {
 		t.Fatalf("replacement reused hidden path %q", replacement.ProjectPath)
 	}
-	if got := app.ResumeCloudWorkspaceTask("cws_hide"); got.ProjectPath != replacement.ProjectPath {
+	if got := mustResumeCloudWorkspaceTask(t, app, "cws_hide"); got.ProjectPath != replacement.ProjectPath {
 		t.Fatalf("resume after replacement=%q want %q", got.ProjectPath, replacement.ProjectPath)
 	}
 }
