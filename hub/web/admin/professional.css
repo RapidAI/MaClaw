@@ -62,7 +62,10 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 #tab-digital-assets #digitalAssetsAclSaveBtn:disabled{cursor:not-allowed;opacity:.58;box-shadow:none}
 #tab-digital-assets #digitalAssetsDetail{min-width:0}
 @media (max-width:860px){#tab-digital-assets .digital-assets-workspace{grid-template-columns:1fr}#tab-digital-assets #digitalAssetsList{max-height:260px}#tab-digital-assets .digital-assets-acl-tree{max-height:220px}}
-#tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-tree-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-bottom:8px}
+#tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-tree-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;margin-bottom:8px}
+#tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+#tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;height:26px;padding:0 8px;border:1px solid #d7e2ee;border-radius:999px;background:#f8fbff;color:#334155;font-size:12px;cursor:pointer}
+#tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-tree-toolbar input{height:34px;min-width:0;padding:0 10px;font-size:12px}
 #tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-tree-toolbar button{height:34px;min-height:34px;padding:0 10px;font-size:12px;box-shadow:none}
 #tab-system #tenantCloudWorkspaceSettingsCard .cws-acl-tree{max-height:260px;overflow:auto;border:1px solid #e1e8f1;border-radius:9px;padding:5px;background:#fbfcfe}

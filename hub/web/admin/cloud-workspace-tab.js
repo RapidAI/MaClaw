@@ -8,7 +8,7 @@
   var CWS_I18N = {
     en: {
       title: 'Cloud Workspace',
-      desc: 'Control who can create cloud workspaces, per-user quota, and capacity limits for this tenant.',
+      desc: 'Enable cloud workspaces for all users, or for multiple selected departments (including descendants). Users who are not enabled never see cloud workspaces when creating a task.',
       reload: 'Reload',
       save: 'Save Settings',
       saving: 'Saving...',
@@ -17,9 +17,9 @@
       modeLabel: 'Availability',
       modeOff: 'Off',
       modeAllUsers: 'Open to all users',
-      modeDepartments: 'Open by department',
+      modeDepartments: 'Open by department (multi-select)',
       departmentsLabel: 'Departments',
-      departmentsHint: 'Checking a department includes that node and its descendants. Members of child departments are included automatically.',
+      departmentsHint: 'Check one or more departments. Checking a parent includes all descendants. Only members of the selected departments (and their descendants) can use cloud workspaces.',
       selectedDepartments: '{n} department(s) selected',
       deptFilter: 'Filter departments...',
       deptUnknown: 'Unknown department (kept): {id}',
@@ -29,6 +29,8 @@
       groupsFailed: 'Failed to load departments: {error}',
       reloadGroups: 'Reload departments',
       clearDepartments: 'Clear selection',
+      selectVisible: 'Select visible',
+      selectedChipsAria: 'Selected departments',
       quotaLabel: 'Per-user quota (1-10)',
       maxMiBLabel: 'Per-workspace capacity (MiB)',
       tenantGiBLabel: 'Tenant total capacity (GiB)',
@@ -42,7 +44,7 @@
     },
     zh: {
       title: '\u4e91\u5de5\u4f5c\u533a',
-      desc: '\u63a7\u5236\u8c01\u53ef\u4ee5\u521b\u5efa\u4e91\u5de5\u4f5c\u533a\uff0c\u4ee5\u53ca\u6b64\u79df\u6237\u7684\u4eba\u5747\u914d\u989d\u4e0e\u5bb9\u91cf\u4e0a\u9650\u3002',
+      desc: '\u53ef\u4e3a\u5168\u5458\u5f00\u901a\uff0c\u4e5f\u53ef\u540c\u65f6\u52fe\u9009\u591a\u4e2a\u90e8\u95e8\u5f00\u901a\uff08\u542b\u5b50\u90e8\u95e8\uff09\u3002\u672a\u5f00\u901a\u7684\u7528\u6237\u5728\u65b0\u5efa\u4efb\u52a1\u65f6\u770b\u4e0d\u5230\u4e91\u7aef\u5de5\u4f5c\u533a\u3002',
       reload: '\u5237\u65b0',
       save: '\u4fdd\u5b58\u8bbe\u7f6e',
       saving: '\u4fdd\u5b58\u4e2d...',
@@ -51,9 +53,9 @@
       modeLabel: '\u5f00\u653e\u8303\u56f4',
       modeOff: '\u5173\u95ed',
       modeAllUsers: '\u5168\u5458\u5f00\u653e',
-      modeDepartments: '\u6309\u90e8\u95e8\u5f00\u653e',
+      modeDepartments: '\u6309\u90e8\u95e8\u5f00\u653e\uff08\u53ef\u591a\u9009\uff09',
       departmentsLabel: '\u90e8\u95e8',
-      departmentsHint: '\u52fe\u9009\u90e8\u95e8\u4f1a\u5305\u542b\u8be5\u8282\u70b9\u53ca\u5176\u5b50\u90e8\u95e8\u3002\u5b50\u90e8\u95e8\u6210\u5458\u81ea\u52a8\u88ab\u5305\u542b\u3002',
+      departmentsHint: '\u53ef\u540c\u65f6\u52fe\u9009\u591a\u4e2a\u90e8\u95e8\u3002\u52fe\u9009\u7236\u90e8\u95e8\u4f1a\u5305\u542b\u5176\u5168\u90e8\u5b50\u5b59\u3002\u53ea\u6709\u6240\u9009\u90e8\u95e8\u53ca\u5176\u5b50\u5b59\u7684\u6210\u5458\u53ef\u4ee5\u4f7f\u7528\u4e91\u7aef\u5de5\u4f5c\u533a\u3002',
       selectedDepartments: '\u5df2\u9009 {n} \u4e2a\u90e8\u95e8',
       deptFilter: '\u7b5b\u9009\u90e8\u95e8...',
       deptUnknown: '\u672a\u77e5\u90e8\u95e8\uff08\u5df2\u4fdd\u7559\uff09\uff1a{id}',
@@ -63,6 +65,8 @@
       groupsFailed: '\u52a0\u8f7d\u90e8\u95e8\u5931\u8d25: {error}',
       reloadGroups: '\u91cd\u65b0\u52a0\u8f7d\u90e8\u95e8',
       clearDepartments: '\u6e05\u7a7a\u9009\u62e9',
+      selectVisible: '\u5168\u9009\u5f53\u524d\u53ef\u89c1',
+      selectedChipsAria: '\u5df2\u9009\u90e8\u95e8',
       quotaLabel: '\u4eba\u5747\u914d\u989d\uff081-10\uff09',
       maxMiBLabel: '\u5355\u5de5\u4f5c\u533a\u5bb9\u91cf\uff08MiB\uff09',
       tenantGiBLabel: '\u79df\u6237\u603b\u5bb9\u91cf\uff08GiB\uff09',
@@ -312,11 +316,65 @@
     updateEmptyWarn();
   }
 
+  function deptLabelById() {
+    var labels = {};
+    (state.securityGroups || []).forEach(function(g) {
+      if (!g || !g.id) return;
+      labels[String(g.id)] = g.path || g.name || g.id;
+    });
+    return labels;
+  }
+
+  function selectedChipsHost() {
+    var host = byID('tenantCloudWorkspaceSelectedChips');
+    if (host) return host;
+    var summary = byID('tenantCloudWorkspaceSelectedDepartments');
+    if (!summary || !summary.parentNode) return null;
+    host = global.document.createElement('div');
+    host.id = 'tenantCloudWorkspaceSelectedChips';
+    host.className = 'cws-acl-chips';
+    host.setAttribute('aria-live', 'polite');
+    summary.parentNode.insertBefore(host, summary.nextSibling);
+    return host;
+  }
+
+  function renderSelectedChips() {
+    var host = selectedChipsHost();
+    if (!host) return;
+    var ids = state.selectedDepts || [];
+    if (!ids.length || currentMode() !== 'departments') {
+      host.innerHTML = '';
+      host.style.display = 'none';
+      return;
+    }
+    var labels = deptLabelById();
+    host.style.display = '';
+    host.setAttribute('aria-label', cwsx('selectedChipsAria'));
+    host.innerHTML = ids.map(function(id) {
+      var label = labels[id] || id;
+      return '<button type="button" class="cws-acl-chip" data-dept-id="' + escapeHtml(id) + '"'
+        + ' title="' + escapeHtml(label) + '">'
+        + '<span>' + escapeHtml(label) + '</span>'
+        + '<span aria-hidden="true">\u00d7</span></button>';
+    }).join('');
+    host.querySelectorAll('.cws-acl-chip').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var id = String(btn.getAttribute('data-dept-id') || '');
+        cardQueryAll('.cws-acl-tree-dept').forEach(function(cb) {
+          if (String(cb.value || '') === id) cb.checked = false;
+        });
+        state.selectedDepts = (state.selectedDepts || []).filter(function(x) { return x !== id; });
+        collectSelectedFromDom();
+        updateEmptyWarn();
+      });
+    });
+  }
+
   function updateSelectionSummary(count) {
     var summary = byID('tenantCloudWorkspaceSelectedDepartments');
-    if (!summary) return;
     if (count == null) count = collectSelectedFromDom().length;
-    summary.textContent = cwsx('selectedDepartments', { n: String(count) });
+    if (summary) summary.textContent = cwsx('selectedDepartments', { n: String(count) });
+    renderSelectedChips();
   }
 
   function updateEmptyWarn() {
@@ -422,6 +480,7 @@
           + ' placeholder="' + escapeHtml(cwsx('deptFilter')) + '"'
           + ' aria-label="' + escapeHtml(cwsx('deptFilter')) + '"'
           + '>'
+          + actionButton('tenantCloudWorkspaceSelectVisibleBtn', cwsx('selectVisible'), 'ghost')
           + actionButton('tenantCloudWorkspaceClearDepartmentsBtn', cwsx('clearDepartments'), 'ghost')
           + '</div>'
           + '<div class="cws-acl-tree" role="group" aria-label="' + escapeHtml(cwsx('departmentsLabel')) + '">'
@@ -446,6 +505,18 @@
     var deptFilter = byID('tenantCloudWorkspaceDeptFilter');
     if (deptFilter) {
       deptFilter.addEventListener('input', applyDeptFilter);
+    }
+    var selectVisible = byID('tenantCloudWorkspaceSelectVisibleBtn');
+    if (selectVisible) {
+      selectVisible.addEventListener('click', function() {
+        cardQueryAll('.cws-acl-tree-branch').forEach(function(branch) {
+          if (branch.style.display === 'none') return;
+          var cb = branch.querySelector('.cws-acl-tree-dept');
+          if (cb) cb.checked = true;
+        });
+        collectSelectedFromDom();
+        updateEmptyWarn();
+      });
     }
     var clearDepartments = byID('tenantCloudWorkspaceClearDepartmentsBtn');
     if (clearDepartments) {
@@ -509,8 +580,9 @@
     }
     var over = byID('tenantCloudWorkspaceOverQuota');
     if (over) {
-      var users = state.preview.over_quota_users.map(function(id) {
-        return String(id || '').trim();
+      var users = state.preview.over_quota_users.map(function(item) {
+        if (item && typeof item === 'object') return String(item.sn || '').trim();
+        return String(item || '').trim();
       }).filter(Boolean);
       if (!users.length) {
         over.style.display = 'none';

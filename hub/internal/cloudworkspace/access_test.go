@@ -167,6 +167,22 @@ func TestGranted_DepartmentsChildOfSelectedAllows(t *testing.T) {
 	}
 }
 
+func TestGranted_MultipleDepartmentsAreOR(t *testing.T) {
+	settings := Settings{Mode: ModeDepartments, DepartmentIDs: []string{"eng", "sales"}}
+	eng := newTestService(&fakeUsers{byID: map[string]*store.User{
+		"u1": {ID: "u1", Email: "eng@x.com"},
+	}}, nil)
+	if !mustGrant(t, eng, settings, testPrincipal()) {
+		t.Fatal("user in first of several selected departments should be allowed")
+	}
+	sales := newTestService(&fakeUsers{byID: map[string]*store.User{
+		"u1": {ID: "u1", Email: "sales@x.com"},
+	}}, nil)
+	if !mustGrant(t, sales, settings, testPrincipal()) {
+		t.Fatal("user in second of several selected departments should be allowed")
+	}
+}
+
 func TestGranted_DepartmentsSiblingDenies(t *testing.T) {
 	svc := newTestService(&fakeUsers{byID: map[string]*store.User{
 		"u1": {ID: "u1", Email: "sales@x.com"},

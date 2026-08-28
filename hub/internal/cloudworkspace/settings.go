@@ -296,6 +296,7 @@ func (s *Service) BuildPreview(ctx context.Context, tenantID string, settings Se
 	}
 	idSet := collectSelectedAndDescendants(tree, settings.DepartmentIDs)
 	preview.DepartmentCount = len(idSet)
+	rootID := strings.TrimSpace(tree.ID)
 	emails := make(map[string]struct{})
 	for id := range idSet {
 		members, err := s.Org.ListGroupMembers(ctx, id)
@@ -309,7 +310,7 @@ func (s *Service) BuildPreview(ctx context.Context, tenantID string, settings Se
 			}
 			// ListGroupMembers(root) also appends unassigned users; skip those so
 			// user_count matches Granted (empty GetUserGroupID is always deny).
-			if s.Groups != nil {
+			if id == rootID && s.Groups != nil {
 				gid, err := s.Groups.GetUserGroupID(ctx, email)
 				if err != nil {
 					continue
