@@ -332,6 +332,9 @@ func TestPrepareGrantedPullsServerTreeAndDeletesLocalExtras(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "extra.txt"), []byte("gone"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "stale-empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "node_modules"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -348,6 +351,9 @@ func TestPrepareGrantedPullsServerTreeAndDeletesLocalExtras(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "extra.txt")); !os.IsNotExist(err) {
 		t.Fatal("pull should delete unignored extra")
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "stale-empty")); !os.IsNotExist(err) {
+		t.Fatal("pull should prune empty leftover dirs")
 	}
 	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "node_modules", "x.js")); err != nil {
 		t.Fatal("ignored extras must not be deleted")
@@ -529,6 +535,68 @@ func TestDirtyCacheCancelDeletesLeaseAndDoesNotOpen(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "stale.txt")); err != nil {
 		t.Fatal("cancel must not pull/delete local files")
+	}
+}
+
+func TestMatchingTreeDoesNotPromptDirtyOnRevisionMismatch(t *testing.T) {
+	body := []byte("server")
+	sum := cloudWorkspaceSHA256Hex(body)
+	hub := &fakeCloudWorkspaceHub{
+		acquired: cloudWorkspaceAcquiredGranted,
+		revision: "rev-server",
+		entries:  []cloudWorkspaceManifestEntry{{Path: "a.txt", SHA256: sum, Size: int64(len(body))}},
+		objects:  map[string][]byte{sum: body},
+	}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	root := normalizeProjectSessionPath(app.cloudWorkspaceCachePath("tenant_acme", "cws_match"))
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCloudWorkspaceLocalState(root, "rev-old"); err != nil {
+		t.Fatal(err)
+	}
+	cloudWorkspaceConfirmDiscardDirtyFn = func() bool {
+		t.Fatal("identical files must not prompt discard")
+		return false
+	}
+	if _, err := app.PrepareCloudWorkspace("cws_match"); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+}
+
+func TestLocalExtrasPromptEvenIfRevisionMatches(t *testing.T) {
+	body := []byte("server")
+	sum := cloudWorkspaceSHA256Hex(body)
+	hub := &fakeCloudWorkspaceHub{
+		acquired: cloudWorkspaceAcquiredGranted,
+		revision: "rev-server",
+		entries:  []cloudWorkspaceManifestEntry{{Path: "a.txt", SHA256: sum, Size: int64(len(body))}},
+		objects:  map[string][]byte{sum: body},
+	}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	root := normalizeProjectSessionPath(app.cloudWorkspaceCachePath("tenant_acme", "cws_extras"))
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "extra.txt"), []byte("unpushed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCloudWorkspaceLocalState(root, "rev-server"); err != nil {
+		t.Fatal(err)
+	}
+	cloudWorkspaceConfirmDiscardDirtyFn = func() bool { return false }
+	_, err := app.PrepareCloudWorkspace("cws_extras")
+	if err == nil || !strings.Contains(err.Error(), "取消") {
+		t.Fatalf("unpushed extras must prompt, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "extra.txt")); err != nil {
+		t.Fatal("cancel must keep unpushed extras")
 	}
 }
 

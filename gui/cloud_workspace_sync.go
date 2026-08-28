@@ -218,21 +218,6 @@ func cloudWorkspaceTreesEqual(local []cloudWorkspaceManifestEntry, remote []clou
 }
 
 func cloudWorkspaceCacheDirty(root string, remote *cloudWorkspaceManifest, afterSteal bool) (bool, error) {
-	state, err := readCloudWorkspaceLocalState(root)
-	if err != nil {
-		return false, err
-	}
-	last := strings.TrimSpace(state.LastPushedRevision)
-	serverRev := ""
-	if remote != nil {
-		serverRev = strings.TrimSpace(remote.Revision)
-	}
-	if last != "" && last != serverRev {
-		return true, nil
-	}
-	if !afterSteal {
-		return false, nil
-	}
 	local, err := scanCloudWorkspaceLocal(root)
 	if err != nil {
 		return false, err
@@ -241,7 +226,20 @@ func cloudWorkspaceCacheDirty(root string, remote *cloudWorkspaceManifest, after
 	if remote != nil {
 		remoteEntries = remote.Entries
 	}
-	return !cloudWorkspaceTreesEqual(local, remoteEntries), nil
+	if cloudWorkspaceTreesEqual(local, remoteEntries) {
+		return false, nil
+	}
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return false, err
+	}
+	last := strings.TrimSpace(state.LastPushedRevision)
+	// Brand-new cache: pull without a prompt. Any existing cache (or a steal)
+	// with a different tree must confirm before Pull wipes local files.
+	if last == "" && !afterSteal {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (p *cloudWorkspaceProtocol) putBytes(ctx context.Context, sha string, data []byte) error {
@@ -409,10 +407,54 @@ func (p *cloudWorkspaceProtocol) Pull(ctx context.Context, root string) (*cloudW
 	if err != nil {
 		return nil, err
 	}
+	if err := pruneCloudWorkspaceEmptyDirs(root, matcher); err != nil {
+		return nil, err
+	}
 	if err := writeCloudWorkspaceLocalState(root, remote.Revision); err != nil {
 		return nil, err
 	}
 	return remote, nil
+}
+
+func pruneCloudWorkspaceEmptyDirs(root string, matcher *cloudworkspaceignore.Matcher) error {
+	if matcher == nil {
+		matcher = cloudworkspaceignore.NewMatcher("")
+	}
+	var dirs []string
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if matcher.ShouldIgnore(rel, true) {
+			return filepath.SkipDir
+		}
+		dirs = append(dirs, p)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		entries, readErr := os.ReadDir(dirs[i])
+		if readErr != nil || len(entries) != 0 {
+			continue
+		}
+		if err := os.Remove(dirs[i]); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 type cloudWorkspaceHTTPTransport struct {
