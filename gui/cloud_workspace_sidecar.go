@@ -32,6 +32,15 @@ type cloudWorkspaceTaskSidecar struct {
 	Tag  string `json:"tag"`
 }
 
+// cloudWorkspaceSessionSidecar is the Hub session.json payload: conversation
+// plus draft input, with the local tab_id / project_path stripped.
+type cloudWorkspaceSessionSidecar struct {
+	Conversation []interface{} `json:"conversation,omitempty"`
+	InputText    string        `json:"input_text,omitempty"`
+}
+
+var cloudWorkspaceSidecarMaxBytes = int64(cloudWorkspaceObjectMaxBytes)
+
 type cloudWorkspaceSidecarBundle struct {
 	Task       cloudWorkspaceTaskSidecar
 	Session    *TabSessionData
@@ -196,19 +205,27 @@ func (a *App) collectCloudWorkspaceTabSession(projectPath string) *TabSessionDat
 	if err != nil || index == nil {
 		return nil
 	}
-	tabID := ""
-	var best int64
+	liveID, archivedID := "", ""
+	var liveAt, archivedAt int64
 	for _, entry := range index.Tabs {
-		if entry.Archived {
-			continue
-		}
 		if normalizeProjectSessionPath(entry.ProjectPath) != projectPath {
 			continue
 		}
-		if tabID == "" || entry.LastActiveAt >= best {
-			tabID = entry.ID
-			best = entry.LastActiveAt
+		if entry.Archived {
+			if archivedID == "" || entry.LastActiveAt >= archivedAt {
+				archivedID = entry.ID
+				archivedAt = entry.LastActiveAt
+			}
+			continue
 		}
+		if liveID == "" || entry.LastActiveAt >= liveAt {
+			liveID = entry.ID
+			liveAt = entry.LastActiveAt
+		}
+	}
+	tabID := liveID
+	if tabID == "" {
+		tabID = archivedID
 	}
 	if tabID == "" && a != nil {
 		a.tabProjectPaths.Range(func(key, value any) bool {
@@ -232,6 +249,34 @@ func (a *App) collectCloudWorkspaceTabSession(projectPath string) *TabSessionDat
 		return nil
 	}
 	return session
+}
+
+func marshalCloudWorkspaceSessionSidecar(session *TabSessionData) []byte {
+	if session == nil {
+		return nil
+	}
+	raw, err := json.Marshal(cloudWorkspaceSessionSidecar{
+		Conversation: session.Conversation,
+		InputText:    session.InputText,
+	})
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	return raw
+}
+
+func parseCloudWorkspaceSessionSidecar(data []byte) *TabSessionData {
+	if len(data) == 0 {
+		return nil
+	}
+	var payload cloudWorkspaceSessionSidecar
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil
+	}
+	if payload.Conversation == nil && strings.TrimSpace(payload.InputText) == "" {
+		return nil
+	}
+	return &TabSessionData{Conversation: payload.Conversation, InputText: payload.InputText}
 }
 
 func mergeCloudWorkspaceTabSession(dst, src *TabSessionData, tabID, projectPath string) {
@@ -303,13 +348,14 @@ func (a *App) flushCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 		}
 	}
 	if data := readCloudWorkspaceSidecarFile(codingExecCheckpointFilePath(ownerID, projectPath)); len(data) > 0 {
-		if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarCheckpoint, data); err != nil {
+		if int64(len(data)) > cloudWorkspaceSidecarMaxBytes {
+			log.Printf("[cloud_workspace] skip oversized checkpoint sidecar workspace=%s size=%d", workspaceID, len(data))
+		} else if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarCheckpoint, data); err != nil {
 			return err
 		}
 	}
 	if session := a.collectCloudWorkspaceTabSession(projectPath); session != nil {
-		raw, err := json.Marshal(session)
-		if err == nil && len(raw) > 0 {
+		if raw := marshalCloudWorkspaceSessionSidecar(session); len(raw) > 0 {
 			if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession, raw); err != nil {
 				return err
 			}
@@ -359,12 +405,12 @@ func (a *App) fetchCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 		case cloudWorkspaceSidecarCheckpoint:
 			bundle.Checkpoint = data
 		case cloudWorkspaceSidecarSession:
-			var session TabSessionData
-			if err := json.Unmarshal(data, &session); err != nil {
-				log.Printf("[cloud_workspace] session sidecar json workspace=%s err=%v", workspaceID, err)
+			session := parseCloudWorkspaceSessionSidecar(data)
+			if session == nil {
+				log.Printf("[cloud_workspace] session sidecar json workspace=%s err=invalid", workspaceID)
 				continue
 			}
-			bundle.Session = &session
+			bundle.Session = session
 		case cloudWorkspaceSidecarTask:
 			var task cloudWorkspaceTaskSidecar
 			if err := json.Unmarshal(data, &task); err != nil {

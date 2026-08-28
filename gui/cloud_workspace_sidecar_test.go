@@ -65,9 +65,7 @@ func TestCloudWorkspaceSidecarFlushOnRelease(t *testing.T) {
 	if string(hub.sidecars[cloudWorkspaceSidecarCheckpoint]) != string(checkpoint) {
 		t.Fatalf("checkpoint sidecar=%q", hub.sidecars[cloudWorkspaceSidecarCheckpoint])
 	}
-	if !strings.Contains(string(hub.sidecars[cloudWorkspaceSidecarSession]), "continue the bid") {
-		t.Fatalf("session sidecar=%q", hub.sidecars[cloudWorkspaceSidecarSession])
-	}
+	assertCloudWorkspaceSessionSidecar(t, hub.sidecars[cloudWorkspaceSidecarSession], "continue the bid")
 	var task cloudWorkspaceTaskSidecar
 	if err := json.Unmarshal(hub.sidecars[cloudWorkspaceSidecarTask], &task); err != nil {
 		t.Fatal(err)
@@ -88,9 +86,7 @@ func TestCloudWorkspaceSidecarFlushOnRelease(t *testing.T) {
 func TestCloudWorkspaceSidecarRestoreOnCreateTask(t *testing.T) {
 	sticky := []byte(`{"kind":"local","goal":"restored sticky"}`)
 	checkpoint := []byte(`{"tasks":[{"title":"resume"}]}`)
-	sessionRaw, _ := json.Marshal(TabSessionData{
-		TabID:        "other-machine",
-		ProjectPath:  `D:\old\task`,
+	sessionRaw, _ := json.Marshal(cloudWorkspaceSessionSidecar{
 		Conversation: []interface{}{map[string]any{"role": "assistant", "content": "restored chat"}},
 		InputText:    "carry on",
 	})
@@ -149,7 +145,95 @@ func TestCloudWorkspaceSidecarRestoreOnCreateTask(t *testing.T) {
 	if session.InputText != "carry on" {
 		t.Fatalf("input=%q", session.InputText)
 	}
+	if session.TabID != "tab-restore" {
+		t.Fatalf("tab_id=%q", session.TabID)
+	}
 	if session.ProjectPath != created.ProjectPath {
 		t.Fatalf("session project=%q want %q", session.ProjectPath, created.ProjectPath)
+	}
+}
+
+func TestCloudWorkspaceSidecarFlushOnTabClose(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.CreateTaskWithCloudWorkspace("标书项目", "", "coding_dev", "cws_tabclose")
+	if created.ProjectPath == "" {
+		t.Fatal("empty task")
+	}
+	if notice := app.CreateProjectTabSession("tab-close", created.ProjectPath); notice == "" {
+		t.Fatal("expected tab session")
+	}
+	if err := app.ensureProjectTabSessionPersist().SaveSession(&TabSessionData{
+		TabID:        "tab-close",
+		ProjectPath:  created.ProjectPath,
+		Conversation: []interface{}{map[string]any{"role": "user", "content": "keep going"}},
+		InputText:    "draft",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app.CloseProjectTabSession("tab-close")
+	if lookupHeldCloudWorkspace("cws_tabclose") != nil {
+		t.Fatal("tab close should release the lease")
+	}
+
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	assertCloudWorkspaceSessionSidecar(t, hub.sidecars[cloudWorkspaceSidecarSession], "keep going")
+	if !hub.deleted {
+		t.Fatal("tab close should DELETE lease")
+	}
+}
+
+func TestCloudWorkspaceSidecarSkipsOversizedCheckpoint(t *testing.T) {
+	prev := cloudWorkspaceSidecarMaxBytes
+	cloudWorkspaceSidecarMaxBytes = 8
+	t.Cleanup(func() { cloudWorkspaceSidecarMaxBytes = prev })
+
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := app.CreateTaskWithCloudWorkspace("标书项目", "", "coding_dev", "cws_bigcp")
+	if created.ProjectPath == "" {
+		t.Fatal("empty task")
+	}
+	if err := os.WriteFile(filepath.Join(created.ProjectPath, codingExecCheckpointFileName), []byte("0123456789abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(created.WorkingDir, "src.txt"), []byte("code"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.ReleaseCloudWorkspace("cws_bigcp"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if _, ok := hub.sidecars[cloudWorkspaceSidecarCheckpoint]; ok {
+		t.Fatalf("oversized checkpoint must be skipped: %q", hub.sidecars[cloudWorkspaceSidecarCheckpoint])
+	}
+	var task cloudWorkspaceTaskSidecar
+	if err := json.Unmarshal(hub.sidecars[cloudWorkspaceSidecarTask], &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Name != "标书项目" {
+		t.Fatalf("task sidecar=%+v", task)
+	}
+	if !hub.deleted {
+		t.Fatal("oversized checkpoint must not keep the lease")
+	}
+}
+
+func assertCloudWorkspaceSessionSidecar(t *testing.T, raw []byte, wantContent string) {
+	t.Helper()
+	if !strings.Contains(string(raw), wantContent) {
+		t.Fatalf("session sidecar=%q", raw)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("session sidecar json: %v", err)
+	}
+	for _, key := range []string{"tab_id", "project_path", "working_dir"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("%s leaked into session sidecar: %s", key, raw)
+		}
 	}
 }
