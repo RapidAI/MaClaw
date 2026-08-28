@@ -400,6 +400,15 @@ function Stage-DeployAssets {
         throw 'HubCenter problem reports script is missing authenticated local attachment download support.'
     }
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\admin') -Label 'hub admin web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\admin\cloud-workspace-tab.js') -Label 'hub cloud workspace admin script'
+    $hubAdminIndex = Get-Content -LiteralPath (Join-Path $StageRoot 'hub\web\admin\index.html') -Raw
+    if ($hubAdminIndex -notmatch 'id="tenantCloudWorkspaceSettingsCard"' -or $hubAdminIndex -notmatch 'cloud-workspace-tab\.js') {
+        throw 'Hub admin page does not include the cloud workspace settings card.'
+    }
+    $hubCloudWorkspaceScript = Get-Content -LiteralPath (Join-Path $StageRoot 'hub\web\admin\cloud-workspace-tab.js') -Raw
+    if ($hubCloudWorkspaceScript -notmatch 'loadTenantCloudWorkspaceSettings' -or $hubCloudWorkspaceScript -notmatch '/api/admin/cloud-workspaces/settings') {
+        throw 'Hub cloud workspace admin script is missing settings load/save.'
+    }
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\dist') -Label 'hub pwa web dist'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
@@ -1366,6 +1375,9 @@ function Invoke-PostDeploySmokeCheck {
         if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
             $checks += [pscustomobject]@{ Label = 'hub healthz'; Url = ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub admin'; Url = ("{0}/admin" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
+            $checks += [pscustomobject]@{ Label = 'hub cloud workspace admin page'; Url = ("{0}/admin" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200; BodyMarker = 'tenantCloudWorkspaceSettingsCard' }
+            $checks += [pscustomobject]@{ Label = 'hub cloud workspace admin script'; Url = ("{0}/admin/cloud-workspace-tab.js" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200; BodyMarker = 'loadTenantCloudWorkspaceSettings' }
+            $checks += [pscustomobject]@{ Label = 'hub cloud workspace settings api'; Url = ("{0}/api/admin/cloud-workspaces/settings" -f $target.HubPublicUrl.TrimEnd('/')); Want = 401 }
             $checks += [pscustomobject]@{ Label = 'hub pet pack v2 guide'; Url = ("{0}/pet-pack-help?lang=zh" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200; BodyMarker = 'native-skeleton' }
             $checks += [pscustomobject]@{ Label = 'hub card store page'; Url = ("{0}/card_store?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
             $checks += [pscustomobject]@{ Label = 'hub card store public api'; Url = ("{0}/api/card-store/products?tenant_id=tenant_default" -f $target.HubPublicUrl.TrimEnd('/')); Want = 200 }
