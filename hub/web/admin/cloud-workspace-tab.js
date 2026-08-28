@@ -151,7 +151,7 @@
 
   function canManageTenantCloudWorkspace() {
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
-    return !!profile && String(profile.scope || '').toLowerCase() === 'tenant';
+    return !!profile;
   }
 
   function actionButton(id, label, kind) {

@@ -382,9 +382,9 @@ func NewRouter(
 		cloudWorkspaceSvc.Failures = diagnostics.NewFailureEventRecorder(failureLogs)
 	}
 	cloudWorkspaceSvc.StartHourlyGC()
-	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireTenantAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
-	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireTenantAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
-	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireTenantAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
+	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces", CloudWorkspaceCreateHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}", CloudWorkspaceRenameHandler(cloudWorkspaceSvc, identity))
@@ -600,6 +600,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/model_download/trigger", requireGlobalAdmin(TriggerAdminModelDownloadHandler(configPath)))
 	mux.HandleFunc("GET /api/llm/service/status", GetLLMServiceStatusHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/service/account", GetLLMServiceAccountHandler(identity, system, securitySvc))
+	mux.HandleFunc("PUT /api/llm/service/timezone", SetLLMServiceBillingTimezoneHandler(identity, system))
 	mux.HandleFunc("GET /api/mobile/bootstrap", MobileBootstrapHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/mobile/entitlements/caps", MobileEntitlementsCapsHandler(identity, system, securitySvc))
 	mux.HandleFunc("PUT /api/mobile/entitlements/caps", MobileEntitlementsCapsHandler(identity, system, securitySvc))
@@ -767,8 +768,6 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/users/smart_route", requireAdmin(UpdateUserSmartRouteHandler(identity.UsersRepo())))
 	mux.HandleFunc("GET /api/admin/smart_route_all", requireAdmin(GetSmartRouteAllHandler(system)))
 	mux.HandleFunc("PUT /api/admin/smart_route_all", requireAdmin(UpdateSmartRouteAllHandler(system)))
-	// HTTP threat class-head (not the LLM routing class-head).
-	mountHTTPThreatAdmin(mux, requireTenantAdmin, runtimeDataDir, identity, adminAudit)
 	// Security management
 	if securitySvc != nil {
 		mux.HandleFunc("GET /api/admin/security/groups", requireTenantAdmin(SecurityGroupsHandler(securitySvc)))

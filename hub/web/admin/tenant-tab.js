@@ -965,7 +965,7 @@
     var tenantDigitalAssetsCard = byID('tenantDigitalAssetsSettingsCard');
     if (tenantDigitalAssetsCard) tenantDigitalAssetsCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
     var tenantCloudWorkspaceCard = byID('tenantCloudWorkspaceSettingsCard');
-    if (tenantCloudWorkspaceCard) tenantCloudWorkspaceCard.classList.toggle('hidden', !(hasProfile && tenantAdmin));
+    if (tenantCloudWorkspaceCard) tenantCloudWorkspaceCard.classList.toggle('hidden', !hasProfile);
     if (!(hasProfile && tenantAdmin) && typeof global.stopDigitalAssetsForUnauthorizedScope === 'function') {
       global.stopDigitalAssetsForUnauthorizedScope();
     }

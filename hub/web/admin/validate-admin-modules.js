@@ -18,7 +18,6 @@ const expectedScripts = [
   'governance-tab.js',
   'marketplace-tab.js',
   'security-tab.js',
-  'httpthreat-tab.js',
   'machines-tab.js',
   've-tab.js',
   'im-tab.js',
@@ -42,7 +41,7 @@ const expectedScripts = [
   'overview-config-agent.js',
   'admin-bootstrap.js'
 ];
-const lazyAdminScripts = new Set(['security-tab.js', 'httpthreat-tab.js', 'digital-assets-tab.js', 'llm-provider-tab.js', 'llm-service-tabs.js']);
+const lazyAdminScripts = new Set(['security-tab.js', 'digital-assets-tab.js', 'llm-provider-tab.js', 'llm-service-tabs.js']);
 const removedLegacyFiles = [
   'llmproviders.js',
   'usagestats.js',
@@ -60,7 +59,7 @@ const expectedExports = {
   'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare'],
   'admin-ui.js': ['confirmDialog', 'promptDialog', 'dismissActiveDialog', 'isDialogOpen', 'admin-ui-dialog-overlay', 'mountDialogSession', 'DIALOG_Z_INDEX', '20000', 'bindModalOverlayDismiss', 'isImeComposing', 'skipDismiss'],
   'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'stopDigitalAssetsForUnauthorizedScope', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy', 'downloadBackup', 'backupFilename', 'global.URL.createObjectURL', 'Authorization', 'res.status === 401', 'global.logoutAdmin'],
-  'cloud-workspace-tab.js': ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', 'renderDepartmentTree', 'renderCwsAclPanel', 'normalizeSecurityGroupTree', 'loadSecurityGroups', 'unknownSelectedDepartments', 'cwsMaxDepartmentTreeDepth', 'cws-acl-tree', 'cws-acl-tree-dept', 'cws-acl-tree-branch', 'cws-acl-tree-children', 'cws-acl-tree-toolbar', '/api/admin/security/groups', '/api/admin/cloud-workspaces/settings', 'department_ids', 'max_workspace_bytes', 'tenant_max_total_bytes', 'tenantCloudWorkspaceQuota', 'CWS_QUOTA_MAX', 'emptyDepartmentsWarn']
+  'cloud-workspace-tab.js': ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', 'renderDepartmentTree', 'renderCwsAclPanel', 'normalizeSecurityGroupTree', 'loadSecurityGroups', 'unknownSelectedDepartments', 'cwsMaxDepartmentTreeDepth', 'cws-acl-tree', 'cws-acl-tree-dept', 'cws-acl-tree-branch', 'cws-acl-tree-children', 'cws-acl-tree-toolbar', '/api/admin/security/groups', '/api/admin/cloud-workspaces/settings', 'department_ids', 'max_workspace_bytes', 'tenant_max_total_bytes', 'tenantCloudWorkspaceQuota', 'CWS_QUOTA_MAX', 'emptyDepartmentsWarn', 'selectVisible', 'tenantCloudWorkspaceSelectVisibleBtn', 'cws-acl-chip']
 };
 
 function fail(message) {
@@ -322,11 +321,11 @@ function assertTenantAdminUIHooks() {
   ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings'].forEach(function(name) {
     const handler = extractNamedFunction(cloudWorkspace, name);
     if (!handler.includes('if (!canManageTenantCloudWorkspace()) return null;')) {
-      fail('cloud-workspace-tab.js must guard ' + name + ' to tenant admins.');
+      fail('cloud-workspace-tab.js must guard ' + name + ' behind a signed-in admin profile.');
     }
   });
-  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !(hasProfile && tenantAdmin))")) {
-    fail('tenant-tab.js must show cloud workspace settings only to tenant admins.');
+  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !hasProfile)")) {
+    fail('tenant-tab.js must show cloud workspace settings to signed-in admins.');
   }
   if (!admin.includes('loadTenantCloudWorkspaceSettings')) {
     fail('admin.js must load tenant cloud workspace settings in the tenant system scope.');
@@ -781,6 +780,48 @@ function assertUsageStatsSubtabState() {
   });
 }
 
+function assertUsageStatsRMBEstimate() {
+  const source = read('usage-stats-tab.js');
+  const fnSource = extractNamedFunction(source, 'rmbCostDetails');
+  const sandbox = {
+    Math: Math,
+    Number: Number,
+    fmtRMB: function(value) { return String(value); },
+    fmtInt: function(value) { return String(value); },
+    ust: function(key) { return key; },
+    rmbCoverageDetails: function(usage) { return { available: Number(usage && usage.rmb_pricing_snapshot_requests || 0) > 0, text: 'coverage' }; }
+  };
+  vm.runInNewContext(fnSource + '\nthis.rmbCostDetails = rmbCostDetails;', sandbox, { filename: 'usage-stats-tab.js:rmbCostDetails' });
+  const estimated = sandbox.rmbCostDetails({
+    input_tokens: 5_757_253,
+    output_tokens: 89_002,
+    input_cost_rmb: 0.1048,
+    output_cost_rmb: 0.0402,
+    total_cost_rmb: 0.145,
+    rmb_priced_input_tokens: 104_775,
+    rmb_priced_output_tokens: 20,
+    rmb_pricing_snapshot_requests: 1,
+    // These mixed prices are deliberately not used as a fallback: legacy
+    // Tokens lack a route attribution, so selecting one would fabricate a
+    // precision the report does not have.
+    provider_pricing: [
+      { input_rmb_per_10k: 0.1, output_rmb_per_10k: 0.2 },
+      { input_rmb_per_10k: 2, output_rmb_per_10k: 10 }
+    ]
+  });
+  if (!estimated.estimated || !estimated.lowerBound || estimated.total < 5.7 || estimated.total > 5.9 || estimated.outputRatePerM !== null || estimated.unestimatedTokens !== 88_982) {
+    fail('usage-stats-tab.js must use only representative directional frozen-price samples for the RMB lower-bound estimate; got ' + JSON.stringify(estimated));
+  }
+  const unavailable = sandbox.rmbCostDetails({ input_tokens: 1_000 });
+  if (unavailable.available || unavailable.estimated) {
+    fail('usage-stats-tab.js must not invent an RMB estimate without a frozen-price sample.');
+  }
+  const tooltipSource = extractNamedFunction(source, 'creditCalculationDetails');
+  if (!tooltipSource.includes("creditsTooltipRMBRateUnavailable") || !tooltipSource.includes('rmbCost.lowerBound && ratePerM === null')) {
+    fail('usage-stats-tab.js must not present an insufficient RMB directional sample as a zero effective rate.');
+  }
+}
+
 function assertDigitalAssetDepartmentTreeRender() {
   const source = read('digital-assets-tab.js');
   if (!source.includes('function canManageDigitalAssets()')) {
@@ -879,11 +920,23 @@ function assertCloudWorkspaceDepartmentTreeRender() {
   if (!html.includes('id="tenantCloudWorkspaceQuota" type="number" min="1" max="10"')) {
     fail('index.html must hard-cap cloud workspace quota at 10.');
   }
-  ['cws-acl-tree', 'cws-acl-tree-toolbar', 'cws-acl-tree-children', 'cws-acl-tree-dept-row', '--cws-acl-tree-depth'].forEach(function(marker) {
+  ['cws-acl-tree', 'cws-acl-tree-toolbar', 'cws-acl-tree-children', 'cws-acl-tree-dept-row', '--cws-acl-tree-depth', 'cws-acl-chips', 'cws-acl-chip'].forEach(function(marker) {
     if (!css.includes(marker)) {
       fail('professional.css is missing cloud-workspace tree marker: ' + marker);
     }
   });
+  if (!source.includes('type="checkbox" class="cws-acl-tree-dept"')) {
+    fail('cloud-workspace-tab.js must use checkboxes so multiple departments can be selected.');
+  }
+  if (!source.includes('selectVisible') || !source.includes('tenantCloudWorkspaceSelectVisibleBtn')) {
+    fail('cloud-workspace-tab.js must offer select-visible for multi-department enablement.');
+  }
+  if (!html.includes('id="tenantCloudWorkspaceModeAllUsers"') || !html.includes('id="tenantCloudWorkspaceModeDepartments"')) {
+    fail('index.html must offer all-users and by-department cloud workspace modes.');
+  }
+  if (!source.includes('item.sn')) {
+    fail('cloud-workspace-tab.js must render over-quota users from preview.sn, not object toString.');
+  }
   const normalizeTree = extractNamedFunction(source, 'normalizeSecurityGroupTree');
   const renderTree = extractNamedFunction(source, 'renderDepartmentTree');
   const panel = extractNamedFunction(source, 'renderCwsAclPanel');
@@ -997,12 +1050,10 @@ function assertAdminApiRoutesRegistered() {
   const router = fs.readFileSync(routerPath, 'utf8');
   const migrationHandlerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'migration_handlers.go');
   const migrationHandler = fs.existsSync(migrationHandlerPath) ? fs.readFileSync(migrationHandlerPath, 'utf8') : '';
-  const httpThreatHandlerPath = path.join(root, '..', '..', 'internal', 'httpapi', 'httpthreat_handler.go');
-  const httpThreatHandler = fs.existsSync(httpThreatHandlerPath) ? fs.readFileSync(httpThreatHandlerPath, 'utf8') : '';
   const routes = [];
   const routePattern = /mux\.HandleFunc\("(GET|POST|PUT|PATCH|DELETE) (\/api\/admin\/[^" ]+)/g;
   let routeMatch;
-  [router, migrationHandler, httpThreatHandler].forEach(function(content) {
+  [router, migrationHandler].forEach(function(content) {
     routePattern.lastIndex = 0;
     while ((routeMatch = routePattern.exec(content))) {
       routes.push(routeMatch[2]);
@@ -1168,6 +1219,31 @@ function assertRemovedLegacyFilesDocumented() {
   removedLegacyFiles.forEach(function(name) {
     if (!docs.includes('- ' + name)) {
       fail('MODULES.md must document removed legacy file: ' + name);
+    }
+  });
+}
+
+function assertHTTPThreatFeatureRemoved() {
+  const workspaceRoot = path.join(root, '..', '..', '..');
+  [
+    path.join(workspaceRoot, 'MaClawSrv', 'httpthreat.go'),
+    path.join(workspaceRoot, 'corelib', 'httpthreat'),
+    path.join(root, '..', '..', 'internal', 'httpapi', 'httpthreat_handler.go'),
+    path.join(root, 'httpthreat-tab.js')
+  ].forEach(function(featurePath) {
+    if (fs.existsSync(featurePath)) {
+      fail('HTTP threat classification must remain removed: ' + featurePath);
+    }
+  });
+
+  [
+    [read('admin.js'), 'admin.js'],
+    [read('admin-lazy-module-loader.js'), 'admin-lazy-module-loader.js'],
+    [fs.readFileSync(indexPath, 'utf8'), 'index.html'],
+    [fs.readFileSync(path.join(root, '..', '..', 'internal', 'httpapi', 'router.go'), 'utf8'), 'router.go']
+  ].forEach(function(entry) {
+    if (/httpthreat/i.test(entry[0])) {
+      fail(entry[1] + ' must not retain HTTP threat classification references.');
     }
   });
 }
@@ -1448,6 +1524,7 @@ assertScopedRefreshHooks();
 assertMaclawAppEvidenceReviewMarkers();
 assertUsageRankingEmailFilter();
 assertUsageStatsSubtabState();
+assertUsageStatsRMBEstimate();
 assertDigitalAssetDepartmentTreeRender();
 assertCloudWorkspaceDepartmentTreeRender();
 assertDigitalAssetRoutesTenantScoped();
@@ -1455,6 +1532,7 @@ assertAdminAssetsNoStore();
 assertUserReferralPanelIsolation();
 assertLegacyMirrorRemoved();
 assertRemovedLegacyFilesDocumented();
+assertHTTPThreatFeatureRemoved();
 assertLLMProviderPricingHooks();
 assertLLMProviderBillingScheduleHooks();
 assertMaClawComputeProviderGate();

@@ -59,7 +59,7 @@
     var tenantAdmin = isTenantAdminProfile(profile);
     var tasks = tenantAdmin
       ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantCloudWorkspaceSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
-      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
+      : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants', 'loadTenantCloudWorkspaceSettings'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);
     // system-free guidance and the Config Assistant are tenant-admin only.
