@@ -21,7 +21,7 @@ func (s *Service) checkVolume(objectsDir string, requestSize int64) error {
 	}
 	avail, err := archiveutil.AvailableBytes(objectsDir)
 	if err != nil {
-		return nil
+		return err
 	}
 	need := requestSize
 	if need < VolumeReserveBytes {

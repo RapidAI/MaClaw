@@ -437,6 +437,14 @@ const generatedTaskTitle = (lang: string, mode: '' | 'coding_dev' | 'remote_codi
     return textForLang(lang, 'New task', '新建任务', '新建任務');
 };
 
+type CloudWorkspaceLease = {
+    held?: boolean;
+    machine_id?: string;
+    machine_name?: string;
+    is_self?: boolean;
+    expires_at?: string;
+};
+
 type CloudWorkspaceRow = {
     id?: string;
     name?: string;
@@ -444,6 +452,7 @@ type CloudWorkspaceRow = {
     updated_at?: string;
     lease_in_use?: boolean;
     lease_holder?: string;
+    lease?: CloudWorkspaceLease;
 };
 
 type CloudWorkspaceDeletedRow = {
@@ -470,13 +479,22 @@ const asCloudWorkspaceRow = (value: unknown): CloudWorkspaceRow | null => {
     const row = value as CloudWorkspaceRow;
     const id = typeof row.id === 'string' ? row.id.trim() : '';
     if (!id) return null;
+    let leaseInUse = row.lease_in_use === true;
+    let leaseHolder = typeof row.lease_holder === 'string' ? row.lease_holder : '';
+    const nested = row.lease && typeof row.lease === 'object' ? row.lease : undefined;
+    if (!leaseInUse && !leaseHolder && nested?.held === true && nested.is_self !== true) {
+        leaseInUse = true;
+        const named = typeof nested.machine_name === 'string' ? nested.machine_name.trim() : '';
+        const machineID = typeof nested.machine_id === 'string' ? nested.machine_id.trim() : '';
+        leaseHolder = named || machineID;
+    }
     return {
         id,
         name: typeof row.name === 'string' ? row.name : '',
         used_bytes: Number(row.used_bytes) || 0,
         updated_at: typeof row.updated_at === 'string' ? row.updated_at : '',
-        lease_in_use: row.lease_in_use === true,
-        lease_holder: typeof row.lease_holder === 'string' ? row.lease_holder : '',
+        lease_in_use: leaseInUse,
+        lease_holder: leaseHolder,
     };
 };
 

@@ -168,6 +168,59 @@ func TestCloudWorkspaceEntitlementNetworkErrorKeepsLastGrant(t *testing.T) {
 	}
 }
 
+func TestCloudWorkspaceEntitlementMapsHubNestedLease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"enabled":true,
+			"quota":5,
+			"used":1,
+			"max_workspace_bytes":2147483648,
+			"workspaces":[{
+				"id":"cws_0123456789abcdef0123456789abcdef",
+				"name":"标书项目",
+				"used_bytes":10,
+				"updated_at":"2026-08-28T10:00:00Z",
+				"lease":{"held":true,"machine_id":"m-other","machine_name":"other-pc","is_self":false,"expires_at":"2026-08-28T10:01:30Z"}
+			}],
+			"deleted":[]
+		}`))
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	ent := app.CloudWorkspaceEntitlement()
+	if len(ent.Workspaces) != 1 {
+		t.Fatalf("workspaces=%+v", ent.Workspaces)
+	}
+	ws := ent.Workspaces[0]
+	if !ws.LeaseInUse || ws.LeaseHolder != "other-pc" {
+		t.Fatalf("hub nested lease should map to occupied: %+v", ws)
+	}
+}
+
+func TestCloudWorkspaceEntitlementSelfLeaseIsNotInUse(t *testing.T) {
+	raw := []byte(`{"id":"cws_a","name":"A","used_bytes":1,"updated_at":"t","lease":{"held":true,"machine_id":"m1","machine_name":"HOST-M1","is_self":true}}`)
+	var ws CloudWorkspaceEntitlementWorkspace
+	if err := json.Unmarshal(raw, &ws); err != nil {
+		t.Fatal(err)
+	}
+	if ws.LeaseInUse || ws.LeaseHolder != "" {
+		t.Fatalf("self lease must not occupy: %+v", ws)
+	}
+}
+
+func TestCloudWorkspaceEntitlementLeaseFallsBackToMachineID(t *testing.T) {
+	raw := []byte(`{"id":"cws_a","name":"A","used_bytes":1,"updated_at":"t","lease":{"held":true,"machine_id":"mid","machine_name":"","is_self":false}}`)
+	var ws CloudWorkspaceEntitlementWorkspace
+	if err := json.Unmarshal(raw, &ws); err != nil {
+		t.Fatal(err)
+	}
+	if !ws.LeaseInUse || ws.LeaseHolder != "mid" {
+		t.Fatalf("empty machine_name should fall back to machine_id: %+v", ws)
+	}
+}
+
 func TestCloudWorkspaceEntitlementMissingHubConfigIsUnavailableNotDisabled(t *testing.T) {
 	resetCloudWorkspaceEntitlementCache()
 	t.Cleanup(resetCloudWorkspaceEntitlementCache)

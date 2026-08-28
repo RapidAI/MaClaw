@@ -223,6 +223,9 @@ func TestCloudWorkspaceEntitlementLeaseIsSelf(t *testing.T) {
 	if !lease.Held || !lease.IsSelf || lease.MachineID != "m1" || lease.MachineName != "DESKTOP-M1" {
 		t.Fatalf("lease=%+v", lease)
 	}
+	if ent.Workspaces[0].LeaseInUse {
+		t.Fatalf("self lease must not set lease_in_use: %+v", ent.Workspaces[0])
+	}
 	other := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/entitlement", "m1b", "secret", nil)
 	if other.Code != http.StatusOK {
 		t.Fatalf("other entitlement=%d %s", other.Code, other.Body.String())
@@ -233,5 +236,8 @@ func TestCloudWorkspaceEntitlementLeaseIsSelf(t *testing.T) {
 	}
 	if len(entOther.Workspaces) != 1 || entOther.Workspaces[0].Lease == nil || entOther.Workspaces[0].Lease.IsSelf {
 		t.Fatalf("other ent=%+v", entOther)
+	}
+	if !entOther.Workspaces[0].LeaseInUse || entOther.Workspaces[0].LeaseHolder != "DESKTOP-M1" {
+		t.Fatalf("other machine should see occupied: %+v", entOther.Workspaces[0])
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -15,6 +16,47 @@ type CloudWorkspaceEntitlementWorkspace struct {
 	UpdatedAt   string `json:"updated_at"`
 	LeaseInUse  bool   `json:"lease_in_use,omitempty"`
 	LeaseHolder string `json:"lease_holder,omitempty"`
+}
+
+type cloudWorkspaceHubLease struct {
+	Held        bool   `json:"held"`
+	MachineID   string `json:"machine_id"`
+	MachineName string `json:"machine_name"`
+	IsSelf      bool   `json:"is_self"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
+func applyCloudWorkspaceEntitlementLease(ws *CloudWorkspaceEntitlementWorkspace, lease *cloudWorkspaceHubLease) {
+	if ws == nil {
+		return
+	}
+	if ws.LeaseInUse || strings.TrimSpace(ws.LeaseHolder) != "" {
+		return
+	}
+	if lease == nil || !lease.Held || lease.IsSelf {
+		return
+	}
+	ws.LeaseInUse = true
+	holder := strings.TrimSpace(lease.MachineName)
+	if holder == "" {
+		holder = strings.TrimSpace(lease.MachineID)
+	}
+	ws.LeaseHolder = holder
+}
+
+// UnmarshalJSON accepts Hub's nested lease plus the flat GUI fields.
+func (ws *CloudWorkspaceEntitlementWorkspace) UnmarshalJSON(data []byte) error {
+	type workspaceAlias CloudWorkspaceEntitlementWorkspace
+	aux := struct {
+		workspaceAlias
+		Lease *cloudWorkspaceHubLease `json:"lease"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*ws = CloudWorkspaceEntitlementWorkspace(aux.workspaceAlias)
+	applyCloudWorkspaceEntitlementLease(ws, aux.Lease)
+	return nil
 }
 
 // CloudWorkspaceDeletedWorkspace is one soft-deleted row in the entitlement payload.

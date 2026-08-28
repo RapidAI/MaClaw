@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/cloudworkspaceignore"
 )
@@ -491,6 +493,58 @@ func TestScanCloudWorkspaceLocalWindowsPathsAndIgnore(t *testing.T) {
 	}
 	if !cloudworkspaceignore.ShouldIgnore(`src\.maclaw-cloud\x`, false, "") {
 		t.Fatal("windows separators must still force-ignore .maclaw-cloud")
+	}
+}
+
+func TestCloudWorkspaceWatchIgnored(t *testing.T) {
+	matcher := cloudworkspaceignore.NewMatcher("")
+	if !cloudWorkspaceWatchIgnored("node_modules", true, matcher) {
+		t.Fatal("node_modules dir should be ignored")
+	}
+	if !cloudWorkspaceWatchIgnored("node_modules/x.js", false, matcher) {
+		t.Fatal("node_modules file should be ignored")
+	}
+	if !cloudWorkspaceWatchIgnored(".maclaw-cloud", true, matcher) {
+		t.Fatal("cache dir should be ignored")
+	}
+	if cloudWorkspaceWatchIgnored("src", true, matcher) {
+		t.Fatal("src should be watched")
+	}
+	if cloudWorkspaceWatchIgnored("src/main.go", false, matcher) {
+		t.Fatal("tracked file should be watched")
+	}
+}
+
+func TestAddCloudWorkspaceWatchRecursiveSkipsIgnoredDirs(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"src", "node_modules", ".maclaw-cloud", filepath.Join("src", "nested")} {
+		if err := os.MkdirAll(filepath.Join(root, rel), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	if err := addCloudWorkspaceWatchRecursive(w, root); err != nil {
+		t.Fatal(err)
+	}
+	watched := map[string]bool{}
+	for _, p := range w.WatchList() {
+		watched[filepath.Clean(p)] = true
+	}
+	if !watched[filepath.Clean(root)] {
+		t.Fatalf("root not watched: %v", w.WatchList())
+	}
+	if !watched[filepath.Clean(filepath.Join(root, "src"))] {
+		t.Fatalf("src not watched: %v", w.WatchList())
+	}
+	if watched[filepath.Clean(filepath.Join(root, "node_modules"))] {
+		t.Fatalf("node_modules must not be watched: %v", w.WatchList())
+	}
+	if watched[filepath.Clean(filepath.Join(root, ".maclaw-cloud"))] {
+		t.Fatalf("cache dir must not be watched: %v", w.WatchList())
 	}
 }
 

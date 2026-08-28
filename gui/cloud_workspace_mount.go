@@ -14,6 +14,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/RapidAI/CodeClaw/corelib/cloudworkspaceignore"
 )
 
 const (
@@ -351,28 +353,48 @@ func addCloudWorkspaceWatchRecursive(w *fsnotify.Watcher, root string) error {
 	if w == nil {
 		return nil
 	}
-	return filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	cloudignore, err := cloudworkspaceignore.ReadCloudignore(root)
+	if err != nil {
+		return err
+	}
+	return addCloudWorkspaceWatchFrom(w, root, root, cloudworkspaceignore.NewMatcher(cloudignore))
+}
+
+func addCloudWorkspaceWatchFrom(w *fsnotify.Watcher, workspaceRoot, start string, matcher *cloudworkspaceignore.Matcher) error {
+	if w == nil {
+		return nil
+	}
+	if matcher == nil {
+		matcher = cloudworkspaceignore.NewMatcher("")
+	}
+	return filepath.WalkDir(start, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() {
 			return nil
 		}
-		rel, relErr := filepath.Rel(root, p)
+		rel, relErr := filepath.Rel(workspaceRoot, p)
 		if relErr != nil {
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
-		if rel != "." && cloudworkspaceIgnoreDir(rel) {
+		if rel != "." && matcher.ShouldIgnore(rel, true) {
 			return filepath.SkipDir
 		}
 		return w.Add(p)
 	})
 }
 
-func cloudworkspaceIgnoreDir(rel string) bool {
-	return strings.EqualFold(rel, cloudWorkspaceCacheStateDir) ||
-		strings.HasPrefix(strings.ToLower(rel), cloudWorkspaceCacheStateDir+"/")
+func cloudWorkspaceWatchIgnored(rel string, isDir bool, matcher *cloudworkspaceignore.Matcher) bool {
+	rel = strings.TrimSpace(filepath.ToSlash(rel))
+	if rel == "" || rel == "." {
+		return false
+	}
+	if matcher == nil {
+		matcher = cloudworkspaceignore.NewMatcher("")
+	}
+	return matcher.ShouldIgnore(rel, isDir)
 }
 
 func (a *App) scheduleCloudWorkspacePush(mount *cloudWorkspaceHeldMount) {
@@ -418,6 +440,8 @@ func (a *App) startCloudWorkspaceWatcher(mount *cloudWorkspaceHeldMount) {
 		_ = w.Close()
 		return
 	}
+	cloudignore, _ := cloudworkspaceignore.ReadCloudignore(mount.LocalPath)
+	matcher := cloudworkspaceignore.NewMatcher(cloudignore)
 	mount.mu.Lock()
 	if mount.watcher != nil {
 		_ = mount.watcher.Close()
@@ -433,16 +457,22 @@ func (a *App) startCloudWorkspaceWatcher(mount *cloudWorkspaceHeldMount) {
 					return
 				}
 				rel, relErr := filepath.Rel(root, event.Name)
-				if relErr == nil {
-					rel = filepath.ToSlash(rel)
-					if cloudworkspaceIgnoreDir(rel) || strings.HasPrefix(strings.ToLower(rel), cloudWorkspaceCacheStateDir+"/") {
-						continue
+				if relErr != nil {
+					continue
+				}
+				rel = filepath.ToSlash(rel)
+				info, statErr := os.Stat(event.Name)
+				isDir := statErr == nil && info.IsDir()
+				if strings.EqualFold(filepath.Base(rel), cloudworkspaceignore.FileName) {
+					if text, readErr := cloudworkspaceignore.ReadCloudignore(root); readErr == nil {
+						matcher = cloudworkspaceignore.NewMatcher(text)
 					}
 				}
-				if event.Has(fsnotify.Create) {
-					if info, statErr := os.Stat(event.Name); statErr == nil && info.IsDir() {
-						_ = w.Add(event.Name)
-					}
+				if cloudWorkspaceWatchIgnored(rel, isDir, matcher) {
+					continue
+				}
+				if event.Has(fsnotify.Create) && isDir {
+					_ = addCloudWorkspaceWatchFrom(w, root, event.Name, matcher)
 				}
 				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 					a.scheduleCloudWorkspacePush(mount)

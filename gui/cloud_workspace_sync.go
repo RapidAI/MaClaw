@@ -455,10 +455,11 @@ func (t *cloudWorkspaceHTTPTransport) PutManifest(ctx context.Context, ifMatch s
 		return nil, err
 	}
 	data, status, err := t.app.cloudWorkspaceHubDo(ctx, http.MethodPut, cloudWorkspaceManifestPath(t.workspaceID), cloudWorkspaceHTTPOptions{
-		timeout:  cloudWorkspaceTransferTimeout(int64(len(raw))),
-		maxRead:  cloudWorkspaceManifestMaxSize,
-		accept:   "application/json",
-		jsonBody: body,
+		timeout:     cloudWorkspaceTransferTimeout(int64(len(raw))),
+		maxRead:     cloudWorkspaceManifestMaxSize,
+		accept:      "application/json",
+		contentType: "application/json",
+		rawBody:     raw,
 	})
 	if err != nil {
 		return nil, err

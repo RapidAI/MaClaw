@@ -217,4 +217,42 @@ func TestEntitlementLeaseIsSelf(t *testing.T) {
 	if !lease.Held || !lease.IsSelf || lease.MachineID != "m1" || lease.MachineName != "HOST-M1" {
 		t.Fatalf("lease=%+v", lease)
 	}
+	if ent.Workspaces[0].LeaseInUse || ent.Workspaces[0].LeaseHolder != "" {
+		t.Fatalf("self lease must not project occupied: %+v", ent.Workspaces[0])
+	}
+}
+
+func TestEntitlementLeaseOtherMachineProjectsInUse(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	insertTestMachine(t, st, "m1", "u1", "HOST-M1")
+	insertTestMachine(t, st, "m2", "u1", "HOST-M2")
+	ws, err := st.Create(ctx, CreateParams{TenantID: "t1", UserID: "u1", Name: "A", Quota: 5, TenantMaxTotalBytes: 1 << 30}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Acquire(ctx, acquireParams(ws.ID, "m1"), now); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{
+		System:     memorySettings{"tenant:t1:cloud_workspace": `{"mode":"all_users","quota":5}`},
+		Users:      &fakeUsers{byID: map[string]*store.User{"u1": testUser()}},
+		Workspaces: st,
+		Now:        func() time.Time { return now },
+	}
+	ent, err := svc.EntitlementFor(ctx, auth.MachinePrincipal{TenantID: "t1", UserID: "u1", MachineID: "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ent.Workspaces) != 1 {
+		t.Fatalf("ent=%+v", ent)
+	}
+	item := ent.Workspaces[0]
+	if item.Lease == nil || item.Lease.IsSelf || !item.Lease.Held {
+		t.Fatalf("lease=%+v", item.Lease)
+	}
+	if !item.LeaseInUse || item.LeaseHolder != "HOST-M1" {
+		t.Fatalf("other machine should see occupied holder HOST-M1: %+v", item)
+	}
 }

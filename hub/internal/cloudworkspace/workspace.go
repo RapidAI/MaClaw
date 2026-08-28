@@ -135,11 +135,13 @@ type EntitlementLease struct {
 
 // EntitlementWorkspace is one active row in the entitlement payload.
 type EntitlementWorkspace struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	UsedBytes int64             `json:"used_bytes"`
-	UpdatedAt string            `json:"updated_at"`
-	Lease     *EntitlementLease `json:"lease,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	UsedBytes   int64             `json:"used_bytes"`
+	UpdatedAt   string            `json:"updated_at"`
+	Lease       *EntitlementLease `json:"lease,omitempty"`
+	LeaseInUse  bool              `json:"lease_in_use,omitempty"`
+	LeaseHolder string            `json:"lease_holder,omitempty"`
 }
 
 // EntitlementDeletedWorkspace is one soft-deleted row in the entitlement payload.
@@ -217,6 +219,7 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 					IsSelf:      lease.MachineID == principal.MachineID,
 					ExpiresAt:   lease.ExpiresAt,
 				}
+				projectEntitlementLease(&item)
 			}
 			out.Workspaces = append(out.Workspaces, item)
 		case StatusDeleted:
@@ -231,6 +234,21 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 		}
 	}
 	return out, nil
+}
+
+// projectEntitlementLease fills the GUI-facing occupied fields. Nested
+// lease stays the source of truth; lease_in_use is only set for a live
+// holder that is not this machine.
+func projectEntitlementLease(item *EntitlementWorkspace) {
+	if item == nil || item.Lease == nil || !item.Lease.Held || item.Lease.IsSelf {
+		return
+	}
+	item.LeaseInUse = true
+	holder := strings.TrimSpace(item.Lease.MachineName)
+	if holder == "" {
+		holder = strings.TrimSpace(item.Lease.MachineID)
+	}
+	item.LeaseHolder = holder
 }
 
 // CreateWorkspace inserts an active workspace under quota in one IMMEDIATE transaction.

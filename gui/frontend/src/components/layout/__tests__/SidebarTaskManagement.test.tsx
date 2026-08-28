@@ -1583,6 +1583,27 @@ describe('SidebarTaskManagement', () => {
         });
     });
 
+    it('maps Hub nested lease onto the occupied badge', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 1,
+            workspaces: [{
+                id: 'cws_a',
+                name: '标书项目',
+                used_bytes: 2048,
+                updated_at: '2026-08-28T10:00:00Z',
+                lease: { held: true, machine_id: 'm-other', machine_name: 'other-pc', is_self: false },
+            }],
+            deleted: [],
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(screen.getByTitle('创建任务'));
+        fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
+        expect((await screen.findByTestId('task-cloud-workspace-lease')).textContent).toContain('占用中（其他设备：other-pc）');
+    });
+
     it('hides cloud workspace controls for remote coding even when granted', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({
             enabled: true,
