@@ -295,7 +295,9 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 		},
 	}
 	result := committer.Commit(skill.WithEvolutionRequestMetadata(ctx, requestID, 1), entry.Name, &entry, "skill.deleted", map[string]string{
-		"skill": entry.Name, "action": "agentservice_delete", "decision": "applied", "request_id": requestID,
+		// Keep deletion under the AgentService install/recovery namespace so
+		// NewService startup recovery cannot miss a crash-window quarantine.
+		"skill": entry.Name, "action": "agentservice_install_delete", "decision": "applied", "request_id": requestID,
 		"attempt": "1", "config_revision": "agentservice-skill-delete-v1", "schema_version": "2", "evidence_mode": "none",
 	})
 	if result.State != "committed" || result.CleanupStatus != "clear" {
