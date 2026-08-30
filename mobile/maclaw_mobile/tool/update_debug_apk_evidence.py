@@ -19,7 +19,7 @@ def debug_apk_evidence_lines(root: Path, artifact: Path) -> list[str]:
     if not artifact_path.is_file():
         raise ValueError(f"Debug APK artifact is not a file: {artifact_path}")
     return [
-        f"  - Artifact: `{artifact}`.",
+        f"  - Artifact: `{artifact.as_posix()}`.",
         f"  - Size: `{artifact_path.stat().st_size}` bytes.",
         f"  - SHA256: `{verify_debug_apk_evidence.sha256_file(artifact_path)}`.",
     ]
