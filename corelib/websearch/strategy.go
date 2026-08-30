@@ -659,10 +659,10 @@ func classifySearchError(err error) string {
 	if err == nil {
 		return "success"
 	}
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+	text := strings.ToLower(err.Error())
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "timeout") || strings.Contains(text, "timed out") {
 		return "timeout"
 	}
-	text := strings.ToLower(err.Error())
 	status := searchHTTPStatus(err)
 	for _, marker := range []string{"captcha", "verification", "challenge", "blocked", "反爬", "人机验证", "自動化查詢", "自动查询"} {
 		if strings.Contains(text, marker) {
@@ -708,12 +708,19 @@ func isMaclawHubUserError(text string) bool {
 		strings.Contains(text, "maclaw hub")
 }
 
+func isMaclawHubSignInError(text string) bool {
+	return strings.Contains(text, "signed-in hub") ||
+		strings.Contains(text, "hub account") ||
+		strings.Contains(text, "sign in to maclaw hub")
+}
+
 // RapidSearch never asks the user for a token or API key. Missing Hub login
-// is a sign-in prompt; every other Hub failure stays generic.
+// is a sign-in prompt. Known RapidSearch failures stay explicit (blocked,
+// timed out, rate limited); parse and other Hub failures stay generic.
 func safeMaclawHubErrorDetail(err error) string {
 	if err != nil {
 		text := strings.ToLower(err.Error())
-		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
+		if isMaclawHubSignInError(text) {
 			return "sign in to MaClaw Hub"
 		}
 	}
