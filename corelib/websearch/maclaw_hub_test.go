@@ -273,6 +273,17 @@ func TestSafeSearchErrorDetailForMissingHubLogin(t *testing.T) {
 	}
 }
 
+func TestSafeSearchErrorDetailForHubUnauthorizedNeverMentionsCredentials(t *testing.T) {
+	err := fmt.Errorf("MaClaw Hub search returned HTTP 401")
+	got := SafeSearchErrorDetail(err)
+	if got != "MaClaw Hub search is unavailable" {
+		t.Fatalf("SafeSearchErrorDetail() = %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "credential") || strings.Contains(strings.ToLower(got), "api key") || strings.Contains(strings.ToLower(got), "token") {
+		t.Fatalf("hub error mentioned secrets: %q", got)
+	}
+}
+
 func TestSearchWithStrategyUsesMaclawHubAndHubAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer viewer-token" {

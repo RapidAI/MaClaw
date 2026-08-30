@@ -684,8 +684,8 @@ func classifySearchError(err error) string {
 func SafeSearchErrorDetail(err error) string {
 	if err != nil {
 		text := strings.ToLower(err.Error())
-		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
-			return "sign in to MaClaw Hub"
+		if isMaclawHubUserError(text) {
+			return safeMaclawHubErrorDetail(err)
 		}
 	}
 	switch classifySearchError(err) {
@@ -699,6 +699,33 @@ func SafeSearchErrorDetail(err error) string {
 		return "request was rate limited"
 	default:
 		return "request failed"
+	}
+}
+
+func isMaclawHubUserError(text string) bool {
+	return strings.Contains(text, "signed-in hub") ||
+		strings.Contains(text, "hub account") ||
+		strings.Contains(text, "maclaw hub")
+}
+
+// RapidSearch never asks the user for a token or API key. Missing Hub login
+// is a sign-in prompt; every other Hub failure stays generic.
+func safeMaclawHubErrorDetail(err error) string {
+	if err != nil {
+		text := strings.ToLower(err.Error())
+		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
+			return "sign in to MaClaw Hub"
+		}
+	}
+	switch classifySearchError(err) {
+	case "timeout":
+		return "request timed out"
+	case "blocked":
+		return "request was blocked or challenged"
+	case "rate_limited":
+		return "request was rate limited"
+	default:
+		return "MaClaw Hub search is unavailable"
 	}
 }
 
