@@ -61,6 +61,35 @@ function webSearchErrorMessage(error: unknown, fallback: string): string {
 	return text && text !== "[object Object]" ? text : fallback;
 }
 
+function mentionsSecretLanguage(text: string): boolean {
+	return /\b(api[-\s]?key|token|credential|bearer|proxy\.token|authorization)\b/i.test(text);
+}
+
+function maclawHubTestErrorMessage(
+	error: unknown,
+	t: (en: string, zhHans: string, zhHant?: string) => string,
+): string {
+	const raw = webSearchErrorMessage(error, "");
+	const lower = raw.toLowerCase();
+	if (!raw || lower.includes("sign in to maclaw hub") || lower.includes("signed-in hub") || lower.includes("hub account")) {
+		return t(
+			"Sign in to MaClaw Hub to use RapidSearch.",
+			"请先登录 MaClaw Hub 后再使用 RapidSearch。",
+			"請先登入 MaClaw Hub 後再使用 RapidSearch。",
+		);
+	}
+	if (lower.includes("timed out") || lower.includes("timeout")) {
+		return t("MaClaw Hub search timed out.", "MaClaw Hub 搜索超时。", "MaClaw Hub 搜尋逾時。");
+	}
+	if (lower.includes("rate limit")) {
+		return t("MaClaw Hub search is rate limited.", "MaClaw Hub 搜索请求过于频繁。", "MaClaw Hub 搜尋請求過於頻繁。");
+	}
+	if (mentionsSecretLanguage(raw) || lower.includes("unauthorized") || lower.includes("401") || lower.includes("rejected") || lower.includes("unavailable")) {
+		return t("MaClaw Hub search is unavailable.", "暂时无法使用 MaClaw Hub 搜索。", "暫時無法使用 MaClaw Hub 搜尋。");
+	}
+	return t("MaClaw Hub search failed.", "MaClaw Hub 搜索失败。", "MaClaw Hub 搜尋失敗。");
+}
+
 function normalizeStrategy(raw: any): SearchStrategy {
 	const engines: SearchEngine[] = [];
 	const seenEngineIDs = new Set<string>();
@@ -429,7 +458,9 @@ export function WebSearchConfigPanel({ lang }: Props) {
 			if (!mounted.current || testRequestVersions.current[engine.id] !== requestVersion) return;
 			setTests(current => ({ ...current, [engine.id]: {
 				state: "error",
-				message: webSearchErrorMessage(err, t("Engine test failed.", "引擎测试失败。")),
+				message: engine.id === "maclaw_hub"
+					? maclawHubTestErrorMessage(err, t)
+					: webSearchErrorMessage(err, t("Engine test failed.", "引擎测试失败。")),
 			} }));
 			} finally {
 				testInFlightEngineIDs.current.delete(engine.id);

@@ -765,6 +765,66 @@ func TestIMGetWebSearchStrategyAttachesHubAuthAtRuntime(t *testing.T) {
 	t.Fatal("MaClaw Hub missing from runtime strategy")
 }
 
+func TestTestWebSearchEngineRequiresHubSignInWithoutMentioningCredentials(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sign in to MaClaw Hub") {
+		t.Fatalf("error = %v, want sign in to MaClaw Hub", err)
+	}
+	lower := strings.ToLower(err.Error())
+	for _, banned := range []string{"credential", "api key", "token", "rejected"} {
+		if strings.Contains(lower, banned) {
+			t.Fatalf("unsigned hub test mentioned %q: %v", banned, err)
+		}
+	}
+}
+
+func TestTestWebSearchEngineSoftensHubUnauthorizedWithoutCredentialCopy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "proxy.token required", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			strategy.Engines[i].BaseURL = server.URL
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: strategy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI},
+	})
+	if err == nil || !strings.Contains(err.Error(), "MaClaw Hub search is unavailable") {
+		t.Fatalf("error = %v, want unavailable", err)
+	}
+	lower := strings.ToLower(err.Error())
+	for _, banned := range []string{"credential", "api key", "token", "rejected", "proxy.token"} {
+		if strings.Contains(lower, banned) {
+			t.Fatalf("signed-in hub 401 mentioned %q: %v", banned, err)
+		}
+	}
+}
+
 func TestTestWebSearchEngineHonorsExplicitMaclawHubQuery(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
