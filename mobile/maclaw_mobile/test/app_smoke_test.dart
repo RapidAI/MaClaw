@@ -15,6 +15,7 @@ import 'package:maclaw_mobile/core/shared_intents/shared_intent_bootstrap.dart';
 import 'package:maclaw_mobile/features/assistant/assistant_controller.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
+import 'support/widget_pumps.dart';
 
 class _SignedOutSessionController extends SessionController {
   @override
@@ -110,7 +111,10 @@ const _phoneRegistrationLogin = '\u624b\u673a\u53f7\u6ce8\u518c/\u767b\u5f55';
 const _sendVerificationCode = '\u53d1\u9001\u9a8c\u8bc1\u7801';
 const _assistantTab = 'AI助手';
 const _mainConversation = '\u4e3b\u5bf9\u8bdd';
-const _emergencyDocuments = '\u5e94\u6025\u6587\u6863';
+const _documentsScreenSubtitle =
+    '\u4e0e\u7535\u8111\u7aef MaClaw GUI \u5171\u4eab\u540c\u4e00 Hub \u6587\u7a3f\u5e93\u3002\u624b\u673a\u4fa7\u91cd\u67e5\u770b\u3001\u5bfc\u5165\u3001AI \u5904\u7406\u4e0e\u5206\u4eab\uff0c\u6b63\u6587\u8bf7\u7528\u7535\u8111 GUI \u6216 AI \u52a9\u624b\u6539\u5199\u3002';
+const _tasksScreenSubtitle =
+    '\u957f\u4efb\u52a1\u7edf\u4e00\u67e5\u770b\uff1a\u6587\u6863\u89e3\u6790/\u5bfc\u51fa\u3001\u5458\u5de5\u4efb\u52a1\u7b49\u3002\u77ed\u64cd\u4f5c\u8bf7\u56de AI \u52a9\u624b\u6216\u6570\u5b57\u5458\u5de5\u9875\u3002';
 const _emergencyServers = '\u5e94\u6025\u670d\u52a1\u5668';
 const _openedTaskNotification = '\u5df2\u6253\u5f00\u4efb\u52a1\u63d0\u9192';
 const _unknownTaskNotification =
@@ -212,7 +216,7 @@ void main() {
             as _TransitioningSessionController)
         .completeLogin();
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.text(_assistantTab), findsWidgets);
     expect(
@@ -220,6 +224,7 @@ void main() {
       contains('https://status.example.com/incident/42'),
     );
     expect(container.read(mobileSharedIntentProvider), isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('keeps a shared document pending until phone login completes',
@@ -274,14 +279,15 @@ void main() {
             as _TransitioningSessionController)
         .completeLogin();
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
-    expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(find.textContaining(_documentsScreenSubtitle), findsOneWidget);
     expect(
       _PendingDocumentFlowController.uploadedPaths,
       ['/tmp/incident-report.pdf'],
     );
     expect(container.read(mobileSharedIntentProvider), isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('keeps an opened task notification until phone login completes',
@@ -336,15 +342,16 @@ void main() {
     (container.read(sessionControllerProvider.notifier)
             as _TransitioningSessionController)
         .completeLogin();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
-    expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(find.textContaining(_tasksScreenSubtitle), findsOneWidget);
     expect(find.textContaining(_openedTaskNotification), findsOneWidget);
     expect(
       find.textContaining('document-export:job-before-login'),
       findsOneWidget,
     );
     expect(notifications.consumeLastOpenedPayload(), isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('signed-in official LLM opens the assistant tab', (tester) async {
@@ -389,6 +396,7 @@ void main() {
     expect(find.text(_mainConversation), findsOneWidget);
     expect(find.byTooltip('开始语音输入'), findsOneWidget);
     expect(find.text('查信息'), findsNothing);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('opened notification payload is consumed by app shell',
@@ -438,13 +446,14 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.textContaining(_openedTaskNotification), findsOneWidget);
     expect(find.textContaining('document-export:job-1'), findsOneWidget);
-    expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(find.textContaining(_tasksScreenSubtitle), findsOneWidget);
     expect(notifications.latestOpenedNotification, isNull);
     expect(notifications.consumeLastOpenedPayload(), isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('unknown notification payload does not fake task recovery',
@@ -494,14 +503,16 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.textContaining(_unknownTaskNotification), findsNothing);
     expect(find.textContaining(_openedTaskNotification), findsNothing);
     expect(find.text(_mainConversation), findsOneWidget);
-    expect(find.text(_emergencyDocuments), findsNothing);
+    expect(find.textContaining(_documentsScreenSubtitle), findsNothing);
+    expect(find.textContaining(_tasksScreenSubtitle), findsNothing);
     expect(notifications.latestOpenedNotification, isNull);
     expect(notifications.consumeLastOpenedPayload(), isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('opened notification payload message redacts URL secrets',
@@ -551,15 +562,16 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
-    expect(find.text(_emergencyDocuments), findsOneWidget);
+    expect(find.textContaining(_documentsScreenSubtitle), findsOneWidget);
     expect(find.textContaining(_openedTaskNotification), findsOneWidget);
     expect(find.textContaining('[REDACTED_CREDENTIALS]'), findsOneWidget);
     expect(find.textContaining('[REDACTED_SECRET]'), findsOneWidget);
     expect(find.textContaining('admin:pass'), findsNothing);
     expect(find.textContaining('secret-token'), findsNothing);
     expect(notifications.latestOpenedNotification, isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('opened server notification payload recovers to servers tab',
@@ -615,6 +627,7 @@ void main() {
     expect(find.textContaining(_openedTaskNotification), findsOneWidget);
     expect(find.textContaining('server-profile:srv-prod'), findsOneWidget);
     expect(notifications.latestOpenedNotification, isNull);
+    await disposePumpedTree(tester);
   });
 
   testWidgets('signed-in missing LLM opens the configuration screen',
@@ -654,11 +667,11 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
-    expect(find.textContaining('配置 MaClaw LLM'), findsOneWidget);
-    expect(find.text(_assistantTab), findsNothing);
+    expect(find.text('数字分身'), findsWidgets);
     expect(find.text(_mainConversation), findsNothing);
+    await disposePumpedTree(tester);
   });
 
   testWidgets(
@@ -699,10 +712,11 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
-    expect(find.textContaining('配置 MaClaw LLM'), findsOneWidget);
+    expect(find.text('数字分身'), findsWidgets);
     expect(find.text(_mainConversation), findsNothing);
+    await disposePumpedTree(tester);
   });
 
   test('mobileLlmConfigured accepts official and desktop QR delegated access',
@@ -855,7 +869,7 @@ void main() {
 
     expect(
       mobileNotificationTargetPath('document-export:job-1', features),
-      '/documents',
+      '/tasks',
     );
     expect(
       mobileNotificationTargetPath('digital-employee-task:task-1', features),
@@ -889,9 +903,9 @@ void main() {
     expect(
       mobileNotificationRecoveryMessage(
         'document-export:job-1',
-        '/documents',
+        '/tasks',
       ),
-      '已打开任务提醒：请在文档页查看导出任务状态',
+      '已打开任务提醒：请在后台或文档页查看导出任务状态',
     );
     expect(
       mobileNotificationRecoveryMessage(

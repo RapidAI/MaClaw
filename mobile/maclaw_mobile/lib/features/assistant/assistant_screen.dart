@@ -3003,32 +3003,37 @@ class _AssistantSourcesPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final count = citations.length;
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsets.only(bottom: 4),
-        initiallyExpanded: false,
-        title: Text(
-          '来源 · $count 条',
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: scheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
+    // Flutter 3.44+ asserts when ExpansionTile's ListTile sits inside a
+    // colored DecoratedBox (the chat bubble). Give the tile its own Material.
+    return Material(
+      type: MaterialType.transparency,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(bottom: 4),
+          initiallyExpanded: false,
+          title: Text(
+            '来源 · $count 条',
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          subtitle: Text(
+            '展开查看参考链接',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+          ),
+          children: [
+            for (final citation in citations)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _CitationTile(citation: citation),
               ),
+          ],
         ),
-        subtitle: Text(
-          '展开查看参考链接',
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-        ),
-        children: [
-          for (final citation in citations)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: _CitationTile(citation: citation),
-            ),
-        ],
       ),
     );
   }
