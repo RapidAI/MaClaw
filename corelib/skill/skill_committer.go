@@ -9,6 +9,7 @@ package skill
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -69,6 +70,15 @@ type SkillCommitter struct {
 	// requested identity is absent. It is used by the explicit operator create
 	// path; all repair/optimization callers keep the safer update-only default.
 	AllowCreate bool
+	// SkipIfUnchanged enables the idempotent no-op fast path for callers whose
+	// transaction has no external side effects. Directory publishers must leave
+	// this disabled because an unchanged registry entry may still accompany a
+	// required filesystem publication.
+	SkipIfUnchanged bool
+	// SkipDefinitionBackup disables YAML pre-image capture and definition
+	// writing for transactions that are explicitly config-only. This keeps
+	// metadata-only batch maintenance from manufacturing YAML backups.
+	SkipDefinitionBackup bool
 }
 
 // Commit executes config → YAML → index → final-audit as one compensating
@@ -164,11 +174,27 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 		// do not synthesize a YAML path or invoke the default writer.
 		effectiveAfter = CloneNLSkillEntry(&updatedSkills[len(updatedSkills)-1])
 	}
+	// An unchanged candidate is a first-class terminal outcome. Do this check
+	// before taking a YAML backup or writing the durable compensation record so
+	// repeated installs/maintenance plans cannot manufacture versions, queue
+	// rows, index writes, or misleading committed audits.
+	if c.SkipIfUnchanged && reflect.DeepEqual(originalSkills, updatedSkills) {
+		return EvolutionCommitResult{
+			State: "skipped", RequestID: requestID, ConfigRevision: c.ConfigRevision,
+			FailureReason: "no_change", RollbackComplete: true, CleanupStatus: "clear",
+		}
+	}
 
-	yamlPath, yamlBackup, yamlExists, err := evolutionYAMLBackup(effectiveAfter)
-	if err != nil {
-		result.FailureReason = "yaml_backup_failed"
-		return result
+	var yamlPath string
+	var yamlBackup []byte
+	var yamlExists bool
+	if !c.SkipDefinitionBackup {
+		var err error
+		yamlPath, yamlBackup, yamlExists, err = evolutionYAMLBackup(effectiveAfter)
+		if err != nil {
+			result.FailureReason = "yaml_backup_failed"
+			return result
+		}
 	}
 	action := "evolution"
 	if auditData != nil && strings.TrimSpace(auditData["action"]) != "" {

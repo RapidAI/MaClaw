@@ -16,6 +16,7 @@ type stubProviderTrafficRepo struct {
 	dayStart   time.Time
 	weekStart  time.Time
 	monthStart time.Time
+	classSince time.Time
 }
 
 func (r *stubProviderTrafficRepo) Insert(context.Context, *llmservice.TenantUsageRecord) error {
@@ -27,8 +28,9 @@ func (r *stubProviderTrafficRepo) QuerySummary(context.Context, llmservice.Usage
 func (r *stubProviderTrafficRepo) QueryRecent(context.Context, string, string, int) ([]*llmservice.TenantUsageRecord, error) {
 	return nil, nil
 }
-func (r *stubProviderTrafficRepo) QueryClassTraffic(context.Context, string, time.Time) ([]llmservice.ClassTrafficRow, map[string]int64, []llmservice.ClassTrafficSample, error) {
-	return nil, nil, nil, nil
+func (r *stubProviderTrafficRepo) QueryClassTraffic(_ context.Context, _ string, since time.Time) ([]llmservice.ClassTrafficRow, map[string]int64, []llmservice.ClassTrafficSample, error) {
+	r.classSince = since
+	return []llmservice.ClassTrafficRow{{Class: "total", Requests: 1, InputTokens: 12, OutputTokens: 24, TotalTokens: 36}}, map[string]int64{"rule": 1}, nil, nil
 }
 func (r *stubProviderTrafficRepo) QueryProviderTraffic(_ context.Context, dayStart, weekStart, monthStart time.Time) (map[string]llmservice.ProviderPeriodTraffic, error) {
 	r.dayStart, r.weekStart, r.monthStart = dayStart, weekStart, monthStart
@@ -126,5 +128,52 @@ func TestAdminLLMProviderTrafficHandlerIgnoresOversizedTimezone(t *testing.T) {
 	}
 	if payload.Timezone != "Asia/Shanghai" {
 		t.Fatalf("timezone = %q, want default Asia/Shanghai", payload.Timezone)
+	}
+}
+
+func TestAdminLLMClassTrafficHandlerUsesCalendarDayWindow(t *testing.T) {
+	repo := &stubProviderTrafficRepo{}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/class-traffic?service_group_id=maclaw-official&window=24h&timezone=Asia/Shanghai", nil)
+	rec := httptest.NewRecorder()
+	adminLLMClassTrafficHandler(llmservice.NewStatsService(repo))(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["window"] != "day" {
+		t.Fatalf("window = %#v, want calendar day", payload["window"])
+	}
+	if repo.classSince.IsZero() {
+		t.Fatal("handler did not query a class-traffic window")
+	}
+	hour, min, sec := repo.classSince.Clock()
+	if hour != 0 || min != 0 || sec != 0 {
+		t.Fatalf("class since = %s, want local midnight", repo.classSince)
+	}
+	if repo.classSince.Location() == nil || repo.classSince.Location().String() != "Asia/Shanghai" {
+		t.Fatalf("class since location = %v, want Asia/Shanghai", repo.classSince.Location())
+	}
+}
+
+func TestAdminLLMClassTrafficHandlerNilService(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/llm/class-traffic?service_group_id=maclaw-official", nil)
+	rec := httptest.NewRecorder()
+	adminLLMClassTrafficHandler(nil)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["window"] != "day" || payload["timezone"] != "Asia/Shanghai" {
+		t.Fatalf("nil service payload = %#v", payload)
+	}
+	rows, _ := payload["rows"].([]any)
+	if len(rows) == 0 {
+		t.Fatal("nil service should still return normalized class rows")
 	}
 }

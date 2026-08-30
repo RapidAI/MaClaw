@@ -111,6 +111,7 @@ type UsageFilter struct {
 	Period         string `json:"period,omitempty"`     // "daily" / "weekly" / "monthly"
 	StartDate      string `json:"start_date,omitempty"` // "2026-01-01"
 	EndDate        string `json:"end_date,omitempty"`
+	Timezone       string `json:"timezone,omitempty"`
 	Limit          int    `json:"limit,omitempty"`
 }
 
@@ -205,7 +206,7 @@ func (s *StatsService) QueryRecentRecords(ctx context.Context, hubID, tenantID s
 
 // QueryProviderTraffic returns current day/week/month token volume per provider.
 func (s *StatsService) QueryProviderTraffic(ctx context.Context, timezone string, now time.Time) (*ProviderTrafficReport, error) {
-	loc := loadTrafficLocation(timezone)
+	loc := TrafficLocation(timezone)
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -230,7 +231,7 @@ func (s *StatsService) QueryProviderTraffic(ctx context.Context, timezone string
 // QueryServiceGroupTraffic returns current day/week/month token totals for all
 // service groups in one repository pass.
 func (s *StatsService) QueryServiceGroupTraffic(ctx context.Context, timezone string, now time.Time) (*ServiceGroupTrafficReport, error) {
-	loc := loadTrafficLocation(timezone)
+	loc := TrafficLocation(timezone)
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -259,6 +260,12 @@ func (s *StatsService) QueryClassTraffic(ctx context.Context, serviceGroupID str
 	rows, sources, samples, err := s.repo.QueryClassTraffic(ctx, serviceGroupID, since)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if sources == nil {
+		sources = map[string]int64{}
+	}
+	if samples == nil {
+		samples = []ClassTrafficSample{}
 	}
 	return NormalizeClassTrafficRows(rows), sources, samples, nil
 }
@@ -298,7 +305,9 @@ func NormalizeClassTrafficRows(rows []ClassTrafficRow) []ClassTrafficRow {
 	return out
 }
 
-func loadTrafficLocation(name string) *time.Location {
+// TrafficLocation resolves an IANA timezone for token-traffic windows.
+// Empty or unknown names fall back to Asia/Shanghai, matching the admin UI.
+func TrafficLocation(name string) *time.Location {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "Asia/Shanghai"
@@ -310,6 +319,27 @@ func loadTrafficLocation(name string) *time.Location {
 		return loc
 	}
 	return time.FixedZone("Asia/Shanghai", 8*3600)
+}
+
+// ClassTrafficSince maps the admin window switch onto the same local
+// day/week/month starts as the service-group traffic cards. Legacy 24h/7d/30d
+// query values are aliases so old URLs keep the same calendar windows.
+func ClassTrafficSince(window string, loc *time.Location, now time.Time) (time.Time, string) {
+	if loc == nil {
+		loc = TrafficLocation("")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	dayStart, weekStart, monthStart := ProviderTrafficBounds(now, loc)
+	switch strings.ToLower(strings.TrimSpace(window)) {
+	case "week", "7d":
+		return weekStart, "week"
+	case "month", "30d":
+		return monthStart, "month"
+	default: // "day", "24h", empty, or unknown
+		return dayStart, "day"
+	}
 }
 
 // ProviderTrafficBounds returns local day/week/month starts. Weeks start on Monday.

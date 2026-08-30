@@ -1324,7 +1324,7 @@ func mergeEvolvedEntry(dst *corelib.NLSkillEntry, src *corelib.NLSkillEntry) {
 // responsibility of SkillSaver/its owner; a saver that reports success must
 // have refreshed its index before returning.
 type EvolutionCommitResult struct {
-	State            string // committed | rolled_back | audit_pending
+	State            string // skipped | committed | rolled_back | audit_pending
 	FailureReason    string
 	RollbackComplete bool
 	CleanupStatus    string // clear | pending | needs_review
@@ -1352,6 +1352,7 @@ func (p *EvolutionPipeline) persistDefinitionChangeWithAudit(ctx context.Context
 		IndexRefresher:   p.IndexRefresher,
 		FinalAuditor:     p.FinalAuditor,
 		ConfigRevision:   p.configRevision(),
+		SkipIfUnchanged:  true,
 	}).Commit(ctx, skillName, after, event, auditData)
 }
 
@@ -1647,12 +1648,19 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 		return OptimizeResult{Attempted: true, Optimized: false, Explanation: result.Explanation}
 	}
 
-	// Keep an in-memory snapshot as well: ApplyOptimization mutates req.Entry
-	// before durable persistence, so a failed commit must not leave the worker
-	// carrying an unapplied candidate after YAML/config rollback.
+	// Keep an in-memory snapshot and apply the candidate to a detached copy.
+	// SkillLoader implementations are allowed to return pointers into the same
+	// object held by req.Entry; mutating that alias before Commit would make the
+	// old and new lists appear identical and bypass the no-op/rollback checks.
 	originalEntry := CloneNLSkillEntry(req.Entry)
+	originalTarget := req.Entry
+	candidateEntry := CloneNLSkillEntry(req.Entry)
+	if candidateEntry == nil {
+		return OptimizeResult{Attempted: true, Explanation: "optimization candidate unavailable"}
+	}
 	// Apply optimization.
-	if ApplyOptimization(req.Entry, result, p.Versioner) {
+	if ApplyOptimization(candidateEntry, result, p.Versioner) {
+		req.Entry = candidateEntry
 		// Persist atomically: SkillSaver's closure holds the write lock, so
 		// we pass the full updated list inside one call. Only the fields the
 		// optimization actually modified are merged into the freshly loaded
@@ -1694,6 +1702,13 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 			"schema_version": "2", "evidence_mode": "real",
 		}
 		commit := p.persistDefinitionChangeWithAudit(ctx, req.SkillName, req.Entry, "skill:optimization_commit", commitAudit)
+		if commit.State == "skipped" {
+			if originalEntry != nil {
+				*req.Entry = *originalEntry
+			}
+			log.Printf("[evolution-pipeline] optimization skipped skill=%s reason=%s", req.SkillName, commit.FailureReason)
+			return OptimizeResult{Attempted: true, Optimized: false, Explanation: "optimization skipped: " + commit.FailureReason}
+		}
 		if commit.State != "committed" || commit.CleanupStatus != "clear" {
 			if originalEntry != nil {
 				*req.Entry = *originalEntry
@@ -1703,6 +1718,9 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 				"decision": commit.State, "reason": "optimization_persistence_failed", "failure_reason": commit.FailureReason,
 			})
 			return OptimizeResult{Attempted: true, Explanation: "optimization not committed: " + commit.FailureReason}
+		}
+		if originalTarget != nil {
+			*originalTarget = *req.Entry
 		}
 
 		log.Printf("[evolution-pipeline] optimization applied for skill=%s, triggering upload check", req.SkillName)

@@ -6960,6 +6960,17 @@ func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, 
 	}
 	if !res.OK || res.Result.ExecutedCount == 0 && patchDraft == nil {
 		out["result"], out["error"], out["message"] = res.Result, res.Error, res.Message
+		if res.OK && res.Result.ExecutedCount == 0 && patchDraft == nil {
+			// A confirmed maintenance action that produced no effective change is
+			// an idempotent terminal result. Do not create a compensation row,
+			// refresh indexes, or emit an applied audit event.
+			out["state"] = "skipped"
+			out["cleanup_status"] = "clear"
+			out["ok"] = true
+			out["message"] = "no changes required"
+			out["request_id"] = requestID
+			return out
+		}
 		out["ok"] = res.OK
 		return out
 	}
@@ -7001,7 +7012,9 @@ func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, 
 		FinalAuditor: func(event string, data map[string]string) error {
 			return skill.RecordEvolutionEventStrict(event, data, "desktop")
 		},
-		ConfigRevision: configRevision,
+		ConfigRevision:       configRevision,
+		SkipIfUnchanged:      !fileBackedContract,
+		SkipDefinitionBackup: !fileBackedContract,
 	}
 	commitResult := committer.Commit(context.Background(), skillName, &updated[0], "skill:maintenance_apply", auditData)
 	out["result"] = res.Result
@@ -7011,6 +7024,14 @@ func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, 
 	}
 	if res.PatchDraft != nil {
 		out["patch_draft"] = res.PatchDraft
+	}
+	if commitResult.State == "skipped" {
+		out["state"] = "skipped"
+		out["cleanup_status"] = "clear"
+		out["ok"] = true
+		out["message"] = "no changes required"
+		out["request_id"] = commitResult.RequestID
+		return out
 	}
 	if commitResult.State != "committed" || commitResult.CleanupStatus != "clear" {
 		out["state"] = commitResult.State

@@ -25,6 +25,16 @@ const (
 )
 
 var (
+	// WebSearchEngineMaclawHub is the opt-in MaClaw Hub/RapidSearch engine ID.
+	// Keep the identifier in this package so strategy normalization, auth and
+	// download routing all share one stable value.
+	WebSearchEngineMaclawHub          = "maclaw_hub"
+	WebSearchMaclawHubTimeout         = 180 * time.Second
+	WebSearchMaclawHubDownloadTimeout = WebSearchMaclawHubTimeout
+	// strategyMaclawHubTimeout gives the authenticated Hub proxy enough time to
+	// complete a remote search while remaining bounded by the caller context.
+	strategyMaclawHubTimeout = WebSearchMaclawHubTimeout
+
 	// strategySearchTimeout is the HTTP/API portion of a runtime search. When a
 	// browser engine or browser fallback is reachable, strategySearchBudget adds
 	// strategyBrowserTimeout so the last-resort path is not starved by retries.
@@ -43,15 +53,17 @@ var builtinWebSearchEngines = map[string]struct {
 	Name      string
 	BaseURL   string
 	NeedsKey  bool
+	OptIn     bool
 }{
-	"bing_cn":    {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
-	"baidu":      {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
-	"google":     {Transport: corelib.WebSearchTransportBrowser, Name: "Google"},
-	"duckduckgo": {Transport: corelib.WebSearchTransportHTTPHTML, Name: "DuckDuckGo", BaseURL: defaultLegacySearchURL},
-	"brave":      {Transport: corelib.WebSearchTransportAPI, Name: "Brave Search API", BaseURL: defaultBraveSearchURL, NeedsKey: true},
-	"serper":     {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
-	"tinyfish":   {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
-	"tavily":     {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
+	"bing_cn":                {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
+	"baidu":                  {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
+	"google":                 {Transport: corelib.WebSearchTransportBrowser, Name: "Google"},
+	"duckduckgo":             {Transport: corelib.WebSearchTransportHTTPHTML, Name: "DuckDuckGo", BaseURL: defaultLegacySearchURL},
+	"brave":                  {Transport: corelib.WebSearchTransportAPI, Name: "Brave Search API", BaseURL: defaultBraveSearchURL, NeedsKey: true},
+	"serper":                 {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
+	"tinyfish":               {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
+	"tavily":                 {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
+	WebSearchEngineMaclawHub: {Transport: corelib.WebSearchTransportAPI, Name: "MaClaw Hub / RapidSearch", BaseURL: defaultMaclawHubSearchURL, OptIn: true},
 }
 
 var searchQueryHashSalt = func() [32]byte {
@@ -87,16 +99,16 @@ func DefaultWebSearchStrategy(preset string) corelib.WebSearchStrategy {
 	preset = normalizePreset(preset)
 	var order []string
 	if preset == corelib.WebSearchPresetInternational {
-		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily"}
+		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	} else {
 		preset = corelib.WebSearchPresetMainland
-		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily"}
+		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	}
 	engines := make([]corelib.WebSearchEngineConfig, 0, len(order))
 	for i, id := range order {
 		meta := builtinWebSearchEngines[id]
 		engines = append(engines, corelib.WebSearchEngineConfig{
-			ID: id, Enabled: !meta.NeedsKey, Priority: i + 1,
+			ID: id, Enabled: !meta.NeedsKey && !meta.OptIn, Priority: i + 1,
 			Transport: meta.Transport, BaseURL: meta.BaseURL,
 		})
 	}
@@ -296,7 +308,18 @@ func strategySearchBudget(strategy corelib.WebSearchStrategy) time.Duration {
 		return 2 * time.Minute
 	}
 	if browserWorkReachable(strategy) {
-		return strategySearchTimeout + strategyBrowserTimeout
+		budget := strategySearchTimeout + strategyBrowserTimeout
+		for _, engine := range strategy.Engines {
+			if engine.Enabled && engine.ID == WebSearchEngineMaclawHub && budget < strategyMaclawHubTimeout {
+				return strategyMaclawHubTimeout
+			}
+		}
+		return budget
+	}
+	for _, engine := range strategy.Engines {
+		if engine.Enabled && engine.ID == WebSearchEngineMaclawHub && strategySearchTimeout < strategyMaclawHubTimeout {
+			return strategyMaclawHubTimeout
+		}
 	}
 	return strategySearchTimeout
 }
@@ -777,7 +800,7 @@ func classifySearchError(err error) string {
 	if err == nil {
 		return "success"
 	}
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") || strings.Contains(strings.ToLower(err.Error()), "timed out") {
 		return "timeout"
 	}
 	text := strings.ToLower(err.Error())
@@ -787,7 +810,7 @@ func classifySearchError(err error) string {
 			return "blocked"
 		}
 	}
-	if status == 401 || status == 403 || strings.Contains(text, "api key") {
+	if status == 401 || status == 403 || strings.Contains(text, "api key") || strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
 		return "invalid_key"
 	}
 	if status == 429 || strings.Contains(text, "rate limit") {
@@ -800,6 +823,18 @@ func classifySearchError(err error) string {
 // response bodies. Those bodies can echo requests, credentials, or private
 // gateway diagnostics and are unsafe for logs, tool output, and settings UI.
 func SafeSearchErrorDetail(err error) string {
+	if err != nil {
+		text := strings.ToLower(err.Error())
+		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") || strings.Contains(text, "sign in to maclaw hub") {
+			return "sign in to MaClaw Hub"
+		}
+		if strings.Contains(text, "maclaw hub search returned http 401") {
+			return "MaClaw Hub search is unavailable"
+		}
+		if strings.Contains(text, "maclaw hub search returned") && (strings.Contains(text, "unavailable") || strings.Contains(text, "offline") || strings.Contains(text, "failed to parse")) {
+			return "MaClaw Hub search is unavailable"
+		}
+	}
 	switch classifySearchError(err) {
 	case "timeout":
 		return "request timed out"

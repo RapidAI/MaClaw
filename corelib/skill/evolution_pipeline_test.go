@@ -885,6 +885,44 @@ func TestSkillCommitter_CommitsOnlyAfterAuditAndCleansCompensation(t *testing.T)
 	}
 }
 
+func TestSkillCommitter_NoChangeSkipsPersistenceAndAudit(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "committer-noop")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := corelib.NLSkillEntry{
+		Name: "committer-noop", SkillDir: dir, Description: "same",
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo same"}}},
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: committer-noop\ndescription: same\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := struct{ save, index, audit int }{}
+	committer := &SkillCommitter{
+		SkillLoader:      func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{entry} },
+		SkillSaver:       func([]corelib.NLSkillEntry) error { calls.save++; return nil },
+		DefinitionWriter: func(*corelib.NLSkillEntry) error { t.Fatal("no-op wrote YAML"); return nil },
+		IndexRefresher:   func() error { calls.index++; return nil },
+		FinalAuditor:     func(string, map[string]string) error { calls.audit++; return nil },
+		SkipIfUnchanged:  true,
+	}
+	result := committer.Commit(context.Background(), entry.Name, &entry, "skill:test_noop", map[string]string{"action": "maintenance"})
+	if result.State != "skipped" || result.FailureReason != "no_change" || result.CleanupStatus != "clear" {
+		t.Fatalf("no-op result = %+v", result)
+	}
+	if calls.save != 0 || calls.index != 0 || calls.audit != 0 {
+		t.Fatalf("no-op side effects save=%d index=%d audit=%d", calls.save, calls.index, calls.audit)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("no-op compensation records = %+v, err=%v", records, err)
+	}
+}
+
 func TestSkillCommitter_UsesForwardIndexOnCommitAndRollbackIndexOnFailure(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()

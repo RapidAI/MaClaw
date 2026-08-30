@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -102,6 +103,11 @@ func (h *IMMessageHandler) toolExecuteSkillMaintenancePlan(args map[string]inter
 	var updated []corelib.NLSkillEntry
 	var result cskill.SkillMaintenanceExecutionResult
 	var repairTargets []corelib.NLSkillEntry
+	commitState := ""
+	commitCleanupStatus := ""
+	commitRequestID := ""
+	commitFailureReason := ""
+	noOpCommit := false
 	skills := exec.loadSkills()
 	planOpts := cskill.SkillMaintenancePlanOptions{
 		Now:                 time.Now(),
@@ -128,6 +134,49 @@ func (h *IMMessageHandler) toolExecuteSkillMaintenancePlan(args map[string]inter
 		})
 	}
 	repairTargets = skillMaintenanceRepairTargets(updated, result)
+	if !dryRun && result.OK && len(result.Actions) == 0 && result.ExecutedCount == 0 {
+		// An approved action can legitimately disappear from a freshly rebuilt
+		// plan (for example, the maintenance condition was already repaired).
+		// Treat an empty plan as an idempotent no-op instead of inventing a
+		// synthetic skill identity or reporting a failed commit.
+		noOpCommit = true
+		commitState = "skipped"
+		commitCleanupStatus = "clear"
+		commitRequestID = fmt.Sprintf("evo_im_maintenance_%d", time.Now().UnixNano())
+		goto maintenanceCommitDone
+	}
+	if !dryRun && result.OK {
+		// File-backed contract drafts require the desktop reviewed-patch flow;
+		// this IM path only owns config-backed metadata mutations. Never let the
+		// config-only committer silently treat a YAML draft as a no-op.
+		for _, action := range result.Actions {
+			if action.PatchDraft != nil {
+				result.OK = false
+				result.Error = "file-backed maintenance draft requires reviewed desktop apply"
+				break
+			}
+		}
+	}
+	if !dryRun && result.OK {
+		// Batch maintenance must not claim a single-skill admission check is
+		// sufficient. Check every entry whose authoritative metadata changes;
+		// any pending/unreadable compensation keeps the whole batch fail-closed.
+		originalByName := make(map[string]corelib.NLSkillEntry, len(skills))
+		for _, entry := range skills {
+			originalByName[strings.ToLower(strings.TrimSpace(entry.Name))] = entry
+		}
+		for i := range updated {
+			before, exists := originalByName[strings.ToLower(strings.TrimSpace(updated[i].Name))]
+			if exists && reflect.DeepEqual(before, updated[i]) {
+				continue
+			}
+			if err := ensureSkillEvolutionMutationAdmission(h.app, updated[i].Name); err != nil {
+				result.OK = false
+				result.Error = err.Error()
+				break
+			}
+		}
+	}
 	if !dryRun && result.OK {
 		requestID := fmt.Sprintf("evo_im_maintenance_%d", time.Now().UnixNano())
 		configRevision := skillEvolutionConfigRevision(h.app)
@@ -166,12 +215,28 @@ func (h *IMMessageHandler) toolExecuteSkillMaintenancePlan(args map[string]inter
 				return cskill.RecordEvolutionEventStrict(event, data, "desktop")
 			},
 			ConfigRevision: configRevision,
+			// IM maintenance mutates only the config-backed registry snapshot;
+			// unchanged plans must be a side-effect-free no-op.
+			SkipIfUnchanged: true,
+			// IM maintenance does not own file-backed YAML drafts; only the
+			// config snapshot is committed by this path.
+			SkipDefinitionBackup: true,
 		}
 		commitResult := committer.Commit(cskill.WithEvolutionRequestMetadata(context.Background(), requestID, 1), commitSkillName, &updated[0], "skill:maintenance_plan_applied", map[string]string{
 			"skill": "maintenance", "action": "maintenance_plan", "decision": "applied", "via": "operator",
 			"request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none",
 		})
-		if commitResult.State != "committed" || commitResult.CleanupStatus != "clear" {
+		commitState = commitResult.State
+		commitCleanupStatus = commitResult.CleanupStatus
+		commitRequestID = commitResult.RequestID
+		commitFailureReason = commitResult.FailureReason
+		if commitResult.State == "skipped" {
+			// A reviewed action whose authoritative state is already identical is
+			// not an applied mutation. Keep the review trace previewed so it can be
+			// re-evaluated if the plan changes, and avoid an applied audit claim.
+			noOpCommit = true
+		}
+		if (commitResult.State != "committed" && commitResult.State != "skipped") || commitResult.CleanupStatus != "clear" {
 			result.OK = false
 			result.Error = fmt.Sprintf("skill maintenance not committed: %s (%s)", commitResult.State, commitResult.FailureReason)
 		}
@@ -188,12 +253,18 @@ maintenanceCommitDone:
 			"review_execution_audit_error": skillMaintenanceErrorString(auditErr),
 			"plan_summary":                 plan.Summary,
 			"self_repair_triggers_started": 0,
+			"state":                        commitState,
+			"cleanup_status":               commitCleanupStatus,
+			"request_id":                   commitRequestID,
+			"failure_reason":               commitFailureReason,
 			"result":                       result,
 		})
 	}
 	auditStatus := skillDraftExecutionPreviewed
 	if !result.OK {
 		auditStatus = skillDraftExecutionBlocked
+	} else if noOpCommit {
+		auditStatus = skillDraftExecutionPreviewed
 	} else if !dryRun {
 		auditStatus = skillDraftExecutionApplied
 	}
@@ -219,6 +290,10 @@ maintenanceCommitDone:
 		"review_execution_audit_error": "",
 		"plan_summary":                 plan.Summary,
 		"self_repair_triggers_started": triggeredRepairs,
+		"state":                        commitState,
+		"cleanup_status":               commitCleanupStatus,
+		"request_id":                   commitRequestID,
+		"failure_reason":               commitFailureReason,
 		"result":                       result,
 	}
 	if auditErr != nil {

@@ -2485,6 +2485,7 @@ func proxyResponseUsageWithFallback(reqBody map[string]any, respBody []byte) (in
 	}
 	return inputTokens, outputTokens, patchedBody
 }
+
 func estimateProxyTokenUsage(reqBody map[string]any, respBody []byte) (inputTokens, outputTokens int64) {
 	if reqBody != nil {
 		for _, key := range []string{"messages", "input", "instructions", "tools", "tool_choice", "response_format"} {
@@ -2662,8 +2663,12 @@ func extractTokenUsageFromMapWithPresence(usage map[string]any) (inputTokens, ou
 	if totalTokens > 0 {
 		switch {
 		case !inputObserved && !outputObserved:
+			// A total-only usage is a complete measurement. Record it as input
+			// and do not later fill the missing side with a local estimate,
+			// which would inflate the billed token total.
 			inputTokens = totalTokens
 			inputObserved = true
+			outputObserved = true
 		case !inputObserved && totalTokens > outputTokens:
 			inputTokens = totalTokens - outputTokens
 			inputObserved = true
@@ -2685,7 +2690,42 @@ func extractTokenUsageFromMapWithPresence(usage map[string]any) (inputTokens, ou
 			return 0, 0, true, true
 		}
 	}
+	if reasoning := reasoningTokensFromUsage(usage); reasoning > 0 {
+		accounted := inputTokens + outputTokens
+		switch {
+		case totalObserved && totalTokens == accounted+reasoning:
+			outputTokens += reasoning
+			outputObserved = true
+		case totalObserved && totalTokens == accounted:
+			// reasoning is already inside completion/output tokens
+		case totalObserved && totalTokens > accounted && totalTokens-accounted <= reasoning:
+			outputTokens += totalTokens - accounted
+			outputObserved = true
+		case !outputObserved:
+			outputTokens += reasoning
+			outputObserved = true
+		}
+	}
 	return inputTokens, outputTokens, inputObserved, outputObserved
+}
+
+func reasoningTokensFromUsage(usage map[string]any) int64 {
+	if usage == nil {
+		return 0
+	}
+	if value, ok := usageNumberPresent(usage["reasoning_tokens"]); ok && value > 0 {
+		return value
+	}
+	for _, key := range []string{"completion_tokens_details", "output_tokens_details"} {
+		details, _ := usage[key].(map[string]any)
+		if details == nil {
+			continue
+		}
+		if value, ok := usageNumberPresent(details["reasoning_tokens"]); ok && value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func firstTokenUsageValue(usage map[string]any, keys ...string) (int64, bool) {

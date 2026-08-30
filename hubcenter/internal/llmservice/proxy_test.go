@@ -3965,6 +3965,25 @@ func TestExtractTokenUsageInfersMissingSideFromTotal(t *testing.T) {
 	}
 }
 
+func TestExtractTokenUsageDoesNotEstimateWhenOnlyTotalIsPresent(t *testing.T) {
+	reqBody := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "this must not inflate the total"}}}
+	input, output, _ := proxyResponseUsageWithFallback(reqBody, []byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"total_tokens":20}}`))
+	if input != 20 || output != 0 {
+		t.Fatalf("total-only usage = %d/%d, want 20/0 without estimated output", input, output)
+	}
+}
+
+func TestExtractTokenUsageFoldsSeparateReasoningTokensIntoOutput(t *testing.T) {
+	input, output := extractTokenUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":550,"completion_tokens_details":{"reasoning_tokens":400}}}`))
+	if input != 100 || output != 450 {
+		t.Fatalf("separate reasoning usage = %d/%d, want 100/450", input, output)
+	}
+	input, output = extractTokenUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":500,"total_tokens":600,"completion_tokens_details":{"reasoning_tokens":400}}}`))
+	if input != 100 || output != 500 {
+		t.Fatalf("included reasoning usage = %d/%d, want 100/500", input, output)
+	}
+}
+
 func TestEstimateProxyResponseTokensIncludesStructuredContentAndToolCalls(t *testing.T) {
 	body := []byte(`{"choices":[{"message":{"content":[{"type":"text","text":"structured answer"}],"tool_calls":[{"function":{"name":"lookup","arguments":"{\"id\":\"T-1\"}"}}],"function_call":{"name":"legacy_lookup","arguments":"{\"id\":\"T-2\"}"}}},{"text":"legacy completion text"}]}`)
 	if got := estimateProxyResponseTokens(body); got <= 0 {

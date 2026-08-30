@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -640,6 +641,39 @@ func TestLLMUsageRepoQueryProviderTrafficOffsetFormattedLegacyRow(t *testing.T) 
 	}
 }
 
+func TestLLMUsageRepoQueryProviderTrafficMergesPaddedProviderIDs(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-provider-traffic-pad.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, loc)
+	dayStart, weekStart, monthStart := llmservice.ProviderTrafficBounds(now, loc)
+	if _, err := provider.Write.Exec(`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at) VALUES ('h1', 't1', 'm', 'alpha', 10, 20, 0, 0, '', '2026-08-12T01:00:00+08:00'), ('h1', 't1', 'm', ' alpha ', 3, 4, 0, 0, '', '2026-08-12T02:00:00+08:00')`); err != nil {
+		t.Fatalf("insert padded providers: %v", err)
+	}
+
+	got, err := NewLLMUsageRepo(provider).QueryProviderTraffic(context.Background(), dayStart, weekStart, monthStart)
+	if err != nil {
+		t.Fatalf("QueryProviderTraffic() error = %v", err)
+	}
+	row := got["alpha"]
+	if row.Day != (llmservice.TokenTraffic{InputTokens: 13, OutputTokens: 24, TotalTokens: 37}) {
+		t.Fatalf("padded provider day = %#v, want merged 13/24/37", row.Day)
+	}
+	if _, ok := got[" alpha "]; ok {
+		t.Fatalf("untrimmed provider key should not appear: %#v", got)
+	}
+}
+
 func TestLLMUsageRepoQueryServiceGroupTrafficOffsetFormattedLegacyRow(t *testing.T) {
 	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-service-group-traffic-offset.db"), WAL: false})
 	if err != nil {
@@ -670,5 +704,137 @@ func TestLLMUsageRepoQueryServiceGroupTrafficOffsetFormattedLegacyRow(t *testing
 	}
 	if row.Week != (llmservice.TokenTraffic{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}) {
 		t.Fatalf("legacy week = %#v, want the offset row counted in the week", row.Week)
+	}
+}
+
+func TestLLMUsageRepoQueryClassTrafficTrimsGroupAndUsesDatetimeWindow(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-class-traffic.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, loc)
+	dayStart, _, _ := llmservice.ProviderTrafficBounds(now, loc)
+	repo := NewLLMUsageRepo(provider)
+	ctx := context.Background()
+	if err := repo.Insert(ctx, &llmservice.TenantUsageRecord{
+		HubID: "h1", TenantID: "t1", Model: "m", ProviderID: "p", ServiceGroupID: "group-a",
+		WorkloadClass: "code", ClassSource: "rule", Preview: "today",
+		InputTokens: 10, OutputTokens: 20, CreatedAt: time.Date(2026, 8, 12, 1, 0, 0, 0, loc),
+	}); err != nil {
+		t.Fatalf("Insert(today) error = %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at) VALUES ('h1', 't1', 'm', 'p', ' group-a ', 'code', 'rule', 'padded', 3, 4, 0, 0, '', '2026-08-12T02:00:00+08:00')`); err != nil {
+		t.Fatalf("insert padded group: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at) VALUES ('h1', 't1', 'm', 'p', 'group-a', 'code', 'rule', 'yesterday', 70, 80, 0, 0, '', '2026-08-11T23:00:00+08:00')`); err != nil {
+		t.Fatalf("insert yesterday: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at) VALUES ('h1', 't1', 'm', 'p', 'group-a', 'code', ' hint ', 'hint-preview', 1, 1, 0, 0, '', '2026-08-12T03:00:00+08:00')`); err != nil {
+		t.Fatalf("insert padded hint: %v", err)
+	}
+
+	rows, _, samples, err := repo.QueryClassTraffic(ctx, "group-a", dayStart)
+	if err != nil {
+		t.Fatalf("QueryClassTraffic() error = %v", err)
+	}
+	var input, output int64
+	for _, row := range rows {
+		if row.Class == "code" {
+			input, output = row.InputTokens, row.OutputTokens
+		}
+	}
+	if input != 14 || output != 25 {
+		t.Fatalf("class tokens = %d/%d, want 14/25 (today + padded + hint traffic, exclude pre-midnight offset row)", input, output)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("samples = %d, want 2 in-window non-hint previews", len(samples))
+	}
+	for _, sample := range samples {
+		if strings.TrimSpace(sample.Source) == "hint" || sample.Preview == "hint-preview" {
+			t.Fatalf("padded hint sample leaked into previews: %#v", sample)
+		}
+	}
+}
+
+func TestLLMUsageRepoQuerySummaryUsesLocalTimezoneDay(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-usage-summary-tz.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	repo := NewLLMUsageRepo(provider)
+	ctx := context.Background()
+	if err := repo.Insert(ctx, &llmservice.TenantUsageRecord{
+		HubID: "h1", TenantID: "t1", Model: "m", ProviderID: "p",
+		InputTokens: 11, OutputTokens: 22, CreatedAt: time.Date(2026, 8, 12, 0, 30, 0, 0, loc),
+	}); err != nil {
+		t.Fatalf("Insert error = %v", err)
+	}
+
+	got, err := repo.QuerySummary(ctx, llmservice.UsageFilter{
+		HubID: "h1", TenantID: "t1", Period: "daily", Timezone: "Asia/Shanghai",
+		StartDate: "2026-08-12", EndDate: "2026-08-12",
+	})
+	if err != nil {
+		t.Fatalf("QuerySummary() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %#v, want one Shanghai Aug 12 bucket", got)
+	}
+	if got[0].PeriodStart != "2026-08-12" {
+		t.Fatalf("period_start = %q, want 2026-08-12 in Asia/Shanghai", got[0].PeriodStart)
+	}
+	if got[0].InputTokens != 11 || got[0].OutputTokens != 22 {
+		t.Fatalf("tokens = %#v, want 11/22", got[0])
+	}
+
+	utc, err := repo.QuerySummary(ctx, llmservice.UsageFilter{
+		HubID: "h1", TenantID: "t1", Period: "daily", Timezone: "UTC",
+		StartDate: "2026-08-12", EndDate: "2026-08-12",
+	})
+	if err != nil {
+		t.Fatalf("QuerySummary(UTC) error = %v", err)
+	}
+	if len(utc) != 0 {
+		t.Fatalf("UTC Aug 12 rows = %#v, want empty (record is Aug 11 16:30Z)", utc)
+	}
+
+	week, err := repo.QuerySummary(ctx, llmservice.UsageFilter{
+		HubID: "h1", TenantID: "t1", Period: "weekly", Timezone: "Asia/Shanghai",
+		StartDate: "2026-08-10", EndDate: "2026-08-16",
+	})
+	if err != nil {
+		t.Fatalf("QuerySummary(weekly) error = %v", err)
+	}
+	if len(week) != 1 || week[0].PeriodStart != "2026-08-10" {
+		t.Fatalf("weekly rows = %#v, want one bucket starting Monday 2026-08-10", week)
+	}
+
+	miss, err := repo.QuerySummary(ctx, llmservice.UsageFilter{
+		HubID: "h1", TenantID: "t1", Model: "other", Period: "daily", Timezone: "Asia/Shanghai",
+		StartDate: "2026-08-12", EndDate: "2026-08-12",
+	})
+	if err != nil {
+		t.Fatalf("QuerySummary(model miss) error = %v", err)
+	}
+	if len(miss) != 0 {
+		t.Fatalf("model filter = %#v, want empty", miss)
 	}
 }

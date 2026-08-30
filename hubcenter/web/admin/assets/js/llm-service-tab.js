@@ -81,7 +81,6 @@ if (typeof I18N_ZH !== 'undefined') {
       sgTryRaw: 'Raw JSON', sgClassCol: 'Class', sgClassReq: 'Req', sgClassIn: 'In', sgClassOut: 'Out', sgClassTok: 'Tokens',
       sgClassTotal: 'Total', sgClassEmpty: 'No billed traffic in this window.', sgSourceMix: 'Source mix',
       sgNoHintSamples: 'Recent previews', sgNoHintSamplesEmpty: 'No recent previews.',
-      sgWin_24h: '24h', sgWin_7d: '7d', sgWin_30d: '30d',
       sgTierHigh: 'Official high (official-high)', sgTierMid: 'Official mid (official-mid)', sgTierLow: 'Official low (official-low)',
       sgPlanDesignNoLow: 'Plan and design cannot use the low band.',
       sgProtectedModel: 'auto and official quality bands cannot be renamed or removed while they are in use.',
@@ -224,7 +223,6 @@ if (typeof I18N_ZH !== 'undefined') {
       sgTryRaw: '\u539f\u59cb JSON', sgClassCol: '\u5206\u7c7b', sgClassReq: '\u8bf7\u6c42', sgClassIn: '\u8f93\u5165', sgClassOut: '\u8f93\u51fa', sgClassTok: 'Tokens',
       sgClassTotal: '\u5408\u8ba1', sgClassEmpty: '\u8fd9\u4e2a\u7a97\u53e3\u6ca1\u6709\u6263\u8d39\u6d41\u91cf\u3002', sgSourceMix: '\u6765\u6e90\u6df7\u5408',
       sgNoHintSamples: '\u8fd1\u671f\u9884\u89c8', sgNoHintSamplesEmpty: '\u6682\u65e0\u9884\u89c8\u3002',
-      sgWin_24h: '24h', sgWin_7d: '7d', sgWin_30d: '30d',
       sgTierHigh: '\u5b98\u65b9\u9ad8\u6863\uff08official-high\uff09', sgTierMid: '\u5b98\u65b9\u4e2d\u6863\uff08official-mid\uff09', sgTierLow: '\u5b98\u65b9\u4f4e\u6863\uff08official-low\uff09',
       sgPlanDesignNoLow: '\u89c4\u5212\u548c\u8bbe\u8ba1\u4e0d\u80fd\u8d70\u4f4e\u6863\u3002',
       sgProtectedModel: '\u52a8\u6001\u7ec4\u91cc\uff0cauto \u548c\u6b63\u5728\u4f7f\u7528\u7684\u5b98\u65b9\u6863\u4e0d\u80fd\u6539\u540d\u6216\u5220\u6389\u3002',
@@ -361,7 +359,7 @@ if (typeof I18N_ZH !== 'undefined') {
   var sgResolutionOptions = [0,1,2,3,4,5];
   var sgMultiplierOptions = [0.25,0.5,0.75,1,1.5,2,3,5,10];
   var sgTrafficSeq = 0, sgTrySeq = 0, sgHeadSeq = 0, sgHeadPollTimer = 0;
-  var _sgTrafficDataWin = '24h';
+  var _sgTrafficDataWin = 'day';
   var _testingGroupId = '';
 
   window.initLLMServiceTab = async function() {
@@ -1858,10 +1856,16 @@ if (typeof I18N_ZH !== 'undefined') {
     return !!(overlay&&overlay.classList.contains('show')&&sgOpenKind===kind&&sgDraft&&String(sgDraft.id||'')===String(id||''));
   }
   function sgTrafficDialogAlive(id){ return sgDialogAlive('traffic',id); }
+  function sgTrafficWindowName(name){
+    name=String(name||'');
+    if(name==='week'||name==='7d') return 'week';
+    if(name==='month'||name==='30d') return 'month';
+    return 'day';
+  }
   function sgWinButtons(id){
-    var cur=_sgTrafficDataWin||'24h';
-    return ['24h','7d','30d'].map(function(win){
-      return '<button class="btn-ghost sg-traffic-win'+(cur===win?' is-active':'')+'" type="button" data-win="'+win+'" onclick="sgLoadClassTraffic('+jsArg(id)+','+jsArg(win)+')">'+esc(t('sgWin_'+win))+'</button>';
+    var cur=sgTrafficWindowName(_sgTrafficDataWin||serviceGroupTrafficPeriod||'day');
+    return ['day','week','month'].map(function(win){
+      return '<button class="btn-ghost sg-traffic-win'+(cur===win?' is-active':'')+'" type="button" data-win="'+win+'" onclick="sgLoadClassTraffic('+jsArg(id)+','+jsArg(win)+')">'+esc(providerTrafficPeriodLabel(win))+'</button>';
     }).join('');
   }
   function sgFmtTryResult(data){
@@ -1904,7 +1908,7 @@ if (typeof I18N_ZH !== 'undefined') {
     function valOf(id){var el=document.getElementById(id);return el?el.value:'';}
     var out=document.getElementById('sgTryRunOut');
     var board=document.getElementById('sgClassTraffic');
-    return {tryOpen:!!(tryBox&&tryBox.open),tryText:valOf('sgTryRunText'),tryWorkflow:valOf('sgTryWorkflow'),tryPhase:valOf('sgTryPhase'),tryTask:valOf('sgTryTask'),tryOut:out?out.innerHTML:'',win:_sgTrafficDataWin||'24h',board:board?board.innerHTML:''};
+    return {tryOpen:!!(tryBox&&tryBox.open),tryText:valOf('sgTryRunText'),tryWorkflow:valOf('sgTryWorkflow'),tryPhase:valOf('sgTryPhase'),tryTask:valOf('sgTryTask'),tryOut:out?out.innerHTML:'',win:sgTrafficWindowName(_sgTrafficDataWin||serviceGroupTrafficPeriod||'day'),board:board?board.innerHTML:''};
   }
   function sgRestoreTraffic(snap){
     if(!snap)return;
@@ -1914,13 +1918,15 @@ if (typeof I18N_ZH !== 'undefined') {
     set('sgTryRunText',snap.tryText); set('sgTryWorkflow',snap.tryWorkflow); set('sgTryPhase',snap.tryPhase); set('sgTryTask',snap.tryTask);
     var out=document.getElementById('sgTryRunOut'); if(out&&snap.tryOut)out.innerHTML=snap.tryOut;
     var board=document.getElementById('sgClassTraffic'); if(board&&snap.board)board.innerHTML=snap.board;
-    if(snap.win)_sgTrafficDataWin=snap.win;
+    if(snap.win)_sgTrafficDataWin=sgTrafficWindowName(snap.win);
   }
   function sgRenderTrafficDialog(opts){
     var d=sgDraft||{};
     var id=String(d.id||'');
     sgOpenKind='traffic';
     var snap=opts&&opts.snap;
+    if(snap&&snap.win) _sgTrafficDataWin=sgTrafficWindowName(snap.win);
+    else _sgTrafficDataWin=sgTrafficWindowName(serviceGroupTrafficPeriod||'day');
     var body='<div class="sg-train-block"><div class="sg-section-title">'+esc(t('sgClassTraffic'))+'</div>'
       +'<div class="hint">'+esc(t('sgClassTrafficHint'))+'</div>'
       +'<div class="sg-inline-tools">'+sgWinButtons(id)+'</div>'
@@ -1943,7 +1949,7 @@ if (typeof I18N_ZH !== 'undefined') {
   window.sgLoadClassTraffic=async function(id, windowName){
     var el=document.getElementById('sgClassTraffic');
     if(!el)return;
-    windowName=windowName||_sgTrafficDataWin||'24h';
+    windowName=sgTrafficWindowName(windowName||_sgTrafficDataWin||serviceGroupTrafficPeriod||'day');
     _sgTrafficDataWin=windowName;
     var seq=++sgTrafficSeq;
     var buttons=document.querySelectorAll('.sg-traffic-dialog button.sg-traffic-win[data-win]');

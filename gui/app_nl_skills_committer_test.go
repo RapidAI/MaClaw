@@ -44,3 +44,29 @@ func TestCreateNLSkillUsesSharedCommitterAndRollsBackIndexFailure(t *testing.T) 
 		t.Fatalf("refresh calls = %d, want forward failure and rollback refresh", refreshCalls)
 	}
 }
+
+func TestApplySkillMaintenanceActionReturnsSkippedForNoChange(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: home}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "maintenance-clean", Status: "active", Source: "manual",
+		Steps: []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	out := app.ApplySkillMaintenanceAction("improve_contract", "maintenance-clean", "", true, false)
+	if ok, _ := out["ok"].(bool); !ok {
+		t.Fatalf("expected no-op maintenance to be accepted: %#v", out)
+	}
+	if out["state"] != "skipped" || out["cleanup_status"] != "clear" || out["message"] != "no changes required" {
+		t.Fatalf("unexpected no-op result: %#v", out)
+	}
+}
