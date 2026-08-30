@@ -86,6 +86,10 @@ export function AddSkill(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['AddSkill'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function AddSkillDetailed(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['AddSkillDetailed'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function AddVEToGroup(arg1, arg2) {
   return window['go']['main']['App']['AddVEToGroup'](arg1, arg2);
 }
@@ -772,6 +776,10 @@ export function DeleteSession(arg1) {
 
 export function DeleteSkill(arg1, arg2) {
   return window['go']['main']['App']['DeleteSkill'](arg1, arg2);
+}
+
+export function DeleteSkillDetailed(arg1, arg2) {
+  return window['go']['main']['App']['DeleteSkillDetailed'](arg1, arg2);
 }
 
 export function DeleteSurvey(arg1) {
@@ -2280,6 +2288,10 @@ export function InstallSelectedMaclawAppPackageFromHub(arg1, arg2) {
 
 export function InstallSkill(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['InstallSkill'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function InstallSkillDetailed(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['InstallSkillDetailed'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function InstallTool(arg1) {
@@ -3806,8 +3818,8 @@ export function RestoreWindowGeometry() {
   return window['go']['main']['App']['RestoreWindowGeometry']();
 }
 
-export function ResumeCloudWorkspaceTask(arg1) {
-  return window['go']['main']['App']['ResumeCloudWorkspaceTask'](arg1);
+export function ResumeCloudWorkspaceTask(arg1, arg2) {
+  return window['go']['main']['App']['ResumeCloudWorkspaceTask'](arg1, arg2);
 }
 
 export function ResumeProject(arg1) {

@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -303,23 +302,18 @@ func (a *App) RestoreCloudWorkspace(id string) (CloudWorkspaceEntitlementWorkspa
 	return row.toActive(), nil
 }
 
-func (a *App) cloudWorkspaceTaskIsResumable(result ProjectSearchResult) bool {
-	path := normalizeProjectSessionPath(result.ProjectPath)
-	if path == "" {
-		return false
+// localCloudWorkspaceID is the 1:1 identity used by restore, resume, and
+// list collapse. Working_dir wins over accumulated cloud_workspace: tags.
+func localCloudWorkspaceID(rec memory.ProjectRecord) string {
+	if !projectRecordHasTag(rec, taskManagementTag) {
+		return ""
 	}
-	if _, err := os.Stat(filepath.Clean(path)); err != nil {
-		return false
-	}
-	a.ensureMemoryStore()
-	if a.memoryStore == nil {
-		return true
-	}
-	pi := a.memoryStore.ProjectIndex()
-	if pi == nil {
-		return true
-	}
-	return !pi.IsHidden(path) && !pi.IsArchived(path)
+	return primaryCloudWorkspaceID(rec)
+}
+
+func recordIsLocalCloudWorkspaceTask(candidate memory.ProjectRecord, workspaceID string) bool {
+	workspaceID = strings.TrimSpace(workspaceID)
+	return workspaceID != "" && localCloudWorkspaceID(candidate) == workspaceID
 }
 
 func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool) ProjectSearchResult {
@@ -327,24 +321,6 @@ func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool
 	if workspaceID == "" {
 		return ProjectSearchResult{}
 	}
-	if result, ok := lookupCloudWorkspaceTask(workspaceID); ok {
-		path := normalizeProjectSessionPath(result.ProjectPath)
-		if path != "" {
-			_, statErr := os.Stat(filepath.Clean(path))
-			inIndex := false
-			a.ensureMemoryStore()
-			if a.memoryStore != nil {
-				if pi := a.memoryStore.ProjectIndex(); pi != nil {
-					inIndex = pi.Get(path) != nil
-				}
-			}
-			if statErr == nil || inIndex {
-				if includeHidden || a.cloudWorkspaceTaskIsResumable(result) {
-					return result
-				}
-			}
-		}
-	}
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
 		return ProjectSearchResult{}
@@ -353,13 +329,16 @@ func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool
 	if pi == nil {
 		return ProjectSearchResult{}
 	}
-	want := cloudWorkspaceTag(workspaceID)
 	hidden := ProjectSearchResult{}
+	archived := ProjectSearchResult{}
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
-		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, want)
+		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
 	}) {
 		result := projectRecordToSearchResult(pi, rec)
 		if pi.IsArchived(rec.ProjectPath) {
+			if includeHidden && strings.TrimSpace(archived.ProjectPath) == "" {
+				archived = result
+			}
 			continue
 		}
 		if pi.IsHidden(rec.ProjectPath) {
@@ -368,13 +347,44 @@ func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool
 			}
 			continue
 		}
+		rememberCloudWorkspaceTask(workspaceID, result)
 		return result
 	}
-	return hidden
+	if includeHidden && strings.TrimSpace(hidden.ProjectPath) != "" {
+		return hidden
+	}
+	if includeHidden && strings.TrimSpace(archived.ProjectPath) != "" {
+		return archived
+	}
+	return ProjectSearchResult{}
 }
 
 func (a *App) findVisibleCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
 	return a.findLocalCloudWorkspaceTask(workspaceID, false)
+}
+
+func (a *App) visibleCloudWorkspaceTaskAt(workspaceID, projectPath string) ProjectSearchResult {
+	workspaceID = strings.TrimSpace(workspaceID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if workspaceID == "" || projectPath == "" {
+		return ProjectSearchResult{}
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil || pi.IsHidden(projectPath) || pi.IsArchived(projectPath) {
+		return ProjectSearchResult{}
+	}
+	if !recordIsLocalCloudWorkspaceTask(*rec, workspaceID) {
+		return ProjectSearchResult{}
+	}
+	return projectRecordToSearchResult(pi, *rec)
 }
 
 func (a *App) bindPreparedCloudWorkspaceTask(workspaceID string, result ProjectSearchResult, localPath string) ProjectSearchResult {
@@ -404,7 +414,8 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	}
 	if existing := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(existing.ProjectPath) != "" {
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
-		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
+		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
+		a.refreshCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
 		return bound, nil
 	}
 	name, mode = a.cloudWorkspaceTaskIdentity(workspaceID, name, mode)
@@ -420,6 +431,7 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	if strings.TrimSpace(result.ProjectPath) != "" {
 		a.clearDismissedCloudWorkspaceTask(workspaceID)
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, result, prepared.LocalPath)
+		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
 		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
 		a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
 		return bound, nil
@@ -427,14 +439,19 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	return result, fmt.Errorf("创建云端工作区任务失败")
 }
 
-// ResumeCloudWorkspaceTask returns the 1:1 task for workspaceID (process map or cloud_workspace: tag)
-// after re-running PrepareCloudWorkspace so tab/sidebar reopen holds the exclusive lease.
-func (a *App) ResumeCloudWorkspaceTask(workspaceID string) (ProjectSearchResult, error) {
+// ResumeCloudWorkspaceTask returns the 1:1 task for workspaceID after
+// re-running PrepareCloudWorkspace so tab/sidebar reopen holds the exclusive lease.
+// projectPath, when it still names a visible row for this workspace, is kept so
+// clicking an older duplicate does not switch the user onto a newer leftover row.
+func (a *App) ResumeCloudWorkspaceTask(workspaceID, projectPath string) (ProjectSearchResult, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return ProjectSearchResult{}, nil
 	}
-	existing := a.findVisibleCloudWorkspaceTask(workspaceID)
+	existing := a.visibleCloudWorkspaceTaskAt(workspaceID, projectPath)
+	if strings.TrimSpace(existing.ProjectPath) == "" {
+		existing = a.findVisibleCloudWorkspaceTask(workspaceID)
+	}
 	if strings.TrimSpace(existing.ProjectPath) == "" {
 		return ProjectSearchResult{}, nil
 	}
@@ -447,6 +464,10 @@ func (a *App) ResumeCloudWorkspaceTask(workspaceID string) (ProjectSearchResult,
 		return ProjectSearchResult{}, fmt.Errorf("cloud workspace cache path is empty")
 	}
 	bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
-	a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
+	a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
+	// Re-fetch sidecars on every explicit reopen. PrepareCloudWorkspace may
+	// return an already-held mount without pulling, but another machine may have
+	// appended conversation turns since this tab was last opened.
+	a.refreshCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
 	return bound, nil
 }

@@ -128,17 +128,23 @@ static inline esp_err_t compact_connectivity_adapter_stream_body_reader(
         return ESP_ERR_INVALID_ARG;
     }
     const device_connectivity_stream_request_t *request = context;
+    if (!request->body_reader) return ESP_ERR_INVALID_STATE;
     uint32_t read = 0;
     device_status_t status = request->body_reader(request->body_reader_context,
                                                    buffer, (uint32_t)requested, &read);
     if (status != DEVICE_STATUS_OK) return device_status_to_platform_error(status);
+    if (read > requested) return ESP_ERR_INVALID_SIZE;
     *read_bytes = read;
     return ESP_OK;
 }
 
 static inline esp_err_t compact_connectivity_adapter_cellular_http_request(
     const device_connectivity_http_request_t *request) {
-    if (!request || request->body_len > SIZE_MAX || request->response_capacity > SIZE_MAX) {
+    if (!request || !request->method || !request->url ||
+        !request->response || request->response_capacity < 2 ||
+        !request->response_len || !request->status_code || !request->truncated ||
+        request->timeout_ms == 0 || request->timeout_ms > INT_MAX ||
+        request->body_len > SIZE_MAX || request->response_capacity > SIZE_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
     size_t response_len = 0;
@@ -155,7 +161,13 @@ static inline esp_err_t compact_connectivity_adapter_cellular_http_request(
 
 static inline esp_err_t compact_connectivity_adapter_cellular_http_stream_request(
     const device_connectivity_stream_request_t *request) {
-    if (!request || request->request.body_len > SIZE_MAX ||
+    if (!request || !request->body_reader || !request->stream_buffer ||
+        request->stream_buffer_size == 0 || !request->request.method ||
+        !request->request.url || !request->request.response ||
+        request->request.response_capacity < 2 || !request->request.response_len ||
+        !request->request.status_code || !request->request.truncated ||
+        request->request.timeout_ms == 0 || request->request.timeout_ms > INT_MAX ||
+        request->request.body_len > SIZE_MAX ||
         request->request.response_capacity > SIZE_MAX ||
         request->stream_buffer_size > SIZE_MAX) {
         return ESP_ERR_INVALID_ARG;

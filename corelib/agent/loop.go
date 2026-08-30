@@ -79,6 +79,23 @@ type LoopCallbacks interface {
 	ShouldStop() bool
 }
 
+// LLMAuthRefresh is an optional host hook. When a token-validation 401/403 is
+// retried, the loop can pick up a rotated OAuth access token. The bool is true
+// only when the access token actually changed.
+type LLMAuthRefresh interface {
+	RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool)
+}
+
+func applyRefreshedLLMAuth(dst, src corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if key := strings.TrimSpace(src.Key); key != "" {
+		dst.Key = src.Key
+	}
+	if authType := strings.TrimSpace(src.AuthType); authType != "" {
+		dst.AuthType = src.AuthType
+	}
+	return dst
+}
+
 type ToolExecutionOutcome string
 
 const (
@@ -1622,42 +1639,70 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		if err != nil {
 			disposeSurface(ToolSurfaceTransportFailure)
-			// Retry with exponential backoff for transient errors (503, timeout, network).
-			// SubAgent tasks should be resilient to brief API outages.
+			// Retry with exponential backoff for transient errors (503, timeout,
+			// network, OAuth token-validation 401/403). SubAgent tasks should be
+			// resilient to brief API outages and short-lived auth glitches.
 			// A partial streamed response has already been rendered. Retrying it
 			// would duplicate that visible output in the same assistant message.
 			canRetry := requestChannel == nil && !containAmbiguousDelivery && resp == nil && requestBaseCtx.Err() == nil && requestCtx.Err() == nil
+			didAuthRefresh := false
 			for retryAttempt := 1; retryAttempt <= maxLLMRetries && canRetry && shouldRetrySimpleLLMError(err); retryAttempt++ {
+				rotated := false
+				if !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
+					didAuthRefresh = true
+					if refresher, ok := cb.(LLMAuthRefresh); ok {
+						if next, didRotate := refresher.RefreshLLMAuth(requestCtx); didRotate {
+							cfg = applyRefreshedLLMAuth(cfg, next)
+							aggCFG = applyRefreshedLLMAuth(aggCFG, next)
+							rotated = true
+							cb.OnProgress("已刷新模型登录状态，即将重试...")
+						}
+					}
+				}
 				backoff := llmRetryBackoff(retryAttempt)
-				log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
-				// A live steer can arrive while the loop is backing off from a
-				// transient provider error. Poll the replan revision so the user does
-				// not wait 2-6 seconds and then watch stale context retry first.
-				deadline := time.NewTimer(backoff)
-				ticker := time.NewTicker(50 * time.Millisecond)
+				if rotated {
+					backoff = 0
+				}
+				if backoff > 0 {
+					log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
+					retryMsg := "API 暂时不可用，%d 秒后重试 (%d/%d)..."
+					if llm.IsTransientTokenValidationError(err) {
+						retryMsg = "模型认证暂时失败，%d 秒后重试 (%d/%d)..."
+					}
+					cb.OnProgress(fmt.Sprintf(retryMsg, int(backoff.Seconds()), retryAttempt, maxLLMRetries))
+				} else {
+					log.Printf("[agent-loop] LLM token-validation error, retrying immediately after credential refresh (attempt %d/%d): %v", retryAttempt, maxLLMRetries, err)
+				}
 				interruptedForReplan := false
-			waitBackoff:
-				for {
-					select {
-					case <-deadline.C:
-						break waitBackoff
-					case <-ticker.C:
-						if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
-							interruptedForReplan = true
+				if backoff > 0 {
+					// A live steer can arrive while the loop is backing off from a
+					// transient provider error. Poll the replan revision so the user does
+					// not wait 2-6 seconds and then watch stale context retry first.
+					deadline := time.NewTimer(backoff)
+					ticker := time.NewTicker(50 * time.Millisecond)
+				waitBackoff:
+					for {
+						select {
+						case <-deadline.C:
 							break waitBackoff
-						}
-						if cb.ShouldStop() {
-							break waitBackoff
+						case <-ticker.C:
+							if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+								interruptedForReplan = true
+								break waitBackoff
+							}
+							if cb.ShouldStop() {
+								break waitBackoff
+							}
 						}
 					}
-				}
-				if !deadline.Stop() {
-					select {
-					case <-deadline.C:
-					default:
+					if !deadline.Stop() {
+						select {
+						case <-deadline.C:
+						default:
+						}
 					}
+					ticker.Stop()
 				}
-				ticker.Stop()
 				if interruptedForReplan {
 					break
 				}

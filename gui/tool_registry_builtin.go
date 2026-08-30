@@ -917,7 +917,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	// --- Web search & fetch tools ---
 	// web_search stays annotated for unmanaged/legacy turns. The managed
 	// catalog unpublished this soup in favor of semantic_search_trusted_web.
-	reg("web_search", "搜索互联网内容，查询天气、新闻、汇率、股价等实时信息。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。搜索 API 失效或额度耗尽时自动降级为搜索引擎页面抓取（内置反爬升级链，无需任何 API key）；抓取端点全部失败时用真实浏览器兜底搜索 Bing/Google。",
+	reg("web_search", "搜索互联网内容，查询天气、新闻、汇率、股价等实时信息。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。搜索 API 失效、超时、被拦，或结果不含查询中的目标站点（如 OpenReview）时，自动继续用真实浏览器兜底搜索 Google/Bing。",
 		ToolCategoryBuiltin, []string{"web", "search", "internet", "google", "query", "network"},
 		map[string]interface{}{
 			"query":       map[string]string{"type": "string", "description": "搜索关键词"},
@@ -1091,8 +1091,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"remote_path":     map[string]string{"type": "string", "description": "远程文件/目录路径（upload/download 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolSSH(args) })
-	// Legacy ssh soup. Managed remote-host turns unpublish this entry and
-	// use semantic_execute_trusted_ssh when a session is bound.
+	// Soup ssh is unpublished only while trusted bound-session SSH is published.
 	annotateSemanticTool(registry, "ssh", []tool.CapabilityProvision{{
 		Capability: tool.CapabilityShellExecuteRemoteHost, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectExternalEffect})

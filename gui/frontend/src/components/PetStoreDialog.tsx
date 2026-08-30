@@ -32,6 +32,12 @@ const petStoreErrorText = (lang: Lang, err: unknown) => {
     if (normalized.includes('pet pack has been removed')) {
         return t(lang, '该宠物包已被作者移除，无法安装。', 'This pet pack has been removed by its creator and cannot be installed.');
     }
+    if (normalized.includes('already bound to another user')) {
+        return t(lang, '该邮箱已绑定其他市场账号。请用原 HubCenter 账号登录，或联系管理员合并账号。', 'This email is already bound to another market account. Sign in with the original HubCenter account, or ask an administrator to merge them.');
+    }
+    if (normalized.includes('session refresh failed') || normalized.includes('session expired or invalid')) {
+        return t(lang, '登录已过期或 HubCenter 会话刷新失败，请重新连接 HubCenter 后重试。', 'The HubCenter session expired or could not be refreshed. Reconnect this device and try again.');
+    }
     return message;
 };
 // Every Pet Store binding returns this message when no HubCenter is configured
@@ -43,7 +49,7 @@ const isHubCenterMissingError = (err: unknown) => errText(err).toLowerCase().inc
 const isPetStoreSignInError = (err: unknown) => errText(err).toLowerCase().includes('please sign in to hubcenter');
 const storeLoadErrorText = (lang: Lang, err: unknown) => isHubCenterMissingError(err)
     ? t(lang, '未配置 HubCenter，宠物市场不可用。请先在设置中连接 HubCenter，然后重试。', 'HubCenter is not configured, so the Pet Store is unavailable. Connect to HubCenter in Settings, then retry.')
-    : errText(err);
+    : petStoreErrorText(lang, err);
 const number = (value: unknown) => {
     const numericValue = Number(value);
     return Number.isFinite(numericValue) ? numericValue.toLocaleString() : '—';

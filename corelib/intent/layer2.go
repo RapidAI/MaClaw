@@ -136,6 +136,8 @@ func defaultAnchors() []intentAnchor {
 				"帮我登录服务器重启服务",
 				"查看服务器上的GPU占用率",
 				"远程执行命令查看磁盘空间",
+				"这是服务器地址和账号，升级线上服务并保留当前镜像方便回退",
+				"用这台机器的账号密码更新远端服务版本",
 				// English
 				"connect to the server via SSH",
 				"log into the production server",
@@ -143,6 +145,8 @@ func defaultAnchors() []intentAnchor {
 				"restart the service on the remote machine",
 				"SSH into the GPU server and check usage",
 				"run a command on the remote host",
+				"here are the host credentials, upgrade the remote service and keep the running image for rollback",
+				"update the service on that machine using the account I just gave you",
 			},
 		},
 		{

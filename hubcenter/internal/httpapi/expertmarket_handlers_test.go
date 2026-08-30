@@ -185,6 +185,41 @@ func TestExpertMarketPublicShareReturnsPlatformDistributionAcrossReadAPIs(t *tes
 	if detailRec.Code != http.StatusOK || !bytes.Contains(detailRec.Body.Bytes(), []byte(`"platform_distribution":true`)) {
 		t.Fatalf("detail=%d %s, want enabled distribution", detailRec.Code, detailRec.Body.String())
 	}
+
+	anonList := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts", nil)
+	anonListRec := httptest.NewRecorder()
+	h.ListExpertMarketListings(anonListRec, anonList)
+	if anonListRec.Code != http.StatusOK || !bytes.Contains(anonListRec.Body.Bytes(), []byte(`"platform_distribution":true`)) {
+		t.Fatalf("anonymous list=%d %s, want public catalogue", anonListRec.Code, anonListRec.Body.String())
+	}
+	if bytes.Contains(anonListRec.Body.Bytes(), []byte(`"owned":true`)) {
+		t.Fatalf("anonymous list should not mark listings owned: %s", anonListRec.Body.String())
+	}
+
+	anonDetail := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+created.ID, nil)
+	anonDetail.SetPathValue("id", created.ID)
+	anonDetailRec := httptest.NewRecorder()
+	h.GetExpertMarketListing(anonDetailRec, anonDetail)
+	if anonDetailRec.Code != http.StatusOK || !bytes.Contains(anonDetailRec.Body.Bytes(), []byte(`"platform_distribution":true`)) {
+		t.Fatalf("anonymous detail=%d %s, want public listing", anonDetailRec.Code, anonDetailRec.Body.String())
+	}
+
+	staleList := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts", nil)
+	staleList.Header.Set("Authorization", "Bearer not-a-session")
+	staleListRec := httptest.NewRecorder()
+	h.ListExpertMarketListings(staleListRec, staleList)
+	if staleListRec.Code != http.StatusUnauthorized {
+		t.Fatalf("stale list=%d %s, want unauthorized so the client can refresh", staleListRec.Code, staleListRec.Body.String())
+	}
+
+	staleDetail := httptest.NewRequest(http.MethodGet, "/api/v1/expert-market/experts/"+created.ID, nil)
+	staleDetail.SetPathValue("id", created.ID)
+	staleDetail.Header.Set("Authorization", "Bearer not-a-session")
+	staleDetailRec := httptest.NewRecorder()
+	h.GetExpertMarketListing(staleDetailRec, staleDetail)
+	if staleDetailRec.Code != http.StatusUnauthorized {
+		t.Fatalf("stale detail=%d %s, want unauthorized so the client can refresh", staleDetailRec.Code, staleDetailRec.Body.String())
+	}
 }
 
 func TestExpertMarketAccountUsesUserIDAcrossBoundLoginContacts(t *testing.T) {

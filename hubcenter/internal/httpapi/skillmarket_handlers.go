@@ -145,8 +145,12 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 				return
 			}
 			email = strings.TrimSpace(sess.Email)
-			user, err = h.userSvc.EnsureAccountWithID(r.Context(), sess.UserID, email)
+			user, err = h.userSvc.EnsureAccountWithVerifiedContact(r.Context(), sess.UserID, email)
 			if err != nil {
+				if errors.Is(err, skillmarket.ErrEmailBoundToAnotherUser) {
+					smError(w, http.StatusConflict, "ensure account: "+err.Error())
+					return
+				}
 				smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
 				return
 			}

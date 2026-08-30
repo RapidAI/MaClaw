@@ -536,6 +536,31 @@ describe('CodePreviewWorkspace context menu', () => {
         expect(onFileDeleted).toHaveBeenCalledWith('report.md');
     });
 
+    it('closes each deleted file even when another delete is already in flight', async () => {
+        let resolveFirst: ((value?: unknown) => void) | undefined;
+        const onFileDeleted = vi.fn();
+        deleteEntry
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+            .mockResolvedValueOnce(undefined);
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [
+                { name: 'a.md', path: 'a.md', is_dir: false },
+                { name: 'b.md', path: 'b.md', is_dir: false },
+            ],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} onFileDeleted={onFileDeleted} />);
+        fireEvent.contextMenu(await screen.findByText('a.md'), { clientX: 30, clientY: 30 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        await waitFor(() => expect(deleteEntry).toHaveBeenCalledWith('cloud-task', 'a.md'));
+        fireEvent.contextMenu(screen.getByText('b.md'), { clientX: 40, clientY: 40 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        await waitFor(() => expect(deleteEntry).toHaveBeenCalledWith('cloud-task', 'b.md'));
+        await waitFor(() => expect(onFileDeleted).toHaveBeenCalledWith('b.md'));
+        await act(async () => { resolveFirst?.(); });
+        await waitFor(() => expect(onFileDeleted).toHaveBeenCalledWith('a.md'));
+    });
+
     it('does not delete a cloud file when the custom confirm is cancelled', async () => {
         showConfirm.mockResolvedValueOnce(false);
         getDirectory.mockResolvedValue({
@@ -577,18 +602,41 @@ describe('CodePreviewWorkspace context menu', () => {
         await waitFor(() => expect(screen.queryByText('docs')).toBeNull());
     });
 
+    it('still deletes the original cloud file if the task changes while confirm is open', async () => {
+        let resolveConfirm: ((value: boolean) => void) | undefined;
+        showConfirm.mockImplementationOnce(() => new Promise((resolve) => { resolveConfirm = resolve; }));
+        getDirectory.mockImplementation(async (projectPath: string) => (
+            projectPath === 'cloud-task-a'
+                ? { root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws-a', entries: [{ name: 'report.md', path: 'report.md', is_dir: false }] }
+                : { root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws-b', entries: [{ name: 'other.md', path: 'other.md', is_dir: false }] }
+        ));
+        const view = render(<CodePreviewWorkspace projectPath="cloud-task-a" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        await waitFor(() => expect(showConfirm).toHaveBeenCalledTimes(1));
+        view.rerender(<CodePreviewWorkspace projectPath="cloud-task-b" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('other.md')).toBeTruthy();
+        await act(async () => { resolveConfirm?.(true); });
+        await waitFor(() => expect(deleteEntry).toHaveBeenCalledWith('cloud-task-a', 'report.md'));
+        expect(screen.getByText('other.md')).toBeTruthy();
+        expect(screen.queryByText('report.md')).toBeNull();
+    });
+
     it('shows a notice when cloud file deletion fails after confirm', async () => {
+        const onFileDeleted = vi.fn();
         deleteEntry.mockRejectedValueOnce(new Error('cloud workspace is read-only'));
         getDirectory.mockResolvedValue({
             root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
             entries: [{ name: 'report.md', path: 'report.md', is_dir: false }],
         });
-        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} onFileDeleted={onFileDeleted} />);
         fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
         fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
         const notice = await screen.findByTestId('code-preview-workspace-notice');
         expect(notice.textContent || '').toContain('云端工作区当前为只读。');
         expect(notice.getAttribute('role')).toBe('alert');
+        expect(await screen.findByText('report.md')).toBeTruthy();
+        expect(onFileDeleted).not.toHaveBeenCalled();
     });
 
     it('explains that remote VS Code files are local temporary copies', async () => {

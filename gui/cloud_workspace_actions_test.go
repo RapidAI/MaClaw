@@ -101,9 +101,13 @@ func mustCreateCloudWorkspaceTask(t *testing.T, app *App, name, workingDir, mode
 	return created
 }
 
-func mustResumeCloudWorkspaceTask(t *testing.T, app *App, workspaceID string) ProjectSearchResult {
+func mustResumeCloudWorkspaceTask(t *testing.T, app *App, workspaceID string, projectPath ...string) ProjectSearchResult {
 	t.Helper()
-	got, err := app.ResumeCloudWorkspaceTask(workspaceID)
+	preferred := ""
+	if len(projectPath) > 0 {
+		preferred = projectPath[0]
+	}
+	got, err := app.ResumeCloudWorkspaceTask(workspaceID, preferred)
 	if err != nil {
 		t.Fatalf("ResumeCloudWorkspaceTask: %v", err)
 	}

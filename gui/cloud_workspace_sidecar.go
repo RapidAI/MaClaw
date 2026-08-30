@@ -38,8 +38,9 @@ type cloudWorkspaceTaskSidecar struct {
 // cloudWorkspaceSessionSidecar is the Hub session.json payload: conversation
 // plus draft input, with the local tab_id / project_path stripped.
 type cloudWorkspaceSessionSidecar struct {
-	Conversation []interface{} `json:"conversation,omitempty"`
+	Conversation []interface{} `json:"conversation"`
 	InputText    string        `json:"input_text,omitempty"`
+	ClearedAt    int64         `json:"cleared_at,omitempty"`
 }
 
 const maxCloudWorkspaceConversationEntries = 4000
@@ -53,13 +54,29 @@ func mergeCloudWorkspaceSessionHistory(local, remote *TabSessionData) *TabSessio
 		return nil
 	}
 	out := &TabSessionData{}
-	if remote != nil {
+	if local != nil && local.ConversationClearedAt > out.ConversationClearedAt {
+		out.ConversationClearedAt = local.ConversationClearedAt
+	}
+	if remote != nil && remote.ConversationClearedAt > out.ConversationClearedAt {
+		out.ConversationClearedAt = remote.ConversationClearedAt
+	}
+	includeRemote := remote != nil
+	includeLocal := local != nil
+	if local != nil && remote != nil {
+		switch {
+		case local.ConversationClearedAt > remote.ConversationClearedAt:
+			includeRemote = false
+		case remote.ConversationClearedAt > local.ConversationClearedAt:
+			includeLocal = false
+		}
+	}
+	if includeRemote {
 		out.Conversation = append(out.Conversation, remote.Conversation...)
 		out.InputText = remote.InputText
 	}
-	if local != nil {
+	if includeLocal {
 		out.Conversation = append(out.Conversation, local.Conversation...)
-		if strings.TrimSpace(local.InputText) != "" {
+		if strings.TrimSpace(local.InputText) != "" || !includeRemote {
 			out.InputText = local.InputText
 		}
 	}
@@ -121,7 +138,7 @@ func cloudWorkspaceSessionHistoryEqual(a, b *TabSessionData) bool {
 	cb := mergeCloudWorkspaceSessionHistory(b, nil)
 	ra, _ := json.Marshal(ca.Conversation)
 	rb, _ := json.Marshal(cb.Conversation)
-	return string(ra) == string(rb) && a.InputText == b.InputText
+	return string(ra) == string(rb) && a.InputText == b.InputText && a.ConversationClearedAt == b.ConversationClearedAt
 }
 
 var cloudWorkspaceSidecarMaxBytes = int64(cloudWorkspaceObjectMaxBytes)
@@ -371,6 +388,7 @@ func marshalCloudWorkspaceSessionSidecar(session *TabSessionData) []byte {
 	raw, err := json.Marshal(cloudWorkspaceSessionSidecar{
 		Conversation: session.Conversation,
 		InputText:    session.InputText,
+		ClearedAt:    session.ConversationClearedAt,
 	})
 	if err != nil || len(raw) == 0 {
 		return nil
@@ -386,10 +404,7 @@ func parseCloudWorkspaceSessionSidecar(data []byte) *TabSessionData {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil
 	}
-	if payload.Conversation == nil && strings.TrimSpace(payload.InputText) == "" {
-		return nil
-	}
-	return &TabSessionData{Conversation: payload.Conversation, InputText: payload.InputText}
+	return &TabSessionData{Conversation: payload.Conversation, InputText: payload.InputText, ConversationClearedAt: payload.ClearedAt}
 }
 
 func mergeCloudWorkspaceTabSession(dst, src *TabSessionData, tabID, projectPath string) {
@@ -398,10 +413,15 @@ func mergeCloudWorkspaceTabSession(dst, src *TabSessionData, tabID, projectPath 
 	}
 	dst.TabID = tabID
 	dst.ProjectPath = projectPath
-	if src.Conversation != nil {
-		dst.Conversation = src.Conversation
+	// Keep turns already present on this machine while incorporating the cloud
+	// snapshot.  This matters when a reopen races a debounced local save.
+	merged := mergeCloudWorkspaceSessionHistory(dst, src)
+	if merged != nil {
+		dst.Conversation = merged.Conversation
+		if strings.TrimSpace(merged.InputText) != "" || strings.TrimSpace(dst.InputText) == "" {
+			dst.InputText = merged.InputText
+		}
 	}
-	dst.InputText = src.InputText
 	dst.ScrollTop = src.ScrollTop
 }
 
@@ -465,29 +485,8 @@ func (a *App) flushCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 			return err
 		}
 	}
-	if session := a.collectCloudWorkspaceTabSession(projectPath); session != nil {
-		unlock := lockCloudWorkspaceSessionFlush(workspaceID)
-		defer unlock()
-		// Session history is the only sidecar that is intentionally multi-writer.
-		// Merge with the latest cloud snapshot before replacing it.
-		remoteSession := (*TabSessionData)(nil)
-		remoteRaw, fetchErr := a.getCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession)
-		if fetchErr != nil {
-			return fetchErr
-		}
-		if len(remoteRaw) > 0 {
-			if remote := parseCloudWorkspaceSessionSidecar(remoteRaw); remote != nil {
-				remoteSession = remote
-				session = mergeCloudWorkspaceSessionHistory(session, remote)
-			} else {
-				return fmt.Errorf("invalid cloud workspace session history")
-			}
-		}
-		if raw := marshalCloudWorkspaceSessionSidecar(session); len(raw) > 0 && !cloudWorkspaceSessionHistoryEqual(session, remoteSession) {
-			if err := a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarSession, raw); err != nil {
-				return err
-			}
-		}
+	if err := a.flushCloudWorkspaceSession(ctx, workspaceID, projectPath); err != nil {
+		return err
 	}
 	return a.flushCloudWorkspaceTaskSidecar(ctx, workspaceID)
 }
@@ -532,6 +531,82 @@ func (a *App) flushCloudWorkspaceTaskSidecarBestEffort(workspaceID string) {
 	if err := a.flushCloudWorkspaceTaskSidecar(ctx, workspaceID); err != nil {
 		log.Printf("[cloud_workspace] task sidecar flush failed workspace=%s err=%v", workspaceID, err)
 	}
+}
+
+// flushCloudWorkspaceSessionBestEffort publishes the latest conversation
+// snapshot as soon as a project tab saves it.  File watchers only observe
+// workspace files, so without this hook an idle chat would remain local until
+// lease release and could not be resumed from another machine.
+func (a *App) flushCloudWorkspaceSessionBestEffort(projectPath string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return
+	}
+	workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath)
+	if workspaceID == "" {
+		return
+	}
+	ctx, cancel := a.cloudWorkspaceRequestContext()
+	defer cancel()
+	if err := a.flushCloudWorkspaceSession(ctx, workspaceID, projectPath); err != nil {
+		log.Printf("[cloud_workspace] session sidecar flush failed workspace=%s err=%v", workspaceID, err)
+	}
+}
+
+// flushCloudWorkspaceSession publishes only conversation state.  Keeping this
+// path separate from full workspace pushes avoids re-uploading large coding
+// checkpoints on every debounced chat-history update.
+func (a *App) flushCloudWorkspaceSession(ctx context.Context, workspaceID, projectPath string) error {
+	workspaceID = strings.TrimSpace(workspaceID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if workspaceID == "" || projectPath == "" {
+		return nil
+	}
+	session := a.collectCloudWorkspaceTabSession(projectPath)
+	if session == nil {
+		return nil
+	}
+	unlock := lockCloudWorkspaceSessionFlush(workspaceID)
+	defer unlock()
+	remoteSession := (*TabSessionData)(nil)
+	remoteRaw, err := a.getCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession)
+	if err != nil {
+		return err
+	}
+	if len(remoteRaw) > 0 {
+		remoteSession = parseCloudWorkspaceSessionSidecar(remoteRaw)
+		if remoteSession == nil {
+			return fmt.Errorf("invalid cloud workspace session history")
+		}
+		// A local clear is an explicit fence and must not be undone by merging
+		// the previous remote transcript back into the new snapshot.
+		if session.ConversationClearedAt > 0 && session.ConversationClearedAt >= remoteSession.ConversationClearedAt {
+			remoteSession = nil
+		} else {
+			session = mergeCloudWorkspaceSessionHistory(session, remoteSession)
+		}
+	}
+	raw := marshalCloudWorkspaceSessionSidecar(session)
+	if len(raw) == 0 || cloudWorkspaceSessionHistoryEqual(session, remoteSession) {
+		return nil
+	}
+	return a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarSession, raw)
+}
+
+// refreshCloudWorkspaceSidecars fetches the cloud snapshot even when the
+// workspace lease is already held by this process.  PrepareCloudWorkspace's
+// fast path intentionally skips the pull; an explicit task reopen must still
+// refresh conversation history from other machines.
+func (a *App) refreshCloudWorkspaceSidecars(workspaceID, projectPath string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || workspaceID == "" || projectPath == "" {
+		return
+	}
+	ctx, cancel := a.cloudWorkspaceSyncContext()
+	defer cancel()
+	a.fetchCloudWorkspaceSidecars(ctx, workspaceID)
+	a.applyCloudWorkspaceSidecars(workspaceID, projectPath)
 }
 
 func (a *App) fetchCloudWorkspaceSidecars(ctx context.Context, workspaceID string) {

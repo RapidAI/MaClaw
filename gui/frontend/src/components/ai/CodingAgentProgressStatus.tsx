@@ -1,5 +1,6 @@
 import React from "react";
 import type { ChatMessage } from "./useAIAssistant";
+import { sanitizeVisibleChatText } from "./visibleChatText";
 
 interface CodingAgentProgressTheme {
     text: string;
@@ -485,6 +486,10 @@ export function renderCodingAgentWorkingTrail(t: CodingAgentProgressTheme, lang:
 export function codingAssistantNoteLooksInternal(text: string): boolean {
     const trimmed = (text || "").trim();
     if (!trimmed) return true;
+    // Shared-loop reasoning is prefixed with U+0001 per token. Concatenated
+    // notes render as Chromium tofu (□The□ user□ wants…) and duplicate the
+    // thinking panel — hide them instead of showing a truncated dump.
+    if (trimmed.includes("\x01")) return true;
     if (trimmed.startsWith("##") || trimmed.includes("## ")) return true;
     const lower = trimmed.toLowerCase();
     const needles = [
@@ -932,8 +937,10 @@ function renderCodingAgentAssistantNote(
     t: CodingAgentProgressTheme,
     key?: string,
 ): React.ReactNode {
-    const text = (progress.detail || progress.summary || "").trim();
-    if (!text || codingAssistantNoteLooksInternal(text)) return null;
+    const raw = (progress.detail || progress.summary || "").trim();
+    if (!raw || codingAssistantNoteLooksInternal(raw)) return null;
+    const text = sanitizeVisibleChatText(raw).trim();
+    if (!text) return null;
     return (
         <div
             key={key}

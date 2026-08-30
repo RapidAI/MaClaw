@@ -54,6 +54,18 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestIsXAIGrokOAuthProvider(t *testing.T) {
+	if !isXAIGrokOAuthProvider(corelib.MaclawLLMProvider{Name: "xAI-Grok", AuthType: "oauth"}) {
+		t.Fatal("expected name match")
+	}
+	if !isXAIGrokOAuthProvider(corelib.MaclawLLMProvider{Name: "My Grok", AuthType: "oauth", URL: "https://api.x.ai/v1"}) {
+		t.Fatal("expected api.x.ai URL match")
+	}
+	if isXAIGrokOAuthProvider(corelib.MaclawLLMProvider{Name: "xAI-Grok", AuthType: "api_key"}) {
+		t.Fatal("api_key must not be treated as xAI OAuth")
+	}
+}
+
 func TestDoFetchModelsRequestSetsXAIOAuthHeader(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

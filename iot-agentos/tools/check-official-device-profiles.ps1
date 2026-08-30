@@ -47,9 +47,15 @@ if (-not $cc) {
         }
         $exe = Join-Path $outDir ("test_official_device_profile_" + $profile.Name + '.exe')
         $defines = @($profile.Defines | ForEach-Object { "-D$_" })
-        # Keep literal quotes in the compiler argument; backslash-escaped quotes
-        # are interpreted as stray characters by MinGW's preprocessor on Windows.
-        $idDefinition = ('-DEXPECTED_PROFILE_ID_TEXT="{0}"' -f $profile.Id)
+        # PowerShell 7 passes embedded quotes through to MinGW, while Windows
+        # PowerShell 5 strips them during native argument conversion. Keep the
+        # compiler definition equivalent on both hosts without changing the C
+        # test contract.
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $idDefinition = ('-DEXPECTED_PROFILE_ID_TEXT=\"{0}\"' -f $profile.Id)
+        } else {
+            $idDefinition = ('-DEXPECTED_PROFILE_ID_TEXT="{0}"' -f $profile.Id)
+        }
         & $cc.Source -std=c11 -Wall -Wextra -Werror "-I$(Join-Path $projectRoot 'main')" `
             $idDefinition $defines $testSource $validationSource $source -o $exe
         if ($LASTEXITCODE -ne 0) {

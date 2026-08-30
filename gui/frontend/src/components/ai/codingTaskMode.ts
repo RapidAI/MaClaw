@@ -22,6 +22,68 @@ export function cloudWorkspaceIdFromTags(tags?: string[] | null): string {
     return "";
 }
 
+/** Same identity order as the backend: working_dir, then tag, then project path. */
+export function cloudWorkspaceIdFromTaskFields(task?: {
+    tags?: string[] | null;
+    project_path?: string | null;
+    projectPath?: string | null;
+    working_dir?: string | null;
+    workingDir?: string | null;
+} | null): string {
+    if (!task) return "";
+    return (
+        cloudWorkspaceIdFromPath(task.working_dir || task.workingDir)
+        || cloudWorkspaceIdFromTags(task.tags)
+        || cloudWorkspaceIdFromPath(task.project_path || task.projectPath)
+        || ""
+    ).trim();
+}
+
+const GENERIC_CLOUD_WORKSPACE_TASK_NAMES = new Set([
+    "new cloud workspace task",
+    "新建云端工作区任务",
+    "新建雲端工作區任務",
+]);
+
+function cloudWorkspaceTaskNameScore(name?: string | null): number {
+    const trimmed = String(name || "").trim();
+    if (!trimmed || GENERIC_CLOUD_WORKSPACE_TASK_NAMES.has(trimmed) || GENERIC_CLOUD_WORKSPACE_TASK_NAMES.has(trimmed.toLowerCase())) {
+        return 0;
+    }
+    return 1;
+}
+
+/** Keep at most one sidebar row per cloud workspace. Prefer a named title. */
+export function collapseCloudWorkspaceTasks<T extends {
+    name?: string | null;
+    tags?: string[] | null;
+    project_path?: string | null;
+    projectPath?: string | null;
+    working_dir?: string | null;
+    workingDir?: string | null;
+}>(tasks: T[]): T[] {
+    if (tasks.length <= 1) return tasks;
+    const byId = new Map<string, number>();
+    const out: T[] = [];
+    for (const task of tasks) {
+        const id = cloudWorkspaceIdFromTaskFields(task);
+        if (!id) {
+            out.push(task);
+            continue;
+        }
+        const idx = byId.get(id);
+        if (idx === undefined) {
+            byId.set(id, out.length);
+            out.push(task);
+            continue;
+        }
+        if (cloudWorkspaceTaskNameScore(task.name) > cloudWorkspaceTaskNameScore(out[idx].name)) {
+            out[idx] = task;
+        }
+    }
+    return out;
+}
+
 export function isCloudWorkspacePath(path?: string | null): boolean {
     const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
     return normalized.includes("/cloud-workspaces/");

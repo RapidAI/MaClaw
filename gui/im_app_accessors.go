@@ -10,12 +10,14 @@ package main
 // so that IMMessageHandler can be constructed without a *App (for TUI).
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/websearch"
+	"context"
+	"log"
 	"os"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
 // getWebSearchStrategy resolves the search strategy for both desktop and
@@ -305,6 +307,73 @@ func (h *IMMessageHandler) ensureOAuthToken() error {
 		return nil
 	}
 	return h.app.ensureOAuthToken()
+}
+
+func (h *IMMessageHandler) forceRefreshOAuthToken() error {
+	return h.forceRefreshOAuthTokenCtx(context.Background())
+}
+
+func (h *IMMessageHandler) forceRefreshOAuthTokenCtx(ctx context.Context) error {
+	if h.app == nil {
+		return nil
+	}
+	return h.app.forceRefreshOAuthTokenCtx(ctx)
+}
+
+func applyLLMAuthKey(dst, src corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if key := strings.TrimSpace(src.Key); key != "" {
+		dst.Key = src.Key
+	}
+	if authType := strings.TrimSpace(src.AuthType); authType != "" {
+		dst.AuthType = src.AuthType
+	}
+	return dst
+}
+
+func llmAuthKeyRotated(prev, next corelib.MaclawLLMConfig) bool {
+	key := strings.TrimSpace(next.Key)
+	return key != "" && key != strings.TrimSpace(prev.Key)
+}
+
+func applyRefreshedProviderKey(cfg corelib.MaclawLLMConfig, key, authType string, found bool, fallback corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if found && strings.TrimSpace(key) != "" {
+		cfg.Key = key
+		if strings.TrimSpace(authType) != "" {
+			cfg.AuthType = authType
+		}
+		return cfg
+	}
+	// A bound ProviderID must not pick up a different profile's key.
+	if strings.TrimSpace(cfg.ProviderID) != "" {
+		return cfg
+	}
+	return applyLLMAuthKey(cfg, fallback)
+}
+
+func (h *IMMessageHandler) refreshLLMConfigAfterTokenError(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	return h.refreshLLMConfigAfterTokenErrorCtx(context.Background(), cfg)
+}
+
+func (h *IMMessageHandler) refreshLLMConfigAfterTokenErrorCtx(ctx context.Context, cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if h == nil || h.app == nil {
+		return cfg
+	}
+	id := strings.TrimSpace(cfg.ProviderID)
+	var err error
+	if id != "" {
+		err = h.app.ensureOAuthTokenForProviderMaybeForce(ctx, id, true)
+	} else {
+		err = h.app.forceRefreshOAuthTokenCtx(ctx)
+	}
+	if err != nil {
+		log.Printf("[LLM] OAuth force refresh after token-validation error: %v", err)
+	}
+	key, authType, found := h.app.oauthAccessTokenForConfig(cfg)
+	fallback := corelib.MaclawLLMConfig{}
+	if id == "" {
+		fallback = h.getMaclawLLMConfig()
+	}
+	return applyRefreshedProviderKey(cfg, key, authType, found, fallback)
 }
 
 // --- Interaction Infrastructure ---

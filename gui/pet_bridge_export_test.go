@@ -247,6 +247,236 @@ func TestPetStoreRequestDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestIsAnonymousMarketGETAllowsPublicCatalogueOnly(t *testing.T) {
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/api/v1/expert-market/experts?q=a&page=1", true},
+		{"GET", "/api/v1/expert-market/experts/listed-1", true},
+		{"GET", "/api/v1/expert-market/experts/listed-1/download", false},
+		{"GET", "/api/v1/expert-market/account", false},
+		{"POST", "/api/v1/expert-market/experts", false},
+		{"GET", "/api/v1/pet-store/packs", true},
+		{"GET", "/api/v1/pet-store/rankings", true},
+		{"GET", "/api/v1/pet-store/account", false},
+		{"GET", "/api/v1/pet-store/packs/pack-1/download", false},
+		{"GET", "/api/v1/pet-store/creator-report", false},
+	}
+	for _, tc := range cases {
+		if got := isAnonymousMarketGET(tc.method, tc.path); got != tc.want {
+			t.Fatalf("isAnonymousMarketGET(%q, %q)=%v, want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestMarketRequestDoesNotRefreshSessionOnForbidden(t *testing.T) {
+	var machineLoginCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/expert-market/experts/listed-1/download":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"purchase required"}`))
+		case "/api/v1/auth/machine-login":
+			machineLoginCalls++
+			_, _ = w.Write([]byte(`{"session_token":"refreshed-token"}`))
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
+		SkillMarketSessionToken: "valid-token",
+		RemoteUserID:            "usr_hub",
+		RemoteEmail:             "owner@example.test",
+		RemoteMachineID:         "machine-1",
+		RemoteViewerToken:       strings.Repeat("a", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.expertMarketRequest(http.MethodGet, "/api/v1/expert-market/experts/listed-1/download", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "purchase required") {
+		t.Fatalf("download err=%v, want purchase required", err)
+	}
+	if machineLoginCalls != 0 {
+		t.Fatalf("machine-login calls=%d, want 0 on 403", machineLoginCalls)
+	}
+	if strings.Contains(err.Error(), "after refreshing") {
+		t.Fatalf("403 was treated as an expired session: %v", err)
+	}
+}
+
+func TestExpertMarketAccountDoesNotFallBackToAnonymousGET(t *testing.T) {
+	var anonymousAccount bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/expert-market/account":
+			if r.Header.Get("Authorization") == "" {
+				anonymousAccount = true
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"session expired or invalid"}`))
+		case "/api/v1/auth/machine-login":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"ensure account: account email is already bound to another user"}`))
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
+		SkillMarketSessionToken: "expired-token",
+		RemoteUserID:            "usr_hub",
+		RemoteEmail:             "owner@example.test",
+		RemoteMachineID:         "machine-1",
+		RemoteViewerToken:       strings.Repeat("a", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GetExpertMarketAccount(); err == nil {
+		t.Fatal("account request should not succeed without a session")
+	}
+	if anonymousAccount {
+		t.Fatal("account GET was retried without authorization")
+	}
+}
+
+func TestExpertMarketRequestFallsBackToPublicCatalogueWhenRefreshStillUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/expert-market/experts":
+			if r.Header.Get("Authorization") != "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"session expired or invalid"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"experts":[{"id":"expert-public","name":"Public expert"}],"total":1}`))
+		case "/api/v1/auth/machine-login":
+			_, _ = w.Write([]byte(`{"session_token":"still-unusable-token"}`))
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
+		SkillMarketSessionToken: "expired-token",
+		RemoteUserID:            "usr_hub",
+		RemoteEmail:             "owner@example.test",
+		RemoteMachineID:         "machine-1",
+		RemoteViewerToken:       strings.Repeat("a", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.ListExpertMarketListings("", "published", 1, 30)
+	if err != nil {
+		t.Fatalf("public catalogue after unusable refresh: %v", err)
+	}
+	experts, _ := result["experts"].([]interface{})
+	if len(experts) != 1 {
+		t.Fatalf("experts=%v, want public catalogue", result)
+	}
+}
+
+func TestExpertMarketRequestFallsBackToPublicCatalogueWhenSessionRefreshFails(t *testing.T) {
+	var expertsAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/expert-market/experts":
+			expertsAuth = r.Header.Get("Authorization")
+			if expertsAuth != "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"session expired or invalid"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"experts":[{"id":"expert-public","name":"Public expert"}],"total":1}`))
+		case "/api/v1/auth/machine-login":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"ensure account: account email is already bound to another user"}`))
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
+		SkillMarketSessionToken: "expired-token",
+		RemoteUserID:            "usr_hub",
+		RemoteEmail:             "owner@example.test",
+		RemoteMachineID:         "machine-1",
+		RemoteViewerToken:       strings.Repeat("a", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.ListExpertMarketListings("", "published", 1, 30)
+	if err != nil {
+		t.Fatalf("public catalogue fallback: %v", err)
+	}
+	experts, _ := result["experts"].([]interface{})
+	if len(experts) != 1 {
+		t.Fatalf("experts=%v, want public catalogue", result)
+	}
+	if expertsAuth != "" {
+		t.Fatalf("fallback catalogue request still sent authorization %q", expertsAuth)
+	}
+}
+
+func TestExpertMarketRequestSurfacesRefreshFailureWithoutPetStoreLabel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/expert-market/experts":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"session expired or invalid"}`))
+		case "/api/v1/auth/machine-login":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"ensure account: account email is already bound to another user"}`))
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:      server.URL,
+		RemoteHubID:             "hub-test",
+		SkillMarketSessionToken: "expired-token",
+		RemoteUserID:            "usr_hub",
+		RemoteEmail:             "owner@example.test",
+		RemoteMachineID:         "machine-1",
+		RemoteViewerToken:       strings.Repeat("a", 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := app.ListExpertMarketListings("", "published", 1, 30)
+	if err == nil {
+		t.Fatal("expected catalogue load to fail after a failed session refresh")
+	}
+	if !strings.Contains(err.Error(), "Expert Market session refresh failed") {
+		t.Fatalf("error=%v, want Expert Market session refresh failure", err)
+	}
+	if strings.Contains(err.Error(), "Pet Store") {
+		t.Fatalf("expert market error leaked Pet Store wording: %v", err)
+	}
+	if !strings.Contains(err.Error(), "already bound to another user") {
+		t.Fatalf("error=%v, want bound-email cause", err)
+	}
+}
+
 func TestPetStoreRequestRefreshesExpiredSessionUsingHubEnrollment(t *testing.T) {
 	var marketCalls int
 	var machineLoginCalls int

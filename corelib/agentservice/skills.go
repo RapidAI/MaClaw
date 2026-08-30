@@ -244,11 +244,19 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 	if dir == "" {
 		return fmt.Errorf("skill directory not found")
 	}
-	if err := s.revokeSkillDynamicContract(p, skillStableID(entry)); err != nil {
-		return err
-	}
 	quarantine := filepath.Join(filepath.Dir(dir), fmt.Sprintf(".skill-delete-pending-%d", time.Now().UnixNano()))
 	requestID := fmt.Sprintf("agent_skill_delete_%d", time.Now().UnixNano())
+	stableID := skillStableID(entry)
+	previousContract, hadPreviousContract := s.dynamicCapabilities.ResolveSkillDynamicContract(ctx, p, stableID)
+	contractSnapshotKey := "skill_contract|" + p.TenantID + "|" + p.UserID + "|" + stableID
+	contractSnapshotPayload := ""
+	if hadPreviousContract {
+		contractSnapshotPayload, err = encodeSkillContractExternalSnapshot(p, stableID, previousContract, requestID, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("prepare Skill contract compensation snapshot: %w", err)
+		}
+	}
+	contractRevoked := false
 	committer := &skill.SkillCommitter{
 		SkillLoader: func() []corelib.NLSkillEntry { return skill.ScanSkillDirAll(filepath.Dir(dir)) },
 		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
@@ -268,6 +276,11 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 		},
 		IndexRefresher: func() error { return nil },
 		FinalAuditor: func(event string, data map[string]string) error {
+			// Contract revocation is completed in ExternalCommit, before this
+			// final-audit callback. Keeping this callback audit-only ensures a
+			// successful skill.deleted event is never emitted before the
+			// authorization fence has crossed, while rollback can restore both
+			// directory and contract if audit persistence fails.
 			return s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: event, ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: data})
 		},
 		ConfigRevision: "agentservice-skill-delete-v1",
@@ -275,6 +288,9 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 			record.SetRecoveryScope(s.dataRoot)
 			record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: dir, BackupPath: quarantine, HadPrevious: true}})
 			record.SetAffectedSkills([]string{entry.Name})
+			if hadPreviousContract {
+				record.SetExternalSnapshot(contractSnapshotKey, contractSnapshotPayload)
+			}
 		},
 		ExternalCommitWithCompensation: func(record *skill.EvolutionCompensationRecord) error {
 			if err := skill.RetryDirectoryRename(dir, quarantine); err != nil {
@@ -282,13 +298,46 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 			}
 			moves := []skill.EvolutionDirectoryMove{{OriginalPath: dir, BackupPath: quarantine, HadPrevious: true, Moved: true}}
 			record.SetDirectoryMoves(moves)
-			return skill.ReplaceEvolutionCompensation(*record)
+			if err := skill.ReplaceEvolutionCompensation(*record); err != nil {
+				return err
+			}
+			// Revoke while the directory is quarantined, before any index or
+			// audit success can make the deletion visible. ExternalRollback
+			// restores the contract and directory on every later failure.
+			// Mark the transition before calling the registry: a registry failure
+			// may have applied the revoke before returning an error.
+			contractRevoked = hadPreviousContract
+			if contractRevoked {
+				record.MarkExternalApplied(contractSnapshotKey, true)
+				if err := skill.ReplaceEvolutionCompensation(*record); err != nil {
+					return err
+				}
+			}
+			if err := s.revokeSkillDynamicContract(p, stableID); err != nil {
+				return err
+			}
+			return nil
 		},
 		ExternalRollback: func() error {
 			if _, statErr := os.Stat(quarantine); os.IsNotExist(statErr) {
+				if contractRevoked && hadPreviousContract {
+					if err := s.dynamicCapabilities.PublishSkillContract(p, stableID, previousContract); err != nil {
+						return fmt.Errorf("restore Skill dynamic capability contract: %w", err)
+					}
+					contractRevoked = false
+				}
 				return nil
 			}
-			return skill.RetryDirectoryRename(quarantine, dir)
+			if err := skill.RetryDirectoryRename(quarantine, dir); err != nil {
+				return err
+			}
+			if contractRevoked && hadPreviousContract {
+				if err := s.dynamicCapabilities.PublishSkillContract(p, stableID, previousContract); err != nil {
+					return fmt.Errorf("restore Skill dynamic capability contract: %w", err)
+				}
+				contractRevoked = false
+			}
+			return nil
 		},
 		PostCommitCleanup: func() error {
 			if err := os.RemoveAll(quarantine); err != nil && !os.IsNotExist(err) {
@@ -302,6 +351,7 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 		// NewService startup recovery cannot miss a crash-window quarantine.
 		"skill": entry.Name, "action": "agentservice_install_delete", "decision": "applied", "request_id": requestID,
 		"attempt": "1", "config_revision": "agentservice-skill-delete-v1", "schema_version": "2", "evidence_mode": "none",
+		"external_state": "dynamic_skill_contract", "contract_revocation": map[bool]string{true: "applied", false: "none"}[hadPreviousContract],
 	})
 	if result.State != "committed" || result.CleanupStatus != "clear" {
 		return fmt.Errorf("skill delete not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
@@ -922,7 +972,6 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 	scanned := make([]corelib.NLSkillEntry, 0, len(entries))
 	seenNames := make(map[string]struct{}, len(entries))
 	seenDirs := make(map[string]struct{}, len(entries))
-	revokedStableIDs := make(map[string]struct{})
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
@@ -936,11 +985,10 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 			return nil, fmt.Errorf("duplicate skill %q in import", entry.Name)
 		}
 		seenNames[nameKey] = struct{}{}
-		if existing, _, err := s.findSkill(p, entry.Name); err == nil {
+		if _, _, err := s.findSkill(p, entry.Name); err == nil {
 			if !overwrite {
 				return nil, fmt.Errorf("skill %q already exists", entry.Name)
 			}
-			revokedStableIDs[skillStableID(existing)] = struct{}{}
 		}
 		dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
 		cleanDir := filepath.Clean(dir)
@@ -953,14 +1001,6 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 		}
 		seenDirs[dirKey] = struct{}{}
 		scanned = append(scanned, entry)
-	}
-	// Replacement cannot retain the previous package's contract. Perform this
-	// fence before altering directories; an interrupted import is quarantined
-	// until a trusted lifecycle publisher binds the new content.
-	for stableID := range revokedStableIDs {
-		if err := s.revokeSkillDynamicContract(p, stableID); err != nil {
-			return nil, err
-		}
 	}
 	return s.persistImportedEntriesWithCommitter(ctx, p, root, scanned, overwrite)
 }
@@ -1072,6 +1112,24 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 	first := items[0].entry
 	first.SkillDir = items[0].finalDir
 	first.Source = firstNonEmpty(first.Source, "file")
+	previousContracts := make(map[string]DynamicCapabilityContract)
+	contractSnapshotKeys := make(map[string]string)
+	contractSnapshotPayloads := make(map[string]string)
+	for _, item := range items {
+		if existing, _, findErr := s.findSkill(p, item.entry.Name); findErr == nil {
+			stableID := skillStableID(existing)
+			if contract, ok := s.dynamicCapabilities.ResolveSkillDynamicContract(ctx, p, stableID); ok {
+				previousContracts[stableID] = contract
+				contractSnapshotKeys[stableID] = "skill_contract|" + p.TenantID + "|" + p.UserID + "|" + stableID
+				encoded, encodeErr := encodeSkillContractExternalSnapshot(p, stableID, contract, requestID, time.Now().UTC())
+				if encodeErr != nil {
+					return nil, fmt.Errorf("prepare Skill contract compensation snapshot: %w", encodeErr)
+				}
+				contractSnapshotPayloads[stableID] = encoded
+			}
+		}
+	}
+	revokedContracts := make(map[string]bool)
 	committer := &skill.SkillCommitter{
 		SkillLoader: func() []corelib.NLSkillEntry { return skill.ScanSkillDirAll(root) },
 		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
@@ -1108,6 +1166,9 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 			record.SetCreatedDirectories(created)
 			record.SetDirectoryMoves(moves)
 			record.SetAffectedSkills(affected)
+			for stableID := range previousContracts {
+				record.SetExternalSnapshot(contractSnapshotKeys[stableID], contractSnapshotPayloads[stableID])
+			}
 		},
 		ExternalCommitWithCompensation: func(record *skill.EvolutionCompensationRecord) error {
 			moves := append([]skill.EvolutionDirectoryMove(nil), record.DirectoryMoves...)
@@ -1132,6 +1193,16 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 					return err
 				}
 			}
+			for stableID := range previousContracts {
+				revokedContracts[stableID] = true
+				record.MarkExternalApplied(contractSnapshotKeys[stableID], true)
+				if err := replaceAgentSkillCompensation(record, moves); err != nil {
+					return err
+				}
+				if err := s.revokeSkillDynamicContract(p, stableID); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 		ExternalRollback: func() error {
@@ -1144,6 +1215,13 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 				if items[i].moved {
 					if err := skill.RetryDirectoryRename(items[i].backup, items[i].finalDir); err != nil {
 						return err
+					}
+				}
+			}
+			for stableID := range revokedContracts {
+				if contract, ok := previousContracts[stableID]; ok {
+					if err := s.dynamicCapabilities.PublishSkillContract(p, stableID, contract); err != nil {
+						return fmt.Errorf("restore Skill dynamic capability contract: %w", err)
 					}
 				}
 			}
@@ -1161,7 +1239,7 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 			return nil
 		},
 	}
-	result := committer.Commit(skill.WithEvolutionRequestMetadata(ctx, requestID, 1), first.Name, &first, "skill.installed", map[string]string{"skill": first.Name, "action": "agentservice_install", "decision": "applied", "source": first.Source, "request_id": requestID, "attempt": "1", "config_revision": "agentservice-skill-install-v1", "schema_version": "2", "evidence_mode": "none", "package_count": fmt.Sprintf("%d", len(items))})
+	result := committer.Commit(skill.WithEvolutionRequestMetadata(ctx, requestID, 1), first.Name, &first, "skill.installed", map[string]string{"skill": first.Name, "action": "agentservice_install", "decision": "applied", "source": first.Source, "request_id": requestID, "attempt": "1", "config_revision": "agentservice-skill-install-v1", "schema_version": "2", "evidence_mode": "none", "package_count": fmt.Sprintf("%d", len(items)), "external_state": "dynamic_skill_contract", "contract_revocation_count": fmt.Sprintf("%d", len(previousContracts))})
 	if result.State != "committed" || result.CleanupStatus != "clear" {
 		return nil, fmt.Errorf("skill install not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
 	}

@@ -357,6 +357,66 @@ func TestIsRetryableLLMError_NotFor400(t *testing.T) {
 	}
 }
 
+func TestClassify_OAuthTokenValidation403_Transient(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	err := &llm.HTTPStatusError{
+		StatusCode: 403,
+		Body:       []byte(`{"error":{"message":"The OAuth2 access token could not be validated."}}`),
+	}
+	cat := r.Classify("llm_request", err)
+	if cat != FailureTransient {
+		t.Fatalf("expected FailureTransient for OAuth token-validation 403, got %s", cat)
+	}
+	if !isRetryableLLMError(err) {
+		t.Fatal("OAuth token-validation 403 should be retryable")
+	}
+	d0 := r.Decide("llm_request", cat, 0)
+	if d0.Action != RetryActionRetry || d0.Delay != 10*time.Second {
+		t.Fatalf("attempt 0: expected retry/10s, got %s/%v", d0.Action, d0.Delay)
+	}
+	d1 := r.Decide("llm_request", cat, 1)
+	if d1.Action != RetryActionRetry || d1.Delay != 20*time.Second {
+		t.Fatalf("attempt 1: expected retry/20s, got %s/%v", d1.Action, d1.Delay)
+	}
+}
+
+func TestClassify_Generic403Forbidden_NotTransient(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	err := &llm.HTTPStatusError{
+		StatusCode: 403,
+		Body:       []byte(`{"code":"LLM_MODEL_FORBIDDEN","message":"no active model service entitlement"}`),
+	}
+	cat := r.Classify("llm_request", err)
+	if cat == FailureTransient {
+		t.Fatal("generic model-forbidden 403 should not be transient")
+	}
+	if isRetryableLLMError(err) {
+		t.Fatal("generic model-forbidden 403 should not be retryable")
+	}
+}
+
+func TestIsRetryableLLMError_UserFacingOAuth403(t *testing.T) {
+	err := errors.New("LLM call failed: 模型服务拒绝访问，账号可能被限制、额度不足或无权使用该模型 (HTTP 403): The OAuth2 access token could not be validated.")
+	if !isRetryableLLMError(err) {
+		t.Fatal("user-facing OAuth 403 should be retryable")
+	}
+	r := NewAdaptiveRetry(nil)
+	if cat := r.Classify("llm_request", err); cat != FailureTransient {
+		t.Fatalf("expected FailureTransient, got %s", cat)
+	}
+}
+
+func TestClassify_InvalidOAuthConfig_NotTransient(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	err := errors.New("invalid oauth client configuration: missing token endpoint")
+	if isRetryableLLMError(err) {
+		t.Fatal("oauth config errors should not be retried as token-validation")
+	}
+	if cat := r.Classify("llm_request", err); cat == FailureTransient {
+		t.Fatalf("expected non-transient, got %s", cat)
+	}
+}
+
 func TestIsTransientServerError_Overloaded(t *testing.T) {
 	err := errors.New("The server is overloaded, please try again later")
 	if !isTransientServerError(err) {

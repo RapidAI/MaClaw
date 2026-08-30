@@ -139,7 +139,9 @@ func countBySHA(entries []ManifestEntry) map[string]int {
 	return out
 }
 
-// GetManifest returns the current tree for an owned workspace held by this machine.
+// GetManifest returns the current tree for an owned workspace. Reads are
+// intentionally lease-free so multiple machines can observe the workspace
+// while another machine is writing through v2 operations.
 func (s *Store) GetManifest(ctx context.Context, tenantID, userID, workspaceID, machineID string, now time.Time) (*Manifest, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrUnavailable
@@ -147,12 +149,10 @@ func (s *Store) GetManifest(ctx context.Context, tenantID, userID, workspaceID, 
 	tenantID = store.NormalizeTenantID(tenantID)
 	userID = strings.TrimSpace(userID)
 	workspaceID = strings.TrimSpace(workspaceID)
-	machineID = strings.TrimSpace(machineID)
+	_ = strings.TrimSpace(machineID)
+	_ = now
 	ws, err := requireActiveOwned(ctx, s.db, tenantID, userID, workspaceID)
 	if err != nil {
-		return nil, err
-	}
-	if err := assertLeaseHeld(ctx, s.db, workspaceID, machineID, now); err != nil {
 		return nil, err
 	}
 	entries, err := listManifestEntries(ctx, s.db, workspaceID)

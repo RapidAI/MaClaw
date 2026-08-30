@@ -3333,6 +3333,9 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("搜索 \"%s\" 找到 %d 条结果:\n\n", query, len(results)))
+	if response.Degraded {
+		sb.WriteString("部分搜索引擎不可用，已使用浏览器兜底。若结果仍不含目标站点，请用 browser 工具直接打开该网站。\n\n")
+	}
 	for i, r := range results {
 		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.URL))
 		if r.Snippet != "" {

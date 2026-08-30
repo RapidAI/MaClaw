@@ -22,28 +22,57 @@ func mergeSessionJSON(existing, incoming []byte) []byte {
 	var old, next struct {
 		Conversation []json.RawMessage `json:"conversation,omitempty"`
 		InputText    string            `json:"input_text,omitempty"`
+		ClearedAt    int64             `json:"cleared_at,omitempty"`
 	}
 	if json.Unmarshal(existing, &old) != nil || json.Unmarshal(incoming, &next) != nil {
 		return incoming
 	}
-	seen := make(map[[32]byte]struct{}, len(old.Conversation)+len(next.Conversation))
+	// A clear timestamp is a tombstone/fence.  Never resurrect turns from a
+	// snapshot that predates the latest clear, even when two Hub processes race
+	// while replacing the encrypted sidecar.
 	merged := make([]json.RawMessage, 0, len(old.Conversation)+len(next.Conversation))
-	for _, item := range append(old.Conversation, next.Conversation...) {
+	switch {
+	case next.ClearedAt > old.ClearedAt:
+		merged = append(merged, next.Conversation...)
+	case old.ClearedAt > next.ClearedAt:
+		merged = append(merged, old.Conversation...)
+	default:
+		merged = append(merged, old.Conversation...)
+		merged = append(merged, next.Conversation...)
+	}
+	seen := make(map[[32]byte]struct{}, len(merged))
+	uniq := merged[:0]
+	for _, item := range merged {
 		key := sha256.Sum256(item)
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		merged = append(merged, item)
+		uniq = append(uniq, item)
 	}
-	if len(merged) > 4000 {
-		merged = merged[len(merged)-4000:]
+	if len(uniq) > 4000 {
+		uniq = uniq[len(uniq)-4000:]
 	}
-	out := map[string]any{"conversation": merged}
-	if next.InputText != "" {
+	out := map[string]any{"conversation": uniq}
+	if next.ClearedAt > old.ClearedAt {
+		if next.InputText != "" {
+			out["input_text"] = next.InputText
+		}
+	} else if old.ClearedAt > next.ClearedAt {
+		if old.InputText != "" {
+			out["input_text"] = old.InputText
+		}
+	} else if next.InputText != "" {
 		out["input_text"] = next.InputText
 	} else if old.InputText != "" {
 		out["input_text"] = old.InputText
+	}
+	clearedAt := old.ClearedAt
+	if next.ClearedAt > clearedAt {
+		clearedAt = next.ClearedAt
+	}
+	if clearedAt > 0 {
+		out["cleared_at"] = clearedAt
 	}
 	raw, err := json.Marshal(out)
 	if err != nil {

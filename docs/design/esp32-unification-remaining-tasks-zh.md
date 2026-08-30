@@ -1,5 +1,15 @@
 # MaClaw AgentOS ESP32 HAL 与业务统一剩余任务清单
 
+> 2026-08-30 B3/A9 EC801E HTTP body-queue backpressure fence：通用 `HttpClient` 的 body 分片队列助手现在以 `bool` 报告有限等待、连接关闭或队列超时，不在队列锁范围内直接改写 terminal error；TCP parser callback 使用独立解析锁，固定长度与 chunked 状态机均在消费数据前检查失败并统一 fail-closed 唤醒读者，终态错误会退休 parser 并丢弃未解码缓存，保留 `Read()` 对 producer 的唤醒契约。Fangtang-4G ESP-IDF 6.0.2 完整 configure/build/link 通过，app `0x359080`，最小 app 分区余 `0x46f80`（8%）。真实 EC801E/ML307 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 ML307 HTTP 并发配置与 URL 边界补强：`Ml307Http::Open` 现在在互斥锁下快照 timeout/header/content/keep-alive 配置，避免 setter 并发造成半套请求；`SetContent`、状态/长度/错误及响应头读取统一受锁保护；修复无 path URL 的越界访问，并保持 query-only URL 规范化。Fangtang-4G ESP-IDF 6.0.2 完整 configure/build/link 通过，app `0x3578b0`，最小 app 分区余 `0x48750`（8%）。真实 UART/HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 ML307 HTTP response-header parser fence：解码后的响应头现在拒绝缺少分隔符、非法字段名、控制字符及冲突重复字段；合法 HTTP 状态行可被忽略，重复同值字段保持确定性。解析失败立即清空 body、发布错误事件并保留 owner 清理 slot。Fangtang-4G ESP-IDF 6.0.2 增量链接通过，app `0x357a40`，最小 app 分区余 `0x485c0`（8%）；真实 UART/HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 EC801E HTTP stream parser fence：通用 TCP HTTP client 现在拒绝非法 host/scheme、状态行与 header，采用有界 `from_chars` 解析 Content-Length/chunk size，固定长度 body 不得超额，chunk data 必须带 CRLF，trailer 经过同样字段校验；非零长度空指针读写及解析错误均 fail-closed。Fangtang-4G ESP-IDF 6.0.2 增量链接通过，app `0x3580e0`，最小 app 分区余 `0x47f20`（8%）；真实 UART/HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 EC801E HTTP parser concurrency fence：通用 `HttpClient` 的 setter、连接复用查询、响应头/状态/长度/错误读取现在统一受 mutex 保护；非法响应解析会设置 terminal error/EOF 并唤醒读者，chunk trailer 不再静默忽略畸形字段。Fangtang-4G ESP-IDF 6.0.2 增量链接通过，app `0x3580e0`，最小 app 分区余 `0x47f20`（8%）；真实 EC801E/ML307 分包、abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
 > 2026-08-30 B3/A9 ML307 HTTP keep-alive/timeout fence：补齐 `Ml307Http::SetKeepAlive`，按标准 `Connection: keep-alive` header 写入同一 ordered header stream，保证仅有一个 final-header 标记且对象析构仍负责释放 modem slot；同时将调用方 timeout 显式下发为非零 modem timeout，配置失败立即终止。ML307 lifecycle、Gateway cancellation、HAL gates 与 Fangtang-4G 完整链接通过（app `0x356f30`，分区余 `0x490d0` / 8%）。真实长连接、UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
 
 > 2026-08-30 B3/A9 ML307 HTTP modem-timeout fence：Ml307Http 现在把调用方的有界毫秒 timeout 向上取整为非零秒值，显式配置 connect/response/input 三段 modem timeout；SSL、chunked、encoding、header 与 content 配置失败均立即终止本次请求，避免 modem 使用默认无限/旧配置继续运行。lifecycle、Gateway cancellation、HAL gates 与 Fangtang-4G 完整链接通过；app `0x356da0`，分区余 `0x49260` / 8%。真实 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
@@ -975,6 +985,8 @@
 
 > 2026-08-30 A9/C7 runtime pet asset media-lease fence：runtime pet asset 在开启 optional media work 后、以及 stale-cache 回收完成后，分别重新校验 Gateway capability lease；并发 Connectivity 撤销或代际切换时，不再继续 cache 回收/HTTP 下载，始终释放 source/cache frame 与 media-work admission。`check-pet-asset-service.ps1` 及 runtime Host regression 通过；HTTP cancellation、PSA/renderer 真实故障域、Storage 断电窗口与 COM3–COM6 HIL 仍未完成。
 
+> 2026-08-30 B3/A9 EC801E HTTP parser follow-up：修复 chunk-size 空行被静默跳过的问题；无 `Transfer-Encoding: chunked` 且无 `Content-Length` 的响应强制关闭连接，避免连接复用把连接关闭分隔的 body 误归入下一请求。ML307 lifecycle、HAL、官方 profile 与 Reference/Fake gates 通过；Fangtang-4G ESP-IDF 6.0.2 完整构建通过，app `0x3581a0`，最小 app 分区余 `0x47e60`（8%）。真实 EC801E/ML307 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
 > 2026-08-30 B3/A9 Fangtang ML307/UART 生命周期收口：AtUart Shutdown 现先发布 shutdown flag，再停止 UHCI RX，并通过 event-group bit 显式唤醒 EventTask，随后等待 receive/event worker 完成；析构路径在超时后继续等待任务退出，避免释放 queue/event/UHCI 资源时发生 use-after-free。AtModem 保留并注销 URC callback 后再关闭 UART；Fangtang transport、Connectivity、Platform 与 legacy seam 提供 value-only deinit/reinitialize，但尚未绑定 production runtime-restart coordinator。ML307 lifecycle、Gateway asset cancellation、HAL boundary gates 与 Fangtang-4G ESP-IDF 6.0.2 完整链接通过（app `0x3561b0`，最小分区余 `0x49e50` / 8%）；真实 4G fault-domain、modem现场 HIL、runtime restart trigger/回滚及 COM3–COM6 HIL 仍未完成。
 
 > 2026-08-30 B3/A9 ML307 URC malformed-input fence：AtUart URC 解析现在对空字段、未闭合字符串及无参数 `CME ERROR` 保持安全值解析；Ml307Http 对 `MHTTPURC`/`MHTTPCREATE` 先做最小参数个数校验，畸形 header/content/error 直接唤醒等待者并进入错误/EOF 状态，避免越界访问或把分包残片当成有效响应。新增 lifecycle gate 断言解析器 fail-closed；Fangtang-4G 增量链接通过。该源码/Host/build 证据仍不替代真实 ML307 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL。
@@ -990,3 +1002,28 @@
 > 2026-08-30 B3/A9 ML307 UART CRLF 边界收口：AtUart 对缺失 CRLF 的 `+MHTTPURC: "ind"` 仅接受精确 token；仅当后续字节明确为下一条 `+` URC 时在准确边界合成终止符，部分或异常 token 保持未解析，避免 UART 分包残片被伪装成有效响应。Lifecycle 静态 gate 与 Fangtang-4G ESP-IDF 6.0.2 全量构建通过（app `0x356f00`，最小 app 分区余 `0x49100` / 8%）；真实 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
 
 > 2026-08-30 B3/A9 ML307 HTTP cumulative/error fail-closed fence：`MHTTPURC` content 现在要求 modem `sum_len` 与已接收 body 加当前 chunk 精确相等，拒绝重复/跳跃 offset；`Read()` 与 `ReadAll()` 在 attributed error 或超时后清空缓冲并返回失败，不再以已排队 body/EOF 伪装成功。Lifecycle gate 与 Fangtang-4G ESP-IDF 6.0.2 全量构建通过（app `0x356f80`，最小 app 分区余 `0x49080` / 8%）；真实 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 ML307 HTTP slot-release fence：Ml307Http::Open() 在 MHTTPCREATE 成功后任一配置、请求发送或 IND 等待失败，统一执行 MHTTPDEL 释放 modem slot；Close() 先撤销本地 active/id 所有权再触碰 UART，防止重入 URC 继续归属旧实例并允许后续请求重建。FetchHeaders() 对错误、超时及畸形 Content-Length 同样闭锁并释放实例。Host lifecycle gate 通过；Fangtang Ninja 因磁盘空间不足未取得新链接产物，真实 HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 Fangtang cellular HTTP cumulative-offset fence：`Ml307Request` 现在为每个响应维护独立累计 `body_offset_`，content URC 要求 `received_length == body_offset_ + current_length`，并拒绝非法 slot、精确 arity、控制字符/fragment URL 与整数溢出；关闭时旧 slot id 立即失效。ML307 lifecycle、HAL 与 Gateway cancellation gates 通过；真实 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 ML307 HTTP owner/abort boundary fence：Fangtang `Ml307Request` 现在拒绝空 body 指针、无效流缓冲和 CR/LF/引号注入 header；`Read` 对空输出缓冲 fail-closed，`ReadAll` 超时或错误后主动关闭并释放 modem slot。Fangtang cellular HTTP 的 slot/URL/累计 body URC 校验已扩展并完成 ESP-IDF 6.0.2 增量重链，app `0x357350`，最小 app 分区余 `0x48cb0`（8%）。真实 HTTP abort、UART 分包、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 ML307 HTTP bounded-input and abort fence：Fangtang cellular HTTP owner 增加 body/body-reader/stream-buffer 组合校验、header 值 CR/LF/引号拒绝及空 buffer 读取保护；Ml307Http `ReadAll()` 超时或 URC error 会主动关闭请求。官方与 Reference/Fake profile 的 Windows PowerShell/MinGW 宏传参兼容性同步修复；全部相关 gates 通过。Fangtang ESP-IDF 6.0.2 增量重链通过，app `0x357350`，最小 app 分区余 `0x48cb0`（8%）；真实 HTTP abort、UART 分包、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+> 2026-08-30 B3/A9 Fangtang ML307 HTTP zero-length URC arity fence：content URC 现区分零长度终止块与带 payload 块；`current_length == 0` 时必须精确保留 5 个元数据参数，额外第 6 个字段直接进入错误路径，避免把携带伪 payload 的畸形 URC 当作 EOF。Fangtang ML307 lifecycle gate 通过；真实 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 Fangtang cellular adapter input fence：cellular HTTP/stream adapter 现在在进入 ML307 前验证 method、URL、response/output 指针、容量、status/truncated 输出、body reader、stream buffer 与有界 timeout；reader 返回的字节数超过请求容量时立即报错，阻止上层长度欺骗。ML307 lifecycle、Connectivity、network-lifecycle、Gateway cancellation 与 HAL gates 通过；真实 4G fault-domain、HTTP abort、UART 分包及 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 EC801E HTTP body backpressure fence：TCP 回调不再在持有 client mutex 时等待满的 body queue；body 按 8 KiB 分片并在 read-side 消费后唤醒 producer，队列无法在有界 timeout 内排空则 terminal error/EOF，避免 RX callback 与 Read 互相阻塞。Fangtang-4G HTTP object compile、ML307 lifecycle gate 与完整 Ninja 链接通过，app `0x358470`，最小 app 分区余 `0x47b90`（8%）。真实 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 EC801E response body semantics fence：通用 `HttpClient` 识别 `HEAD`、1xx（拒绝 101）、204 与 304 的无 body 响应并立即完成；`Transfer-Encoding` 仅接受单一 `chunked` token，未知编码/编码链均拒绝。Fangtang-4G ESP-IDF 6.0.2 完整链接通过，app `0x358570`，最小 app 分区余 `0x47a90`（8%）。真实 EC801E/ML307 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 Fangtang cellular HTTP response framing fence：ML307 解码后的 header blob 现在按行、字段名和值及有界 `Content-Length` 解析，严格识别单一 `Transfer-Encoding: chunked`；重复/未知编码、冲突长度和控制字符均 fail-closed，不再用 `find()` 子串猜测 framing。Fangtang-4G ESP-IDF 6.0.2 完整链接通过，app `0x358930`，最小 app 分区余 `0x476d0`（8%）。真实 ML307 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 Fangtang cellular HTTP body-forbidden fence：`Ml307Request` 现在在每次 `Open()` 重置并在最终 header 明确记录 `HEAD`/204/304 无 body 状态；1xx interim（101 除外）继续等待最终响应，101 直接 fail-closed；body-forbidden 状态拒绝非零 content URC，且 content 在 header 完成前不被接受。响应头 framing parser 同时去除尾随空白、以大小写不敏感方式识别 `Transfer-Encoding: chunked`，重复 `Content-Length` 仅接受相同值并要求存在状态行。Fangtang-4G ESP-IDF 6.0.2 完整链接通过，app `0x358a40`，最小 app 分区余 `0x475c0`（8%）。真实 ML307 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 通用 Ml307Http 响应语义与写入边界收口：共享 ML307 HTTP client 现在同样处理 `HEAD`/204/304 无 body、1xx interim（拒绝 101），content URC 必须在最终 header 后到达且 body-forbidden 状态拒绝非零数据；响应头要求合法状态行、大小写不敏感字段、严格单一 `Transfer-Encoding: chunked` 与一致重复 `Content-Length`。零长度 `Write()` 改为纯 no-op，避免注入伪造 CRLF body；响应头查找兼容字段名大小写。Fangtang-4G ESP-IDF 6.0.2 完整链接通过，app `0x358f90`，最小 app 分区余 `0x47070`（8%）。真实 ML307 UART 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 EC801E response body semantics fence：通用 `HttpClient` 现在识别 `HEAD`、1xx（拒绝 101）、204 与 304 的无 body 响应，立即完成且不消费后续字节；`Transfer-Encoding` 仅接受单一 `chunked` token，未知编码/编码链均拒绝。Fangtang-4G ESP-IDF 6.0.2 完整链接通过，app `0x358560`，最小 app 分区余 `0x47aa0`（8%）。真实 EC801E/ML307 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。
+
+> 2026-08-30 B3/A9 EC801E Transfer-Encoding token fence：响应 `Transfer-Encoding` 现在按逗号分隔 coding token 严格解析，仅接受最终 token 为 `chunked`；`notchunked`、空 token 或未知编码均 fail-closed，避免子串匹配导致 body framing/连接复用失步。Fangtang-4G ESP-IDF 6.0.2 完整构建通过，app `0x3582c0`，最小 app 分区余 `0x47d40`（8%）。真实 EC801E/ML307 分包、HTTP abort、4G fault-domain 与 COM3–COM6 HIL 仍未完成。

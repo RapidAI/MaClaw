@@ -2,7 +2,9 @@ package agentservice
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,52 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+const skillExternalSnapshotSchema = "maclaw.external-snapshot/v1"
+const skillExternalSnapshotKind = "dynamic_skill_contract"
+
+// skillContractExternalSnapshot is the versioned, principal-bound envelope
+// stored in the generic compensation queue.  The queue treats the value as
+// opaque; AgentService validates the envelope before it can mutate the
+// dynamic-contract registry.  PreImage deliberately contains only the
+// contract declaration, never credentials or provider payloads.
+type skillContractExternalSnapshot struct {
+	Schema        string          `json:"schema"`
+	Kind          string          `json:"kind"`
+	TenantID      string          `json:"tenant_id"`
+	UserID        string          `json:"user_id"`
+	StableID      string          `json:"stable_id"`
+	PayloadDigest string          `json:"payload_digest"`
+	PreImage      json.RawMessage `json:"pre_image"`
+	CapturedAt    string          `json:"captured_at"`
+	RequestID     string          `json:"request_id"`
+}
+
+func encodeSkillContractExternalSnapshot(principal Principal, stableID string, contract DynamicCapabilityContract, requestID string, capturedAt time.Time) (string, error) {
+	stableID = strings.TrimSpace(stableID)
+	if !validRecoveryScopeSegment(principal.TenantID) || !validRecoveryScopeSegment(principal.UserID) || stableID == "" {
+		return "", fmt.Errorf("invalid Skill contract snapshot identity")
+	}
+	if err := contract.validate(); err != nil {
+		return "", fmt.Errorf("invalid Skill contract snapshot: %w", err)
+	}
+	payload, err := json.Marshal(contract)
+	if err != nil {
+		return "", fmt.Errorf("encode Skill contract snapshot: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	snapshot := skillContractExternalSnapshot{
+		Schema: skillExternalSnapshotSchema, Kind: skillExternalSnapshotKind,
+		TenantID: principal.TenantID, UserID: principal.UserID, StableID: stableID,
+		PayloadDigest: hex.EncodeToString(digest[:]), PreImage: payload,
+		CapturedAt: capturedAt.UTC().Format(time.RFC3339Nano), RequestID: strings.TrimSpace(requestID),
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", fmt.Errorf("encode Skill contract snapshot envelope: %w", err)
+	}
+	return string(encoded), nil
+}
 
 const maxMessageAttachments = coreim.ThirdPartyMaxAttachments
 
@@ -167,12 +215,123 @@ func (s *Service) recoverAgentSkillInstallCompensations() (recovered int, pendin
 	if s == nil {
 		return 0, 0, fmt.Errorf("service is unavailable")
 	}
-	return skill.RecoverPendingEvolutionCompensationsForActionPrefixAndScope(
-		"agentservice_install",
-		s.dataRoot,
-		func([]corelib.NLSkillEntry) error { return nil },
-		nil,
-	)
+	return skill.RecoverPendingEvolutionCompensationsForActionPrefixAndScopeWithExternalRecovery(
+		"agentservice_install", s.dataRoot,
+		func([]corelib.NLSkillEntry) error { return nil }, nil,
+		s.restoreSkillExternalCompensation)
+}
+
+// restoreSkillExternalCompensation restores principal-scoped dynamic Skill
+// contracts captured by an interrupted directory transaction. Malformed keys
+// or snapshots fail closed instead of being silently ignored.
+func (s *Service) restoreSkillExternalCompensation(record skill.EvolutionCompensationRecord) error {
+	if s == nil || s.dynamicCapabilities == nil {
+		return fmt.Errorf("dynamic capability registry is unavailable")
+	}
+	for key, encoded := range record.ExternalSnapshots {
+		principal, stableID, parseErr := parseSkillExternalSnapshotKey(key)
+		if parseErr != nil {
+			return parseErr
+		}
+		if !skillCompensationPathBelongsToPrincipal(record, s.dataRoot, principal.TenantID, principal.UserID) {
+			return fmt.Errorf("external Skill contract snapshot is outside principal scope")
+		}
+		var envelope skillContractExternalSnapshot
+		if err := json.Unmarshal([]byte(encoded), &envelope); err != nil {
+			return fmt.Errorf("decode external Skill contract snapshot: %w", err)
+		}
+		legacyRaw := envelope.Schema == "" && envelope.Kind == "" && len(envelope.PreImage) == 0
+		if legacyRaw {
+			// Records written before the envelope existed are accepted only as a
+			// one-way compatibility read. They still require a valid contract,
+			// principal-bound key and scope-checked durable paths; new writes always
+			// use the versioned envelope below.
+			envelope.PreImage = json.RawMessage(encoded)
+		} else if envelope.Schema != skillExternalSnapshotSchema || envelope.Kind != skillExternalSnapshotKind || envelope.TenantID != principal.TenantID || envelope.UserID != principal.UserID || envelope.StableID != stableID {
+			return fmt.Errorf("external Skill contract snapshot identity/schema mismatch")
+		}
+		if strings.TrimSpace(envelope.RequestID) != "" && strings.TrimSpace(record.RequestID) != "" && envelope.RequestID != record.RequestID {
+			return fmt.Errorf("external Skill contract snapshot request mismatch")
+		}
+		if !legacyRaw && strings.TrimSpace(envelope.PayloadDigest) == "" {
+			return fmt.Errorf("external Skill contract snapshot digest is missing")
+		}
+		digest := sha256.Sum256(envelope.PreImage)
+		if !legacyRaw && !strings.EqualFold(envelope.PayloadDigest, hex.EncodeToString(digest[:])) {
+			return fmt.Errorf("external Skill contract snapshot digest mismatch")
+		}
+		var contract DynamicCapabilityContract
+		if err := json.Unmarshal(envelope.PreImage, &contract); err != nil {
+			return fmt.Errorf("decode external Skill contract pre-image: %w", err)
+		}
+		if err := contract.validate(); err != nil {
+			return fmt.Errorf("validate external Skill contract pre-image: %w", err)
+		}
+		if err := s.dynamicCapabilities.PublishSkillContract(principal, stableID, contract); err != nil {
+			return fmt.Errorf("restore external Skill contract %q: %w", stableID, err)
+		}
+	}
+	return nil
+}
+
+func parseSkillExternalSnapshotKey(key string) (Principal, string, error) {
+	parts := strings.SplitN(strings.TrimSpace(key), "|", 4)
+	if len(parts) != 4 || parts[0] != "skill_contract" || !validRecoveryScopeSegment(parts[1]) || !validRecoveryScopeSegment(parts[2]) || strings.TrimSpace(parts[3]) == "" {
+		return Principal{}, "", fmt.Errorf("invalid external Skill contract snapshot key")
+	}
+	return Principal{TenantID: parts[1], UserID: parts[2]}, parts[3], nil
+}
+
+func validRecoveryScopeSegment(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && value != "." && value != ".." && !strings.ContainsAny(value, `/\\|`)
+}
+
+func skillCompensationPathBelongsToPrincipal(record skill.EvolutionCompensationRecord, dataRoot, tenantID, userID string) bool {
+	root := filepath.Clean(strings.TrimSpace(dataRoot))
+	if root == "." || !validRecoveryScopeSegment(tenantID) || !validRecoveryScopeSegment(userID) {
+		return false
+	}
+	principalRoot := filepath.Join(root, "tenants", tenantID, "users", userID)
+	paths := []string{record.YAMLPath, record.DraftPath, record.DirPath, record.DirBackupPath}
+	for _, move := range record.DirectoryMoves {
+		paths = append(paths, move.OriginalPath, move.BackupPath)
+	}
+	paths = append(paths, record.CreatedDirs...)
+	seen := false
+	for _, candidate := range paths {
+		candidate = filepath.Clean(strings.TrimSpace(candidate))
+		if strings.TrimSpace(candidate) == "" || candidate == "." {
+			continue
+		}
+		seen = true
+		if !pathWithinRoot(candidate, principalRoot) {
+			continue
+		}
+	}
+	if !seen {
+		return false
+	}
+	for _, candidate := range paths {
+		candidate = filepath.Clean(strings.TrimSpace(candidate))
+		if strings.TrimSpace(candidate) == "" || candidate == "." {
+			continue
+		}
+		if !pathWithinRoot(candidate, principalRoot) {
+			return false
+		}
+	}
+	return true
+}
+
+func pathWithinRoot(candidate, root string) bool {
+	candidate = filepath.Clean(candidate)
+	root = filepath.Clean(root)
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // Close releases process-held resources (e.g. SQLite record store). Safe to call

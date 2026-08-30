@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -62,6 +63,10 @@ type cloudWorkspaceHeldMount struct {
 	LocalPath   string
 	TenantID    string
 	ReadOnly    bool
+	// Shared is true when another machine owns the legacy lease. In this mode
+	// v2 per-file operations provide multi-writer safety and no heartbeat or
+	// lease release is attempted.
+	Shared bool
 
 	hbCancel  context.CancelFunc
 	watcher   *fsnotify.Watcher
@@ -641,21 +646,37 @@ func heldWritableCloudWorkspacePath(workspaceID string) (string, bool) {
 	return path, true
 }
 
+func cloudWorkspaceIdentityFromResult(result ProjectSearchResult) string {
+	if id := cloudWorkspaceIDFromPathString(result.WorkingDir); id != "" {
+		return id
+	}
+	if id := cloudWorkspaceIDFromTags(result.Tags); id != "" {
+		return id
+	}
+	return cloudWorkspaceIDFromPathString(result.ProjectPath)
+}
+
 func (a *App) lookupCloudWorkspaceIDForProject(projectPath string) string {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
 		return ""
 	}
 	if result, ok := lookupCloudWorkspaceTaskByPath(projectPath); ok {
-		if id := cloudWorkspaceIDFromTags(result.Tags); id != "" {
+		if id := cloudWorkspaceIdentityFromResult(result); id != "" {
 			return id
 		}
 	}
 	if id := lookupCloudWorkspaceIDByLocalPath(projectPath); id != "" {
 		return id
 	}
+	if id := cloudWorkspaceIDFromPathString(projectPath); id != "" {
+		return id
+	}
 	if wd := a.recentTaskWorkingDir(projectPath); wd != "" {
 		if id := lookupCloudWorkspaceIDByLocalPath(wd); id != "" {
+			return id
+		}
+		if id := cloudWorkspaceIDFromPathString(wd); id != "" {
 			return id
 		}
 	}
@@ -671,13 +692,7 @@ func (a *App) lookupCloudWorkspaceIDForProject(projectPath string) string {
 	if rec == nil {
 		return ""
 	}
-	if id := cloudWorkspaceIDFromTags(rec.Tags); id != "" {
-		return id
-	}
-	if wd := recentTaskWorkingDirFromTags(rec.Tags); wd != "" {
-		return lookupCloudWorkspaceIDByLocalPath(wd)
-	}
-	return ""
+	return primaryCloudWorkspaceID(*rec)
 }
 
 func (a *App) releaseCloudWorkspaceForProjectPath(projectPath string) {
@@ -704,6 +719,7 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 	stopCloudWorkspaceMount(mount)
 	mount.mu.Lock()
 	readOnly := mount.ReadOnly
+	shared := mount.Shared
 	root := mount.LocalPath
 	leaseID := mount.LeaseID
 	mount.mu.Unlock()
@@ -719,6 +735,9 @@ func (a *App) releaseCloudWorkspace(ctx context.Context, workspaceID string, del
 		} else if err := a.flushCloudWorkspaceSidecars(ctx, workspaceID); err != nil {
 			log.Printf("[cloud_workspace] release sidecar flush failed workspace=%s err=%v", workspaceID, err)
 		}
+	}
+	if shared {
+		return nil
 	}
 	if err := a.deleteCloudWorkspaceLease(ctx, workspaceID, leaseID); err != nil {
 		if !deleteLeaseOnPushFail {
@@ -770,16 +789,16 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 	leaseCtx, leaseCancel := a.cloudWorkspaceRequestContext()
 	defer leaseCancel()
 	outcome, err := a.acquireCloudWorkspaceLease(leaseCtx, workspaceID, force)
+	shared := false
 	if err != nil {
 		var inUse *cloudWorkspaceInUseError
 		if asCloudWorkspaceInUse(err, &inUse) && !force {
-			if !a.confirmCloudWorkspaceSteal(inUse.HolderMachineName) {
-				return PreparedCloudWorkspace{}, inUse
-			}
-			force = true
-			forceCtx, forceCancel := a.cloudWorkspaceRequestContext()
-			defer forceCancel()
-			outcome, err = a.acquireCloudWorkspaceLease(forceCtx, workspaceID, true)
+			// A live lease no longer blocks a second machine: v2 operations are
+			// per-file, idempotent and conflict-aware. Keep the existing holder's
+			// lease intact and mount this cache in shared mode.
+			shared = true
+			outcome = &cloudWorkspaceAcquireOutcome{}
+			err = nil
 		}
 		if err != nil {
 			return PreparedCloudWorkspace{}, err
@@ -794,13 +813,16 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		LeaseID:     outcome.LeaseID,
 		LocalPath:   localPath,
 		TenantID:    tenantID,
+		Shared:      shared,
 	}
 	// Heartbeat must run during dialogs and Pull/Push: a max-size sync can exceed LeaseTTL.
-	a.startCloudWorkspaceHeartbeat(mount)
+	if !shared {
+		a.startCloudWorkspaceHeartbeat(mount)
+	}
 	acquired := strings.TrimSpace(outcome.Acquired)
 	failPrepare := func(err error) (PreparedCloudWorkspace, error) {
 		stopCloudWorkspaceMount(mount)
-		if acquired != cloudWorkspaceAcquiredRenewed {
+		if !shared && acquired != cloudWorkspaceAcquiredRenewed {
 			ctx, cancel := a.cloudWorkspaceRequestContext()
 			defer cancel()
 			_ = a.deleteCloudWorkspaceLease(ctx, workspaceID, outcome.LeaseID)
@@ -809,7 +831,7 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 	}
 
 	proto := a.cloudWorkspaceProtocol(workspaceID)
-	if acquired != cloudWorkspaceAcquiredRenewed {
+	if !shared && acquired != cloudWorkspaceAcquiredRenewed {
 		peekCtx, peekCancel := a.cloudWorkspaceSyncContext()
 		remote, remoteErr := proto.Transport.GetManifest(peekCtx)
 		peekCancel()
@@ -836,7 +858,28 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 
 	syncCtx, syncCancel := a.cloudWorkspaceSyncContext()
 	defer syncCancel()
-	if acquired == cloudWorkspaceAcquiredRenewed {
+	if shared {
+		state, stateErr := readCloudWorkspaceLocalState(localPath)
+		if stateErr != nil {
+			return failPrepare(stateErr)
+		}
+		if strings.TrimSpace(state.LastPushedRevision) == "" {
+			// A brand-new shared cache has no local baseline; hydrate it from the
+			// manifest before tailing events so old history is not missed.
+			if _, pullErr := proto.Pull(syncCtx, localPath); pullErr != nil {
+				return failPrepare(pullErr)
+			}
+		}
+		if err := proto.PullEvents(syncCtx, localPath); err != nil {
+			if errors.Is(err, errCloudWorkspaceV2Unavailable) {
+				if _, pullErr := proto.Pull(syncCtx, localPath); pullErr != nil {
+					return failPrepare(pullErr)
+				}
+			} else {
+				return failPrepare(err)
+			}
+		}
+	} else if acquired == cloudWorkspaceAcquiredRenewed {
 		if _, err := proto.Push(syncCtx, localPath); err != nil {
 			return failPrepare(err)
 		}

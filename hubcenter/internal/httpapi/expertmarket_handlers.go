@@ -309,7 +309,7 @@ func publicExpertMarketListing(item *expertMarketListing) expertMarketPublicList
 // market ordering while avoiding an N+1 purchase lookup for every card.
 func (h *SkillMarketHandlers) expertMarketOwnedListings(r *http.Request, userID string, ids []string) (map[string]bool, error) {
 	owned := make(map[string]bool)
-	if len(ids) == 0 {
+	if len(ids) == 0 || strings.TrimSpace(userID) == "" {
 		return owned, nil
 	}
 	placeholders := make([]string, len(ids))
@@ -354,6 +354,19 @@ func (h *SkillMarketHandlers) expertMarketUser(r *http.Request) (string, string,
 	// separate named helper so its future policy can diverge without leaking the
 	// Pet Store domain into this API.
 	return h.petStoreUser(r)
+}
+
+func (h *SkillMarketHandlers) optionalExpertMarketUser(r *http.Request) (string, error) {
+	if strings.TrimSpace(extractSessionToken(r)) == "" {
+		return "", nil
+	}
+	userID, _, err := h.expertMarketUser(r)
+	if err != nil {
+		// A presented token must be validated. Swallowing expiry would make
+		// the public catalogue succeed and stop the desktop from refreshing.
+		return "", err
+	}
+	return userID, nil
 }
 
 func expertMarketValidStatus(status string) bool {
@@ -512,7 +525,7 @@ func expertMarketManifest(data []byte) (sourceID, name, description, icon string
 
 func (h *SkillMarketHandlers) ListExpertMarketListings(w http.ResponseWriter, r *http.Request) {
 	h.ensureExpertMarketSchema()
-	userID, _, err := h.expertMarketUser(r)
+	userID, err := h.optionalExpertMarketUser(r)
 	if err != nil {
 		smError(w, http.StatusUnauthorized, err.Error())
 		return
@@ -583,7 +596,7 @@ func (h *SkillMarketHandlers) ListExpertMarketListings(w http.ResponseWriter, r 
 
 func (h *SkillMarketHandlers) GetExpertMarketListing(w http.ResponseWriter, r *http.Request) {
 	h.ensureExpertMarketSchema()
-	userID, _, err := h.expertMarketUser(r)
+	userID, err := h.optionalExpertMarketUser(r)
 	if err != nil {
 		smError(w, http.StatusUnauthorized, err.Error())
 		return

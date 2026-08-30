@@ -3,7 +3,6 @@ package skillmarket
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
@@ -13,6 +12,11 @@ const (
 	defaultVoucherCount = 3
 	defaultVoucherDays  = 7
 )
+
+// ErrEmailBoundToAnotherUser is returned when a Hub principal would be
+// created under a contact that already belongs to a different market user,
+// and the caller did not present that contact as Hub-verified.
+var ErrEmailBoundToAnotherUser = errors.New("account email is already bound to another user")
 
 // UserService 管理 SkillMarket 用户账户。
 type UserService struct {
@@ -58,9 +62,22 @@ func (s *UserService) EnsureAccount(ctx context.Context, email string) (*SkillMa
 	return user, nil
 }
 
-// VerifyAccount 将账户升级为 verified。
-// 如果 email 已有 unverified 账户，直接接管（方案 A）。
+// EnsureAccountWithID creates a market user for a durable Hub principal.
+// Email and phone are login contacts: an unmatched contact must never redirect
+// this user ID onto another account's market assets.
 func (s *UserService) EnsureAccountWithID(ctx context.Context, userID, email string) (*SkillMarketUser, error) {
+	return s.ensureAccountWithID(ctx, userID, email, false)
+}
+
+// EnsureAccountWithVerifiedContact is EnsureAccountWithID for a contact the
+// Hub (or an already-authenticated session) has proven belongs to this user.
+// A pre-existing email/phone account is adopted so machine login can reopen
+// the market instead of returning HTTP 500 on leftover email-first rows.
+func (s *UserService) EnsureAccountWithVerifiedContact(ctx context.Context, userID, email string) (*SkillMarketUser, error) {
+	return s.ensureAccountWithID(ctx, userID, email, true)
+}
+
+func (s *UserService) ensureAccountWithID(ctx context.Context, userID, email string, claimVerifiedContact bool) (*SkillMarketUser, error) {
 	email = normalizeEmail(email)
 	if userID != "" {
 		if u, err := s.store.GetUserByID(ctx, userID); err == nil {
@@ -72,11 +89,8 @@ func (s *UserService) EnsureAccountWithID(ctx context.Context, userID, email str
 	if userID == "" {
 		return s.EnsureAccount(ctx, email)
 	}
-	// A Hub user ID is the durable principal. Email and phone are login
-	// identities that may be bound to the same person, so an unmatched contact
-	// must never redirect this user ID to another account's market assets.
-	if _, err := s.store.GetUserByEmail(ctx, email); err == nil {
-		return nil, fmt.Errorf("account email is already bound to another user")
+	if existing, err := s.store.GetUserByEmail(ctx, email); err == nil {
+		return s.adoptOrRejectBoundEmail(existing, userID, claimVerifiedContact)
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
@@ -99,16 +113,24 @@ func (s *UserService) EnsureAccountWithID(ctx context.Context, userID, email str
 			return u, nil
 		}
 		if u, err2 := s.store.GetUserByEmail(ctx, email); err2 == nil {
-			if u.ID == userID {
-				return u, nil
-			}
-			return nil, fmt.Errorf("account email is already bound to another user")
+			return s.adoptOrRejectBoundEmail(u, userID, claimVerifiedContact)
 		}
 		return nil, err
 	}
 	return user, nil
 }
 
+func (s *UserService) adoptOrRejectBoundEmail(existing *SkillMarketUser, userID string, claimVerifiedContact bool) (*SkillMarketUser, error) {
+	if existing == nil {
+		return nil, ErrEmailBoundToAnotherUser
+	}
+	if existing.ID == userID || claimVerifiedContact {
+		return existing, nil
+	}
+	return nil, ErrEmailBoundToAnotherUser
+}
+
+// VerifyAccount 将账户升级为 verified。
 func (s *UserService) VerifyAccount(ctx context.Context, email, method string) (*SkillMarketUser, error) {
 	email = normalizeEmail(email)
 	u, err := s.store.GetUserByEmail(ctx, email)

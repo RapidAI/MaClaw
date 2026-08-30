@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func newRestoreCloudWorkspaceTestHub(workspaceID, taskName, taskMode string, includeEntitlementTask bool) *fakeCloudWorkspaceHub {
@@ -303,9 +305,7 @@ func TestDeleteTaskHidesReplacementRowForSameWorkspace(t *testing.T) {
 	hub := newRestoreCloudWorkspaceTestHub("cws_dup", "云端任务", taskCodingDevTag, true)
 	app := newCloudWorkspaceMountTestApp(t, hub)
 	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_dup")
-	dup := app.restoreCloudWorkspaceTaskRecord(CloudWorkspaceEntitlementWorkspace{
-		ID: "cws_dup", Name: "云端任务",
-	}, "重复行", taskCodingDevTag)
+	dup := app.createTaskRecordWithWorkingDir("重复行", "", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag("cws_dup")}, created.WorkingDir, true)
 	if strings.TrimSpace(dup.ProjectPath) == "" || dup.ProjectPath == created.ProjectPath {
 		t.Fatalf("dup=%+v created=%q", dup, created.ProjectPath)
 	}
@@ -315,6 +315,249 @@ func TestDeleteTaskHidesReplacementRowForSameWorkspace(t *testing.T) {
 	if got := app.ListTasks(10); len(got) != 0 {
 		t.Fatalf("replacement row still listed: %+v", got)
 	}
+}
+
+func TestLookupCloudWorkspaceIDForProjectUsesWorkingDir(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_lookup", "长江学者申请", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	cache := app.cloudWorkspaceCachePath(app.cloudWorkspaceTenantID(), "cws_lookup")
+	created := app.createTaskRecordWithWorkingDir("长江学者申请", "", []string{taskManagementTag, taskUserCreatedTag}, cache, true)
+	if created.ProjectPath == "" {
+		t.Fatal("legacy cloud task was not created")
+	}
+	if got := app.lookupCloudWorkspaceIDForProject(created.ProjectPath); got != "cws_lookup" {
+		t.Fatalf("lookup=%q want cws_lookup", got)
+	}
+	app.HideTask(created.ProjectPath)
+	if got := app.RestoreCloudWorkspaceTasks(); len(got) != 0 {
+		t.Fatalf("working-dir hide must tombstone restore: %+v", got)
+	}
+	if got := app.ListTasks(10); len(got) != 0 {
+		t.Fatalf("hidden working-dir task still listed: %+v", got)
+	}
+}
+
+func TestRestoreCloudWorkspaceTasksReusesWorkingDirIdentity(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_legacy", "长江学者申请", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	cache := app.cloudWorkspaceCachePath(app.cloudWorkspaceTenantID(), "cws_legacy")
+	created := app.createTaskRecordWithWorkingDir("长江学者申请", "", []string{taskManagementTag, taskUserCreatedTag}, cache, true)
+	if created.ProjectPath == "" {
+		t.Fatal("legacy cloud task was not created")
+	}
+	if projectRecordHasTagLike(created.Tags, cloudWorkspaceTag("cws_legacy")) {
+		t.Fatalf("setup must omit the workspace tag: %v", created.Tags)
+	}
+
+	restored := app.RestoreCloudWorkspaceTasks()
+	if len(restored) != 0 {
+		t.Fatalf("restore should reuse the visible row, got %+v", restored)
+	}
+	listed := app.ListTasks(10)
+	if len(listed) != 1 || listed[0].ProjectPath != created.ProjectPath {
+		t.Fatalf("list after restore=%+v want %q", listed, created.ProjectPath)
+	}
+	if countVisibleCloudWorkspaceTasks(t, app, "cws_legacy") != 1 {
+		t.Fatalf("visible rows for workspace=%d", countVisibleCloudWorkspaceTasks(t, app, "cws_legacy"))
+	}
+}
+
+func TestRestoreCloudWorkspaceTaskRecordReusesVisibleRow(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_reuse", "云端任务", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_reuse")
+	again := app.restoreCloudWorkspaceTaskRecord(CloudWorkspaceEntitlementWorkspace{
+		ID: "cws_reuse", Name: "云端任务",
+	}, "重复行", taskCodingDevTag)
+	if again.ProjectPath != created.ProjectPath {
+		t.Fatalf("restore record=%q want existing %q", again.ProjectPath, created.ProjectPath)
+	}
+	if countVisibleCloudWorkspaceTasks(t, app, "cws_reuse") != 1 {
+		t.Fatalf("visible rows=%d list=%+v", countVisibleCloudWorkspaceTasks(t, app, "cws_reuse"), app.ListTasks(10))
+	}
+}
+
+func TestRestorePrefersVisibleRowOverHiddenProcessMap(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_stale", "长江学者申请", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	hidden := mustCreateCloudWorkspaceTask(t, app, "长江学者申请", "", "coding_dev", "cws_stale")
+	visible := app.createTaskRecordWithWorkingDir("长江学者申请", "", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag("cws_stale")}, hidden.WorkingDir, true)
+	if visible.ProjectPath == "" || visible.ProjectPath == hidden.ProjectPath {
+		t.Fatalf("visible=%+v hidden=%q", visible, hidden.ProjectPath)
+	}
+	app.ensureMemoryStore()
+	if pi := app.memoryStore.ProjectIndex(); pi != nil {
+		pi.SetHidden(hidden.ProjectPath, true)
+	}
+	rememberCloudWorkspaceTask("cws_stale", hidden)
+
+	if got := app.RestoreCloudWorkspaceTasks(); len(got) != 0 {
+		t.Fatalf("restore should keep the visible row, got %+v", got)
+	}
+	listed := app.ListTasks(10)
+	if len(listed) != 1 || listed[0].ProjectPath != visible.ProjectPath {
+		t.Fatalf("list=%+v want visible %q", listed, visible.ProjectPath)
+	}
+	if pi := app.memoryStore.ProjectIndex(); pi == nil || !pi.IsHidden(hidden.ProjectPath) {
+		t.Fatalf("hidden leftover was unhidden: %q", hidden.ProjectPath)
+	}
+}
+
+func TestResumeCloudWorkspaceTaskHidesDuplicateRows(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_click", "长江学者申请", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "长江学者申请", "", "coding_dev", "cws_click")
+	dup := app.createTaskRecordWithWorkingDir("长江学者申请", "", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag("cws_click")}, created.WorkingDir, true)
+	if dup.ProjectPath == "" || dup.ProjectPath == created.ProjectPath {
+		t.Fatalf("dup=%+v created=%q", dup, created.ProjectPath)
+	}
+
+	resumed := mustResumeCloudWorkspaceTask(t, app, "cws_click")
+	if resumed.ProjectPath == "" {
+		t.Fatal("resume returned empty")
+	}
+	listed := app.ListTasks(10)
+	if len(listed) != 1 {
+		t.Fatalf("list after resume=%+v", listed)
+	}
+	if countVisibleCloudWorkspaceTasks(t, app, "cws_click") != 1 {
+		t.Fatalf("visible rows after resume=%d", countVisibleCloudWorkspaceTasks(t, app, "cws_click"))
+	}
+}
+
+func TestResumeCloudWorkspaceTaskKeepsClickedRow(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_prefer", "长江学者申请", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	clicked := mustCreateCloudWorkspaceTask(t, app, "长江学者申请", "", "coding_dev", "cws_prefer")
+	newer := app.createTaskRecordWithWorkingDir("长江学者申请", "", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag("cws_prefer")}, clicked.WorkingDir, true)
+	if newer.ProjectPath == "" || newer.ProjectPath == clicked.ProjectPath {
+		t.Fatalf("newer=%+v clicked=%q", newer, clicked.ProjectPath)
+	}
+	resumed := mustResumeCloudWorkspaceTask(t, app, "cws_prefer", clicked.ProjectPath)
+	if resumed.ProjectPath != clicked.ProjectPath {
+		t.Fatalf("resume=%q want clicked %q", resumed.ProjectPath, clicked.ProjectPath)
+	}
+	if countVisibleCloudWorkspaceTasks(t, app, "cws_prefer") != 1 {
+		t.Fatalf("visible rows after resume=%d", countVisibleCloudWorkspaceTasks(t, app, "cws_prefer"))
+	}
+	listed := app.ListTasks(10)
+	if len(listed) != 1 || listed[0].ProjectPath != clicked.ProjectPath {
+		t.Fatalf("list=%+v want clicked %q", listed, clicked.ProjectPath)
+	}
+}
+
+func TestRestoreCloudWorkspaceTaskRecordRespectsDismissed(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_tombstone", "云端任务", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_tombstone")
+	app.HideTask(created.ProjectPath)
+	again := app.restoreCloudWorkspaceTaskRecord(CloudWorkspaceEntitlementWorkspace{
+		ID: "cws_tombstone", Name: "云端任务",
+	}, "重复行", taskCodingDevTag)
+	if strings.TrimSpace(again.ProjectPath) != "" {
+		t.Fatalf("dismissed workspace created/unhid %+v", again)
+	}
+	if got := app.ListTasks(10); len(got) != 0 {
+		t.Fatalf("list after dismissed restore=%+v", got)
+	}
+}
+
+func TestDeleteCloudWorkspaceHidesDuplicateLocalRows(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_deldup", "长江学者申请", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "长江学者申请", "", "coding_dev", "cws_deldup")
+	dup := app.createTaskRecordWithWorkingDir("长江学者申请", "", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag("cws_deldup")}, created.WorkingDir, true)
+	if dup.ProjectPath == "" || dup.ProjectPath == created.ProjectPath {
+		t.Fatalf("dup=%+v created=%q", dup, created.ProjectPath)
+	}
+	if _, err := app.DeleteCloudWorkspace("cws_deldup"); err != nil {
+		t.Fatalf("DeleteCloudWorkspace: %v", err)
+	}
+	if got := app.ListTasks(10); len(got) != 0 {
+		t.Fatalf("duplicate rows survived workspace delete: %+v", got)
+	}
+	if countVisibleCloudWorkspaceTasks(t, app, "cws_deldup") != 0 {
+		t.Fatalf("visible rows after delete=%d", countVisibleCloudWorkspaceTasks(t, app, "cws_deldup"))
+	}
+}
+
+func TestHideOtherLocalCloudWorkspaceTasksRequiresKeepPath(t *testing.T) {
+	resetCloudWorkspaceEntitlementCache()
+	t.Cleanup(resetCloudWorkspaceEntitlementCache)
+	hub := newRestoreCloudWorkspaceTestHub("cws_keep", "云端任务", taskCodingDevTag, true)
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_keep")
+	app.hideOtherLocalCloudWorkspaceTasks("cws_keep", "")
+	if got := app.ListTasks(10); len(got) != 1 || got[0].ProjectPath != created.ProjectPath {
+		t.Fatalf("empty keep path must not hide the row: %+v", got)
+	}
+}
+
+func TestCloudWorkspaceIdentityFromResultPrefersWorkingDir(t *testing.T) {
+	got := cloudWorkspaceIdentityFromResult(ProjectSearchResult{
+		ProjectPath: "legacy",
+		WorkingDir:  "C:/data/cloud-workspaces/tenant_default/cws_b",
+		Tags:        []string{taskManagementTag, cloudWorkspaceTag("cws_a"), cloudWorkspaceTag("cws_b")},
+	})
+	if got != "cws_b" {
+		t.Fatalf("identity=%q want cws_b from working_dir", got)
+	}
+}
+
+func TestRecordIsLocalCloudWorkspaceTaskUsesWorkingDirOverAccumulatedTags(t *testing.T) {
+	rec := memory.ProjectRecord{
+		ProjectPath: "legacy",
+		Tags: []string{
+			taskManagementTag,
+			cloudWorkspaceTag("cws_a"),
+			cloudWorkspaceTag("cws_b"),
+			recentTaskWorkingDirTag("C:/data/cloud-workspaces/tenant_default/cws_b"),
+		},
+	}
+	if recordIsLocalCloudWorkspaceTask(rec, "cws_a") {
+		t.Fatal("working_dir identity is cws_b; cws_a tag must not claim the row")
+	}
+	if !recordIsLocalCloudWorkspaceTask(rec, "cws_b") {
+		t.Fatal("working_dir identity should match cws_b")
+	}
+}
+
+func countVisibleCloudWorkspaceTasks(t *testing.T, app *App, workspaceID string) int {
+	t.Helper()
+	app.ensureMemoryStore()
+	if app.memoryStore == nil {
+		t.Fatal("memory store missing")
+	}
+	pi := app.memoryStore.ProjectIndex()
+	if pi == nil {
+		t.Fatal("project index missing")
+	}
+	count := 0
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
+	}) {
+		if pi.IsArchived(rec.ProjectPath) || pi.IsHidden(rec.ProjectPath) {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func TestHideTaskKeepsCloudWorkspaceForRetry(t *testing.T) {

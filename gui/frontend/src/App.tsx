@@ -86,7 +86,7 @@ import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureT
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
-import { agentModeFromTaskTags, cloudWorkspaceIdFromTags, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/ai/codingTaskLaunch';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
@@ -578,7 +578,7 @@ function App() {
     }, [openExpertTabIDs, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
+    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; working_dir?: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
     const taskItemsRef = useRef(taskItems);
     taskItemsRef.current = taskItems;
     // A ListTasks response can complete after a task was just created locally.
@@ -3042,7 +3042,7 @@ function App() {
         };
     }, [refreshTasks]);
 
-    const resumeTask = useCallback(async (projectPath: string, task?: { project_path?: string; name?: string; tags?: string[] }) => {
+    const resumeTask = useCallback(async (projectPath: string, task?: { project_path?: string; name?: string; tags?: string[]; working_dir?: string }) => {
         const startedAt = performance.now();
         try {
             // Normalize separators so Windows path variants still match list tags.
@@ -3069,9 +3069,13 @@ function App() {
                 refreshTasks();
                 return;
             }
-            const cloudWorkspaceId = cloudWorkspaceIdFromTags(proj?.tags);
+            const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({
+                tags: proj?.tags,
+                project_path: projectPath,
+                working_dir: proj?.working_dir,
+            });
             if (cloudWorkspaceId) {
-                const bound = await ResumeCloudWorkspaceTask(cloudWorkspaceId);
+                const bound = await ResumeCloudWorkspaceTask(cloudWorkspaceId, projectPath);
                 if (!bound?.project_path) {
                     throw new Error(lang === 'zh-Hans'
                         ? '无法打开云端工作区任务'
@@ -3228,7 +3232,7 @@ function App() {
                 }
             } else if (cloudWorkspaceId) {
                 agentMode = mode === 'coding_dev' ? 'coding_dev' : undefined;
-                created = await ResumeCloudWorkspaceTask(cloudWorkspaceId);
+                created = await ResumeCloudWorkspaceTask(cloudWorkspaceId, '');
                 let cloudCreated = false;
                 if (!created?.project_path) {
                     created = await CreateTaskWithCloudWorkspace(taskName, localWorkDir, mode || '', cloudWorkspaceId);

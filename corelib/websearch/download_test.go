@@ -1089,7 +1089,9 @@ func TestFallbackChainUsesBrowserSearchHook(t *testing.T) {
 	lastGoodEndpointName = ""
 	lastGoodEndpointMu.Unlock()
 
+	var engines []string
 	SetBrowserSearchProvider(func(ctx context.Context, engineID, query string, maxResults int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
 		return []BrowserSearchHit{{Title: "Browser Hit", URL: "https://go.dev/", Snippet: "via browser"}}, nil
 	})
 	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
@@ -1101,10 +1103,87 @@ func TestFallbackChainUsesBrowserSearchHook(t *testing.T) {
 	if len(results) != 1 || results[0].Title != "Browser Hit" {
 		t.Fatalf("hook results not used: %+v", results)
 	}
+	if len(engines) == 0 || engines[0] != "bing_cn" {
+		t.Fatalf("generic query should try Bing browser first, got %v", engines)
+	}
 
 	// Without the hook the same failures must surface as an error.
 	SetBrowserSearchProvider(nil)
 	if _, err := searchDirectFallbackChain(context.Background(), "golang", 3, ""); err == nil {
 		t.Fatal("expected error when hook is nil and all endpoints fail")
+	}
+}
+
+func TestFallbackChainPrefersGoogleBrowserForNamedSite(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL} {
+		orig := *p
+		*p = srv.URL
+		t.Cleanup(func() { *p = orig })
+	}
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = ""
+	lastGoodEndpointMu.Unlock()
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, query string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if query != "openreview iclr" {
+			t.Errorf("query = %q", query)
+		}
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=1"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	results, err := searchDirectFallbackChain(context.Background(), "openreview iclr", 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(engines) == 0 || engines[0] != "google" {
+		t.Fatalf("OpenReview query should try Google browser first, got %v", engines)
+	}
+	if len(results) != 1 || results[0].URL != "https://openreview.net/forum?id=1" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+func TestFallbackChainTriesSecondBrowserWhenNamedSiteStillMissing(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL} {
+		orig := *p
+		*p = srv.URL
+		t.Cleanup(func() { *p = orig })
+	}
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = ""
+	lastGoodEndpointMu.Unlock()
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if engineID == "google" {
+			return []BrowserSearchHit{{Title: "Wiki", URL: "https://en.wikipedia.org/wiki/Open_review"}}, nil
+		}
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=bing"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	results, err := searchDirectFallbackChain(context.Background(), "openreview iclr", 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(engines) < 2 || engines[0] != "google" || engines[1] != "bing_cn" {
+		t.Fatalf("engines = %v, want google then bing_cn", engines)
+	}
+	if len(results) == 0 || results[0].URL != "https://openreview.net/forum?id=bing" {
+		t.Fatalf("results = %+v", results)
 	}
 }

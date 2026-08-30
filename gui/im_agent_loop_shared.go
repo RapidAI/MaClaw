@@ -1603,6 +1603,16 @@ func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.llmCfg
 }
 
+func (c *sharedAgentLoopCallbacks) RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool) {
+	if c == nil || c.handler == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	prev := c.llmCfg
+	next := c.handler.refreshLLMConfigAfterTokenErrorCtx(ctx, c.llmCfg)
+	c.llmCfg = applyLLMAuthKey(c.llmCfg, next)
+	return c.llmCfg, llmAuthKeyRotated(prev, c.llmCfg)
+}
+
 // AllowMoAFanOut implements agent.MoABudgetGate when the app tracks daily LLM budget.
 func (c *sharedAgentLoopCallbacks) AllowMoAFanOut(nRefs int) (ok bool, reason string) {
 	if c == nil || c.handler == nil || c.handler.app == nil {

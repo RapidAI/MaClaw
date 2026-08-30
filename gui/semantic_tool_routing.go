@@ -979,6 +979,13 @@ func applySemanticRoutingMissFallback(ctx *LoopContext) {
 		return
 	}
 	hostAdapter := routingMissWantsHostAdapter(*ctx.Runtime.SemanticIntent) && semanticFileDeliveryPublished(ctx.Platform)
+	if leftoverKeepsRemoteHostClassification(*ctx.Runtime.SemanticIntent) {
+		// Keep LabelSSH. Chat-projecting it to unknown would make leftover
+		// skip hide builtin ssh, which is the only connect/exec surface for
+		// an unbound classified SSH turn.
+		markLoopRoutingMissChatLeftover(ctx, *ctx.Runtime.SemanticIntent)
+		return
+	}
 	if loopContextIsSemanticManaged(ctx) {
 		projected := semanticChatProjection(*ctx.Runtime.SemanticIntent)
 		if hostAdapter {
@@ -1111,7 +1118,23 @@ func loopContextIsVisionFallthrough(ctx *LoopContext) bool {
 	return ctx != nil && ctx.Runtime.VisionFallthrough
 }
 
+// leftoverKeepsRemoteHostClassification is a capability-family check, not a
+// user-text heuristic. Managed SSH is the bound-session adapter; an unbound
+// UIC LabelSSH turn (primary or secondary) misses to leftover so builtin ssh
+// can connect/exec. Chat-projecting that classification would strip the
+// leftover skip's PreResolved keep and hide the tool.
+func leftoverKeepsRemoteHostClassification(result intent.ClassificationResult) bool {
+	return !result.Degraded && classificationHasLabel(result, intent.LabelSSH) && result.Confidence >= intent.EmbeddingLookupMinScore
+}
+
 func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
+	if loopContextHasRoutingMissFallback(ctx) {
+		// Leftover still carries the turn's UIC result. LabelSSH is a managed
+		// family, so treating leftover as "managed, skip the name-router"
+		// would leave an empty surface after the unbound miss. Vision and
+		// classifier protocol failures stay blocked.
+		return loopContextIsVisionFallthrough(ctx) || loopContextHasClassificationProtocolFailure(ctx)
+	}
 	return loopContextIsSemanticManaged(ctx) || loopContextIsVisionFallthrough(ctx) || loopContextHasClassificationProtocolFailure(ctx)
 }
 
@@ -2477,6 +2500,14 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// without bytes is not this fact. A confident primary screenshot still
 	// plans capture.
 	if semanticHostStagedImageUnderstand(userText, attachments, classification) {
+		return nil, false, nil
+	}
+	// Managed SSH is the bound-session adapter (command only). A new-host
+	// connect/exec request cannot carry host/password on that surface, so a
+	// declared SSH turn (primary or secondary) misses to leftover where the
+	// builtin ssh tool lives. Planning the other family first HostRejects
+	// the whole turn as unmet.
+	if classificationHasLabel(classification, intent.LabelSSH) && !semanticTrustedSSHPublished(h) {
 		return nil, false, nil
 	}
 	if !imSemanticIntentIsManagedForLoop(semanticWorkflowAgentLoop(requestCtx), classification) {

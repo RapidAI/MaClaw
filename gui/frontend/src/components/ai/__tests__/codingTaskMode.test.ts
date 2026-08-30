@@ -3,6 +3,8 @@ import {
     agentModeFromTaskTags,
     cloudWorkspaceIdFromTags,
     cloudWorkspaceIdFromPath,
+    cloudWorkspaceIdFromTaskFields,
+    collapseCloudWorkspaceTasks,
     cloudWorkspaceNameFromEntitlement,
     __resetCloudWorkspaceDisplayNamesForTests,
     lookupCloudWorkspaceDisplayName,
@@ -35,6 +37,29 @@ describe("codingTaskMode", () => {
         expect(cloudWorkspaceIdFromTags(["cloud_workspace:cws_demo", "coding_dev"])).toBe("cws_demo");
         expect(cloudWorkspaceIdFromTags(["coding_dev"])).toBe("");
         expect(cloudWorkspaceIdFromTags([])).toBe("");
+    });
+
+    it("prefers working_dir over accumulated cloud workspace tags", () => {
+        expect(cloudWorkspaceIdFromTaskFields({
+            tags: ["cloud_workspace:cws_a", "cloud_workspace:cws_b"],
+            project_path: "D:/tasks/legacy",
+            working_dir: "C:/data/cloud-workspaces/tenant_default/cws_b",
+        })).toBe("cws_b");
+        expect(cloudWorkspaceIdFromTaskFields({
+            tags: ["cloud_workspace:cws_a"],
+            project_path: "D:/tasks/tagged",
+        })).toBe("cws_a");
+    });
+
+    it("collapses duplicate cloud workspace rows to the named task", () => {
+        const collapsed = collapseCloudWorkspaceTasks([
+            { name: "新建云端工作区任务", tags: ["cloud_workspace:cws_x"], project_path: "D:/tasks/generic" },
+            { name: "长江学者申请", tags: ["cloud_workspace:cws_x"], project_path: "D:/tasks/named" },
+            { name: "local", project_path: "D:/tasks/local" },
+        ]);
+        expect(collapsed).toHaveLength(2);
+        expect(collapsed[0].project_path).toBe("D:/tasks/named");
+        expect(collapsed[1].project_path).toBe("D:/tasks/local");
     });
 
     it("detects local cache paths of cloud workspaces", () => {

@@ -379,14 +379,54 @@ func TestIMSemanticDelegateRequiresChildReceipt(t *testing.T) {
 	}
 }
 
+func TestIMSemanticSSHUnboundMissesToLeftover(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSSH)}
+	registerBuiltinTools(h.registry, h)
+	_, _, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "do it", "lansenger", "root-ssh-unbound", "turn-ssh-unbound",
+		&intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: .98, ToolNames: []string{"ssh"}},
+	)
+	if handled || err != nil {
+		t.Fatalf("unbound ssh must miss to leftover handled=%v err=%v", handled, err)
+	}
+}
+
+func TestIMSemanticMixedSSHUnboundMissesToLeftover(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSSH)}
+	registerBuiltinTools(h.registry, h)
+	_, _, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "do it", "lansenger", "root-ssh-mixed-unbound", "turn-ssh-mixed-unbound",
+		&intent.ClassificationResult{Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelSSH}, Confidence: .98},
+	)
+	if handled || err != nil {
+		t.Fatalf("mixed unbound ssh must miss to leftover handled=%v err=%v", handled, err)
+	}
+}
+
+func TestIMSemanticSSHUsesTrustedAdapterWhenBound(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSSH)}
+	registerBuiltinTools(h.registry, h)
+	h.semanticTrustedSSH = func(userID, command string) (string, error) { return "remote:" + command, nil }
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "do it", "lansenger", "root-ssh-bound", "turn-ssh-bound",
+		&intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: .98, ToolNames: []string{"ssh"}},
+	)
+	if err != nil || !handled || surface == nil || len(defs) < 1 {
+		t.Fatalf("bound ssh handled=%v err=%v", handled, err)
+	}
+	if surface.plan.Selections[0].AdapterName != semanticTrustedSSHAdapter {
+		t.Fatalf("bound ssh adapter=%q, want %s", surface.plan.Selections[0].AdapterName, semanticTrustedSSHAdapter)
+	}
+	if name := extractToolName(defs[0]); name != "ssh" {
+		t.Fatalf("bound ssh visible name=%q, want ssh", name)
+	}
+}
+
 func TestIMSemanticSSHBrowserCURequireBoundRuntime(t *testing.T) {
 	for _, tc := range []struct {
 		label intent.IntentLabel
 		hook  func(*IMMessageHandler)
 	}{
-		{intent.LabelSSH, func(h *IMMessageHandler) {
-			h.semanticTrustedSSH = func(userID, command string) (string, error) { return "remote:" + command, nil }
-		}},
 		{intent.LabelBrowser, func(h *IMMessageHandler) {
 			h.semanticTrustedBrowser = func(userID, action, url string) (string, error) { return "navigated " + url, nil }
 		}},

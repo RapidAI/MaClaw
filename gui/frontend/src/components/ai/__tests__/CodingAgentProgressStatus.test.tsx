@@ -1334,6 +1334,29 @@ describe('CodingAgentProgressStatus', () => {
         expect(screen.getByTestId('coding-agent-assistant-note').textContent).toContain('I found the narrowest safe edit.');
     });
 
+    it('hides leaked reasoning-lane assistant notes instead of rendering tofu squares', () => {
+        const payload = JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            event: 'assistant_note',
+            phase: 'running',
+            task_id: 'T1',
+            title: 'Fix parser',
+            detail: '\x01The\x01 user\x01 wants me to continue',
+        });
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg(`Coding Agent Event: ${payload}`)],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+
+        expect(screen.queryByTestId('coding-agent-assistant-note')).toBeNull();
+    });
+
     it('maps tool names to Codex trail labels and hides audit rollups from chat', () => {
         expect(codingAgentToolDisplayName('read_file')).toBe('Read');
         expect(codingAgentToolDisplayName('ssh_read_file')).toBe('Read');
@@ -1346,6 +1369,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'tool_finished', detail: 'bash' })).toBe(false);
         expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'assistant_note', detail: 'Compiling the new hello world.' })).toBe(false);
         expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'assistant_note', detail: '## 执行报告' })).toBe(true);
+        expect(isCodingAgentChatHiddenEvent({ phase: 'running', title: '', event: 'assistant_note', detail: '\x01The\x01 user\x01 wants' })).toBe(true);
         expect(isCodingAgentPlainTrailEvent({ phase: 'running', title: '', event: 'tool_finished', detail: 'write_file' })).toBe(true);
         expect(isCodingAgentPlainTrailEvent({ phase: 'result', title: '', event: 'quality_summary' })).toBe(false);
         expect(codingAgentMessagesHavePlainTrail([])).toBe(false);

@@ -177,8 +177,8 @@ func TestSemanticS2b2FamiliesFailClosedOnMixedUnmappedLabels(t *testing.T) {
 
 // TestSemanticS2b2CatalogOnlyFamiliesStayUnmanaged pins the remaining
 // catalog-only capabilities: they have no intent rule. schedule_manage is
-// now mapped to schedule.administer.local; mixed file_read+ssh still
-// fail-closes on the unmapped ssh label.
+// now mapped to schedule.administer.local. Mixed file_read+ssh without a
+// bound session misses to leftover so builtin ssh can run.
 func TestSemanticS2b2CatalogOnlyFamiliesStayUnmanaged(t *testing.T) {
 	for _, capability := range semanticS2b2CatalogOnlyCapabilities() {
 		for label, templates := range imSemanticIntentRuleSet {
@@ -199,8 +199,8 @@ func TestSemanticS2b2CatalogOnlyFamiliesStayUnmanaged(t *testing.T) {
 		Primary: intent.LabelFileRead, Secondary: []intent.IntentLabel{intent.LabelSSH}, Confidence: .98,
 	}
 	prepared, handled, err := h.semanticPlanForTurnWithClassification("user", "read a file and restart the server", "lansenger", "root", "turn", mixed)
-	if !handled || err == nil || !strings.Contains(err.Error(), "unmet") {
-		t.Fatalf("file_read+ssh without ssh runtime must be unmet, prepared=%#v handled=%v err=%v", prepared, handled, err)
+	if handled || prepared != nil || err != nil {
+		t.Fatalf("file_read+ssh without ssh runtime must miss to leftover handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
 }
 

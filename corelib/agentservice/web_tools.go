@@ -31,7 +31,11 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Search \"%s\" — %d results:\n\n", query, len(results)))
-	sb.WriteString("Use these search results as web evidence. Cite title/URL/snippet, and call web_fetch on a result URL before making precise claims that require page-level verification.\n\n")
+	sb.WriteString("Use these search results as web evidence. Cite title/URL/snippet, and call web_fetch on a result URL before making precise claims that require page-level verification.\n")
+	if response.Degraded {
+		sb.WriteString("Some search engines were unavailable; results include a browser fallback. If the target site is missing, open it with the browser tool.\n")
+	}
+	sb.WriteString("\n")
 	for i, r := range results {
 		sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.URL))
 		if r.Snippet != "" {

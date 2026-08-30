@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestDoSimpleLLMRequest_OpenAISSEFallback(t *testing.T) {
@@ -343,5 +344,66 @@ func TestDoSimpleLLMRequest_StopsWaitingWhenTimeoutExpires(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 180*time.Millisecond {
 		t.Fatalf("elapsed = %s, want backoff wait to stop promptly", elapsed)
+	}
+}
+
+func TestApplyRefreshedLLMAuth(t *testing.T) {
+	dst := corelib.MaclawLLMConfig{Key: "old", AuthType: "oauth", Model: "grok-4.6"}
+	got := applyRefreshedLLMAuth(dst, corelib.MaclawLLMConfig{Key: "new", AuthType: "oauth"})
+	if got.Key != "new" || got.Model != "grok-4.6" {
+		t.Fatalf("got %+v", got)
+	}
+	got = applyRefreshedLLMAuth(dst, corelib.MaclawLLMConfig{})
+	if got.Key != "old" {
+		t.Fatalf("empty refresh must keep key, got %q", got.Key)
+	}
+}
+
+func TestShouldRetrySimpleLLMError_OAuthTokenValidation(t *testing.T) {
+	oauthErr := &llm.HTTPStatusError{
+		StatusCode: http.StatusForbidden,
+		Body:       []byte(`{"error":{"message":"The OAuth2 access token could not be validated."}}`),
+	}
+	if !shouldRetrySimpleLLMError(oauthErr) {
+		t.Fatal("OAuth token-validation 403 should be retried")
+	}
+	if shouldRetrySimpleLLMError(&llm.HTTPStatusError{
+		StatusCode: http.StatusForbidden,
+		Body:       []byte(`{"code":"LLM_MODEL_FORBIDDEN","message":"no active model service entitlement"}`),
+	}) {
+		t.Fatal("generic model-forbidden 403 should not be retried")
+	}
+	if shouldRetrySimpleLLMError(errors.New("OpenAI 认证失败 (HTTP 401)")) {
+		t.Fatal("generic 401 should not be retried")
+	}
+}
+
+func TestDoSimpleLLMRequest_RetriesOAuthTokenValidation403(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := attempts.Add(1)
+		if current < 3 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"message":"The OAuth2 access token could not be validated."}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model"}
+	resp, err := DoSimpleLLMRequest(cfg, []interface{}{
+		map[string]interface{}{"role": "user", "content": "hi"},
+	}, srv.Client(), 10*time.Second)
+	if err != nil {
+		t.Fatalf("DoSimpleLLMRequest returned error: %v", err)
+	}
+	if resp.Content != "recovered" {
+		t.Fatalf("content = %q, want recovered", resp.Content)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
 	}
 }

@@ -1096,6 +1096,47 @@ func TestSkillCommitter_RecoveryNeverRollsBackCommittedCleanupPending(t *testing
 	}
 }
 
+func TestCompensationRecoveryUsesDurableFinalAuditMarker(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	created := filepath.Join(base, "skills", "audit-marker")
+	if err := os.MkdirAll(created, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	requestID := "req-audit-marker"
+	record := NewEvolutionCompensationRecord(requestID, "audit-marker", "legacy_gui_skill_install", "", nil, false, nil, "post_commit_state_persist_failed")
+	record.FinalAuditKind = KindFromEventName("skill:legacy_install_committed")
+	record.TransactionState = "prepared" // simulate a crash before queue state replacement
+	record.CleanupStatus = "pending"
+	record.SetCreatedDirectories([]string{created})
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordEvolutionEventStrict("skill:legacy_install_committed", map[string]string{
+		"skill": "audit-marker", "action": "legacy_gui_skill_install", "decision": "applied", "request_id": requestID,
+		"schema_version": "2",
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewEvolutionPipeline()
+	recovered, pending, err := p.RecoverPendingCompensations()
+	if err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	if _, statErr := os.Stat(created); statErr != nil {
+		t.Fatalf("committed created directory was removed after audit-marker recovery: %v", statErr)
+	}
+	if summaries, readErr := ListEvolutionCompensationSummaries(); readErr != nil {
+		t.Fatal(readErr)
+	} else if len(summaries) != 0 {
+		t.Fatalf("compensation queue after audit-marker recovery = %#v, want empty", summaries)
+	}
+}
+
 func TestRecoverPendingCompensationsScopedByServiceRoot(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()
@@ -1148,6 +1189,52 @@ func TestRecoverPendingCompensationsScopedByServiceRoot(t *testing.T) {
 	}
 }
 
+func TestRecoverPendingCompensationsForActionPrefixAndSkillDoesNotClaimSibling(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	makePending := func(name string) string {
+		dir := filepath.Join(base, "skills", name)
+		backup := dir + ".prev"
+		if err := os.MkdirAll(backup, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: "+name+"\ndescription: restored\nsteps: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		record := NewEvolutionCompensationRecord("legacy-"+name, name, "legacy_gui_skill_install", "", nil, false, nil, "install interrupted")
+		record.TransactionState = "audit_pending"
+		record.CleanupStatus = "pending"
+		record.SetDirectoryMoves([]EvolutionDirectoryMove{{OriginalPath: dir, BackupPath: backup, HadPrevious: true, Moved: true, Published: true}})
+		if err := PersistEvolutionCompensation(record); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	targetDir := makePending("target")
+	siblingDir := makePending("sibling")
+
+	recovered, pending, err := RecoverPendingEvolutionCompensationsForActionPrefixAndSkill("legacy_gui_skill_", "target", nil, nil)
+	if err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("filtered recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "skill.yaml")); err != nil {
+		t.Fatalf("target compensation was not recovered: %v", err)
+	}
+	if _, err := os.Stat(siblingDir + ".prev"); err != nil {
+		t.Fatalf("sibling compensation was claimed or removed: %v", err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil {
+		t.Fatalf("read remaining compensations: %v", err)
+	}
+	if len(records) != 1 || records[0].Skill != "sibling" {
+		t.Fatalf("remaining compensations = %#v, want only sibling", records)
+	}
+}
+
 func TestRecoverPendingCompensationsScopeRejectsOutOfRootPaths(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()
@@ -1185,6 +1272,45 @@ func TestRecoverPendingCompensationsScopeRejectsOutOfRootPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(original, "skill.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("out-of-scope original was unexpectedly restored: %v", err)
+	}
+}
+
+func TestRecoverPendingCompensationsWithExternalSnapshotFailsClosedWithoutRestorer(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	scope := filepath.Join(base, "service")
+	original := filepath.Join(scope, "skills", "external")
+	backup := original + ".prev"
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: external\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("external-no-restorer", "external", "agentservice_install", "", nil, false, nil, "external state pending")
+	record.TransactionState = "audit_pending"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(scope)
+	record.SetDirectoryMoves([]EvolutionDirectoryMove{{OriginalPath: original, BackupPath: backup, HadPrevious: true, Moved: true, Published: true}})
+	record.SetExternalSnapshot("opaque_external_state", "{}")
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	recovered, pending, err := RecoverPendingEvolutionCompensationsForActionPrefixAndScope("agentservice_install", scope, func([]corelib.NLSkillEntry) error { return nil }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 || pending != 1 {
+		t.Fatalf("recovery without external restorer = recovered:%d pending:%d", recovered, pending)
+	}
+	if _, err := os.Stat(filepath.Join(backup, "skill.yaml")); err != nil {
+		t.Fatalf("external snapshot without restorer was allowed to mutate directory: %v", err)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 1 {
+		t.Fatalf("pending external compensation was not retained: records=%#v err=%v", records, err)
 	}
 }
 

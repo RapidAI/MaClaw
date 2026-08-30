@@ -176,6 +176,9 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 	}
 	record := newEvolutionCompensationRecord(requestID, skillName, action, yamlPath, yamlBackup, yamlExists, rollbackSkills, "skill_commit_pending")
 	record.TransactionState = "prepared"
+	if strings.TrimSpace(event) != "" {
+		record.FinalAuditKind = KindFromEventName(event)
+	}
 	if c.CompensationMutator != nil {
 		c.CompensationMutator(&record)
 	}

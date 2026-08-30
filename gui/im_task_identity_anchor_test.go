@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -326,5 +327,217 @@ func TestTaskIdentityAnchorPPTCharterIsInjectedWithoutPersonSubject(t *testing.T
 	}
 	if !anchorSeen {
 		t.Fatal("PPT charter must be injected even without a person-name subject")
+	}
+}
+
+func TestTaskIdentityAnchorIgnoresCasualChat(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:casual"
+	h.updateTaskIdentityAnchorFromUserText(owner, "你好")
+	h.updateTaskIdentityAnchorFromUserText(owner, "南京天气，输出格式化pdf报告")
+	if _, ok := h.taskIdentityAnchorForUser(owner); ok {
+		t.Fatal("casual chat must not install an enforced task charter")
+	}
+	if reason := taskAnchorDeliverableWriteBlockReason(&taskIdentityAnchor{OriginalRequest: "南京天气，输出格式化pdf报告"}, "office", map[string]interface{}{
+		"action":    "write_pptx",
+		"file_path": "ai-math-foundations.pptx",
+	}); reason != "" {
+		t.Fatalf("unenforced weather charter must not gate PPT writes: %s", reason)
+	}
+}
+
+func TestTaskIdentityAnchorRecoversFromMultimodalHistory(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-ppt-multimodal"
+	original := "码卡龙平台仓库： github.com/rapidia/maclaw 编写一个介绍AI Native组织的驱动系统的介绍PPT"
+	h.memory.Save(owner, []agent.ConversationEntry{{
+		Role: "user",
+		Content: []interface{}{
+			map[string]interface{}{"type": "text", "text": original},
+		},
+		Timestamp: 50,
+	}})
+	anchor, ok := h.taskIdentityAnchorForTurn(owner, "继续改进ppt呀")
+	if !ok || !strings.Contains(anchor.OriginalRequest, "码卡龙") {
+		t.Fatalf("multimodal original request was not recovered: %#v", anchor)
+	}
+}
+
+func TestTaskIdentityAnchorPrefersEarliestTimestampedRequest(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-ppt-ts"
+	h.memory.Save(owner, []agent.ConversationEntry{
+		{Role: "user", Content: "编写人工智能数学基础讲义PPT，图文公式并茂", Timestamp: 200},
+		{Role: "user", Content: "码卡龙平台仓库： github.com/rapidia/maclaw 编写介绍AI Native组织的PPT", Timestamp: 100},
+	})
+	anchor, ok := h.taskIdentityAnchorForTurn(owner, "继续改进ppt呀")
+	if !ok || !strings.Contains(anchor.OriginalRequest, "码卡龙") {
+		t.Fatalf("later unchartered follow-up won the charter: %#v", anchor)
+	}
+}
+
+func TestRememberTaskAnchorDeliverableSkipsContradiction(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-ppt-record"
+	original := "码卡龙平台仓库： github.com/rapidia/maclaw 编写一个介绍AI Native组织的驱动系统的介绍PPT"
+	h.updateTaskIdentityAnchorFromUserText(owner, original)
+	anchor, ok := h.taskIdentityAnchorForUser(owner)
+	if !ok {
+		t.Fatal("expected charter")
+	}
+	h.rememberTaskAnchorDeliverable(owner, &anchor, "office", map[string]interface{}{
+		"action": "write_pptx", "file_path": `C:\ws\ai-math-foundations.pptx`,
+	})
+	if len(anchor.PrimaryFiles) != 0 {
+		t.Fatalf("contradicting write mutated snapshot: %#v", anchor.PrimaryFiles)
+	}
+	got, _ := h.taskIdentityAnchorForUser(owner)
+	if len(got.PrimaryFiles) != 0 {
+		t.Fatalf("contradicting write persisted: %#v", got.PrimaryFiles)
+	}
+	h.rememberTaskAnchorDeliverable(owner, &anchor, "office", map[string]interface{}{
+		"action": "write_pptx", "file_path": `C:\ws\maclaw-ai-native-org.pptx`,
+	})
+	if len(anchor.PrimaryFiles) != 1 || filepath.Base(anchor.PrimaryFiles[0]) != "maclaw-ai-native-org.pptx" {
+		t.Fatalf("primary snapshot = %#v", anchor.PrimaryFiles)
+	}
+	prompt := taskIdentityAnchorPrompt(anchor)
+	if strings.Contains(prompt, `C:\ws\`) {
+		t.Fatalf("prompt leaked full path:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "maclaw-ai-native-org.pptx") {
+		t.Fatalf("prompt missing basename:\n%s", prompt)
+	}
+}
+
+func TestTaskIdentityAnchorChineseTopicBlocksEnglishMathFilename(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-zh"
+	h.updateTaskIdentityAnchorFromUserText(owner, "编写一个介绍码卡龙企业级Agent平台的演讲PPT")
+	anchor, ok := h.taskIdentityAnchorForUser(owner)
+	if !ok {
+		t.Fatal("expected Chinese PPT charter")
+	}
+	mathArgs := map[string]interface{}{"action": "write_pptx", "file_path": `C:\ws\ai-math-foundations.pptx`}
+	reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", mathArgs)
+	if reason == "" {
+		t.Fatal("Chinese MaClaw charter must still block an English math lecture filename")
+	}
+	if strings.Contains(reason, `C:\ws\`) {
+		t.Fatalf("block reason leaked a full path: %s", reason)
+	}
+	if !strings.Contains(reason, "ai-math-foundations.pptx") {
+		t.Fatalf("block reason should name the rejected file: %s", reason)
+	}
+	maclawArgs := map[string]interface{}{"action": "write_pptx", "file_path": "maclaw-ai-native-org.pptx"}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", maclawArgs); reason != "" {
+		t.Fatalf("aliased MaClaw filename blocked: %s", reason)
+	}
+	genericArgs := map[string]interface{}{"action": "write_pptx", "file_path": "presentation.pptx"}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", genericArgs); reason != "" {
+		t.Fatalf("generic first PPT write blocked: %s", reason)
+	}
+}
+
+func TestTaskIdentityAnchorTopicSignalIsNotContinuation(t *testing.T) {
+	if isTaskAnchorContinuationText("ppt需要做成码卡龙介绍，专业风格") {
+		t.Fatal("a named-topic PPT request must not be treated as a continuation")
+	}
+	if !isTaskAnchorContinuationText("忘掉前面的错误提示。ppt需要专业风格，现在太朴素了。") {
+		t.Fatal("style-only follow-up should stay a continuation")
+	}
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-named"
+	h.updateTaskIdentityAnchorFromUserText(owner, "ppt需要做成码卡龙介绍，专业风格")
+	anchor, ok := h.taskIdentityAnchorForUser(owner)
+	if !ok || !strings.Contains(anchor.OriginalRequest, "码卡龙") {
+		t.Fatalf("named-topic request should become the charter: %#v", anchor)
+	}
+}
+
+func TestTaskIdentityAnchorIgnoresHomeDirectoryMaclawSegment(t *testing.T) {
+	anchor := taskIdentityAnchor{
+		Subject:         "马勇",
+		OriginalRequest: "撰写马勇的科研简介",
+		SourcePaths:     []string{`C:\Users\ma139\.maclaw\data\cloud-workspaces\cws_x\resume.pdf`},
+	}
+	reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", map[string]interface{}{
+		"action": "write_pptx", "file_path": "maclaw-ai-native-org.pptx",
+	})
+	if reason == "" {
+		t.Fatal("a resume task must not inherit MaClaw identity from the .maclaw data directory")
+	}
+}
+
+func TestTaskIdentityAnchorSpeechWithoutPPTIsNotWorkKind(t *testing.T) {
+	if got := extractTaskWorkKind("长江学者申请后的学术演讲安排"); got != "" {
+		t.Fatalf("bare 演讲 must not classify as %q", got)
+	}
+	if got := extractTaskWorkKind("编写一个介绍码卡龙企业级Agent平台的演讲PPT"); got != "ppt" {
+		t.Fatalf("演讲PPT = %q, want ppt", got)
+	}
+}
+
+func TestTaskIdentityAnchorGenericVersionedFilenameAllowed(t *testing.T) {
+	anchor := taskIdentityAnchor{OriginalRequest: "编写一个介绍码卡龙企业级Agent平台的演讲PPT", WorkKind: "ppt"}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", map[string]interface{}{
+		"action": "write_pptx", "file_path": "presentation-v2.pptx",
+	}); reason != "" {
+		t.Fatalf("versioned generic PPT blocked: %s", reason)
+	}
+}
+
+func TestTaskIdentityAnchorBookMentionIsNotDocumentCharter(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:books"
+	h.updateTaskIdentityAnchorFromUserText(owner, "帮我找几本机器学习书籍")
+	if _, ok := h.taskIdentityAnchorForUser(owner); ok {
+		t.Fatal("a book-shopping request must not install a document charter")
+	}
+	h.updateTaskIdentityAnchorFromUserText(owner, "把讲义拍个照发给我")
+	if _, ok := h.taskIdentityAnchorForUser(owner); ok {
+		t.Fatal("photographing lecture notes must not install a document charter")
+	}
+	if got := extractTaskWorkKind("使用book-pdf skill 编写人工智能数学入门"); got != "document" {
+		t.Fatalf("book-pdf handbook request = %q, want document", got)
+	}
+}
+
+func TestTaskIdentityAnchorPrefersActiveBranchOverEarlierInactiveTopic(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-active-branch"
+	math := "编写人工智能数学基础讲义PPT，图文公式并茂"
+	maclaw := "码卡龙平台仓库： github.com/rapidia/maclaw 编写介绍AI Native组织的PPT"
+	h.memory.Save(owner, []agent.ConversationEntry{
+		{Role: "user", Content: math, ID: "math", Timestamp: 50},
+		{Role: "assistant", Content: "ok", ID: "math-a", ParentID: "math", Timestamp: 51},
+		{Role: "user", Content: maclaw, ID: "maclaw", Timestamp: 100},
+		{Role: "assistant", Content: "ok", ID: "maclaw-a", ParentID: "maclaw", Timestamp: 101},
+	})
+	anchor, ok := h.taskIdentityAnchorForTurn(owner, "继续改进ppt呀")
+	if !ok || !strings.Contains(anchor.OriginalRequest, "码卡龙") {
+		t.Fatalf("active-branch MaClaw request lost to an earlier inactive topic: %#v", anchor)
+	}
+}
+
+func TestTaskIdentityAnchorFollowUpDoesNotRewriteUnchangedCharter(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-stable"
+	original := "码卡龙平台仓库： github.com/rapidia/maclaw 编写一个介绍AI Native组织的驱动系统的介绍PPT"
+	h.updateTaskIdentityAnchorFromUserText(owner, original)
+	first, ok := h.taskIdentityAnchorForUser(owner)
+	if !ok {
+		t.Fatal("expected charter")
+	}
+	h.updateTaskIdentityAnchorFromUserText(owner, "继续改进ppt呀")
+	second, ok := h.taskIdentityAnchorForUser(owner)
+	if !ok {
+		t.Fatal("expected charter after follow-up")
+	}
+	if !first.UpdatedAt.Equal(second.UpdatedAt) {
+		t.Fatalf("unchanged follow-up rewrote the charter timestamp: %v vs %v", first.UpdatedAt, second.UpdatedAt)
+	}
+	if second.OriginalRequest != first.OriginalRequest {
+		t.Fatalf("follow-up changed original request: %#v", second)
 	}
 }

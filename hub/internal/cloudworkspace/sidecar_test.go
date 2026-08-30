@@ -111,3 +111,33 @@ func TestSessionSidecarWriteMergesExistingHistory(t *testing.T) {
 		t.Fatalf("merged=%s err=%v", got, err)
 	}
 }
+
+func TestSessionSidecarClearFenceDoesNotResurrectHistory(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	root := t.TempDir()
+	bs := &BlobStore{Root: root, KeyDir: filepath.Join(root, "keys"), DB: st.db}
+	ctx := context.Background()
+	first, _ := json.Marshal(map[string]any{"conversation": []any{map[string]any{"id": "old"}}, "input_text": "draft"})
+	cleared, _ := json.Marshal(map[string]any{"conversation": []any{map[string]any{"id": "new"}}, "cleared_at": int64(100)})
+	if err := bs.PutSidecar(ctx, "t1", "u1", "cws_one", SidecarSession, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := bs.PutSidecar(ctx, "t1", "u1", "cws_one", SidecarSession, cleared); err != nil {
+		t.Fatal(err)
+	}
+	got, err := bs.GetSidecar(ctx, "t1", "u1", "cws_one", SidecarSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Conversation []map[string]any `json:"conversation"`
+		InputText    string           `json:"input_text"`
+		ClearedAt    int64            `json:"cleared_at"`
+	}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Conversation) != 1 || payload.Conversation[0]["id"] != "new" || payload.InputText != "" || payload.ClearedAt != 100 {
+		t.Fatalf("clear fence lost: %s", got)
+	}
+}

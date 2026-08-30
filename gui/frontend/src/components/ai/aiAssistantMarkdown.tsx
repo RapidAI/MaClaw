@@ -14,6 +14,7 @@ import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } fro
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { sanitizeVisibleChatText } from "./visibleChatText";
 import { stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import {
     prepareChatBodyForDisplay,
@@ -1608,14 +1609,25 @@ function reasoningPreviewText(text: string, maxLength = 96): string | undefined 
     return compact.length > maxLength ? `${compact.slice(0, maxLength - 1).trimEnd()}…` : compact;
 }
 
+/** 1-based thought index in an interleaved coding timeline, or undefined. */
+export function codingTimelineThoughtStep(timeline: Array<{ kind: string }>, index: number): number | undefined {
+    if (timeline[index]?.kind !== "thinking") return undefined;
+    let step = 0;
+    for (let i = 0; i <= index; i++) {
+        if (timeline[i]?.kind === "thinking") step += 1;
+    }
+    return step;
+}
+
 /** One collapsed reasoning node at its actual position in a coding turn. */
 export function renderCodingAgentThinkingTimelineItem(
     item: CodingAgentTimelineItem,
     t: Theme,
     lang: string,
+    step?: number,
 ): React.ReactNode {
     const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(
-        stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(item.content || "")),
+        stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(item.content || ""))),
     ));
     if (!displayReasoning.trim()) return null;
     // Keep short thoughts uncluttered (and avoid repeating the body text in
@@ -1626,7 +1638,7 @@ export function renderCodingAgentThinkingTimelineItem(
             key={item.id}
             defaultOpen={false}
             label={lang === "en" ? "Thought" : "思考过程"}
-            step={item.sequence}
+            step={step}
             lang={lang}
             preview={preview}
             theme={t}
@@ -1796,7 +1808,7 @@ export function renderMessage(
                             const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
                             const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
                             // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
-                            const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(msg.reasoning || ""))));
+                            const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(msg.reasoning || "")))));
                             if (!displayReasoning.trim()) return null;
                             return (
                                 <AssistantReasoningPanel

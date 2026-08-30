@@ -53,6 +53,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // CodingSubAgent executes a single coding task in a clean context.
@@ -1028,10 +1029,6 @@ type codingSubAgentCallbacks struct {
 
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
-
-	noteMu     sync.Mutex
-	noteBuf    strings.Builder
-	lastNoteAt time.Time
 }
 
 func newCodingSubAgentCallbacks(s *CodingSubAgent, task *TaskItem, reqCtx, designCtx string, prevOutputs []string) *codingSubAgentCallbacks {
@@ -1076,6 +1073,17 @@ func (c *codingSubAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	// system prompt's KV state, reducing latency and cost by ~90% for iters 2-80.
 	cfg.EnablePromptCache = true
 	return cfg
+}
+
+func (c *codingSubAgentCallbacks) RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool) {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	prev := c.subagent.cfg
+	next := c.subagent.handler.refreshLLMConfigAfterTokenErrorCtx(ctx, c.subagent.cfg)
+	c.subagent.cfg = applyLLMAuthKey(c.subagent.cfg, next)
+	cfg := c.GetLLMConfig()
+	return cfg, llmAuthKeyRotated(prev, cfg)
 }
 
 // RouteTurn forces the reasoning path for coding subagent loops when a
@@ -1483,11 +1491,17 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	horizon := c.subagent != nil && c.subagent.horizonPosture
 	if horizon {
 		tools := buildHorizonEpisodeTools(c.subagent.handler, c.subagent.horizonToolSurface)
+		if c.task != nil && !codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
+			tools = omitCodingToolDefinition(tools, reportLocalizationToolName)
+		}
 		c.logCacheEvent("tools", "build-horizon", "tool_count", len(tools))
 		return cloneCodingSubAgentToolDefinitions(tools)
 	}
 	tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
-	tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
+	tools = append(tools, buildCodeNavigationToolDefinition())
+	if c.task == nil || codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
+		tools = append(tools, buildReportLocalizationToolDefinition())
+	}
 	if c.task != nil && codingTaskLooksInquiry(c.task) {
 		tools = filterCodingInquiryTools(tools)
 		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
@@ -1812,6 +1826,23 @@ func cloneCodingSubAgentToolDefinitions(tools []map[string]interface{}) []map[st
 	out := make([]map[string]interface{}, len(tools))
 	for i, tool := range tools {
 		out[i] = agent.CloneToolDefinitionMap(tool)
+	}
+	return out
+}
+
+func omitCodingToolDefinition(tools []map[string]interface{}, name string) []map[string]interface{} {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" || len(tools) == 0 {
+		return tools
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		got, _ := fn["name"].(string)
+		if strings.ToLower(strings.TrimSpace(got)) == name {
+			continue
+		}
+		out = append(out, tool)
 	}
 	return out
 }
@@ -13300,7 +13331,6 @@ func (c *codingSubAgentCallbacks) OnToken(delta string) {
 	if c != nil && c.subagent != nil && c.subagent.onToken != nil {
 		c.subagent.onToken(delta)
 	}
-	c.emitAssistantNoteDelta(delta)
 }
 
 func (c *codingSubAgentCallbacks) OnProgress(text string) {
@@ -13314,65 +13344,12 @@ func (c *codingSubAgentCallbacks) OnToolCall(name string) {
 	// executeToolWithOutcome, which the UI can compact into one live status row.
 }
 
-func (c *codingSubAgentCallbacks) emitAssistantNoteDelta(delta string) {
-	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
-		return
-	}
-	if strings.TrimSpace(delta) == "" {
-		return
-	}
-	c.noteMu.Lock()
-	c.noteBuf.WriteString(delta)
-	text := strings.TrimSpace(c.noteBuf.String())
-	ready := codingAssistantNoteReady(text, delta)
-	if !ready || (!c.lastNoteAt.IsZero() && time.Since(c.lastNoteAt) < 800*time.Millisecond) {
-		c.noteMu.Unlock()
-		return
-	}
-	text = compactCodingAssistantNote(text)
-	if text == "" {
-		c.noteBuf.Reset()
-		c.noteMu.Unlock()
-		return
-	}
-	c.noteBuf.Reset()
-	c.lastNoteAt = time.Now()
-	title := ""
-	if c.task != nil {
-		title = compactSubAgentTaskTitle(c.task.Title)
-	}
-	c.noteMu.Unlock()
-	c.emitAssistantNoteEvent(title, text)
-}
-
-func (c *codingSubAgentCallbacks) emitAssistantNoteEvent(title, text string) {
-	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
-		return
-	}
-	text = compactCodingAssistantNote(text)
-	if text == "" {
-		return
-	}
-	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
-	event.Event = codingAgentEventKindAssistantNote.String()
-	event.Detail = text
-	event.Summary = text
-	emitCodingAgentEvent(c.subagent.onProgress, event)
-}
-
-func codingAssistantNoteReady(text, delta string) bool {
-	if utf8.RuneCountInString(text) >= 80 {
-		return true
-	}
-	if utf8.RuneCountInString(text) < 12 {
-		return false
-	}
-	return strings.ContainsAny(delta, "\n。.!?")
-}
-
 func compactCodingAssistantNote(text string) string {
-	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
 	if codingAssistantNoteLooksInternal(text) {
+		return ""
+	}
+	text = strings.Join(strings.Fields(strings.TrimSpace(textutil.SanitizeVisibleChatText(text))), " ")
+	if text == "" || codingAssistantNoteLooksInternal(text) {
 		return ""
 	}
 	return truncateRunesForSubAgent(text, 160)
@@ -13381,6 +13358,12 @@ func compactCodingAssistantNote(text string) string {
 func codingAssistantNoteLooksInternal(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" {
+		return true
+	}
+	// Leaked reasoning-lane sentinels belong on the thinking panel, not as a
+	// truncated assistant_note. Keep this check before sanitizing so history
+	// that still stores U+0001 is hidden instead of shown as a duplicate dump.
+	if strings.ContainsRune(text, '\x01') {
 		return true
 	}
 	if strings.HasPrefix(text, "##") || strings.Contains(text, "## ") {
@@ -14688,7 +14671,7 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 	}
 	b.WriteString(`## 可用工具
 - code_navigation：优先用于符号、定义、引用、调用链与候选定位
-- report_localization：提交结构化根因证据
+- report_localization：仅 bug 修复时提交根因证据；探索/新功能不要调用
 - Glob / ripgrep / list_directory / read_file：文本定位与阅读
 - git_diff：只读 diff/status（如可用）
 `)
@@ -14698,8 +14681,8 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 	b.WriteString(`
 ## 工作规范
 	1. 先搜索再阅读关键文件
-	2. 故障定位必须输出症状、Top 候选、根因文件/符号、因果路径、复现证据、反证/排除假设、focused test，并调用 report_localization
-	3. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误和官方文档；纯仓内问题也要在 report_localization 说明为何无需联网
+	2. 仅当任务是修复已有代码的 bug 时，才调用 report_localization 提交根因证据。探索项目、补齐功能、核对 CLI 不要提交定位报告。
+	3. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误和官方文档；纯仓内 bug 才在 report_localization 说明为何无需联网
 	4. 完成后给出结构化发现：关键路径、结论、外部来源、风险/建议
 	5. 禁止 write/edit 改文件；不要改仓库状态
 `)
@@ -14726,7 +14709,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
-- 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。纯仓内逻辑问题可以不联网，但必须在 report_localization 中说明理由。report_localization 被接受后，后续同任务轮次可直接改根因文件；不要把同一份完整报告再交一遍，除非门禁明确要求重交。
+- 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。探索项目或实现新功能不要调用 report_localization。只有修复已有文件中的 bug 才提交定位报告；被接受后同任务轮次可直接改根因文件，不要把同一份完整报告再交一遍，除非门禁明确要求重交。
 - 子代理（Codex 风格）：复杂/可并行工作时用 spawn_coding_agent 派生子代理。
   - explorer：只读探查（搜索/阅读），返回结构化发现
   - worker：隔离 git worktree / 远程 isolate 实现/修复；必须声明 files 写集合；不可再嵌套 spawn

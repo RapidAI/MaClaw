@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -278,10 +279,104 @@ func TestLocalizationTriggerUsesEnglishWordBoundaries(t *testing.T) {
 	for _, text := range []string{
 		"fix parser crash", "parser regression", "request fails intermittently",
 		"compiler error in parser", "test failed on Windows", "service hangs during shutdown", "request timeout",
+		"故障定位 parser", "定位根因后修复",
 	} {
 		if !codingTaskNeedsLocalization(text) {
 			t.Fatalf("bug task %q should require localization", text)
 		}
+	}
+	for _, text := range []string{
+		"探索项目现状与 CLI 缺口",
+		"这次把定位报告的全部必填字段一次写进调用，不再只传文件名。",
+		"先定位相关路径与符号，再深入阅读关键文件",
+		"开发一个基于ClamAV引擎的C++系统病毒扫描工具",
+	} {
+		if codingTaskNeedsLocalization(text) {
+			t.Fatalf("feature/exploration text %q must not trip the bug-fix localization gate", text)
+		}
+	}
+	poisonedStep := "[Plan step T1/2] 探索项目现状与 CLI 缺口\n\n" +
+		"You are executing plan step T1/2: 探索项目现状与 CLI 缺口\n" +
+		"Focus on this step only; do not skip ahead.\n\n" +
+		"## Overall user request (context only — not a license to finish later steps)\n" +
+		"继续完成编程任务\n\n" +
+		"Previous turn summary:\n" +
+		"Prior plan step T1 (探索项目现状与 CLI 缺口) status=failed.\n" +
+		"bug localization quality gate failed: missing localization evidence"
+	if codingTaskNeedsLocalization(poisonedStep) {
+		t.Fatal("carry-over failed status must not reclassify exploration as a bug-fix")
+	}
+	crlfPoisoned := strings.ReplaceAll(poisonedStep, "\n", "\r\n")
+	crlfPoisoned = strings.ReplaceAll(crlfPoisoned, "Previous turn summary:", "PREVIOUS TURN SUMMARY:")
+	if codingTaskNeedsLocalization(crlfPoisoned) {
+		t.Fatal("carry-over header matching must be case-insensitive")
+	}
+}
+
+func TestReportLocalizationSkippedForFeatureWork(t *testing.T) {
+	remote := &remoteCodingCallbacks{task: "探索项目现状与 CLI 缺口"}
+	got := remote.executeRemoteReportLocalization(map[string]interface{}{"root_cause_file": "src/main.cpp"})
+	if !strings.Contains(got, "report_localization skipped") {
+		t.Fatalf("feature work should skip localization: %s", got)
+	}
+	if remoteCodingToolOutcome(got) != "success" {
+		t.Fatalf("skip must not look like a tool failure: %s -> %s", got, remoteCodingToolOutcome(got))
+	}
+
+	local := &codingSubAgentCallbacks{task: &TaskItem{Title: "开发一个基于ClamAV引擎的C++系统病毒扫描工具"}}
+	res := local.executeReportLocalization(map[string]interface{}{"root_cause_file": "src/main.cpp"})
+	if res.Outcome != codingToolOutcomeSuccess || !strings.Contains(res.Text, "report_localization skipped") {
+		t.Fatalf("local feature work should skip localization: %+v", res)
+	}
+
+	bug := &remoteCodingCallbacks{task: "fix parser crash"}
+	got = bug.executeRemoteReportLocalization(map[string]interface{}{"root_cause_file": "src/main.cpp"})
+	if !strings.Contains(got, "invalid localization evidence") {
+		t.Fatalf("bug-fix still needs a complete report: %s", got)
+	}
+}
+
+func TestRemoteBuildToolsOmitsLocalizationForFeatureWork(t *testing.T) {
+	hasTool := func(tools []map[string]interface{}) bool {
+		for _, def := range tools {
+			fn, _ := def["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			if name == reportLocalizationToolName {
+				return true
+			}
+		}
+		return false
+	}
+	feature := &remoteCodingCallbacks{task: "探索项目现状与 CLI 缺口"}
+	if hasTool(feature.BuildTools("")) {
+		t.Fatal("feature exploration must not list report_localization")
+	}
+	bug := &remoteCodingCallbacks{task: "fix parser crash"}
+	if !hasTool(bug.BuildTools("")) {
+		t.Fatal("bug-fix work must still list report_localization")
+	}
+	poisoned := &remoteCodingCallbacks{task: "[Plan step T1/2] 探索项目现状与 CLI 缺口\n\n" +
+		"继续完成编程任务\n\nPrevious turn summary:\n" +
+		"Prior plan step T1 status=failed.\nbug localization quality gate failed: missing localization evidence"}
+	if hasTool(poisoned.BuildTools("")) {
+		t.Fatal("failed-step carry summary must not put report_localization back on the surface")
+	}
+	if !strings.Contains(poisoned.executeRemoteReportLocalization(map[string]interface{}{"root_cause_file": "src/main.cpp"}), "report_localization skipped") {
+		t.Fatal("failed-step carry summary must skip localization reports")
+	}
+}
+
+func TestLocalizationInvalidEvidenceMessageStopsIncompleteRetry(t *testing.T) {
+	err := fmt.Errorf("missing required fields: causal_path, reproduction, supporting_evidence, research_decision, research_reason, confidence")
+	got := localizationInvalidEvidenceMessage(err)
+	if !strings.Contains(got, "invalid localization evidence: missing required fields") {
+		t.Fatalf("missing prefix: %q", got)
+	}
+	if !strings.Contains(got, "stop calling report_localization") {
+		t.Fatalf("missing non-bug guidance: %q", got)
+	}
+	if !strings.Contains(got, `"confidence":0.8`) {
+		t.Fatalf("missing example payload: %q", got)
 	}
 }
 

@@ -55,13 +55,16 @@ func NewConversationTree(entries []ConversationEntry) *ConversationTree {
 	}
 
 	// Assign IDs to entries that don't have them (legacy linear history).
+	// Entries that already have an ID and an empty parent are explicit roots
+	// and must not be chained onto the previous item.
 	var lastID string
 	for i := range entries {
 		be := entryToBranchable(entries[i])
+		hadID := be.ID != ""
 		if be.ID == "" {
 			be.ID = generateEntryID()
 		}
-		if be.ParentID == "" && i > 0 && lastID != "" {
+		if !hadID && be.ParentID == "" && i > 0 && lastID != "" {
 			be.ParentID = lastID
 		}
 		if be.Timestamp == 0 {

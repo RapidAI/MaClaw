@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     assistantMessageHasVisibleBody,
     buildAssistantReplyCopyText,
+    codingTimelineThoughtStep,
     copyTextToClipboard,
     renderCodingAgentThinkingTimelineItem,
     renderContentWithCodeBlocks,
@@ -1486,6 +1487,42 @@ describe("renderMessage assistant display guard", () => {
         render(<div>{renderCodingAgentThinkingTimelineItem(message.codingTimeline[0], lightTheme, "en")}</div>);
         expect(screen.getByText("Thought")).toBeTruthy();
         expect(screen.getByText("Inspect the timeline renderer")).toBeTruthy();
+    });
+
+    it("strips leaked reasoning-lane sentinels from thinking timeline text", () => {
+        const item = {
+            id: "thought-tofu",
+            sequence: 131,
+            kind: "thinking" as const,
+            content: "\x01The\x01 user\x01 wants me to continue",
+            timestamp: 1,
+        };
+        render(<div>{renderCodingAgentThinkingTimelineItem(item, lightTheme, "en")}</div>);
+        const panel = screen.getByTestId("assistant-reasoning-panel");
+        expect(panel.textContent || "").toContain("The user wants me to continue");
+        expect(panel.textContent || "").not.toContain("\x01");
+        expect(panel.textContent || "").not.toContain("\u25A1");
+        expect(panel.textContent || "").not.toContain("#131");
+    });
+
+    it("numbers coding thoughts by ordinal instead of backend sequence", () => {
+        const timeline = [
+            { kind: "thinking" },
+            { kind: "progress" },
+            { kind: "thinking" },
+        ];
+        expect(codingTimelineThoughtStep(timeline, 0)).toBe(1);
+        expect(codingTimelineThoughtStep(timeline, 1)).toBeUndefined();
+        expect(codingTimelineThoughtStep(timeline, 2)).toBe(2);
+        render(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-ordinal",
+            sequence: 131,
+            kind: "thinking",
+            content: "Inspect the current scanner CLI",
+            timestamp: 1,
+        }, lightTheme, "zh", 2)}</div>);
+        expect(screen.getByText("#2")).toBeTruthy();
+        expect(screen.queryByText("#131")).toBeNull();
     });
 
     it("renders legacy guide receipts as compact status instead of a system card", () => {

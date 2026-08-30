@@ -91,7 +91,8 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelSSH,
 			Domain: "远程操作 (Remote)",
 			TreeText: "用户要连接远程服务器、执行命令、查看日志、管理服务、操作远端主机。" +
-				"语义判据：用户目标需要操作远程主机、服务进程、端口、容器、反向代理或服务器日志。",
+				"语义判据：用户目标需要操作远程主机、服务进程、端口、容器、反向代理或服务器日志。" +
+				"给出主机地址与账号并要求在远端升级、部署、重启或保留镜像回退，也属于本类别，即使未写出 SSH 字样。",
 			EmbedTexts: []string{
 				"登录服务器查看日志",
 				"连接远程服务器",
@@ -99,12 +100,16 @@ func DefaultDefinitions() []IntentDefinition {
 				"帮我登录服务器重启服务",
 				"查看服务器上的GPU占用率",
 				"远程执行命令查看磁盘空间",
+				"这是服务器地址和账号，升级线上服务并保留当前镜像方便回退",
+				"用这台机器的账号密码更新远端服务版本",
 				"connect to the server via SSH",
 				"log into the production server",
 				"check the server logs remotely",
 				"restart the service on the remote machine",
 				"SSH into the GPU server and check usage",
 				"run a command on the remote host",
+				"here are the host credentials, upgrade the remote service and keep the running image for rollback",
+				"update the service on that machine using the account I just gave you",
 			},
 			ToolNames: []string{"ssh"},
 		},

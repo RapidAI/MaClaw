@@ -1038,6 +1038,16 @@ export function CodePreviewPanel({
         setWorkspaceActive(false);
     }, [onOpenWorkspaceFile, onSelectFile]);
 
+    const handleWorkspaceFileDeleted = useCallback((deletedPath: string) => {
+        if (!onCloseFile || !deletedPath) return;
+        onCloseFile(deletedPath);
+        const slash = `${deletedPath}/`;
+        const win = `${deletedPath}\\`;
+        for (const filePath of files.keys()) {
+            if (filePath !== deletedPath && (filePath.startsWith(slash) || filePath.startsWith(win))) onCloseFile(filePath);
+        }
+    }, [files, onCloseFile]);
+
     const handleSelectFile = useCallback((filePath: string) => {
         setWorkspaceActive(false);
         onSelectFile(filePath);
@@ -1480,7 +1490,7 @@ export function CodePreviewPanel({
                         </button>
                         ) : null}
                     </div>
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={(path) => { onCloseFile?.(path); for (const filePath of Array.from(files.keys())) { if (filePath !== path && (filePath.startsWith(`${path}/`) || filePath.startsWith(`${path}\\`))) onCloseFile?.(filePath); } }} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                 </div>
             </div>
         );
@@ -1773,7 +1783,7 @@ export function CodePreviewPanel({
                 }}
             >
                 {workspaceActive ? (
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={(path) => { onCloseFile?.(path); for (const filePath of Array.from(files.keys())) { if (filePath !== path && (filePath.startsWith(`${path}/`) || filePath.startsWith(`${path}\\`))) onCloseFile?.(filePath); } }} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                 ) : activeFile ? (
                     diffLines ? (
                         <DiffView

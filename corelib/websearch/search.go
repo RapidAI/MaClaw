@@ -68,7 +68,7 @@ func SearchCtx(parent context.Context, query string, maxResults int) ([]SearchRe
 		return nil, err
 	}
 	defer cancel()
-	results, err := searchDirectFallbackChain(ctx, query, maxResults, "")
+	results, err := searchDirectFallbackChainFrom(parent, ctx, query, maxResults, "")
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
@@ -92,10 +92,17 @@ func SearchWithProviderCtx(parent context.Context, query string, maxResults int,
 
 	provider = normalizeProvider(provider)
 	results, err := runProviderSearch(ctx, query, maxResults, provider, false)
-	if err == nil && len(results) > 0 {
+	hint := searchQuerySiteHint(query)
+	if err == nil && len(results) > 0 && resultsCoverSiteHint(results, hint) {
 		return results, nil
 	}
-	return fallbackDirectSearch(ctx, query, maxResults, provider, err, results)
+	if providerUsedDirectChain(provider) {
+		if err != nil {
+			return nil, err
+		}
+		return results, nil
+	}
+	return fallbackDirectSearch(parent, ctx, query, maxResults, provider, err, results)
 }
 
 // TestProvider performs a strict provider probe without falling back to direct
@@ -234,13 +241,24 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 	return results, nil
 }
 
-func fallbackDirectSearch(ctx context.Context, query string, maxResults int, provider corelib.WebSearchProvider, providerErr error, providerResults []SearchResult) ([]SearchResult, error) {
+func providerUsedDirectChain(provider corelib.WebSearchProvider) bool {
+	switch provider.Type {
+	case "brave", "serper", "tinyfish", "tavily":
+		return strings.TrimSpace(provider.Key) == ""
+	case "duckduckgo":
+		return false
+	default:
+		return true
+	}
+}
+
+func fallbackDirectSearch(parent, ctx context.Context, query string, maxResults int, provider corelib.WebSearchProvider, providerErr error, providerResults []SearchResult) ([]SearchResult, error) {
 	fallbackCtx, cancel := context.WithTimeout(ctx, fallbackSearchTimeout)
 	defer cancel()
 
-	results, fallbackErr := searchDirectFallbackChain(fallbackCtx, query, maxResults, providerFailureDomain(provider))
+	results, fallbackErr := searchDirectFallbackChainFrom(parent, fallbackCtx, query, maxResults, providerFailureDomain(provider))
 	if fallbackErr == nil && len(results) > 0 {
-		return results, nil
+		return mergeSearchResultsPrefer(providerResults, results, maxResults, searchQuerySiteHint(query)), nil
 	}
 	if providerErr != nil {
 		if fallbackErr != nil {
@@ -289,19 +307,42 @@ func getBrowserSearchProvider() BrowserSearchProvider {
 }
 
 func searchDirectFallbackChain(ctx context.Context, query string, maxResults int, skipFailureDomain string) ([]SearchResult, error) {
+	return searchDirectFallbackChainFrom(ctx, ctx, query, maxResults, skipFailureDomain)
+}
+
+func searchDirectFallbackChainFrom(parent, ctx context.Context, query string, maxResults int, skipFailureDomain string) ([]SearchResult, error) {
+	if parent == nil {
+		parent = ctx
+	}
 	endpoints := orderedDirectSearchEndpoints()
+	hint := searchQuerySiteHint(query)
+	hook := getBrowserSearchProvider()
+	var candidates []SearchResult
 	var failures []string
+	htmlMisses := 0
 	for _, endpoint := range endpoints {
 		if skipFailureDomain != "" && endpoint.FailureDomain == skipFailureDomain {
+			continue
+		}
+		if hook != nil && (contextRemaining(ctx) <= strategyBrowserTimeout || htmlMisses >= htmlMissSkipThreshold(hint)) {
+			failures = append(failures, endpoint.Name+" skipped: reserved time for browser search")
 			continue
 		}
 		endpointCtx, cancel := directEndpointContext(ctx)
 		results, err := endpoint.Search(endpointCtx, query, maxResults)
 		cancel()
 		if err == nil && len(results) > 0 {
-			recordGoodEndpoint(endpoint.Name)
-			return results, nil
+			valid := mergeSearchResultsPrefer(nil, results, maxResults, hint)
+			if hint == "" || resultsCoverSiteHint(valid, hint) {
+				recordGoodEndpoint(endpoint.Name)
+				return mergeSearchResultsPrefer(candidates, valid, maxResults, hint), nil
+			}
+			candidates = mergeSearchResultsPrefer(candidates, valid, maxResults, hint)
+			htmlMisses++
+			failures = append(failures, endpoint.Name+" missed named site")
+			continue
 		}
+		htmlMisses++
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s failed: %v", endpoint.Name, err))
 		} else {
@@ -311,26 +352,66 @@ func searchDirectFallbackChain(ctx context.Context, query string, maxResults int
 			break
 		}
 	}
-	// Ultimate fallback: the managed real browser (cookies, TLS fingerprint,
-	// JS execution) searches Bing/Google directly. Registered by the GUI.
-	if hook := getBrowserSearchProvider(); hook != nil && ctx.Err() == nil {
-		dlogf("[search] all direct endpoints failed; trying browser search fallback")
-		hits, herr := hook(ctx, "bing_cn", query, maxResults, false)
-		if herr == nil && len(hits) > 0 {
-			results := make([]SearchResult, 0, len(hits))
-			for _, h := range hits {
-				results = append(results, SearchResult{Title: h.Title, URL: h.URL, Snippet: h.Snippet})
-			}
-			return results, nil
-		}
-		if herr != nil {
-			failures = append(failures, fmt.Sprintf("browser-search failed: %v", herr))
-		} else {
-			failures = append(failures, "browser-search returned no results")
-		}
+	results, err := searchDirectBrowserFallback(parent, ctx, query, maxResults, hint, candidates)
+	if err == nil && len(results) > 0 {
+		return results, nil
+	}
+	if err != nil {
+		failures = append(failures, err.Error())
+	}
+	if len(candidates) > 0 {
+		return candidates, nil
 	}
 	if len(failures) == 0 {
 		return nil, fmt.Errorf("no direct fallback endpoints available")
+	}
+	return nil, errors.New(strings.Join(failures, "; "))
+}
+
+func searchDirectBrowserFallback(parent, ctx context.Context, query string, maxResults int, hint string, candidates []SearchResult) ([]SearchResult, error) {
+	hook := getBrowserSearchProvider()
+	if hook == nil {
+		return nil, nil
+	}
+	if (parent == nil || parent.Err() != nil) && (ctx == nil || ctx.Err() != nil) {
+		return nil, fmt.Errorf("browser-search skipped: no remaining time")
+	}
+	dlogf("[search] direct endpoints missed; trying browser search fallback")
+	engines := []string{"google", "bing_cn"}
+	if hint == "" {
+		engines = []string{"bing_cn", "google"}
+	}
+	var failures []string
+	for _, engineID := range engines {
+		attemptParent := browserFallbackParent(parent, ctx, corelib.WebSearchStrategy{})
+		if attemptParent == nil || attemptParent.Err() != nil {
+			break
+		}
+		attemptCtx, cancel := context.WithTimeout(attemptParent, strategyBrowserTimeout)
+		hits, herr := hook(attemptCtx, engineID, query, maxResults, false)
+		cancel()
+		if herr == nil && len(hits) > 0 {
+			incoming := make([]SearchResult, 0, len(hits))
+			for _, h := range hits {
+				incoming = append(incoming, SearchResult{Title: h.Title, URL: h.URL, Snippet: h.Snippet})
+			}
+			candidates = mergeSearchResultsPrefer(candidates, incoming, maxResults, hint)
+			if hint == "" || resultsCoverSiteHint(candidates, hint) {
+				return candidates, nil
+			}
+			continue
+		}
+		if herr != nil {
+			failures = append(failures, fmt.Sprintf("browser-search %s failed: %v", engineID, herr))
+		} else {
+			failures = append(failures, "browser-search "+engineID+" returned no results")
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+	if len(failures) == 0 {
+		return nil, nil
 	}
 	return nil, errors.New(strings.Join(failures, "; "))
 }

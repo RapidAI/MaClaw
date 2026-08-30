@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,8 @@ type LoopContext struct {
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
 	Runtime    RuntimeContext
+	// Loop-scoped fail-closed tools unlocked by discover_tool. Not a shared pin.
+	discoveredConditionalTools map[string]bool
 	// ingressFingerprint is a host-computed digest of the authenticated inbound
 	// payload and request-scoped client binding. RequestID only identifies a
 	// transport retry inside this exact payload; it must not let a changed body,
@@ -772,6 +776,39 @@ func (c *LoopContext) Context() (context.Context, context.CancelFunc) {
 		}
 	}()
 	return ctx, cancel
+}
+
+func (c *LoopContext) rememberDiscoveredConditionalTool(name string) bool {
+	name = strings.TrimSpace(name)
+	if c == nil || name == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.discoveredConditionalTools == nil {
+		c.discoveredConditionalTools = make(map[string]bool)
+	}
+	c.discoveredConditionalTools[name] = true
+	return true
+}
+
+func (c *LoopContext) discoveredConditionalToolNames() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.discoveredConditionalTools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(c.discoveredConditionalTools))
+	for name := range c.discoveredConditionalTools {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Done marks the loop as finished. Must be called exactly once when

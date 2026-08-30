@@ -2,6 +2,7 @@ package skillmarket
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -478,12 +479,32 @@ func TestUserServiceEnsureAccountWithIDRejectsAnEmailBoundToAnotherUser(t *testi
 	if _, err := svc.EnsureAccountWithID(ctx, "user-one", "shared@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.EnsureAccountWithID(ctx, "user-two", "shared@example.com"); err == nil {
-		t.Fatal("expected a conflicting email to be rejected")
+	if _, err := svc.EnsureAccountWithID(ctx, "user-two", "shared@example.com"); !errors.Is(err, ErrEmailBoundToAnotherUser) {
+		t.Fatalf("error = %v, want ErrEmailBoundToAnotherUser", err)
 	}
 	user, err := store.GetUserByEmail(ctx, "shared@example.com")
 	if err != nil || user.ID != "user-one" {
 		t.Fatalf("email binding changed to %+v, err=%v", user, err)
+	}
+}
+
+func TestUserServiceEnsureAccountWithVerifiedContactAdoptsEmailFirstAccount(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	svc := NewUserService(store, nil)
+	legacy, err := svc.EnsureAccount(ctx, "Owner@Example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnsureAccountWithID(ctx, "usr_hub", "owner@example.com"); !errors.Is(err, ErrEmailBoundToAnotherUser) {
+		t.Fatal("unverified client contact must not take over the email-first account")
+	}
+	got, err := svc.EnsureAccountWithVerifiedContact(ctx, "usr_hub", "Owner@Example.com")
+	if err != nil {
+		t.Fatalf("EnsureAccountWithVerifiedContact() error = %v", err)
+	}
+	if got.ID != legacy.ID || got.Email != "owner@example.com" {
+		t.Fatalf("adopted user = %+v, want legacy id %s", got, legacy.ID)
 	}
 }
 

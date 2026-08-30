@@ -81,10 +81,21 @@ func (a *App) migrateOAuthCredentialsOnStartup(config corelib.AppConfig) {
 //
 // This is called from ensureOAuthToken (app_maclaw_llm.go).
 func (a *App) ensureOAuthTokenViaStore(provider corelib.MaclawLLMProvider, providerIdx int) error {
-	return a.ensureOAuthTokenViaStoreMaybeSync(provider, providerIdx, true)
+	return a.ensureOAuthTokenViaStoreMaybeSyncForce(context.Background(), provider, providerIdx, true, false)
+}
+
+func (a *App) ensureOAuthTokenViaStoreForced(ctx context.Context, provider corelib.MaclawLLMProvider, providerIdx int) error {
+	return a.ensureOAuthTokenViaStoreMaybeSyncForce(ctx, provider, providerIdx, true, true)
 }
 
 func (a *App) ensureOAuthTokenViaStoreMaybeSync(provider corelib.MaclawLLMProvider, providerIdx int, syncConfig bool) error {
+	return a.ensureOAuthTokenViaStoreMaybeSyncForce(context.Background(), provider, providerIdx, syncConfig, false)
+}
+
+func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provider corelib.MaclawLLMProvider, providerIdx int, syncConfig, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	storeID := credentialStoreProviderID(provider)
 	if storeID == "" || a.credentialStore == nil {
 		return nil // not an OAuth provider or store not initialized
@@ -99,12 +110,13 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSync(provider corelib.MaclawLLMProvid
 			return nil, nil
 		}
 
-		// Check if refresh is needed
-		if !old.IsExpired() {
-			return old, nil // still valid, no change
+		if !force && !old.IsExpired() {
+			return old, nil
 		}
-
 		if old.RefreshToken == "" {
+			if force && !old.IsExpired() {
+				return old, nil
+			}
 			return old, fmt.Errorf("refresh_token is empty, please re-login (%s OAuth)", provider.Name)
 		}
 
@@ -114,7 +126,7 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSync(provider corelib.MaclawLLMProvid
 		switch storeID {
 		case "openai":
 			cfg := oauth.DefaultConfig()
-			result, refreshErr = oauth.RefreshAccessToken(cfg, old.RefreshToken)
+			result, refreshErr = oauth.RefreshAccessTokenCtx(ctx, cfg, old.RefreshToken)
 		case "anthropic":
 			result, refreshErr = oauth.RefreshAnthropicToken(old.RefreshToken)
 		case "github-copilot":
@@ -135,7 +147,7 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSync(provider corelib.MaclawLLMProvid
 			log.Printf("[credential-store] refreshed %s copilot token (expires_at=%d)", storeID, copilotResp.ExpiresAt)
 			return updated, nil
 		case "xai-grok":
-			result, refreshErr = oauth.RefreshXAIToken(context.Background(), old.RefreshToken)
+			result, refreshErr = oauth.RefreshXAIToken(ctx, old.RefreshToken)
 		default:
 			return old, fmt.Errorf("unknown OAuth provider for refresh: %s", storeID)
 		}

@@ -799,6 +799,38 @@ func TestPetStoreUserRequiresPublisherEmail(t *testing.T) {
 	}
 }
 
+func TestPetStoreUserAdoptsEmailFirstAccount(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := skillmarket.NewStore(db, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSvc := skillmarket.NewUserService(store, nil)
+	authSvc := skillmarket.NewAuthService(store, nil, "")
+	h := NewSkillMarketHandlers(SkillMarketConfig{Store: store, UserSvc: userSvc, AuthSvc: authSvc, DataDir: t.TempDir()})
+	legacy, err := userSvc.EnsureAccount(context.Background(), "owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := authSvc.CreateSessionForUser(context.Background(), "usr_hub", "owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pet-store/account", nil)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	id, email, err := h.petStoreUser(req)
+	if err != nil {
+		t.Fatalf("petStoreUser: %v", err)
+	}
+	if id != legacy.ID || email != "owner@example.test" {
+		t.Fatalf("petStoreUser = %s/%s, want adopted legacy account %s", id, email, legacy.ID)
+	}
+}
+
 func TestPetStorePreviewAssetsPutsCoverFirst(t *testing.T) {
 	var archive bytes.Buffer
 	zw := zip.NewWriter(&archive)

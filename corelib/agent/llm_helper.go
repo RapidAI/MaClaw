@@ -69,6 +69,9 @@ func shouldRetrySimpleLLMError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if llm.IsTransientTokenValidationError(err) {
+		return true
+	}
 	var httpErr *llmHTTPError
 	if errors.As(err, &httpErr) {
 		return httpErr.statusCode == http.StatusRequestTimeout || httpErr.statusCode == http.StatusTooManyRequests || httpErr.statusCode >= http.StatusInternalServerError
@@ -159,8 +162,12 @@ func DoSimpleLLMRequestContextWithOptions(parent context.Context, cfg corelib.Ma
 			break
 		}
 		elapsed := time.Since(startedAt).Round(time.Millisecond)
-		log.Printf("[LLM Simple] attempt %d/%d failed for model=%s protocol=%s after %s: %v; retrying in %s", attempt, simpleLLMMaxAttempts, cfg.Model, cfg.Protocol, elapsed, err, backoff)
-		if err := waitSimpleLLMBackoff(ctx, backoff); err != nil {
+		wait := backoff
+		if llm.IsTransientTokenValidationError(err) && wait < time.Second {
+			wait = time.Second
+		}
+		log.Printf("[LLM Simple] attempt %d/%d failed for model=%s protocol=%s after %s: %v; retrying in %s", attempt, simpleLLMMaxAttempts, cfg.Model, cfg.Protocol, elapsed, err, wait)
+		if err := waitSimpleLLMBackoff(ctx, wait); err != nil {
 			lastErr = err
 			log.Printf("[LLM Simple] stop retrying for model=%s protocol=%s after %s: %v", cfg.Model, cfg.Protocol, time.Since(startedAt).Round(time.Millisecond), err)
 			break

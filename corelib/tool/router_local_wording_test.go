@@ -114,3 +114,18 @@ func routeLocalWording(message string) map[string]bool {
 	}
 	return routed
 }
+
+func TestIsFailClosedConditionalTool(t *testing.T) {
+	if !IsFailClosedConditionalTool("ssh") {
+		t.Fatal("ssh must be fail-closed")
+	}
+	if !IsFailClosedConditionalTool("screenshot") {
+		t.Fatal("screenshot must be fail-closed")
+	}
+	if IsFailClosedConditionalTool("web_search") {
+		t.Fatal("score-eligible web_search must not be fail-closed")
+	}
+	if IsFailClosedConditionalTool("bash") {
+		t.Fatal("core bash is not a conditional tool")
+	}
+}

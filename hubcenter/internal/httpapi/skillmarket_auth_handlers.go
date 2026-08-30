@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -153,10 +154,23 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 
 	// The Hub user ID is the durable market principal. The contact is retained
 	// only for moderation/audit information, so a bound phone and email always
-	// reach the same purchases and submissions.
-	user, err := h.userSvc.EnsureAccountWithID(r.Context(), userID, contact)
+	// reach the same purchases and submissions. A Hub-verified contact may
+	// already own an email-first market row; adopt that row instead of 500.
+	user, err := h.ensureMachineLoginAccount(r.Context(), userID, contact, strings.TrimSpace(principal.Email))
 	if err != nil {
+		if errors.Is(err, skillmarket.ErrEmailBoundToAnotherUser) {
+			smError(w, http.StatusConflict, err.Error())
+			return
+		}
 		smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
+		return
+	}
+	if user == nil || strings.TrimSpace(user.ID) == "" {
+		smError(w, http.StatusInternalServerError, "ensure account: empty user")
+		return
+	}
+	if h.authSvc == nil {
+		smError(w, http.StatusServiceUnavailable, "authentication service unavailable")
 		return
 	}
 	// Auto-verify the account since the user already proved identity via Hub enrollment.
@@ -175,6 +189,33 @@ func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Reques
 		"user_id":       sess.UserID,
 		"expires_at":    sess.ExpiresAt,
 	})
+}
+
+func (h *SkillMarketHandlers) ensureMachineLoginAccount(ctx context.Context, userID, contact, verifiedContact string) (*skillmarket.SkillMarketUser, error) {
+	if h == nil || h.userSvc == nil {
+		return nil, errors.New("user service unavailable")
+	}
+	claimClientContact := verifiedContact != "" && strings.EqualFold(verifiedContact, contact)
+	var (
+		user *skillmarket.SkillMarketUser
+		err  error
+	)
+	if claimClientContact {
+		user, err = h.userSvc.EnsureAccountWithVerifiedContact(ctx, userID, contact)
+	} else {
+		user, err = h.userSvc.EnsureAccountWithID(ctx, userID, contact)
+	}
+	if err == nil || !errors.Is(err, skillmarket.ErrEmailBoundToAnotherUser) {
+		return user, err
+	}
+	// The client-supplied contact is bound to a different market row. Fall
+	// back to the Hub-verified contact so a leftover email-first account
+	// cannot block this enrolled device, and a spoofed contact cannot steal
+	// that leftover row.
+	if verifiedContact == "" || strings.EqualFold(verifiedContact, contact) {
+		return nil, err
+	}
+	return h.userSvc.EnsureAccountWithVerifiedContact(ctx, userID, verifiedContact)
 }
 
 // SendLookupVerification handles POST /api/v1/auth/lookup.
@@ -351,7 +392,7 @@ func extractSessionToken(r *http.Request) string {
 	// Authorization header) and query strings end up in access logs.
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	}
 	return ""
 }

@@ -423,7 +423,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "web_search",
-		Description: "Search the internet. Returns a list of results with title, URL, and snippet.",
+		Description: "Search the internet. Returns a list of results with title, URL, and snippet. If HTML/API engines time out, are blocked, or miss a named site (e.g. OpenReview), search continues with a real-browser Google/Bing fallback.",
 		Properties: map[string]interface{}{
 			"query":       map[string]string{"type": "string", "description": "Search query"},
 			"max_results": map[string]string{"type": "integer", "description": "Max results, default 8, max 20"},

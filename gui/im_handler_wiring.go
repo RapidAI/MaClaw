@@ -625,11 +625,10 @@ type IMMessageHandler struct {
 	// sticky tool grant, and is revalidated before every semantic read.
 	activeLocalDocuments sync.Map // map[string][]activeLocalDocumentContext
 
-	// taskAnchors records the subject and primary evidence explicitly supplied
-	// for an active conversational task. It is deliberately host-derived (from
-	// the user's message/attachment markers), rather than a model-managed
-	// memory. This prevents a follow-up such as "condense it" from silently
-	// switching to a similarly-worded profile found in another old task.
+	// taskAnchors is the host-owned charter for the current tab/session
+	// (original request, person/source, work kind, primary files). It is
+	// derived from the user's message, not model memory, so "继续改进 ppt"
+	// cannot silently switch to another topic sharing the workspace.
 	taskAnchors sync.Map // map[string]taskIdentityAnchor
 }
 

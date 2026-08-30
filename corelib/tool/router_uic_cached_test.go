@@ -203,6 +203,62 @@ func TestRouter_SkipUnifiedClassifierDoesNotOpenCachedSSH(t *testing.T) {
 	}
 }
 
+func TestRouter_LeftoverPreResolvedSSHKeepsSSH(t *testing.T) {
+	router := NewRouter(nil)
+	ssh := uicintent.ClassificationResult{
+		Primary: uicintent.LabelSSH, Confidence: 0.95, ToolNames: []string{"ssh"},
+	}
+	result := router.RouteWithOptions("upgrade the remote service and keep the running image", searchRouteTools(), RouteOptions{
+		SkipUnifiedClassifier: true,
+		PreResolved:           &ssh,
+	})
+	if !routedToolNames(result)["ssh"] {
+		t.Fatalf("leftover must keep ssh when this turn classified ssh, got %v", routedToolNames(result))
+	}
+}
+
+func TestRouter_LeftoverPreResolvedMixedSSHKeepsSSH(t *testing.T) {
+	router := NewRouter(nil)
+	mixed := uicintent.ClassificationResult{
+		Primary: uicintent.LabelSearch, Secondary: []uicintent.IntentLabel{uicintent.LabelSSH}, Confidence: 0.95,
+	}
+	result := router.RouteWithOptions("search and restart the server", searchRouteTools(), RouteOptions{
+		SkipUnifiedClassifier: true,
+		PreResolved:           &mixed,
+	})
+	if !routedToolNames(result)["ssh"] {
+		t.Fatalf("leftover mixed LabelSSH must keep ssh via affinity, got %v", routedToolNames(result))
+	}
+}
+
+func TestRouter_LeftoverPreResolvedSSHAffinityWithoutToolNames(t *testing.T) {
+	router := NewRouter(nil)
+	ssh := uicintent.ClassificationResult{
+		Primary: uicintent.LabelSSH, Confidence: 0.95,
+	}
+	result := router.RouteWithOptions("upgrade the remote service and keep the running image", searchRouteTools(), RouteOptions{
+		SkipUnifiedClassifier: true,
+		PreResolved:           &ssh,
+	})
+	if !routedToolNames(result)["ssh"] {
+		t.Fatalf("leftover LabelSSH without ToolNames must keep ssh via affinity, got %v", routedToolNames(result))
+	}
+}
+
+func TestRouter_LeftoverPreResolvedWeakSSHDoesNotKeepSSH(t *testing.T) {
+	router := NewRouter(nil)
+	ssh := uicintent.ClassificationResult{
+		Primary: uicintent.LabelSSH, Confidence: 0.55, ToolNames: []string{"ssh"},
+	}
+	result := router.RouteWithOptions("upgrade the remote service and keep the running image", searchRouteTools(), RouteOptions{
+		SkipUnifiedClassifier: true,
+		PreResolved:           &ssh,
+	})
+	if routedToolNames(result)["ssh"] {
+		t.Fatalf("leftover skip must not keep sub-floor ssh, got %v", routedToolNames(result))
+	}
+}
+
 func TestRouter_SkipUnifiedClassifierCachedCodingDoesNotConstrainSkills(t *testing.T) {
 	uic := uicintent.New(uicintent.Config{
 		Embedder: embedding.NoopEmbedder{},

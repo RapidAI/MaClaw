@@ -540,6 +540,15 @@ func TestCollapseDuplicateCloudWorkspaceRecordsUsesWorkingDirForLegacyTags(t *te
 	}
 }
 
+func TestCloudWorkspaceTaskNameScoreTreatsTraditionalGenericTitleAsPlaceholder(t *testing.T) {
+	if cloudWorkspaceTaskNameScore("新建雲端工作區任務") != 0 {
+		t.Fatal("traditional generic title should score as placeholder")
+	}
+	if cloudWorkspaceTaskNameScore("长江学者申请") == 0 {
+		t.Fatal("user title should stay meaningful")
+	}
+}
+
 func TestCollapseDuplicateCloudWorkspaceRecordsPrefersNamedRegardlessOfOrder(t *testing.T) {
 	records := []memory.ProjectRecord{
 		{ProjectPath: "named", Name: "用户命名任务", Tags: []string{cloudWorkspaceTag("cws_x")}},
@@ -548,6 +557,23 @@ func TestCollapseDuplicateCloudWorkspaceRecordsPrefersNamedRegardlessOfOrder(t *
 	got := collapseDuplicateCloudWorkspaceRecords(records)
 	if len(got) != 1 || got[0].ProjectPath != "named" {
 		t.Fatalf("records=%+v, want named winner", got)
+	}
+}
+
+func TestCollapseDuplicateCloudWorkspaceRecordsMergesWorkingDirOnlyRow(t *testing.T) {
+	now := time.Now()
+	records := []memory.ProjectRecord{
+		{ProjectPath: "legacy", Name: "长江学者申请", Tags: []string{
+			taskManagementTag, recentTaskWorkingDirTag("C:/data/cloud-workspaces/tenant_default/cws_scholar"),
+		}, LastActivity: now},
+		{ProjectPath: "tagged", Name: "长江学者申请", Tags: []string{
+			taskManagementTag, cloudWorkspaceTag("cws_scholar"),
+			recentTaskWorkingDirTag("C:/data/cloud-workspaces/tenant_default/cws_scholar"),
+		}, LastActivity: now.Add(time.Minute)},
+	}
+	got := collapseDuplicateCloudWorkspaceRecords(records)
+	if len(got) != 1 || got[0].ProjectPath != "tagged" {
+		t.Fatalf("records=%+v, want tagged winner", got)
 	}
 }
 

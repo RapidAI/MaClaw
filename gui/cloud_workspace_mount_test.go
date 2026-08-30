@@ -22,23 +22,25 @@ import (
 )
 
 type fakeCloudWorkspaceHub struct {
-	mu                 sync.Mutex
-	leaseID            string
-	acquired           string
-	conflictUntilForce bool
-	forceCount         int
-	leaseAcquires      int
-	heartbeats         int
-	heartbeatStatus    int
-	deleted            bool
-	failPush           bool
-	revision           string
-	entries            []cloudWorkspaceManifestEntry
-	objects            map[string][]byte
-	chunks             map[string]map[int][]byte
-	sidecars           map[string][]byte
-	sidecarGets        int
-	entitlement        *CloudWorkspaceEntitlement
+	mu                  sync.Mutex
+	leaseID             string
+	acquired            string
+	conflictUntilForce  bool
+	forceCount          int
+	leaseAcquires       int
+	heartbeats          int
+	heartbeatStatus     int
+	deleted             bool
+	failPush            bool
+	failAfterOperations int
+	operationCount      int
+	revision            string
+	entries             []cloudWorkspaceManifestEntry
+	objects             map[string][]byte
+	chunks              map[string]map[int][]byte
+	sidecars            map[string][]byte
+	sidecarGets         int
+	entitlement         *CloudWorkspaceEntitlement
 }
 
 func cloudWorkspaceSHA256Hex(body []byte) string {
@@ -138,6 +140,12 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		if h.failPush {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_FAILED", "message": "push failed"})
+			return
+		}
+		h.operationCount++
+		if h.failAfterOperations > 0 && h.operationCount > h.failAfterOperations {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_FAILED", "message": "operation failed"})
 			return
 		}
 		var op cloudWorkspaceOperation

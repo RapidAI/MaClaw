@@ -82,6 +82,9 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	tools = mergeAmbientRetrievalTools(tools, allTools)
 	tools = applyRoutingMissLeftoverTools(tools, allTools, ctx)
 	baseTools = applyRoutingMissLeftoverTools(baseTools, allTools, ctx)
+	if !phase.ForceSkillPreference {
+		tools, baseTools = applyLoopDiscoveredConditionalTools(tools, baseTools, allTools, ctx)
+	}
 	if profile.IsLight() || isLightPromptProfile(profile.PromptProfile) {
 		tool.WriteToolExposureLog("execution_profile", userText, requestID, userID, profile.Layer, profile.TaskType, beforeProfileFilter, agentLoopToolNamesForLog(tools))
 		log.Printf("[exec-profile] layer=%s prompt=%s task=%s request_id=%q user=%q confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d routed_before=%d routed_after=%d tools=%q",

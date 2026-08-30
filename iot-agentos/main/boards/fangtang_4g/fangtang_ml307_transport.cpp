@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -73,6 +75,113 @@ static constexpr int kHttpContentWriteTimeoutMs = 10000;
 // application recovery task can observe a detached SIM or dropped context
 // instead of trusting the last successful boot state indefinitely.
 static constexpr int kNetworkProbeIntervalMs = 5000;
+
+/* Parse the modem's decoded response-header blob without relying on substring
+ * matches.  This keeps malformed framing from turning into a successful EOF
+ * and makes the cellular path agree with the generic EC801E client. */
+static bool parse_http_header_framing(const std::string& decoded,
+                                      bool *out_chunked,
+                                      bool *out_content_length_zero) {
+    if (!out_chunked || !out_content_length_zero) return false;
+    *out_chunked = false;
+    *out_content_length_zero = false;
+    bool transfer_seen = false;
+    bool content_length_seen = false;
+    size_t content_length_value = 0;
+    bool status_line_seen = false;
+    size_t cursor = 0;
+    while (cursor <= decoded.size()) {
+        const size_t line_end = decoded.find('\n', cursor);
+        const size_t end = line_end == std::string::npos ? decoded.size() : line_end;
+        size_t last = end;
+        if (last > cursor && decoded[last - 1] == '\r') --last;
+        if (cursor == last) {
+            if (line_end == std::string::npos) break;
+            cursor = line_end + 1;
+            continue;
+        }
+        const std::string line = decoded.substr(cursor, last - cursor);
+        if (line.rfind("HTTP/", 0) == 0) {
+            const size_t version_end = line.find(' ', 5u);
+            if (version_end == std::string::npos || version_end < 8u ||
+                version_end > line.size() - 4u ||
+                !std::isdigit(static_cast<unsigned char>(line[5])) ||
+                line[6] != '.' ||
+                !std::isdigit(static_cast<unsigned char>(line[7])) ||
+                !std::isdigit(static_cast<unsigned char>(line[version_end + 1])) ||
+                !std::isdigit(static_cast<unsigned char>(line[version_end + 2])) ||
+                !std::isdigit(static_cast<unsigned char>(line[version_end + 3])) ||
+                (version_end + 4u < line.size() && line[version_end + 4u] != ' ')) {
+                return false;
+            }
+            status_line_seen = true;
+            if (line_end == std::string::npos) break;
+            cursor = line_end + 1;
+            continue;
+        }
+        const size_t colon = line.find(':');
+        if (colon == std::string::npos || colon == 0u) return false;
+        std::string name = line.substr(0, colon);
+        std::string value = line.substr(colon + 1);
+        while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
+        size_t first = 0;
+        while (first < value.size() && (value[first] == ' ' || value[first] == '\t')) ++first;
+        value.erase(0, first);
+        while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.pop_back();
+        for (unsigned char c : name) {
+            if (c < 0x21u || c > 0x7eu || c == ':' || c == '"') return false;
+        }
+        for (unsigned char c : value) {
+            if (c == '\r' || c == '\n' || c == '"' || c == 0x7fu ||
+                (c < 0x20u && c != '\t')) return false;
+        }
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (name == "transfer-encoding") {
+            if (transfer_seen) return false;
+            transfer_seen = true;
+            size_t token_begin = 0;
+            size_t token_count = 0;
+            std::string token;
+            while (token_begin <= value.size()) {
+                const size_t comma = value.find(',', token_begin);
+                const size_t token_end = comma == std::string::npos ? value.size() : comma;
+                size_t token_first = token_begin;
+                size_t token_last = token_end;
+                while (token_first < token_last &&
+                       (value[token_first] == ' ' || value[token_first] == '\t')) ++token_first;
+                while (token_last > token_first &&
+                       (value[token_last - 1] == ' ' || value[token_last - 1] == '\t')) --token_last;
+                if (token_first == token_last) return false;
+                token = value.substr(token_first, token_last - token_first);
+                for (unsigned char c : token) {
+                    if (!std::isalnum(c) && c != '-' && c != '_') return false;
+                }
+                ++token_count;
+                if (comma == std::string::npos) break;
+                token_begin = comma + 1;
+            }
+            std::transform(token.begin(), token.end(), token.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (token_count != 1u || token != "chunked") return false;
+            *out_chunked = true;
+        } else if (name == "content-length") {
+            size_t length = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), length, 10);
+            if (result.ec != std::errc() || result.ptr != value.data() + value.size()) return false;
+            if (content_length_seen && length != content_length_value) return false;
+            content_length_seen = true;
+            content_length_value = length;
+            *out_content_length_zero = length == 0u;
+        }
+        if (line_end == std::string::npos) break;
+        cursor = line_end + 1;
+    }
+    return status_line_seen;
+}
+
 static TaskHandle_t s_network_probe_task;
 static SemaphoreHandle_t s_network_probe_stopped;
 static std::atomic<bool> s_network_probe_stop_requested{false};
@@ -254,6 +363,7 @@ static bool argument_string(const std::vector<AtArgumentValue>& arguments,
 }
 
 static int method_number(const char *method) {
+    if (!method || !method[0]) return 0;
     if (!strcmp(method, "GET")) return 1;
     if (!strcmp(method, "POST")) return 2;
     if (!strcmp(method, "PUT")) return 3;
@@ -364,7 +474,42 @@ public:
               size_t stream_buffer_size = 0) {
         int method_id = method_number(method);
         if (!method_id || !ParseUrl(url)) return false;
+        if (body_len > 0 && !body && !body_reader) return false;
+        if (body_reader && (!stream_buffer || stream_buffer_size == 0)) return false;
+        auto header_value_safe = [](const char *value) {
+            if (!value) return true;
+            for (const unsigned char *p = reinterpret_cast<const unsigned char *>(value);
+                 *p; ++p) {
+                if (*p == '\r' || *p == '\n' || *p == '"') return false;
+            }
+            return true;
+        };
+        auto header_name_safe = [](const char *value) {
+            if (!value) return true;
+            for (const unsigned char *p = reinterpret_cast<const unsigned char *>(value);
+                 *p; ++p) {
+                if (*p == '\r' || *p == '\n' || *p == '"' || *p == ':' ||
+                    *p == ' ' || *p == '\t') return false;
+            }
+            return true;
+        };
+        if (!header_value_safe(content_type) || !header_value_safe(authorization) ||
+            !header_name_safe(extra_header_name) ||
+            !header_value_safe(extra_header_value)) {
+            return false;
+        }
         method_ = method;
+
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            body_.clear();
+            body_offset_ = 0;
+            error_ = false;
+            eof_ = false;
+            headers_received_ = false;
+            response_chunked_ = false;
+            body_forbidden_ = false;
+        }
 
         {
             std::unique_lock<std::mutex> slot_lock(s_slot_mutex);
@@ -497,6 +642,7 @@ public:
 
     // Returns bytes copied, zero at EOF, and -1 on timeout/error/cancel.
     int Read(char *buffer, size_t capacity) {
+        if (capacity > 0 && !buffer) return -1;
         std::unique_lock<std::mutex> lock(state_mutex_);
         bool ready = state_cv_.wait_for(
             lock, std::chrono::milliseconds(timeout_ms_),
@@ -546,6 +692,7 @@ public:
     void Close() {
         if (!instance_active_.exchange(false)) return;
         int id = http_id_.load();
+        http_id_.store(-1);
         if (id >= 0) {
             (void)uart_->SendCommand("AT+MHTTPDEL=" + std::to_string(id));
             ESP_LOGI(TAG, "ML307 HTTP connection closed, ID: %d", id);
@@ -561,13 +708,25 @@ private:
         if (scheme != "http" && scheme != "https") return false;
         secure_ = scheme == "https";
         size_t host_start = scheme_end + 3;
-        size_t path_start = value.find('/', host_start);
+        size_t path_start = value.find_first_of("/?", host_start);
         std::string authority = path_start == std::string::npos
                                     ? value.substr(host_start)
                                     : value.substr(host_start, path_start - host_start);
-        if (authority.empty()) return false;
+        if (authority.empty() ||
+            value.find('#', host_start) != std::string::npos ||
+            authority.find_first_of("@\\") != std::string::npos) return false;
+        for (size_t i = host_start; i < value.size(); ++i) {
+            const unsigned char c = static_cast<unsigned char>(value[i]);
+            if (c < 0x20u || c == 0x7fu || c == '"') return false;
+        }
         origin_ = scheme + "://" + authority;
-        path_ = path_start == std::string::npos ? "/" : value.substr(path_start);
+        if (path_start == std::string::npos) {
+            path_ = "/";
+        } else if (value[path_start] == '?') {
+            path_ = "/" + value.substr(path_start);
+        } else {
+            path_ = value.substr(path_start);
+        }
         return true;
     }
 
@@ -582,9 +741,18 @@ private:
                    const std::vector<AtArgumentValue>& arguments) {
         if (command == "MHTTPCREATE") {
             int id = -1;
-            if (!argument_int(arguments, 0, &id)) return;
+            if (arguments.size() != 1u || !argument_int(arguments, 0, &id) ||
+                id < 0 || id >= static_cast<int>(kHttpSlotCount)) {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                if (awaiting_create_) {
+                    error_ = true;
+                    awaiting_create_ = false;
+                    state_cv_.notify_all();
+                }
+                return;
+            }
             std::lock_guard<std::mutex> lock(state_mutex_);
-            if (!awaiting_create_) return;
+            if (!awaiting_create_ || instance_active_.load()) return;
             http_id_.store(id);
             instance_active_.store(true);
             state_cv_.notify_all();
@@ -600,7 +768,8 @@ private:
 
         int id = -1;
         const std::string *type = nullptr;
-        if (!argument_string(arguments, 0, &type) ||
+        if (arguments.size() < 2u || arguments.size() > 6u ||
+            !argument_string(arguments, 0, &type) ||
             !argument_int(arguments, 1, &id) || id != http_id_.load()) {
             return;
         }
@@ -608,27 +777,46 @@ private:
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (*type == "header") {
             const std::string *encoded_headers = nullptr;
-            if (arguments.size() < 5u ||
+            if (arguments.size() != 5u ||
                 !argument_int(arguments, 2, &status_code_) ||
                 status_code_ < 100 || status_code_ > 599 ||
                 arguments[3].type != AtArgumentValue::Type::Int ||
                 !argument_string(arguments, 4, &encoded_headers)) {
                 error_ = true;
             } else {
+                /* 1xx responses are interim (except 101, which switches
+                 * protocols and is outside this request/response API). Keep
+                 * waiting for the final response instead of exposing an
+                 * incomplete header to callers. */
+                if (status_code_ >= 100 && status_code_ < 200) {
+                    if (status_code_ == 101) {
+                        error_ = true;
+                    } else {
+                        response_chunked_ = false;
+                        body_forbidden_ = false;
+                    }
+                    state_cv_.notify_all();
+                    return;
+                }
                 headers_received_ = true;
                 // Responses without a body are not guaranteed to emit a
                 // content URC; let the reader complete immediately.
-                if (method_ == "HEAD" || status_code_ == 204 || status_code_ == 304) {
+                body_forbidden_ = method_ == "HEAD" || status_code_ == 204 || status_code_ == 304;
+                if (body_forbidden_) {
                     eof_ = true;
                 } else {
                     std::string decoded;
                     if (!uart_->DecodeHexAppend(decoded, encoded_headers->data(), encoded_headers->size())) {
                         error_ = true;
                     } else {
-                        std::transform(decoded.begin(), decoded.end(), decoded.begin(),
-                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                        response_chunked_ = decoded.find("transfer-encoding: chunked") != std::string::npos;
-                        if (decoded.find("content-length: 0") != std::string::npos) eof_ = true;
+                        bool chunked = false;
+                        bool content_length_zero = false;
+                        if (!parse_http_header_framing(decoded, &chunked, &content_length_zero)) {
+                            error_ = true;
+                        } else {
+                            response_chunked_ = chunked;
+                            if (content_length_zero) eof_ = true;
+                        }
                     }
                 }
             }
@@ -636,24 +824,30 @@ private:
             int content_length = 0;
             int received_length = 0;
             int current_length = 0;
-            if (arguments.size() < 5u ||
+            if (!headers_received_ || arguments.size() < 5u || arguments.size() > 6u ||
                 !argument_int(arguments, 2, &content_length) ||
                 !argument_int(arguments, 3, &received_length) ||
                 !argument_int(arguments, 4, &current_length)) {
                 error_ = true;
             } else {
-                if (content_length < 0 || received_length < 0 || current_length < 0 ||
-                    current_length > received_length ||
-                    (!response_chunked_ && received_length > content_length)) {
+                if (body_forbidden_ && (received_length != 0 || current_length != 0)) {
                     error_ = true;
-                } else if (current_length > 0 && arguments.size() >= 6) {
+                } else if (content_length < 0 || received_length < 0 || current_length < 0 ||
+                    current_length > received_length ||
+                    (!response_chunked_ && received_length > content_length) ||
+                    static_cast<size_t>(current_length) >
+                        std::numeric_limits<size_t>::max() - body_offset_ ||
+                    static_cast<size_t>(received_length) != body_offset_ +
+                        static_cast<size_t>(current_length)) {
+                    error_ = true;
+                } else if (current_length > 0 && arguments.size() == 6u) {
                     const std::string *encoded = nullptr;
                     if (argument_string(arguments, 5, &encoded)) {
                         std::string decoded;
                         if (!uart_->DecodeHexAppend(decoded, encoded->data(), encoded->size()) ||
                             decoded.size() != static_cast<size_t>(current_length) ||
-                            body_.size() != static_cast<size_t>(received_length - current_length) ||
-                            body_.size() + decoded.size() != static_cast<size_t>(received_length)) {
+                            decoded.size() > std::numeric_limits<size_t>::max() - body_.size() ||
+                            decoded.size() != static_cast<size_t>(current_length)) {
                             ESP_LOGE(TAG, "ML307 cellular HTTP body contains malformed hex");
                             body_.clear();
                             error_ = true;
@@ -662,11 +856,22 @@ private:
                             return;
                         }
                         body_.append(decoded);
+                        body_offset_ = static_cast<size_t>(received_length);
                     } else {
                         error_ = true;
                     }
                 } else if (current_length > 0) {
                     error_ = true;
+                } else if (arguments.size() != 5u) {
+                    // A zero-length terminator carries no payload.  Accepting
+                    // an extra sixth argument would make malformed URCs look
+                    // like a valid EOF and could desynchronise the next URC.
+                    error_ = true;
+                } else {
+                    /* A zero-length terminator must still carry the exact
+                     * cumulative offset; retain the independent offset even
+                     * though readers may have drained body_. */
+                    body_offset_ = static_cast<size_t>(received_length);
                 }
                 // Non-chunked firmware reports total/accumulated bytes;
                 // chunked firmware terminates with a zero-length content URC.
@@ -678,7 +883,12 @@ private:
             }
         } else if (*type == "err") {
             int modem_error = 0;
-            (void)argument_int(arguments, 2, &modem_error);
+            if (arguments.size() != 3u || !argument_int(arguments, 2, &modem_error) ||
+                modem_error < 0) {
+                error_ = true;
+                state_cv_.notify_all();
+                return;
+            }
             ESP_LOGE(TAG, "ML307 HTTP request error: id=%d modem_error=%d", id,
                      modem_error);
             error_ = true;
@@ -700,6 +910,7 @@ private:
     bool headers_received_ = false;
     bool error_ = false;
     bool eof_ = false;
+    bool body_forbidden_ = false;
     bool secure_ = false;
     bool response_chunked_ = false;
     bool slot_acquired_ = false;
@@ -708,6 +919,7 @@ private:
     std::string origin_;
     std::string path_;
     std::string body_;
+    size_t body_offset_ = 0;
 };
 
 extern "C" bool ml307_transport_is_ready(void) {

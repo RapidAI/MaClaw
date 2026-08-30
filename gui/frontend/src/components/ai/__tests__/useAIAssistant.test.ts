@@ -5687,6 +5687,45 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMessages(result.current.messages)[0].codingTimeline?.at(-1)?.content).toBe('Finally verify the completed edit.');
     });
 
+    it('does not interleave leaked reasoning-lane assistant notes into the coding timeline', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('keep leaked reasoning off the trail');
+            await Promise.resolve();
+        });
+
+        const req = requestEvent();
+        const leaked = `Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            event: 'assistant_note',
+            phase: 'running',
+            task_id: 'T1',
+            title: 'Fix parser',
+            detail: '\x01The\x01 user\x01 wants me to continue',
+        })}`;
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 10, text: '\x01Inspect the implementation.' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, sequence: 20, text: leaked });
+            emitRuntimeEvent('ai-assistant-token', { request_id: req.request_id, sequence: 30, text: '\x01Apply the focused change.' });
+        });
+
+        const timeline = assistantMessages(result.current.messages)[0].codingTimeline;
+        expect(timeline?.map(item => item.kind)).toEqual(['thinking', 'thinking']);
+        expect(timeline?.map(item => item.content)).toEqual([
+            'Inspect the implementation.',
+            'Apply the focused change.',
+        ]);
+
+        await act(async () => {
+            pending.resolve({ text: 'Done.', error: '', fields: null, actions: null, request_id: req.request_id || '' });
+            await pending.promise;
+        });
+    });
+
     it('replaces a completed tool result at its original action position', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);

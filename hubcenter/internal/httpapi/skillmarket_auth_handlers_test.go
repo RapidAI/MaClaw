@@ -138,6 +138,53 @@ func TestSkillMarketMachineLoginKeepsTheSameUserIDAcrossBoundContacts(t *testing
 	}
 }
 
+func TestSkillMarketMachineLoginAdoptsVerifiedEmailAlreadyBound(t *testing.T) {
+	handlers, store := skillMarketTestHandlersForViewer(t, &hubs.ViewerMachinePrincipal{UserID: "usr_hub", Email: "owner@example.com", MachineID: "machine-bound-email"})
+	if _, err := handlers.userSvc.EnsureAccount(context.Background(), "owner@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/machine-login", strings.NewReader(`{"hub_id":"hub-1","user_id":"usr_hub","account":"owner@example.com","machine_id":"machine-bound-email","viewer_token":"`+strings.Repeat("e", 32)+`"}`))
+	rec := httptest.NewRecorder()
+	handlers.MachineLogin(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("machine-login status=%d body=%s, want adopted session", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"session_token"`) {
+		t.Fatalf("unexpected body=%s", rec.Body.String())
+	}
+	user, err := store.GetUserByEmail(req.Context(), "owner@example.com")
+	if err != nil || user == nil || user.Email != "owner@example.com" {
+		t.Fatalf("stored user=%+v err=%v", user, err)
+	}
+}
+
+func TestSkillMarketMachineLoginRejectsUnverifiedContactBoundToAnotherUser(t *testing.T) {
+	handlers, store := skillMarketTestHandlersForViewer(t, &hubs.ViewerMachinePrincipal{UserID: "usr_attacker", Email: "attacker@example.com", MachineID: "machine-attacker"})
+	if _, err := handlers.userSvc.EnsureAccountWithID(context.Background(), "usr_victim", "victim@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/machine-login", strings.NewReader(`{"hub_id":"hub-1","user_id":"usr_attacker","account":"victim@example.com","machine_id":"machine-attacker","viewer_token":"`+strings.Repeat("f", 32)+`"}`))
+	rec := httptest.NewRecorder()
+	handlers.MachineLogin(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("machine-login status=%d body=%s, want attacker session on verified contact", rec.Code, rec.Body.String())
+	}
+	var session struct {
+		UserID string `json:"user_id"`
+		Email  string `json:"email"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.UserID != "usr_attacker" || session.Email != "attacker@example.com" {
+		t.Fatalf("session=%+v, want attacker principal rather than the bound victim contact", session)
+	}
+	user, err := store.GetUserByEmail(req.Context(), "victim@example.com")
+	if err != nil || user.ID != "usr_victim" {
+		t.Fatalf("victim account changed to %+v err=%v", user, err)
+	}
+}
+
 func TestSkillMarketMachineLoginRejectsMismatchedUserID(t *testing.T) {
 	handlers, _ := skillMarketTestHandlersForViewer(t, &hubs.ViewerMachinePrincipal{UserID: "authenticated-user", Email: "user@example.com", MachineID: "machine-1"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/machine-login", strings.NewReader(`{"hub_id":"hub-1","user_id":"victim-user","account":"victim@example.com","machine_id":"machine-1","viewer_token":"valid-viewer-token"}`))

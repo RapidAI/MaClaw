@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -142,25 +143,30 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		return fmt.Sprintf("No matching tools found for: %q. Try rephrasing your need or use craft_tool to create a custom script.", need)
 	}
 
-	activatedDeferred := make(map[string]bool)
+	activated := make(map[string]bool)
 	if h.toolDefGen != nil {
 		for _, item := range ranked {
 			if h.toolDefGen.ActivateDeferredTool(item.name) {
-				activatedDeferred[item.name] = true
+				activated[item.name] = true
 			}
 		}
-		if len(activatedDeferred) > 0 {
-			h.toolsMu.Lock()
-			h.cachedTools = nil
-			h.toolsCacheTime = time.Time{}
-			h.toolsMu.Unlock()
+	}
+	// Fail-closed names stay hidden until a plan or a loop-scoped discovery grant
+	// exposes them. Grant only names the query actually mentioned so a broad
+	// BM25 hit cannot unlock screenshot/browser alongside ssh.
+	for _, item := range ranked {
+		if discoveryNeedMentionsTool(need, item.name) && h.grantDiscoveredConditionalTool(ownerID, item.name) {
+			activated[item.name] = true
 		}
 	}
+	if len(activated) > 0 {
+		h.toolsMu.Lock()
+		h.cachedTools = nil
+		h.toolsCacheTime = time.Time{}
+		h.toolsMu.Unlock()
+	}
 
-	// Discovery can activate a deferred catalog entry, but must not turn a
-	// conditional tool name into a session authorization. A later task replan
-	// evaluates the returned capability against current policy and need.
-	anyActivated := len(activatedDeferred) > 0
+	anyActivated := len(activated) > 0
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d matching tools:\n", len(ranked)))
@@ -178,13 +184,13 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 		if runes := []rune(desc); len(runes) > 120 {
 			desc = string(runes[:120]) + "..."
 		}
-		isActivated := activatedDeferred[item.name]
+		isActivated := activated[item.name]
 		b.WriteString(discoverToolStatusLine(i+1, item.name, desc, tool.CoreToolNames[item.name], isActivated))
 	}
 	if anyActivated {
 		b.WriteString("\nActivated catalog entries are available for a subsequent planned step.")
 	} else {
-		b.WriteString("\nUse the matched tool name when the next step needs that capability.")
+		b.WriteString("\nThe matched name is not in the current tool list yet. If it stays unmatched after this search, use another listed tool; do not keep calling discover_tool for the same name.")
 	}
 	if containsMCPDiscoveryMatch(ranked, mcpMatches) {
 		b.WriteString("\nMCP matches are not executable on this legacy surface. Request a managed semantic replan; the host must bind the provider and tool before it is exposed.")
@@ -286,6 +292,79 @@ func containsMCPDiscoveryMatch(ranked []discoveredToolScore, mcpMatches map[stri
 		}
 	}
 	return false
+}
+
+func discoveryNeedMentionsTool(need, name string) bool {
+	need = strings.ToLower(strings.TrimSpace(need))
+	name = strings.ToLower(strings.TrimSpace(name))
+	if need == "" || name == "" {
+		return false
+	}
+	if need == name {
+		return true
+	}
+	for i := 0; i <= len(need)-len(name); i++ {
+		if need[i:i+len(name)] != name {
+			continue
+		}
+		leftOK := i == 0 || !isDiscoveryNameByte(need[i-1])
+		rightOK := i+len(name) == len(need) || !isDiscoveryNameByte(need[i+len(name)])
+		if leftOK && rightOK {
+			return true
+		}
+	}
+	return false
+}
+
+func isDiscoveryNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+func (h *IMMessageHandler) grantDiscoveredConditionalTool(ownerID, name string) bool {
+	if h == nil || !tool.IsFailClosedConditionalTool(name) {
+		return false
+	}
+	loopCtx := h.runtimeLoopContextForOwner(ownerID)
+	if loopCtx == nil {
+		return false
+	}
+	return loopCtx.rememberDiscoveredConditionalTool(name)
+}
+
+func applyLoopDiscoveredConditionalTools(tools, baseTools, allTools []map[string]interface{}, ctx *LoopContext) ([]map[string]interface{}, []map[string]interface{}) {
+	discovered := ctx.discoveredConditionalToolNames()
+	if len(discovered) == 0 {
+		return tools, baseTools
+	}
+	before := agentLoopToolNameSet(tools)
+	tools = ensureNamedToolsPresent(tools, allTools, discovered)
+	baseTools = ensureNamedToolsPresent(baseTools, allTools, discovered)
+	if added := surfaceRecoveryAddedNames(before, tools); len(added) > 0 {
+		log.Printf("[tool-surface] inject reason=loop-discovery tools=%s", strings.Join(added, ","))
+	}
+	return tools, baseTools
+}
+
+func agentLoopToolNameSet(tools []map[string]interface{}) map[string]bool {
+	out := make(map[string]bool, len(tools))
+	for _, def := range tools {
+		if name := extractToolName(def); name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func surfaceRecoveryAddedNames(before map[string]bool, tools []map[string]interface{}) []string {
+	var added []string
+	for _, def := range tools {
+		name := extractToolName(def)
+		if name != "" && !before[name] {
+			added = append(added, name)
+		}
+	}
+	sort.Strings(added)
+	return added
 }
 
 func discoverToolStatusLine(index int, name, desc string, coreTool, activated bool) string {

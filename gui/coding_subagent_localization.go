@@ -284,7 +284,7 @@ func extractCodingSubAgentBugSignal(text string) CodingSubAgentBugSignal {
 }
 
 func codingTaskNeedsLocalization(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
+	lower := strings.ToLower(codingTaskLocalizationIntent(text))
 	if lower == "" {
 		return false
 	}
@@ -297,12 +297,43 @@ func codingTaskNeedsLocalization(text string) bool {
 			return true
 		}
 	}
-	for _, marker := range []string{"错误", "异常", "崩溃", "故障", "修复", "不正确", "失效", "失败", "定位", "根因"} {
+	for _, marker := range []string{"错误", "异常", "崩溃", "故障", "修复", "不正确", "失效", "失败", "根因"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	// Bare "定位" matches tool/meta prose ("定位报告", "先定位相关路径") and then
+	// poisons a feature task into the bug-fix edit gate. Require a bug-shaped
+	// collocation instead.
+	for _, marker := range []string{"故障定位", "根因定位", "问题定位", "定位根因", "定位崩溃", "定位故障", "定位问题", "定位错误"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// codingTaskLocalizationIntent drops machine carry-over (prior-step status,
+// last-turn summaries, file lists). Those blocks often contain "failed" /
+// "error" / "定位报告" from the previous gate and would otherwise reclassify a
+// feature step as a bug-fix, forcing report_localization in a retry loop.
+func codingTaskLocalizationIntent(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	cut := len(text)
+	for _, marker := range []string{
+		"previous turn summary:",
+		"files modified earlier:",
+		"prior plan step ",
+	} {
+		if i := strings.Index(lower, marker); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return strings.TrimSpace(text[:cut])
 }
 
 // codingTaskNeedsExternalResearch identifies bug reports whose answer depends
@@ -637,6 +668,21 @@ func localizationHTTPURLTokens(text string) []string {
 		}
 	}
 	return out
+}
+
+const localizationIncompleteReportGuidance = ` If this is exploration or new-feature work, stop calling report_localization and continue with read/search/edit. Bug-fix reports need ALL of: root_cause_file, causal_path (string array), reproduction, supporting_evidence (string array), research_decision (searched|not_needed|unavailable), research_reason, confidence (number in (0,1]). Example: {"root_cause_file":"src/foo.cpp","causal_path":["caller","foo.bar"],"reproduction":"command X fails with Y","supporting_evidence":["src/foo.cpp:12 takes the failing branch"],"research_decision":"not_needed","research_reason":"failure is fully visible in repository control flow","confidence":0.8}`
+
+const localizationReportNotRequiredMessage = "report_localization skipped: this task is not a bug-fix of existing code. Do not retry this tool. Continue exploring or implementing with read/search/edit tools."
+
+func localizationInvalidEvidenceMessage(err error) string {
+	if err == nil {
+		return "invalid localization evidence"
+	}
+	msg := "invalid localization evidence: " + err.Error()
+	if strings.Contains(err.Error(), "missing required fields") {
+		return msg + localizationIncompleteReportGuidance
+	}
+	return msg
 }
 
 func localizationMissingRequiredFields(e CodingSubAgentLocalizationEvidence) []string {
@@ -1688,7 +1734,7 @@ func buildCodeNavigationToolDefinition() map[string]interface{} {
 
 func buildReportLocalizationToolDefinition() map[string]interface{} {
 	return buildRemoteToolDef(reportLocalizationToolName,
-		"Submit structured root-cause evidence before editing an existing file for a bug fix. The report becomes an enforced audit gate.",
+		"Submit structured root-cause evidence before editing an existing file for a bug fix. Do not call this for exploration or new-feature work. The report becomes an enforced audit gate.",
 		map[string]interface{}{
 			"root_cause_file":     map[string]interface{}{"type": "string", "minLength": 1},
 			"root_cause_symbol":   map[string]interface{}{"type": "string"},
@@ -1741,10 +1787,14 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 	if c.task != nil {
 		text = c.task.Title + "\n" + c.task.Description
 	}
+	if strings.TrimSpace(text) != "" && !codingTaskNeedsLocalization(text) {
+		log.Printf("[coding-localization] report skipped stage=not_bug task=%d", taskDisplayNumber(c.task))
+		return codingToolExecutionResult{Text: localizationReportNotRequiredMessage, Outcome: codingToolOutcomeSuccess}
+	}
 	e, err := localizationEvidenceFromArgs(args, extractCodingSubAgentBugSignal(text))
 	if err != nil {
 		log.Printf("[coding-localization] report rejected stage=evidence task=%d error=%q", taskDisplayNumber(c.task), compactCodingSubAgentLogText(err.Error(), 500))
-		return codingToolExecutionResult{Text: "invalid localization evidence: " + err.Error(), Outcome: codingToolOutcomeFailed}
+		return codingToolExecutionResult{Text: localizationInvalidEvidenceMessage(err), Outcome: codingToolOutcomeFailed}
 	}
 	searches := c.getSearchesRun()
 	if err := validateLocalizationResearchEvidence(text, &e, searches); err != nil {
@@ -1794,11 +1844,16 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 	if c == nil {
 		return "localization state unavailable"
 	}
-	e, err := localizationEvidenceFromArgs(args, extractCodingSubAgentBugSignal(c.task+"\n"+c.taskContext))
+	taskText := c.task + "\n" + c.taskContext
+	if strings.TrimSpace(taskText) != "" && !codingTaskNeedsLocalization(taskText) {
+		log.Printf("[remote-localization] report skipped stage=not_bug project=%q", remoteLocalizationLogProject(c))
+		return localizationReportNotRequiredMessage
+	}
+	e, err := localizationEvidenceFromArgs(args, extractCodingSubAgentBugSignal(taskText))
 	if err != nil {
 		log.Printf("[remote-localization] report rejected stage=evidence project=%q error=%q",
 			remoteLocalizationLogProject(c), compactCodingSubAgentLogText(err.Error(), 500))
-		return "invalid localization evidence: " + err.Error()
+		return localizationInvalidEvidenceMessage(err)
 	}
 	if err := validateLocalizationResearchEvidence(c.task+"\n"+c.taskContext, &e, c.searchesRun); err != nil {
 		log.Printf("[remote-localization] report rejected stage=research project=%q root=%q confidence=%.2f %s error=%q",

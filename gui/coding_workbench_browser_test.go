@@ -577,6 +577,205 @@ func TestCodingWorkbenchEntryProtected(t *testing.T) {
 	}
 }
 
+func TestCacheRelativeCloudWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	got, err := cacheRelativeCloudWorkspacePath(root, filepath.Join(root, "docs", "a.md"))
+	if err != nil || got != "docs/a.md" {
+		t.Fatalf("rel=%q err=%v", got, err)
+	}
+	if _, err := cacheRelativeCloudWorkspacePath(root, root); err == nil {
+		t.Fatal("cache root itself must be rejected")
+	}
+	if _, err := cacheRelativeCloudWorkspacePath(root, filepath.Join(t.TempDir(), "outside.md")); err == nil {
+		t.Fatal("path outside the cache must be rejected")
+	}
+}
+
+func TestInferCloudWorkspaceDeleteDir(t *testing.T) {
+	root := t.TempDir()
+	if err := writeCloudWorkspaceState(root, cloudWorkspaceLocalState{
+		LastEntries: []cloudWorkspaceManifestEntry{
+			{Path: "docs/a.md"},
+			{Path: "notes.md"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	isDir, err := inferCloudWorkspaceDeleteDir(root, "docs")
+	if err != nil || !isDir {
+		t.Fatalf("docs should infer as a folder: isDir=%v err=%v", isDir, err)
+	}
+	isDir, err = inferCloudWorkspaceDeleteDir(root, "notes.md")
+	if err != nil || isDir {
+		t.Fatalf("notes.md should infer as a file: isDir=%v err=%v", isDir, err)
+	}
+	isDir, err = inferCloudWorkspaceDeleteDir(root, "missing.md")
+	if err != nil || isDir {
+		t.Fatalf("unknown path should infer as a file: isDir=%v err=%v", isDir, err)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryDeletesRemoteWhenLocalAlreadyGone(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "gone.md"), []byte("drop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := app.pushCloudWorkspace(ctx, "cws_delete_missing", prepared.LocalPath); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	if err := os.Remove(filepath.Join(prepared.LocalPath, "gone.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "gone.md"); err != nil {
+		t.Fatalf("delete missing local: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for _, entry := range hub.entries {
+		if entry.Path == "gone.md" {
+			t.Fatalf("remote still has gone.md: %+v", hub.entries)
+		}
+	}
+}
+
+func TestCollectCloudWorkspaceDeletePathsIncludesUntrackedFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, cloudWorkspaceCacheStateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gone.md"), []byte("drop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := collectCloudWorkspaceDeletePaths(root, "gone.md", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "gone.md" {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
+func TestListCloudWorkspaceFilesUnderWalksOnlyTheTargetFolder(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs", "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.md"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "nested", "b.md"), []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "outside.md"), []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := listCloudWorkspaceFilesUnder(root, "docs", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(paths, ",")
+	if !strings.Contains(got, "docs/a.md") || !strings.Contains(got, "docs/nested/b.md") {
+		t.Fatalf("paths=%v", paths)
+	}
+	for _, path := range paths {
+		if path == "outside.md" {
+			t.Fatalf("walked the whole workspace: %v", paths)
+		}
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryKeepsAcceptedRemoteDeletesAfterLaterFailure(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prepared.LocalPath, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "docs", "a.md"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "docs", "b.md"), []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := app.pushCloudWorkspace(ctx, "cws_delete_partial", prepared.LocalPath); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	hub.mu.Lock()
+	hub.failAfterOperations = 1
+	hub.operationCount = 0
+	hub.mu.Unlock()
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "docs"); err == nil {
+		t.Fatal("expected later remote delete to fail")
+	}
+	st, err := readCloudWorkspaceLocalState(prepared.LocalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasA, hasB := false, false
+	for _, entry := range st.LastEntries {
+		if entry.Path == "docs/a.md" {
+			hasA = true
+		}
+		if entry.Path == "docs/b.md" {
+			hasB = true
+		}
+	}
+	if hasA {
+		t.Fatalf("accepted remote delete still in LastEntries: %+v", st.LastEntries)
+	}
+	if !hasB {
+		t.Fatalf("failed remote delete was dropped from LastEntries: %+v", st.LastEntries)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryDoesNotPushUnrelatedLocalEdits(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_unrelated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "gone.md"), []byte("drop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := app.pushCloudWorkspace(ctx, "cws_delete_unrelated", prepared.LocalPath); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "dirty.md"), []byte("local-only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "gone.md"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "dirty.md")); err != nil {
+		t.Fatalf("unrelated local edit was removed: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for _, entry := range hub.entries {
+		if entry.Path == "dirty.md" {
+			t.Fatalf("delete pushed unrelated local edit: %+v", hub.entries)
+		}
+		if entry.Path == "gone.md" {
+			t.Fatalf("remote still has gone.md: %+v", hub.entries)
+		}
+	}
+}
+
 func TestCleanupCodingWorkbenchVSCodeRemoteSnapshotsKeepsFutureDatedCopies(t *testing.T) {
 	cacheRoot := t.TempDir()
 	snapshot := filepath.Join(cacheRoot, "snapshots", "future")

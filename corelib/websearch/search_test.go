@@ -321,7 +321,7 @@ func TestFallbackDirectSearchRespectsParentContextAfterProviderError(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := fallbackDirectSearch(ctx, "golang", 5, corelib.WebSearchProvider{Type: "serper"}, context.Canceled, nil)
+	_, err := fallbackDirectSearch(ctx, ctx, "golang", 5, corelib.WebSearchProvider{Type: "serper"}, context.Canceled, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -197,12 +197,10 @@ func TestSemanticSensitiveFamiliesFailClosedOnMixedUnmappedLabels(t *testing.T) 
 	}
 }
 
-// TestSemanticExternalEffectFamiliesCatalogRegisteredButUnmanaged pins the S2a
-// downgrade decision: ssh/browser/computer_use providers are catalog-registered
-// with their reviewed capability and effect class, but no intent rule maps
-// their labels to a need because a trusted receipt boundary for their external
-// effects is out of slice scope. Their requests therefore remain explicitly
-// legacy instead of executing as untracked synchronous side effects.
+// TestSemanticExternalEffectFamiliesCatalogRegisteredButUnmanaged pins that
+// ssh/browser/computer_use are managed external-effect families with a
+// reviewed catalog provision. Unbound SSH misses to leftover (builtin ssh);
+// browser and computer_use without a bound runtime stay unmet.
 func TestSemanticExternalEffectFamiliesCatalogRegisteredButUnmanaged(t *testing.T) {
 	for _, label := range []intent.IntentLabel{intent.LabelSSH, intent.LabelBrowser, intent.LabelComputerUse} {
 		classification := intent.ClassificationResult{Primary: label, Confidence: .98}
@@ -241,9 +239,9 @@ func TestSemanticExternalEffectFamiliesCatalogRegisteredButUnmanaged(t *testing.
 	}
 }
 
-// TestSemanticExternalEffectMixedRequestFailsClosed proves that adding the
-// catalog-only registrations did not weaken the coverage gate: a managed label
-// combined with a catalog-only external-effect label still fails closed.
+// TestSemanticExternalEffectMixedRequestFailsClosed: unbound SSH on a mixed
+// turn must miss to leftover (builtin ssh), not HostReject the other family
+// as unmet. Browser/CU still fail closed without a bound runtime.
 func TestSemanticExternalEffectMixedRequestFailsClosed(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)
@@ -251,8 +249,8 @@ func TestSemanticExternalEffectMixedRequestFailsClosed(t *testing.T) {
 		Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelSSH}, Confidence: .98,
 	}
 	prepared, handled, err := h.semanticPlanForTurnWithClassification("user", "search and restart the server", "lansenger", "root", "turn", classification)
-	if !handled || err == nil || !strings.Contains(err.Error(), "unmet") {
-		t.Fatalf("search+ssh without ssh runtime must be unmet, prepared=%#v handled=%v err=%v", prepared, handled, err)
+	if handled || prepared != nil || err != nil {
+		t.Fatalf("search+ssh without ssh runtime must miss to leftover handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
 }
 

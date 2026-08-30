@@ -1007,11 +1007,13 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 	if reason := taskAnchorDeliverableWriteBlockReason(taskAnchor, name, args); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
-	defer func() {
-		if result.Outcome == toolOutcomeSucceeded {
-			h.rememberTaskAnchorDeliverable(policyUserID, taskAnchor, name, args)
-		}
-	}()
+	if taskAnchorDeliverablePath(name, args) != "" {
+		defer func() {
+			if result.Outcome == toolOutcomeSucceeded {
+				h.rememberTaskAnchorDeliverable(policyUserID, taskAnchor, name, args)
+			}
+		}()
+	}
 	// File delivery: structured only. send_to_im forces IM; send_file needs flag/destination.
 	// Do not keyword-scan userText.
 	switch name {

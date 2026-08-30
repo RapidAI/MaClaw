@@ -153,7 +153,6 @@ func isTransientServerError(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := strings.ToLower(err.Error())
 	if isHubPeriodLimitError(err) {
 		return false
 	}
@@ -161,6 +160,10 @@ func isTransientServerError(err error) bool {
 	if isHubRateLimitWaitCanceledError(err) {
 		return false
 	}
+	if llm.IsTransientTokenValidationError(err) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
 	if strings.Contains(s, "服务繁忙") ||
 		strings.Contains(s, "网络错误") {
 		return true

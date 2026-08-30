@@ -2,8 +2,10 @@ package main
 
 import (
 	"archive/tar"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -518,20 +520,23 @@ func (a *App) OpenCodingWorkbenchFileLocally(projectPath, relativePath string) e
 }
 
 // DeleteCodingWorkbenchEntry removes a cloud-workspace file or folder from the
-// local cache and immediately pushes that deletion to the remote workspace.
+// local cache and immediately deletes the matching remote objects. Unrelated
+// local edits are left unsynced.
 func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
 		return fmt.Errorf("project path is required")
 	}
 	workspaceID := strings.TrimSpace(a.lookupCloudWorkspaceIDForProject(projectPath))
-	if workspaceID == "" {
-		if root, rootErr := codingWorkbenchBrowserLocalRoot(a, projectPath); rootErr == nil {
-			workspaceID = lookupCloudWorkspaceIDByLocalPath(root)
-		}
+	root, rootErr := codingWorkbenchBrowserLocalRoot(a, projectPath)
+	if workspaceID == "" && rootErr == nil {
+		workspaceID = lookupCloudWorkspaceIDByLocalPath(root)
 	}
 	if workspaceID == "" {
 		return fmt.Errorf("delete is only available for cloud workspaces")
+	}
+	if rootErr != nil {
+		return rootErr
 	}
 	cacheRoot, ok := heldWritableCloudWorkspacePath(workspaceID)
 	if !ok {
@@ -544,40 +549,145 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 	if relativePath == "" {
 		return fmt.Errorf("file path is required")
 	}
-	if codingWorkbenchEntryProtected(relativePath) {
-		return fmt.Errorf("entry cannot be deleted")
-	}
-	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
-	if err != nil {
-		return err
-	}
 	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(absPath)
+	cacheRel, err := cacheRelativeCloudWorkspacePath(cacheRoot, absPath)
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() && !info.IsDir() {
+	if codingWorkbenchEntryProtected(relativePath) || codingWorkbenchEntryProtected(cacheRel) {
 		return fmt.Errorf("entry cannot be deleted")
 	}
-	if err := trackCloudWorkspacePathsForDelete(cacheRoot, relativePath, info.IsDir()); err != nil {
+	info, err := os.Lstat(absPath)
+	missing := err != nil && os.IsNotExist(err)
+	if err != nil && !missing {
 		return err
 	}
-	if info.IsDir() {
-		if err := os.RemoveAll(absPath); err != nil {
+	isDir := false
+	if !missing {
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			return fmt.Errorf("entry cannot be deleted")
+		}
+		isDir = info.IsDir()
+	} else {
+		isDir, err = inferCloudWorkspaceDeleteDir(cacheRoot, cacheRel)
+		if err != nil {
 			return err
 		}
-	} else if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+	}
+	remotePaths, err := collectCloudWorkspaceDeletePaths(cacheRoot, cacheRel, isDir)
+	if err != nil {
 		return err
 	}
-	ctx, cancel := a.cloudWorkspaceRequestContext()
+	if _, ok := heldWritableCloudWorkspacePath(workspaceID); !ok {
+		return fmt.Errorf("cloud workspace is read-only")
+	}
+	if !missing {
+		if isDir {
+			if err := os.RemoveAll(absPath); err != nil {
+				return err
+			}
+		} else if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	ctx, cancel := a.cloudWorkspaceSyncContext()
 	defer cancel()
-	if _, err := a.pushCloudWorkspace(ctx, workspaceID, cacheRoot); err != nil {
+	if err := a.deleteCloudWorkspaceRemotePaths(ctx, workspaceID, cacheRoot, remotePaths); err != nil {
+		if missing {
+			return err
+		}
 		return fmt.Errorf("local file deleted, but remote delete failed: %w", err)
 	}
 	return nil
+}
+
+func (a *App) deleteCloudWorkspaceRemotePaths(ctx context.Context, workspaceID, root string, paths []string) error {
+	proto := a.cloudWorkspaceProtocol(workspaceID)
+	err := proto.DeletePaths(ctx, root, paths)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errCloudWorkspaceV2Unavailable) {
+		_, pushErr := proto.Push(ctx, root)
+		return pushErr
+	}
+	return err
+}
+
+func cacheRelativeCloudWorkspacePath(cacheRoot, absPath string) (string, error) {
+	rel, err := filepath.Rel(cacheRoot, absPath)
+	if err != nil {
+		return "", fmt.Errorf("path outside the working directory")
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("path outside the working directory")
+	}
+	cleaned, ok := cloudWorkspaceSafeRelPath(rel)
+	if !ok {
+		return "", fmt.Errorf("path outside the working directory")
+	}
+	return cleaned, nil
+}
+
+func inferCloudWorkspaceDeleteDir(root, cacheRel string) (bool, error) {
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return false, err
+	}
+	prefix := cacheRel + "/"
+	for _, entry := range state.LastEntries {
+		if entry.Path == cacheRel {
+			return false, nil
+		}
+		if strings.HasPrefix(entry.Path, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func collectCloudWorkspaceDeletePaths(root, cacheRel string, isDir bool) ([]string, error) {
+	covered := func(path string) bool {
+		if path == cacheRel {
+			return !isDir
+		}
+		return strings.HasPrefix(path, cacheRel+"/")
+	}
+	seen := map[string]struct{}{}
+	var paths []string
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || !covered(path) || codingWorkbenchEntryProtected(path) {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	local, err := listCloudWorkspaceFilesUnder(root, cacheRel, isDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range local {
+		add(path)
+	}
+	if isDir {
+		state, err := readCloudWorkspaceLocalState(root)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range state.LastEntries {
+			add(entry.Path)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func codingWorkbenchEntryProtected(relativePath string) bool {
@@ -587,50 +697,6 @@ func codingWorkbenchEntryProtected(relativePath string) bool {
 		}
 	}
 	return false
-}
-
-// trackCloudWorkspacePathsForDelete records the soon-to-be-removed files in
-// LastEntries so PushOperations emits matching remote delete operations even
-// when the cache was populated by a full Pull instead of per-file ops.
-func trackCloudWorkspacePathsForDelete(root, relativePath string, isDir bool) error {
-	state, err := readCloudWorkspaceLocalState(root)
-	if err != nil {
-		return err
-	}
-	have := make(map[string]struct{}, len(state.LastEntries))
-	for _, entry := range state.LastEntries {
-		have[entry.Path] = struct{}{}
-	}
-	prefix := relativePath + "/"
-	changed := false
-	track := func(path string) {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			return
-		}
-		if _, ok := have[path]; ok {
-			return
-		}
-		state.LastEntries = append(state.LastEntries, cloudWorkspaceManifestEntry{Path: path})
-		have[path] = struct{}{}
-		changed = true
-	}
-	if !isDir {
-		track(relativePath)
-	}
-	local, scanErr := scanCloudWorkspaceLocal(root)
-	if scanErr != nil {
-		return scanErr
-	}
-	for _, entry := range local {
-		if entry.Path == relativePath || (isDir && strings.HasPrefix(entry.Path, prefix)) {
-			track(entry.Path)
-		}
-	}
-	if !changed {
-		return nil
-	}
-	return writeCloudWorkspaceState(root, state)
 }
 
 func (a *App) codingWorkbenchRejectsLocalOpen(projectPath string) bool {

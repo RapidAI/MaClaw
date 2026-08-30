@@ -99,6 +99,18 @@ func TestMergeCloudWorkspaceSessionHistoryKeepsBothMachines(t *testing.T) {
 	}
 }
 
+func TestMergeCloudWorkspaceSessionHistoryHonorsClearFence(t *testing.T) {
+	local := &TabSessionData{Conversation: []interface{}{map[string]any{"id": "new"}}, ConversationClearedAt: 200}
+	remote := &TabSessionData{Conversation: []interface{}{map[string]any{"id": "old"}}, ConversationClearedAt: 100}
+	merged := mergeCloudWorkspaceSessionHistory(local, remote)
+	if len(merged.Conversation) != 1 || merged.Conversation[0].(map[string]any)["id"] != "new" {
+		t.Fatalf("stale remote history resurrected: %+v", merged.Conversation)
+	}
+	if merged.ConversationClearedAt != 200 {
+		t.Fatalf("clear fence=%d", merged.ConversationClearedAt)
+	}
+}
+
 func TestCloudWorkspaceSidecarRestoreOnCreateTask(t *testing.T) {
 	sticky := []byte(`{"kind":"local","goal":"restored sticky"}`)
 	checkpoint := []byte(`{"tasks":[{"title":"resume"}]}`)

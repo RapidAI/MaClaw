@@ -8,7 +8,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
-import { isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
+import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 
 export interface CancelAIAssistantResult {
@@ -236,7 +236,7 @@ export function sanitizeAIAssistantStreamText(value: string): string {
         // providers use U+25A1 ("□") as a replacement glyph when a token
         // cannot be decoded; letting it through makes the entire reasoning
         // trail appear to be filled with squares in the GUI.
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\uE000-\uF8FF\uFFF9-\uFFFD]/g, '');
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\uE000-\uF8FF\uFFF0-\uFFFF]/g, '');
     return reasoning ? `\x01${visible}` : visible;
 }
 
@@ -857,12 +857,24 @@ function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
     const nextReasoning = message.reasoning
         ? stripRolePrefixReasoning(sanitizeAIAssistantFinalText(message.reasoning))
         : message.reasoning;
-    if (nextContent === message.content && nextReasoning === message.reasoning) return message;
+    const nextTimeline = message.codingTimeline?.map(sanitizeCodingThoughtItem);
+    const nextPending = message.pendingCodingThoughts?.map(sanitizeCodingThoughtItem);
+    const timelineChanged = !!nextTimeline?.some((item, index) => item !== message.codingTimeline?.[index]);
+    const pendingChanged = !!nextPending?.some((item, index) => item !== message.pendingCodingThoughts?.[index]);
+    if (nextContent === message.content && nextReasoning === message.reasoning && !timelineChanged && !pendingChanged) return message;
     return {
         ...message,
         content: nextContent,
         reasoning: nextReasoning || undefined,
+        codingTimeline: nextTimeline,
+        pendingCodingThoughts: nextPending,
     };
+}
+
+function sanitizeCodingThoughtItem(item: CodingAgentTimelineItem): CodingAgentTimelineItem {
+    if (item.kind !== 'thinking') return item;
+    const content = sanitizeAIAssistantFinalText(item.content || '');
+    return content === item.content ? item : { ...item, content };
 }
 
 function stripAssistantProtocolArtifactsFrontend(text: string): string {
@@ -1435,7 +1447,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
     // Reasoning tokens are prefixed with \x01 by the backend to distinguish
     // them from content tokens. They represent the model's thinking phase.
     if (delta.startsWith('\x01')) {
-        const reasoningDelta = delta.slice(1);
+        const reasoningDelta = sanitizeAIAssistantFinalText(delta.slice(1));
         if (!reasoningDelta) return message;
         const existingReasoning = message.reasoning || '';
         // Status milestones are rendered as bullet lines in the same reasoning
@@ -3858,10 +3870,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     timestamp: message.timestamp,
                 }]
                 : timeline;
+            const toolProgress = parseCodingAgentProgress(progressText);
+            // Audit rollups and leaked reasoning-lane notes already have a home
+            // (sidebar / thinking panel). Inserting them here left empty feed
+            // slots and □-filled truncated dumps between real thoughts.
+            if (toolProgress && isCodingAgentChatHiddenEvent(toolProgress)) {
+                if (timeline.length > 0 || openingReasoning === timeline || openingReasoning.length === 0) return message;
+                return {
+                    ...message,
+                    pendingCodingThoughts: undefined,
+                    reasoningStartSequence: undefined,
+                    codingTimeline: openingReasoning,
+                };
+            }
             if (preferredSequence && codingTimelineSequenceIsTaken(openingReasoning, preferredSequence)) return message;
             const sequence = nextCodingTimelineSequence(openingReasoning, eventSequence);
             const completedAt = Date.now();
-            const toolProgress = parseCodingAgentProgress(progressText);
             if (toolProgress?.event === 'tool_finished') {
                 const replacedTimeline = replaceMatchingCodingToolStart(openingReasoning, progressText, sequence, completedAt);
                 if (replacedTimeline) {

@@ -9,6 +9,8 @@ $uartC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\at_uart.cc
 $modemH = Join-Path $projectRoot 'managed_components\78__esp-ml307\include\at_modem.h'
 $modemC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\at_modem.cc'
 $httpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ml307\ml307_http.cc'
+$genericHttpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\http_client.cc'
+$genericHttpH = Join-Path $projectRoot 'managed_components\78__esp-ml307\include\http_client.h'
 $mqttC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ml307\ml307_mqtt.cc'
 $tcpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ml307\ml307_tcp.cc'
 $udpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ml307\ml307_udp.cc'
@@ -17,7 +19,7 @@ $ecTcpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec
 $ecUdpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec801e_udp.cc'
 $ecSslC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec801e_ssl.cc'
 $failures = @()
-foreach ($path in @($transportH,$transportC,$uartH,$uartC,$modemH,$modemC,$httpC,$mqttC,$tcpC,$udpC,$ecMqttC,$ecTcpC,$ecUdpC,$ecSslC)) {
+foreach ($path in @($transportH,$transportC,$uartH,$uartC,$modemH,$modemC,$httpC,$genericHttpC,$genericHttpH,$mqttC,$tcpC,$udpC,$ecMqttC,$ecTcpC,$ecUdpC,$ecSslC)) {
     if (-not (Test-Path -LiteralPath $path)) { $failures += "missing $path" }
 }
 if ($failures.Count -eq 0) {
@@ -28,6 +30,8 @@ if ($failures.Count -eq 0) {
     $modem = Get-Content -LiteralPath $modemC -Raw
     $modemHeader = Get-Content -LiteralPath $modemH -Raw
     $http = Get-Content -LiteralPath $httpC -Raw
+    $genericHttp = Get-Content -LiteralPath $genericHttpC -Raw
+    $genericHttpHeader = Get-Content -LiteralPath $genericHttpH -Raw
     $mqtt = Get-Content -LiteralPath $mqttC -Raw
     $tcp = Get-Content -LiteralPath $tcpC -Raw
     $udp = Get-Content -LiteralPath $udpC -Raw
@@ -137,6 +141,115 @@ if ($failures.Count -eq 0) {
     }
     if ($http -notmatch '(?s)error_code_ >= 0.*?return -1') {
         $failures += 'Ml307Http Read must fail closed after an attributed error event'
+    }
+    if ($transport -notmatch '(?s)MHTTPCREATE.*?arguments\.size\(\) != 1u.*?kHttpSlotCount') {
+        $failures += 'Fangtang cellular HTTP create URC must enforce one valid slot id'
+    }
+    if ($transport -notmatch '(?s)MHTTPURC.*?arguments\.size\(\) < 2u.*?arguments\.size\(\) > 6u') {
+        $failures += 'Fangtang cellular HTTP URC must reject malformed arity before indexing'
+    }
+    if ($transport -notmatch '(?s)arguments\.size\(\) != 5u.*?status_code_') {
+        $failures += 'Fangtang cellular HTTP header URC must require exact metadata arity'
+    }
+    if ($transport -notmatch '(?s)body_offset_.*?current_length.*?received_length') {
+        $failures += 'Fangtang cellular HTTP content URC must enforce cumulative body length'
+    }
+    if ($transport -notmatch '(?s)current_length > 0\).*?arguments\.size\(\) != 5u') {
+        $failures += 'Fangtang cellular HTTP zero-length content URC must reject an extra payload field'
+    }
+    if ($transport -notmatch '(?s)http_id_\.store\(-1\)') {
+        $failures += 'Fangtang cellular HTTP close must retire the slot id before reuse'
+    }
+    if ($transport -notmatch '(?s)c < 0x20u \|\| c == 0x7fu') {
+        $failures += 'Fangtang cellular HTTP URL parser must reject authority control characters'
+    }
+    if ($transport -notmatch '(?s)body_len > 0 && !body && !body_reader') {
+        $failures += 'Fangtang cellular HTTP must reject non-empty requests without a body source'
+    }
+    if ($transport -notmatch '(?s)header_value_safe.*?\\r.*?\\n.*?"') {
+        $failures += 'Fangtang cellular HTTP headers must reject AT command delimiter injection'
+    }
+    if ($transport -notmatch '(?s)parse_http_header_framing.*?from_chars' -or
+        $transport -notmatch '(?s)parse_http_header_framing\(decoded') {
+        $failures += 'Fangtang cellular HTTP response headers must use bounded framing parser'
+    }
+    if ($transport -notmatch '(?s)token_count != 1u.*?chunked') {
+        $failures += 'Fangtang cellular HTTP Transfer-Encoding must reject coding chains and unknown tokens'
+    }
+    if ($transport -notmatch '(?s)body_forbidden_\s*=\s*false' -or
+        $transport -notmatch '(?s)body_forbidden_\s*=\s*method_\s*==\s*"HEAD"' -or
+        $transport -notmatch '(?s)body_forbidden_.*?received_length != 0') {
+        $failures += 'Fangtang cellular HTTP must fence body-forbidden responses and content URCs'
+    }
+    if ($transport -notmatch '(?s)content_length_seen.*?from_chars' -or
+        $transport -notmatch '(?s)content_length_seen.*?length != content_length_value') {
+        $failures += 'Fangtang cellular HTTP must reject conflicting Content-Length headers'
+    }
+    if ($transport -notmatch '(?s)header_name_safe.*?[:\\?]') {
+        $failures += 'Fangtang cellular HTTP header names must reject delimiter characters'
+    }
+    if ($transport -notmatch '(?s)authority\.find_first_of\("@\\\\"\)') {
+        $failures += 'Fangtang cellular HTTP URL authority must reject userinfo and backslash ambiguity'
+    }
+    if ($http -notmatch '(?s)ReadAll\(\).*?error_code_ = 255.*?Close\(\)') {
+        $failures += 'Ml307Http ReadAll timeout/error must close the owned modem slot'
+    }
+    if ($http -notmatch '(?s)body_forbidden_\s*=\s*method_\s*==\s*"HEAD"' -or
+        $http -notmatch '(?s)status_code == 101' -or
+        $http -notmatch '(?s)interim_response_') {
+        $failures += 'Ml307Http must fence body-forbidden statuses and interim responses'
+    }
+    if ($http -notmatch '(?s)!headers_received.*?body_forbidden') {
+        $failures += 'Ml307Http content URC must require final headers and reject bodyless payloads'
+    }
+    if ($http -notmatch '(?s)token_count != 1u.*?chunked' -or
+        $http -notmatch '(?s)content_length_seen.*?content_length_value') {
+        $failures += 'Ml307Http response framing must reject coding chains and conflicting lengths'
+    }
+    if ($http -notmatch '(?s)buffer_size == 0u\) return 0') {
+        $failures += 'Ml307Http zero-length writes must not inject synthetic CRLF payloads'
+    }
+    if ($genericHttp -notmatch '(?s)protocol_ != "http".*?protocol_ != "https"' -or
+        $genericHttp -notmatch '(?s)ParseHeaderLine.*?http_header_name_safe' -or
+        $genericHttp -notmatch '(?s)parse_http_size\(cl_it->second.value' -or
+        $genericHttp -notmatch '(?s)CHUNK_DATA_CRLF.*?ParseHeaderLine' -or
+        $genericHttp -notmatch '(?s)buffer_size > 0u && !buffer') {
+        $failures += 'Generic EC801E HTTP client must enforce URL/header/length/chunk and buffer boundaries'
+    }
+    if ($genericHttpHeader -notmatch 'CHUNK_DATA_CRLF' -or
+        $genericHttpHeader -notmatch 'content_length_present_' -or
+        $genericHttpHeader -notmatch 'body_forbidden_' -or
+        $genericHttpHeader -notmatch 'interim_response_') {
+        $failures += 'Generic EC801E HTTP client state must retain explicit chunk CRLF and Content-Length presence'
+    }
+    if ($genericHttp -notmatch '(?s)status == 101' -or
+        $genericHttp -notmatch '(?s)status == 204' -or
+        $genericHttp -notmatch '(?s)status == 304' -or
+        $genericHttp -notmatch '(?s)http_transfer_encoding_is_chunked') {
+        $failures += 'Generic EC801E HTTP client must fence body-forbidden statuses and Transfer-Encoding tokens'
+    }
+    if ($genericHttpHeader -notmatch '(?s)bool\s+ParseRegularBody\s*\(' -or
+        $genericHttpHeader -notmatch '(?s)bool\s+AddBodyData\s*\(') {
+        $failures += 'Generic EC801E HTTP body queue helpers must report backpressure failure explicitly'
+    }
+    $bodyQueueStart = $genericHttp.IndexOf('bool HttpClient::AddBodyData(')
+    if ($bodyQueueStart -ge 0) {
+        $bodyQueueEnd = $genericHttp.IndexOf('std::string HttpClient::ReadAll()', $bodyQueueStart)
+        if ($bodyQueueEnd -lt 0) { $bodyQueueEnd = $genericHttp.Length }
+        $bodyQueue = $genericHttp.Substring($bodyQueueStart, $bodyQueueEnd - $bodyQueueStart)
+        if ($bodyQueue -match 'SetError\s*\(') {
+            $failures += 'Generic EC801E body queue helpers must not mutate terminal error state while applying backpressure'
+        }
+    } else {
+        $failures += 'Generic EC801E body queue helpers must be implemented as bool-returning functions'
+    }
+    if ($genericHttp -notmatch '(?s)if\s*\(!AddBodyData\(std::move\(chunk_data\)\)\).*?SetError\s*\(' -or
+        $genericHttp -notmatch '(?s)if\s*\(!ParseRegularBody\(rx_buffer_\)\).*?SetError\s*\(') {
+        $failures += 'Generic EC801E body parsers must handle queue backpressure failure at the state-machine boundary'
+    }
+    $onTcpDataMatch = [regex]::Match($genericHttp, '(?s)void\s+HttpClient::OnTcpData\s*\([^\{]+\{(.*?)\n\}')
+    if ($onTcpDataMatch.Success -and $onTcpDataMatch.Groups[1].Value -match 'lock_guard\s*<\s*std::mutex\s*>\s+lock\s*\(mutex_\)') {
+        $failures += 'Generic EC801E TCP callback must not hold client mutex while applying body backpressure'
     }
     if ($mqtt -notmatch 'DecodeHexAppend' -or $mqtt -notmatch 'arguments\[6\]\.type') {
         $failures += 'Ml307Mqtt publish URC must type-check and validate hex payloads'

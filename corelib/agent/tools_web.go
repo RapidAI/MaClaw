@@ -37,7 +37,7 @@ func ToolWebSearchWithStrategyCtx(ctx context.Context, strategy corelib.WebSearc
 	if err != nil {
 		return fmt.Sprintf("搜索失败: %v", err)
 	}
-	return formatWebSearchResults(response.Results)
+	return formatWebSearchResultsNote(response.Results, response.Degraded)
 }
 
 func ToolWebSearchCtx(ctx context.Context, provider corelib.WebSearchProvider, args map[string]interface{}) string {
@@ -69,11 +69,18 @@ func webSearchMaxResults(args map[string]interface{}) int {
 }
 
 func formatWebSearchResults(results []websearch.SearchResult) string {
+	return formatWebSearchResultsNote(results, false)
+}
+
+func formatWebSearchResultsNote(results []websearch.SearchResult, degraded bool) string {
 	if len(results) == 0 {
 		return "未找到相关结果。"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "找到 %d 条结果:\n\n", len(results))
+	if degraded {
+		b.WriteString("部分搜索引擎不可用，已使用浏览器兜底。若结果仍不含目标站点，请用 browser 工具直接打开该网站。\n\n")
+	}
 	for i, r := range results {
 		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, r.Title, r.URL)
 		if r.Snippet != "" {

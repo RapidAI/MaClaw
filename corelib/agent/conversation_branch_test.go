@@ -5,6 +5,31 @@ import (
 	"testing"
 )
 
+func TestConversationTree_PreservesExplicitRoots(t *testing.T) {
+	entries := []ConversationEntry{
+		{Role: "user", Content: "math ppt", ID: "math", Timestamp: 50},
+		{Role: "assistant", Content: "ok", ID: "math-a", ParentID: "math", Timestamp: 51},
+		{Role: "user", Content: "maclaw ppt", ID: "maclaw", Timestamp: 100},
+		{Role: "assistant", Content: "ok", ID: "maclaw-a", ParentID: "maclaw", Timestamp: 101},
+	}
+	tree := NewConversationTreeWithTip(entries, "maclaw-a")
+	branch := tree.ActiveBranch()
+	if len(branch) != 2 {
+		t.Fatalf("active branch = %d, want 2 (maclaw root only), contents=%v", len(branch), branchContents(branch))
+	}
+	if branch[0].ID != "maclaw" || branch[1].ID != "maclaw-a" {
+		t.Fatalf("active branch IDs = %s -> %s, want maclaw -> maclaw-a", branch[0].ID, branch[1].ID)
+	}
+}
+
+func branchContents(entries []ConversationEntry) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.ID + ":" + e.Role
+	}
+	return out
+}
+
 func TestConversationTree_LinearHistory(t *testing.T) {
 	entries := []ConversationEntry{
 		{Role: "user", Content: "hello"},

@@ -161,18 +161,28 @@ type App struct {
 	// semanticEffectReceiptWorker is the generic reconciliation loop for
 	// receipt-bound dynamic effects. It owns no sources yet; channel/provider
 	// integrations register their binding-specific receipt source here.
-	semanticEffectReceiptWorker        *agentservice.DynamicEffectReceiptWorker
-	semanticInvocationKey              []byte
-	testHomeDir                        string // For testing purposes
-	downloadCancelers                  map[string]context.CancelFunc
-	downloadMutex                      sync.Mutex
-	skillInstallConfirm                sync.Map
-	IsInitMode                         bool
-	IsAutoStart                        bool
-	installingNode                     bool      // Flag to prevent concurrent Node.js installation
-	installingGit                      bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone                    chan bool // Channel to signal Node.js installation completion
-	installMutex                       sync.Mutex
+	semanticEffectReceiptWorker *agentservice.DynamicEffectReceiptWorker
+	semanticInvocationKey       []byte
+	testHomeDir                 string // For testing purposes
+	downloadCancelers           map[string]context.CancelFunc
+	downloadMutex               sync.Mutex
+	skillInstallConfirm         sync.Map
+	IsInitMode                  bool
+	IsAutoStart                 bool
+	installingNode              bool      // Flag to prevent concurrent Node.js installation
+	installingGit               bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone             chan bool // Channel to signal Node.js installation completion
+	installMutex                sync.Mutex
+	// legacyInstallResults stores the latest structured outcome for the
+	// compatibility InstallSkill API. The Wails method historically returns
+	// only error, so the result is exposed through InstallSkillDetailed while
+	// keeping the old binding source-compatible.
+	legacyInstallResultsMu sync.Mutex
+	legacyInstallResults   map[string]LegacySkillInstallResult
+	// legacySkillWriteFile is intentionally narrow and test-overridable. It
+	// keeps settings/metadata atomic writes behind one adapter so failure
+	// injection can verify the durable install rollback contract.
+	legacySkillWriteFile               func(string, []byte) error
 	toolInstallLocks                   map[string]bool // Track which tools are currently being installed
 	toolLockMutex                      sync.Mutex      // Mutex for toolInstallLocks map
 	remoteSessions                     *RemoteSessionManager
@@ -12315,6 +12325,98 @@ type legacySkillCommitError struct {
 	committed bool
 }
 
+// LegacySkillInstallResult is the structured outcome of the traditional GUI
+// ZIP/plugin installer. It deliberately mirrors the shared committer result
+// axes so callers cannot treat a nil error as proof that cleanup completed.
+// The legacy adapter remains a migration boundary and is still not eligible
+// for automatic installation.
+type LegacySkillInstallResult struct {
+	OK               bool   `json:"ok"`
+	State            string `json:"state"`          // committed | rolled_back | audit_pending
+	CleanupStatus    string `json:"cleanup_status"` // clear | pending | needs_review
+	RequestID        string `json:"request_id,omitempty"`
+	FailureReason    string `json:"failure_reason,omitempty"`
+	RollbackComplete bool   `json:"rollback_complete"`
+}
+
+func legacySkillResultKey(operation, skillName string) string {
+	return strings.ToLower(strings.TrimSpace(operation)) + "|" + strings.TrimSpace(skillName)
+}
+
+func (a *App) recordLegacySkillResult(operation, skillName string, result LegacySkillInstallResult) {
+	if a == nil {
+		return
+	}
+	a.legacyInstallResultsMu.Lock()
+	defer a.legacyInstallResultsMu.Unlock()
+	if a.legacyInstallResults == nil {
+		a.legacyInstallResults = make(map[string]LegacySkillInstallResult)
+	}
+	a.legacyInstallResults[legacySkillResultKey(operation, skillName)] = result
+}
+
+func (a *App) writeLegacySkillFile(path string, data []byte) error {
+	if a != nil && a.legacySkillWriteFile != nil {
+		return a.legacySkillWriteFile(path, data)
+	}
+	return atomicWriteFile(path, data)
+}
+
+// InstallSkillDetailed returns the structured result for the legacy GUI
+// installer. InstallSkill remains the compatibility error-only entry point
+// used by existing Wails bindings; new callers should branch on State and
+// CleanupStatus exactly as they do for SkillCommitter results.
+func (a *App) InstallSkillDetailed(name, description, skillType, value, location, projectPath, toolName string) LegacySkillInstallResult {
+	if a == nil {
+		return LegacySkillInstallResult{State: "rolled_back", CleanupStatus: "clear", FailureReason: "app not initialized"}
+	}
+	// Do not let a previous invocation for the same name leak into an early
+	// validation failure that occurs before InstallSkill allocates a request ID.
+	a.legacyInstallResultsMu.Lock()
+	delete(a.legacyInstallResults, legacySkillResultKey("install", name))
+	a.legacyInstallResultsMu.Unlock()
+	err := a.InstallSkill(name, description, skillType, value, location, projectPath, toolName)
+	a.legacyInstallResultsMu.Lock()
+	result, ok := a.legacyInstallResults[legacySkillResultKey("install", name)]
+	a.legacyInstallResultsMu.Unlock()
+	if !ok {
+		result = LegacySkillInstallResult{State: "rolled_back", CleanupStatus: "clear", RollbackComplete: err == nil}
+	}
+	if err != nil && result.FailureReason == "" {
+		result.FailureReason = err.Error()
+	}
+	return result
+}
+
+// AddSkillDetailed and DeleteSkillDetailed provide the same explicit result
+// contract for the two remaining legacy GUI mutation entry points. The
+// compatibility methods keep their historical error-only signatures.
+func (a *App) AddSkillDetailed(name, description, skillType, value, toolName string) LegacySkillInstallResult {
+	err := a.AddSkill(name, description, skillType, value, toolName)
+	return legacySkillResultFromError("add", name, err)
+}
+
+func (a *App) DeleteSkillDetailed(name, toolName string) LegacySkillInstallResult {
+	err := a.DeleteSkill(name, toolName)
+	return legacySkillResultFromError("delete", name, err)
+}
+
+func legacySkillResultFromError(operation, skillName string, err error) LegacySkillInstallResult {
+	result := LegacySkillInstallResult{OK: err == nil, State: "committed", CleanupStatus: "clear", RollbackComplete: err == nil}
+	if err != nil {
+		result.State = "rolled_back"
+		result.RollbackComplete = !strings.Contains(strings.ToLower(err.Error()), "rollback incomplete")
+		result.FailureReason = err.Error()
+		var committedErr *legacySkillCommitError
+		if errors.As(err, &committedErr) && committedErr.committed {
+			result.State = "committed"
+			result.CleanupStatus = "pending"
+			result.RollbackComplete = true
+		}
+	}
+	return result
+}
+
 func (e *legacySkillCommitError) Error() string { return e.err.Error() }
 func (e *legacySkillCommitError) Unwrap() error { return e.err }
 
@@ -12331,9 +12433,44 @@ func resolveLegacySkillPackagePath(value, skillsDir string) string {
 	return filepath.Join(skillsDir, value)
 }
 
+// recoverLegacySkillCompensations replays only the legacy GUI metadata
+// transactions owned by this adapter. The generic queue remains authoritative
+// and unreadable/pending records fail closed before any new metadata, package,
+// or settings write is attempted.
+func recoverLegacySkillCompensationsForPrefixes(skillName string, indexRefresher func() error, prefixes ...string) error {
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return fmt.Errorf("legacy Skill mutation blocked: compensation queue unavailable: %w", err)
+	}
+	for _, prefix := range prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" {
+			continue
+		}
+		if _, pending, err := skill.RecoverPendingEvolutionCompensationsForActionPrefixAndSkill(prefix, skillName, nil, indexRefresher); err != nil {
+			return fmt.Errorf("legacy Skill compensation recovery failed: %w", err)
+		} else if pending > 0 {
+			return fmt.Errorf("legacy Skill mutation blocked: pending compensation requires review")
+		}
+	}
+	if strings.TrimSpace(skillName) != "" {
+		pipeline := skill.NewEvolutionPipeline()
+		if pipeline.HasPendingCompensation(skillName) {
+			return fmt.Errorf("legacy Skill mutation blocked: pending compensation for %q", skillName)
+		}
+	}
+	return nil
+}
+
+func recoverLegacySkillCompensations(skillName string) error {
+	return recoverLegacySkillCompensationsForPrefixes(skillName, nil, "legacy_gui_skill_add", "legacy_gui_skill_delete", "legacy_gui_skill_install")
+}
+
 func (a *App) AddSkill(name, description, skillType, value, toolName string) error {
 	a.installMutex.Lock()
 	defer a.installMutex.Unlock()
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("skill name required")
+	}
 	return a.addSkillLocked(name, description, skillType, value, toolName)
 }
 
@@ -12341,6 +12478,21 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 // already hold installMutex (InstallSkill) use this helper to keep directory,
 // package and metadata writes serialized as one local critical section.
 func (a *App) addSkillLocked(name, description, skillType, value, toolName string) error {
+	return a.addSkillLockedWithRecord(name, description, skillType, value, toolName, nil)
+}
+
+// addSkillLockedWithRecord reuses an already-persisted outer install record.
+// This prevents InstallSkill from creating a nested durable transaction for
+// metadata/package publication; the outer record remains the sole recovery
+// authority and owns the final audit/commit boundary.
+func (a *App) addSkillLockedWithRecord(name, description, skillType, value, toolName string, sharedRecord *skill.EvolutionCompensationRecord) error {
+	// InstallSkill owns an outer install transaction. Do not recover that
+	// in-flight record recursively while addSkillLocked updates metadata.
+	if sharedRecord == nil {
+		if err := recoverLegacySkillCompensationsForPrefixes(name, func() error { return a.refreshSkillIndexesAfterMutationChecked(name) }, "legacy_gui_skill_add", "legacy_gui_skill_delete"); err != nil {
+			return err
+		}
+	}
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "name": name, "type": skillType, "tool": toolName}); err != nil {
 		return err
 	}
@@ -12377,6 +12529,7 @@ func (a *App) addSkillLocked(name, description, skillType, value, toolName strin
 	// Check for duplicate name - update if exists
 	found := false
 	var stagedPackage, packageDestination, packageBackup string
+	packageHadPrevious := false
 	packagePublished := false
 	defer func() {
 		if stagedPackage != "" {
@@ -12443,6 +12596,7 @@ func (a *App) addSkillLocked(name, description, skillType, value, toolName strin
 			return err
 		}
 		if _, err := os.Stat(packageDestination); err == nil {
+			packageHadPrevious = true
 			if err := os.Rename(packageDestination, packageBackup); err != nil {
 				return fmt.Errorf("backup skill package: %w", err)
 			}
@@ -12461,6 +12615,13 @@ func (a *App) addSkillLocked(name, description, skillType, value, toolName strin
 	}
 	for i, s := range skills {
 		if s.Name == name {
+			// A legacy registry update with an identical authoritative payload is
+			// a true no-op. Do not create a package backup, rewrite metadata, or
+			// invalidate the scanner merely because the caller repeated the same
+			// request.
+			if s.Description == description && s.Type == skillType && s.Value == value {
+				return nil
+			}
 			finalValue := value
 			if skillKind.IsZip() {
 				// If value is a path (contains separator)", assume it's a new file to copy
@@ -12507,29 +12668,241 @@ func (a *App) addSkillLocked(name, description, skillType, value, toolName strin
 	if err != nil {
 		return err
 	}
+	// Persist the legacy metadata/package pre-image before crossing the first
+	// destructive filesystem boundary. The package itself remains on disk and
+	// is represented by a durable file move plan; metadata is bounded and stored
+	// as an exact snapshot so a restart can restore the pair deterministically.
+	legacyRequestID := fmt.Sprintf("legacy_gui_skill_add_%d", time.Now().UnixNano())
+	legacyRecord := skill.NewEvolutionCompensationRecord(legacyRequestID, name, "legacy_gui_skill_add", "", nil, false, nil, "legacy_skill_mutation")
+	legacyRecord.FinalAuditKind = skill.KindFromEventName("skill:legacy_installed")
+	if sharedRecord != nil {
+		legacyRecord = *sharedRecord
+		legacyRequestID = legacyRecord.RequestID
+	} else {
+		legacyRecord.TransactionState = "prepared"
+		legacyRecord.CleanupStatus = "pending"
+		legacyRecord.SetRecoveryScope(skillsDir)
+		legacyRecord.SetFileSnapshots([]skill.EvolutionFileSnapshot{{Path: metadataPath, BackupB64: base64.StdEncoding.EncodeToString(originalMetadata), Exists: metadataExists}})
+	}
+	if stagedPackage != "" {
+		legacyRecord.SetRollbackCleanupPaths([]string{stagedPackage})
+		if _, statErr := os.Stat(packageDestination); statErr == nil {
+			legacyRecord.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: packageDestination, BackupPath: packageDestination + ".prev", HadPrevious: true}})
+		} else if os.IsNotExist(statErr) {
+			created := append([]string(nil), legacyRecord.CreatedDirs...)
+			created = append(created, packageDestination)
+			legacyRecord.SetCreatedDirectories(created)
+		} else {
+			return fmt.Errorf("inspect legacy Skill package destination: %w", statErr)
+		}
+	}
+	if sharedRecord == nil {
+		if err := skill.PersistEvolutionCompensation(legacyRecord); err != nil {
+			return fmt.Errorf("persist legacy Skill compensation: %w", err)
+		}
+	}
+	legacyRecordPersisted := true
+	persistLegacyRecord := func() error {
+		if sharedRecord != nil {
+			*sharedRecord = legacyRecord
+			return nil
+		}
+		return skill.ReplaceEvolutionCompensation(legacyRecord)
+	}
+	clearLegacyRecord := func(committed bool, cleanupErr error) error {
+		if !legacyRecordPersisted {
+			return cleanupErr
+		}
+		if sharedRecord != nil {
+			*sharedRecord = legacyRecord
+			return cleanupErr
+		}
+		if committed {
+			legacyRecord.TransactionState = "committed"
+			legacyRecord.CleanupStatus = "pending"
+			if cleanupErr != nil {
+				legacyRecord.LastError = cleanupErr.Error()
+			}
+			if err := skill.ReplaceEvolutionCompensation(legacyRecord); err != nil && cleanupErr == nil {
+				return err
+			}
+			return cleanupErr
+		}
+		if cleanupErr != nil {
+			legacyRecord.TransactionState = "audit_pending"
+			legacyRecord.CleanupStatus = "pending"
+			legacyRecord.LastError = cleanupErr.Error()
+			_ = skill.ReplaceEvolutionCompensation(legacyRecord)
+			return cleanupErr
+		}
+		if err := skill.ClearEvolutionCompensation(legacyRecord.RequestID, legacyRecord.Skill, legacyRecord.Action); err != nil {
+			legacyRecord.TransactionState = "rolled_back"
+			legacyRecord.CleanupStatus = "pending"
+			legacyRecord.LastError = err.Error()
+			_ = skill.ReplaceEvolutionCompensation(legacyRecord)
+			return err
+		}
+		legacyRecordPersisted = false
+		return nil
+	}
 	if err := publishPackage(); err != nil {
+		rollbackErr := rollbackPackage()
+		if rollbackErr != nil {
+			_ = clearLegacyRecord(false, rollbackErr)
+			return fmt.Errorf("publish skill package: %w; rollback package: %v", err, rollbackErr)
+		}
+		_ = clearLegacyRecord(false, err)
 		return err
+	}
+	if stagedPackage == "" && packagePublished {
+		if packageHadPrevious && packageBackup != "" {
+			legacyRecord.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: packageDestination, BackupPath: packageBackup, HadPrevious: true, Moved: true, Published: true}})
+			legacyRecord.SetPostCommitCleanupPaths([]string{packageBackup})
+		} else {
+			// InstallSkill may already have registered directories extracted from
+			// the archive in the outer record. Preserve those paths when the inner
+			// metadata transaction publishes its package copy; otherwise an index or
+			// audit failure would roll back metadata but orphan the extracted Skill.
+			created := append([]string(nil), legacyRecord.CreatedDirs...)
+			created = append(created, packageDestination)
+			legacyRecord.SetCreatedDirectories(created)
+		}
+		if err := persistLegacyRecord(); err != nil {
+			rollbackErr := rollbackPackage()
+			if rollbackErr != nil {
+				_ = clearLegacyRecord(false, rollbackErr)
+				return fmt.Errorf("persist legacy package compensation: %w; rollback package: %v", err, rollbackErr)
+			}
+			_ = clearLegacyRecord(false, err)
+			return fmt.Errorf("persist legacy package compensation: %w", err)
+		}
 	}
 	if err := atomicWriteFile(metadataPath, data); err != nil {
 		rollbackErr := rollbackPackage()
 		if rollbackErr != nil {
+			_ = clearLegacyRecord(false, rollbackErr)
 			return fmt.Errorf("write skill metadata: %w; rollback package: %v", err, rollbackErr)
 		}
 		if metadataExists {
 			if restoreErr := atomicWriteFile(metadataPath, originalMetadata); restoreErr != nil {
+				_ = clearLegacyRecord(false, restoreErr)
 				return fmt.Errorf("write skill metadata: %w; restore metadata: %v", err, restoreErr)
 			}
 		} else {
 			_ = os.Remove(metadataPath)
 		}
+		_ = clearLegacyRecord(false, err)
 		return fmt.Errorf("write skill metadata: %w", err)
+	}
+	// The legacy registry is not self-contained: routing is a derived but
+	// checked publication boundary. Refresh it only after metadata/package are
+	// in their forward state; if the refresh fails, restore both authoritative
+	// inputs before retaining/clearing the compensation record.
+	if sharedRecord == nil {
+		if err := a.refreshSkillIndexesAfterMutationChecked(name); err != nil {
+			rollbackErr := rollbackPackage()
+			if metadataExists {
+				if restoreErr := atomicWriteFile(metadataPath, originalMetadata); restoreErr != nil {
+					if rollbackErr != nil {
+						rollbackErr = fmt.Errorf("%v; restore metadata: %w", rollbackErr, restoreErr)
+					} else {
+						rollbackErr = restoreErr
+					}
+				}
+			} else if removeErr := os.Remove(metadataPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				if rollbackErr != nil {
+					rollbackErr = fmt.Errorf("%v; remove metadata: %w", rollbackErr, removeErr)
+				} else {
+					rollbackErr = removeErr
+				}
+			}
+			// Rebuild the checked index from the restored metadata/package state
+			// before clearing the durable record. Clearing first would make a
+			// second index failure unrecoverable after a process restart.
+			if restoreIndexErr := a.refreshSkillIndexesAfterMutationChecked(name); restoreIndexErr != nil {
+				if rollbackErr != nil {
+					rollbackErr = fmt.Errorf("%v; restore index: %w", rollbackErr, restoreIndexErr)
+				} else {
+					rollbackErr = restoreIndexErr
+				}
+			}
+			if rollbackErr != nil {
+				_ = clearLegacyRecord(false, rollbackErr)
+				return fmt.Errorf("refresh Skill index: %w; rollback: %v", err, rollbackErr)
+			}
+			if clearErr := clearLegacyRecord(false, err); clearErr != nil {
+				return fmt.Errorf("refresh Skill index: %w; clear compensation: %v", err, clearErr)
+			}
+			return fmt.Errorf("refresh Skill index: %w", err)
+		}
+	}
+	if sharedRecord != nil {
+		// The outer InstallSkill transaction owns index publication, final audit,
+		// and commit-state persistence. Do not emit a local "installed" audit here:
+		// doing so would leave an applied event behind if the outer checked-index
+		// or final-audit step later fails and rolls this metadata/package change
+		// back. Keep the prepared outer record intact and let the caller continue.
+		*sharedRecord = legacyRecord
+		return nil
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:legacy_installed", map[string]string{
+		"skill": name, "action": "legacy_gui_skill_add", "decision": "applied", "request_id": legacyRequestID,
+		"attempt": "1", "config_revision": "legacy-gui-skill-v1", "schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		rollbackErr := rollbackPackage()
+		if metadataExists {
+			if restoreErr := atomicWriteFile(metadataPath, originalMetadata); restoreErr != nil {
+				if rollbackErr != nil {
+					rollbackErr = fmt.Errorf("%v; restore metadata: %w", rollbackErr, restoreErr)
+				} else {
+					rollbackErr = restoreErr
+				}
+			}
+		} else if removeErr := os.Remove(metadataPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			if rollbackErr != nil {
+				rollbackErr = fmt.Errorf("%v; remove metadata: %w", rollbackErr, removeErr)
+			} else {
+				rollbackErr = removeErr
+			}
+		}
+		if restoreIndexErr := a.refreshSkillIndexesAfterMutationChecked(name); restoreIndexErr != nil {
+			if rollbackErr != nil {
+				rollbackErr = fmt.Errorf("%v; restore index: %w", rollbackErr, restoreIndexErr)
+			} else {
+				rollbackErr = restoreIndexErr
+			}
+		}
+		if rollbackErr != nil {
+			_ = clearLegacyRecord(false, rollbackErr)
+			return fmt.Errorf("legacy Skill final audit: %w; rollback: %v", err, rollbackErr)
+		}
+		if clearErr := clearLegacyRecord(false, err); clearErr != nil {
+			return fmt.Errorf("legacy Skill final audit: %w; clear compensation: %v", err, clearErr)
+		}
+		return fmt.Errorf("legacy Skill final audit: %w", err)
+	}
+	// The final audit is the business commit boundary. Persist that fact before
+	// deleting package backups or the compensation record; otherwise a process
+	// crash in the cleanup window could make startup recovery roll back an
+	// already-audited metadata/package pair.
+	if err := clearLegacyRecord(true, nil); err != nil {
+		return &legacySkillCommitError{err: fmt.Errorf("legacy Skill commit state persist failed: %w", err), committed: true}
 	}
 	if packageBackup != "" {
 		if err := os.Remove(packageBackup); err != nil && !os.IsNotExist(err) {
 			// The new metadata/package pair is already committed. Surface cleanup
 			// failure so callers do not mistake this legacy API for a clear commit.
-			return &legacySkillCommitError{err: fmt.Errorf("skill metadata committed but package cleanup failed: %w", err), committed: true}
+			cleanupErr := fmt.Errorf("skill metadata committed but package cleanup failed: %w", err)
+			_ = clearLegacyRecord(true, cleanupErr)
+			return &legacySkillCommitError{err: cleanupErr, committed: true}
 		}
+	}
+	if err := skill.ClearEvolutionCompensation(legacyRecord.RequestID, legacyRecord.Skill, legacyRecord.Action); err != nil {
+		legacyRecord.TransactionState = "committed"
+		legacyRecord.CleanupStatus = "pending"
+		legacyRecord.LastError = err.Error()
+		_ = skill.ReplaceEvolutionCompensation(legacyRecord)
+		return &legacySkillCommitError{err: fmt.Errorf("legacy Skill compensation cleanup failed: %w", err), committed: true}
 	}
 	if a.skillExecutor != nil {
 		a.skillExecutor.invalidateSkillCache()
@@ -12617,7 +12990,7 @@ func (a *App) installDefaultMarketplaceLocked() error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal settings: %v", err)
 		}
-		if err := atomicWriteFile(settingsFile, data); err != nil {
+		if err := a.writeLegacySkillFile(settingsFile, data); err != nil {
 			return fmt.Errorf("failed to write settings: %v", err)
 		}
 		a.log("Default marketplaces added to ~/.claude/settings.json")
@@ -12690,6 +13063,13 @@ func ensureSkillZipDoesNotOverwriteExisting(archivePath, destinationRoot string)
 		if readErr != nil {
 			return fmt.Errorf("inspect existing skill destination: %w", readErr)
 		}
+		// Root-level files are merged by the legacy extractor. There is no
+		// bounded per-file pre-image for that merge, so an existing destination
+		// (even an empty one) is not a safe transaction target. Fail closed and
+		// require a fresh destination until this adapter moves to SkillCommitter.
+		if len(entries) == 0 {
+			return fmt.Errorf("skill ZIP contains root-level files and legacy GUI cannot atomically merge an existing destination")
+		}
 		for _, existing := range entries {
 			if existing.Name() == "." || existing.Name() == ".." {
 				continue
@@ -12708,9 +13088,55 @@ func ensureSkillZipDoesNotOverwriteExisting(archivePath, destinationRoot string)
 	return nil
 }
 
-func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
+// legacySkillInstallCreatedPaths predicts the top-level paths an archive
+// publication may create. It is persisted before extraction so a crash during
+// unzip still leaves a durable, bounded removal plan. Existing top-level paths
+// are rejected by ensureSkillZipDoesNotOverwriteExisting.
+func legacySkillInstallCreatedPaths(archivePath, destinationRoot string) ([]string, error) {
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect skill ZIP mutation paths: %w", err)
+	}
+	defer archive.Close()
+	rootHasFiles := false
+	tops := make(map[string]struct{})
+	for _, entry := range archive.File {
+		name := strings.Trim(strings.ReplaceAll(entry.Name, "\\", "/"), "/")
+		if name == "" || strings.HasPrefix(name, "__MACOSX/") || name == "__MACOSX" {
+			continue
+		}
+		parts := strings.Split(name, "/")
+		if len(parts) == 1 {
+			if !entry.FileInfo().IsDir() {
+				rootHasFiles = true
+			}
+			continue
+		}
+		tops[parts[0]] = struct{}{}
+	}
+	paths := make([]string, 0, len(tops)+1)
+	if rootHasFiles {
+		if _, statErr := os.Stat(destinationRoot); os.IsNotExist(statErr) {
+			paths = append(paths, destinationRoot)
+		} else if statErr != nil {
+			return nil, statErr
+		}
+	}
+	for top := range tops {
+		paths = append(paths, filepath.Join(destinationRoot, top))
+	}
+	return paths, nil
+}
+
+func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) (retErr error) {
 	a.installMutex.Lock()
 	defer a.installMutex.Unlock()
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("skill name required")
+	}
+	if err := recoverLegacySkillCompensationsForPrefixes(name, func() error { return a.refreshSkillIndexesAfterMutationChecked(name) }, "legacy_gui_skill_add", "legacy_gui_skill_delete", "legacy_gui_skill_install"); err != nil {
+		return err
+	}
 	locationKind := normalizeSkillInstallLocationKind(location)
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if locationKind.IsProject() && projectPath == "" {
@@ -12778,10 +13204,215 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 		}
 	}
 	var installedSkillDirs []string
-	// 2. Install to Tool
+	// InstallSkill has historically composed directory extraction/settings
+	// mutation with addSkillLocked's independent metadata transaction. Create
+	// an outer durable record before either side effect so a crash cannot leave
+	// an extracted directory or plugin setting without a recovery plan.
+	installRequestID := fmt.Sprintf("legacy_gui_skill_install_%d", time.Now().UnixNano())
+	installRecord := skill.NewEvolutionCompensationRecord(installRequestID, name, "legacy_gui_skill_install", "", nil, false, nil, "legacy_skill_install")
+	installRecord.FinalAuditKind = skill.KindFromEventName("skill:legacy_install_committed")
+	installRecord.TransactionState = "prepared"
+	installRecord.CleanupStatus = "pending"
+	var installDestinationRoot string
+	if skillKind.IsZip() {
+		if locationKind.IsUser() {
+			installDestinationRoot = filepath.Join(a.GetUserHomeDir(), configDirName, "skills")
+		} else if locationKind.IsProject() {
+			installDestinationRoot = filepath.Join(projectPath, configDirName, "skills")
+		}
+	}
+	// User installs touch both the configured desktop data directory and the
+	// tool's home directory; project installs add a third root. There is no
+	// single safe filesystem scope for this legacy adapter, so ownership is
+	// restricted by the dedicated action prefix and each durable path is still
+	// validated by the compensation reader.
+	// addSkillLocked always owns the shared legacy metadata registry, including
+	// project installs; snapshot that exact path rather than deriving a project
+	// local path that the inner transaction will never write.
+	installMetadataPath := filepath.Join(a.GetSkillsDir(toolName), "metadata.json")
+	installMetadataBefore, installMetadataExists := []byte(nil), false
+	if before, readErr := os.ReadFile(installMetadataPath); readErr == nil {
+		installMetadataBefore, installMetadataExists = append([]byte(nil), before...), true
+	} else if !os.IsNotExist(readErr) {
+		return fmt.Errorf("snapshot install metadata: %w", readErr)
+	}
+	fileSnapshots := []skill.EvolutionFileSnapshot{{Path: installMetadataPath, BackupB64: base64.StdEncoding.EncodeToString(installMetadataBefore), Exists: installMetadataExists}}
+	// Plugin installation mutates settings before metadata registration. Include
+	// that pre-image in the same durable record so recovery does not depend on a
+	// process-local defer.
 	var settingsPath string
 	var settingsBefore []byte
 	settingsExisted := false
+	if locationKind.IsUser() && skillKind.IsAddress() {
+		home := a.GetUserHomeDir()
+		if strings.TrimSpace(home) == "" {
+			return fmt.Errorf("user home directory is unavailable")
+		}
+		settingsPath = filepath.Join(home, ".claude", "settings.json")
+		if before, readErr := os.ReadFile(settingsPath); readErr == nil {
+			settingsBefore, settingsExisted = append([]byte(nil), before...), true
+		} else if !os.IsNotExist(readErr) {
+			return fmt.Errorf("snapshot plugin settings: %w", readErr)
+		}
+		fileSnapshots = append(fileSnapshots, skill.EvolutionFileSnapshot{Path: settingsPath, BackupB64: base64.StdEncoding.EncodeToString(settingsBefore), Exists: settingsExisted})
+	}
+	if skillKind.IsZip() && installDestinationRoot != "" {
+		created, pathErr := legacySkillInstallCreatedPaths(fullPath, installDestinationRoot)
+		if pathErr != nil {
+			return pathErr
+		}
+		installRecord.SetCreatedDirectories(created)
+	}
+	if skillKind.IsZip() && zipSnapshotPath != "" {
+		// addSkillLocked publishes a metadata-registry package copy after the
+		// archive has been extracted. Reserve its deterministic destination in
+		// the outer record as well; otherwise an outer audit failure could remove
+		// the extracted directory while leaving the inner package orphaned.
+		packagePath := filepath.Join(a.GetSkillsDir(toolName), filepath.Base(zipSnapshotPath))
+		if _, statErr := os.Lstat(packagePath); statErr == nil {
+			return fmt.Errorf("legacy Skill package destination already exists: %s", filepath.Base(packagePath))
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect legacy Skill package destination: %w", statErr)
+		}
+		created := append([]string(nil), installRecord.CreatedDirs...)
+		created = append(created, packagePath)
+		installRecord.SetCreatedDirectories(created)
+	}
+	installRecord.SetFileSnapshots(fileSnapshots)
+	installRecordPersisted := false
+	installCommitted := false
+	// Publish a structured result for callers that opt into
+	// InstallSkillDetailed. The legacy Wails method keeps its error-only
+	// signature, but every transaction outcome is still classified using the
+	// same state axes as SkillCommitter.
+	defer func() {
+		result := LegacySkillInstallResult{
+			OK:               retErr == nil,
+			State:            strings.TrimSpace(installRecord.TransactionState),
+			CleanupStatus:    strings.TrimSpace(installRecord.CleanupStatus),
+			RequestID:        installRequestID,
+			RollbackComplete: retErr == nil,
+		}
+		if result.State == "" {
+			result.State = "rolled_back"
+		}
+		if result.CleanupStatus == "" {
+			result.CleanupStatus = "clear"
+		}
+		if retErr != nil {
+			if result.State == "prepared" {
+				result.State = "rolled_back"
+			}
+			result.RollbackComplete = result.State == "rolled_back" && !strings.Contains(strings.ToLower(retErr.Error()), "rollback incomplete")
+			result.FailureReason = retErr.Error()
+			var committedErr *legacySkillCommitError
+			if errors.As(retErr, &committedErr) && committedErr.committed {
+				result.OK = false
+				result.State = "committed"
+				result.CleanupStatus = "pending"
+				result.RollbackComplete = true
+			}
+		} else {
+			result.OK = true
+			result.State = "committed"
+			result.CleanupStatus = "clear"
+		}
+		a.recordLegacySkillResult("install", name, result)
+	}()
+	installCleanup := func() error {
+		if !installRecordPersisted {
+			return nil
+		}
+		if installCommitted {
+			if err := skill.ClearEvolutionCompensation(installRecord.RequestID, installRecord.Skill, installRecord.Action); err != nil {
+				installRecord.LastError = err.Error()
+				installRecord.TransactionState = "committed"
+				installRecord.CleanupStatus = "pending"
+				_ = skill.ReplaceEvolutionCompensation(installRecord)
+				return err
+			}
+			installRecordPersisted = false
+			return nil
+		}
+		// Restore authoritative files/directories first. The checked index is
+		// rebuilt explicitly below so this rollback path has one observable index
+		// attempt and can retain the durable record when that attempt fails.
+		if err := skill.RestoreEvolutionCompensation(installRecord, nil, nil); err != nil {
+			installRecord.LastError = err.Error()
+			installRecord.TransactionState = "audit_pending"
+			installRecord.CleanupStatus = "pending"
+			_ = skill.ReplaceEvolutionCompensation(installRecord)
+			return err
+		}
+		// The outer record owns extracted directories and the metadata/settings
+		// pre-images. Rebuild the checked routing index after restoring those
+		// authoritative inputs; otherwise a failed install could remain routable
+		// through a stale index even though its files were rolled back.
+		if err := a.refreshSkillIndexesAfterMutationChecked(name); err != nil {
+			installRecord.LastError = err.Error()
+			installRecord.TransactionState = "audit_pending"
+			installRecord.CleanupStatus = "pending"
+			_ = skill.ReplaceEvolutionCompensation(installRecord)
+			return err
+		}
+		if err := skill.ClearEvolutionCompensation(installRecord.RequestID, installRecord.Skill, installRecord.Action); err != nil {
+			installRecord.LastError = err.Error()
+			installRecord.TransactionState = "rolled_back"
+			installRecord.CleanupStatus = "pending"
+			_ = skill.ReplaceEvolutionCompensation(installRecord)
+			return err
+		}
+		installRecordPersisted = false
+		return nil
+	}
+	if err := skill.PersistEvolutionCompensation(installRecord); err != nil {
+		return fmt.Errorf("persist legacy Skill install compensation: %w", err)
+	}
+	installRecordPersisted = true
+	defer func() {
+		if retErr != nil && installRecordPersisted && !installCommitted {
+			if err := installCleanup(); err != nil {
+				retErr = fmt.Errorf("%v; install rollback incomplete: %w", retErr, err)
+			}
+		}
+	}()
+	markInstallCommitted := func() error {
+		if err := skill.RecordEvolutionEventStrict("skill:legacy_install_committed", map[string]string{
+			"skill": name, "action": "legacy_gui_skill_install", "decision": "applied", "request_id": installRequestID,
+			"attempt": "1", "config_revision": "legacy-gui-skill-v1", "schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return fmt.Errorf("legacy Skill install final audit: %w", err)
+		}
+		// The outer install business boundary is crossed at final audit. Set the
+		// flag before persisting state so a failure to update the queue cannot
+		// trigger a destructive rollback of an already-audited inner metadata
+		// transaction.
+		installCommitted = true
+		installRecord.TransactionState = "committed"
+		installRecord.CleanupStatus = "pending"
+		installRecord.FailureReason = "post_commit_cleanup_pending"
+		if err := skill.ReplaceEvolutionCompensation(installRecord); err != nil {
+			return &legacySkillCommitError{err: fmt.Errorf("legacy Skill install commit state persist failed: %w", err), committed: true}
+		}
+		return installCleanup()
+	}
+	persistInstallAuditPending := func(cause error) error {
+		// The outer transaction has not crossed its business boundary when the
+		// final audit or checked-index step fails. Keep it audit-pending so the
+		// deferred rollback restores directory/settings/metadata pre-images.
+		installCommitted = false
+		installRecord.TransactionState = "audit_pending"
+		installRecord.CleanupStatus = "pending"
+		installRecord.FailureReason = "outer_install_audit_or_index_failed"
+		if cause != nil {
+			installRecord.LastError = cause.Error()
+		}
+		if err := skill.ReplaceEvolutionCompensation(installRecord); err != nil {
+			return fmt.Errorf("persist committed install compensation: %w", err)
+		}
+		return fmt.Errorf("audit-pending-install")
+	}
+	// 2. Install to Tool
 	settingsCommitted := false
 	defer func() {
 		// Marketplace registration and plugin enablement share one legacy
@@ -12791,24 +13422,12 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 		// new settings and must keep them.
 		if settingsPath != "" && !settingsCommitted {
 			if settingsExisted {
-				_ = atomicWriteFile(settingsPath, settingsBefore)
+				_ = a.writeLegacySkillFile(settingsPath, settingsBefore)
 			} else {
 				_ = os.Remove(settingsPath)
 			}
 		}
 	}()
-	if locationKind.IsUser() && skillKind.IsAddress() {
-		home := a.GetUserHomeDir()
-		if strings.TrimSpace(home) == "" {
-			return fmt.Errorf("user home directory is unavailable")
-		}
-		settingsPath = filepath.Join(home, ".claude", "settings.json")
-		if before, readErr := os.ReadFile(settingsPath); readErr == nil {
-			settingsBefore, settingsExisted = before, true
-		} else if !os.IsNotExist(readErr) {
-			return fmt.Errorf("snapshot plugin settings: %w", readErr)
-		}
-	}
 	if locationKind.IsUser() {
 		if skillKind.IsAddress() {
 			// Skill ID installation
@@ -12851,7 +13470,7 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 			if err != nil {
 				return fmt.Errorf("failed to marshal settings: %v", err)
 			}
-			if err := atomicWriteFile(settingsFile, data); err != nil {
+			if err := a.writeLegacySkillFile(settingsFile, data); err != nil {
 				return fmt.Errorf("failed to write settings: %v", err)
 			}
 			a.log(fmt.Sprintf("Plugin %s enabled in settings.json", value))
@@ -12868,8 +13487,15 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 				return fmt.Errorf("unzip failed: %v", err)
 			}
 			installedSkillDirs = append(installedSkillDirs, newlyInstalledSkillDirs(destDir, beforeDirs)...)
+			created := append([]string(nil), installedSkillDirs...)
+			for _, existing := range installRecord.CreatedDirs {
+				created = append(created, existing)
+			}
+			installRecord.SetCreatedDirectories(created)
+			if err := skill.ReplaceEvolutionCompensation(installRecord); err != nil {
+				return fmt.Errorf("persist extracted Skill compensation: %w", err)
+			}
 			if err := writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports); err != nil {
-				cleanupImportedSkillDirs(installedSkillDirs)
 				return fmt.Errorf("write skill scan cache: %w", err)
 			}
 		}
@@ -12881,8 +13507,15 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 			return fmt.Errorf("unzip failed: %v", err)
 		}
 		installedSkillDirs = append(installedSkillDirs, newlyInstalledSkillDirs(destDir, beforeDirs)...)
+		created := append([]string(nil), installedSkillDirs...)
+		for _, existing := range installRecord.CreatedDirs {
+			created = append(created, existing)
+		}
+		installRecord.SetCreatedDirectories(created)
+		if err := skill.ReplaceEvolutionCompensation(installRecord); err != nil {
+			return fmt.Errorf("persist extracted Skill compensation: %w", err)
+		}
 		if err := writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports); err != nil {
-			cleanupImportedSkillDirs(installedSkillDirs)
 			return fmt.Errorf("write skill scan cache: %w", err)
 		}
 	}
@@ -12891,23 +13524,58 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 	if zipSnapshotPath != "" {
 		addSkillValue = zipSnapshotPath
 	}
-	if err := a.addSkillLocked(name, description, skillType, addSkillValue, toolName); err != nil {
+	if err := a.addSkillLockedWithRecord(name, description, skillType, addSkillValue, toolName, &installRecord); err != nil {
 		var committedErr *legacySkillCommitError
 		if errors.As(err, &committedErr) && committedErr.committed {
-			// The metadata/package business commit crossed its boundary; retain
-			// the settings mutation and surface cleanup-pending semantics to the
-			// caller instead of restoring a now-inconsistent pre-image.
+			// The inner metadata/package transaction is already audited. Preserve
+			// the published pair and close the outer durable record as a committed
+			// but cleanup-pending result instead of restoring the pre-image.
+			if indexErr := a.refreshSkillIndexesAfterMutationChecked(name); indexErr != nil {
+				pendingErr := persistInstallAuditPending(indexErr)
+				return fmt.Errorf("%v; refresh Skill index after inner commit: %v; %v", err, indexErr, pendingErr)
+			}
+			if commitErr := markInstallCommitted(); commitErr != nil {
+				// The inner metadata/package transaction is already audited. Preserve
+				// the published pair and leave the outer record committed/pending so
+				// recovery only retries cleanup; never restore the old metadata here.
+				if installCommitted {
+					// Final audit succeeded and only committed-state persistence or
+					// cleanup failed. Preserve the audited result and keep settings.
+					settingsCommitted = true
+					return err
+				}
+				pendingErr := persistInstallAuditPending(commitErr)
+				return fmt.Errorf("%v; %v; %v", err, commitErr, pendingErr)
+			}
 			settingsCommitted = true
+			return err
 		} else {
 			cleanupImportedSkillDirs(installedSkillDirs)
 			if settingsPath != "" {
 				if settingsExisted {
-					_ = atomicWriteFile(settingsPath, settingsBefore)
+					_ = a.writeLegacySkillFile(settingsPath, settingsBefore)
 				} else {
 					_ = os.Remove(settingsPath)
 				}
 			}
 		}
+		return err
+	}
+	// The legacy metadata writer has a separate transaction and does not publish
+	// the checked routing index. Treat index refresh as an explicit outer step;
+	// its failure is handled by the durable install rollback above.
+	if err := a.refreshSkillIndexesAfterMutationChecked(name); err != nil {
+		return fmt.Errorf("refresh Skill index after legacy install: %w", err)
+	}
+	if err := markInstallCommitted(); err != nil {
+		if installCommitted {
+			settingsCommitted = true
+			return &legacySkillCommitError{err: fmt.Errorf("legacy Skill install committed but cleanup failed: %w", err), committed: true}
+		}
+		// Final-audit failure has not crossed the business commit boundary.
+		// Return a normal error so the deferred outer compensation restores
+		// extracted directories, metadata and settings instead of reporting a
+		// false committed result.
 		return err
 	}
 	settingsCommitted = true
@@ -12943,6 +13611,12 @@ func snapshotSkillZipForInstall(src string) (string, func(), error) {
 func (a *App) DeleteSkill(name, toolName string) error {
 	a.installMutex.Lock()
 	defer a.installMutex.Unlock()
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("skill name required")
+	}
+	if err := recoverLegacySkillCompensationsForPrefixes(name, func() error { return a.refreshSkillIndexesAfterMutationChecked(name) }, "legacy_gui_skill_add", "legacy_gui_skill_delete", "legacy_gui_skill_install"); err != nil {
+		return err
+	}
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "uninstall", "name": name, "tool": toolName}); err != nil {
 		return err
 	}
@@ -12953,7 +13627,10 @@ func (a *App) DeleteSkill(name, toolName string) error {
 	skillsDir := a.GetSkillsDir(toolName)
 	metadataPath := filepath.Join(skillsDir, "metadata.json")
 	var skills []corelib.Skill
+	var originalMetadata []byte
+	metadataExists := false
 	if data, err := os.ReadFile(metadataPath); err == nil {
+		originalMetadata, metadataExists = append([]byte(nil), data...), true
 		if err := json.Unmarshal(data, &skills); err != nil {
 			return fmt.Errorf("decode skill metadata: %w", err)
 		}
@@ -12961,54 +13638,34 @@ func (a *App) DeleteSkill(name, toolName string) error {
 		return fmt.Errorf("read skill metadata: %w", err)
 	}
 	var newSkills []corelib.Skill
+	foundSkill := false
 	type deletedPackage struct {
 		original string
 		staged   string
+		moved    bool
 	}
 	var deleted []deletedPackage
-	rollbackPackages := func() error {
-		var firstErr error
-		for i := len(deleted) - 1; i >= 0; i-- {
-			item := deleted[i]
-			if _, err := os.Stat(item.staged); err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			if err := os.Rename(item.staged, item.original); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		return firstErr
-	}
 	for _, s := range skills {
 		if s.Name == name {
+			foundSkill = true
 			if normalizeSkillTypeKind(s.Type).IsZip() {
 				packagePath := resolveLegacySkillPackagePath(s.Value, skillsDir)
 				if _, err := os.Stat(packagePath); err == nil {
 					stage, stageErr := os.CreateTemp(filepath.Dir(packagePath), ".skill-delete-*")
 					if stageErr != nil {
-						_ = rollbackPackages()
 						return fmt.Errorf("stage skill package deletion: %w", stageErr)
 					}
 					stagePath := stage.Name()
 					if closeErr := stage.Close(); closeErr != nil {
 						_ = os.Remove(stagePath)
-						_ = rollbackPackages()
 						return fmt.Errorf("stage skill package deletion: %w", closeErr)
 					}
 					_ = os.Remove(stagePath)
-					if renameErr := os.Rename(packagePath, stagePath); renameErr != nil {
-						_ = rollbackPackages()
-						return fmt.Errorf("stage skill package deletion: %w", renameErr)
-					}
+					// Only allocate the quarantine path here. The durable intent is
+					// persisted below before the first rename crosses a destructive
+					// filesystem boundary.
 					deleted = append(deleted, deletedPackage{original: packagePath, staged: stagePath})
 				} else if !os.IsNotExist(err) {
-					_ = rollbackPackages()
 					return fmt.Errorf("inspect skill package: %w", err)
 				}
 			}
@@ -13016,21 +13673,109 @@ func (a *App) DeleteSkill(name, toolName string) error {
 			newSkills = append(newSkills, s)
 		}
 	}
+	if !foundSkill {
+		return nil
+	}
 	data, err := json.MarshalIndent(newSkills, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := atomicWriteFile(metadataPath, data); err != nil {
-		rollbackErr := rollbackPackages()
-		if rollbackErr != nil {
-			return fmt.Errorf("write skill metadata: %w; restore package: %v", err, rollbackErr)
+	requestID := fmt.Sprintf("legacy_gui_skill_delete_%d", time.Now().UnixNano())
+	record := skill.NewEvolutionCompensationRecord(requestID, name, "legacy_gui_skill_delete", "", nil, false, nil, "legacy_skill_delete")
+	record.FinalAuditKind = skill.KindFromEventName("skill:legacy_deleted")
+	record.TransactionState = "prepared"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(skillsDir)
+	record.SetFileSnapshots([]skill.EvolutionFileSnapshot{{Path: metadataPath, BackupB64: base64.StdEncoding.EncodeToString(originalMetadata), Exists: metadataExists}})
+	moves := make([]skill.EvolutionDirectoryMove, 0, len(deleted))
+	for _, item := range deleted {
+		moves = append(moves, skill.EvolutionDirectoryMove{OriginalPath: item.original, BackupPath: item.staged, HadPrevious: true})
+	}
+	record.SetDirectoryMoves(moves)
+	if err := skill.PersistEvolutionCompensation(record); err != nil {
+		for _, item := range deleted {
+			_ = os.Remove(item.staged)
 		}
-		return fmt.Errorf("write skill metadata: %w", err)
+		return fmt.Errorf("persist legacy Skill delete compensation: %w", err)
+	}
+	restoreOrQueue := func(cause error) error {
+		if restoreErr := skill.RestoreEvolutionCompensation(record, nil, nil); restoreErr != nil {
+			record.TransactionState = "audit_pending"
+			record.CleanupStatus = "pending"
+			record.LastError = fmt.Sprintf("%v; restore: %v", cause, restoreErr)
+			_ = skill.ReplaceEvolutionCompensation(record)
+			return fmt.Errorf("%v; legacy Skill delete rollback incomplete", cause)
+		}
+		// The routing index is derived state but still a publication boundary.
+		// Restore authoritative metadata/package inputs first, then rebuild the
+		// checked index before clearing the durable compensation record. Clearing
+		// first would make a second index failure unrecoverable after restart.
+		if indexErr := a.refreshSkillIndexesAfterMutationChecked(name); indexErr != nil {
+			record.TransactionState = "audit_pending"
+			record.CleanupStatus = "pending"
+			record.LastError = fmt.Sprintf("%v; restore index: %v", cause, indexErr)
+			_ = skill.ReplaceEvolutionCompensation(record)
+			return fmt.Errorf("%v; legacy Skill delete index rollback incomplete: %v", cause, indexErr)
+		}
+		if clearErr := skill.ClearEvolutionCompensation(record.RequestID, record.Skill, record.Action); clearErr != nil {
+			record.TransactionState = "rolled_back"
+			record.CleanupStatus = "pending"
+			record.LastError = clearErr.Error()
+			_ = skill.ReplaceEvolutionCompensation(record)
+			return fmt.Errorf("%v; clear compensation: %v", cause, clearErr)
+		}
+		return cause
+	}
+	for i := range deleted {
+		if err := skill.RetryDirectoryRename(deleted[i].original, deleted[i].staged); err != nil {
+			return restoreOrQueue(fmt.Errorf("stage skill package deletion: %w", err))
+		}
+		deleted[i].moved = true
+		moves[i].Moved = true
+		record.SetDirectoryMoves(moves)
+		if err := skill.ReplaceEvolutionCompensation(record); err != nil {
+			return restoreOrQueue(fmt.Errorf("persist delete move compensation: %w", err))
+		}
+	}
+	if err := atomicWriteFile(metadataPath, data); err != nil {
+		return restoreOrQueue(fmt.Errorf("write skill metadata: %w", err))
+	}
+	// Publish the checked routing index only after metadata/package deletion is
+	// staged. If publication fails, restore both authoritative inputs and then
+	// refresh the index from the restored state via restoreOrQueue.
+	if err := a.refreshSkillIndexesAfterMutationChecked(name); err != nil {
+		return restoreOrQueue(fmt.Errorf("refresh Skill index: %w", err))
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:legacy_deleted", map[string]string{
+		"skill": name, "action": "legacy_gui_skill_delete", "decision": "applied", "request_id": requestID,
+		"attempt": "1", "config_revision": "legacy-gui-skill-v1", "schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return restoreOrQueue(fmt.Errorf("legacy Skill final audit: %w", err))
+	}
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	record.FailureReason = "post_commit_cleanup_pending"
+	record.SetPostCommitCleanupPaths(func() []string {
+		paths := make([]string, 0, len(deleted))
+		for _, item := range deleted {
+			paths = append(paths, item.staged)
+		}
+		return paths
+	}())
+	if err := skill.ReplaceEvolutionCompensation(record); err != nil {
+		return &legacySkillCommitError{err: fmt.Errorf("legacy Skill delete committed but compensation update failed: %w", err), committed: true}
 	}
 	for _, item := range deleted {
 		if err := os.Remove(item.staged); err != nil && !os.IsNotExist(err) {
-			return &legacySkillCommitError{err: fmt.Errorf("skill metadata committed but package cleanup failed: %w", err), committed: true}
+			record.LastError = err.Error()
+			_ = skill.ReplaceEvolutionCompensation(record)
+			return &legacySkillCommitError{err: fmt.Errorf("legacy Skill metadata committed but package cleanup failed: %w", err), committed: true}
 		}
+	}
+	if err := skill.ClearEvolutionCompensation(record.RequestID, record.Skill, record.Action); err != nil {
+		record.LastError = err.Error()
+		_ = skill.ReplaceEvolutionCompensation(record)
+		return &legacySkillCommitError{err: fmt.Errorf("legacy Skill delete compensation cleanup failed: %w", err), committed: true}
 	}
 	if a.skillExecutor != nil {
 		a.skillExecutor.invalidateSkillCache()

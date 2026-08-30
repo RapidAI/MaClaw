@@ -19,7 +19,40 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+type failingAuditStore struct {
+	Store
+	failAudit bool
+}
+
+type failingSkillContractRevokeRegistry struct {
+	DynamicCapabilityContractRegistry
+	fail        bool
+	failPublish bool
+}
+
+func (r *failingSkillContractRevokeRegistry) RevokeSkillContract(p Principal, stableID string) error {
+	if r.fail {
+		return fmt.Errorf("injected contract revoke failure")
+	}
+	return r.DynamicCapabilityContractRegistry.RevokeSkillContract(p, stableID)
+}
+
+func (r *failingSkillContractRevokeRegistry) PublishSkillContract(p Principal, stableID string, contract DynamicCapabilityContract) error {
+	if r.failPublish {
+		return fmt.Errorf("injected contract restore failure")
+	}
+	return r.DynamicCapabilityContractRegistry.PublishSkillContract(p, stableID, contract)
+}
+
+func (s *failingAuditStore) SaveAuditEvent(v AuditEvent) error {
+	if s.failAudit {
+		return fmt.Errorf("injected audit failure")
+	}
+	return s.Store.SaveAuditEvent(v)
+}
 
 func makeSkillZipBytes(t *testing.T, entries map[string]string) []byte {
 	t.Helper()
@@ -1363,6 +1396,54 @@ func TestNewServiceRecoversAgentSkillDirectoryCompensation(t *testing.T) {
 	}
 }
 
+func TestNewServiceRecoversAgentSkillContractSnapshot(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	root := filepath.Join(dataRoot, "tenants", principal.TenantID, "users", principal.UserID, "skills")
+	original := filepath.Join(root, "contract-recover")
+	backup := original + ".prev"
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: contract-recover\ndescription: restored\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	encoded, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := skill.NewEvolutionCompensationRecord("contract-recovery-request", "contract-recover", "agentservice_install", "", nil, false, nil, "publish interrupted")
+	record.Status = "pending"
+	record.TransactionState = "audit_pending"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(dataRoot)
+	record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: original, BackupPath: backup, HadPrevious: true, Moved: true, Published: true}})
+	record.SetExternalSnapshot("skill_contract|"+principal.TenantID+"|"+principal.UserID+"|legacy:contract-recover", string(encoded))
+	record.MarkExternalApplied("skill_contract|"+principal.TenantID+"|"+principal.UserID+"|legacy:contract-recover", true)
+	if err := skill.PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(original, "skill.yaml")); err != nil {
+		t.Fatalf("startup recovery did not restore original directory: %v", err)
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, "legacy:contract-recover"); !ok {
+		t.Fatal("startup recovery did not restore dynamic Skill contract")
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil || len(summaries) != 0 {
+		t.Fatalf("startup recovery left compensation records: summaries=%#v err=%v", summaries, err)
+	}
+}
+
 func TestAgentServiceRuntimeAndUploadBlockOnScopedCompensation(t *testing.T) {
 	oldBase := corelib.MaclawBaseDir()
 	base := t.TempDir()
@@ -1434,5 +1515,273 @@ func TestAgentServiceDeleteSkillUsesQuarantineTransaction(t *testing.T) {
 		t.Fatal(err)
 	} else if len(summaries) != 0 {
 		t.Fatalf("delete left compensation records: %d", len(summaries))
+	}
+}
+
+func TestAgentServiceDeleteSkillAuditFailureRestoresDirectory(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := &failingAuditStore{Store: NewMemoryStore(), failAudit: true}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "delete-audit-failure")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: delete-audit-failure\ndescription: test\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stableID := "legacy:delete-audit-failure"
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	if err := svc.dynamicCapabilities.PublishSkillContract(principal, stableID, contract); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteSkill(context.Background(), principal, "delete-audit-failure"); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("DeleteSkill error = %v, want committed failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill.yaml")); err != nil {
+		t.Fatalf("directory was not restored after audit failure: %v", err)
+	}
+	entries, listErr := svc.ListSkills(context.Background(), principal)
+	if listErr != nil || len(entries) != 1 || entries[0].Name != "delete-audit-failure" {
+		t.Fatalf("restored skill listing = %#v, err=%v", entries, listErr)
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, stableID); !ok {
+		t.Fatal("Skill contract was not restored after final-audit failure")
+	}
+}
+
+func TestAgentServiceDeleteSkillContractRevokeFailureLeavesContractAndDirectory(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := NewMemoryStore()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "delete-contract-failure")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: delete-contract-failure\ndescription: test\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := corelib.NLSkillEntry{Name: "delete-contract-failure", SkillDir: dir, Version: "1"}
+	stableID := skillStableID(entry)
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	if err := svc.dynamicCapabilities.PublishSkillContract(principal, stableID, contract); err != nil {
+		t.Fatal(err)
+	}
+	svc.dynamicCapabilities = &failingSkillContractRevokeRegistry{DynamicCapabilityContractRegistry: svc.dynamicCapabilities, fail: true}
+	if err := svc.DeleteSkill(context.Background(), principal, entry.Name); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("DeleteSkill error = %v, want contract revoke failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill.yaml")); err != nil {
+		t.Fatalf("directory was not restored after contract revoke failure: %v", err)
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, stableID); !ok {
+		t.Fatal("skill contract was unexpectedly revoked after failed delete")
+	}
+	if events, err := store.ListAuditEvents(principal.TenantID, principal.UserID); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, event := range events {
+			if event.Action == "skill.deleted" && event.ResourceID == entry.Name {
+				t.Fatal("failed delete emitted skill.deleted audit")
+			}
+		}
+	}
+}
+
+func TestAgentServiceImportContractRevokeFailureRollsBackDirectoryAndContract(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := NewMemoryStore()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldArchive := makeSkillZipBytes(t, map[string]string{
+		"contract-update/skill.yaml": "name: contract-update\ndescription: old\nsteps:\n  - action: prompt\n    prompt: old\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(oldArchive)}); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	stableID := "legacy:contract-update"
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	if err := svc.dynamicCapabilities.PublishSkillContract(principal, stableID, contract); err != nil {
+		t.Fatal(err)
+	}
+	oldRegistry := svc.dynamicCapabilities
+	svc.dynamicCapabilities = &failingSkillContractRevokeRegistry{DynamicCapabilityContractRegistry: oldRegistry, fail: true}
+	newArchive := makeSkillZipBytes(t, map[string]string{
+		"contract-update/skill.yaml": "name: contract-update\ndescription: new\nsteps:\n  - action: prompt\n    prompt: new\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(newArchive), Overwrite: true}); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("overwrite error = %v, want contract revoke failure", err)
+	}
+	entries, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(entries) != 1 || entries[0].Description != "old" {
+		t.Fatalf("old installation was not restored: entries=%#v err=%v", entries, err)
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, stableID); !ok {
+		t.Fatal("old Skill contract was not restored after failed overwrite")
+	}
+}
+
+func TestAgentServiceDeleteSkillAuditFailureContractRestoreFailureStaysPending(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := &failingAuditStore{Store: NewMemoryStore(), failAudit: true}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "delete-contract-restore-failure")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: delete-contract-restore-failure\ndescription: test\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stableID := "legacy:delete-contract-restore-failure"
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	if err := svc.dynamicCapabilities.PublishSkillContract(principal, stableID, contract); err != nil {
+		t.Fatal(err)
+	}
+	baseRegistry := svc.dynamicCapabilities
+	svc.dynamicCapabilities = &failingSkillContractRevokeRegistry{DynamicCapabilityContractRegistry: baseRegistry, failPublish: true}
+	if err := svc.DeleteSkill(context.Background(), principal, "delete-contract-restore-failure"); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("DeleteSkill error = %v, want rollback-incomplete failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill.yaml")); err != nil {
+		t.Fatalf("directory should be restored even when contract restore fails: %v", err)
+	}
+	if records, err := skill.ListEvolutionCompensationSummaries(); err != nil || len(records) != 1 || records[0].TransactionState != "audit_pending" {
+		t.Fatalf("contract restore failure should retain audit_pending compensation: summaries=%#v err=%v", records, err)
+	}
+}
+
+func TestAgentServiceImportAuditFailureRollsBackPublishedDirectory(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := &failingAuditStore{Store: NewMemoryStore(), failAudit: true}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := makeSkillZipBytes(t, map[string]string{
+		"audit-import/skill.yaml": "name: audit-import\ndescription: test\nsteps:\n  - action: prompt\n    prompt: hello\n",
+	})
+	_, err = svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(archive)})
+	if err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("InstallSkill error = %v, want final-audit rollback", err)
+	}
+	root := svc.UserSkillsRoot(principal.TenantID, principal.UserID)
+	if _, statErr := os.Stat(filepath.Join(root, "audit-import")); !os.IsNotExist(statErr) {
+		t.Fatalf("published directory remains after audit failure: %v", statErr)
+	}
+}
+
+func TestNewServiceRecoversAgentSkillDeleteQuarantine(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	original := filepath.Join(dataRoot, "tenants", "tenant", "users", "user", "skills", "delete-recover")
+	quarantine := filepath.Join(filepath.Dir(original), ".skill-delete-pending-crash")
+	if err := os.MkdirAll(quarantine, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantine, "skill.yaml"), []byte("name: delete-recover\ndescription: retained\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := skill.NewEvolutionCompensationRecord("delete-recovery-request", "delete-recover", "agentservice_install_delete", "", nil, false, nil, "delete quarantine interrupted")
+	record.TransactionState = "audit_pending"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(dataRoot)
+	record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: original, BackupPath: quarantine, HadPrevious: true, Moved: false, Published: false}})
+	if err := skill.PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{}); err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(original, "skill.yaml")); err != nil {
+		t.Fatalf("delete quarantine was not restored: %v", err)
+	}
+	if _, err := os.Stat(quarantine); !os.IsNotExist(err) {
+		t.Fatalf("delete quarantine remains after recovery: %v", err)
 	}
 }

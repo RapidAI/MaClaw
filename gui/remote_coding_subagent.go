@@ -1937,10 +1937,6 @@ type remoteCodingCallbacks struct {
 
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
-
-	noteMu     sync.Mutex
-	noteBuf    strings.Builder
-	lastNoteAt time.Time
 }
 
 type remoteCodingFileAuditEvent struct {
@@ -1965,6 +1961,16 @@ func (c *remoteCodingCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 		return corelib.MaclawLLMConfig{}
 	}
 	return c.agent.cfg
+}
+
+func (c *remoteCodingCallbacks) RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool) {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	prev := c.agent.cfg
+	next := c.agent.handler.refreshLLMConfigAfterTokenErrorCtx(ctx, c.agent.cfg)
+	c.agent.cfg = applyLLMAuthKey(c.agent.cfg, next)
+	return c.agent.cfg, llmAuthKeyRotated(prev, c.agent.cfg)
 }
 
 // RouteTurn applies the reasoning route to the coding task's start-time
@@ -2203,7 +2209,10 @@ func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbac
 
 func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interface{} {
 	tools := remoteCodingToolDefinitions()
-	tools = append(tools, buildCodeNavigationToolDefinition(), buildReportLocalizationToolDefinition())
+	tools = append(tools, buildCodeNavigationToolDefinition())
+	if c == nil || codingTaskNeedsLocalization(strings.TrimSpace(c.task+"\n"+c.taskContext)) {
+		tools = append(tools, buildReportLocalizationToolDefinition())
+	}
 	if c == nil {
 		// Keep the callback contract nil-safe. This is used by lightweight
 		// prompt/tool-surface checks before a concrete remote agent is bound.
@@ -2545,7 +2554,6 @@ func (c *remoteCodingCallbacks) OnToken(delta string) {
 	if c != nil && c.agent != nil && c.agent.onToken != nil {
 		c.agent.onToken(delta)
 	}
-	c.emitAssistantNoteDelta(delta)
 }
 
 func (c *remoteCodingCallbacks) OnProgress(text string) {
@@ -2572,42 +2580,6 @@ func (c *remoteCodingCallbacks) emitRemoteToolStartedEvent(name, argsJSON string
 		Title:   c.userFacingActivityTitle(),
 		Command: remoteCodingToolEventCommand(strings.ToLower(strings.TrimSpace(name)), argsJSON),
 		Files:   codingToolEventFiles(name, argsJSON, remoteCodingDisplayRoot(c)),
-	}
-	emitCodingAgentEvent(c.agent.onProgress, event)
-}
-
-func (c *remoteCodingCallbacks) emitAssistantNoteDelta(delta string) {
-	if c == nil || c.agent == nil || c.agent.onProgress == nil {
-		return
-	}
-	if strings.TrimSpace(delta) == "" {
-		return
-	}
-	c.noteMu.Lock()
-	c.noteBuf.WriteString(delta)
-	text := strings.TrimSpace(c.noteBuf.String())
-	ready := codingAssistantNoteReady(text, delta)
-	if !ready || (!c.lastNoteAt.IsZero() && time.Since(c.lastNoteAt) < 800*time.Millisecond) {
-		c.noteMu.Unlock()
-		return
-	}
-	text = compactCodingAssistantNote(text)
-	if text == "" {
-		c.noteBuf.Reset()
-		c.noteMu.Unlock()
-		return
-	}
-	c.noteBuf.Reset()
-	c.lastNoteAt = time.Now()
-	c.noteMu.Unlock()
-	event := CodingAgentEvent{
-		Version: 1,
-		Agent:   codingAgentNameCoding.String(),
-		Event:   codingAgentEventKindAssistantNote.String(),
-		Phase:   codingAgentEventPhaseRunning.String(),
-		Title:   c.userFacingActivityTitle(),
-		Detail:  text,
-		Summary: text,
 	}
 	emitCodingAgentEvent(c.agent.onProgress, event)
 }
@@ -4543,9 +4515,9 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 	}
 	sb.WriteString(`
 ## 工作规范
-1. 先定位相关路径与符号，再深入阅读关键文件
-1a. 故障定位优先 code_navigation；输出必须包含症状、Top 候选、根因文件/符号、因果路径、复现证据、反证/排除假设与建议的 focused test，并用 report_localization 提交结构化结果
-1b. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误与组件版本，优先核对官方文档并记录来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内问题也要明确说明为何无需联网
+1. 先找到相关路径与符号，再深入阅读关键文件
+1a. 仅当任务是修复已有代码的 bug 时：优先 code_navigation，形成症状、候选、根因、因果路径、复现与反证，并调用 report_localization。探索项目、补齐功能、核对 CLI 不要提交定位报告。
+1b. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误与组件版本，优先核对官方文档并记录来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内 bug 才需要说明为何无需联网
 2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）
 3. git status/diff/log 自检不要加 2>/dev/null 或 >/dev/null；若目录不是 Git 仓库，直接在结论中说明即可，不要用重定向掩盖 fatal 信息
 4. 完成后给出结构化发现：关键路径、结论、风险/建议

@@ -350,27 +350,19 @@ func collapseDuplicateCloudWorkspaceRecords(records []memory.ProjectRecord) []me
 	}
 	out := make([]memory.ProjectRecord, 0, len(records))
 	for _, rec := range records {
-		workspaceIDs := cloudWorkspaceIDsFromTags(rec.Tags)
-		if len(workspaceIDs) == 0 {
+		workspaceID := primaryCloudWorkspaceID(rec)
+		if workspaceID == "" {
 			out = append(out, rec)
 			continue
 		}
 		if cloudWorkspaceTaskNameScore(rec.Name) == 0 {
-			hasMeaningful := false
 			// A legacy row can contain tags from several workspaces. Its
 			// working_dir (and therefore primary ID) identifies the row it
 			// actually represents; a named row for an unrelated accumulated tag
 			// must not make this fallback disappear.
-			if id := primaryCloudWorkspaceID(rec); id != "" {
-				hasMeaningful = meaningfulWorkspace[id]
-			}
-			if hasMeaningful {
+			if meaningfulWorkspace[workspaceID] {
 				continue
 			}
-		}
-		workspaceID := primaryCloudWorkspaceID(rec)
-		if workspaceID == "" {
-			workspaceID = workspaceIDs[0]
 		}
 		if idx, ok := byWorkspace[workspaceID]; ok {
 			if preferCloudWorkspaceTaskRecord(rec, out[idx]) {
@@ -403,7 +395,7 @@ func cloudWorkspaceIDsFromTags(tags []string) []string {
 
 func cloudWorkspaceTaskNameScore(name string) int {
 	name = strings.TrimSpace(strings.ToLower(name))
-	if name == "" || name == "新建云端工作区任务" || name == "new cloud workspace task" {
+	if name == "" || name == "新建云端工作区任务" || name == "新建雲端工作區任務" || name == "new cloud workspace task" {
 		return 0
 	}
 	return 1
@@ -5806,14 +5798,23 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	// A debounced frontend history flush can race with task deletion. Serialize
 	// it with the tab lifecycle so it cannot recreate a deleted session file.
 	a.tabWorkingDirMu.Lock()
-	defer a.tabWorkingDirMu.Unlock()
 	persist := a.ensureProjectTabSessionPersist()
+	var cloudProjectPath string
+	defer func() {
+		a.tabWorkingDirMu.Unlock()
+		if cloudProjectPath != "" {
+			go a.flushCloudWorkspaceSessionBestEffort(cloudProjectPath)
+		}
+	}()
 	// An explicit empty history is a clear request, not a normal save. Do not
 	// create a file for an unknown tab: task-level clearing already removes all
 	// owned snapshots, and an unowned late debounce must not revive history.
 	if len(conversation) == 0 {
 		if err := persist.ClearSessionConversation(tabID); err != nil {
 			log.Printf("[SaveProjectTabConversation] clear tab=%s err=%v", tabID, err)
+		}
+		if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+			cloudProjectPath, _ = cached.(string)
 		}
 		return
 	}
@@ -5838,6 +5839,7 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
 	}
+	cloudProjectPath = session.ProjectPath
 }
 
 // tabConversationPassesClearFence rejects snapshots created before the most

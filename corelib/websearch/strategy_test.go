@@ -35,6 +35,12 @@ func TestDefaultWebSearchStrategyPresets(t *testing.T) {
 	if mainland.BrowserHumanAssistEnabled || international.BrowserHumanAssistEnabled {
 		t.Fatal("human verification assistance must require explicit opt-in")
 	}
+	if mainland.BrowserFallbackEngineID != "bing_cn" {
+		t.Fatalf("mainland fallback = %q, want bing_cn", mainland.BrowserFallbackEngineID)
+	}
+	if international.BrowserFallbackEngineID != "google" {
+		t.Fatalf("international fallback = %q, want google", international.BrowserFallbackEngineID)
+	}
 }
 
 func TestNormalizeWebSearchStrategyDropsRetiredMojeekEntry(t *testing.T) {
@@ -642,5 +648,474 @@ func TestMergeSearchResultsCanonicalizesTrackingURLs(t *testing.T) {
 	results := mergeSearchResults([]SearchResult{{Title: "A", URL: "https://Example.com/doc/?utm_source=x"}}, []SearchResult{{Title: "B", URL: "https://example.com/doc"}, {Title: "C", URL: "https://example.net/"}}, 8)
 	if len(results) != 2 || results[1].Title != "C" {
 		t.Fatalf("deduped results = %#v", results)
+	}
+}
+
+func TestStrategySearchBudgetReservesBrowserFallbackWithoutHumanAssist(t *testing.T) {
+	SetBrowserSearchProvider(func(context.Context, string, string, int, bool) ([]BrowserSearchHit, error) {
+		return nil, errors.New("unused")
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	if got := strategySearchBudget(strategy); got != strategySearchTimeout+strategyBrowserTimeout {
+		t.Fatalf("default budget = %s, want %s", got, strategySearchTimeout+strategyBrowserTimeout)
+	}
+
+	strategy.BrowserFallbackEnabled = false
+	for i := range strategy.Engines {
+		if strategy.Engines[i].Transport == corelib.WebSearchTransportBrowser {
+			strategy.Engines[i].Enabled = false
+		}
+	}
+	if got := strategySearchBudget(strategy); got != strategySearchTimeout {
+		t.Fatalf("direct-only budget = %s, want %s", got, strategySearchTimeout)
+	}
+}
+
+func overrideStrategyTimeouts(t *testing.T, search, browser, engine, retry time.Duration) {
+	t.Helper()
+	oldSearch, oldBrowser, oldEngine, oldRetry := strategySearchTimeout, strategyBrowserTimeout, strategyEngineTimeout, strategyRetryDelay
+	strategySearchTimeout = search
+	strategyBrowserTimeout = browser
+	strategyEngineTimeout = engine
+	strategyRetryDelay = retry
+	t.Cleanup(func() {
+		strategySearchTimeout = oldSearch
+		strategyBrowserTimeout = oldBrowser
+		strategyEngineTimeout = oldEngine
+		strategyRetryDelay = oldRetry
+	})
+}
+
+func TestSearchWithStrategyFallsBackToBrowserWhenHTTPEnginesTimeOut(t *testing.T) {
+	overrideStrategyTimeouts(t, 80*time.Millisecond, 50*time.Millisecond, 40*time.Millisecond, 0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+	}))
+	t.Cleanup(server.Close)
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, query string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if query != "openreview" {
+			t.Errorf("query = %q", query)
+		}
+		return []BrowserSearchHit{{Title: "OpenReview", URL: "https://openreview.net/forum?id=abc", Snippet: "paper"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "serper", Enabled: true, Priority: 1,
+			Transport: corelib.WebSearchTransportAPI, APIKey: "secret", BaseURL: server.URL,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	started := time.Now()
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 3, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(engines, []string{"google"}) {
+		t.Fatalf("browser engines = %v, want [google] for an OpenReview query", engines)
+	}
+	if len(response.Results) != 1 || response.Results[0].URL != "https://openreview.net/forum?id=abc" {
+		t.Fatalf("results = %#v", response.Results)
+	}
+	if !response.Degraded {
+		t.Fatal("browser fallback should mark the response degraded")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("search took %s, HTTP engines should fail fast into browser fallback", elapsed)
+	}
+}
+
+func TestSearchWithStrategySkipsRemainingHTTPToReserveBrowserBudget(t *testing.T) {
+	overrideStrategyTimeouts(t, 80*time.Millisecond, 80*time.Millisecond, 50*time.Millisecond, 0)
+
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hits++
+		time.Sleep(200 * time.Millisecond)
+	}))
+	t.Cleanup(server.Close)
+
+	SetBrowserSearchProvider(func(context.Context, string, string, int, bool) ([]BrowserSearchHit, error) {
+		return []BrowserSearchHit{{Title: "OpenReview", URL: "https://openreview.net/forum?id=1"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "serper", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportAPI, APIKey: "secret", BaseURL: server.URL},
+			{ID: "duckduckgo", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+		},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 3, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := false
+	for _, attempt := range response.Diagnostics {
+		if attempt.EngineID == "duckduckgo" && attempt.Outcome == "skipped" {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Fatalf("duckduckgo was not skipped to reserve browser budget: %#v", response.Diagnostics)
+	}
+	if hits > 3 {
+		t.Fatalf("HTTP hits = %d, want the first engine not to keep retrying into the browser reserve", hits)
+	}
+	if len(response.Results) != 1 || response.Results[0].URL != "https://openreview.net/forum?id=1" {
+		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestSearchWithStrategyUsesParentBudgetWhenInnerTimeoutExpires(t *testing.T) {
+	overrideStrategyTimeouts(t, 40*time.Millisecond, 50*time.Millisecond, 80*time.Millisecond, 0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		time.Sleep(250 * time.Millisecond)
+	}))
+	t.Cleanup(server.Close)
+
+	browserCalls := 0
+	SetBrowserSearchProvider(func(ctx context.Context, engineID string, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		browserCalls++
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return []BrowserSearchHit{{Title: "OpenReview", URL: "https://openreview.net/forum?id=parent"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "serper", Enabled: true, Priority: 1,
+			Transport: corelib.WebSearchTransportAPI, APIKey: "secret", BaseURL: server.URL,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 3, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if browserCalls != 1 {
+		t.Fatalf("browser calls = %d, want 1 after inner budget expired", browserCalls)
+	}
+	if len(response.Results) != 1 || response.Results[0].URL != "https://openreview.net/forum?id=parent" {
+		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestSearchQuerySiteHintRecognizesOpenReview(t *testing.T) {
+	if got := searchQuerySiteHint("openreview iclr 2024"); got != "openreview" {
+		t.Fatalf("hint = %q", got)
+	}
+	if got := searchQuerySiteHint("https://openreview.net/forum?id=abc"); got != "openreview" {
+		t.Fatalf("domain hint = %q", got)
+	}
+	if got := searchQuerySiteHint("golang generics"); got != "" {
+		t.Fatalf("generic query should have no site hint, got %q", got)
+	}
+	if got := searchQuerySiteHint("code review checklist"); got != "" {
+		t.Fatalf("review token should not match openreview, got %q", got)
+	}
+	if got := searchQuerySiteHint("read the go.dev docs"); got != "" {
+		t.Fatalf("short SLD must not become a site hint, got %q", got)
+	}
+	if hostCoversSiteHint("notopenreview.com", "openreview") {
+		t.Fatal("substring hosts must not count as covering")
+	}
+	if !hostCoversSiteHint("openreview.net", "openreview") || !hostCoversSiteHint("ieeexplore.ieee.org", "ieee") {
+		t.Fatal("expected host labels to cover the site hint")
+	}
+}
+
+func TestSearchWithStrategyContinuesToBrowserWhenHTMLMissesNamedSite(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `<html><body>
+<a class="result-link" href="https://en.wikipedia.org/wiki/Open_review">Open review</a>
+<a class="result-link" href="https://example.com/a">Unrelated A</a>
+<a class="result-link" href="https://example.com/b">Unrelated B</a>
+</body></html>`)
+	}))
+	t.Cleanup(server.Close)
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		return []BrowserSearchHit{{Title: "ICLR paper", URL: "https://openreview.net/forum?id=xyz", Snippet: "OpenReview"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "duckduckgo", Enabled: true, Priority: 1,
+			Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 3,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview iclr 2024", 8, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(engines, []string{"google"}) {
+		t.Fatalf("browser engines = %v, want google fallback for a named site miss", engines)
+	}
+	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=xyz" {
+		t.Fatalf("OpenReview hit should be ranked first: %#v", response.Results)
+	}
+	if !response.Degraded {
+		t.Fatal("HTML miss plus browser fallback should be degraded")
+	}
+}
+
+func TestSearchWithStrategyDoesNotBrowserFallbackWhenGenericQueryIsCovered(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `<html><body>
+<a class="result-link" href="https://go.dev/doc">Go docs</a>
+<a class="result-link" href="https://example.com/a">A</a>
+<a class="result-link" href="https://example.com/b">B</a>
+</body></html>`)
+	}))
+	t.Cleanup(server.Close)
+
+	called := false
+	SetBrowserSearchProvider(func(context.Context, string, string, int, bool) ([]BrowserSearchHit, error) {
+		called = true
+		return []BrowserSearchHit{{Title: "unexpected", URL: "https://example.net"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "duckduckgo", Enabled: true, Priority: 1,
+			Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 3,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "golang generics", 8, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("generic covered HTML results should not invoke browser fallback")
+	}
+	if len(response.Results) != 3 {
+		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestSearchWithStrategySkipsRemainingHTMLAfterConsecutiveMisses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "blocked", http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	SetBrowserSearchProvider(func(context.Context, string, string, int, bool) ([]BrowserSearchHit, error) {
+		return []BrowserSearchHit{{Title: "OpenReview", URL: "https://openreview.net/forum?id=skip"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "duckduckgo", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+			{ID: "baidu", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+			{ID: "bing_cn", Enabled: true, Priority: 3, Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+		},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 3, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := false
+	for _, attempt := range response.Diagnostics {
+		if attempt.EngineID == "bing_cn" && attempt.Transport == corelib.WebSearchTransportHTTPHTML && attempt.Outcome == "skipped" {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Fatalf("remaining HTML engines should be skipped after a named-site miss: %#v", response.Diagnostics)
+	}
+	if len(response.Results) != 1 || response.Results[0].URL != "https://openreview.net/forum?id=skip" {
+		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestSearchWithStrategyTriesSecondBrowserWhenNamedSiteStillMissing(t *testing.T) {
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if engineID == "google" {
+			return []BrowserSearchHit{
+				{Title: "Open review", URL: "https://en.wikipedia.org/wiki/Open_review"},
+				{Title: "A", URL: "https://example.com/a"},
+				{Title: "B", URL: "https://example.com/b"},
+			}, nil
+		}
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=2"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetInternational, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "google", MinResultsBeforeHedge: 3,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview iclr", 8, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(engines, []string{"google", "bing_cn"}) {
+		t.Fatalf("engines = %v, want google then bing_cn", engines)
+	}
+	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=2" {
+		t.Fatalf("OpenReview hit should be first: %#v", response.Results)
+	}
+}
+
+func TestSearchWithStrategyFallbackRetriesSecondBrowserWhenFirstMissesNamedSite(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "blocked", http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if engineID == "google" {
+			return []BrowserSearchHit{{Title: "Wiki", URL: "https://en.wikipedia.org/wiki/Open_review"}}, nil
+		}
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=3"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "duckduckgo", Enabled: true, Priority: 1,
+			Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 8, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(engines, []string{"google", "bing_cn"}) {
+		t.Fatalf("engines = %v, want google then bing_cn", engines)
+	}
+	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=3" {
+		t.Fatalf("OpenReview hit should be first: %#v", response.Results)
+	}
+}
+
+func TestSearchWithStrategySkipsHTMLAfterBrowserMissesNamedSite(t *testing.T) {
+	ddgHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ddgHits++
+		_, _ = fmt.Fprint(w, `<html><body><a class="result-link" href="https://example.com/ddg">DDG</a></body></html>`)
+	}))
+	t.Cleanup(server.Close)
+
+	var engines []string
+	SetBrowserSearchProvider(func(_ context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if engineID == "google" {
+			return []BrowserSearchHit{
+				{Title: "Wiki", URL: "https://en.wikipedia.org/wiki/Open_review"},
+				{Title: "A", URL: "https://example.com/a"},
+				{Title: "B", URL: "https://example.com/b"},
+			}, nil
+		}
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=4"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetInternational, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{
+			{ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser},
+			{ID: "duckduckgo", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL},
+		},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "google", MinResultsBeforeHedge: 3,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 8, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ddgHits != 0 {
+		t.Fatalf("HTML engine was consulted after a browser named-site miss: hits=%d", ddgHits)
+	}
+	if !reflect.DeepEqual(engines, []string{"google", "bing_cn"}) {
+		t.Fatalf("engines = %v, want google then bing_cn", engines)
+	}
+	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=4" {
+		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestSearchWithStrategySecondBrowserGetsFreshBudgetAfterFirst(t *testing.T) {
+	overrideStrategyTimeouts(t, 30*time.Millisecond, 40*time.Millisecond, 80*time.Millisecond, 0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "blocked", http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	var engines []string
+	var bingBudget time.Duration
+	SetBrowserSearchProvider(func(ctx context.Context, engineID, _ string, _ int, _ bool) ([]BrowserSearchHit, error) {
+		engines = append(engines, engineID)
+		if engineID == "google" {
+			<-ctx.Done()
+			return []BrowserSearchHit{{Title: "Wiki", URL: "https://en.wikipedia.org/wiki/Open_review"}}, nil
+		}
+		if deadline, ok := ctx.Deadline(); ok {
+			bingBudget = time.Until(deadline)
+		} else {
+			bingBudget = time.Hour
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return []BrowserSearchHit{{Title: "Paper", URL: "https://openreview.net/forum?id=budget"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	strategy := corelib.WebSearchStrategy{
+		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModePriority,
+		Engines: []corelib.WebSearchEngineConfig{{
+			ID: "duckduckgo", Enabled: true, Priority: 1,
+			Transport: corelib.WebSearchTransportHTTPHTML, BaseURL: server.URL,
+		}},
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn", MinResultsBeforeHedge: 1,
+	}
+	response, err := SearchWithStrategyCtx(context.Background(), "openreview", 8, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(engines, []string{"google", "bing_cn"}) {
+		t.Fatalf("engines = %v, want google then bing_cn", engines)
+	}
+	if bingBudget < 30*time.Millisecond {
+		t.Fatalf("bing browser budget = %s, want a fresh attempt not inner-context crumbs", bingBudget)
+	}
+	if len(response.Results) == 0 || response.Results[0].URL != "https://openreview.net/forum?id=budget" {
+		t.Fatalf("results = %#v", response.Results)
 	}
 }

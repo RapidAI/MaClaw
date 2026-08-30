@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+)
 
 var adaptiveRetryNetworkKeywords = []string{
 	"timeout", "connection refused", "dial",
@@ -25,6 +29,9 @@ var adaptiveRetryLogicKeywords = []string{
 func classifyAdaptiveRetryFailure(err error) FailureCategory {
 	if err == nil {
 		return FailureUnknown
+	}
+	if llm.IsTransientTokenValidationError(err) {
+		return FailureTransient
 	}
 	msg := strings.ToLower(err.Error())
 

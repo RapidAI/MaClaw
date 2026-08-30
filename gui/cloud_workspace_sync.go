@@ -123,6 +123,88 @@ func (p *cloudWorkspaceProtocol) PushOperations(ctx context.Context, root string
 	return writeCloudWorkspaceState(root, state)
 }
 
+// DeletePaths submits per-file remote deletes and drops them from local sync
+// state. It does not upload unrelated local edits.
+func (p *cloudWorkspaceProtocol) DeletePaths(ctx context.Context, root string, paths []string) error {
+	if p == nil || p.Transport == nil {
+		return fmt.Errorf("cloud workspace sync unavailable")
+	}
+	if _, ok := p.Transport.(cloudWorkspaceV2Transport); !ok {
+		return errCloudWorkspaceV2Unavailable
+	}
+	uniq := uniqueCloudWorkspacePaths(paths)
+	if len(uniq) == 0 {
+		return nil
+	}
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return err
+	}
+	_, _, clientID, _ := p.clientIdentity()
+	if clientID == "" {
+		clientID = "maclaw-gui"
+	}
+	drop := make(map[string]struct{}, len(uniq))
+	persist := func() error {
+		kept := make([]cloudWorkspaceManifestEntry, 0, len(state.LastEntries))
+		for _, entry := range state.LastEntries {
+			if _, ok := drop[entry.Path]; ok {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		state.LastEntries = kept
+		return writeCloudWorkspaceState(root, state)
+	}
+	for _, path := range uniq {
+		if _, ok := cloudWorkspaceSafeRelPath(path); !ok || codingWorkbenchEntryProtected(path) {
+			continue
+		}
+		op := cloudWorkspaceOperation{
+			OpID:             operationID("delete", path, state.FileRevisions[path], ""),
+			Path:             path,
+			Kind:             "delete",
+			BaseFileRevision: state.FileRevisions[path],
+			ClientInstanceID: clientID,
+		}
+		res, err := p.SubmitOperation(ctx, op)
+		if err != nil {
+			if len(drop) > 0 {
+				_ = persist()
+			}
+			return err
+		}
+		if res.Accepted {
+			drop[path] = struct{}{}
+			delete(state.FileRevisions, path)
+			continue
+		}
+		if len(drop) > 0 {
+			_ = persist()
+		}
+		return p.materializeConflict(ctx, root, op, res)
+	}
+	return persist()
+}
+
+func uniqueCloudWorkspacePaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // PullEvents applies remote operations newer than the local cursor. Unmodified
 // files are updated in place; locally edited files are preserved and the
 // remote version is written as a conflict copy.
@@ -160,6 +242,25 @@ func (p *cloudWorkspaceProtocol) PullEvents(ctx context.Context, root string) er
 			state.LastEventSeq = ev.Seq
 		}
 		if ev.ClientInstanceID == clientID {
+			continue
+		}
+		// Conflict events describe a rejected candidate, not the canonical
+		// file state. Never apply their object to the working tree; preserve it
+		// as a conflict copy so another machine's edit remains inspectable.
+		if ev.ConflictOfSeq != 0 {
+			if ev.ObjectSHA256 != "" {
+				data, getErr := p.Transport.GetObject(ctx, ev.ObjectSHA256, 0)
+				if getErr != nil {
+					return getErr
+				}
+				dest := conflictCopyPath(root, ev.Path, time.Now())
+				if dest == "" {
+					return fmt.Errorf("invalid cloud workspace conflict path %q", ev.Path)
+				}
+				if writeErr := atomicWriteFile(dest, data); writeErr != nil {
+					return writeErr
+				}
+			}
 			continue
 		}
 		localPath := filepath.Join(root, filepath.FromSlash(ev.Path))
@@ -514,6 +615,71 @@ func scanCloudWorkspaceLocal(root string) ([]cloudWorkspaceManifestEntry, error)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
+}
+
+// listCloudWorkspaceFilesUnder returns cache-relative slash paths of regular
+// files covered by cacheRel. Directories are walked in place; the whole
+// workspace is not hashed.
+func listCloudWorkspaceFilesUnder(root, cacheRel string, isDir bool) ([]string, error) {
+	cacheRel = strings.TrimSpace(cacheRel)
+	if cacheRel == "" {
+		return nil, nil
+	}
+	if !isDir {
+		return []string{cacheRel}, nil
+	}
+	cloudignore, err := cloudworkspaceignore.ReadCloudignore(root)
+	if err != nil {
+		return nil, err
+	}
+	matcher := cloudworkspaceignore.NewMatcher(cloudignore)
+	target := filepath.Join(root, filepath.FromSlash(cacheRel))
+	var paths []string
+	err = filepath.WalkDir(target, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." || rel == cacheRel {
+			if d.IsDir() {
+				return nil
+			}
+		}
+		if matcher.ShouldIgnore(rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if rel == cacheRel || strings.HasPrefix(rel, cacheRel+"/") {
+			paths = append(paths, rel)
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func cloudWorkspaceTreesEqual(local []cloudWorkspaceManifestEntry, remote []cloudWorkspaceManifestEntry) bool {

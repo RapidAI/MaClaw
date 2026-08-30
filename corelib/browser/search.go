@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -128,9 +129,14 @@ func searchEngineViaBrowser(ctx context.Context, cdpAddr, engine, searchURL stri
 }
 
 func searchEngineViaBrowserWithOptions(ctx context.Context, cdpAddr, engine, searchURL string, maxResults int, opts SearchOptions) ([]SearchHit, error) {
-	timeout := 8 * time.Second
+	timeout := 15 * time.Second
 	if opts.HumanAssist {
 		timeout = 90 * time.Second
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 && remaining < timeout {
+			timeout = remaining
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -182,10 +188,6 @@ func searchEngineViaBrowserWithOptions(ctx context.Context, cdpAddr, engine, sea
 	defer pws.Close()
 
 	expr := searchExtractionJS(engine, maxResults)
-	deadline := time.Now().Add(6 * time.Second)
-	if opts.HumanAssist {
-		deadline = time.Now().Add(75 * time.Second)
-	}
 	verificationSeen := false
 	for {
 		raw, err := pws.Send("Runtime.evaluate", map[string]interface{}{
@@ -208,14 +210,14 @@ func searchEngineViaBrowserWithOptions(ctx context.Context, cdpAddr, engine, sea
 				}
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-ctx.Done():
 			if verificationSeen {
 				return nil, fmt.Errorf("verification challenge was not completed")
 			}
-			return nil, fmt.Errorf("no organic results on the results page")
-		}
-		select {
-		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf("no organic results on the results page: %w", ctx.Err())
+			}
 			return nil, ctx.Err()
 		case <-time.After(700 * time.Millisecond):
 		}

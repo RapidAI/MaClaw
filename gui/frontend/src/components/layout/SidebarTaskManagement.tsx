@@ -6,7 +6,7 @@ import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_PROJECT_TASK_CLOSED, type OpenCrea
 import { localizeText } from '../../i18n';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
-import { agentModeFromTaskTags, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, collapseCloudWorkspaceTasks, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
@@ -378,9 +378,7 @@ export function isActiveTaskRow(
     if (workDir && workDir === activePath) return true;
     // Cloud resume rebinds the tab onto a cache path that may differ from the
     // durable list row; match by workspace id so the highlight still lands.
-    const rowWorkspaceId = cloudWorkspaceIdFromTags(proj.tags)
-        || cloudWorkspaceIdFromPath(proj.project_path)
-        || cloudWorkspaceIdFromPath(proj.working_dir);
+    const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(proj);
     const activeWorkspaceId = canonical.cloudWorkspaceId || cloudWorkspaceIdFromPath(activePath);
     return !!rowWorkspaceId && rowWorkspaceId === activeWorkspaceId;
 }
@@ -434,7 +432,11 @@ function buildTaskContextMenuItems(opts: {
             },
         },
     ];
-    const cloudWorkspaceId = cloudWorkspaceIdFromTags(menu.tags);
+    const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({
+        tags: menu.tags,
+        project_path: menu.projectPath,
+        working_dir: menu.workingDir,
+    });
     if (cloudWorkspaceId) {
         items.push({
             label: textForLang(lang, 'Browse', '浏览', '瀏覽'),
@@ -636,6 +638,79 @@ const asCloudWorkspaceRow = (value: unknown): CloudWorkspaceRow | null => {
     };
 };
 
+const deletedWorkspaceId = (row: { id?: string } | null | undefined): string => (row?.id || '').trim();
+
+const CloudDeletedWorkspaceRow = ({
+    row,
+    lang,
+    testIdPrefix,
+    busy,
+    quotaReached,
+    forceDeleting,
+    onRestore,
+    onForceDelete,
+}: {
+    row: CloudWorkspaceDeletedRow;
+    lang: string;
+    testIdPrefix: 'task-cloud-overview' | 'task-cloud-workspace';
+    busy: boolean;
+    quotaReached: boolean;
+    forceDeleting: boolean;
+    onRestore: (id: string) => void;
+    onForceDelete: (id: string) => void;
+}) => {
+    const id = deletedWorkspaceId(row);
+    const name = (row.name || '').trim();
+    const restoreDisabled = !id || busy || quotaReached;
+    const forceDeleteDisabled = !id || busy;
+    return (
+        <div data-workspace-id={id || undefined} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '6px 8px', borderRadius: '7px', border: '1px dashed var(--theme-border)' }}>
+            <span style={{ minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--theme-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name || row.id}</span>
+                <span style={{ display: 'block', fontSize: '0.62rem', color: 'var(--theme-text-muted)' }}>
+                    {textForLang(lang, 'Restorable for 7 days', '7 天内可恢复', '7 天內可恢復')}
+                </span>
+                {forceDeleting && (
+                    <span
+                        data-testid={`${testIdPrefix}-force-delete-progress`}
+                        role="status"
+                        aria-label={textForLang(lang, 'Permanently deleting workspace and remote files', '正在永久删除工作区及远程文件', '正在永久刪除工作區及遠端檔案')}
+                        style={{ display: 'block', marginTop: '4px', width: '130px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, #dc2626 18%, transparent)' }}
+                    >
+                        <span style={{ display: 'block', width: '45%', height: '100%', borderRadius: 'inherit', background: '#dc2626', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
+                    </span>
+                )}
+            </span>
+            <span style={{ display: 'inline-flex', gap: '5px', flexShrink: 0 }}>
+                <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-restore`}
+                    disabled={restoreDisabled}
+                    title={quotaReached
+                        ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
+                        : textForLang(lang, 'Restore', '恢复', '恢復')}
+                    onClick={() => { if (id) onRestore(id); }}
+                    style={{ flexShrink: 0, border: '1px solid var(--theme-border)', borderRadius: '6px', background: 'var(--theme-surface)', color: 'var(--theme-primary)', cursor: restoreDisabled ? 'default' : 'pointer', padding: '3px 8px', fontSize: '0.66rem', opacity: restoreDisabled ? 0.5 : 1 }}
+                >
+                    {textForLang(lang, 'Restore', '恢复', '恢復')}
+                </button>
+                <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-force-delete`}
+                    aria-label={name
+                        ? textForLang(lang, `Delete “${name}” permanently`, `强制删除「${name}」`, `強制刪除「${name}」`)
+                        : textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
+                    disabled={forceDeleteDisabled}
+                    onClick={() => { if (id) onForceDelete(id); }}
+                    style={{ flexShrink: 0, border: '1px solid color-mix(in srgb, #dc2626 48%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, #dc2626 8%, transparent)', color: '#b91c1c', cursor: forceDeleteDisabled ? 'default' : 'pointer', padding: '3px 6px', fontSize: '0.62rem', opacity: forceDeleteDisabled ? 0.5 : 1 }}
+                >
+                    {textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
+                </button>
+            </span>
+        </div>
+    );
+};
+
 const CloudWorkspaceLeaseNote = ({ row, lang }: { row: CloudWorkspaceRow; lang: string }) => {
     if (!row.lease_in_use) return null;
     return (
@@ -669,9 +744,9 @@ const dropCloudWorkspaceFromEntitlement = (
     if (!prev) return prev ?? null;
     const id = workspaceId.trim();
     if (!id) return prev;
-    const current = (prev.workspaces || []).find(row => row.id === id);
-    const workspaces = (prev.workspaces || []).filter(row => row.id !== id);
-    const rest = (prev.deleted || []).filter(row => row.id !== id);
+    const current = (prev.workspaces || []).find(row => deletedWorkspaceId(row) === id);
+    const workspaces = (prev.workspaces || []).filter(row => deletedWorkspaceId(row) !== id);
+    const rest = (prev.deleted || []).filter(row => deletedWorkspaceId(row) !== id);
     const nextDeleted = deleted || (current
         ? { id, name: current.name, used_bytes: current.used_bytes, deleted_at: new Date().toISOString() }
         : null);
@@ -754,12 +829,57 @@ const cloudWorkspaceIdFromTask = (task: unknown): string => {
     const tags = Array.isArray(tagsRaw) ? tagsRaw.map(item => String(item)) : undefined;
     const projectPath = String(rec.project_path ?? rec.ProjectPath ?? rec.projectPath ?? '');
     const workingDir = String(rec.working_dir ?? rec.WorkingDir ?? rec.workingDir ?? '');
-    return (
-        cloudWorkspaceIdFromTags(tags)
-        || cloudWorkspaceIdFromPath(projectPath)
-        || cloudWorkspaceIdFromPath(workingDir)
-        || ''
-    ).trim();
+    return cloudWorkspaceIdFromTaskFields({
+        tags,
+        project_path: projectPath,
+        working_dir: workingDir,
+    });
+};
+
+/** Hub workspace names keyed by id. Live rows overwrite recently deleted aliases. */
+export function cloudWorkspaceNameMapFromEntitlement(
+    ent: Pick<CloudEntitlementState, 'workspaces' | 'deleted'> | null | undefined,
+): Map<string, string> {
+    const names = new Map<string, string>();
+    if (!ent) return names;
+    for (const list of [ent.deleted, ent.workspaces]) {
+        if (!Array.isArray(list)) continue;
+        for (const row of list) {
+            const id = String(row?.id || '').trim();
+            const name = String(row?.name || '').trim();
+            if (id && name) names.set(id, name);
+        }
+    }
+    return names;
+}
+
+/** Secondary line under the task title. Cloud rows show the Hub workspace name only. */
+export function taskSecondaryLabelFor(
+    proj: Pick<TaskManagementItem, 'preview' | 'project_path' | 'tags' | 'working_dir'>,
+    workspaceNameById?: Map<string, string>,
+): string {
+    const workspaceId = cloudWorkspaceIdFromTask(proj);
+    if (workspaceId) {
+        return (
+            workspaceNameById?.get(workspaceId)
+            || lookupCloudWorkspaceDisplayName(workspaceId)
+            || ''
+        ).trim();
+    }
+    if (isCloudWorkspaceTask(proj)) return '';
+    return String(proj.preview || '').trim() || String(proj.project_path || '');
+}
+
+const joinHoverLines = (...lines: Array<string | false | null | undefined>): string => {
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const line of lines) {
+        const text = String(line || '').trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        parts.push(text);
+    }
+    return parts.join('\n');
 };
 
 const taskForCloudWorkspace = (taskList: TaskManagementItem[], workspaceId: string): TaskManagementItem | undefined => {
@@ -1048,7 +1168,10 @@ export const SidebarTaskManagement = ({
             selectPlaceholderGenRef.current += 1;
         };
     }, []);
-    const visibleTasks = tasks.filter(proj => proj.has_output !== false);
+    const visibleTasks = useMemo(
+        () => collapseCloudWorkspaceTasks(tasks.filter(proj => proj.has_output !== false)),
+        [tasks],
+    );
     const taskListRef = useRef<HTMLDivElement | null>(null);
     const activeRowPresent = visibleTasks.some(proj => isActiveTaskRow(proj, activeAssistantTask));
     useEffect(() => {
@@ -1521,8 +1644,15 @@ export const SidebarTaskManagement = ({
     const cloudQuota = Number(cloudEntitlement?.quota) || 0;
     const cloudCreateSelected = cloudGranted && workspaceKind === 'cloud' && newTaskMode !== 'remote_coding_dev';
     const cloudWorkspaces = cloudEntitlement?.workspaces || [];
+    // Task rows can share the same workspace; build the lookup once per
+    // entitlement update instead of scanning the Hub list for every row.
+    const cloudWorkspaceNames = useMemo(
+        () => cloudWorkspaceNameMapFromEntitlement(cloudEntitlement),
+        [cloudEntitlement],
+    );
     const cloudUsed = Math.max(Number(cloudEntitlement?.used) || 0, cloudWorkspaces.length);
     const cloudQuotaReached = cloudGranted && cloudQuota > 0 && cloudUsed >= cloudQuota;
+    const cloudDeletedRowBusy = creatingTask || cloudWorkspaceBusy || cloudRestorePending;
     const cloudDeleted = cloudEntitlement?.deleted || [];
     const cloudDeniedReason = cloudWorkspaceDeniedReason(lang, cloudEntitlement);
     const boundCloudWorkspaceIds = useMemo(() => {
@@ -1781,8 +1911,8 @@ export const SidebarTaskManagement = ({
             await ForceDeleteCloudWorkspace(workspaceId);
             setCloudEntitlement(prev => {
                 if (!prev) return prev;
-                const workspaces = (prev.workspaces || []).filter(row => row.id !== workspaceId);
-                const deleted = (prev.deleted || []).filter(row => row.id !== workspaceId);
+                const workspaces = (prev.workspaces || []).filter(row => deletedWorkspaceId(row) !== workspaceId);
+                const deleted = (prev.deleted || []).filter(row => deletedWorkspaceId(row) !== workspaceId);
                 return { ...prev, workspaces, deleted, used: workspaces.length };
             });
             refreshTasks();
@@ -1801,10 +1931,10 @@ export const SidebarTaskManagement = ({
 
     const confirmForceDeleteCloudWorkspace = async (id: string) => {
         const workspaceId = id.trim();
-        if (!workspaceId || cloudWorkspaceBusy || creatingTaskRef.current || cloudRestorePending) return;
+        if (!workspaceId || cloudWorkspaceBusyRef.current || creatingTaskRef.current || cloudRestorePending) return;
         if (typeof ForceDeleteCloudWorkspace !== 'function') return;
         if (forceDeleteConfirmOpenRef.current) return;
-        const name = (cloudDeleted.find(row => row.id === workspaceId)?.name || '').trim();
+        const name = (cloudDeleted.find(row => deletedWorkspaceId(row) === workspaceId)?.name || '').trim();
         forceDeleteConfirmOpenRef.current = true;
         let confirmed = false;
         try {
@@ -1820,8 +1950,8 @@ export const SidebarTaskManagement = ({
         } finally {
             forceDeleteConfirmOpenRef.current = false;
         }
-        if (!confirmed || !mountedRef.current || creatingTaskRef.current) return;
-        const stillDeleted = (cloudEntitlementRef.current?.deleted || []).some(row => row.id === workspaceId);
+        if (!confirmed || !mountedRef.current || creatingTaskRef.current || cloudWorkspaceBusyRef.current) return;
+        const stillDeleted = (cloudEntitlementRef.current?.deleted || []).some(row => deletedWorkspaceId(row) === workspaceId);
         if (!stillDeleted) {
             setCreateError(textForLang(lang, 'This workspace is no longer in Recently deleted.', '该工作区已不在「最近删除」中。', '該工作區已不在「最近刪除」中。'));
             return;
@@ -2081,8 +2211,12 @@ export const SidebarTaskManagement = ({
             emitProjectTaskClosed(projectPath);
             refreshTasks();
             const targetPath = normalizeProjectSessionPath(projectPath);
-            const workspaceId = cloudWorkspaceIdFromTags(tags)
-                || cloudWorkspaceIdFromTask(tasks.find(item => normalizeProjectSessionPath(item.project_path) === targetPath));
+            const listed = tasks.find(item => normalizeProjectSessionPath(item.project_path) === targetPath);
+            const workspaceId = cloudWorkspaceIdFromTaskFields({
+                tags,
+                project_path: projectPath,
+                working_dir: listed?.working_dir,
+            }) || cloudWorkspaceIdFromTask(listed);
             if (workspaceId) {
                 // Invalidate in-flight entitlement applies so a late mount/create
                 // fetch cannot put the deleted workspace back as an unlinked row.
@@ -2186,6 +2320,7 @@ export const SidebarTaskManagement = ({
             const remoteMaintenance = isRemoteMaintenanceTask(proj);
             const codingBadge = pureCodingBadgeLabel(proj, lang);
             const cloudBadge = cloudWorkspaceBadgeLabel(proj, lang);
+            const taskSecondaryLabel = taskSecondaryLabelFor(proj, cloudWorkspaceNames);
             const pureCoding = isPureCodingTask(proj);
             const workflowStatus = workflowStatusForTask(proj.active_workflow, lang);
             const createdAtLabel = taskCreationLabel(proj.created_at, lang);
@@ -2193,6 +2328,18 @@ export const SidebarTaskManagement = ({
             const removalError = removeErrors.get(proj.project_path) || '';
             const isActive = isActiveTaskRow(proj, activeAssistantTask);
             const isBusy = openingTaskPath === proj.project_path || isRemoving;
+            const secondaryStatusLabel = isRemoving
+                ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...')
+                : openingTaskPath === proj.project_path
+                    ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...')
+                    : '';
+            const rowPathHint = isCloudWorkspaceTask(proj)
+                ? cloudSafePathLabel(proj.working_dir || proj.project_path, taskSecondaryLabel || cloudBadge || 'cloud')
+                : proj.project_path;
+            const taskTitleText = String(proj.name || '').trim()
+                || (isCloudWorkspaceTask(proj) ? (taskSecondaryLabel || cloudBadge || rowPathHint) : proj.project_path);
+            const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText ? taskSecondaryLabel : '';
+            const secondaryText = secondaryStatusLabel || identitySubtitle;
             const rowStyle: CSSProperties = {
                 display: 'flex',
                 flexDirection: 'row',
@@ -2208,7 +2355,7 @@ export const SidebarTaskManagement = ({
                 } : {}),
             };
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-task-path={proj.project_path}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isBusy ? ' is-busy' : ''}`} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={`${proj.name || proj.project_path}\n${proj.project_path}${workflowStatus ? '\n' + [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · ') : ''}${cloudBadge ? '\n' + cloudBadge : ''}${codingBadge ? '\n' + codingBadge : ''}${createdAtLabel ? '\n' + createdAtLabel : ''}${proj.preview ? '\n' + proj.preview : ''}`} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isBusy ? ' is-busy' : ''}`} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, workflowStatus && [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · '), cloudBadge, codingBadge, createdAtLabel, identitySubtitle)} aria-current={isActive ? 'true' : undefined}>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
                     <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
                         {(workflowStatus || codingBadge || cloudBadge || proj.pinned) && (
@@ -2266,8 +2413,8 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
-                        <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{isRemoving ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...') : openingTaskPath === proj.project_path ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...') : (proj.preview || proj.project_path)}</span>
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{taskTitleText}</span>}
+                        {secondaryText ? <span data-testid="task-secondary-label" style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{secondaryText}</span> : null}
                         {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
                         {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
                         {removalError && <span data-testid="task-remove-error" role="alert" style={{ display: 'block', marginTop: '4px', color: 'var(--theme-danger, #b91c1c)', fontSize: '0.62rem', lineHeight: 1.3, textAlign: 'left' }}>{removalError}</span>}
@@ -2441,43 +2588,17 @@ export const SidebarTaskManagement = ({
                                     {textForLang(lang, 'Recently deleted', '最近删除', '最近刪除')}
                                 </div>
                                 {cloudDeleted.map(row => (
-                                    <div key={`overview-deleted-${row.id}`} data-workspace-id={row.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '6px 8px', borderRadius: '7px', border: '1px dashed var(--theme-border)' }}>
-                                        <span style={{ minWidth: 0 }}>
-                                            <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--theme-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name || row.id}</span>
-                                            <span style={{ display: 'block', fontSize: '0.62rem', color: 'var(--theme-text-muted)' }}>
-                                                {textForLang(lang, 'Restorable for 7 days', '7 天内可恢复', '7 天內可恢復')}
-                                            </span>
-                                            {forceDeletingCloudWorkspaceId === row.id && <span data-testid="task-cloud-overview-force-delete-progress" role="status" aria-label={textForLang(lang, 'Permanently deleting workspace and remote files', '正在永久删除工作区及远程文件', '正在永久刪除工作區及遠端檔案')} style={{ display: 'block', marginTop: '4px', width: '130px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, #dc2626 18%, transparent)' }}><span style={{ display: 'block', width: '45%', height: '100%', borderRadius: 'inherit', background: '#dc2626', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
-                                        </span>
-                                        <span style={{ display: 'inline-flex', gap: '5px', flexShrink: 0 }}>
-                                        <button
-                                            type="button"
-                                            data-testid="task-cloud-overview-restore"
-                                            disabled={creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached}
-                                            title={cloudQuotaReached
-                                                ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
-                                                : textForLang(lang, 'Restore', '恢复', '恢復')}
-                                            onClick={() => { void restoreDeletedCloudWorkspace(row.id || ''); }}
-                                            style={{ flexShrink: 0, border: '1px solid var(--theme-border)', borderRadius: '6px', background: 'var(--theme-surface)', color: 'var(--theme-primary)', cursor: creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached ? 'default' : 'pointer', padding: '3px 8px', fontSize: '0.66rem', opacity: creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached ? 0.5 : 1 }}
-                                        >
-                                            {textForLang(lang, 'Restore', '恢复', '恢復')}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            data-testid="task-cloud-overview-force-delete"
-                                            aria-label={
-                                                (row.name || '').trim()
-                                                    ? textForLang(lang, `Delete “${row.name}” permanently`, `强制删除「${row.name}」`, `強制刪除「${row.name}」`)
-                                                    : textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')
-                                            }
-                                            disabled={creatingTask || cloudWorkspaceBusy || cloudRestorePending}
-                                            onClick={() => { void confirmForceDeleteCloudWorkspace(row.id || ''); }}
-                                            style={{ flexShrink: 0, border: '1px solid color-mix(in srgb, #dc2626 48%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, #dc2626 8%, transparent)', color: '#b91c1c', padding: '3px 6px', fontSize: '0.62rem' }}
-                                        >
-                                            {textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
-                                        </button>
-                                        </span>
-                                    </div>
+                                    <CloudDeletedWorkspaceRow
+                                        key={`overview-deleted-${row.id}`}
+                                        row={row}
+                                        lang={lang}
+                                        testIdPrefix="task-cloud-overview"
+                                        busy={cloudDeletedRowBusy}
+                                        quotaReached={cloudQuotaReached}
+                                        forceDeleting={forceDeletingCloudWorkspaceId === row.id}
+                                        onRestore={restoreDeletedCloudWorkspace}
+                                        onForceDelete={confirmForceDeleteCloudWorkspace}
+                                    />
                                 ))}
                             </div>
                         )}
@@ -2736,26 +2857,17 @@ export const SidebarTaskManagement = ({
                                             {textForLang(lang, 'Recently deleted', '最近删除', '最近刪除')}
                                         </div>
                                         {cloudDeleted.map(row => (
-                                            <div key={row.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '6px 8px', borderRadius: '7px', border: '1px dashed var(--theme-border)' }}>
-                                                <span style={{ minWidth: 0 }}>
-                                                    <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--theme-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name || row.id}</span>
-                                                    <span style={{ display: 'block', fontSize: '0.62rem', color: 'var(--theme-text-muted)' }}>
-                                                        {textForLang(lang, 'Restorable for 7 days', '7 天内可恢复', '7 天內可恢復')}
-                                                    </span>
-                                                </span>
-                                                <button
-                                                    type="button"
-                                                    data-testid="task-cloud-workspace-restore"
-                                                    disabled={creatingTask || cloudWorkspaceBusy || cloudQuotaReached}
-                                                    title={cloudQuotaReached
-                                                        ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
-                                                        : textForLang(lang, 'Restore', '恢复', '恢復')}
-                                                    onClick={() => { void restoreDeletedCloudWorkspace(row.id || ''); }}
-                                                    style={{ flexShrink: 0, border: '1px solid var(--theme-border)', borderRadius: '6px', background: 'var(--theme-surface)', color: 'var(--theme-primary)', cursor: creatingTask || cloudWorkspaceBusy || cloudQuotaReached ? 'default' : 'pointer', padding: '3px 8px', fontSize: '0.66rem', opacity: creatingTask || cloudWorkspaceBusy || cloudQuotaReached ? 0.5 : 1 }}
-                                                >
-                                                    {textForLang(lang, 'Restore', '恢复', '恢復')}
-                                                </button>
-                                            </div>
+                                            <CloudDeletedWorkspaceRow
+                                                key={row.id}
+                                                row={row}
+                                                lang={lang}
+                                                testIdPrefix="task-cloud-workspace"
+                                                busy={cloudDeletedRowBusy}
+                                                quotaReached={cloudQuotaReached}
+                                                forceDeleting={forceDeletingCloudWorkspaceId === row.id}
+                                                onRestore={restoreDeletedCloudWorkspace}
+                                                onForceDelete={confirmForceDeleteCloudWorkspace}
+                                            />
                                         ))}
                                     </div>
                                 )}

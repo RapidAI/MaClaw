@@ -826,12 +826,14 @@ func (h *SkillMarketHandlers) petStoreUser(r *http.Request) (string, string, err
 	}
 	// The authenticated Hub user ID is the account identity. Email/phone are
 	// login contacts and may change or coexist for the same person, so never
-	// resolve market ownership through the session's contact value.
-	u, err := h.userSvc.EnsureAccountWithID(r.Context(), sess.UserID, strings.TrimSpace(sess.Email))
+	// resolve market ownership through the session's contact value. A session
+	// contact is already authenticated, so adopt a leftover email-first row
+	// instead of failing the market open with a bound-email 500.
+	u, err := h.userSvc.EnsureAccountWithVerifiedContact(r.Context(), sess.UserID, strings.TrimSpace(sess.Email))
 	if err != nil {
 		return "", "", err
 	}
-	if strings.TrimSpace(u.ID) == "" || u.ID != strings.TrimSpace(sess.UserID) || strings.TrimSpace(u.Email) == "" {
+	if strings.TrimSpace(u.ID) == "" || strings.TrimSpace(u.Email) == "" {
 		return "", "", fmt.Errorf("publisher email is required")
 	}
 	return u.ID, u.Email, nil

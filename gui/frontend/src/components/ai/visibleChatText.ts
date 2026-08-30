@@ -1,14 +1,18 @@
-const VE_TOFU_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uE000-\uF8FF\uFFF0-\uFFFF]/g;
+const VE_TOFU_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\uE000-\uF8FF\uFFF0-\uFFFF]/g;
 
 /**
- * Strip stream markers and non-displayable runes from assembled VE text.
- * Unlike {@link visibleVEStreamContent}, a leading U+0001 does not drop the
- * whole string — that would hide a persisted answer that still carries the
- * sentinel from an older backend.
+ * Strip stream markers and non-displayable runes from assembled visible text.
+ * Unlike stream-delta helpers, a leading U+0001 does not drop the whole
+ * string — that would hide a persisted answer that still carries the sentinel
+ * from an older backend.
  */
-export function sanitizeVisibleVEText(value: unknown): string {
+export function sanitizeVisibleChatText(value: unknown): string {
     const content = typeof value === "string" ? value : "";
     return content.replace(VE_TOFU_RE, "");
+}
+
+export function sanitizeVisibleVEText(value: unknown): string {
+    return sanitizeVisibleChatText(value);
 }
 
 /**
@@ -20,7 +24,7 @@ export function sanitizeVisibleVEText(value: unknown): string {
 export function visibleVEStreamContent(value: unknown): string {
     const content = typeof value === "string" ? value : "";
     if (content.startsWith("\x01")) return "";
-    return sanitizeVisibleVEText(content);
+    return sanitizeVisibleChatText(content);
 }
 
 export function firstVEStreamText(...values: unknown[]): unknown {
@@ -37,6 +41,6 @@ export function visibleHistoryMessageContent(kind: string, ...values: unknown[])
         case "stream_end":
             return visibleVEStreamContent(raw);
         default:
-            return sanitizeVisibleVEText(raw);
+            return sanitizeVisibleChatText(raw);
     }
 }

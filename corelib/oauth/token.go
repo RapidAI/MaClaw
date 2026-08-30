@@ -31,7 +31,7 @@ func RefreshXAIToken(ctx context.Context, refreshToken string) (*TokenResult, er
 // 如果 TokenExpiresAt 为 0，返回 false（无过期信息）。
 // 当前时间 + TokenRefreshMargin (5 min) >= TokenExpiresAt 时返回 true。
 func NeedsRefresh(provider corelib.MaclawLLMProvider) bool {
-	if provider.AuthType != "oauth" {
+	if !strings.EqualFold(strings.TrimSpace(provider.AuthType), "oauth") {
 		return false
 	}
 	if provider.TokenExpiresAt == 0 {
@@ -128,25 +128,55 @@ func ApplyTokenResult(provider corelib.MaclawLLMProvider, result *TokenResult) c
 // 如果 refresh_token 为空，返回错误提示重新登录。
 // 刷新成功后调用 saveFn 持久化。
 func EnsureValidToken(provider corelib.MaclawLLMProvider, cfg Config, saveFn func(corelib.MaclawLLMProvider) error) (corelib.MaclawLLMProvider, error) {
-	if provider.AuthType != "oauth" {
+	return ensureValidToken(context.Background(), provider, cfg, saveFn, false)
+}
+
+// ForceRefreshToken refreshes an OAuth access token even when TokenExpiresAt
+// still looks valid. Used after the provider rejected the current token.
+func ForceRefreshToken(provider corelib.MaclawLLMProvider, cfg Config, saveFn func(corelib.MaclawLLMProvider) error) (corelib.MaclawLLMProvider, error) {
+	return ForceRefreshTokenCtx(context.Background(), provider, cfg, saveFn)
+}
+
+// ForceRefreshTokenCtx is ForceRefreshToken with caller cancellation.
+func ForceRefreshTokenCtx(ctx context.Context, provider corelib.MaclawLLMProvider, cfg Config, saveFn func(corelib.MaclawLLMProvider) error) (corelib.MaclawLLMProvider, error) {
+	return ensureValidToken(ctx, provider, cfg, saveFn, true)
+}
+
+func shouldRefreshOAuthToken(provider corelib.MaclawLLMProvider, force bool) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider.AuthType), "oauth") {
+		return false
+	}
+	if strings.TrimSpace(provider.RefreshToken) == "" {
+		return false
+	}
+	return force || NeedsRefresh(provider)
+}
+
+func ensureValidToken(ctx context.Context, provider corelib.MaclawLLMProvider, cfg Config, saveFn func(corelib.MaclawLLMProvider) error, force bool) (corelib.MaclawLLMProvider, error) {
+	if !strings.EqualFold(strings.TrimSpace(provider.AuthType), "oauth") {
 		return provider, nil
 	}
-	if !NeedsRefresh(provider) {
+	if !shouldRefreshOAuthToken(provider, force) {
+		if !force && NeedsRefresh(provider) && provider.RefreshToken == "" {
+			return provider, fmt.Errorf("refresh_token is empty, please re-login")
+		}
 		return provider, nil
 	}
-	if provider.RefreshToken == "" {
-		return provider, fmt.Errorf("refresh_token is empty, please re-login")
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	result, err := RefreshAccessToken(cfg, provider.RefreshToken)
+	result, err := RefreshAccessTokenCtx(ctx, cfg, provider.RefreshToken)
 	if err != nil {
 		return provider, fmt.Errorf("token refresh failed: %w", err)
 	}
 
 	provider = ApplyTokenResult(provider, result)
 
-	if err := saveFn(provider); err != nil {
-		return provider, fmt.Errorf("failed to persist refreshed token: %w", err)
+	if saveFn != nil {
+		if err := saveFn(provider); err != nil {
+			return provider, fmt.Errorf("failed to persist refreshed token: %w", err)
+		}
 	}
 
 	return provider, nil

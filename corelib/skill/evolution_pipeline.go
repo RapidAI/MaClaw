@@ -49,10 +49,16 @@ type EvolutionPipeline struct {
 	// config/YAML/index publication but before the caller emits success. A
 	// non-nil error triggers compensation; this keeps audit evidence atomic
 	// with the mutation rather than best-effort after the fact.
-	FinalAuditor  func(event string, data map[string]string) error
-	UploadTrigger func(skillName string, result *SkillExecutionResultCompat) // enqueues upload via SkillLifecycleManager (subject to skill_auto_upload_enabled)
-	LLM           LLMRepairer
-	EventEmitter  func(event string, data map[string]string) // notifies frontend of evolution actions
+	FinalAuditor func(event string, data map[string]string) error
+	// ExternalRecovery restores caller-owned external pre-images (for example
+	// dynamic capability contracts) before filesystem/config rollback during
+	// cross-process compensation recovery. It is intentionally optional so
+	// legacy records remain compatible; services that mutate external state must
+	// provide it and persist the corresponding snapshot in the record.
+	ExternalRecovery func(EvolutionCompensationRecord) error
+	UploadTrigger    func(skillName string, result *SkillExecutionResultCompat) // enqueues upload via SkillLifecycleManager (subject to skill_auto_upload_enabled)
+	LLM              LLMRepairer
+	EventEmitter     func(event string, data map[string]string) // notifies frontend of evolution actions
 
 	// Config
 	PostExecDelay        time.Duration // delay after skill exec before running pipeline (default 5s)

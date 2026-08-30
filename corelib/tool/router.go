@@ -1078,10 +1078,19 @@ func init() {
 // IsConditionalTool returns true if the tool is governed by a conditional keep
 // rule. Sensitive conditional tools are included only when the semantic
 // classifier activates them; score-eligible (benign) ones may also enter via
-// retrieval scoring. Once actually used in a session, callers should pin them
-// via ActivateSessionTool so they remain available for follow-up messages.
+// retrieval scoring. Shared-router name pins are not an authorization path:
+// a later iteration may expose a fail-closed name only through a loop-scoped
+// discovery grant or a governed plan, never ActivateSessionTool.
 func IsConditionalTool(name string) bool {
 	return allConditionalKeepTools[name]
+}
+
+// IsFailClosedConditionalTool reports a sensitive conditional tool that the
+// compatibility router hides unless a classifier, leftover recovery, or
+// loop-scoped discovery grant exposes it. Score-eligible tools already compete
+// on retrieval and do not need that recovery path.
+func IsFailClosedConditionalTool(name string) bool {
+	return allConditionalKeepTools[name] && !scoreEligibleConditionalToolNames[name]
 }
 
 // noPinConditionalTools lists conditional tools that should NOT be session-pinned
@@ -1212,6 +1221,29 @@ func (r *Router) lookupRouteClassification(userMessage string, opts RouteOptions
 
 func uicToolNameActivatable(name string) bool {
 	return allConditionalKeepTools[name] || knowledgeWriteToolNames[name]
+}
+
+func preResolvedKeepsFailClosedTool(pre *intent.ClassificationResult, toolName string) bool {
+	// Leftover skip uses the lookup floor, not the live-UIC 0.50 band. An
+	// uncertain tree (0.50–0.70) must not force-open ssh/browser.
+	if pre == nil || !classificationActivatesTools(*pre, intent.EmbeddingLookupMinScore) {
+		return false
+	}
+	for _, name := range classificationConditionalToolNames(*pre) {
+		if name == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+var routeToolAffinity = intent.NewToolAffinityRegistry()
+
+func classificationConditionalToolNames(result intent.ClassificationResult) []string {
+	if len(result.ToolNames) > 0 {
+		return result.ToolNames
+	}
+	return routeToolAffinity.Resolve(result.Primary, result.Secondary)
 }
 
 func coreRoutePriority(name string, condKeep, mustKeep map[string]bool) int {
@@ -1363,19 +1395,18 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		}
 
 		uicKnowledgeWrite := !opts.SkipUnifiedClassifier && uicResult.Primary == intent.LabelKnowledgeWrite
-		if len(uicResult.ToolNames) > 0 {
-			for _, toolName := range uicResult.ToolNames {
-				if !uicToolNameActivatable(toolName) {
-					continue
-				}
-				// Leftover skip forbids live fusion so ssh/browser stay
-				// fail-closed. A cached tree may still name those tools;
-				// only score-eligible names may be forced into the surface.
-				if opts.SkipUnifiedClassifier && !scoreEligibleConditionalToolNames[toolName] {
-					continue
-				}
-				condKeep[toolName] = true
+		for _, toolName := range classificationConditionalToolNames(uicResult) {
+			if !uicToolNameActivatable(toolName) {
+				continue
 			}
+			// Leftover skip forbids live fusion so ssh/browser stay
+			// fail-closed. A cached tree may still name those tools;
+			// only score-eligible names may be forced into the surface
+			// unless this turn's own PreResolved classification named them.
+			if opts.SkipUnifiedClassifier && !scoreEligibleConditionalToolNames[toolName] && !preResolvedKeepsFailClosedTool(opts.PreResolved, toolName) {
+				continue
+			}
+			condKeep[toolName] = true
 		}
 		if uicKnowledgeWrite {
 			condKeep = narrowKnowledgeWriteTools(condKeep, userMessage)

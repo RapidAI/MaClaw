@@ -207,6 +207,13 @@ describe('ExpertMarketDialog', () => {
         await waitFor(() => expect(AppAPI.ListExpertMarketListings).toHaveBeenCalledTimes(2));
     });
 
+    it('explains a Hub-verified email that is already bound to another market account', async () => {
+        vi.mocked(AppAPI.ListExpertMarketListings).mockRejectedValue(new Error('Expert Market session refresh failed: account email is already bound to another user'));
+        render(<DialogProvider><ExpertMarketDialog lang="zh-Hans" onClose={vi.fn()} /></DialogProvider>);
+        const alert = await screen.findByRole('alert');
+        expect(alert.textContent).toContain('该邮箱已绑定其他市场账号');
+    });
+
     it('keeps the newest catalogue response when an earlier refresh finishes late', async () => {
         let resolveFirst!: (value: Record<string, any>) => void;
         const first = new Promise<Record<string, any>>(resolve => { resolveFirst = resolve; });
@@ -285,6 +292,16 @@ describe('ExpertMarketDialog', () => {
         expect(screen.queryByText('No expert submissions yet.')).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
         await waitFor(() => expect(AppAPI.GetExpertMarketAccount).toHaveBeenCalledTimes(2));
+    });
+
+    it('does not treat a failed account request as a zero Credits balance', async () => {
+        vi.mocked(AppAPI.GetExpertMarketAccount).mockRejectedValue(new Error('account service unavailable'));
+        render(<DialogProvider><ExpertMarketDialog lang="en" onClose={vi.fn()} /></DialogProvider>);
+        await screen.findByRole('button', { name: 'Install' });
+        fireEvent.click(screen.getByRole('tab', { name: 'My library' }));
+        await screen.findByRole('alert');
+        expect(document.querySelector('.expert-market-balance')?.textContent).toContain('—');
+        expect(document.querySelector('.expert-market-balance')?.textContent).not.toContain('0 Credits');
     });
 
     it('shows a submitted expert from the account response in My library', async () => {

@@ -7,7 +7,7 @@ import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./
 import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
-import { renderCodingAgentThinkingTimelineItem, renderMessage } from "./aiAssistantMarkdown";
+import { codingTimelineThoughtStep, renderCodingAgentThinkingTimelineItem, renderMessage } from "./aiAssistantMarkdown";
 import {
     formatRecordingCompletionDisplay,
     formatRecordingCompletionMessage,
@@ -5435,10 +5435,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 return (
                     <Fragment key={msg.id}>
                         <div data-testid="coding-agent-interleaved-timeline">
-                            {codingTimeline.map((item) => (
+                            {codingTimeline.map((item, index) => (
                                 <Fragment key={item.id}>
                                     {item.kind === "thinking"
-                                        ? renderCodingAgentThinkingTimelineItem(item, t, lang)
+                                        ? renderCodingAgentThinkingTimelineItem(item, t, lang, codingTimelineThoughtStep(codingTimeline, index))
                                         : renderCodingAgentActivityFeed([{
                                             id: item.id,
                                             role: "progress",

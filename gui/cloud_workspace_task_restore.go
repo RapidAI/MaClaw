@@ -82,6 +82,17 @@ func (a *App) saveDismissedCloudWorkspaceTasks(ids map[string]struct{}) {
 	}
 }
 
+func (a *App) cloudWorkspaceTaskIsDismissed(workspaceID string) bool {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return false
+	}
+	cloudWorkspaceRestoreMu.Lock()
+	defer cloudWorkspaceRestoreMu.Unlock()
+	_, ok := a.loadDismissedCloudWorkspaceTasks()[workspaceID]
+	return ok
+}
+
 func (a *App) dismissCloudWorkspaceTask(workspaceID string) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
@@ -113,27 +124,7 @@ func (a *App) clearDismissedCloudWorkspaceTask(workspaceID string) {
 }
 
 func (a *App) dismissCloudWorkspaceTaskByPath(projectPath string) {
-	projectPath = normalizeProjectSessionPath(projectPath)
-	if projectPath == "" {
-		return
-	}
-	id := a.lookupCloudWorkspaceIDForProject(projectPath)
-	if id == "" {
-		if result, ok := lookupCloudWorkspaceTaskByPath(projectPath); ok {
-			id = cloudWorkspaceIDFromTags(result.Tags)
-		}
-	}
-	if id == "" {
-		a.ensureMemoryStore()
-		if a.memoryStore != nil {
-			if pi := a.memoryStore.ProjectIndex(); pi != nil {
-				if rec := pi.Get(projectPath); rec != nil {
-					id = cloudWorkspaceIDFromTags(rec.Tags)
-				}
-			}
-		}
-	}
-	if id != "" {
+	if id := a.lookupCloudWorkspaceIDForProject(projectPath); id != "" {
 		a.dismissCloudWorkspaceTask(id)
 	}
 }
@@ -171,11 +162,24 @@ func (a *App) restoreCloudWorkspaceTaskRecord(ws CloudWorkspaceEntitlementWorksp
 	if workspaceID == "" {
 		return ProjectSearchResult{}
 	}
+	workingDir := a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), workspaceID)
+	if _, skip := a.loadDismissedCloudWorkspaceTasks()[workspaceID]; skip {
+		return ProjectSearchResult{}
+	}
+	if existing := a.findLocalCloudWorkspaceTask(workspaceID, true); strings.TrimSpace(existing.ProjectPath) != "" {
+		hidden, archived := a.cloudWorkspaceTaskFlags(existing)
+		if archived {
+			return ProjectSearchResult{}
+		}
+		if hidden {
+			return a.unhideCloudWorkspaceTask(workspaceID, existing)
+		}
+		return a.bindPreparedCloudWorkspaceTask(workspaceID, existing, workingDir)
+	}
 	name = normalizeRecentTaskName(name)
 	if name == "" {
 		return ProjectSearchResult{}
 	}
-	workingDir := a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), workspaceID)
 	tags := []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}
 	if normalized := NormalizeCreateTaskMode(mode); normalized != "" {
 		tags = append(tags, normalized)
@@ -237,13 +241,11 @@ func (a *App) hideLocalCloudWorkspaceTask(workspaceID string, dismiss bool) {
 	if a.memoryStore == nil {
 		return
 	}
-	cloudWorkspaceRestoreMu.Lock()
-	existing := a.findLocalCloudWorkspaceTask(workspaceID, true)
-	path := normalizeProjectSessionPath(existing.ProjectPath)
-	if path == "" {
-		cloudWorkspaceRestoreMu.Unlock()
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
 		return
 	}
+	cloudWorkspaceRestoreMu.Lock()
 	if dismiss {
 		ids := a.loadDismissedCloudWorkspaceTasks()
 		if _, ok := ids[workspaceID]; !ok {
@@ -251,44 +253,89 @@ func (a *App) hideLocalCloudWorkspaceTask(workspaceID string, dismiss bool) {
 			a.saveDismissedCloudWorkspaceTasks(ids)
 		}
 	}
-	a.ensureMemoryStore()
-	if a.memoryStore != nil {
-		if pi := a.memoryStore.ProjectIndex(); pi != nil {
-			pi.SetHidden(path, true)
+	var paths []string
+	var newlyHidden []string
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
+	}) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || pi.IsArchived(path) {
+			continue
 		}
+		if !pi.IsHidden(path) {
+			pi.SetHidden(path, true)
+			newlyHidden = append(newlyHidden, path)
+		}
+		paths = append(paths, path)
 	}
 	cloudWorkspaceRestoreMu.Unlock()
-	a.releaseCloudWorkspaceForProjectPath(path)
-	forgetCloudWorkspaceTaskByPath(path)
-	a.cancelProjectTaskLoop(path)
-	a.emitProjectIndexChanged(path)
-	a.emitProjectTaskClosed(path)
+	for _, path := range paths {
+		a.releaseCloudWorkspaceForProjectPath(path)
+		forgetCloudWorkspaceTaskByPath(path)
+		a.cancelProjectTaskLoop(path)
+	}
+	for _, path := range newlyHidden {
+		a.emitProjectTaskClosed(path)
+	}
+	if len(newlyHidden) > 0 {
+		a.emitProjectIndexChanged("")
+	}
 }
 
-// hideOtherLocalCloudWorkspaceTasks hides leftover local rows for workspaceID
-// except exceptPath. DeleteTask uses this when an in-flight restore created a
-// replacement row for the same workspace while the original path was being removed.
+func keepCloudWorkspacePath(keep map[string]string, workspaceID, path string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	path = normalizeProjectSessionPath(path)
+	if keep == nil || workspaceID == "" || path == "" {
+		return
+	}
+	keep[workspaceID] = path
+}
+
+// hideOtherLocalCloudWorkspaceTasks hides leftover visible rows for workspaceID
+// except exceptPath. exceptPath is required: an empty keep path must not hide
+// every local row for the workspace.
 func (a *App) hideOtherLocalCloudWorkspaceTasks(workspaceID, exceptPath string) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	exceptPath = normalizeProjectSessionPath(exceptPath)
-	if a == nil || workspaceID == "" {
+	if workspaceID == "" || exceptPath == "" {
 		return
 	}
-	if a.memoryStore == nil {
-		return
+	if n := a.hideOtherLocalCloudWorkspaceTasksForKeep(map[string]string{workspaceID: exceptPath}); n > 0 {
+		a.emitProjectIndexChanged("")
+	}
+}
+
+func (a *App) hideOtherLocalCloudWorkspaceTasksForKeep(keep map[string]string) int {
+	if a == nil || len(keep) == 0 || a.memoryStore == nil {
+		return 0
+	}
+	normalized := make(map[string]string, len(keep))
+	for id, path := range keep {
+		id = strings.TrimSpace(id)
+		path = normalizeProjectSessionPath(path)
+		if id == "" || path == "" {
+			continue
+		}
+		normalized[id] = path
+	}
+	if len(normalized) == 0 {
+		return 0
 	}
 	pi := a.memoryStore.ProjectIndex()
 	if pi == nil {
-		return
+		return 0
 	}
-	want := cloudWorkspaceTag(workspaceID)
 	cloudWorkspaceRestoreMu.Lock()
 	var extras []string
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
-		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, want)
+		id := localCloudWorkspaceID(candidate)
+		_, ok := normalized[id]
+		return ok
 	}) {
+		id := localCloudWorkspaceID(rec)
+		keepPath := normalized[id]
 		path := normalizeProjectSessionPath(rec.ProjectPath)
-		if path == "" || path == exceptPath || pi.IsArchived(path) || pi.IsHidden(path) {
+		if path == "" || path == keepPath || pi.IsArchived(path) || pi.IsHidden(path) {
 			continue
 		}
 		pi.SetHidden(path, true)
@@ -298,10 +345,10 @@ func (a *App) hideOtherLocalCloudWorkspaceTasks(workspaceID, exceptPath string) 
 	for _, path := range extras {
 		forgetCloudWorkspaceTaskByPath(path)
 		a.cancelProjectTaskLoop(path)
-		a.emitProjectIndexChanged(path)
 		a.emitProjectTaskDeleted(path)
 		a.emitProjectTaskClosed(path)
 	}
+	return len(extras)
 }
 
 func (a *App) entitlementForCloudWorkspaceRestore() CloudWorkspaceEntitlement {
@@ -336,6 +383,7 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 
 	pending := make([]CloudWorkspaceEntitlementWorkspace, 0, len(ent.Workspaces))
 	restored := make([]ProjectSearchResult, 0, len(ent.Workspaces))
+	keep := make(map[string]string, len(ent.Workspaces))
 	unhid := 0
 	cloudWorkspaceRestoreMu.Lock()
 	dismissed := a.loadDismissedCloudWorkspaceTasks()
@@ -357,7 +405,9 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 			continue
 		}
 		if hidden {
-			restored = append(restored, a.unhideCloudWorkspaceTask(workspaceID, existing))
+			bound := a.unhideCloudWorkspaceTask(workspaceID, existing)
+			restored = append(restored, bound)
+			keepCloudWorkspacePath(keep, workspaceID, bound.ProjectPath)
 			unhid++
 			continue
 		}
@@ -365,12 +415,9 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 			existing.WorkingDir = a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), workspaceID)
 		}
 		rememberCloudWorkspaceTask(workspaceID, existing)
+		keepCloudWorkspacePath(keep, workspaceID, existing.ProjectPath)
 	}
 	cloudWorkspaceRestoreMu.Unlock()
-	if unhid > 0 {
-		a.emitProjectIndexChanged("")
-		unhid = 0
-	}
 
 	for _, ws := range pending {
 		if cloudWorkspaceRestoreGen.Load() != gen {
@@ -393,10 +440,13 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 				continue
 			}
 			if hidden {
-				restored = append(restored, a.unhideCloudWorkspaceTask(workspaceID, existing))
+				bound := a.unhideCloudWorkspaceTask(workspaceID, existing)
+				restored = append(restored, bound)
+				keepCloudWorkspacePath(keep, workspaceID, bound.ProjectPath)
 				unhid++
 			} else {
 				rememberCloudWorkspaceTask(workspaceID, existing)
+				keepCloudWorkspacePath(keep, workspaceID, existing.ProjectPath)
 			}
 			cloudWorkspaceRestoreMu.Unlock()
 			continue
@@ -411,9 +461,17 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 			log.Printf("[cloud_workspace] restore task failed workspace=%s", workspaceID)
 			continue
 		}
+		// HideTask may have been waiting on restoreMu. Re-read the tombstone
+		// after unlocking so a concurrent hide still wins over this new row.
+		if a.cloudWorkspaceTaskIsDismissed(workspaceID) {
+			a.hideLocalCloudWorkspaceTask(workspaceID, true)
+			continue
+		}
+		keepCloudWorkspacePath(keep, workspaceID, created.ProjectPath)
 		restored = append(restored, created)
 	}
-	if unhid > 0 {
+	extras := a.hideOtherLocalCloudWorkspaceTasksForKeep(keep)
+	if unhid > 0 || extras > 0 {
 		a.emitProjectIndexChanged("")
 	}
 	return restored

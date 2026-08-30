@@ -1205,10 +1205,8 @@ func (a *App) materializeMaclawLLMProvider(p corelib.MaclawLLMProvider) corelib.
 	}
 	key := p.Key
 	if authKind.IsOAuth() {
-		if storeKey := a.resolveProviderKeyFromStore(p); storeKey != "" {
-			key = storeKey
-		} else if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
-			key = p.OAuthAccessToken
+		if runtimeKey := a.oauthRuntimeKey(p); runtimeKey != "" {
+			key = runtimeKey
 		}
 	}
 	if authKind.IsOAuth() {
@@ -2599,19 +2597,111 @@ func (a *App) GetOpenAIUsage() (*oauth.UsageInfo, error) {
 // uses OAuth. Profile-based probes must never refresh whichever provider is
 // currently projected into the legacy assistant fields.
 func (a *App) ensureOAuthTokenForProvider(providerID string) error {
+	return a.ensureOAuthTokenForProviderMaybeForce(context.Background(), providerID, false)
+}
+
+func (a *App) forceRefreshOAuthToken() error {
+	return a.forceRefreshOAuthTokenCtx(context.Background())
+}
+
+func (a *App) forceRefreshOAuthTokenCtx(ctx context.Context) error {
+	data := a.GetMaclawLLMProviders()
+	for _, provider := range data.Providers {
+		if corelib.MaclawLLMProviderNameEqual(provider.Name, data.Current) {
+			return a.ensureOAuthTokenForProviderMaybeForce(ctx, maclawLLMProviderIDForRead(provider), true)
+		}
+	}
+	return nil
+}
+
+func (a *App) oauthRuntimeKey(p corelib.MaclawLLMProvider) string {
+	if !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+		return strings.TrimSpace(p.Key)
+	}
+	if a != nil {
+		if storeKey := strings.TrimSpace(a.resolveProviderKeyFromStore(p)); storeKey != "" {
+			return storeKey
+		}
+	}
+	if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
+		return strings.TrimSpace(p.OAuthAccessToken)
+	}
+	return strings.TrimSpace(p.Key)
+}
+
+func isXAIGrokOAuthProvider(p corelib.MaclawLLMProvider) bool {
+	if !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+		return false
+	}
+	if corelib.MaclawLLMProviderNameEqual(p.Name, "xAI-Grok") {
+		return true
+	}
+	endpoint, err := url.Parse(strings.TrimSpace(p.URL))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(endpoint.Hostname())) {
+	case "api.x.ai", "x.ai":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) oauthAccessTokenForConfig(cfg corelib.MaclawLLMConfig) (key, authType string, ok bool) {
+	if a == nil {
+		return "", "", false
+	}
+	data := a.GetMaclawLLMProviders()
+	id := strings.TrimSpace(cfg.ProviderID)
+	name := strings.TrimSpace(cfg.ProviderName)
+	match := func(p corelib.MaclawLLMProvider) (string, string, bool) {
+		resolved := a.oauthRuntimeKey(p)
+		if resolved == "" {
+			return "", "", false
+		}
+		return resolved, p.AuthType, true
+	}
+	if id != "" {
+		for _, p := range data.Providers {
+			if maclawLLMProviderIDForRead(p) == id {
+				return match(p)
+			}
+		}
+	}
+	if name != "" {
+		for _, p := range data.Providers {
+			if corelib.MaclawLLMProviderNameEqual(p.Name, name) {
+				return match(p)
+			}
+		}
+	}
+	return "", "", false
+}
+
+func (a *App) ensureOAuthTokenForProviderMaybeForce(ctx context.Context, providerID string, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
 		if maclawLLMProviderIDForRead(p) == strings.TrimSpace(providerID) && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			// Primary path: use CredentialStore (serialized, independent of configMu)
 			if a.credentialStore != nil && credentialStoreProviderID(p) != "" {
+				if force {
+					return a.ensureOAuthTokenViaStoreForced(ctx, p, i)
+				}
 				return a.ensureOAuthTokenViaStore(p, i)
 			}
 			// Fallback path: legacy config.json-based refresh
-			if p.Name == "xAI-Grok" && oauth.NeedsRefresh(p) {
+			if isXAIGrokOAuthProvider(p) && (force || oauth.NeedsRefresh(p)) {
 				if p.RefreshToken == "" {
+					if force && !oauth.NeedsRefresh(p) {
+						return nil
+					}
 					return fmt.Errorf("refresh_token is empty, please re-login (xAI-Grok OAuth)")
 				}
-				result, err := oauth.RefreshXAIToken(context.Background(), p.RefreshToken)
+				result, err := oauth.RefreshXAIToken(ctx, p.RefreshToken)
 				if err != nil {
 					return fmt.Errorf("token refresh failed: %w", err)
 				}
@@ -2620,10 +2710,19 @@ func (a *App) ensureOAuthTokenForProvider(providerID string) error {
 				return a.SaveMaclawLLMProviders(data.Providers, data.Current)
 			}
 			cfg := oauth.DefaultConfig()
-			updated, err := oauth.EnsureValidToken(p, cfg, func(up corelib.MaclawLLMProvider) error {
+			saveFn := func(up corelib.MaclawLLMProvider) error {
 				data.Providers[i] = up
 				return a.SaveMaclawLLMProviders(data.Providers, data.Current)
-			})
+			}
+			var (
+				updated corelib.MaclawLLMProvider
+				err     error
+			)
+			if force {
+				updated, err = oauth.ForceRefreshTokenCtx(ctx, p, cfg, saveFn)
+			} else {
+				updated, err = oauth.EnsureValidToken(p, cfg, saveFn)
+			}
 			if err != nil {
 				return err
 			}

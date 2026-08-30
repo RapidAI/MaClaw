@@ -65,8 +65,13 @@ if (-not $cc) {
     $outDir = Join-Path $projectRoot 'build-host-tests'
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $exe = Join-Path $outDir 'test_reference_fake_device_profile.exe'
+    $idDefinition = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        '-DEXPECTED_PROFILE_ID_TEXT=\"reference-fake-v1\"'
+    } else {
+        '-DEXPECTED_PROFILE_ID_TEXT="reference-fake-v1"'
+    }
     $defines = @(
-        '-DEXPECTED_PROFILE_ID_TEXT="reference-fake-v1"',
+        $idDefinition,
         '-DEXPECTED_WIDTH=240',
         '-DEXPECTED_HEIGHT=320',
         '-DEXPECTED_CAPABILITIES=DEVICE_CAPABILITY_REQUIRED_BASELINE',

@@ -21,6 +21,20 @@ const LIBRARY_PAGE_SIZE = 8;
 const t = (lang: Lang, zh: string, en: string) => lang.startsWith('zh') ? zh : en;
 const number = (value: unknown) => Number(value || 0).toLocaleString();
 const message = (err: unknown) => err instanceof Error ? err.message : String(err || 'Unknown error');
+const marketErrorText = (lang: Lang, err: unknown) => {
+    const raw = message(err);
+    const normalized = raw.toLowerCase();
+    if (normalized.includes('already bound to another user')) {
+        return t(lang, '该邮箱已绑定其他市场账号。请用原 HubCenter 账号登录，或联系管理员合并账号。', 'This email is already bound to another market account. Sign in with the original HubCenter account, or ask an administrator to merge them.');
+    }
+    if (normalized.includes('session refresh failed') || normalized.includes('session expired or invalid')) {
+        return t(lang, '登录已过期或 HubCenter 会话刷新失败，请重新连接 HubCenter 后重试。', 'The HubCenter session expired or could not be refreshed. Reconnect this device and try again.');
+    }
+    if (normalized.includes('未配置 hubcenter')) {
+        return t(lang, '未配置 HubCenter，专家市场不可用。请先在设置中连接 HubCenter，然后重试。', 'HubCenter is not configured, so Expert Market is unavailable. Connect to HubCenter in Settings, then retry.');
+    }
+    return raw;
+};
 
 /**
  * Consumer surface for the AI Expert Market. It deliberately mirrors the Pet
@@ -143,11 +157,11 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             setListings(Array.isArray(catalogue?.experts) ? catalogue.experts : []);
         } catch (err) {
             if (!mountedRef.current || requestID !== catalogueRequestRef.current) return;
-            setError(message(err));
+            setError(marketErrorText(lang, err));
         } finally {
             if (mountedRef.current && requestID === catalogueRequestRef.current) setLoading(false);
         }
-    }, [sort, submittedQuery]);
+    }, [lang, sort, submittedQuery]);
 
     const refreshAccount = useCallback(async () => {
         const requestID = ++accountRequestRef.current;
@@ -170,11 +184,11 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             // Do not turn an account request failure into the misleading empty
             // “no submissions” / “no acquired experts” state. The catalogue
             // remains usable, while My library clearly explains how to retry.
-            setAccountError(message(err));
+            setAccountError(marketErrorText(lang, err));
         } finally {
             if (mountedRef.current && requestID === accountRequestRef.current) setAccountLoading(false);
         }
-    }, []);
+    }, [lang]);
 
     // React Strict Mode deliberately runs effects through setup → cleanup →
     // setup in development. Re-arm this guard in setup so the second pass can
@@ -234,7 +248,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             void refreshAccount();
             showAlert(t(lang, '专家及其缺失依赖已安装到本机。', 'The expert and any missing dependencies were installed locally.'), t(lang, '专家已安装', 'Expert installed'));
         } catch (err) {
-            showAlert(message(err), t(lang, '安装失败', 'Install failed'));
+            showAlert(marketErrorText(lang, err), t(lang, '安装失败', 'Install failed'));
         } finally { setBusyID(''); }
     };
 
@@ -267,7 +281,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             void refreshAccount();
             await install(listing, true);
         } catch (err) {
-            showAlert(message(err), t(lang, '获取失败', 'Get failed'));
+            showAlert(marketErrorText(lang, err), t(lang, '获取失败', 'Get failed'));
             setBusyID('');
         }
     };
@@ -297,7 +311,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             onUninstalled?.(localExpertID);
             void refreshAccount();
         } catch (err) {
-            await showAlert(message(err), t(lang, '卸载失败', 'Uninstall failed'));
+            await showAlert(marketErrorText(lang, err), t(lang, '卸载失败', 'Uninstall failed'));
         } finally { setBusyID(''); }
     };
 
@@ -330,7 +344,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             void loadCatalogue();
             void refreshAccount();
             onMarketChanged?.();
-        } catch (err) { showAlert(message(err), t(lang, '下架失败', 'Unlist failed')); } finally { setBusyID(''); }
+        } catch (err) { showAlert(marketErrorText(lang, err), t(lang, '下架失败', 'Unlist failed')); } finally { setBusyID(''); }
     };
 
     const deletePrivate = async (listing: Listing) => {
@@ -364,7 +378,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             } : current);
             void refreshAccount();
             onMarketChanged?.();
-        } catch (err) { await showAlert(message(err), t(lang, '删除私有分享失败', 'Delete private share failed')); } finally { setBusyID(''); }
+        } catch (err) { await showAlert(marketErrorText(lang, err), t(lang, '删除私有分享失败', 'Delete private share failed')); } finally { setBusyID(''); }
     };
 
     const publish = async (listing: Listing) => {
@@ -396,7 +410,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             } : current);
             void refreshAccount();
             onMarketChanged?.();
-        } catch (err) { showAlert(message(err), t(lang, '提交审核失败', 'Review submission failed')); } finally { setBusyID(''); }
+        } catch (err) { showAlert(marketErrorText(lang, err), t(lang, '提交审核失败', 'Review submission failed')); } finally { setBusyID(''); }
     };
 
     const makePrivate = async (listing: Listing) => {
@@ -429,7 +443,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
             void loadCatalogue();
             void refreshAccount();
             onMarketChanged?.();
-        } catch (err) { showAlert(message(err), t(lang, '转为私有失败', 'Make private failed')); } finally { setBusyID(''); }
+        } catch (err) { showAlert(marketErrorText(lang, err), t(lang, '转为私有失败', 'Make private failed')); } finally { setBusyID(''); }
     };
 
     const selectTab = (nextTab: 'market' | 'library') => {
@@ -455,7 +469,7 @@ export function ExpertMarketDialog({ lang, initialTab = 'market', onClose, onIns
                     <button ref={libraryTabRef} id="expert-market-tab-library" role="tab" type="button" tabIndex={tab === 'library' ? 0 : -1} aria-selected={tab === 'library'} aria-controls="expert-market-panel-library" className={tab === 'library' ? 'active' : ''} onClick={() => selectTab('library')} onKeyDown={event => handleTabKeyDown(event, 'library')}>{t(lang, '我的库', 'My library')}</button>
                 </div>
                 <div className="expert-market-account-actions">
-                    <span className="expert-market-balance">{t(lang, '余额', 'Balance')} <strong>{accountLoading && !account ? '—' : `${number(account?.credits)} Credits`}</strong></span>
+                    <span className="expert-market-balance">{t(lang, '余额', 'Balance')} <strong>{account ? `${number(account.credits)} Credits` : '—'}</strong></span>
                     <button className="expert-market-assets-button" type="button" onClick={openAssetManagement}>{t(lang, '资产管理', 'Asset Management')}</button>
                 </div>
             </div>

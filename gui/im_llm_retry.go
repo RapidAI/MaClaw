@@ -81,6 +81,7 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 	result *agentLoopLLMRetryResult,
 ) {
 	category := adaptiveRetry.Classify("llm_request", result.Err)
+	didAuthRefresh := false
 	for retryAttempt := 0; result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
 		// If the request context is already cancelled (e.g. by RequestReplan),
 		// retrying is pointless — the next request will immediately fail with
@@ -98,14 +99,20 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 		if decision.Action != RetryActionRetry {
 			return
 		}
-		adaptiveRetry.RecordFailure("llm_request", category, decision)
-		log.Printf("[LLM] AdaptiveRetry: %s error, retry after %v (%d): %v", string(category), decision.Delay, retryAttempt+1, result.Err)
-		result.RetryWaitElapsed += decision.Delay
 		result.RetryCount++
-		reportLLMRetryWait(category == FailureTransient, onProgress, decision.Delay, retryAttempt+1, maxTransientRetries)
-		if waitCancelled(ctx, decision.Delay) {
-			result.Cancelled = true
-			return
+		cfg, rotated := h.maybeRefreshLLMAuthForRetry(reqCtx, cfg, result.Err, &didAuthRefresh)
+		if rotated {
+			log.Printf("[LLM] AdaptiveRetry: token-validation error, retrying immediately after credential refresh (%d): %v", retryAttempt+1, result.Err)
+			reportLLMAuthRefresh(onProgress)
+		} else {
+			adaptiveRetry.RecordFailure("llm_request", category, decision)
+			log.Printf("[LLM] AdaptiveRetry: %s error, retry after %v (%d): %v", string(category), decision.Delay, retryAttempt+1, result.Err)
+			result.RetryWaitElapsed += decision.Delay
+			reportLLMRetryWait(category == FailureTransient, onProgress, decision.Delay, retryAttempt+1, maxTransientRetries)
+			if waitCancelled(ctx, decision.Delay) {
+				result.Cancelled = true
+				return
+			}
 		}
 		retryMetrics := &llmStreamMetrics{}
 		result.Response, result.Err = h.doLLMRequestStream(reqCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
@@ -153,14 +160,21 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 		retryDelay = baseTransientDelay
 		retryMax = maxTransientRetries
 	}
+	didAuthRefresh := false
 	for retryAttempt := 0; retryAttempt < retryMax && result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
-		log.Printf("[LLM] request failed, retry after %v (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, result.Err)
-		result.RetryWaitElapsed += retryDelay
 		result.RetryCount++
-		reportLLMRetryWait(isTransient, onProgress, retryDelay, retryAttempt+1, retryMax)
-		if waitCancelled(ctx, retryDelay) {
-			result.Cancelled = true
-			return
+		cfg, rotated := h.maybeRefreshLLMAuthForRetry(reqCtx, cfg, result.Err, &didAuthRefresh)
+		if rotated {
+			log.Printf("[LLM] token-validation error, retrying immediately after credential refresh (%d/%d): %v", retryAttempt+1, retryMax, result.Err)
+			reportLLMAuthRefresh(onProgress)
+		} else {
+			log.Printf("[LLM] request failed, retry after %v (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, result.Err)
+			result.RetryWaitElapsed += retryDelay
+			reportLLMRetryWait(isTransient, onProgress, retryDelay, retryAttempt+1, retryMax)
+			if waitCancelled(ctx, retryDelay) {
+				result.Cancelled = true
+				return
+			}
 		}
 		retryMetrics := &llmStreamMetrics{}
 		result.Response, result.Err = h.doLLMRequestStream(reqCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
@@ -224,4 +238,21 @@ func reportLLMRetryWait(isTransient bool, onProgress tool.ProgressCallback, dela
 		return
 	}
 	onProgress(fmt.Sprintf("API 暂时不可用，%d 秒后重试 (%d/%d)...", int(delay.Seconds()), attempt, max))
+}
+
+func reportLLMAuthRefresh(onProgress tool.ProgressCallback) {
+	if onProgress == nil {
+		return
+	}
+	onProgress("已刷新模型登录状态，即将重试...")
+}
+
+func (h *IMMessageHandler) maybeRefreshLLMAuthForRetry(ctx context.Context, cfg corelib.MaclawLLMConfig, err error, did *bool) (corelib.MaclawLLMConfig, bool) {
+	if did == nil || *did || !llm.IsTransientTokenValidationError(err) {
+		return cfg, false
+	}
+	*did = true
+	prev := cfg
+	cfg = h.refreshLLMConfigAfterTokenErrorCtx(ctx, cfg)
+	return cfg, llmAuthKeyRotated(prev, cfg)
 }

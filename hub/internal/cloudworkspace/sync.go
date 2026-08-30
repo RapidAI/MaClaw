@@ -8,6 +8,17 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 )
 
+func (s *Service) requireActiveWorkspace(ctx context.Context, principal auth.MachinePrincipal, workspaceID string) error {
+	ws, err := s.Workspaces.GetOwned(ctx, principal.TenantID, principal.UserID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if ws == nil || ws.Status != StatusActive {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Service) blobs() (*BlobStore, error) {
 	if s == nil || s.Workspaces == nil || s.Blobs == nil {
 		return nil, ErrUnavailable
@@ -71,7 +82,9 @@ func (s *Service) PutManifest(ctx context.Context, principal auth.MachinePrincip
 	return s.Workspaces.ReplaceManifest(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, ifMatch, normalized, s.now())
 }
 
-// GetObject decrypts and returns plaintext. Requires a valid lease.
+// GetObject decrypts and returns plaintext. Reads are lease-free to allow
+// concurrent multi-machine mounts; ownership and active status are still
+// enforced by the store.
 func (s *Service) GetObject(ctx context.Context, principal auth.MachinePrincipal, workspaceID, sha256hex string) ([]byte, error) {
 	blobs, err := s.blobs()
 	if err != nil {
@@ -80,7 +93,7 @@ func (s *Service) GetObject(ctx context.Context, principal auth.MachinePrincipal
 	if !ValidSHA256Hex(sha256hex) {
 		return nil, ErrInvalidBlobKey
 	}
-	if _, err := s.Workspaces.RequireLease(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, s.now()); err != nil {
+	if err := s.requireActiveWorkspace(ctx, principal, workspaceID); err != nil {
 		return nil, err
 	}
 	return blobs.Get(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex)
@@ -106,7 +119,7 @@ func (s *Service) PutObject(ctx context.Context, principal auth.MachinePrincipal
 		return PutResult{}, err
 	}
 	if has {
-		if _, err := s.Workspaces.RequireLease(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, s.now()); err != nil {
+		if err := s.requireActiveWorkspace(ctx, principal, workspaceID); err != nil {
 			return PutResult{}, err
 		}
 		if err := blobs.recordObject(ctx, workspaceID, sha256hex, int64(len(plaintext))); err != nil {
@@ -122,7 +135,7 @@ func (s *Service) PutObject(ctx context.Context, principal auth.MachinePrincipal
 	if err := s.checkVolume(objectsDir, int64(len(plaintext))); err != nil {
 		return PutResult{}, err
 	}
-	if _, err := s.Workspaces.PrepareObjectPut(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, sha256hex, int64(len(plaintext)), maxWS, tenantMax, s.now()); err != nil {
+	if _, err := s.Workspaces.PrepareObjectPut(ctx, principal.TenantID, principal.UserID, workspaceID, "", sha256hex, int64(len(plaintext)), maxWS, tenantMax, s.now()); err != nil {
 		return PutResult{}, err
 	}
 	return blobs.PutExpected(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex, plaintext)
@@ -137,7 +150,7 @@ func (s *Service) PutObjectChunk(ctx context.Context, principal auth.MachinePrin
 	if !ValidSHA256Hex(sha256hex) {
 		return ErrInvalidBlobKey
 	}
-	if _, err := s.Workspaces.RequireLease(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, s.now()); err != nil {
+	if _, err := s.Workspaces.GetOwned(ctx, principal.TenantID, principal.UserID, workspaceID); err != nil {
 		return err
 	}
 	objectsDir, err := blobs.ObjectsDir(principal.TenantID, principal.UserID, workspaceID)
@@ -159,7 +172,7 @@ func (s *Service) CompleteObject(ctx context.Context, principal auth.MachinePrin
 	if !ValidSHA256Hex(sha256hex) {
 		return PutResult{}, ErrInvalidBlobKey
 	}
-	if _, err := s.Workspaces.RequireLease(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, s.now()); err != nil {
+	if _, err := s.Workspaces.GetOwned(ctx, principal.TenantID, principal.UserID, workspaceID); err != nil {
 		return PutResult{}, err
 	}
 	has, err := blobs.Has(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex)
@@ -182,7 +195,7 @@ func (s *Service) CompleteObject(ctx context.Context, principal auth.MachinePrin
 	if err := s.checkVolume(objectsDir, int64(len(plain))); err != nil {
 		return PutResult{}, err
 	}
-	if _, err := s.Workspaces.PrepareObjectPut(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, sha256hex, int64(len(plain)), maxWS, tenantMax, s.now()); err != nil {
+	if _, err := s.Workspaces.PrepareObjectPut(ctx, principal.TenantID, principal.UserID, workspaceID, "", sha256hex, int64(len(plain)), maxWS, tenantMax, s.now()); err != nil {
 		return PutResult{}, err
 	}
 	got, err := blobs.PutExpected(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex, plain)

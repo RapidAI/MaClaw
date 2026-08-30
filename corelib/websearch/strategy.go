@@ -17,16 +17,12 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-const (
-	strategySearchTimeout             = 30 * time.Second
-	strategyBrowserTimeout            = 6 * time.Second
-	WebSearchMaclawHubTimeout         = 180 * time.Second
-	WebSearchMaclawHubDownloadTimeout = WebSearchMaclawHubTimeout
-	WebSearchEngineMaclawHub          = "maclaw_hub"
-	strategyMaclawHubTimeout          = WebSearchMaclawHubTimeout
-)
-
 var (
+	// strategySearchTimeout is the HTTP/API portion of a runtime search. When a
+	// browser engine or browser fallback is reachable, strategySearchBudget adds
+	// strategyBrowserTimeout so the last-resort path is not starved by retries.
+	strategySearchTimeout       = 30 * time.Second
+	strategyBrowserTimeout      = 15 * time.Second
 	strategyEngineTimeout       = 6 * time.Second
 	strategyProbeEngineTimeout  = 12 * time.Second
 	strategyProbeBrowserTimeout = 30 * time.Second
@@ -40,17 +36,15 @@ var builtinWebSearchEngines = map[string]struct {
 	Name      string
 	BaseURL   string
 	NeedsKey  bool
-	OptIn     bool
 }{
-	"bing_cn":                {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
-	"baidu":                  {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
-	"google":                 {Transport: corelib.WebSearchTransportBrowser, Name: "Google"},
-	"duckduckgo":             {Transport: corelib.WebSearchTransportHTTPHTML, Name: "DuckDuckGo", BaseURL: defaultLegacySearchURL},
-	"brave":                  {Transport: corelib.WebSearchTransportAPI, Name: "Brave Search API", BaseURL: defaultBraveSearchURL, NeedsKey: true},
-	"serper":                 {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
-	"tinyfish":               {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
-	"tavily":                 {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
-	WebSearchEngineMaclawHub: {Transport: corelib.WebSearchTransportAPI, Name: "MaClaw Hub / RapidSearch", BaseURL: defaultMaclawHubSearchURL, OptIn: true},
+	"bing_cn":    {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
+	"baidu":      {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
+	"google":     {Transport: corelib.WebSearchTransportBrowser, Name: "Google"},
+	"duckduckgo": {Transport: corelib.WebSearchTransportHTTPHTML, Name: "DuckDuckGo", BaseURL: defaultLegacySearchURL},
+	"brave":      {Transport: corelib.WebSearchTransportAPI, Name: "Brave Search API", BaseURL: defaultBraveSearchURL, NeedsKey: true},
+	"serper":     {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
+	"tinyfish":   {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
+	"tavily":     {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
 }
 
 var searchQueryHashSalt = func() [32]byte {
@@ -86,23 +80,23 @@ func DefaultWebSearchStrategy(preset string) corelib.WebSearchStrategy {
 	preset = normalizePreset(preset)
 	var order []string
 	if preset == corelib.WebSearchPresetInternational {
-		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
+		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily"}
 	} else {
 		preset = corelib.WebSearchPresetMainland
-		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
+		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily"}
 	}
 	engines := make([]corelib.WebSearchEngineConfig, 0, len(order))
 	for i, id := range order {
 		meta := builtinWebSearchEngines[id]
 		engines = append(engines, corelib.WebSearchEngineConfig{
-			ID: id, Enabled: !meta.NeedsKey && !meta.OptIn, Priority: i + 1,
+			ID: id, Enabled: !meta.NeedsKey, Priority: i + 1,
 			Transport: meta.Transport, BaseURL: meta.BaseURL,
 		})
 	}
 	return corelib.WebSearchStrategy{
 		Version: corelib.WebSearchStrategyVersion, Preset: preset,
 		Mode: corelib.WebSearchModePriority, Engines: engines,
-		BrowserFallbackEnabled: true, BrowserFallbackEngineID: "bing_cn",
+		BrowserFallbackEnabled: true, BrowserFallbackEngineID: defaultBrowserFallbackEngineID(preset),
 		// Manual verification can foreground a browser tab and wait substantially
 		// longer than an ordinary search, so it must be an explicit opt-in.
 		BrowserHumanAssistEnabled: false,
@@ -141,7 +135,7 @@ func NormalizeWebSearchStrategy(strategy corelib.WebSearchStrategy) (corelib.Web
 	}
 	strategy.BrowserFallbackEngineID = strings.ToLower(strings.TrimSpace(strategy.BrowserFallbackEngineID))
 	if strategy.BrowserFallbackEngineID == "" {
-		strategy.BrowserFallbackEngineID = "bing_cn"
+		strategy.BrowserFallbackEngineID = defaultBrowserFallbackEngineID(strategy.Preset)
 	}
 	if strategy.BrowserFallbackEngineID != "bing_cn" && strategy.BrowserFallbackEngineID != "google" {
 		return corelib.WebSearchStrategy{}, fmt.Errorf("browser fallback engine must be bing_cn or google")
@@ -291,25 +285,94 @@ func ResetWebSearchStrategy(current corelib.WebSearchStrategy, preset string) co
 }
 
 func strategySearchBudget(strategy corelib.WebSearchStrategy) time.Duration {
-	budget := strategySearchTimeout
-	if strategy.BrowserHumanAssistEnabled {
-		if strategy.BrowserFallbackEnabled {
-			budget = 2 * time.Minute
-		} else {
-			for _, engine := range strategy.Engines {
-				if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser {
-					budget = 2 * time.Minute
-					break
-				}
-			}
+	if strategy.BrowserHumanAssistEnabled && browserWorkConfigured(strategy) {
+		return 2 * time.Minute
+	}
+	if browserWorkReachable(strategy) {
+		return strategySearchTimeout + strategyBrowserTimeout
+	}
+	return strategySearchTimeout
+}
+
+func hasEnabledBrowserEngine(strategy corelib.WebSearchStrategy) bool {
+	for _, engine := range strategy.Engines {
+		if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser {
+			return true
 		}
+	}
+	return false
+}
+
+func browserWorkConfigured(strategy corelib.WebSearchStrategy) bool {
+	return strategy.BrowserFallbackEnabled || hasEnabledBrowserEngine(strategy)
+}
+
+func browserWorkReachable(strategy corelib.WebSearchStrategy) bool {
+	return getBrowserSearchProvider() != nil && browserWorkConfigured(strategy)
+}
+
+func browserAttemptTimeout(strategy corelib.WebSearchStrategy) time.Duration {
+	if strategy.BrowserHumanAssistEnabled {
+		return 100 * time.Second
+	}
+	return strategyBrowserTimeout
+}
+
+func contextRemaining(ctx context.Context) time.Duration {
+	if ctx == nil {
+		return 0
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return time.Hour
+	}
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func stillNeedsBrowserAttempt(strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool, hint string) bool {
+	if getBrowserSearchProvider() == nil {
+		return false
 	}
 	for _, engine := range strategy.Engines {
-		if engine.Enabled && engine.ID == WebSearchEngineMaclawHub && budget < strategyMaclawHubTimeout {
-			return strategyMaclawHubTimeout
+		if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser && !attemptedBrowser[engine.ID] {
+			return true
 		}
 	}
-	return budget
+	return len(remainingBrowserFallbackIDs(strategy, attemptedBrowser, hint)) > 0
+}
+
+func shouldSkipToPreserveBrowserBudget(ctx context.Context, engine corelib.WebSearchEngineConfig, strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool, hint string) bool {
+	if engine.Transport == corelib.WebSearchTransportBrowser {
+		return false
+	}
+	if !stillNeedsBrowserAttempt(strategy, attemptedBrowser, hint) {
+		return false
+	}
+	return contextRemaining(ctx) <= browserAttemptTimeout(strategy)
+}
+
+func shouldSkipHTMLAfterConsecutiveMisses(engine corelib.WebSearchEngineConfig, htmlUnavailable int, strategy corelib.WebSearchStrategy, attemptedBrowser map[string]bool, hint string) bool {
+	if engine.Transport != corelib.WebSearchTransportHTTPHTML || htmlUnavailable < htmlMissSkipThreshold(hint) {
+		return false
+	}
+	return stillNeedsBrowserAttempt(strategy, attemptedBrowser, hint)
+}
+
+func browserFallbackParent(parent, ctx context.Context, strategy corelib.WebSearchStrategy) context.Context {
+	if ctx != nil && ctx.Err() == nil && contextRemaining(ctx) >= browserAttemptTimeout(strategy) {
+		return ctx
+	}
+	if parent != nil && parent.Err() == nil {
+		return parent
+	}
+	if ctx != nil {
+		return ctx
+	}
+	return parent
 }
 
 // SearchWithStrategyCtx runs enabled engines in user order. Small result sets
@@ -354,6 +417,8 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 	var candidates []SearchResult
 	var failures []string
 	attemptedBrowserEngines := make(map[string]bool)
+	hint := searchQuerySiteHint(query)
+	htmlUnavailable := 0
 	for _, engine := range strategy.Engines {
 		if !engine.Enabled {
 			continue
@@ -362,11 +427,27 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			response.Diagnostics = append(response.Diagnostics, SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "missing API key"})
 			continue
 		}
+		if shouldSkipToPreserveBrowserBudget(ctx, engine, strategy, attemptedBrowserEngines, hint) {
+			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "reserved remaining time for browser fallback"}
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
+			continue
+		}
+		if shouldSkipHTMLAfterConsecutiveMisses(engine, htmlUnavailable, strategy, attemptedBrowserEngines, hint) {
+			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "prior HTML engines missed the query; using browser fallback"}
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
+			continue
+		}
 		if engine.Transport == corelib.WebSearchTransportBrowser {
 			attemptedBrowserEngines[engine.ID] = true
 		}
-		results, attemptErr, elapsed, retryCount := searchStrategyEngine(ctx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled)
-		validResults := mergeSearchResults(nil, results, maxResults)
+		preserve := time.Duration(0)
+		if stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint) && engine.Transport != corelib.WebSearchTransportBrowser {
+			preserve = browserAttemptTimeout(strategy)
+		}
+		results, attemptErr, elapsed, retryCount := searchStrategyEnginePreserving(ctx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled, preserve)
+		validResults := mergeSearchResultsPrefer(nil, results, maxResults, hint)
 		attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, DurationMS: elapsed.Milliseconds(), ResultCount: len(validResults), RetryCount: retryCount}
 		if attemptErr != nil {
 			attempt.Outcome = classifySearchError(attemptErr)
@@ -381,11 +462,26 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			}
 		} else {
 			attempt.Outcome = "success"
-			candidates = mergeSearchResults(candidates, validResults, maxResults)
+			candidates = mergeSearchResultsPrefer(candidates, validResults, maxResults, hint)
+		}
+		if engine.Transport == corelib.WebSearchTransportHTTPHTML {
+			uncovered := hint != "" && !resultsCoverSiteHint(validResults, hint)
+			if attemptErr != nil || len(validResults) == 0 || uncovered {
+				htmlUnavailable++
+			} else {
+				htmlUnavailable = 0
+			}
+		} else if engine.Transport == corelib.WebSearchTransportBrowser && hint != "" {
+			// A real browser that missed the named site will not be beaten by
+			// another HTML scrape; skip remaining HTTP engines and keep the
+			// other browser fallback.
+			if attemptErr != nil || len(validResults) == 0 || !resultsCoverSiteHint(validResults, hint) {
+				htmlUnavailable = htmlMissSkipThreshold(hint)
+			}
 		}
 		response.Diagnostics = append(response.Diagnostics, attempt)
 		logSearchAttempt(query, attempt)
-		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) {
+		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
 			response.Results = candidates
 			response.Degraded = len(response.Diagnostics) > 1 || retryCount > 0
 			return response, nil
@@ -395,46 +491,60 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 		}
 	}
 
-	if strategy.BrowserFallbackEnabled && ctx.Err() == nil && !attemptedBrowserEngines[strategy.BrowserFallbackEngineID] {
-		fallback := corelib.WebSearchEngineConfig{ID: strategy.BrowserFallbackEngineID, Enabled: true, Transport: corelib.WebSearchTransportBrowser}
-		results, attemptErr, elapsed, retryCount := searchStrategyEngine(ctx, query, maxResults, fallback, strategy.BrowserHumanAssistEnabled)
-		validResults := mergeSearchResults(nil, results, maxResults)
-		attempt := SearchAttempt{EngineID: fallback.ID, Transport: fallback.Transport, DurationMS: elapsed.Milliseconds(), ResultCount: len(validResults), RetryCount: retryCount}
-		if attemptErr == nil && len(results) > 0 {
-			response.Results = mergeSearchResults(candidates, validResults, maxResults)
-			if len(response.Results) > 0 {
+	if getBrowserSearchProvider() != nil {
+		for _, fallbackID := range remainingBrowserFallbackIDs(strategy, attemptedBrowserEngines, hint) {
+			fallbackParent := browserFallbackParent(parent, ctx, strategy)
+			if fallbackParent.Err() != nil {
+				break
+			}
+			attemptedBrowserEngines[fallbackID] = true
+			fallback := corelib.WebSearchEngineConfig{ID: fallbackID, Enabled: true, Transport: corelib.WebSearchTransportBrowser}
+			results, attemptErr, elapsed, retryCount := searchStrategyEngine(fallbackParent, query, maxResults, fallback, strategy.BrowserHumanAssistEnabled)
+			validResults := mergeSearchResultsPrefer(nil, results, maxResults, hint)
+			attempt := SearchAttempt{EngineID: fallback.ID, Transport: fallback.Transport, DurationMS: elapsed.Milliseconds(), ResultCount: len(validResults), RetryCount: retryCount}
+			if attemptErr == nil && len(validResults) > 0 {
+				candidates = mergeSearchResultsPrefer(candidates, validResults, maxResults, hint)
 				attempt.Outcome = "success"
 				response.Diagnostics = append(response.Diagnostics, attempt)
 				logSearchAttempt(query, attempt)
-				response.Degraded = true
-				return response, nil
+				if hint == "" || resultsCoverSiteHint(candidates, hint) {
+					response.Results = candidates
+					response.Degraded = true
+					return response, nil
+				}
+				continue
 			}
-			attempt.Outcome = "no_results"
-			attempt.ResultCount = 0
-			failures = append(failures, "browser fallback "+fallback.ID+": no valid results")
-		} else if attemptErr != nil {
-			attempt.Outcome = classifySearchError(attemptErr)
-			attempt.Detail = safeSearchErrorDetail(attemptErr)
-			failures = append(failures, fmt.Sprintf("browser fallback %s: %s", fallback.ID, attempt.Detail))
-		} else {
-			attempt.Outcome = "no_results"
-			failures = append(failures, "browser fallback "+fallback.ID+": no results")
+			if attemptErr != nil {
+				attempt.Outcome = classifySearchError(attemptErr)
+				attempt.Detail = safeSearchErrorDetail(attemptErr)
+				failures = append(failures, fmt.Sprintf("browser fallback %s: %s", fallback.ID, attempt.Detail))
+			} else {
+				attempt.Outcome = "no_results"
+				if len(results) > 0 {
+					failures = append(failures, "browser fallback "+fallback.ID+": no valid results")
+				} else {
+					failures = append(failures, "browser fallback "+fallback.ID+": no results")
+				}
+			}
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
 		}
-		response.Diagnostics = append(response.Diagnostics, attempt)
-		logSearchAttempt(query, attempt)
 	}
 	if len(candidates) > 0 {
 		response.Results = candidates
 		response.Degraded = true
 		return response, nil
 	}
+	if err := parent.Err(); err != nil {
+		return response, fmt.Errorf("web search interrupted: %w", err)
+	}
+	if len(failures) > 0 {
+		return response, errors.New(strings.Join(failures, "; "))
+	}
 	if ctx.Err() != nil {
 		return response, fmt.Errorf("web search interrupted: %w", ctx.Err())
 	}
-	if len(failures) == 0 {
-		return response, fmt.Errorf("no enabled web search engines are available")
-	}
-	return response, errors.New(strings.Join(failures, "; "))
+	return response, fmt.Errorf("no enabled web search engines are available")
 }
 
 // ProbeWebSearchEngineCtx validates one engine with a cold-start-friendly
@@ -469,8 +579,14 @@ func ProbeWebSearchEngineCtx(parent context.Context, query string, maxResults in
 		return SearchResponse{}, err
 	}
 
-	timeout := strategyEngineAttemptTimeout(engine, humanAssist, true)
-	results, attemptErr, elapsed, retryCount := searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, timeout)
+	timeout := strategyProbeEngineTimeout
+	if engine.Transport == corelib.WebSearchTransportBrowser {
+		timeout = strategyProbeBrowserTimeout
+		if humanAssist {
+			timeout = 100 * time.Second
+		}
+	}
+	results, attemptErr, elapsed, retryCount := searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, timeout, 0)
 	validResults := mergeSearchResults(nil, results, maxResults)
 	attempt := SearchAttempt{
 		EngineID: engine.ID, Transport: engine.Transport,
@@ -510,33 +626,28 @@ func queryFingerprint(query string) string {
 	return fmt.Sprintf("%x", h.Sum(nil)[:8])
 }
 
-func strategyEngineAttemptTimeout(engine corelib.WebSearchEngineConfig, humanAssist, probe bool) time.Duration {
-	if engine.ID == WebSearchEngineMaclawHub {
-		return strategyMaclawHubTimeout
-	}
-	if engine.Transport == corelib.WebSearchTransportBrowser {
-		if humanAssist {
-			return 100 * time.Second
-		}
-		if probe {
-			return strategyProbeBrowserTimeout
-		}
-		return strategyBrowserTimeout
-	}
-	if probe {
-		return strategyProbeEngineTimeout
-	}
-	return strategyEngineTimeout
-}
-
 func searchStrategyEngine(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool) ([]SearchResult, error, time.Duration, int) {
-	return searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, strategyEngineAttemptTimeout(engine, humanAssist, false))
+	return searchStrategyEnginePreserving(parent, query, maxResults, engine, humanAssist, 0)
 }
 
-func searchStrategyEngineWithRetry(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool, timeout time.Duration) ([]SearchResult, error, time.Duration, int) {
+func searchStrategyEnginePreserving(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool, preserve time.Duration) ([]SearchResult, error, time.Duration, int) {
+	timeout := strategyEngineTimeout
+	if engine.Transport == corelib.WebSearchTransportBrowser {
+		timeout = strategyBrowserTimeout
+		if humanAssist {
+			timeout = 100 * time.Second
+		}
+	}
+	return searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, timeout, preserve)
+}
+
+func searchStrategyEngineWithRetry(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool, timeout, preserve time.Duration) ([]SearchResult, error, time.Duration, int) {
 	started := time.Now()
 	results, err, _ := searchStrategyEngineWithTimeout(parent, query, maxResults, engine, humanAssist, timeout)
 	if err == nil || !shouldRetrySearchEngine(engine, err) || parent.Err() != nil {
+		return results, err, time.Since(started), 0
+	}
+	if preserve > 0 && contextRemaining(parent) <= preserve {
 		return results, err, time.Since(started), 0
 	}
 	// One retry absorbs transient DNS, proxy-connect, TLS and upstream 5xx
@@ -576,7 +687,7 @@ func shouldRetrySearchEngine(engine corelib.WebSearchEngineConfig, err error) bo
 	}
 	// Configuration/authentication and human-verification failures are stable;
 	// an immediate repeat only burns quota or triggers more anti-bot pressure.
-	for _, marker := range []string{"api key", "signed-in hub", "hub account", "captcha", "verification", "challenge", "blocked"} {
+	for _, marker := range []string{"api key", "captcha", "verification", "challenge", "blocked"} {
 		if strings.Contains(text, marker) {
 			return false
 		}
@@ -659,17 +770,17 @@ func classifySearchError(err error) string {
 	if err == nil {
 		return "success"
 	}
-	text := strings.ToLower(err.Error())
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "timeout") || strings.Contains(text, "timed out") {
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
 		return "timeout"
 	}
+	text := strings.ToLower(err.Error())
 	status := searchHTTPStatus(err)
 	for _, marker := range []string{"captcha", "verification", "challenge", "blocked", "反爬", "人机验证", "自動化查詢", "自动查询"} {
 		if strings.Contains(text, marker) {
 			return "blocked"
 		}
 	}
-	if status == 401 || status == 403 || strings.Contains(text, "api key") || strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
+	if status == 401 || status == 403 || strings.Contains(text, "api key") {
 		return "invalid_key"
 	}
 	if status == 429 || strings.Contains(text, "rate limit") {
@@ -682,12 +793,6 @@ func classifySearchError(err error) string {
 // response bodies. Those bodies can echo requests, credentials, or private
 // gateway diagnostics and are unsafe for logs, tool output, and settings UI.
 func SafeSearchErrorDetail(err error) string {
-	if err != nil {
-		text := strings.ToLower(err.Error())
-		if isMaclawHubUserError(text) {
-			return safeMaclawHubErrorDetail(err)
-		}
-	}
 	switch classifySearchError(err) {
 	case "timeout":
 		return "request timed out"
@@ -702,60 +807,38 @@ func SafeSearchErrorDetail(err error) string {
 	}
 }
 
-func isMaclawHubUserError(text string) bool {
-	return strings.Contains(text, "signed-in hub") ||
-		strings.Contains(text, "hub account") ||
-		strings.Contains(text, "maclaw hub")
-}
-
-func isMaclawHubSignInError(text string) bool {
-	return strings.Contains(text, "signed-in hub") ||
-		strings.Contains(text, "hub account") ||
-		strings.Contains(text, "sign in to maclaw hub")
-}
-
-// RapidSearch never asks the user for a token or API key. Missing Hub login
-// is a sign-in prompt. Known RapidSearch failures stay explicit (blocked,
-// timed out, rate limited); parse and other Hub failures stay generic.
-func safeMaclawHubErrorDetail(err error) string {
-	if err != nil {
-		text := strings.ToLower(err.Error())
-		if isMaclawHubSignInError(text) {
-			return "sign in to MaClaw Hub"
-		}
-	}
-	switch classifySearchError(err) {
-	case "timeout":
-		return "request timed out"
-	case "blocked":
-		return "request was blocked or challenged"
-	case "rate_limited":
-		return "request was rate limited"
-	default:
-		return "MaClaw Hub search is unavailable"
-	}
-}
-
 func safeSearchErrorDetail(err error) string {
 	return SafeSearchErrorDetail(err)
 }
 
 func mergeSearchResults(existing, incoming []SearchResult, limit int) []SearchResult {
-	out := append([]SearchResult(nil), existing...)
+	return mergeSearchResultsPrefer(existing, incoming, limit, "")
+}
+
+func mergeSearchResultsPrefer(existing, incoming []SearchResult, limit int, hint string) []SearchResult {
+	var covering, rest []SearchResult
 	seen := make(map[string]bool, len(existing)+len(incoming))
-	for _, result := range out {
-		seen[canonicalSearchResultURL(result.URL)] = true
-	}
-	for _, result := range incoming {
+	add := func(result SearchResult) {
 		key := canonicalSearchResultURL(result.URL)
 		if key == "" || seen[key] {
-			continue
+			return
 		}
 		seen[key] = true
-		out = append(out, result)
-		if len(out) >= limit {
-			break
+		if hint != "" && resultCoversSiteHint(result, hint) {
+			covering = append(covering, result)
+			return
 		}
+		rest = append(rest, result)
+	}
+	for _, result := range existing {
+		add(result)
+	}
+	for _, result := range incoming {
+		add(result)
+	}
+	out := append(covering, rest...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out
 }

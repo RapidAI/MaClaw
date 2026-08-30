@@ -39,9 +39,10 @@ var taskAnchorDocumentLeadingNamePattern = regexp.MustCompile(`^\s*([\p{Han}]{2,
 var taskAnchorSourcePathPattern = regexp.MustCompile(`(?m)^\s*([A-Za-z]:\\[^\r\n]+|/[^\r\n]+)\s*$`)
 var taskAnchorAutoExtractPathPattern = regexp.MustCompile(`--- auto_extract: begin\s+path="([^"]+)"`)
 
-// updateTaskIdentityAnchorFromUserText creates or refreshes an anchor only
-// when a turn contains durable evidence: an explicit local source or subject.
-// Generic continuation turns must retain the prior anchor unchanged.
+// updateTaskIdentityAnchorFromUserText creates or refreshes an anchor when a
+// turn contains durable task evidence: person/source, a ppt/document work
+// kind, or the session's first substantive request. Generic continuations
+// keep the prior charter unchanged.
 func (h *IMMessageHandler) updateTaskIdentityAnchorFromUserText(userID, userText string) {
 	if h == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(userText) == "" {
 		return
@@ -50,6 +51,7 @@ func (h *IMMessageHandler) updateTaskIdentityAnchorFromUserText(userID, userText
 	paths := extractTaskAnchorSourcePaths(userText)
 	prior, _ := h.taskAnchors.Load(userID)
 	anchor, _ := prior.(taskIdentityAnchor)
+	before := anchor
 	subjectChanged := subject != "" && anchor.Subject != "" && subject != anchor.Subject
 	// A new explicit person/source pair starts a new task. Do not carry the
 	// prior source list into it: that would turn a useful anchor into a blended
@@ -76,16 +78,27 @@ func (h *IMMessageHandler) updateTaskIdentityAnchorFromUserText(userID, userText
 	// first substantive request, or a later math-style instruction can hijack
 	// a PPT tab.
 	if strings.TrimSpace(anchor.OriginalRequest) == "" {
-		if recovered := firstSubstantiveTaskRequest(h.taskAnchorHistory(userID)); recovered != "" {
-			anchor.OriginalRequest = recovered
-		} else if request := firstSubstantiveTaskRequest([]agent.ConversationEntry{{Role: "user", Content: userText}}); request != "" {
-			anchor.OriginalRequest = request
+		current := firstSubstantiveTaskRequest([]agent.ConversationEntry{{Role: "user", Content: userText}})
+		switch {
+		case current != "":
+			if earlier := h.recoverOriginalTaskRequest(userID); earlier != "" {
+				anchor.OriginalRequest = earlier
+			} else {
+				anchor.OriginalRequest = current
+			}
+		case isTaskAnchorContinuationText(userText):
+			// Restarted tabs send "继续改进 ppt" first. Recover the original
+			// request from history; do not scan history for weather/casual turns.
+			anchor.OriginalRequest = h.recoverOriginalTaskRequest(userID)
 		}
 	}
 	if strings.TrimSpace(anchor.WorkKind) == "" {
 		anchor.WorkKind = extractTaskWorkKind(anchor.OriginalRequest)
 	}
 	if !taskIdentityAnchorActive(anchor) {
+		return
+	}
+	if !subjectChanged && taskIdentityAnchorsEqual(before, anchor) {
 		return
 	}
 	anchor.UpdatedAt = time.Now()
@@ -101,7 +114,7 @@ func (h *IMMessageHandler) taskIdentityAnchorForUser(userID string) (taskIdentit
 		return taskIdentityAnchor{}, false
 	}
 	anchor, ok := value.(taskIdentityAnchor)
-	if !ok || !taskIdentityAnchorActive(anchor) {
+	if !ok || !taskIdentityAnchorEnforced(anchor) {
 		return taskIdentityAnchor{}, false
 	}
 	return anchor, true
@@ -113,6 +126,23 @@ func taskIdentityAnchorActive(anchor taskIdentityAnchor) bool {
 		strings.TrimSpace(anchor.OriginalRequest) != ""
 }
 
+// taskIdentityAnchorEnforced is the prompt/tool/memory gate. Only person,
+// source-bound, or ppt/document charters may inject constraints.
+func taskIdentityAnchorEnforced(anchor taskIdentityAnchor) bool {
+	if strings.TrimSpace(anchor.Subject) != "" || len(anchor.SourcePaths) > 0 || len(anchor.PrimaryFiles) > 0 {
+		return true
+	}
+	switch strings.TrimSpace(anchor.WorkKind) {
+	case "ppt", "document":
+		return true
+	}
+	switch extractTaskWorkKind(anchor.OriginalRequest) {
+	case "ppt", "document":
+		return true
+	}
+	return false
+}
+
 func (h *IMMessageHandler) clearTaskIdentityAnchor(userID string) {
 	if h != nil {
 		h.taskAnchors.Delete(userID)
@@ -120,7 +150,7 @@ func (h *IMMessageHandler) clearTaskIdentityAnchor(userID string) {
 }
 
 func taskIdentityAnchorPrompt(anchor taskIdentityAnchor) string {
-	if !taskIdentityAnchorActive(anchor) {
+	if !taskIdentityAnchorEnforced(anchor) {
 		return ""
 	}
 	var b strings.Builder
@@ -142,7 +172,7 @@ func taskIdentityAnchorPrompt(anchor taskIdentityAnchor) string {
 	}
 	if len(anchor.PrimaryFiles) > 0 {
 		b.WriteString("- 当前任务主产物：")
-		b.WriteString(strings.Join(anchor.PrimaryFiles, "；"))
+		b.WriteString(strings.Join(taskAnchorPrimaryBasenames(anchor.PrimaryFiles), "；"))
 		b.WriteString("。覆盖、美化、加页或加图表时请改这些文件（或其文件名前缀变体），不要新建或改写其他主题的讲义/PPT。\n")
 	} else {
 		b.WriteString("- 工作区可能含有其他任务留下的文件。不要把那些文件当成当前任务产物。\n")
@@ -290,7 +320,7 @@ func taskAnchorBlocksMemoryRead(anchor taskIdentityAnchor, action memoryToolActi
 	if taskAnchorAllowsLongTermMemoryRecall(userText) {
 		return false
 	}
-	if len(anchor.SourcePaths) == 0 && strings.TrimSpace(anchor.OriginalRequest) == "" {
+	if !taskIdentityAnchorEnforced(anchor) {
 		return false
 	}
 	switch action {
@@ -355,48 +385,75 @@ func containsLikelyPersonName(content string) bool {
 	return taskAnchorLikelyPersonNamePattern.MatchString(content)
 }
 
-func (h *IMMessageHandler) taskAnchorHistory(userID string) []agent.ConversationEntry {
+func (h *IMMessageHandler) recoverOriginalTaskRequest(userID string) string {
 	if h == nil || h.memory == nil || strings.TrimSpace(userID) == "" {
-		return nil
+		return ""
 	}
-	return h.memory.LoadAll(userID)
+	if got := firstSubstantiveTaskRequest(h.memory.LoadActiveBranch(userID)); got != "" {
+		return got
+	}
+	return firstSubstantiveTaskRequest(h.memory.LoadAll(userID))
 }
 
 func firstSubstantiveTaskRequest(entries []agent.ConversationEntry) string {
-	var best string
-	var bestTS int64
-	found := false
+	var bestTimed string
+	var bestTimedTS int64
+	var firstUntimed string
 	for _, entry := range entries {
 		if entry.Role != "user" {
 			continue
 		}
-		text, _ := entry.Content.(string)
-		text = strings.TrimSpace(stripTaskAnchorDocumentBodies(text))
+		text := strings.TrimSpace(stripTaskAnchorDocumentBodies(conversationEntryText(entry.Content)))
 		if !isSubstantiveTaskRequest(text) {
 			continue
 		}
-		ts := entry.Timestamp
-		if !found || (ts > 0 && (bestTS == 0 || ts < bestTS)) {
-			best = truncateRunes(text, 500)
-			bestTS = ts
-			found = true
+		text = truncateRunes(text, 500)
+		if ts := entry.Timestamp; ts > 0 {
+			if bestTimed == "" || ts < bestTimedTS {
+				bestTimed = text
+				bestTimedTS = ts
+			}
+			continue
+		}
+		if firstUntimed == "" {
+			firstUntimed = text
 		}
 	}
-	return best
+	if bestTimed != "" {
+		return bestTimed
+	}
+	return firstUntimed
 }
 
 func isSubstantiveTaskRequest(text string) bool {
 	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "[系统]") {
+	if text == "" || strings.HasPrefix(text, "[系统]") || isTaskAnchorContinuationText(text) || isTaskAnchorGreetingText(text) {
 		return false
 	}
-	if utf8RuneCount(text) < 8 {
-		return false
+	if extractTaskAnchorSubject(text) != "" || len(extractTaskAnchorSourcePaths(text)) > 0 {
+		return true
 	}
-	return !isTaskAnchorContinuationText(text)
+	switch extractTaskWorkKind(text) {
+	case "ppt", "document":
+		return utf8RuneCount(text) >= 8
+	}
+	return false
+}
+
+func isTaskAnchorGreetingText(text string) bool {
+	compact := strings.ToLower(strings.TrimSpace(text))
+	compact = strings.NewReplacer("！", "", "!", "", "。", "", ".", "", "？", "", "?", "", " ", "", "　", "").Replace(compact)
+	switch compact {
+	case "你好", "您好", "哈喽", "嗨", "在吗", "hello", "hi", "hey", "hola":
+		return true
+	}
+	return false
 }
 
 func isTaskAnchorContinuationText(text string) bool {
+	if hasTaskAnchorTopicSignal(text) {
+		return false
+	}
 	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
 	if compact == "" {
 		return true
@@ -417,20 +474,54 @@ func isTaskAnchorContinuationText(text string) bool {
 	return false
 }
 
+func hasTaskAnchorTopicSignal(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	for han := range taskAnchorHanAliases {
+		if strings.Contains(text, han) {
+			return true
+		}
+	}
+	lower := strings.ToLower(text)
+	for _, token := range []string{"maclaw", "github.com", "mathematics", "handbook"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
 func extractTaskWorkKind(text string) string {
 	lower := strings.ToLower(text)
 	switch {
-	case strings.Contains(lower, "ppt") || strings.Contains(text, "幻灯") || strings.Contains(text, "演讲") || strings.Contains(text, "演示文稿"):
+	case strings.Contains(lower, "ppt") ||
+		strings.Contains(text, "幻灯") ||
+		strings.Contains(text, "演示文稿") ||
+		strings.Contains(text, "演讲ppt") ||
+		strings.Contains(text, "演讲PPT") ||
+		strings.Contains(lower, "slide deck"):
 		return "ppt"
-	case strings.Contains(text, "讲义") || strings.Contains(text, "书籍") || strings.Contains(lower, "handbook") || strings.Contains(lower, "book-pdf") || strings.Contains(lower, "book_pdf"):
+	case strings.Contains(lower, "handbook") || strings.Contains(lower, "book-pdf") || strings.Contains(lower, "book_pdf"):
+		return "document"
+	case strings.Contains(text, "讲义") && taskAnchorHasDocumentWriteIntent(text):
 		return "document"
 	default:
 		return ""
 	}
 }
 
+func taskAnchorHasDocumentWriteIntent(text string) bool {
+	for _, verb := range []string{"编写", "撰写", "生成", "写一本", "写一份", "写本"} {
+		if strings.Contains(text, verb) {
+			return true
+		}
+	}
+	return false
+}
+
 func taskAnchorDeliverableWriteBlockReason(anchor *taskIdentityAnchor, toolName string, args map[string]interface{}) string {
-	if anchor == nil || !taskIdentityAnchorActive(*anchor) {
+	if anchor == nil || !taskIdentityAnchorEnforced(*anchor) {
 		return ""
 	}
 	path := taskAnchorDeliverablePath(toolName, args)
@@ -446,7 +537,7 @@ func taskAnchorDeliverableWriteBlockReason(anchor *taskIdentityAnchor, toolName 
 		fmt.Fprintf(&b, "是「%s」", truncateRunes(req, 80))
 	}
 	if len(anchor.PrimaryFiles) > 0 {
-		fmt.Fprintf(&b, "（主产物 %s）", strings.Join(anchor.PrimaryFiles, "；"))
+		fmt.Fprintf(&b, "（主产物 %s）", strings.Join(taskAnchorPrimaryBasenames(anchor.PrimaryFiles), "；"))
 	}
 	fmt.Fprintf(&b, "。不要改写工作区里其他主题的文件（%s）。请覆盖或修订当前任务主产物。", filepath.Base(path))
 	return b.String()
@@ -493,17 +584,47 @@ func taskAnchorDeliverableContradicts(anchor taskIdentityAnchor, path string) bo
 	if len(anchor.PrimaryFiles) > 0 {
 		return !taskAnchorPrimaryVariant(base, anchor.PrimaryFiles) && !taskAnchorSharesDistinctiveTokens(base, taskAnchorCharterText(anchor))
 	}
-	charter := taskAnchorCharterText(anchor)
-	charterASCII := taskAnchorDistinctiveASCIITokens(charter)
-	fileASCII := taskAnchorDistinctiveASCIITokens(base)
-	if len(charterASCII) == 0 || len(fileASCII) == 0 {
+	if taskAnchorGenericDeliverableName(base) {
 		return false
 	}
-	return !tokenSetsIntersect(charterASCII, fileASCII)
+	charter := taskAnchorCharterText(anchor)
+	charterTok := taskAnchorDistinctiveTokens(charter)
+	fileTok := taskAnchorDistinctiveTokens(base)
+	if len(charterTok) == 0 || len(fileTok) == 0 {
+		return false
+	}
+	return !tokenSetsIntersect(charterTok, fileTok)
+}
+
+var taskAnchorGenericDeliverableStems = map[string]struct{}{
+	"presentation": {}, "deck": {}, "slides": {}, "output": {}, "untitled": {},
+	"draft": {}, "demo": {}, "report": {},
+}
+
+func taskAnchorGenericDeliverableName(filename string) bool {
+	stem := strings.ToLower(taskAnchorFileStem(filename))
+	if stem == "" {
+		return false
+	}
+	if _, ok := taskAnchorGenericDeliverableStems[stem]; ok {
+		return true
+	}
+	for gen := range taskAnchorGenericDeliverableStems {
+		if strings.HasPrefix(stem, gen+"-") || strings.HasPrefix(stem, gen+"_") {
+			return true
+		}
+	}
+	return false
 }
 
 func taskAnchorCharterText(anchor taskIdentityAnchor) string {
-	return strings.TrimSpace(strings.Join([]string{anchor.OriginalRequest, anchor.Subject, strings.Join(anchor.SourcePaths, " ")}, " "))
+	parts := []string{anchor.OriginalRequest, anchor.Subject}
+	for _, path := range anchor.SourcePaths {
+		if base := filepath.Base(path); base != "" && base != "." {
+			parts = append(parts, base)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 func taskAnchorPrimaryVariant(filename string, primary []string) bool {
@@ -535,8 +656,33 @@ func taskAnchorFileStem(filename string) string {
 	return strings.TrimSuffix(filename, filepath.Ext(filename))
 }
 
+func taskAnchorPrimaryBasenames(paths []string) []string {
+	names := make([]string, 0, len(paths))
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		name := filepath.Base(path)
+		if name == "" || name == "." {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
 func taskAnchorSharesDistinctiveTokens(filename, charter string) bool {
-	return tokenSetsIntersect(taskAnchorDistinctiveASCIITokens(filename), taskAnchorDistinctiveASCIITokens(charter))
+	return tokenSetsIntersect(taskAnchorDistinctiveTokens(filename), taskAnchorDistinctiveTokens(charter))
+}
+
+var taskAnchorHanAliases = map[string][]string{
+	"码卡龙": {"maclaw", "macclaw"},
+	"数学":  {"math", "mathematics"},
+	"讲义":  {"lecture", "handbook"},
+	"流形":  {"manifold"},
 }
 
 var taskAnchorASCIIStopwords = map[string]struct{}{
@@ -547,24 +693,60 @@ var taskAnchorASCIIStopwords = map[string]struct{}{
 	"title": {}, "slides": {}, "slide": {}, "page": {}, "pages": {},
 	"ai": {}, "llm": {}, "app": {}, "new": {}, "old": {},
 	"into": {}, "over": {}, "about": {}, "after": {}, "before": {}, "please": {},
+	"agent": {}, "platform": {}, "system": {}, "enterprise": {},
+	"intro": {}, "introduction": {}, "open": {}, "source": {},
 }
 
 var taskAnchorTokenRE = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]{2,}`)
 
-func taskAnchorDistinctiveASCIITokens(text string) []string {
+func taskAnchorDistinctiveTokens(text string) []string {
 	seen := map[string]struct{}{}
 	var out []string
+	add := func(token string) {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" {
+			return
+		}
+		if _, stop := taskAnchorASCIIStopwords[token]; stop {
+			return
+		}
+		if _, ok := seen[token]; ok {
+			return
+		}
+		seen[token] = struct{}{}
+		out = append(out, token)
+	}
 	for _, match := range taskAnchorTokenRE.FindAllString(strings.ToLower(text), -1) {
-		if _, stop := taskAnchorASCIIStopwords[match]; stop {
-			continue
+		add(match)
+	}
+	for han, aliases := range taskAnchorHanAliases {
+		if strings.Contains(text, han) {
+			for _, alias := range aliases {
+				add(alias)
+			}
 		}
-		if _, ok := seen[match]; ok {
-			continue
-		}
-		seen[match] = struct{}{}
-		out = append(out, match)
 	}
 	return out
+}
+
+func taskIdentityAnchorsEqual(a, b taskIdentityAnchor) bool {
+	return a.Subject == b.Subject &&
+		a.OriginalRequest == b.OriginalRequest &&
+		a.WorkKind == b.WorkKind &&
+		taskAnchorStringSlicesEqualFold(a.SourcePaths, b.SourcePaths) &&
+		taskAnchorStringSlicesEqualFold(a.PrimaryFiles, b.PrimaryFiles)
+}
+
+func taskAnchorStringSlicesEqualFold(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !strings.EqualFold(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenSetsIntersect(a, b []string) bool {
@@ -583,6 +765,8 @@ func tokenSetsIntersect(a, b []string) bool {
 	return false
 }
 
+const maxTaskAnchorPrimaryFiles = 3
+
 func (h *IMMessageHandler) rememberTaskAnchorDeliverable(userID string, snapshot *taskIdentityAnchor, toolName string, args map[string]interface{}) {
 	if h == nil {
 		return
@@ -593,29 +777,41 @@ func (h *IMMessageHandler) rememberTaskAnchorDeliverable(userID string, snapshot
 		return
 	}
 	clean := filepath.Clean(path)
-	update := func(anchor taskIdentityAnchor) taskIdentityAnchor {
-		if taskAnchorDeliverableContradicts(anchor, clean) {
-			return anchor
+	apply := func(anchor taskIdentityAnchor) (taskIdentityAnchor, bool) {
+		if !taskIdentityAnchorEnforced(anchor) || taskAnchorDeliverableContradicts(anchor, clean) {
+			return anchor, false
 		}
-		anchor.PrimaryFiles = mergeTaskAnchorPaths(anchor.PrimaryFiles, []string{clean})
+		next := mergeTaskAnchorPaths(anchor.PrimaryFiles, []string{clean})
+		if len(next) > maxTaskAnchorPrimaryFiles {
+			next = next[:maxTaskAnchorPrimaryFiles]
+		}
+		if taskAnchorStringSlicesEqualFold(next, anchor.PrimaryFiles) {
+			return anchor, false
+		}
+		anchor.PrimaryFiles = next
 		anchor.UpdatedAt = time.Now()
-		return anchor
+		return anchor, true
 	}
 	if snapshot != nil {
-		*snapshot = update(*snapshot)
+		if updated, changed := apply(*snapshot); changed {
+			*snapshot = updated
+		}
 	}
 	if strings.TrimSpace(userID) == "" {
 		return
 	}
 	current, ok := h.taskIdentityAnchorForUser(userID)
 	if !ok {
-		if snapshot != nil {
-			current = *snapshot
-		} else {
+		if snapshot == nil || !taskIdentityAnchorEnforced(*snapshot) {
 			return
 		}
+		h.taskAnchors.Store(userID, *snapshot)
+		return
 	}
-	current = update(current)
-	h.taskAnchors.Store(userID, current)
+	updated, changed := apply(current)
+	if !changed {
+		return
+	}
+	h.taskAnchors.Store(userID, updated)
 	log.Printf("[task-anchor] recorded primary deliverable user=%s file=%s", userID, clean)
 }

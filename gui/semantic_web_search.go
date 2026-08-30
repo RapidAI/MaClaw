@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -81,7 +80,8 @@ func (h *IMMessageHandler) searchTrustedWeb(principalID, query string, publicNet
 	if h.semanticTrustedWebSearch != nil {
 		return h.semanticTrustedWebSearch(principalID, query)
 	}
-	ctx := context.Background()
+	ctx, cancel := h.imToolContext()
+	defer cancel()
 	if publicNetworkOnly {
 		ctx = websearch.WithPublicNetworkOnly(ctx)
 	}
@@ -95,6 +95,9 @@ func (h *IMMessageHandler) searchTrustedWeb(principalID, query string, publicNet
 func semanticTrustedWebSearchProjection(query string, response websearch.SearchResponse) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Public web results for %q (%d):\n\n", query, len(response.Results))
+	if response.Degraded {
+		b.WriteString("Some search engines were unavailable; results include a browser fallback. If the target site is missing, open it with the browser tool.\n\n")
+	}
 	for i, result := range response.Results {
 		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, strings.TrimSpace(result.Title), strings.TrimSpace(result.URL))
 		if snippet := strings.TrimSpace(result.Snippet); snippet != "" {
