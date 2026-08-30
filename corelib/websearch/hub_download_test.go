@@ -231,11 +231,11 @@ func TestFetchHubDownloadUnauthorizedIsNotAFile(t *testing.T) {
 		HubDownload: &HubDownloadChannel{Token: "bad-token", BaseURL: proxy.URL},
 	}
 	_, err := FetchCtx(context.Background(), target.URL+"/secret.bin", opts)
-	if err == nil || !strings.Contains(err.Error(), "HTTP 401") || !strings.Contains(err.Error(), "invalid hub session") {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") || !strings.Contains(err.Error(), "sign in to MaClaw Hub") {
 		t.Fatalf("error = %v", err)
 	}
-	if strings.Contains(err.Error(), "bad-token") {
-		t.Fatalf("token leaked: %v", err)
+	if strings.Contains(err.Error(), "bad-token") || strings.Contains(strings.ToLower(err.Error()), "invalid hub session") {
+		t.Fatalf("auth body leaked: %v", err)
 	}
 	if targetHits.Load() != 0 {
 		t.Fatalf("target hits = %d", targetHits.Load())

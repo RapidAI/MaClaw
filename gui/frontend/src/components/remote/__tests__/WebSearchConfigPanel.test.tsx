@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const getMock = vi.fn();
 const saveMock = vi.fn();
@@ -204,6 +204,40 @@ describe("WebSearchConfigPanel", () => {
         const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
         fireEvent.click(toggle.closest("li")!.querySelector(".web-search-config__test")!);
         expect(await screen.findByText("https://example.com/only-url")).toBeTruthy();
+    });
+
+    it("tells the user to sign in to MaClaw Hub when RapidSearch test has no hub session", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            engines: [
+                ...strategy.engines,
+                { id: "maclaw_hub", name: "MaClaw Hub / RapidSearch", enabled: false, priority: 5, transport: "api", needs_api_key: false, has_api_key: false },
+            ],
+        });
+        testMock.mockRejectedValueOnce(new Error("MaClaw Hub / RapidSearch test failed: sign in to MaClaw Hub"));
+        render(<WebSearchConfigPanel lang="en" />);
+        const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
+        const row = toggle.closest("li")!;
+        fireEvent.click(row.querySelector(".web-search-config__test")!);
+        expect(await within(row).findByText("Sign in to MaClaw Hub to use RapidSearch.")).toBeTruthy();
+        expect(row.textContent).not.toMatch(/credential|token|API [Kk]ey/);
+    });
+
+    it("never shows RapidSearch token or API-key language when the hub test is rejected", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            engines: [
+                ...strategy.engines,
+                { id: "maclaw_hub", name: "MaClaw Hub / RapidSearch", enabled: false, priority: 5, transport: "api", needs_api_key: false, has_api_key: false },
+            ],
+        });
+        testMock.mockRejectedValueOnce(new Error("MaClaw Hub / RapidSearch test failed: credentials were rejected"));
+        render(<WebSearchConfigPanel lang="en" />);
+        const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
+        const row = toggle.closest("li")!;
+        fireEvent.click(row.querySelector(".web-search-config__test")!);
+        expect(await within(row).findByText("MaClaw Hub search is unavailable.")).toBeTruthy();
+        expect(row.textContent).not.toMatch(/credentials were rejected|token|API [Kk]ey/);
     });
 
     it("shows MaClaw Hub RapidSearch unchecked without an API-key field", async () => {

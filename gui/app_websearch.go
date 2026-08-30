@@ -334,6 +334,10 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 		if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
 			engine.APIKey = websearch.HubAuthTokenFromConfig(cfg)
 		}
+		if strings.TrimSpace(engine.APIKey) == "" {
+			return WebSearchEngineTestResult{EngineID: engine.ID, Transport: engine.Transport},
+				fmt.Errorf("%s test failed: %s", webSearchEngineName(engine.ID), "sign in to MaClaw Hub")
+		}
 	}
 	// The probe may retry one transient HTTP/API failure. Leave enough outer
 	// budget for two 12-second cold-start attempts plus the short retry delay.

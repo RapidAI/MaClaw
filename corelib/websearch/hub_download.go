@@ -312,13 +312,10 @@ func headerFromOpts(opts *FetchOptions, name string) string {
 }
 
 func hubProxyStatusError(status int, body []byte) error {
-	detail := hubProxyErrorDetail(body)
 	if status == http.StatusUnauthorized {
-		if detail == "" {
-			return fmt.Errorf("MaClaw Hub download returned HTTP 401 (sign in to MaClaw Hub)")
-		}
-		return fmt.Errorf("MaClaw Hub download returned HTTP 401: %s", detail)
+		return fmt.Errorf("MaClaw Hub download returned HTTP 401 (sign in to MaClaw Hub)")
 	}
+	detail := hubProxyErrorDetail(body)
 	if detail != "" {
 		return fmt.Errorf("MaClaw Hub download returned HTTP %d: %s", status, detail)
 	}
@@ -356,7 +353,12 @@ func hubProxyErrorDetail(body []byte) string {
 
 func hubProxyDetailLooksSecret(detail string) bool {
 	lower := strings.ToLower(detail)
-	return strings.Contains(lower, "bearer ") ||
-		strings.Contains(lower, "authorization") ||
-		strings.Contains(strings.ReplaceAll(lower, " ", ""), "proxy.token")
+	for _, marker := range []string{
+		"bearer ", "authorization", "proxy.token", "api key", "apikey", "access token", "token", "credential",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
