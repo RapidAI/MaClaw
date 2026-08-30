@@ -243,10 +243,25 @@ class _FakeNotificationService extends MobileNotificationService {
 
 class _FakeSecureVault extends SecureVault {
   final clearedLegacyServerCredentials = <String>[];
+  final storedKeys = <String, String>{};
 
   @override
   Future<void> clearLegacyServerCredentials(String serverId) async {
     clearedLegacyServerCredentials.add(serverId);
+  }
+
+  @override
+  Future<String?> readKey(String key) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) return null;
+    return storedKeys[trimmed];
+  }
+
+  @override
+  Future<void> writeKey(String key, String value) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) return;
+    storedKeys[trimmed] = value;
   }
 }
 
@@ -739,7 +754,7 @@ Future<void> _pumpAccount(
         if (store != null) mobileLocalStoreProvider.overrideWithValue(store),
         if (notifications != null)
           mobileNotificationServiceProvider.overrideWithValue(notifications),
-        if (vault != null) secureVaultProvider.overrideWithValue(vault),
+        secureVaultProvider.overrideWithValue(vault ?? _FakeSecureVault()),
         apiClientProvider.overrideWithValue(
           apiClient ??
               _FakeApiClient(

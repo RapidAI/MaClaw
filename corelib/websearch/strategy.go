@@ -17,13 +17,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-const (
-	WebSearchMaclawHubTimeout         = 180 * time.Second
-	WebSearchMaclawHubDownloadTimeout = WebSearchMaclawHubTimeout
-	WebSearchEngineMaclawHub          = "maclaw_hub"
-	strategyMaclawHubTimeout          = WebSearchMaclawHubTimeout
-)
-
 var (
 	// WebSearchEngineMaclawHub is the opt-in MaClaw Hub/RapidSearch engine ID.
 	// Keep the identifier in this package so strategy normalization, auth and
