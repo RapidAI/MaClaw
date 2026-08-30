@@ -39,6 +39,18 @@ static inline esp_err_t compact_connectivity_adapter_quiesce_cellular_transport(
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+static inline esp_err_t compact_connectivity_adapter_deinit_cellular_transport(
+    uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static inline esp_err_t compact_connectivity_adapter_reinitialize_cellular_transport(
+    uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 static inline esp_err_t compact_connectivity_adapter_prepare_system_sleep(
     uint32_t timeout_ms) {
     (void)timeout_ms;

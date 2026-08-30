@@ -101,7 +101,7 @@
 
 | 路径 | 等待 L3 上限 |
 |------|----------------|
-| L2+L3 fusion | **5s** (`DefaultFusionTreeDeadline`)，超时降级 embedding-only |
+| L2+L3 fusion | **12s** (`DefaultFusionTreeDeadline`，2026-08-25 由 5s 放宽：远端 hub 实测 ~9.4s，5s 必超时并触发 unknown 降级链)，超时降级 embedding-only |
 | tree-only（无 embedding） | 仍 **30s** (`DefaultLLMTimeout`) |
 
 见 `corelib/intent/classifier.go`；轨道冻结：[response-latency-track-freeze-2026.md](./response-latency-track-freeze-2026.md)。

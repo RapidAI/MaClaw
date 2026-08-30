@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -20,8 +21,21 @@ func newProjectSearchTestApp(t *testing.T) *App {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	// applyDataDirFromConfigLocked pushes this test's base dir into the
+	// process-global corelib base dir and nothing restores it. Snapshot and
+	// restore so later tests (for example computer-use log pruning) never see
+	// a deleted TempDir as the effective base dir.
+	prevBaseDir := corelib.MaclawBaseDir()
+	t.Cleanup(func() {
+		corelib.SetMaclawBaseDir(prevBaseDir)
+	})
 	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
 	t.Cleanup(func() {
+		// Drain fire-and-forget background writers (task flush, hub skill
+		// recommendations → HubCenter selection persist) before stopping the
+		// store so no write lands while t.TempDir removes the config directory.
+		taskAsyncFlushWG.Wait()
+		skillHubRefreshWG.Wait()
 		app.stopMemoryPipelineSchedule("test-cleanup")
 		if app.memoryStore != nil {
 			app.memoryStore.Stop()
@@ -462,6 +476,90 @@ func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
 	}
 	if paths[filepath.Join(app.GetDataDir(), "tasks", "auto")] {
 		t.Fatalf("ListTasks included automatic sediment path")
+	}
+}
+
+func TestSearchTasksCollapsesDuplicateCloudWorkspaceRows(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	workspaceID := "cws_duplicate"
+	older := app.createTaskRecordWithWorkingDir("新建云端工作区任务", "# 新建云端工作区任务\n", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}, "C:/cloud/cws_duplicate", true)
+	newer := app.createTaskRecordWithWorkingDir("码卡龙9.19演讲ppt", "# 码卡龙9.19演讲ppt\n", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}, "C:/cloud/cws_duplicate", true)
+	if older.ProjectPath == "" || newer.ProjectPath == "" {
+		t.Fatalf("setup paths older=%q newer=%q", older.ProjectPath, newer.ProjectPath)
+	}
+	results := app.ListTasks(20)
+	count := 0
+	for _, result := range results {
+		if cloudWorkspaceIDFromTags(result.Tags) == workspaceID {
+			count++
+			if result.Name != "码卡龙9.19演讲ppt" {
+				t.Fatalf("duplicate winner=%+v", result)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("cloud workspace rows=%d results=%+v", count, results)
+	}
+}
+
+func TestSearchTasksCloudDedupUsesCustomName(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	workspaceID := "cws_custom_name"
+	legacy := app.createTaskRecordWithWorkingDir("新建云端工作区任务", "# legacy\n", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}, "C:/cloud/cws_custom_name", true)
+	renamed := app.createTaskRecordWithWorkingDir("新建云端工作区任务", "# placeholder\n", []string{taskManagementTag, taskUserCreatedTag, cloudWorkspaceTag(workspaceID)}, "C:/cloud/cws_custom_name", true)
+	app.memoryStore.ProjectIndex().SetCustomName(renamed.ProjectPath, "我的演讲稿")
+	results := app.ListTasks(20)
+	for _, result := range results {
+		if cloudWorkspaceIDFromTags(result.Tags) == workspaceID {
+			if result.ProjectPath != renamed.ProjectPath || result.Name != "我的演讲稿" {
+				t.Fatalf("winner=%+v, want renamed custom task", result)
+			}
+			return
+		}
+	}
+	t.Fatalf("workspace %q not found in results (legacy=%q renamed=%q)", workspaceID, legacy.ProjectPath, renamed.ProjectPath)
+}
+
+func TestCollapseDuplicateCloudWorkspaceRecordsUsesWorkingDirForLegacyTags(t *testing.T) {
+	now := time.Now()
+	records := []memory.ProjectRecord{
+		{ProjectPath: "legacy", Name: "新建云端工作区任务", Tags: []string{
+			taskManagementTag, cloudWorkspaceTag("cws_a"), cloudWorkspaceTag("cws_b"),
+			recentTaskWorkingDirTag("C:/data/cloud-workspaces/tenant_default/cws_b"),
+		}, LastActivity: now.Add(time.Minute)},
+		{ProjectPath: "named-a", Name: "保留的 A", Tags: []string{taskManagementTag, cloudWorkspaceTag("cws_a")}, LastActivity: now},
+	}
+	got := collapseDuplicateCloudWorkspaceRecords(records)
+	if len(got) != 2 {
+		t.Fatalf("records=%+v, want both unrelated workspace rows", got)
+	}
+	if got[0].ProjectPath != "legacy" || got[1].ProjectPath != "named-a" {
+		t.Fatalf("records order/content=%+v", got)
+	}
+}
+
+func TestCollapseDuplicateCloudWorkspaceRecordsPrefersNamedRegardlessOfOrder(t *testing.T) {
+	records := []memory.ProjectRecord{
+		{ProjectPath: "named", Name: "用户命名任务", Tags: []string{cloudWorkspaceTag("cws_x")}},
+		{ProjectPath: "generic", Name: "新建云端工作区任务", Tags: []string{cloudWorkspaceTag("cws_x")}},
+	}
+	got := collapseDuplicateCloudWorkspaceRecords(records)
+	if len(got) != 1 || got[0].ProjectPath != "named" {
+		t.Fatalf("records=%+v, want named winner", got)
+	}
+}
+
+func TestTaskSearchLimitIsBounded(t *testing.T) {
+	if got := taskSearchLimit(1); got != 50 {
+		t.Fatalf("taskSearchLimit(1)=%d, want 50", got)
+	}
+	if got := taskSearchLimit(20); got != 80 {
+		t.Fatalf("taskSearchLimit(20)=%d, want 80", got)
+	}
+	if got := taskSearchLimit(int(^uint(0) >> 1)); got != maxTaskSearchLimit {
+		t.Fatalf("taskSearchLimit(maxint)=%d, want %d", got, maxTaskSearchLimit)
 	}
 }
 

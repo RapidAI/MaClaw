@@ -51,7 +51,7 @@ func (item responsesAPIReasoningOutputItem) DisplaySummary() string {
 	var out strings.Builder
 	for _, part := range parts {
 		switch part.Type {
-		case "summary_text", "reasoning_text", "reasoning_content", "text", "output_text":
+		case "summary_text", "reasoning_text", "reasoning_content", "text", "output_text", "thinking":
 			text := part.Text
 			if text == "" {
 				text = part.Content
@@ -140,6 +140,11 @@ func ParseNonStreamResponsesAPIBody(body []byte) (*Response, error) {
 				Content: item.Content,
 			}
 			if summary := reasoningItem.DisplaySummary(); summary != "" {
+				// Separate summaries from distinct reasoning items, mirroring
+				// appendResponsesStreamReasoning's item separation.
+				if msg.ReasoningContent != "" {
+					msg.ReasoningContent += "\n"
+				}
 				msg.ReasoningContent += summary
 			}
 		}

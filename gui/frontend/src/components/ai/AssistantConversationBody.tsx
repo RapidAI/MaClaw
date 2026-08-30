@@ -181,8 +181,8 @@ export function AssistantConversationBody({
                 </>
             )}
             {ready && !onboardingIncomplete ? busyAccessory : null}
-            {showThinkingState && <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{thinkingText}</div>}
-            {showProcessingState && <div style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{processingText}</div>}
+            {showThinkingState && <div role="status" aria-live="polite" style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{thinkingText}</div>}
+            {showProcessingState && <div role="status" aria-live="polite" style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{processingText}</div>}
         </>
     );
 }

@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +52,52 @@ func semanticTrustedShellInvocationSchema() map[string]interface{} {
 		"required":             []string{"command"},
 		"additionalProperties": false,
 	}
+}
+
+// semanticShellInvocationArgs washes model-supplied shell arguments before
+// canonical schema validation, the same boundary role as
+// semanticOfficeWriteInvocationArgs. Two correctable shapes show up in
+// production: timeout as a decimal string ("60") and the alias key
+// "timeout" for timeout_seconds. Canonicalization would reject both as
+// parameter_schema_invalid and burn the one-shot grant on a typo. Unknown
+// keys with real values (workdir, shell) pass through untouched: the working
+// directory and interpreter are host-fixed, and dropping such a key would
+// silently change what the model asked for.
+func semanticShellInvocationArgs(argsJSON string) string {
+	var parsed map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &parsed) != nil || parsed == nil {
+		return argsJSON
+	}
+	changed := false
+	for key, raw := range parsed {
+		if raw == nil {
+			delete(parsed, key)
+			changed = true
+		}
+	}
+	if _, ok := parsed["timeout_seconds"]; !ok {
+		if alias, ok := parsed["timeout"]; ok {
+			delete(parsed, "timeout")
+			parsed["timeout_seconds"] = alias
+			changed = true
+		}
+	}
+	if raw, ok := parsed["timeout_seconds"]; ok {
+		if text, isString := raw.(string); isString {
+			if seconds, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
+				parsed["timeout_seconds"] = seconds
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return argsJSON
+	}
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		return argsJSON
+	}
+	return string(body)
 }
 
 func semanticTrustedShellArgsAllowed(args map[string]interface{}) (command string, timeout time.Duration, err error) {
@@ -142,11 +191,15 @@ func (h *IMMessageHandler) executeTrustedShell(principalID, command string, time
 	defer cancel()
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+		// cmd /c via Go argument escaping eats inner quotes and mangles CJK
+		// paths; NewWindowsShellCommand passes the line verbatim. UTF-8 env
+		// keeps child (e.g. Python) stdio out of the GBK console codepage.
+		cmd = tool.NewWindowsShellCommand(ctx, command, workspace)
 	} else {
 		cmd = exec.CommandContext(ctx, "bash", "-lc", command)
+		cmd.Dir = workspace
 	}
-	cmd.Dir = workspace
+	cmd.Env = tool.AppendUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

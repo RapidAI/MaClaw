@@ -451,6 +451,38 @@ func (s *Store) CountActive(ctx context.Context, tenantID, userID string) (int, 
 	return countActive(ctx, s.db, store.NormalizeTenantID(tenantID), strings.TrimSpace(userID))
 }
 
+// HardDeleteDeleted permanently removes an owned soft-deleted workspace.
+func (s *Store) HardDeleteDeleted(ctx context.Context, tenantID, userID, id string) error {
+	if s == nil || s.db == nil {
+		return ErrUnavailable
+	}
+	tenantID, userID, id = store.NormalizeTenantID(tenantID), strings.TrimSpace(userID), strings.TrimSpace(id)
+	return s.withImmediate(ctx, func(q queryer) error {
+		ws, err := getOwned(ctx, q, tenantID, userID, id)
+		if err != nil {
+			return err
+		}
+		if ws.Status != StatusDeleted {
+			return ErrNotFound
+		}
+		for _, stmt := range []string{
+			`DELETE FROM cloud_workspace_manifest_entries WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_objects WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_leases WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspaces WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = ?`,
+		} {
+			args := []any{id}
+			if strings.Contains(stmt, "cloud_workspaces WHERE") {
+				args = []any{id, tenantID, userID, StatusDeleted}
+			}
+			if _, err := q.ExecContext(ctx, stmt, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // TenantUsedBytes sums used_bytes across all statuses, including deleted.
 func (s *Store) TenantUsedBytes(ctx context.Context, tenantID string) (int64, error) {
 	if s == nil || s.db == nil {

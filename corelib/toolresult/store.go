@@ -222,6 +222,13 @@ func DefaultPreview(s string, limit int) string {
 	return utf8Prefix(s, headLen) + sep + utf8Suffix(s, tailLen)
 }
 
+// HandleFooterMarker introduces the model-facing read-back footer appended to
+// a spilled preview. Anything that truncates tool-result content afterwards
+// must preserve everything from this marker to the end of the string —
+// cutting the footer (in particular the id line) orphans the spilled full
+// result, because the model can no longer read it back with read_tool_result.
+const HandleFooterMarker = "[tool_result_handle]"
+
 func appendHandleFooter(preview string, h *Handle) string {
 	if h == nil {
 		return preview
@@ -229,7 +236,7 @@ func appendHandleFooter(preview string, h *Handle) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(preview, "\n"))
 	b.WriteString("\n\n")
-	b.WriteString("[tool_result_handle]\n")
+	b.WriteString(HandleFooterMarker + "\n")
 	fmt.Fprintf(&b, "id: %s\n", h.ID)
 	fmt.Fprintf(&b, "tool: %s\n", modelVisibleToolName(h.ToolName))
 	fmt.Fprintf(&b, "original_bytes: %d\n", h.OriginalBytes)

@@ -3,9 +3,18 @@ package main
 import (
 	"sync"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestEnsureMemoryStoreConcurrentCallsShareOneStore(t *testing.T) {
+	// ensureMemoryStore → applyDataDirFromConfigLocked pushes this test's
+	// TempDir into the process-global corelib base dir; restore it so later
+	// tests never resolve paths under a deleted TempDir.
+	prevBaseDir := corelib.MaclawBaseDir()
+	t.Cleanup(func() {
+		corelib.SetMaclawBaseDir(prevBaseDir)
+	})
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {
 		if app.memoryStore != nil {

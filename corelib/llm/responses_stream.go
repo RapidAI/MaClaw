@@ -164,7 +164,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 			item.name, _ = added.Item["name"].(string)
 			if args, _ := added.Item["arguments"].(string); args != "" {
 				if len(args) > MaxToolArgumentsBytes {
-					return nil, responsesStreamToolArgumentsTooLarge(item.name, len(args))
+					return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamToolArgumentsTooLarge(item.name, len(args))
 				}
 				item.args.WriteString(args)
 			}
@@ -204,6 +204,18 @@ func DoResponsesAPIRequestStreamWithOptions(
 			if json.Unmarshal([]byte(payload), &done) == nil {
 				emitReasoningSummary(firstResponsesStreamText(done.Text, done.Delta))
 			}
+		case "response.reasoning_summary_part.added":
+			// Some providers deliver a whole summary part at once instead of
+			// streaming deltas. Feed it through the same summary path; the
+			// append helper dedupes against already-accumulated deltas.
+			var added struct {
+				Part struct {
+					Text string `json:"text"`
+				} `json:"part"`
+			}
+			if json.Unmarshal([]byte(payload), &added) == nil {
+				emitReasoningSummary(added.Part.Text)
+			}
 
 		case "response.function_call_arguments.delta":
 			var delta struct {
@@ -220,7 +232,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 			}
 			item.args.WriteString(delta.Delta)
 			if item.args.Len() > MaxToolArgumentsBytes {
-				return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", item.name, item.args.Len(), MaxToolArgumentsBytes)
+				return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", item.name, item.args.Len(), MaxToolArgumentsBytes)
 			}
 
 		case "response.function_call_arguments.done":
@@ -235,7 +247,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 					items[done.OutputIndex] = item
 				}
 				if len(done.Arguments) > MaxToolArgumentsBytes {
-					return nil, responsesStreamToolArgumentsTooLarge(item.name, len(done.Arguments))
+					return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamToolArgumentsTooLarge(item.name, len(done.Arguments))
 				}
 				mergeResponsesStreamToolArguments(item, done.Arguments)
 			}
@@ -261,7 +273,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 					item.name = firstResponsesStreamText(item.name, done.Item.Name)
 					if done.Item.Arguments != "" {
 						if len(done.Item.Arguments) > MaxToolArgumentsBytes {
-							return nil, responsesStreamToolArgumentsTooLarge(item.name, len(done.Item.Arguments))
+							return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamToolArgumentsTooLarge(item.name, len(done.Item.Arguments))
 						}
 						mergeResponsesStreamToolArguments(item, done.Item.Arguments)
 					}
@@ -280,7 +292,7 @@ func DoResponsesAPIRequestStreamWithOptions(
 			}
 			for outputIndex, item := range responsesCompletedStreamToolCalls(payload) {
 				if item.args.Len() > MaxToolArgumentsBytes {
-					return nil, responsesStreamToolArgumentsTooLarge(item.name, item.args.Len())
+					return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamToolArgumentsTooLarge(item.name, item.args.Len())
 				}
 				items[outputIndex] = mergeResponsesStreamToolItem(items[outputIndex], item)
 			}
@@ -289,7 +301,10 @@ func DoResponsesAPIRequestStreamWithOptions(
 			finishReason = "length"
 			goto completed
 		case "response.failed", "error":
-			return nil, responsesStreamEventError(payload)
+			// Keep whatever text/reasoning/tool calls were accumulated before
+			// the failure, mirroring the scanner read-error path below, so an
+			// interrupted turn does not silently lose its reasoning trace.
+			return responsesStreamPartialResponse(responseID, textBuf.String(), reasoningBuf.String(), items, usage, finishReason), responsesStreamEventError(payload)
 		}
 	}
 
@@ -355,7 +370,7 @@ func responsesStreamDisplaySummary(item responsesAPIOutputItem) string {
 	var out strings.Builder
 	for _, part := range parts {
 		switch part.Type {
-		case "summary_text", "reasoning_text", "reasoning_content", "text", "output_text":
+		case "summary_text", "reasoning_text", "reasoning_content", "text", "output_text", "thinking":
 			if part.Text != "" {
 				out.WriteString(part.Text)
 			} else {

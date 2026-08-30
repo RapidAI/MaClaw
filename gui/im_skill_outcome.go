@@ -19,8 +19,15 @@ type skillInstallExecutionResult struct {
 }
 
 func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
+	return buildNoToolActionPromptForSkillMode(preferSkill, false, skillName, runID)
+}
+
+func buildNoToolActionPromptForSkillMode(preferSkill, agentGuided bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
+	if agentGuided && skillName != "" {
+		return fmt.Sprintf("[Execution requirement]\n%q is an installed agent-guided workflow. Follow ## Skill 使用文档 with bash, read_file, write_file, or edit_file. Do not call discover_tool, search_and_install_skill, generate_pdf, or manage_skill.\n[/Execution requirement]", skillName)
+	}
 	if runID != "" {
 		return "[Execution requirement]\nThis task requires real execution. Do not stop at explanation or planning. " + buildSkillProgressGuidance(skillName, runID) + "\n[/Execution requirement]"
 	}
@@ -60,8 +67,15 @@ func buildCodingWorkflowImplementationToolingFailureText(reason string, pendingT
 }
 
 func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName, runID string) string {
+	return buildNoToolStallRecoverPromptForSkillMode(consecutive, preferSkill, false, skillName, runID)
+}
+
+func buildNoToolStallRecoverPromptForSkillMode(consecutive int, preferSkill, agentGuided bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
+	if agentGuided && skillName != "" {
+		return fmt.Sprintf("[Recover]\nNo host tool was called for %d consecutive rounds. Follow ## Skill 使用文档 for %q with bash/read_file/write_file/edit_file. Do not discover_tool or generate_pdf.\n[/Recover]", consecutive, skillName)
+	}
 	if runID != "" {
 		return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds. Do not continue with explanation only. %s\n[/Recover]", consecutive, buildSkillProgressGuidance(skillName, runID))
 	}

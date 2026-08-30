@@ -108,6 +108,11 @@ func TestRunAgentLoop_TrialReflect_ClearsRepeatGuardAfterSuccess(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -280,6 +285,11 @@ func TestRunAgentLoop_TrialReflect_RestartsFailureCycleAfterSuccess(t *testing.T
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -440,6 +450,11 @@ func TestRunAgentLoop_EstimatesTokenUsageWhenStreamOmitsUsage(t *testing.T) {
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -615,6 +630,11 @@ func TestRunAgentLoop_OrientSkillPreferenceInjectsRunSkillGuidance(t *testing.T)
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	loopCtx := NewLoopContext("chat-skill-prefer", 2, server.Client())
@@ -716,6 +736,11 @@ func TestRunAgentLoop_SkillFailureInjectsFallbackGuidance(t *testing.T) {
 	}}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -866,6 +891,11 @@ func TestRunAgentLoop_RunningSkillUsesConcreteRunIDGuidanceOnNextRound(t *testin
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -956,6 +986,11 @@ func TestRunAgentLoop_DriftDetectionEntersRecoverPhase(t *testing.T) {
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -1080,6 +1115,11 @@ func TestRunAgentLoop_TrialFailureEntersRecoverPhase(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -1187,6 +1227,11 @@ func TestRunAgentLoop_StreamDoneFiresForToolOnlyAndBonusRounds(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	manager := &RemoteSessionManager{
 		app: app,
@@ -1247,7 +1292,12 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"report.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+		// send_file is a sensitive conditional tool and can never appear on a
+		// classifier-less legacy surface (policy_rejected by design). bash is the
+		// invariant-11 floor tool; the [file_base64] payload pipeline that
+		// materializes LocalFilePath is payload-driven, not tool-name-driven, so
+		// this exercises the same delivery + progress-reporting path.
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"path\\\":\\\"report.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -1274,12 +1324,17 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetToolRegistry(NewToolRegistry())
 	if err := h.registry.Register(RegisteredTool{
-		Name:        "send_file",
-		Description: "test file sender",
+		Name:        "bash",
+		Description: "test file producer",
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
@@ -1290,7 +1345,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 			return "[file_base64|report.pdf|application/pdf]JVBERi0xLjQKfake"
 		},
 	}); err != nil {
-		t.Fatalf("Register send_file tool: %v", err)
+		t.Fatalf("Register bash tool: %v", err)
 	}
 
 	var progress []string
@@ -1312,7 +1367,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	}
 	foundBaseStage := false
 	for _, msg := range progress {
-		if strings.Contains(msg, "工具 · 发送文件") {
+		if strings.Contains(msg, "工具 · 执行命令") {
 			foundBaseStage = true
 		}
 		if strings.Contains(msg, "internal debug-only progress") {
@@ -1329,39 +1384,7 @@ func TestRunAgentLoop_AttachesIntermediateScreenshotAndQRCodeURL(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	var callNum int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		w.Header().Set("Content-Type", "application/json")
-		switch callNum {
-		case 1:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_bash","type":"function","function":{"name":"bash","arguments":"{}"}},{"id":"call_screenshot","type":"function","function":{"name":"screenshot","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
-		default:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"扫码登录即可。"},"finish_reason":"stop"}]}`))
-		}
-	}))
-	defer server.Close()
-
 	app := &App{testHomeDir: tempHome}
-	cfg, err := app.LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
-		Name:          "Custom1",
-		URL:           server.URL,
-		Model:         "test-model",
-		Protocol:      "openai",
-		IsCustom:      true,
-		AuthType:      "none",
-		ContextLength: 16000,
-	}}
-	cfg.MaclawLLMCurrentProvider = "Custom1"
-	cfg.MaclawAgentMaxIterations = 3
-	if err := app.SaveConfig(cfg); err != nil {
-		t.Fatalf("SaveConfig: %v", err)
-	}
-
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetToolRegistry(NewToolRegistry())
 	qrURL := "https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc123&bot_type=3"
@@ -1390,11 +1413,64 @@ func TestRunAgentLoop_AttachesIntermediateScreenshotAndQRCodeURL(t *testing.T) {
 		t.Fatalf("Register screenshot tool: %v", err)
 	}
 
-	loopCtx := NewLoopContext("chat-qr-screenshot", 3, server.Client())
-	resp := h.runAgentLoop(loopCtx, "u1", "system", nil, "部署 cc-connect 并给我二维码", nil, nil, nil, nil, nil, 0, "desktop")
-	if resp == nil {
-		t.Fatal("expected response")
+	// screenshot is a sensitive conditional tool (corelib/tool conditionalKeepRules):
+	// a full legacy loop never renders it into the request surface without a
+	// semantic screenshot intent, and a managed turn owns the whole surface
+	// instead — so the end-to-end route can no longer reach this pipeline.
+	// Drive the legacy batch executor with the exact surface the model saw;
+	// artifact capture (payload observation → pending artifacts → visible
+	// artifacts → final attach) lives at this level.
+	toolCalls := []llm.ToolCall{
+		{ID: "call_bash", Type: "function", Function: llm.ToolCallFunction{Name: "bash", Arguments: "{}"}},
+		{ID: "call_screenshot", Type: "function", Function: llm.ToolCallFunction{Name: "screenshot", Arguments: "{}"}},
 	}
+	visibleArtifacts := &pendingVisibleArtifacts{}
+	execResult := h.executeAgentLoopToolCalls(agentLoopToolCallsOptions{
+		Context:          NewLoopContext("chat-qr-screenshot", 3, nil),
+		UserID:           "u1",
+		UserText:         "部署 cc-connect 并给我二维码",
+		Iteration:        1,
+		Platform:         "desktop",
+		ToolCalls:        toolCalls,
+		ExposedTools:     []map[string]interface{}{toolDef("bash", "fake bash", nil, nil), toolDef("screenshot", "fake screenshot", nil, nil)},
+		VisibleArtifacts: visibleArtifacts,
+	})
+	if execResult.Response != nil {
+		t.Fatalf("unexpected early response: %+v", execResult.Response)
+	}
+	if visibleArtifacts.QRCodeURL != qrURL {
+		t.Fatalf("QRCodeURL = %q, want %q", visibleArtifacts.QRCodeURL, qrURL)
+	}
+	if execResult.PendingArtifacts.ImageKey == "" {
+		t.Fatal("screenshot payload was not captured into pending artifacts")
+	}
+
+	postResult := h.handleAgentLoopPostToolBranch(agentLoopPostToolBranchOptions{
+		Context:              NewLoopContext("chat-qr-screenshot", 3, nil),
+		UserID:               "u1",
+		UserText:             "部署 cc-connect 并给我二维码",
+		Iteration:            1,
+		Platform:             "desktop",
+		ToolCalls:            toolCalls,
+		ToolResults:          execResult.ToolResults,
+		ToolOutcomes:         execResult.ToolOutcomes,
+		ToolExecResults:      execResult.ToolExecResults,
+		Conversation:         execResult.Conversation,
+		History:              execResult.History,
+		Phase:                &agentLoopPhase{},
+		TotalToolCallsInLoop: len(toolCalls),
+		PendingArtifacts:     execResult.PendingArtifacts,
+		VisibleArtifacts:     visibleArtifacts,
+	})
+	if postResult.Response != nil {
+		t.Fatalf("unexpected post-branch response: %+v", postResult.Response)
+	}
+	if visibleArtifacts.LocalPreviewPath == "" || visibleArtifacts.LocalPreviewThumbnail == "" {
+		t.Fatalf("intermediate screenshot not materialized: %+v", visibleArtifacts)
+	}
+
+	resp := &IMAgentResponse{Text: "扫码登录即可。"}
+	visibleArtifacts.Attach(resp)
 	if !strings.Contains(resp.Text, qrURL) {
 		t.Fatalf("response text missing QR URL: %q", resp.Text)
 	}
@@ -1467,6 +1543,11 @@ func TestRunAgentLoop_NoToolStallEntersRecoverPhase(t *testing.T) {
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -1593,6 +1674,11 @@ func TestRunAgentLoop_PendingSkillRunNoToolFragmentStaysInRecover(t *testing.T) 
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -1708,6 +1794,11 @@ func TestHandleIMMessage_ResumeSlotBindsContextWithoutStartingSession(t *testing
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	provider := &fakeProviderAdapter{cmd: CommandSpec{Command: "claude.exe"}}
 	manager := NewRemoteSessionManager(app)
@@ -1805,6 +1896,11 @@ func TestHandleIMMessage_NewTaskAfterIncompleteRunClearsOldContext(t *testing.T)
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -1905,6 +2001,11 @@ func TestHandleIMMessage_StartNewTaskUIActionReplaysOriginalTask(t *testing.T) {
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -2506,6 +2607,11 @@ func TestRunAgentLoop_CompletedSummaryReplyDoesNotTriggerDeliverableRecover(t *t
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -2552,11 +2658,18 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 2:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"deliver\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
-			t.Fatalf("unexpected LLM call %d", callNum)
+			// The pre-loop gate consumes call 1, so the loop's first round sees
+			// the ambient chat-projection surface and its bash delivery is
+			// policy_rejected; the floor-unlock (MissFloorToolsUnlock) then
+			// re-unites bash/write_file for the NEXT round. Keep delivering so
+			// the retried attempt lands on the unlocked surface.
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"deliver\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		}
 	}))
 	defer server.Close()
@@ -2583,12 +2696,17 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
 	if err := h.registry.Register(RegisteredTool{
-		Name:        "send_file",
-		Description: "test file sender",
+		Name:        "bash",
+		Description: "test file producer",
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
@@ -2596,7 +2714,7 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 			return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
 		},
 	}); err != nil {
-		t.Fatalf("Register send_file tool: %v", err)
+		t.Fatalf("Register bash tool: %v", err)
 	}
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "生成 pdf 发我"})
@@ -2618,7 +2736,8 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 	}
 	foundNudge := false
 	foundRecover := false
-	var sawSendFile bool
+	foundFloorUnlock := false
+	var sawDelivery bool
 	for _, evt := range view.Events {
 		if evt.Kind == "delivery.nudged" {
 			foundNudge = true
@@ -2626,15 +2745,21 @@ func TestRunAgentLoop_PromiseOnlyPDFReplyTriggersAnotherRound(t *testing.T) {
 		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "deliverable_pending") {
 			foundRecover = true
 		}
-		if evt.Kind == "tool.executed" && evt.Title == "send_file" {
-			sawSendFile = true
+		if evt.Kind == "surface.floor_unlocked" {
+			foundFloorUnlock = true
+		}
+		if evt.Kind == "tool.executed" && evt.Title == "bash" {
+			sawDelivery = true
 		}
 	}
-	if !foundNudge && !sawSendFile {
-		t.Fatalf("events = %#v, want delivery.nudged event or direct send_file execution", view.Events)
+	// send_file is unreachable on a classifier-less surface by design; the
+	// delivery now lands through the invariant-11 floor (bash + [file_base64]
+	// payload), observable as the floor-unlock event.
+	if !foundNudge && !sawDelivery {
+		t.Fatalf("events = %#v, want delivery.nudged event or direct delivery execution", view.Events)
 	}
-	if !foundRecover && !sawSendFile {
-		t.Fatalf("events = %#v, want deliverable recover event or direct send_file execution", view.Events)
+	if !foundRecover && !foundFloorUnlock && !sawDelivery {
+		t.Fatalf("events = %#v, want deliverable recover, floor unlock, or direct delivery execution", view.Events)
 	}
 }
 
@@ -2694,6 +2819,11 @@ func TestRunAgentLoop_ListSkillsEmptyStateDoesNotEnterTrialFailedRecover(t *test
 	cfg.MaclawAgentMaxIterations = 4
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -2797,6 +2927,11 @@ func TestRunAgentLoop_EmptyAssistantReplyTriggersRecoverPhase(t *testing.T) {
 	cfg.MaclawAgentMaxIterations = 4
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -2905,6 +3040,11 @@ func TestRunAgentLoop_RepeatedPromiseOnlyRepliesEscalateToNoToolStallRecover(t *
 	cfg.MaclawAgentMaxIterations = 5
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -3034,6 +3174,11 @@ func TestRunAgentLoop_EmptyAssistantAfterSkillFailureEscalatesToNoToolStallRecov
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -3138,6 +3283,11 @@ func TestRunAgentLoop_ReasoningFallbackDoesNotTriggerEmptyRecover(t *testing.T) 
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -3225,6 +3375,11 @@ func TestRunAgentLoop_RepeatedEmptyAssistantRepliesReenterRecover(t *testing.T) 
 	cfg.MaclawAgentMaxIterations = config.MinAgentIterations
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -3324,6 +3479,11 @@ func TestRunAgentLoop_RemoteSkillSearchPromptAppearsWhenNoLocalSkillMatches(t *t
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -3390,7 +3550,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 4:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"deliver\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
@@ -3423,6 +3583,11 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -3451,25 +3616,15 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 			if onProgress != nil {
 				onProgress("internal bash progress")
 			}
+			// The delivery step reuses bash (the invariant-11 floor tool): the
+			// [file_base64] payload pipeline is tool-name-agnostic.
+			if _, ok := args["deliver"]; ok {
+				return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
+			}
 			return "review.pdf generated"
 		},
 	}); err != nil {
 		t.Fatalf("Register bash: %v", err)
-	}
-	if err := h.registry.Register(RegisteredTool{
-		Name:        "send_file",
-		Description: "test file sender",
-		Category:    ToolCategoryBuiltin,
-		Status:      RegToolAvailable,
-		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			if onProgress != nil {
-				onProgress("internal send_file progress")
-			}
-			return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
-		},
-	}); err != nil {
-		t.Fatalf("Register send_file: %v", err)
 	}
 
 	job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "生成 pdf 发我", "desktop", "desktop-user", "/project")
@@ -3493,10 +3648,13 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 	if callNum != 4 {
 		t.Fatalf("LLM call count = %d, want 4", callNum)
 	}
+	// craft_tool is a sensitive conditional tool: on a classifier-less legacy
+	// surface it is policy_rejected before any stage progress is emitted, and
+	// the fallback + delivery both run through bash (the invariant-11 floor).
+	// The user-visible stage label for both executed steps is therefore the
+	// bash one.
 	wantProgress := []string{
-		"工具 · 生成脚本",
 		"工具 · 执行命令",
-		"工具 · 发送文件",
 	}
 	for _, want := range wantProgress {
 		found := false
@@ -3524,7 +3682,8 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 	}
 	foundNudge := false
 	foundRecover := false
-	var sawSendFile bool
+	foundFloorUnlock := false
+	var sawDelivery bool
 	for _, evt := range view.Events {
 		if evt.Kind == "delivery.nudged" {
 			foundNudge = true
@@ -3532,15 +3691,21 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		if evt.Kind == "loop.recover_entered" && strings.Contains(evt.Summary, "deliverable_pending") {
 			foundRecover = true
 		}
-		if evt.Kind == "tool.executed" && evt.Title == "send_file" {
-			sawSendFile = true
+		if evt.Kind == "surface.floor_unlocked" {
+			foundFloorUnlock = true
+		}
+		if evt.Kind == "tool.executed" && evt.Title == "bash" {
+			sawDelivery = true
 		}
 	}
-	if !foundNudge && !sawSendFile {
-		t.Fatalf("events = %#v, want delivery.nudged event or direct send_file execution", view.Events)
+	// send_file is unreachable on a classifier-less surface by design; the
+	// delivery now lands through the invariant-11 floor (bash + [file_base64]
+	// payload), observable as the floor-unlock event.
+	if !foundNudge && !sawDelivery {
+		t.Fatalf("events = %#v, want delivery.nudged event or direct delivery execution", view.Events)
 	}
-	if !foundRecover && !sawSendFile {
-		t.Fatalf("events = %#v, want deliverable recover event or direct send_file execution", view.Events)
+	if !foundRecover && !foundFloorUnlock && !sawDelivery {
+		t.Fatalf("events = %#v, want deliverable recover, floor unlock, or direct delivery execution", view.Events)
 	}
 }
 
@@ -3559,11 +3724,17 @@ func TestRunAgentLoop_PromiseOnlyDocumentReplyTriggersAnotherRound(t *testing.T)
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 2:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"report.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"deliver\\\":\\\"report.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
-			t.Fatalf("unexpected LLM call %d", callNum)
+			// The loop's first round sees the ambient chat-projection surface
+			// and its bash delivery is policy_rejected; the floor-unlock
+			// (MissFloorToolsUnlock) re-unites bash/write_file for the NEXT
+			// round, so keep delivering until the retried attempt lands.
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"deliver\\\":\\\"report.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		}
 	}))
 	defer server.Close()
@@ -3590,12 +3761,17 @@ func TestRunAgentLoop_PromiseOnlyDocumentReplyTriggersAnotherRound(t *testing.T)
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
 	if err := h.registry.Register(RegisteredTool{
-		Name:        "send_file",
-		Description: "test file sender",
+		Name:        "bash",
+		Description: "test file producer",
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
@@ -3603,7 +3779,7 @@ func TestRunAgentLoop_PromiseOnlyDocumentReplyTriggersAnotherRound(t *testing.T)
 			return "[file_base64|report.pdf|application/pdf]JVBERi0xLjQKfake"
 		},
 	}); err != nil {
-		t.Fatalf("Register send_file tool: %v", err)
+		t.Fatalf("Register bash tool: %v", err)
 	}
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "整理一份报告发我"})
@@ -3668,6 +3844,11 @@ func TestRunAgentLoop_AutoExtendsLongChatBeforeHardLimit(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -3705,7 +3886,15 @@ func TestRunAgentLoop_AutoExtendsLongChatBeforeHardLimit(t *testing.T) {
 	if loopCtx.MaxIterations() <= 4 {
 		t.Fatalf("MaxIterations = %d, want auto extension beyond 4", loopCtx.MaxIterations())
 	}
-	view, ok := h.traceService.GetTrace(run.RunID)
+	// Trace-lifecycle evolution: the handler now owns run creation and re-keys
+	// loopCtx.RunID to the pipeline run (resp.RunID == loopCtx.RunID after the
+	// turn), so the loop.extended event is recorded under the pipeline run, not
+	// the pre-created StartJobRun one.
+	traceRunID := resp.RunID
+	if traceRunID == "" {
+		traceRunID = loopCtx.RunID
+	}
+	view, ok := h.traceService.GetTrace(traceRunID)
 	if !ok {
 		t.Fatal("expected trace view")
 	}
@@ -3732,19 +3921,19 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch callNum {
 		case 1:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web1\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers day 1\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers day 1\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 2:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web2\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers day 2\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web2\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers day 2\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 3:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web3\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers day 3\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-web3\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"query\\\":\\\"hugging face daily papers day 3\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 4:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"send_file\",\"arguments\":\"{\\\"path\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-send-file\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"deliver\\\":\\\"review.pdf\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
@@ -3776,33 +3965,34 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
+	// web_search and send_file are conditional tools that a classifier-less
+	// legacy surface rejects by design. bash is the invariant-11 floor tool, so
+	// this single registration plays both roles: search steps return text, the
+	// delivery step returns the [file_base64] payload that drives the
+	// (tool-name-agnostic) file materialization pipeline.
 	if err := h.registry.Register(RegisteredTool{
-		Name:        "web_search",
-		Description: "test web search",
+		Name:        "bash",
+		Description: "test search and file producer",
 		Category:    ToolCategoryBuiltin,
 		Status:      RegToolAvailable,
 		Source:      "test",
 		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+			if _, ok := args["deliver"]; ok {
+				return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
+			}
 			q, _ := args["query"].(string)
 			return "results for " + q
 		},
 	}); err != nil {
-		t.Fatalf("Register web_search tool: %v", err)
-	}
-	if err := h.registry.Register(RegisteredTool{
-		Name:        "send_file",
-		Description: "test file sender",
-		Category:    ToolCategoryBuiltin,
-		Status:      RegToolAvailable,
-		Source:      "test",
-		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return "[file_base64|review.pdf|application/pdf]JVBERi0xLjQKfake"
-		},
-	}); err != nil {
-		t.Fatalf("Register send_file tool: %v", err)
+		t.Fatalf("Register bash tool: %v", err)
 	}
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: "desktop-user", Platform: "desktop", Text: "搜索 hugging face daily papers 做综述，生成pdf"})
@@ -3839,7 +4029,12 @@ func TestRunAgentLoop_MarkdownWorkflowUsesWriteThenEditInTrace(t *testing.T) {
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 2:
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-edit\",\"type\":\"function\",\"function\":{\"name\":\"edit_file\",\"arguments\":\"{\\\"path\\\":\\\"~/review.md\\\",\\\"old_string\\\":\\\"First draft\\\",\\\"new_string\\\":\\\"Final draft\\\",\\\"replace_all\\\":false}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
+			// Architecture evolution: on a routing-miss (classifier-less) legacy
+			// turn the surface deliberately strips edit_file (routingMissPrivilegeTools,
+			// parent invariant 11) — bash and write_file are the guaranteed floor.
+			// A markdown revise therefore lands as a write_file overwrite, not an
+			// edit_file patch, and the model never sees edit_file to call it.
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-edit\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"~/review.md\\\",\\\"content\\\":\\\"# Daily Review\\\\nFinal draft\\\"}\"}}]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case 3, 4:
@@ -3875,6 +4070,11 @@ func TestRunAgentLoop_MarkdownWorkflowUsesWriteThenEditInTrace(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.traceService = NewAITraceService()
@@ -3904,22 +4104,23 @@ func TestRunAgentLoop_MarkdownWorkflowUsesWriteThenEditInTrace(t *testing.T) {
 	if !ok {
 		t.Fatal("expected trace view")
 	}
-	var sawWrite, sawEdit, sawCraft bool
+	writeCount := 0
+	var sawCraft bool
 	for _, evt := range view.Events {
 		if evt.Kind != "tool.executed" {
 			continue
 		}
 		switch evt.Title {
 		case "write_file":
-			sawWrite = true
-		case "edit_file":
-			sawEdit = true
+			writeCount++
 		case "craft_tool":
 			sawCraft = true
 		}
 	}
-	if !sawWrite || !sawEdit {
-		t.Fatalf("events = %#v, want write_file and edit_file tool.executed events", view.Events)
+	// edit_file is intentionally absent here: a routing-miss legacy turn strips
+	// it from the model surface, so the revise round must also be a write_file.
+	if writeCount < 2 {
+		t.Fatalf("events = %#v, want two write_file tool.executed events (write then rewrite)", view.Events)
 	}
 	if callNum < 3 {
 		t.Fatalf("expected at least 3 LLM calls, got %d", callNum)

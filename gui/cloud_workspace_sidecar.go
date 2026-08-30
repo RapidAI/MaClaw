@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +42,88 @@ type cloudWorkspaceSessionSidecar struct {
 	InputText    string        `json:"input_text,omitempty"`
 }
 
+const maxCloudWorkspaceConversationEntries = 4000
+
+// mergeCloudWorkspaceSessionHistory performs a deterministic union of local
+// and remote turns. Frontend snapshots are whole-document replacements, so
+// fetching and merging immediately before PUT prevents two machines saving at
+// nearly the same time from erasing each other's history.
+func mergeCloudWorkspaceSessionHistory(local, remote *TabSessionData) *TabSessionData {
+	if local == nil && remote == nil {
+		return nil
+	}
+	out := &TabSessionData{}
+	if remote != nil {
+		out.Conversation = append(out.Conversation, remote.Conversation...)
+		out.InputText = remote.InputText
+	}
+	if local != nil {
+		out.Conversation = append(out.Conversation, local.Conversation...)
+		if strings.TrimSpace(local.InputText) != "" {
+			out.InputText = local.InputText
+		}
+	}
+	seen := make(map[[32]byte]struct{}, len(out.Conversation))
+	uniq := out.Conversation[:0]
+	for _, item := range out.Conversation {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		key := sha256.Sum256(raw)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		uniq = append(uniq, item)
+	}
+	// Preserve conversation order across machines. Most frontend entries carry
+	// a millisecond timestamp; when absent, retain stable insertion order.
+	sort.SliceStable(uniq, func(i, j int) bool {
+		ti, oki := conversationEntryTimestamp(uniq[i])
+		tj, okj := conversationEntryTimestamp(uniq[j])
+		if oki && okj && ti != tj {
+			return ti < tj
+		}
+		return false
+	})
+	if len(uniq) > maxCloudWorkspaceConversationEntries {
+		uniq = uniq[len(uniq)-maxCloudWorkspaceConversationEntries:]
+	}
+	out.Conversation = uniq
+	return out
+}
+
+func conversationEntryTimestamp(v interface{}) (int64, bool) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return 0, false
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(raw, &obj) != nil {
+		return 0, false
+	}
+	for _, key := range []string{"timestamp", "created_at", "createdAt", "ts"} {
+		if n, ok := obj[key].(float64); ok && n > 0 {
+			return int64(n), true
+		}
+	}
+	return 0, false
+}
+
+func cloudWorkspaceSessionHistoryEqual(a, b *TabSessionData) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	// Compare canonicalized histories so timestamp ordering/legacy insertion
+	// order does not cause a no-op release to rewrite the remote sidecar.
+	ca := mergeCloudWorkspaceSessionHistory(a, nil)
+	cb := mergeCloudWorkspaceSessionHistory(b, nil)
+	ra, _ := json.Marshal(ca.Conversation)
+	rb, _ := json.Marshal(cb.Conversation)
+	return string(ra) == string(rb) && a.InputText == b.InputText
+}
+
 var cloudWorkspaceSidecarMaxBytes = int64(cloudWorkspaceObjectMaxBytes)
 
 type cloudWorkspaceSidecarBundle struct {
@@ -52,13 +137,30 @@ var (
 	cloudWorkspaceSidecarMu       sync.Mutex
 	cloudWorkspacePendingSidecars = map[string]cloudWorkspaceSidecarBundle{}
 	cloudWorkspacePendingSessions = map[string]*TabSessionData{}
+	cloudWorkspaceSessionFlushMu  sync.Mutex
+	cloudWorkspaceSessionFlushes  = map[string]*sync.Mutex{}
 )
 
 func resetCloudWorkspaceSidecarState() {
 	cloudWorkspaceSidecarMu.Lock()
-	defer cloudWorkspaceSidecarMu.Unlock()
 	cloudWorkspacePendingSidecars = map[string]cloudWorkspaceSidecarBundle{}
 	cloudWorkspacePendingSessions = map[string]*TabSessionData{}
+	cloudWorkspaceSidecarMu.Unlock()
+	// Keep the lock map intact: replacing it while a flush is waiting could
+	// create two mutexes for the same workspace and reintroduce races.
+}
+
+func lockCloudWorkspaceSessionFlush(workspaceID string) func() {
+	workspaceID = strings.TrimSpace(workspaceID)
+	cloudWorkspaceSessionFlushMu.Lock()
+	m := cloudWorkspaceSessionFlushes[workspaceID]
+	if m == nil {
+		m = &sync.Mutex{}
+		cloudWorkspaceSessionFlushes[workspaceID] = m
+	}
+	cloudWorkspaceSessionFlushMu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 func storeCloudWorkspacePendingSidecars(workspaceID string, bundle cloudWorkspaceSidecarBundle) {
@@ -364,33 +466,72 @@ func (a *App) flushCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 		}
 	}
 	if session := a.collectCloudWorkspaceTabSession(projectPath); session != nil {
-		if raw := marshalCloudWorkspaceSessionSidecar(session); len(raw) > 0 {
+		unlock := lockCloudWorkspaceSessionFlush(workspaceID)
+		defer unlock()
+		// Session history is the only sidecar that is intentionally multi-writer.
+		// Merge with the latest cloud snapshot before replacing it.
+		remoteSession := (*TabSessionData)(nil)
+		remoteRaw, fetchErr := a.getCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarSession)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		if len(remoteRaw) > 0 {
+			if remote := parseCloudWorkspaceSessionSidecar(remoteRaw); remote != nil {
+				remoteSession = remote
+				session = mergeCloudWorkspaceSessionHistory(session, remote)
+			} else {
+				return fmt.Errorf("invalid cloud workspace session history")
+			}
+		}
+		if raw := marshalCloudWorkspaceSessionSidecar(session); len(raw) > 0 && !cloudWorkspaceSessionHistoryEqual(session, remoteSession) {
 			if err := a.putCloudWorkspaceSidecarLimited(ctx, workspaceID, cloudWorkspaceSidecarSession, raw); err != nil {
 				return err
 			}
 		}
 	}
+	return a.flushCloudWorkspaceTaskSidecar(ctx, workspaceID)
+}
+
+func (a *App) cloudWorkspaceTaskSidecarPayload(workspaceID string) cloudWorkspaceTaskSidecar {
 	result := a.findVisibleCloudWorkspaceTask(workspaceID)
 	if strings.TrimSpace(result.Name) == "" && strings.TrimSpace(result.ProjectPath) == "" {
 		if cached, ok := lookupCloudWorkspaceTask(workspaceID); ok {
 			result = cached
 		}
 	}
-	task := cloudWorkspaceTaskSidecar{
+	return cloudWorkspaceTaskSidecar{
 		Name: strings.TrimSpace(result.Name),
 		Mode: cloudWorkspaceModeFromTags(result.Tags),
 		Tag:  cloudWorkspaceTag(workspaceID),
 	}
-	if task.Name != "" || task.Mode != "" {
-		raw, err := json.Marshal(task)
-		if err != nil {
-			return err
-		}
-		if err := a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarTask, raw); err != nil {
-			return err
-		}
+}
+
+func (a *App) flushCloudWorkspaceTaskSidecar(ctx context.Context, workspaceID string) error {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return nil
 	}
-	return nil
+	task := a.cloudWorkspaceTaskSidecarPayload(workspaceID)
+	if task.Name == "" && task.Mode == "" {
+		return nil
+	}
+	raw, err := json.Marshal(task)
+	if err != nil {
+		return err
+	}
+	return a.putCloudWorkspaceSidecar(ctx, workspaceID, cloudWorkspaceSidecarTask, raw)
+}
+
+func (a *App) flushCloudWorkspaceTaskSidecarBestEffort(workspaceID string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if a == nil || workspaceID == "" {
+		return
+	}
+	ctx, cancel := a.cloudWorkspaceRequestContext()
+	defer cancel()
+	if err := a.flushCloudWorkspaceTaskSidecar(ctx, workspaceID); err != nil {
+		log.Printf("[cloud_workspace] task sidecar flush failed workspace=%s err=%v", workspaceID, err)
+	}
 }
 
 func (a *App) fetchCloudWorkspaceSidecars(ctx context.Context, workspaceID string) {
@@ -476,7 +617,22 @@ func (a *App) cloudWorkspaceTaskIdentity(workspaceID, name, mode string) (string
 }
 
 func (a *App) pushCloudWorkspace(ctx context.Context, workspaceID, root string) (*cloudWorkspaceManifest, error) {
-	man, err := a.cloudWorkspaceProtocol(workspaceID).Push(ctx, root)
+	proto := a.cloudWorkspaceProtocol(workspaceID)
+	// Prefer v2 per-file operations for multi-machine mounts. Legacy manifest
+	// replacement remains the compatibility fallback for older Hubs.
+	if err := proto.PushOperations(ctx, root); err == nil {
+		man, getErr := proto.Transport.GetManifest(ctx)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if err := a.flushCloudWorkspaceSidecars(ctx, workspaceID); err != nil {
+			return man, err
+		}
+		return man, nil
+	} else if !errors.Is(err, errCloudWorkspaceV2Unavailable) {
+		return nil, err
+	}
+	man, err := proto.Push(ctx, root)
 	if err != nil {
 		return nil, err
 	}

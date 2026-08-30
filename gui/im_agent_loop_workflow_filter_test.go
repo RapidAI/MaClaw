@@ -286,12 +286,16 @@ func TestPresentationPPTGenerationPhaseUsesArtifactToolPolicy(t *testing.T) {
 		handler.getTools(),
 	)
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, name := range []string{"write_file", "manage_skill", "search_and_install_skill", "craft_tool", "office", "generate_pdf", "send_file", "bash", "list_directory"} {
+	// manage_skill is no longer phase-exposable: it is a legacy dynamic
+	// gateway rendered only by the managed semantic catalog
+	// (tool.IsLegacyModelDynamicGateway), so the legacy workflow surface
+	// cannot re-add it.
+	for _, name := range []string{"write_file", "search_and_install_skill", "craft_tool", "office", "generate_pdf", "send_file", "bash", "list_directory"} {
 		if !names[name] {
 			t.Fatalf("ppt_generation phase should expose %s, got %#v", name, names)
 		}
 	}
-	for _, name := range []string{"edit_file", "task"} {
+	for _, name := range []string{"edit_file", "task", "manage_skill"} {
 		if names[name] {
 			t.Fatalf("ppt_generation phase should not expose %s, got %#v", name, names)
 		}

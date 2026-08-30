@@ -1,4 +1,5 @@
 #include "configuration_transaction.h"
+#include "wifi_enterprise_trust_policy.h"
 
 #include <string.h>
 
@@ -64,10 +65,15 @@ static bool valid_provisioning_request(const configuration_provisioning_request_
     }
     const char *gateway_host = NULL;
     if (!strncmp(request->gateway, "https://", 8u)) gateway_host = request->gateway + 8u;
-    else if (!strncmp(request->gateway, "http://", 7u)) gateway_host = request->gateway + 7u;
     if (!gateway_host || !gateway_host[0] || gateway_host[0] == '/' ||
-        strchr(gateway_host, ' ')) {
+        strchr(gateway_host, '/')) {
         return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)gateway_host; *p; ++p) {
+        if (*p < 0x20u || *p == 0x7fu || *p == '#' || *p == '?' || *p == '@' ||
+            *p == '\\') {
+            return false;
+        }
     }
     if (!strcmp(request->security, "enterprise")) {
         return (!strcmp(request->eap_method, "peap") ||
@@ -77,9 +83,9 @@ static bool valid_provisioning_request(const configuration_provisioning_request_
                strlen(request->identity) < sizeof(request->identity) &&
                (!strcmp(request->ttls_phase2, "mschapv2") ||
                 !strcmp(request->ttls_phase2, "pap")) &&
-               (!strcmp(request->ca_mode, "system") ||
-                !strcmp(request->ca_mode, "none")) &&
-               strlen(request->server_domain) < sizeof(request->server_domain);
+               !strcmp(request->ca_mode, "system") &&
+               wifi_enterprise_trust_policy_valid_domain(
+                   request->server_domain, sizeof(request->server_domain));
     }
     return true;
 }

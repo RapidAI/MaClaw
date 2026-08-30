@@ -15,6 +15,12 @@ on:
 permissions:
   contents: write
 
+# The release job mutates latest manifests and the stable rollback catalogue;
+# serialising it prevents simultaneous tags from publishing inconsistent state.
+concurrency:
+  group: desktop-release-publication-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   APP_NAME: MaClaw
   GO_VERSION: '1.25.5'
@@ -2546,6 +2552,7 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
           RELEASE_ASSETS_DIR: release-assets
           R2_RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
             echo "Cloudflare R2 credentials are required for an official firmware release." >&2
@@ -2571,6 +2578,10 @@ jobs:
             fi
             echo "R2 upload $name size=$(stat -c%s "$path") key=$ASSET_PREFIX/$name"
             wrangler r2 object put "$R2_BUCKET/$ASSET_PREFIX/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            if [ "${RELEASE_CHANNEL}" = "stable" ]; then
+              # Object keys are raw; only the public history URL is escaped.
+              wrangler r2 object put "$R2_BUCKET/releases/${RELEASE_TAG}/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+            fi
           done
           wrangler r2 object put "$R2_BUCKET/${MANIFEST_NAME}" --file "release-assets/${MANIFEST_NAME}" --remote --cache-control "public, max-age=60"
 
@@ -2597,6 +2608,21 @@ jobs:
           python3 -m pip install -q cos-python-sdk-v5
           python3 .github/scripts/sync_cos_release.py
 
+      - name: Publish stable rollback history to Cloudflare R2
+        if: env.RELEASE_CHANNEL == 'stable'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error --retry 2 --output stable-history.json "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"; then
+              break
+            fi
+            [ "$attempt" = "5" ] && exit 1
+            sleep 3
+          done
+          wrangler r2 object put "$R2_BUCKET/stable-history.json" --file stable-history.json --remote --cache-control "public, max-age=60"
       - name: Verify desktop update publication on Cloudflare R2 and Tencent COS
         env:
           R2_PUBLIC_BASE_URL: https://pub-c837069cbe31469590a5fea6235b436b.r2.dev
@@ -2675,6 +2701,85 @@ jobs:
                   time.sleep(5)
           if not verified:
               raise RuntimeError(last_error)
+          PY
+
+      - name: Verify GitHub rollback installer attachments are published
+        # Rollback downloads prefer the deterministic per-tag GitHub attachment
+        # before falling back to R2/COS. Confirm the attachment exists and has
+        # the exact local size after GitHub finishes publishing the release.
+        if: env.RELEASE_CHANNEL == 'stable'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_ASSETS_DIR: release-assets
+          RELEASE_ONLY_ASSETS: ${{ env.RELEASE_ONLY_ASSETS }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          tag = os.environ["RELEASE_TAG"]
+          assets_dir = pathlib.Path(os.environ["RELEASE_ASSETS_DIR"])
+          names = [name.strip() for name in os.environ["RELEASE_ONLY_ASSETS"].splitlines() if name.strip()]
+          # These are the GUI package names the update client can select based
+          # on its active brand. Do not make this rollback gate depend on
+          # unrelated service/TigerProxy installers that happen to use the
+          # same filename suffix.
+          rollback_installers = {
+              "MaClaw-Setup.exe", "MaClaw-Universal.pkg",
+              "TigerClaw-Setup.exe", "TigerClaw-Universal.pkg",
+              "MetaStaff-Setup.exe", "MetaStaff-Universal.pkg",
+          }
+          installers = [name for name in names if name in rollback_installers]
+          if not installers:
+              raise RuntimeError("release contains no desktop rollback installers")
+
+          def public_content_length(url):
+              # GitHub Release downloads redirect to a short-lived object URL;
+              # some edges reject HEAD. Fall back to a one-byte Range GET so
+              # this gate proves the same anonymous read path as the client.
+              try:
+                  request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "MaClaw-release-verifier"})
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      value = response.headers.get("Content-Length")
+                  return int(value)
+              except (urllib.error.HTTPError, urllib.error.URLError, TypeError, ValueError):
+                  request = urllib.request.Request(
+                      url,
+                      headers={"User-Agent": "MaClaw-release-verifier", "Range": "bytes=0-0"},
+                  )
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      if response.status not in (200, 206):
+                          raise RuntimeError(f"GitHub installer returned HTTP {response.status}")
+                      if not response.read(1):
+                          raise RuntimeError("GitHub installer is empty")
+                      content_range = response.headers.get("Content-Range", "")
+                      value = content_range.rsplit("/", 1)[-1] if "/" in content_range else response.headers.get("Content-Length")
+                  return int(value)
+
+          for name in installers:
+              path = assets_dir / name
+              if not path.is_file():
+                  raise RuntimeError(f"local rollback installer is missing: {name}")
+              url = "https://github.com/RapidAI/MaClaw/releases/download/{}/{}".format(
+                  urllib.parse.quote(tag, safe="$&+-.0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~"),
+                  urllib.parse.quote(name, safe="$&+-.0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~"),
+              )
+              for attempt in range(1, 6):
+                  try:
+                      length = public_content_length(url)
+                      if length != path.stat().st_size:
+                          raise RuntimeError(f"published installer size {length} does not match local {path.stat().st_size}")
+                      print(f"published GitHub rollback installer verified: {url} bytes={length}")
+                      break
+                  except Exception as exc:
+                      if attempt == 5:
+                          raise
+                      print(f"rollback installer not ready (attempt {attempt}/5): {exc}")
+                      time.sleep(5)
           PY
 
       - name: Verify Gitee token secret

@@ -94,9 +94,10 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 func appendManagedSemanticSurfaceRules(b *strings.Builder) {
 	b.WriteString(`
 ## 本回合的工具面
-- 本回合的工具是按你要做的事预先授权的。**工具列表就是全部可用工具**（仅限此刻列表里出现的名字），名称就是普通工具名（如 web_search、generate_pdf、send_file），没有需要另唤起的隐藏工具。
+- 本回合的工具是按你要做的事预先授权的。**工具列表就是全部可用工具**（仅限此刻列表里出现的名字），名称就是普通工具名（如 web_search、generate_pdf、send_file）。
+- 工具列表之外还有**可请愿能力**（如 web_search、web_fetch、download_file、bash、office 等）：它们此刻不在列表里，但都是真实工具。需要时先用 tools_search 查确切名字和状态——标记「可请愿」的名字，把它当普通工具**单独**调用一次（download_file 用 url+save_path，bash 用 command），这表示向主机请求授权：获批后名字会加入列表，按提示重新发起即真正执行；标记「已列入本轮计划/已用尽/不可用」的名字调用必被拒绝。工具结果里点名建议的工具（如反爬提示里的 download_file）按此办理：那是主机指的路，不是缺工具。请愿每轮每类限一次，留给真正需要的能力。
+- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、craft_tool、search_and_install_skill、previous_turn_tool，也不要复用历史里的 invoke_* 名称：它们在本回合不存在，调用只会被拒绝，并且浪费一轮。
 - 多步任务会按顺序解锁：当前列表可能只有查询；查询成功后，文档生成或投递会出现在**同一次回复**的下一次请求列表里。那不是「没有 PDF 工具」，不要向用户宣布缺工具，也不要用 python、bash、write_file 绕过。工具一旦出现在当前列表（例如 generate_pdf），必须立刻调用；禁止说「请稍候」然后结束，也不要等用户再发一条消息。
-- 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、download_file、craft_tool、search_and_install_skill、previous_turn_tool，也不要复用历史里的 invoke_* 名称：它们在本回合不存在，调用只会被拒绝，并且浪费一轮。
 - 同一个工具可能有调用次数上限。用完之后它会从列表里消失——这是预算用尽，不是故障，也不代表这件事做不了。下一步授权出现时，再按新列表里的同名工具继续。
 - 参数以当前列表的 schema 为准。投递类工具的目的地已由宿主绑定：不要传 path、channel、group_id，也不要套用旧的 send_to_im(path=...) 签名。
 - 只有当前列表为空、且下一步也没有新授权出现时，才说明缺什么并停下来。不要声称已经做了。
@@ -155,24 +156,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 		// coding workbench and a general chat do not advertise each other's
 		// distilled requests as capabilities.
 		skills = filterSkillsForExperienceDomain(h.skillExperienceDomainForOwner(ownerID), skills)
-		if len(skills) > 0 {
-			b.WriteString("\n## 已注册 Skill\n")
-			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
-			b.WriteString("**Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n")
-			for _, s := range skills {
-				st := normalizeSkillEntryStatus(s.Status)
-				// Only list runnable skills (active or blank/unknown). Never advertise
-				// needs_review/disabled download helpers that will fail at StartRun.
-				if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
-					continue
-				}
-				b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
-				if s.UsageCount > 0 {
-					b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
-				}
-				b.WriteString("\n")
-			}
-		}
+		writeRegisteredSkillsSection(b, skills)
 	}
 
 	// Skill priority strategy
@@ -184,7 +168,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 1. **内置下载工具（HTTP/PDF）**：通用「下载 URL / 保存 PDF」优先用 download_file（或 web_fetch + save_path）。禁止为简单下载去 Hub 安装 wget/curl/Paper Fetch。
    - download_file 内置反爬升级链与自动重试：被 Cloudflare/403 拦截时会自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie）。若返回"存在反爬验证"的错误，标准解法是：先用 browser 工具打开目标网页完成人机验证，然后重试 download_file（可加 use_browser_cookies=true 直接复用会话）；仍失败则用 download_file(via_browser=true) 让浏览器亲自下载。不要写 Python/CDP 脚本绕道抓 cookie。
    - 下载过程日志在 ~/.maclaw/logs/download.log，排障时可读取。
-2. **本地已安装 Skill**：检查上面「已注册 Skill」列表；领域流水线（如 paper_pdf_translator 论文翻译）用 manage_skill(action="run", name="...")。若列表未出现某 skill，不要假设可用。
+2. **本地已安装 Skill**：检查上面「已注册 Skill」列表。Agent 工作流 Skill 按文末「Skill 使用文档」用宿主工具执行，不要 discover_tool 搜索同名工具、不要 generate_pdf 替代、不要 manage_skill。领域流水线（如 paper_pdf_translator 论文翻译）用 manage_skill(action="run", name="...")。若列表未出现某 skill，不要假设可用。
 3. **搜索并安装 Skill**：只有当前工具列表明确包含 search_and_install_skill，且任务确实需要新能力（非简单下载）时，才可从 SkillMarket/ClawHub/GitHub 搜索安装
 4. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本
 
@@ -333,6 +317,65 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	b.WriteString("\n请用中文回复，关键技术术语保留英文。回复要简洁实用。")
 }
 
+func writeRegisteredSkillsSection(b *strings.Builder, skills []NLSkillDefinition) {
+	if b == nil || len(skills) == 0 {
+		return
+	}
+	var guided, runnable []NLSkillDefinition
+	for _, s := range skills {
+		st := normalizeSkillEntryStatus(s.Status)
+		if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
+			continue
+		}
+		if strings.TrimSpace(s.Name) == "" {
+			continue
+		}
+		if strings.TrimSpace(s.Description) == "" && len(s.Triggers) == 0 && len(s.Steps) == 0 {
+			continue
+		}
+		if nlSkillIsAgentGuided(s) {
+			guided = append(guided, s)
+			continue
+		}
+		runnable = append(runnable, s)
+	}
+	if len(guided) == 0 && len(runnable) == 0 {
+		return
+	}
+	b.WriteString("\n## 已注册 Skill\n")
+	if len(runnable) > 0 {
+		b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
+		b.WriteString("**Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n")
+		for _, s := range runnable {
+			writeRegisteredSkillLine(b, s)
+		}
+	}
+	if len(guided) > 0 {
+		b.WriteString("\n### Agent 工作流 Skill（已安装）\n")
+		b.WriteString("这些 skill 不是工具名。用户点名时，按文末「Skill 使用文档」用 bash/read_file/write_file/edit_file 执行；禁止 discover_tool 搜索同名工具，禁止 generate_pdf 替代，禁止 manage_skill。\n")
+		for _, s := range guided {
+			writeRegisteredSkillLine(b, s)
+		}
+	}
+}
+
+func writeRegisteredSkillLine(b *strings.Builder, s NLSkillDefinition) {
+	b.WriteString(formatRegisteredSkillLine(s.Name, s.Description))
+	if s.UsageCount > 0 {
+		b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
+	}
+	b.WriteString("\n")
+}
+
+func formatRegisteredSkillLine(name, description string) string {
+	name = strings.TrimSpace(name)
+	desc := strings.TrimSpace(strings.ReplaceAll(description, "\n", " "))
+	if strings.ContainsAny(name, ":：") {
+		return fmt.Sprintf("- 「%s」: %s", name, desc)
+	}
+	return fmt.Sprintf("- %s: %s", name, desc)
+}
+
 // appendGUIPostCodingWorkflow injects the full 9-step coding workflow (pro mode).
 // This is the detailed GUI version with session management, PDF generation, etc.
 func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg corelib.AppConfig) {
@@ -422,7 +465,7 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	// is one-shot, so skip the whole family on managed turns and leave the
 	// notification for the next unmanaged turn.
 	if !loopContextIsSemanticManaged(loopCtx) {
-		h.appendKnowledgeSkillSection(b, msg, userID)
+		h.appendKnowledgeSkillSection(b, msg, agentGuidedSkillOwnerID(loopCtx, userID))
 		h.appendSkillRepairNotifications(b)
 		h.appendMaintenanceExperienceHints(b)
 		h.appendBundleContextBanner(b)

@@ -470,12 +470,24 @@ func nextContinue(state *WorkingState, toolName, focusLabel string) string {
 		return "按 " + label + " 继续"
 	}
 	if strings.TrimSpace(toolName) != "" && state != nil && strings.TrimSpace(state.Goal) != "" {
+		if isDiscoveryProgressTool(toolName) {
+			return "继续完成 " + state.Goal
+		}
 		return "根据工具 " + toolName + " 的 ok 继续完成 " + state.Goal
 	}
 	if state != nil && strings.TrimSpace(state.Goal) != "" {
 		return "继续完成 " + state.Goal
 	}
 	return "继续当前任务"
+}
+
+func isDiscoveryProgressTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "discover_tool", "search_and_install_skill", "search_skill_hub", "list_mcp_tools":
+		return true
+	default:
+		return false
+	}
 }
 
 func nextSeekUser() string {

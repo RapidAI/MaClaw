@@ -26,7 +26,10 @@ bool platform_power_profile_get_telemetry(uint8_t *out_level_percent,
     if (!round_peripheral_service_get_power_status(&level, &charging)) {
         return false;
     }
-    *out_level_percent = (uint8_t)(level > 100 ? 100 : level);
+    /* Preserve the normalized telemetry contract: an impossible profile
+     * value is unavailable, not a value to silently reinterpret as 100%. */
+    if (level > 100u) return false;
+    *out_level_percent = (uint8_t)level;
     *out_charging = charging;
     return true;
 }

@@ -262,3 +262,27 @@ func TestSearchImagesRespectsSearchFilters(t *testing.T) {
 		t.Fatalf("filtered image results = %#v; want only tenant-a", results)
 	}
 }
+
+func TestSearchImagesCJKQueryUsesLikeFallbackWithoutSQLError(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, Source{ID: "image-source", Kind: SourceKindImage, URI: "file://cat.png", OwnerID: "owner", TenantID: "tenant", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{ID: "image-node", SourceID: "image-source", Type: NodeTypeImage, Text: "可爱的布偶猫生日照片"}); err != nil {
+		t.Fatal(err)
+	}
+	// CJK queries take the LIKE fallback path, which must not reference columns
+	// that document_nodes does not have (regression: n.updated_at).
+	results, err := store.SearchImages(ctx, ImageSearchOptions{SearchOptions: SearchOptions{Query: "布偶猫", OwnerID: "owner", TenantID: "tenant", Limit: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].NodeID != "image-node" {
+		t.Fatalf("CJK image results = %#v; want image-node", results)
+	}
+}

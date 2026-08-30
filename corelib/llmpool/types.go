@@ -22,18 +22,19 @@ type ProviderConfig struct {
 	CreditMultiplier         float64                  `json:"credit_multiplier,omitempty"` // default 1.0 when no schedule window matches
 	Timezone                 string                   `json:"timezone,omitempty"`          // IANA timezone for schedule windows; default Asia/Shanghai
 	CreditMultiplierSchedule []CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
-	// TokenPricing is the provider-wide default directional token price.
-	// Routes without their own Credits price inherit it; route-level
-	// TokenPricing always wins when present.
-	TokenPricing TokenPricing `json:"token_pricing,omitempty"`
-	MaxConcurrency           int                      `json:"max_concurrency,omitempty"`             // 0 = unlimited; HubCenter skips to the next provider when this limit is reached
-	MaxQueueWaiters          int                      `json:"max_queue_waiters,omitempty"`           // max requests waiting in queue
-	QueueTimeoutMS           int                      `json:"queue_timeout_ms,omitempty"`            // max wait time in queue
-	UpstreamTimeoutSec       int                      `json:"upstream_timeout_sec,omitempty"`        // HTTP timeout to upstream
-	CircuitBreakerThreshold  int                      `json:"circuit_breaker_threshold,omitempty"`   // consecutive failures before cooldown; HubCenter treats <=0 as 2
-	CircuitBreakerCooldownMS int                      `json:"circuit_breaker_cooldown_ms,omitempty"` // base cooldown; HubCenter treats <=0 as 10s
-	FailureBackoffBaseMS     int                      `json:"failure_backoff_base_ms,omitempty"`
-	FailureBackoffMaxMS      int                      `json:"failure_backoff_max_ms,omitempty"` // cap for exponential cooldown; HubCenter treats <=0 as 5m
+	// TokenPricing is the provider-wide directional token price. When it has a
+	// usable Credits price it is the authoritative settlement price for every
+	// route dispatched to this provider. Route pricing exists only as a legacy
+	// fallback for providers without a configured price.
+	TokenPricing             TokenPricing `json:"token_pricing,omitempty"`
+	MaxConcurrency           int          `json:"max_concurrency,omitempty"`             // 0 = unlimited; HubCenter skips to the next provider when this limit is reached
+	MaxQueueWaiters          int          `json:"max_queue_waiters,omitempty"`           // max requests waiting in queue
+	QueueTimeoutMS           int          `json:"queue_timeout_ms,omitempty"`            // max wait time in queue
+	UpstreamTimeoutSec       int          `json:"upstream_timeout_sec,omitempty"`        // HTTP timeout to upstream
+	CircuitBreakerThreshold  int          `json:"circuit_breaker_threshold,omitempty"`   // consecutive failures before cooldown; HubCenter treats <=0 as 2
+	CircuitBreakerCooldownMS int          `json:"circuit_breaker_cooldown_ms,omitempty"` // base cooldown; HubCenter treats <=0 as 10s
+	FailureBackoffBaseMS     int          `json:"failure_backoff_base_ms,omitempty"`
+	FailureBackoffMaxMS      int          `json:"failure_backoff_max_ms,omitempty"` // cap for exponential cooldown; HubCenter treats <=0 as 5m
 }
 
 // ServiceGroup defines a set of models with associated provider routing.
@@ -82,9 +83,10 @@ type ModelProviderConfig struct {
 	Priority         int      `json:"priority,omitempty"`
 	ResolutionTier   int      `json:"resolution_tier,omitempty"`
 	CreditMultiplier float64  `json:"credit_multiplier,omitempty"`
-	// TokenPricing is the provider-owned input/output base price. It is kept
-	// separate from CreditMultiplier, which remains a dispatch compatibility
-	// field until all routing code uses token prices directly.
+	// TokenPricing is a legacy per-model fallback input/output base price for
+	// providers without provider-level pricing. It is kept separate from
+	// CreditMultiplier, which remains a dispatch compatibility field until all
+	// routing code uses token prices directly.
 	TokenPricing TokenPricing `json:"token_pricing,omitempty"`
 }
 

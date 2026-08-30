@@ -219,6 +219,8 @@ type IntentCapabilityNeedTemplate struct {
 	// one sibling need per permitted invocation, each of which is planned,
 	// granted, and journaled on its own. Raising it therefore widens what
 	// review can see in the plan, never what a caller can do at runtime.
+	// Only the first sibling inherits Required; later siblings are an
+	// exposure ceiling (RepeatSiblingRequired).
 	MaxInvocations int
 }
 
@@ -336,17 +338,19 @@ func resolveIntentLabelCapabilityNeeds(registry *coretool.CapabilityRegistry, ru
 			}
 			seen[key] = true
 			baseID := "need:" + string(template.Capability) + ":" + coretool.SchemaDigest([]byte(key))[:12]
-			// Siblings share the template's Required flag deliberately: a
-			// repeat budget states how often one meaning may be exercised, and
-			// whether that meaning is required is a property of the meaning,
-			// not of an individual invocation. An optional family is therefore
-			// optional as a whole — every sibling lands in the plan's omitted
-			// list together when no provider serves it.
+			// MaxInvocations is an exposure ceiling, not an obligation.
+			// Required on the template means "this meaning must happen at
+			// least once" — only the first sibling inherits it. Later
+			// siblings stay optional so after-edges (lookup→generate,
+			// lookup→render) unlock after the declared invocation rather
+			// than waiting for unused refinements. An optional template
+			// stays optional as a whole, so a missing provider still
+			// omits the family together.
 			for index := 0; index < coretool.RepeatSiblingBudget(template.MaxInvocations); index++ {
 				needs = append(needs, coretool.CapabilityNeed{
 					ID:         coretool.RepeatSiblingNeedID(baseID, index),
 					Capability: template.Capability, Qualifiers: cloneDynamicNeedQualifiers(template.Qualifiers), Polarity: polarity,
-					Required: template.Required, Confidence: classification.Confidence, EvidenceIDs: []string{"intent:" + string(label)},
+					Required: coretool.RepeatSiblingRequired(template.Required, index), Confidence: classification.Confidence, EvidenceIDs: []string{"intent:" + string(label)},
 				})
 			}
 		}

@@ -1,10 +1,10 @@
 import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
-import type { ChatMessage } from "./useAIAssistant";
+import { sanitizeAIAssistantStreamText, type ChatMessage } from "./useAIAssistant";
 import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { normalizeASRText, shouldDispatchASRText } from "./asrTextUtils";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
-import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
+import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, type CodeFile, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderCodingAgentThinkingTimelineItem, renderMessage } from "./aiAssistantMarkdown";
@@ -15,9 +15,9 @@ import {
     type RecordingCompleteResult,
 } from "./RecordingSessionCard";
 import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
-import { formFieldInputStyle, formFieldLabelColor, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
+import { formFieldInputStyle, formFieldLabelColor, maximizedInlineStyle, overlayStyle, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
-import { getAssistantLightScheme } from "./assistantLightSchemes";
+import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, getAssistantLightScheme } from "./assistantLightSchemes";
 import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
@@ -73,7 +73,7 @@ import { CodingAgentPreviewFocusContext, renderCodingAgentActivityFeed } from ".
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, type ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
@@ -82,7 +82,7 @@ import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
-import { agentModeFromTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
+import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceRevealMatchesTab, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_EXPERT_TASK_DELETED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
@@ -230,15 +230,26 @@ function decodeWorkflowStateFromStorage(raw: any): WorkflowUIState | null {
 function encodeCodeStateForStorage(state: CodePreviewUIState) {
     return {
         ...state,
-        files: Array.from(state.files.entries()),
+        files: Array.from(state.files.entries()).map(([path, file]) => [
+            path,
+            isCloudWorkspacePath(file.absPath) ? { ...file, absPath: undefined } : file,
+        ]),
     };
 }
 
 function decodeCodeStateFromStorage(raw: any): CodePreviewUIState | null {
     if (!raw || typeof raw !== "object") return null;
+    const files = new Map<string, CodeFile>();
+    if (Array.isArray(raw.files)) {
+        for (const entry of raw.files) {
+            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !entry[1] || typeof entry[1] !== "object") continue;
+            const file = entry[1] as CodeFile;
+            files.set(entry[0], isCloudWorkspacePath(file.absPath) ? { ...file, absPath: undefined } : file);
+        }
+    }
     return {
         active: raw.active === true,
-        files: new Map(Array.isArray(raw.files) ? raw.files : []),
+        files,
         activeFilePath: typeof raw.activeFilePath === "string" ? raw.activeFilePath : "",
         sessionID: typeof raw.sessionID === "string" ? raw.sessionID : "",
         sessionActive: raw.sessionActive === true,
@@ -371,12 +382,13 @@ function hasRestorableProjectConversation(history: unknown[] | undefined): boole
 }
 
 function normalizeRestoredProjectHistoryContent(value: unknown): string {
-    if (typeof value === "string") return value.trim();
+    if (typeof value === "string") return sanitizeAIAssistantStreamText(value).replace(/^\x01/, '').trim();
     if (value == null) return "";
     try {
-        return JSON.stringify(value);
+        const serialized = JSON.stringify(value);
+        return typeof serialized === "string" ? sanitizeAIAssistantStreamText(serialized) : "";
     } catch {
-        return String(value);
+        return sanitizeAIAssistantStreamText(String(value));
     }
 }
 
@@ -414,7 +426,7 @@ async function loadRestoredProjectConversationHistory(projectPath: string): Prom
 }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot } = props;
+    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -456,6 +468,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const bumpLocalWorkspaceRefresh = useCallback(() => {
         setLocalWorkspaceRefreshToken((value) => value + 1);
     }, []);
+    const cloudTreeRefreshTimerRef = useRef<number | null>(null);
+    const cloudTreeRefreshTabIdRef = useRef<string | null>(null);
+    const clearCloudTreeRefreshTimer = useCallback(() => {
+        if (cloudTreeRefreshTimerRef.current == null) return;
+        window.clearTimeout(cloudTreeRefreshTimerRef.current);
+        cloudTreeRefreshTimerRef.current = null;
+    }, []);
+    const scheduleCloudTreeRefresh = useCallback(() => {
+        clearCloudTreeRefreshTimer();
+        const tabId = cloudTreeRefreshTabIdRef.current;
+        cloudTreeRefreshTimerRef.current = window.setTimeout(() => {
+            cloudTreeRefreshTimerRef.current = null;
+            if (cloudTreeRefreshTabIdRef.current !== tabId) return;
+            bumpLocalWorkspaceRefresh();
+        }, 400);
+    }, [bumpLocalWorkspaceRefresh, clearCloudTreeRefreshTimer]);
+    useEffect(() => () => {
+        clearCloudTreeRefreshTimer();
+    }, [clearCloudTreeRefreshTimer]);
     /** Avoid auto-reconnect loops: key = projectPath|user@host:port after one attempt (success or fail). */
     const remoteAutoReconnectKeyRef = useRef("");
     /** In-flight SSH reconnect owner (`projectPath|user@host:port`), so different remote tabs never block each other. */
@@ -551,9 +582,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
     const t = useMemo(() => {
-        const base = themeMode === 'dark' ? getAssistantDarkScheme(darkSchemeId).assistantTheme : (lightSchemeId && lightSchemeId !== 'default' ? getAssistantLightScheme(lightSchemeId).assistantTheme : (inline ? lightTheme : overlayTheme));
+        const base = themeMode === 'dark'
+            ? getAssistantDarkScheme(darkSchemeId).assistantTheme
+            : getAssistantLightScheme(lightSchemeId).assistantTheme;
         return Object.assign({}, base, { isDark: themeMode === 'dark' });
-    }, [themeMode, darkSchemeId, lightSchemeId, inline]);
+    }, [themeMode, darkSchemeId, lightSchemeId]);
     const showMaximizeToggle = inline && !!onToggleMaximize;
     // Tracks pure-coding tab so config-changed does not stomp per-task request/workspace mode.
     const pureCodingTabRef = useRef(false);
@@ -800,6 +833,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [lang]);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
+    cloudTreeRefreshTabIdRef.current = activeTab.id;
     const projectTabRenameRequestRef = useRef<Map<string, number>>(new Map());
     const [projectTabSessionReadyRevisions, setProjectTabSessionReadyRevisions] = useState<Record<string, number>>({});
     // Quick model controls use this stable task classification; never infer it
@@ -958,11 +992,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {
                 const inTok = Number(st.session_input_tokens) || 0;
                 const outTok = Number(st.session_output_tokens) || 0;
-                const cost = Number(st.session_est_cost_rmb) || 0;
-                if (inTok > 0 || outTok > 0 || cost > 0) {
-                    let line = `in=${inTok} out=${outTok}`;
-                    if (cost > 0) line += ` · ~¥${cost.toFixed(4)}`;
-                    setCodingSessionCost(line);
+                if (inTok > 0 || outTok > 0) {
+                    setCodingSessionCost(`in=${inTok} out=${outTok}`);
                 } else {
                     setCodingSessionCost("");
                 }
@@ -1256,11 +1287,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 {
                     const inTok = Number(st.session_input_tokens) || 0;
                     const outTok = Number(st.session_output_tokens) || 0;
-                    const cost = Number(st.session_est_cost_rmb) || 0;
-                    if (inTok > 0 || outTok > 0 || cost > 0) {
-                        let line = `in=${inTok} out=${outTok}`;
-                        if (cost > 0) line += ` · ~¥${cost.toFixed(4)}`;
-                        setCodingSessionCost(line);
+                    if (inTok > 0 || outTok > 0) {
+                        setCodingSessionCost(`in=${inTok} out=${outTok}`);
                     } else {
                         setCodingSessionCost("");
                     }
@@ -2357,11 +2385,39 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const isExpertTabActive = activeTab.type === "expert";
+    const [resolvedWorkingDir, setResolvedWorkingDir] = useState<TabWorkingDir | null>(null);
+    const [cloudReveal, setCloudReveal] = useState<TabWorkingDir | null>(null);
+    const pendingCloudRevealRef = useRef<CloudWorkspaceReveal | null>(null);
+    const handleWorkingDirResolved = useCallback((path: string, tabId: string) => {
+        setResolvedWorkingDir(prev => nextTabWorkingDir(prev, tabId, path));
+    }, []);
+    const resolvedDirForActive = cloudWorkingDirForActiveTab({
+        tabId: activeTab.id,
+        projectPath: activeTab.projectPath,
+        stored: resolvedWorkingDir,
+        pending: pendingCloudRevealRef.current,
+    });
+    useEffect(() => {
+        const onChange = props.onActiveAssistantTaskChange as ((identity: ActiveAssistantTaskIdentity | null) => void) | undefined;
+        if (typeof onChange !== "function") return;
+        onChange(activeAssistantTaskIdentity(activeTab, resolvedDirForActive));
+    }, [activeTab?.id, activeTab?.type, activeTab?.expertId, activeTab?.projectPath, resolvedDirForActive, props.onActiveAssistantTaskChange]);
+    const revealForActive = cloudReveal?.tabId === activeTab.id ? cloudReveal.path : "";
     // Expert optimization ("专家优化") controller, extracted to useExpertOptimize.
     const { expertOptimizeBusy, expertOptimizeDraft, handleOptimizeExpert, clearExpertOptimizeDraft } = useExpertOptimize({ activeExpertId: isExpertTabActive ? activeTab.expertId : null, lang, showAlert });
     const isCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "coding_dev";
     const isRemoteCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "remote_coding_dev";
     const isPureCodingEnvironment = isCodingDevEnvironment || isRemoteCodingDevEnvironment;
+    const isCloudWorkspaceEnvironment = isActiveCloudWorkspacePreview({
+        isProjectTab: isProjectTabActive,
+        projectPath: activeTab.projectPath,
+        workingDir: resolvedDirForActive,
+        revealPath: revealForActive,
+        pendingReveal: pendingCloudRevealRef.current,
+    });
+    const cloudPreviewRoot = isCloudWorkspacePath(resolvedDirForActive)
+        ? resolvedDirForActive
+        : (isCloudWorkspacePath(activeTab.projectPath) ? activeTab.projectPath : "");
     // The remote coding engine is reused for maintenance diagnostics, but the
     // visible label must describe the user's job rather than that implementation.
     const isRemoteMaintenanceEnvironment = isRemoteCodingDevEnvironment && activeTab.remoteSafety === "diagnosis";
@@ -3585,7 +3641,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope, codePreviewPathScope);
     const sourcePreviewAllowed = shouldShowSourcePreviewForWorkflow(workflowState.workflowType)
-        || shouldShowSourcePreviewForAgentMode(activeTab.agentMode);
+        || shouldShowSourcePreviewForAgentMode(activeTab.agentMode)
+        || isCloudWorkspaceEnvironment;
     const { state: codePreviewState, closePanel: closeCodePreview, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, focusFile: focusCodeFile, openWorkspaceFile, closeFile: closeCodeFile, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFiles, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return;
@@ -3710,16 +3767,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Source files are neither rendered nor retained outside an active programming
     // workflow, avoiding unnecessary updates and persisted source content.
     useEffect(() => {
-        if (!sourcePreviewAllowed && (codePreviewState.active || codePreviewState.files.size > 0)) {
+        if (sourcePreviewAllowed || isCloudWorkspaceEnvironment) return;
+        if (codePreviewState.active || codePreviewState.files.size > 0) {
             resetCodePreviewState();
             codePreviewStateRef.current = initialCodePreviewState();
         }
-    }, [sourcePreviewAllowed, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
+    }, [sourcePreviewAllowed, isCloudWorkspaceEnvironment, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
     // Pure coding: open empty right-hand source panel once per tab. After that,
     // only recover when files remain and the user did not close (activatePassive
     // preserves userClosed; reopen would clear it).
     useEffect(() => {
-        if (!isPureCodingEnvironment || !codingPreviewAllowed || !sourcePreviewAllowed) {
+        if ((!isPureCodingEnvironment && !isCloudWorkspaceEnvironment) || !codingPreviewAllowed || !sourcePreviewAllowed) {
             if (autoOpenedCodePreviewTabRef.current === activeTab.id) {
                 autoOpenedCodePreviewTabRef.current = null;
             }
@@ -3747,7 +3805,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!codePreviewStateRef.current.userClosed) {
             reopenCodePreview();
         }
-    }, [isPureCodingEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, codePreviewState.active, codePreviewState.files.size, codePreviewState.userClosed, activateCodePreviewPassive, reopenCodePreview, resetCodePreviewState]);
+    }, [isPureCodingEnvironment, isCloudWorkspaceEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, codePreviewState.active, codePreviewState.files.size, codePreviewState.userClosed, activateCodePreviewPassive, reopenCodePreview, resetCodePreviewState]);
     const showCodePreview = codingPreviewAllowed && sourcePreviewAllowed && codePreviewState.active;
     // Isolation conflicts open a dedicated right-hand side panel (not the float popover).
     const showCodingConflictPanel = isPureCodingEnvironment && codingConflictOpen && codingConflictCount > 0;
@@ -3812,6 +3870,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Toggle the entire right-side area (workflow / code / conflict) open/closed
     const handleTogglePreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
+        if (isCloudWorkspaceEnvironment) {
+            if (codePreviewStateRef.current.active) closeCodePreview();
+            else reopenCodePreview();
+            return;
+        }
         if (workflowState.splitMode || codePreviewStateRef.current.active || codingConflictOpen) {
             closeDocPreview();
             closeCodePreview();
@@ -3823,7 +3886,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activateCodePreviewPassive();
             }
         }
-    }, [codingPreviewAllowed, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, closeDocPreview, closeCodePreview, closeCodingConflictSidePanel, openDocPreview, activateCodePreviewPassive]);
+    }, [codingPreviewAllowed, isCloudWorkspaceEnvironment, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, closeDocPreview, closeCodePreview, closeCodingConflictSidePanel, openDocPreview, activateCodePreviewPassive, reopenCodePreview]);
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();
@@ -3836,6 +3899,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const title = localAssistantTabTitle(lang);
     const thinkingText = lang === "en" ? "Working... (you can keep typing)" : "\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can keep typing)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
+    // A foreground round spends a short (but user-visible) requesting phase
+    // connecting to the selected model before the first token arrives. Keep a
+    // dedicated label for this phase so the assistant panel does not look idle
+    // or incorrectly imply that tools are already running.
+    const modelConnectingText = localizeText(lang, "Connecting to model...", "\u8fde\u63a5\u6a21\u578b\u2026", "\u9023\u63a5\u6a21\u578b\u2026");
     const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
         || (isRemoteMaintenanceEnvironment
             ? localizeText(lang, "Describe the maintenance task on the remote host...", "描述远程主机上的维护任务…", "描述遠端主機上的維護任務…")
@@ -3935,6 +4003,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         && (isBusy || workflowCurrentPhaseRunning);
     const activeSessionHasWork = isBusy || activeSessionIsStreaming;
     const displayProgressMessages = activeSessionHasWork ? progressMessages : [];
+    // A busy session can belong to another tab. In that case the active tab is
+    // not waiting for its model connection, so keep the generic activity label
+    // instead of claiming that this tab is connecting.
+    const modelConnectionInProgress = activeSessionIsSending
+        && !activeSessionIsStreaming
+        // When the hook provides an explicit busy-session list, `sending` can
+        // represent a different tab. Only label this tab as connecting when
+        // its own session is in that list.
+        && (panelSessionIsSending || !hasExplicitBusySessionList || busySessionKeys.includes(activeSessionKey));
     useEffect(() => {
         if (!(sending || streaming) || isBusy || activeSessionIsStreaming) return;
         console.info("[AIAssistantPanel] active session idle while another session is busy", {
@@ -4052,7 +4129,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ? (codingAgentInputStatusText(codingAgentProgress, lang) || processingText)
         : latestToolProgress
             ? `${formatToolProgressStatus(latestToolProgress, lang)} · ${lang === "en" ? "you can type ahead" : "\u53ef\u7ee7\u7eed\u8f93\u5165"}`
-            : processingText;
+            : (modelConnectionInProgress ? modelConnectingText : processingText);
     const projectSearch = useProjectSearch(lang);
     useEffect(() => {
         if (!panelActive) projectSearch.close();
@@ -4100,6 +4177,68 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         window.addEventListener('ai-save-current-chat-as-task', handler);
         return () => window.removeEventListener('ai-save-current-chat-as-task', handler);
     }, [openSaveTaskDialog]);
+    useEffect(() => {
+        const tryReveal = (rawPath: string, workingDir = "") => {
+            const want = normalizeProjectSessionPath(rawPath);
+            if (!want) return;
+            const detail = { projectPath: want, workingDir };
+            const matches = cloudWorkspaceRevealMatchesTab(detail, {
+                projectPath: activeTab.projectPath,
+                workingDir: resolvedDirForActive,
+            });
+            if (matches) {
+                pendingCloudRevealRef.current = null;
+                setCloudReveal({ tabId: activeTab.id, path: want });
+                if (isCloudWorkspacePath(workingDir)) {
+                    setResolvedWorkingDir(prev => nextTabWorkingDir(prev, activeTab.id, workingDir));
+                }
+                reopenCodePreview();
+                bumpLocalWorkspaceRefresh();
+                window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
+                return;
+            }
+            pendingCloudRevealRef.current = { projectPath: want, workingDir };
+        };
+        const handler = (e: Event) => {
+            const detail = (e as CustomEvent<{ projectPath?: string; workingDir?: string }>).detail;
+            tryReveal(String(detail?.projectPath || ""), String(detail?.workingDir || ""));
+        };
+        window.addEventListener(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, handler);
+        if (pendingCloudRevealRef.current) {
+            tryReveal(
+                String(pendingCloudRevealRef.current.projectPath || ""),
+                String(pendingCloudRevealRef.current.workingDir || ""),
+            );
+        }
+        return () => window.removeEventListener(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, handler);
+    }, [activeTab.id, activeTab.projectPath, bumpLocalWorkspaceRefresh, reopenCodePreview, resolvedDirForActive]);
+    useEffect(() => {
+        if (!isCloudWorkspaceEnvironment) return;
+        const tab = { projectPath: activeTab.projectPath, workingDir: resolvedDirForActive };
+        const tabWorkspaceId = cloudWorkspaceIdFromPath(resolvedDirForActive || activeTab.projectPath);
+        const matchesActive = (path: string, workspaceId: string) => {
+            if (workspaceId && tabWorkspaceId && workspaceId === tabWorkspaceId) return true;
+            return cloudWorkspaceRevealMatchesTab({ projectPath: path, workingDir: path }, tab);
+        };
+        const offFiles = EventsOn(CLOUD_WORKSPACE_FILES_CHANGED_EVENT, (payload: unknown) => {
+            const rec = parseWailsEventObject(payload);
+            const path = String(rec.path || rec.Path || "");
+            const workspaceId = String(rec.workspace_id || rec.workspaceId || rec.WorkspaceID || "");
+            if (matchesActive(path, workspaceId)) scheduleCloudTreeRefresh();
+        });
+        const expectedSession = projectSessionKey(activeTab.projectPath || "");
+        const offTurn = EventsOn("ai-assistant-response", (payload: unknown) => {
+            const rec = parseWailsEventObject(payload);
+            const sk = normalizeAssistantSessionKey(String(rec.session_key || rec.SessionKey || ""));
+            if (!expectedSession || sk !== normalizeAssistantSessionKey(expectedSession)) return;
+            scheduleCloudTreeRefresh();
+        });
+        return () => {
+            clearCloudTreeRefreshTimer();
+            if (typeof offFiles === "function") offFiles();
+            if (typeof offTurn === "function") offTurn();
+        };
+    }, [isCloudWorkspaceEnvironment, activeTab.id, activeTab.projectPath, scheduleCloudTreeRefresh, clearCloudTreeRefreshTimer, resolvedDirForActive]);
 
     // Branch command listener: triggered by the branch button on user messages.
     useEffect(() => {
@@ -4891,7 +5030,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const continueIdleDrain = continueQueueDrainSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
         const armedIdleDrain = queueAutoDrainArmedSessionKeysRef.current.has(activeSessionKey) && readyToDrainQueue;
         const persistedAutoDrain = !!queue[0]?.autoDrain && readyToDrainQueue;
-        if ((becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
+        // An unresolved unfinished-task / recoverable-session card intercepts
+        // every new turn with the same resume/dismiss prompt instead of running
+        // it. Draining the type-ahead queue now would burn each queued command
+        // into an identical confirmation card, so hold the queue until the user
+        // resolves the card (resolution clears its actions).
+        const hasPendingSlotCard = displayMessages.some((msg: ChatMessage) =>
+            (msg.unfinishedSlot?.actions?.length ?? 0) > 0
+            || (msg.recoverableSession?.actions?.length ?? 0) > 0);
+        if (!hasPendingSlotCard && (becameIdle || returnedToChatIdle || continueIdleDrain || armedIdleDrain || persistedAutoDrain) && queue.length > 0 && !queueEditDraftActive) {
             const entry = queue[0];
             if (firingEntryIdsRef.current.has(entry.id) || drainingEntryIdsRef.current.has(entry.id)) {
                 prevSubmitLockedRef.current = submitLocked;
@@ -4944,7 +5091,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
+    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, displayMessages, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
     const handleFireEntry = useCallback(async (id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
@@ -5242,6 +5389,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const incrementalStateRef = useRef<{ messageId: string; state: IncrementalRenderState }>({
         messageId: '', state: createIncrementalRenderState(),
     });
+    // Same treatment for the streaming reasoning trail (thinking panel): it
+    // grows token-by-token and would otherwise get a full Markdown re-parse
+    // on every 33ms flush, stalling the main thread (frozen spinner/scroll).
+    const reasoningIncrementalStateRef = useRef<{ messageId: string; state: IncrementalRenderState }>({
+        messageId: '', state: createIncrementalRenderState(),
+    });
     // Track render-config: when theme/lang/callback change, invalidate entire cache
     // to avoid returning stale renders with old styles or stale closures.
     // NOTE: isBusy is NOT included here — last-assistant busy only affects
@@ -5252,6 +5405,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         msgRenderCacheRef.current.clear();
         // Also invalidate incremental state on config change (theme colors affect rendered nodes)
         incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
+        reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
     }
     const renderedOtherMessages = useMemo(() => {
         const cache = msgRenderCacheRef.current;
@@ -5302,7 +5456,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // isBusy is included only for the last assistant (Working... placeholder).
             // Include the actual text, not just its length. Tool retries and stream
             // corrections can replace content in place without changing the length.
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.length ?? 0}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.length ?? 0}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -5313,7 +5467,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // the active tail (~20 lines), keeping per-frame cost < 1ms regardless of
             // total message length.
             let node: ReturnType<typeof renderMessage>;
-            if (isLast && activeSessionIsStreaming && msg.role === 'assistant' && msg.content && msg.content.length > 2000) {
+            // Reasoning counts too: round 1 streams a long thinking trail before
+            // the answer body reaches 2KB, and that trail needs the same
+            // freeze-the-stable-part treatment to keep flushes cheap.
+            const longStreamingContent = !!(msg.content && msg.content.length > 2000);
+            const longStreamingReasoning = !!(msg.reasoning && msg.reasoning.length > 2000);
+            if (isLast && activeSessionIsStreaming && msg.role === 'assistant' && (longStreamingContent || longStreamingReasoning)) {
                 node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, true, (formattedContent: string) => {
                     // Incremental render callback: called by renderMessage for the
                     // content section of the last streaming assistant message.
@@ -5323,14 +5482,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.state = createIncrementalRenderState();
                     }
                     return renderContentIncremental(formattedContent, t, incRef.state);
-                }, handleRecordingComplete, isPureCodingEnvironment);
+                }, handleRecordingComplete, isPureCodingEnvironment, (formattedReasoning: string) => {
+                    const incRef = reasoningIncrementalStateRef.current;
+                    if (incRef.messageId !== msg.id) {
+                        incRef.messageId = msg.id;
+                        incRef.state = createIncrementalRenderState();
+                    }
+                    return renderContentIncremental(formattedReasoning, t, incRef.state);
+                });
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
-                if (isLast && msg.role === 'assistant' && incrementalStateRef.current.messageId === msg.id && !activeSessionIsStreaming) {
-                    incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
+                if (isLast && msg.role === 'assistant' && !activeSessionIsStreaming) {
+                    if (incrementalStateRef.current.messageId === msg.id) {
+                        incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
+                    }
+                    if (reasoningIncrementalStateRef.current.messageId === msg.id) {
+                        reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
+                    }
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionHasWork, undefined, handleRecordingComplete, isPureCodingEnvironment);
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment);
             }
             cache.set(msg.id, { contentKey, node });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -5411,7 +5582,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         <div data-testid="ai-panel-root" style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isCloudWorkspaceEnvironment} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both
                 (so the quick-settings / status strip spans into the code-preview column). */}
             <div data-testid="ai-panel-main" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
@@ -5495,6 +5666,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     theme={t}
                     lang={lang}
                     onWorkingDirChange={bumpLocalWorkspaceRefresh}
+                    onWorkingDirResolved={handleWorkingDirResolved}
+                    onOpenCloudFiles={() => {
+                        reopenCodePreview();
+                        window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
+                    }}
                 />
             )}
             {showChatUI && (
@@ -6259,7 +6435,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         />
                     </div>
                 ) : (
-                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
+                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, // Keep prose/reasoning in a CJK-capable UI font. Code blocks opt into monospace locally.
+                    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif", whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
                     {isExpertTabActive && displayMessages.length === 0 ? (
                         // Expert tab empty state (e.g. after a conversation clear):
                         // expert name + intro instead of the generic welcome view.
@@ -6379,9 +6556,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         dismissAgentView={dismissAgentView}
                         lang={lang}
                         selectCodeFile={selectCodeFile}
-                        projectPath={isPureCodingEnvironment ? activeTab.projectPath : undefined}
+                        projectPath={(isPureCodingEnvironment || isCloudWorkspaceEnvironment)
+                            ? ((isCloudWorkspaceEnvironment && cloudPreviewRoot) || activeTab.projectPath)
+                            : undefined}
                         workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : localWorkspaceRefreshToken}
-                        workspaceResetOnRefresh={!isRemoteCodingDevEnvironment}
+                        workspaceResetOnRefresh={!isRemoteCodingDevEnvironment && !isCloudWorkspaceEnvironment}
+                        cloudMode={isCloudWorkspaceEnvironment}
                         openWorkspaceFile={openWorkspaceFile}
                         submitAgentView={panelSubmitAgentView}
                         showCodePreview={showCodePreview}

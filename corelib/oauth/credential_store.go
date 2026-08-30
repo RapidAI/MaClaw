@@ -33,9 +33,9 @@ type CredentialStore interface {
 
 // StoredCredential 统一存储 OAuth 和 SSO 的 credential。
 type StoredCredential struct {
-	Type           string `json:"type"`                      // "oauth" | "sso"
-	AccessToken    string `json:"access_token"`              // 主 token（sk-... 或 raw access_token）
-	RawAccessToken string `json:"raw_access_token,omitempty"` // 原始 access_token（仅 OAuth，用于 Costs/Usage API）
+	Type           string `json:"type"`                       // "oauth" | "sso"
+	AccessToken    string `json:"access_token"`               // 主 token（sk-... 或 raw access_token）
+	RawAccessToken string `json:"raw_access_token,omitempty"` // 原始 access_token（Responses API）；组织账单需要 Admin API Key
 	RefreshToken   string `json:"refresh_token,omitempty"`
 	ExpiresAt      int64  `json:"expires_at,omitempty"` // Unix timestamp
 	// SSO-specific fields

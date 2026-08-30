@@ -266,6 +266,289 @@ func TestCancelledBoundaryDoesNotTryInlineInterrupt(t *testing.T) {
 	}
 }
 
+func TestCancelSessionForUserCancelsInFlightPreLoopWithoutPublishedLoop(t *testing.T) {
+	const userID = "desktop-user:preflight"
+	loopCtx := NewLoopContext("chat", 3, nil)
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	h.beginInFlightTurn(userID, "每个概念的文字解释太少", loopCtx)
+
+	if h.getSessionLoopCtx(userID) != nil {
+		t.Fatal("pre-loop fixture must not publish loopCtx")
+	}
+
+	done := make(chan struct{})
+	var got string
+	var err error
+	go func() {
+		got, err = h.CancelSessionForUser(userID)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pre-loop cancel must not wait for DoneC of an unpublished loop")
+	}
+	if err != nil {
+		t.Fatalf("CancelSessionForUser() error = %v", err)
+	}
+	if got != "每个概念的文字解释太少" {
+		t.Fatalf("cancelled text = %q, want in-flight user text", got)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("pre-loop cancel must cancel the in-flight LoopContext")
+	}
+	if !h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("pre-loop cancel must mark a new-task boundary")
+	}
+	followUp := IMUserMessage{UserID: userID, Text: "忘掉前面的错误提示。ppt需要专业风格，现在太朴素了。"}
+	if h.shouldTryInlineInterrupt(followUp) {
+		t.Fatal("follow-up after pre-loop cancel must not merge into the cancelled turn")
+	}
+}
+
+func TestCancelSessionForUserMarksBoundaryForPendingForegroundTurn(t *testing.T) {
+	const userID = "desktop-user:pending-fg"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem, interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	h.setPendingForegroundText(userID, "improve ppt")
+
+	got, err := h.CancelSessionForUser(userID)
+	if err != nil {
+		t.Fatalf("CancelSessionForUser() error = %v", err)
+	}
+	if got != "improve ppt" {
+		t.Fatalf("cancelled text = %q, want pending foreground text", got)
+	}
+	if !h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("pending-foreground cancel must mark a new-task boundary")
+	}
+	loopCtx := NewLoopContext("chat", 3, nil)
+	resp := h.preLoopCancelResponse(IMUserMessage{UserID: userID, Text: "improve ppt"}, loopCtx, nil, "improve ppt")
+	if resp == nil {
+		t.Fatal("pre-loop must abort once the pending-foreground cancel boundary is set")
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("boundary abort must cancel the LoopContext created after the stop click")
+	}
+}
+
+func TestConsumeCancelledTaskBoundarySkipsInProgressTurn(t *testing.T) {
+	const userID = "desktop-user:consume-same-gen"
+	h := &IMMessageHandler{}
+	h.setPendingForegroundText(userID, "improve ppt")
+	h.markTaskCancelledByUser(userID)
+	if h.consumeCancelledTaskBoundary(userID) {
+		t.Fatal("must not consume the cancel fence of the turn that still holds the session lock")
+	}
+	if !h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("in-progress cancel fence must remain for pre-loop abort")
+	}
+}
+
+func TestConsumeCancelledTaskBoundaryAcceptsNextMessage(t *testing.T) {
+	const userID = "desktop-user:consume-next"
+	h := &IMMessageHandler{}
+	h.setPendingForegroundText(userID, "old ppt task")
+	h.markTaskCancelledByUser(userID)
+	h.setPendingForegroundText(userID, "")
+	h.setPendingForegroundText(userID, "忘掉前面的错误提示。ppt需要专业风格")
+	if !h.consumeCancelledTaskBoundary(userID) {
+		t.Fatal("the next user message must consume the previous cancel fence")
+	}
+	if h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("consumed cancel fence must not leak into the next task")
+	}
+}
+
+func TestIdleCancelDoesNotMarkBoundaryFromPendingForeground(t *testing.T) {
+	const userID = "desktop-user:idle-cancel"
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	_, err := h.CancelSessionForUser(userID)
+	if err == nil {
+		t.Fatal("idle cancel must fail when no published, in-flight, or pending turn exists")
+	}
+	if h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("idle cancel must not force the next message into a fresh-task boundary")
+	}
+}
+
+func TestCancelSessionForUserPrefersInFlightOverStaleLegacy(t *testing.T) {
+	const userID = "desktop-user:stale-legacy"
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	stale := NewLoopContext("chat", 3, nil)
+	h.globalLoopMu.Lock()
+	h.currentLoopCtx = stale
+	h.lastUserID = userID
+	h.lastUserText = "stale published leftover"
+	h.globalLoopMu.Unlock()
+	inFlight := NewLoopContext("chat", 3, nil)
+	h.beginInFlightTurn(userID, "current ppt", inFlight)
+
+	done := make(chan struct{})
+	var got string
+	var err error
+	go func() {
+		got, err = h.CancelSessionForUser(userID)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancel must not wait on a stale legacy DoneC when an in-flight pre-loop exists")
+	}
+	if err != nil {
+		t.Fatalf("CancelSessionForUser() error = %v", err)
+	}
+	if got != "current ppt" {
+		t.Fatalf("cancelled text = %q, want in-flight user text", got)
+	}
+	if !inFlight.IsCancelled() {
+		t.Fatal("must cancel the in-flight pre-loop, not only the stale leftover")
+	}
+	if stale.IsCancelled() {
+		t.Fatal("stale leftover must not be selected over the live in-flight turn")
+	}
+}
+
+func TestRequestCancelSessionForUserCancelsInFlightPreLoop(t *testing.T) {
+	const userID = "desktop-user:preflight-request"
+	loopCtx := NewLoopContext("chat", 3, nil)
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	h.beginInFlightTurn(userID, "old ppt task", loopCtx)
+
+	if _, err := h.RequestCancelSessionForUser(userID); err != nil {
+		t.Fatalf("RequestCancelSessionForUser() error = %v", err)
+	}
+	if !loopCtx.IsCancelled() {
+		t.Fatal("non-blocking cancel must still stop the in-flight pre-loop")
+	}
+	if !h.hasCancelledTaskBoundary(userID) {
+		t.Fatal("non-blocking pre-loop cancel must mark a new-task boundary")
+	}
+}
+
+func TestFollowUpAfterPreLoopCancelDoesNotMergeEvenIfLoopLaterPublishes(t *testing.T) {
+	const userID = "desktop-user:preflight-merge"
+	h := &IMMessageHandler{interruptHandler: newIMInterruptHandler(nil)}
+	h.interruptHandler.handler = h
+	preflight := NewLoopContext("chat", 3, nil)
+	h.beginInFlightTurn(userID, "old ppt task", preflight)
+
+	if _, err := h.RequestCancelSessionForUser(userID); err != nil {
+		t.Fatalf("RequestCancelSessionForUser() error = %v", err)
+	}
+
+	// A cancelled pre-loop that failed to abort could still publish. The
+	// cancel boundary must keep the next user message from being swallowed
+	// as "收到，已纳入当前任务".
+	published := NewLoopContext("chat", 3, nil)
+	h.setSessionLoopCtx(userID, published)
+	tracker := progress.NewAgentProgressTracker(nil, "old ppt task", "office", nil)
+	defer tracker.Stop()
+	h.interruptHandler.SetTracker(userID, tracker)
+
+	result := h.interruptHandler.TryInterrupt(userID, "ppt需要专业风格，现在太朴素了")
+	if result.Handled && result.Action == progress.ActionMerge {
+		t.Fatalf("follow-up after cancel was merged: %+v", result)
+	}
+	if _, injected := h.pendingInjection.Load(userID); injected {
+		t.Fatal("follow-up after cancel must not be injected into the cancelled task")
+	}
+}
+
+func TestPreLoopCancelResponseUsesCancelledExit(t *testing.T) {
+	const userID = "desktop-user:preflight-abort"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "old task"},
+		{Role: "assistant", Content: "partial answer"},
+	}
+	mem.Save(userID, history)
+	loopCtx := NewLoopContext("chat", 3, nil)
+	msg := IMUserMessage{UserID: userID, Text: "improve ppt", RequestID: "req-1"}
+	if resp := h.preLoopCancelResponse(msg, loopCtx, history, msg.Text); resp != nil {
+		t.Fatal("uncancelled pre-loop must not abort")
+	}
+	loopCtx.Cancel()
+	resp := h.preLoopCancelResponse(msg, loopCtx, history, msg.Text)
+	if resp == nil || resp.Error != "" || !strings.Contains(resp.Text, "cancelled") {
+		t.Fatalf("cancelled pre-loop response = %+v, want cancelled exit text", resp)
+	}
+	got := mem.Load(userID)
+	if len(got) != 2 || got[0].Content != "old task" || got[1].Content != "partial answer" {
+		t.Fatalf("pre-loop cancel wiped history: %#v", got)
+	}
+}
+
+func TestCancelAllSessionsForShutdownCancelsInFlightTurn(t *testing.T) {
+	const userID = "desktop-user:preflight-shutdown"
+	loopCtx := NewLoopContext("chat", 3, nil)
+	h := &IMMessageHandler{}
+	h.beginInFlightTurn(userID, "old ppt task", loopCtx)
+
+	h.cancelAllSessionsForShutdown()
+
+	if !loopCtx.IsCancelled() {
+		t.Fatal("shutdown must cancel in-flight pre-loop turns")
+	}
+	if h.inFlightTurnForUser(userID) != nil {
+		t.Fatal("shutdown must drop in-flight pre-loop registrations")
+	}
+}
+
+func TestCancelAndClearInFlightTurnKeepsReplacement(t *testing.T) {
+	const userID = "desktop-user:inflight-replace"
+	h := &IMMessageHandler{}
+	old := NewLoopContext("chat", 3, nil)
+	h.beginInFlightTurn(userID, "old", old)
+	loaded, ok := h.inFlightTurns.Load(userID)
+	if !ok {
+		t.Fatal("expected in-flight registration")
+	}
+	replacement := NewLoopContext("chat", 3, nil)
+	h.beginInFlightTurn(userID, "new", replacement)
+
+	if turn, _ := loaded.(*inFlightTurn); turn != nil && turn.ctx != nil {
+		turn.ctx.Cancel()
+	}
+	h.inFlightTurns.CompareAndDelete(userID, loaded)
+
+	got := h.inFlightTurnForUser(userID)
+	if got == nil || got.ctx != replacement {
+		t.Fatal("clearing the observed in-flight turn must not drop a replacement")
+	}
+	if replacement.IsCancelled() {
+		t.Fatal("replacement in-flight turn must stay live")
+	}
+	if !old.IsCancelled() {
+		t.Fatal("observed in-flight turn must still be cancelled")
+	}
+}
+
+func TestRunAgentLoopDoesNotPublishCancelledPreLoop(t *testing.T) {
+	const userID = "desktop-user:preflight-run"
+	mem := agent.NewConversationMemory()
+	defer mem.Stop()
+	h := &IMMessageHandler{memory: mem}
+	loopCtx := NewLoopContext("chat", 3, nil)
+	loopCtx.Cancel()
+	resp := h.runAgentLoop(loopCtx, userID, "system", nil, "improve ppt", nil, nil, nil, nil, nil, 1, "desktop")
+	if resp == nil || !strings.Contains(resp.Text, "cancelled") {
+		t.Fatalf("cancelled runAgentLoop = %+v, want cancelled exit", resp)
+	}
+	if got := h.getSessionLoopCtx(userID); got != nil {
+		t.Fatal("cancelled pre-loop must not publish as the active session loop")
+	}
+}
+
 func TestCancelCurrentSessionClearsPendingInjectionAndMarksBoundary(t *testing.T) {
 	loopCtx := NewLoopContext("chat", 3, nil)
 	h := &IMMessageHandler{interruptHandler: &imInterruptHandler{}}

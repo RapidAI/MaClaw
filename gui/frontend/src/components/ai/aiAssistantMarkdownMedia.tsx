@@ -1,6 +1,7 @@
 import type React from "react";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { cloudSafePathLabel } from "./codingTaskMode";
 
 /** Last path segment of a Windows or POSIX path. */
 function baseName(filePath: string): string {
@@ -26,7 +27,7 @@ export function renderScreenshotPreview(
                 fileName={fileName}
                 lang={lang}
                 theme={t}
-                title={localFilePath}
+                title={localFilePath ? cloudSafePathLabel(localFilePath, isZh ? "云端文件" : "Cloud file") : undefined}
                 frameStyle={{
                     width: "180px",
                     maxWidth: "100%",

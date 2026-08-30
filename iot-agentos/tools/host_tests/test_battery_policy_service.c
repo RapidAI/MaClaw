@@ -14,7 +14,21 @@
 static int64_t s_time_us;
 static device_power_telemetry_t s_telemetry;
 static bool s_provider_reenter_prepare;
+static bool s_provider_return_false;
 static device_status_t s_reentrant_prepare_status;
+static unsigned s_checkpoint_calls;
+static device_status_t s_checkpoint_status;
+
+static device_status_t checkpoint_callback(uint32_t timeout_ms, void *context) {
+    (void)context;
+    if (timeout_ms == 0u) return DEVICE_STATUS_INVALID_ARGUMENT;
+    ++s_checkpoint_calls;
+    if (context) {
+        /* The late-success fixture consumes exactly the callback allowance. */
+        s_time_us += (int64_t)timeout_ms * 1000;
+    }
+    return s_checkpoint_status;
+}
 
 int64_t esp_timer_get_time(void) { return s_time_us; }
 void vTaskDelay(TickType_t ticks) { s_time_us += (int64_t)(ticks ? ticks : 1u) * 1000; }
@@ -25,7 +39,7 @@ bool device_power_get_telemetry(device_power_telemetry_t *out_telemetry) {
         s_reentrant_prepare_status = battery_policy_service_prepare_system_sleep(1);
     }
     *out_telemetry = s_telemetry;
-    return s_telemetry.available;
+    return s_provider_return_false ? false : s_telemetry.available;
 }
 
 static void set_telemetry(bool available, bool charging, uint8_t level) {
@@ -51,6 +65,32 @@ int main(void) {
     CHECK(snapshot.level == DEVICE_BATTERY_POLICY_CONSERVE);
     CHECK(snapshot.optional_work_allowed);
     CHECK(!snapshot.high_power_work_allowed);
+    CHECK(battery_policy_service_limit_backlight_percent(100u) == 65u);
+
+    /* An impossible normalized percentage is rejected without publishing a
+     * partial snapshot or advancing the hysteresis state. */
+    set_telemetry(true, false, 101);
+    snapshot = sentinel;
+    CHECK(!battery_policy_service_get_snapshot(&snapshot));
+    CHECK(memcmp(&snapshot, &sentinel, sizeof(snapshot)) == 0);
+    set_telemetry(true, false, 20);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_CONSERVE);
+
+    /* A provider failure must override any bytes it may have left in the
+     * output structure; the policy must not publish that stale observation. */
+    set_telemetry(true, false, 1);
+    s_provider_return_false = true;
+    snapshot = sentinel;
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.telemetry_available == false);
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_NORMAL);
+    CHECK(snapshot.optional_work_allowed && snapshot.high_power_work_allowed);
+    CHECK(memcmp(&snapshot, &sentinel, sizeof(snapshot)) != 0);
+    s_provider_return_false = false;
+    set_telemetry(true, false, 20);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_CONSERVE);
 
     /* The provider can trigger a reentrant PREPARE while this snapshot still
      * owns an admission. It must close new reads and wait until this read
@@ -71,9 +111,72 @@ int main(void) {
     battery_policy_service_abort_system_sleep_prepare();
 
     CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_CONSERVE);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_CONSERVE);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
     CHECK(snapshot.level == DEVICE_BATTERY_POLICY_PROTECT);
     CHECK(!snapshot.optional_work_allowed);
     CHECK(!snapshot.high_power_work_allowed);
+    CHECK(battery_policy_service_limit_backlight_percent(100u) == 35u);
+    CHECK(battery_policy_service_set_emergency_checkpoint_callback(
+              checkpoint_callback, NULL) == DEVICE_STATUS_OK);
+    s_checkpoint_status = DEVICE_STATUS_TIMEOUT;
+    CHECK(battery_policy_service_run_emergency_checkpoint(10) == DEVICE_STATUS_TIMEOUT);
+    CHECK(s_checkpoint_calls == 1u);
+    /* A failed write is terminal for this PROTECT generation; telemetry
+     * polling must not amplify flash damage with retries. */
+    CHECK(battery_policy_service_run_emergency_checkpoint(10) == DEVICE_STATUS_BUSY);
+    CHECK(s_checkpoint_calls == 1u);
+    CHECK(battery_policy_service_set_emergency_checkpoint_callback(
+              checkpoint_callback, NULL) == DEVICE_STATUS_OK);
+    s_checkpoint_status = DEVICE_STATUS_OK;
+    /* Replacing the callback cannot reopen a failed generation. */
+    CHECK(battery_policy_service_run_emergency_checkpoint(10) == DEVICE_STATUS_BUSY);
+
+    /* Reset the policy generation without a callback, then install a callback
+     * that reports success only after consuming the parent budget. */
+    set_telemetry(true, true, 50);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(battery_policy_service_set_emergency_checkpoint_callback(NULL, NULL) ==
+          DEVICE_STATUS_OK);
+    set_telemetry(true, false, 10);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_PROTECT);
+    CHECK(battery_policy_service_set_emergency_checkpoint_callback(
+              checkpoint_callback, (void *)1) == DEVICE_STATUS_OK);
+    s_checkpoint_status = DEVICE_STATUS_OK;
+    CHECK(battery_policy_service_run_emergency_checkpoint(10) == DEVICE_STATUS_TIMEOUT);
+    CHECK(s_checkpoint_calls == 2u);
+    CHECK(battery_policy_service_run_emergency_checkpoint(10) == DEVICE_STATUS_BUSY);
+    set_telemetry(true, true, 50);
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_NORMAL);
+    CHECK(battery_policy_service_limit_backlight_percent(100u) == 100u);
+    set_telemetry(true, false, 10);
+    /* Re-entering PROTECT with the callback already installed automatically
+     * consumes the one-shot checkpoint budget. */
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_PROTECT);
+    CHECK(s_checkpoint_calls == 3u);
+    CHECK(battery_policy_service_run_emergency_checkpoint(10) == DEVICE_STATUS_BUSY);
+    CHECK(!battery_policy_service_try_begin_emergency_checkpoint());
+
+    /* A transient provider outage must not erase an already-confirmed
+     * PROTECT generation. The safety latch survives missing telemetry, while
+     * recovery still requires a subsequent valid observation. */
+    s_provider_return_false = true;
+    snapshot = sentinel;
+    CHECK(battery_policy_service_get_snapshot(&snapshot));
+    CHECK(snapshot.level == DEVICE_BATTERY_POLICY_PROTECT);
+    CHECK(!snapshot.telemetry_available);
+    CHECK(!snapshot.optional_work_allowed);
+    CHECK(battery_policy_service_limit_backlight_percent(100u) == 35u);
+    s_provider_return_false = false;
 
     CHECK(battery_policy_service_prepare_system_sleep(10) == DEVICE_STATUS_OK);
     snapshot = sentinel;

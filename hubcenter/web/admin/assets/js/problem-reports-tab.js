@@ -6,7 +6,8 @@
     if (!contentGroup || !main) return false;
     const button = document.createElement('button');
     button.dataset.tab = 'problemreports';
-    button.innerHTML = '<span class="nav-icon" aria-hidden="true">!</span><span>故障报告</span><small>查看诊断包、截图和处理状态</small>';
+    const problemIcon = (typeof TAB_ICONS === 'object' && TAB_ICONS.problemreports) ? TAB_ICONS.problemreports : '<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>';
+    button.innerHTML = '<span class="nav-icon" aria-hidden="true">' + problemIcon + '</span><span>故障报告</span><small>查看诊断包、截图和处理状态</small>';
     button.onclick = function () { window.openTab('problemreports'); };
     contentGroup.insertBefore(button, contentGroup.querySelector('[data-tab="failurelogs"]'));
     const panel = document.createElement('section');
@@ -21,6 +22,8 @@
       document.querySelectorAll('.panel').forEach(function (node) { node.classList.toggle('active', node.id === 'tab-' + name); });
       document.getElementById('pageTitle').textContent = '故障报告';
       document.getElementById('pageSubtitle').textContent = '查看用户诊断包、截图及处理状态';
+      const pageIcon = document.getElementById('pageTabIcon');
+      if (pageIcon) pageIcon.innerHTML = problemIcon;
       window.loadProblemReports();
     };
     return true;

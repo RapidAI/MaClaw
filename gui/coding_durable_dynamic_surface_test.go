@@ -161,8 +161,8 @@ func TestCodingDurableDynamicSurfaceFixedBridgeRejectsAndJournalsInvalidArgument
 		t.Fatal(err)
 	}
 	first := surface.ExecuteBoundSelection(context.Background(), identity, dynamic, h, "test-provider/v1", "connection-a", "response-a", "call-1", alias, `{"unexpected":true}`, time.Unix(5, 0).UTC())
-	if first.ReasonCode != "parameter_schema_invalid" || first.Succeeded || !strings.Contains(first.Result, "parameter_schema_invalid") {
-		t.Fatalf("invalid arguments were not durably rejected: %#v", first)
+	if first.ReasonCode != "parameter_schema_invalid" || first.Succeeded || !strings.Contains(first.Result, "parameter_unknown_field: unexpected") {
+		t.Fatalf("invalid arguments were not durably rejected with the offending field localized: %#v", first)
 	}
 	replay := surface.ExecuteBoundSelection(context.Background(), identity, dynamic, h, "test-provider/v1", "connection-a", "response-a", "call-1", alias, `{"unexpected":true}`, time.Unix(6, 0).UTC())
 	if replay.ReasonCode != "parameter_schema_invalid" || replay.Succeeded || replay.Result != first.Result {

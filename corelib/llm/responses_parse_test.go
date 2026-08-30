@@ -46,3 +46,30 @@ func TestParseNonStreamResponsesAPIBody_ExtractsReasoningSummaryAlias(t *testing
 		t.Fatalf("reasoning_content = %q, want %q", got, want)
 	}
 }
+
+func TestParseNonStreamResponsesAPIBody_AcceptsThinkingPart(t *testing.T) {
+	response, err := ParseNonStreamResponsesAPIBody([]byte(`{
+        "output":[{"type":"reasoning","summary":[{"type":"thinking","text":"Thought it through."}]}]
+    }`))
+	if err != nil {
+		t.Fatalf("ParseNonStreamResponsesAPIBody returned error: %v", err)
+	}
+	if got, want := response.Choices[0].Message.ReasoningContent, "Thought it through."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+}
+
+func TestParseNonStreamResponsesAPIBody_SeparatesMultipleReasoningItems(t *testing.T) {
+	response, err := ParseNonStreamResponsesAPIBody([]byte(`{
+        "output":[
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"First item."}]},
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"Second item."}]}
+        ]
+    }`))
+	if err != nil {
+		t.Fatalf("ParseNonStreamResponsesAPIBody returned error: %v", err)
+	}
+	if got, want := response.Choices[0].Message.ReasoningContent, "First item.\nSecond item."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+}

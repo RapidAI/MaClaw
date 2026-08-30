@@ -1059,6 +1059,11 @@ func (parent *CodingSubAgent) runNestedCodingAgent(spec codingSpawnSpec, parentC
 	// child has its own ledger Attempt and anchor registration.
 	child.nestDepth = parent.nestDepth + 1
 	child.role = spec.Role
+	// The spawn itself was admitted under the parent's boundary, so the child
+	// inherits only the host provenance fact — never the parent's identity,
+	// relation handle, surface, or grants. A child with its own ledger attempt
+	// still re-resolves its own verified identity.
+	child.correlatedLocalExecution = parent.correlatedLocalExecution
 	if spec.Role == codingRoleWorker {
 		child.SetFullEnvironment(true)
 		child.setNestedWorkerScopeApproval(nil)

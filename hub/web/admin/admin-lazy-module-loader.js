@@ -6,7 +6,6 @@
   var modulesByTab = {
     security: 'security-tab.js',
     approvalroles: 'security-tab.js',
-    httpthreat: 'httpthreat-tab.js',
     'digital-assets': 'digital-assets-tab.js',
     llmproviders: 'llm-provider-tab.js',
     modelservices: 'llm-service-tabs.js',

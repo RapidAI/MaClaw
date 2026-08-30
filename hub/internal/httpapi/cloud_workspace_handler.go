@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
@@ -183,10 +185,12 @@ func decodeOptionalName(r *http.Request) (string, error) {
 	return req.Name, nil
 }
 
-// CloudWorkspaceEntitlementHandler GET /api/v1/cloud-workspaces/entitlement
+// CloudWorkspaceEntitlementHandler GET /api/v1/cloud-workspaces/entitlement.
+// Machine auth is enough: an unbound machine is a 200 enabled=false probe, not 401.
+// Mutations still require authenticateCloudWorkspaceMachine (UserID present).
 func CloudWorkspaceEntitlementHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		principal, ok := authenticateCloudWorkspaceMachine(w, r, identity)
+		principal, ok := authenticateVEMachine(w, r, identity)
 		if !ok {
 			return
 		}
@@ -285,6 +289,26 @@ func CloudWorkspaceDeleteHandler(svc *cloudworkspace.Service, identity veMachine
 	}
 }
 
+// CloudWorkspaceHardDeleteHandler DELETE /api/v1/cloud-workspaces/{id}/purge
+func CloudWorkspaceHardDeleteHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateCloudWorkspaceMachine(w, r, identity)
+		if !ok || !requireCloudWorkspaceGrant(w, r, svc, principal) {
+			return
+		}
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace not found")
+			return
+		}
+		if err := svc.HardDeleteDeletedWorkspace(r.Context(), *principal, id); err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // CloudWorkspaceRestoreHandler POST /api/v1/cloud-workspaces/{id}/restore
 func CloudWorkspaceRestoreHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -306,5 +330,97 @@ func CloudWorkspaceRestoreHandler(svc *cloudworkspace.Service, identity veMachin
 			return
 		}
 		writeJSON(w, http.StatusOK, workspaceJSON(ws))
+	}
+}
+
+// CloudWorkspaceEventsHandler returns ordered v2 file operations after a cursor.
+func CloudWorkspaceEventsHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateCloudWorkspaceMachine(w, r, identity)
+		if !ok || !requireCloudWorkspaceGrant(w, r, svc, principal) {
+			return
+		}
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace not found")
+			return
+		}
+		after, err := parseNonNegativeQueryInt(r.URL.Query().Get("after_seq"), 0)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "after_seq must be a non-negative integer")
+			return
+		}
+		limit, err := parseNonNegativeQueryInt(r.URL.Query().Get("limit"), 500)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "limit must be a non-negative integer")
+			return
+		}
+		if svc.Workspaces == nil {
+			writeCloudWorkspaceError(w, cloudworkspace.ErrUnavailable)
+			return
+		}
+		if _, err := svc.Workspaces.GetOwned(r.Context(), principal.TenantID, principal.UserID, id); err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		events, err := svc.Workspaces.ListEvents(r.Context(), id, after, limit)
+		if err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	}
+}
+
+func parseNonNegativeQueryInt(raw string, fallback int64) (int64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0, errors.New("invalid non-negative integer")
+	}
+	return n, nil
+}
+
+// CloudWorkspaceOperationHandler accepts an idempotent multi-writer file operation.
+func CloudWorkspaceOperationHandler(svc *cloudworkspace.Service, identity veMachineAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateCloudWorkspaceMachine(w, r, identity)
+		if !ok || !requireCloudWorkspaceGrant(w, r, svc, principal) {
+			return
+		}
+		id := strings.TrimSpace(r.PathValue("id"))
+		var op cloudworkspace.Operation
+		dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&op); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid cloud workspace operation")
+			return
+		}
+		if op.Kind == "put" {
+			if svc.Blobs == nil {
+				writeCloudWorkspaceError(w, cloudworkspace.ErrUnavailable)
+				return
+			}
+			has, err := svc.Blobs.Has(r.Context(), principal.TenantID, principal.UserID, id, op.ObjectSHA256)
+			if err != nil || !has {
+				if err == nil {
+					err = cloudworkspace.ErrObjectMissing
+				}
+				writeCloudWorkspaceError(w, err)
+				return
+			}
+		}
+		if svc.Workspaces == nil {
+			writeCloudWorkspaceError(w, cloudworkspace.ErrUnavailable)
+			return
+		}
+		out, err := svc.Workspaces.ApplyOperation(r.Context(), principal.TenantID, principal.UserID, id, op, time.Now().UTC())
+		if err != nil {
+			writeCloudWorkspaceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }

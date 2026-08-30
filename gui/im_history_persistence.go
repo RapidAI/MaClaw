@@ -517,7 +517,16 @@ Reply with exactly one word: pending or done. If uncertain, reply done.`,
 		return ok && intent == pendingReplyPromptIntentPending
 	}
 	log.Printf("[PendingUserReply] prompt intent classification unavailable: %v", err)
-	return false
+	// Fail open to PENDING, never to amnesia. The heuristic candidate gate has
+	// already matched a question-shaped assistant message, and the answer-side
+	// binding re-verifies freshness against the current history before any
+	// context is injected. Dropping the marker here is the expensive error:
+	// hub timeout on 2026-08-27 left a real pending question unmarked, the
+	// user's 16-rune answer ("1. 布娃 2。可爱风 3。没有") was then classified
+	// standalone as coding@0.80, and the PPT task died on the coding surface.
+	// A false pending marker costs one re-verified context hint; a lost one
+	// costs the task.
+	return true
 }
 
 func (h *IMMessageHandler) classifyPendingUserReplyAnswer(userID, question, answer string) (bool, bool) {

@@ -1030,12 +1030,20 @@ func anyMap(value any) map[string]any {
 }
 
 // anySlice normalizes common slice shapes produced by JSON decode ([]any) and
-// in-memory builders ([]map[string]any) into a single []any for iteration.
+// in-memory builders ([]map[string]any, []string) into a single []any for
+// iteration.
 func anySlice(value any) []any {
 	switch typed := value.(type) {
 	case []any:
 		return typed
 	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, item)
+		}
+		return out
+	case []string:
+		// Go-built maps (no JSON round-trip) carry typed string slices.
 		out := make([]any, 0, len(typed))
 		for _, item := range typed {
 			out = append(out, item)

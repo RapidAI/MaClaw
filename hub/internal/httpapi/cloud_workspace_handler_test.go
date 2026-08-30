@@ -300,8 +300,15 @@ func TestCloudWorkspaceSoftDeleteRestoreAndNonOwner(t *testing.T) {
 		t.Fatalf("non-owner restore=%d %s", foreignRestore.Code, foreignRestore.Body.String())
 	}
 	emptyUser := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/entitlement", "m-empty", "secret", nil)
-	if emptyUser.Code != http.StatusUnauthorized || cloudWorkspaceErrCode(t, emptyUser) != "MACHINE_UNAUTHORIZED" {
-		t.Fatalf("empty user=%d %s", emptyUser.Code, emptyUser.Body.String())
+	if emptyUser.Code != http.StatusOK {
+		t.Fatalf("empty user entitlement=%d %s", emptyUser.Code, emptyUser.Body.String())
+	}
+	var emptyEnt cloudworkspace.Entitlement
+	if err := json.Unmarshal(emptyUser.Body.Bytes(), &emptyEnt); err != nil {
+		t.Fatal(err)
+	}
+	if emptyEnt.Enabled {
+		t.Fatalf("empty user must not be granted: %+v", emptyEnt)
 	}
 }
 
@@ -336,6 +343,31 @@ func TestCloudWorkspaceAdminPreviewOverQuotaUsers(t *testing.T) {
 	item := got.Preview.OverQuotaUsers[0]
 	if item.SN != "SN-u1" || item.Used != 2 || item.Quota != 1 {
 		t.Fatalf("item=%+v", item)
+	}
+}
+
+func TestCloudWorkspaceEntitlementEmptyUserIDIsDisabledNotUnauthorized(t *testing.T) {
+	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	rec := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/entitlement", "m-empty", "secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("entitlement=%d %s", rec.Code, rec.Body.String())
+	}
+	var ent cloudworkspace.Entitlement
+	if err := json.Unmarshal(rec.Body.Bytes(), &ent); err != nil {
+		t.Fatal(err)
+	}
+	if ent.Enabled {
+		t.Fatalf("empty user granted: %+v", ent)
+	}
+	if ent.Reason != cloudworkspace.ReasonMachineUnbound {
+		t.Fatalf("reason=%q want %q", ent.Reason, cloudworkspace.ReasonMachineUnbound)
+	}
+	if ent.Quota != 5 {
+		t.Fatalf("quota=%d want tenant quota", ent.Quota)
+	}
+	create := doCloudWorkspaceRequest(t, h, http.MethodPost, "/api/v1/cloud-workspaces", "m-empty", "secret", map[string]any{"name": "X"})
+	if create.Code != http.StatusUnauthorized || cloudWorkspaceErrCode(t, create) != "MACHINE_UNAUTHORIZED" {
+		t.Fatalf("empty user create=%d %s", create.Code, create.Body.String())
 	}
 }
 

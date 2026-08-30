@@ -146,6 +146,10 @@ func TestTaskIdentityAnchorBlocksMemoryRecallUntilCurrentTurnExplicitlyRequestsI
 	if !taskAnchorBlocksMemoryRead(anchor, memoryToolActionRecall, "搜索历史会话，看看此前版本") {
 		t.Fatal("history-search consent must not implicitly authorize long-term memory")
 	}
+	ppt := taskIdentityAnchor{OriginalRequest: "码卡龙平台仓库 github.com/rapidia/maclaw 编写介绍PPT"}
+	if !taskAnchorBlocksMemoryRead(ppt, memoryToolActionRecall, "继续改进ppt呀") {
+		t.Fatal("a PPT charter must not silently recall another task's long-term memory")
+	}
 }
 
 func TestSessionSearchIsRegisteredAsOwnerScoped(t *testing.T) {
@@ -218,5 +222,109 @@ func TestTaskIdentityAnchorSurvivesSystemPromptRebuild(t *testing.T) {
 func TestTaskIdentityAnchorFromToolArgsRejectsWrongType(t *testing.T) {
 	if _, ok := taskIdentityAnchorFromToolArgs(map[string]interface{}{"_task_identity_anchor": map[string]interface{}{"Subject": "李新帅"}}); ok {
 		t.Fatal("serialized/model-shaped anchor must not be accepted as trusted host metadata")
+	}
+}
+
+func TestTaskIdentityAnchorFromToolArgsAcceptsOriginalRequestOnly(t *testing.T) {
+	if _, ok := taskIdentityAnchorFromToolArgs(map[string]interface{}{
+		"_task_identity_anchor": taskIdentityAnchor{OriginalRequest: "码卡龙企业级 Agent 平台介绍 PPT"},
+	}); !ok {
+		t.Fatal("original-request-only charter must be accepted as trusted host metadata")
+	}
+}
+
+func TestTaskIdentityAnchorKeepsPPTCharterAcrossMathStyleFollowUp(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-ppt"
+	original := "码卡龙平台仓库： github.com/rapidia/maclaw  , 编写一个介绍AI Native组织的驱动系统，maclaw开源企业级agent平台的介绍PPT, 需要突出AI Native组织的运行原理，码卡龙平台的企业级特性对此的支撑，以及码卡龙的先进技术。先写提纲，再写ppt"
+
+	h.updateTaskIdentityAnchorFromUserText(owner, original)
+	h.updateTaskIdentityAnchorFromUserText(owner, "每个概念的文字解释太少，需要做到图、文、公式并茂，概念解释还需要联系物理意义与AI中的应用，方便理解")
+	h.updateTaskIdentityAnchorFromUserText(owner, "忘掉前面的错误提示。ppt需要专业风格，现在太朴素了。")
+	h.updateTaskIdentityAnchorFromUserText(owner, "继续改进ppt呀")
+
+	anchor, ok := h.taskIdentityAnchorForUser(owner)
+	if !ok {
+		t.Fatal("expected a task charter after the original PPT request")
+	}
+	if !strings.Contains(anchor.OriginalRequest, "码卡龙") || !strings.Contains(anchor.OriginalRequest, "maclaw") {
+		t.Fatalf("original request drifted: %#v", anchor)
+	}
+	if strings.Contains(anchor.OriginalRequest, "每个概念") || strings.Contains(anchor.OriginalRequest, "数学") {
+		t.Fatalf("math-style follow-up replaced the charter: %#v", anchor)
+	}
+	if anchor.WorkKind != "ppt" {
+		t.Fatalf("work kind = %q, want ppt", anchor.WorkKind)
+	}
+	prompt := taskIdentityAnchorPrompt(anchor)
+	for _, want := range []string{"码卡龙", "继续改进 ppt", "其他主题"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("charter prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "每个概念的文字解释太少") {
+		t.Fatalf("follow-up leaked into charter prompt:\n%s", prompt)
+	}
+
+	mathArgs := map[string]interface{}{"action": "write_pptx", "file_path": "ai-math-foundations.pptx"}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", mathArgs); reason == "" {
+		t.Fatal("math lecture PPT must not be writable on a MaClaw PPT charter")
+	}
+	maclawArgs := map[string]interface{}{"action": "write_pptx", "file_path": "maclaw-ai-native-org.pptx"}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", maclawArgs); reason != "" {
+		t.Fatalf("MaClaw PPT write blocked: %s", reason)
+	}
+
+	h.rememberTaskAnchorDeliverable(owner, &anchor, "office", maclawArgs)
+	if len(anchor.PrimaryFiles) != 1 || !strings.Contains(anchor.PrimaryFiles[0], "maclaw-ai-native-org.pptx") {
+		t.Fatalf("primary files = %#v", anchor.PrimaryFiles)
+	}
+	chartArgs := map[string]interface{}{"action": "write_pptx", "file_path": "maclaw-ai-native-org-charts.pptx"}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", chartArgs); reason != "" {
+		t.Fatalf("primary variant blocked: %s", reason)
+	}
+	if reason := taskAnchorDeliverableWriteBlockReason(&anchor, "office", mathArgs); reason == "" {
+		t.Fatal("math PPT must stay blocked after the primary deliverable is recorded")
+	}
+}
+
+func TestTaskIdentityAnchorRecoversOriginalRequestFromSessionHistory(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-ppt-recover"
+	original := "码卡龙平台仓库： github.com/rapidia/maclaw 编写一个介绍AI Native组织的驱动系统的介绍PPT"
+	h.memory.Save(owner, []agent.ConversationEntry{
+		{Role: "user", Content: original, Timestamp: 100},
+		{Role: "assistant", Content: "提纲已写", Timestamp: 200},
+	})
+
+	anchor, ok := h.taskIdentityAnchorForTurn(owner, "继续改进ppt呀")
+	if !ok {
+		t.Fatal("expected recovered charter")
+	}
+	if !strings.Contains(anchor.OriginalRequest, "码卡龙") {
+		t.Fatalf("did not recover original request: %#v", anchor)
+	}
+	if strings.Contains(anchor.OriginalRequest, "继续改进") {
+		t.Fatalf("used the follow-up as the charter: %#v", anchor)
+	}
+}
+
+func TestTaskIdentityAnchorPPTCharterIsInjectedWithoutPersonSubject(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	const owner = "desktop-user:maclaw-ppt-prompt"
+	original := "码卡龙平台仓库： github.com/rapidia/maclaw 编写一个介绍AI Native组织的驱动系统的介绍PPT"
+	started := h.buildAgentLoopConversationStart("chat", owner, original, "system", "desktop", nil, corelib.MaclawLLMConfig{}, nil, 0, nil, nil, nil, true)
+	anchorSeen := false
+	for _, raw := range started.Conversation {
+		message, ok := raw.(map[string]string)
+		if !ok || message["role"] != "system" {
+			continue
+		}
+		if strings.Contains(message["content"], "任务身份与来源锚点") && strings.Contains(message["content"], "码卡龙") {
+			anchorSeen = true
+		}
+	}
+	if !anchorSeen {
+		t.Fatal("PPT charter must be injected even without a person-name subject")
 	}
 }

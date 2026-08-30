@@ -39,9 +39,10 @@ typedef struct {
      * private to their respective owners. */
     /* Stops every app-level owner that could enter a network client or
      * callback: Gateway/poll/meeting work plus root-owned optional media,
-     * wake-restart and cellular-recovery participants. A future composition
-     * bridge may delegate internally, but it must return OK only once the
-     * complete dependent set is no longer able to touch the physical root. */
+     * startup-pet, wake-restart, deferred-setup and cellular-recovery
+     * participants. A future composition bridge may delegate internally, but
+     * it must return OK only once the complete dependent set is no longer
+     * able to touch the physical root. */
     device_status_t (*quiesce_network_dependents)(void *context,
                                                    uint32_t timeout_ms);
     device_status_t (*stop_provisioning)(void *context, uint32_t timeout_ms);

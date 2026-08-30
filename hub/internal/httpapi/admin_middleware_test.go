@@ -74,6 +74,22 @@ func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService)
 	return services.handler, services.admins
 }
 
+func TestHTTPThreatRoutesRemainRemoved(t *testing.T) {
+	handler, _ := newAdminRouterTestServices(t)
+	for _, path := range []string{
+		"/api/admin/httpthreat/status",
+		"/api/httpthreat/serving",
+		"/api/httpthreat/inspect",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("removed HTTP-threat route %s returned %d, want %d", path, resp.Code, http.StatusNotFound)
+		}
+	}
+}
+
 func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 	t.Helper()
 

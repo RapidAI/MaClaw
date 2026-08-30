@@ -1630,6 +1630,11 @@ func TestSkillRunnerStartRun_AllowsGUIOpenAIProxyEnv(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	runner := NewSkillRunner(app.skillExecutor)
 

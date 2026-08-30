@@ -61,6 +61,8 @@ if ($arbC) {
             'audio_service_request_playback_stop',
             'audio_service_request_capture_stop',
             'audio_service_reset_capture_stop',
+            'audio_service_preempt_for_alarm',
+            'audio_service_consume_alarm_interruption',
             'audio_service_wake_word_start',
             'audio_service_wake_word_stop',
             'audio_service_wake_word_stop_with_timeout',
@@ -69,6 +71,38 @@ if ($arbC) {
         if ($arbC -notlike "*$api*") {
             $failures += "audio_arbitration_service.c must call $api"
         }
+    }
+    if ($arbC -notmatch 'audio_arbitration_is_authoritative\(\).*audio_service_preempt_for_alarm|audio_service_preempt_for_alarm\(300u\)') {
+        $failures += 'alarm authoritative path must invoke bounded audio preemption'
+    }
+    if ($arbC -notlike '*audio_arbitration_consume_alarm_interruption*') {
+        $failures += 'interaction must consume generation-scoped alarm interruption fact via arbitration'
+    }
+    if ($arbC -notmatch 'audio_arbitration_alarm_preemption_allowed\([\s\S]*audio_service_preempt_for_alarm\(300u\)') {
+        $failures += 'Alarm burst path must gate bounded preemption with the pure policy'
+    }
+}
+$alarm = Join-Path $projectRoot 'main\services\alarm_service.c'
+if (Test-Path -LiteralPath $alarm) {
+    $alarmText = Get-Content -LiteralPath $alarm -Raw
+    if ($alarmText -notmatch 'audio_arbitration_alarm_transaction_begin\(\)[\s\S]*audio_arbitration_alarm_transaction_end\(\)') {
+        $failures += 'Alarm ring must bracket all bursts with one transaction epoch'
+    }
+}
+$audio = Join-Path $projectRoot 'main\audio_service.c'
+if (Test-Path -LiteralPath $audio) {
+    $audioText = Get-Content -LiteralPath $audio -Raw
+    if ($audioText -notmatch 'platform_audio_play_wav[\s\S]*audio_service_consume_alarm_interruption') {
+        $failures += 'WAV cleanup must consume interruption after physical playback end'
+    }
+    if ($audioText -notmatch 'audio_arbitration_alarm_interruption_generation_allowed') {
+        $failures += 'Audio Service must use the shared generation fence policy'
+    }
+}
+$mp3 = Join-Path $projectRoot 'main\mp3_player.c'
+if (Test-Path -LiteralPath $mp3) {
+    if ((Get-Content -LiteralPath $mp3 -Raw) -notlike '*AUDIO_ARBITRATION_KIND_PCM_PLAYBACK*') {
+        $failures += 'PCM playback must classify authoritative Alarm interruption after cleanup'
     }
 }
 
@@ -86,6 +120,9 @@ if (Test-Path -LiteralPath $hdr) {
         'must not enable coordinator authoritative'
     Assert-FileLacks $hdr 'audio_arbitration_set_authoritative\s*\(\s*true' `
         'must not enable arbitration authoritative'
+    if ((Get-Content -LiteralPath $hdr -Raw) -notlike '*audio_arbitration_alarm_preemption_allowed*') {
+        $failures += 'public arbitration header must expose the pure Alarm preemption policy'
+    }
 }
 
 $cmake = Get-Content -LiteralPath (Join-Path $projectRoot 'main\CMakeLists.txt') -Raw

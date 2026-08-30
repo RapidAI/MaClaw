@@ -1371,6 +1371,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
     const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const dirtyTabIdsRef = useRef<Set<string>>(new Set());
+    // Incremented before a tab is cleared. A queued debounce captures its
+    // generation and must not write a pre-clear transcript afterwards.
+    const historyGenerationByTabIdRef = useRef<Map<string, number>>(new Map());
     const scheduleHistoryPersist = useCallback(() => {
         if (historyPersistTimerRef.current) clearTimeout(historyPersistTimerRef.current);
         historyPersistTimerRef.current = setTimeout(() => {
@@ -1381,10 +1384,16 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             if (dirtyIds.size > 0) {
                 const projectTabs = tabStateRef.current.tabs.filter(t => (((t.type === "project" && t.projectPath && !isACPMirrorTab(t)) || t.type === "expert") && dirtyIds.has(t.id)));
                 for (const tab of projectTabs) {
+                    const generation = historyGenerationByTabIdRef.current.get(tab.id) || 0;
                     const state = tabStatesRef.current.get(tab.id);
                     if (state && Array.isArray(state.history) && state.history.length > 0) {
                         const history = persistableProjectHistory(state.history);
-                        SaveProjectTabConversation(tab.id, history).catch(() => {});
+                        // Re-check immediately before dispatch: clearing a tab
+                        // while this debounce was queued invalidates the old
+                        // snapshot rather than allowing it to resurrect.
+                        if ((historyGenerationByTabIdRef.current.get(tab.id) || 0) === generation) {
+                            SaveProjectTabConversation(tab.id, history).catch(() => {});
+                        }
                     }
                 }
                 dirtyTabIdsRef.current = new Set();
@@ -1393,6 +1402,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     }, []);
 
     const clearTabConversation = useCallback((tabId: string) => {
+        historyGenerationByTabIdRef.current.set(tabId, (historyGenerationByTabIdRef.current.get(tabId) || 0) + 1);
+        dirtyTabIdsRef.current.delete(tabId);
         tabStatesRef.current.set(tabId, {
             history: [],
             scrollTop: 0,
@@ -1403,14 +1414,14 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             ...prev,
             tabs: prev.tabs.map(t => t.id === tabId ? { ...t, discussionId: undefined, conversationResetSeq: (t.conversationResetSeq || 0) + 1 } : t),
         }));
-        // Persist the cleared state so it doesn't resurrect after restart
-        dirtyTabIdsRef.current.add(tabId);
-        scheduleHistoryPersist();
+        // Remove the local snapshot synchronously as well. A crash during the
+        // former debounce window must not restore cleared history on startup.
+        persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
         // Also clear backend session file immediately (don't wait for debounce).
         // ACP mirrors are not desktop-owned session files.
         const tab = tabStateRef.current.tabs.find(item => item.id === tabId);
         if (!tab || !isACPMirrorTab(tab)) SaveProjectTabConversation(tabId, []).catch(() => {});
-    }, [scheduleHistoryPersist, updateTabState]);
+    }, [updateTabState]);
 
     const saveTabState = useCallback((tabId: string, state: Partial<AITabState>) => {
         const openTab = tabStateRef.current.tabs.find(t => t.id === tabId);

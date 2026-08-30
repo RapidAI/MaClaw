@@ -121,6 +121,22 @@ func TestCodingStaticCompatibilityModelSurfaceExcludesUncorrelatedRemoteEffects(
 	}
 }
 
+func TestCorrelatedRemoteCodingSurfaceIncludesEffectfulTools(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{correlatedRemoteExecution: true}}
+	names := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("implement", 0))
+	for _, want := range []string{"ssh_read_file", "ssh_write_file", "ssh_edit_file", "ssh_bash", "ssh_list_dir"} {
+		if !containsStringForTest(names, want) {
+			t.Fatalf("correlated remote surface omitted %s: %v", want, names)
+		}
+	}
+	// Even with the full surface, effectful calls remain correlation-bound.
+	epoch := cb.BeginToolSurfaceEpoch(0)
+	got := cb.ExecuteToolCallWithContext("ssh_bash", `{"command":"true"}`, "call-1", agent.ToolCallExecutionContext{SurfaceEpoch: epoch})
+	if got.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(got.Result, "static_response_correlation_missing") {
+		t.Fatalf("uncorrelated effectful dispatch was not rejected: %#v", got)
+	}
+}
+
 func TestCodingStaticCompatibilityInventoryCoversRenderedRemoteSurface(t *testing.T) {
 	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
 	for _, name := range codingSubAgentToolDefinitionNamesForTest(cb.BuildTools("work")) {
@@ -166,6 +182,44 @@ func TestCodingStaticCompatibilityRequestSurfaceRejectsStaleAndPostureRemovedToo
 	}
 	if result := cb.ExecuteToolCallWithContext("read_file", `{"path":"missing"}`, "call-3", agent.ToolCallExecutionContext{}); strings.Contains(result.Result, "static_surface_unavailable") {
 		t.Fatalf("rendered local read was rejected by surface fence: %#v", result)
+	}
+}
+
+func TestNextCodingStaticCompatibilityRevisionOnlyAdvancesOnNameSetChange(t *testing.T) {
+	first := map[string]struct{}{"read_file": {}, "todo_write": {}}
+	if got := nextCodingStaticCompatibilityRevision(0, nil, first); got != 1 {
+		t.Fatalf("first install revision=%d", got)
+	}
+	if got := nextCodingStaticCompatibilityRevision(1, first, map[string]struct{}{"todo_write": {}, "read_file": {}}); got != 1 {
+		t.Fatalf("identical names must keep revision, got %d", got)
+	}
+	if got := nextCodingStaticCompatibilityRevision(1, first, map[string]struct{}{"read_file": {}}); got != 2 {
+		t.Fatalf("name-set replacement revision=%d", got)
+	}
+}
+
+func TestInstallCodingStaticCompatibilitySurfaceReusesNameSet(t *testing.T) {
+	first := map[string]struct{}{"read_file": {}, "todo_write": {}}
+	rev, names := installCodingStaticCompatibilitySurface(0, nil, first)
+	if rev != 1 || len(names) != 2 {
+		t.Fatalf("first install rev=%d names=%v", rev, names)
+	}
+	same := map[string]struct{}{"todo_write": {}, "read_file": {}}
+	rev, kept := installCodingStaticCompatibilitySurface(rev, names, same)
+	if rev != 1 {
+		t.Fatalf("same names rev=%d", rev)
+	}
+	names["probe"] = struct{}{}
+	if _, ok := kept["probe"]; !ok {
+		t.Fatal("identical names must keep the previous map rather than installing a copy")
+	}
+	next := map[string]struct{}{"read_file": {}}
+	rev, replaced := installCodingStaticCompatibilitySurface(rev, names, next)
+	if rev != 2 || len(replaced) != 1 {
+		t.Fatalf("name-set replacement rev=%d names=%v", rev, replaced)
+	}
+	if _, ok := replaced["probe"]; ok {
+		t.Fatal("replacement must install the new name set")
 	}
 }
 

@@ -42,8 +42,8 @@
 //	                       max_invocations}]; polarity defaults to require,
 //	                       required defaults to true for require polarity.
 //	                       max_invocations > 1 expands the need into that many
-//	                       sibling needs (id, id#02, ...), which is how a
-//	                       repeat budget is spent as plan nodes.
+//	                       sibling needs (id, id#02, ...); only the first
+//	                       sibling inherits Required, the rest are a ceiling.
 //	facts                  [{id, kind, authority, attributes, valid_seconds,
 //	                       artifact}]; valid_seconds is relative to context.now
 //	                       (negative = already expired). artifact carries a full

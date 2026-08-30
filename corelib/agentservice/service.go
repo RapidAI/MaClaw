@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -60,6 +61,14 @@ type Service struct {
 
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc
+	// skillInstallTxnMu serializes local Skill directory transactions and
+	// protects the service-owned cross-restart compensation journal.
+	skillInstallTxnMu sync.Mutex
+	// skillInstallRecoveryBlocked is fail-closed state set when AgentService
+	// startup cannot prove that its durable directory compensation queue has
+	// been recovered. Reads remain available, but imports/updates are refused
+	// until a later admission check clears the condition.
+	skillInstallRecoveryBlocked bool
 }
 
 type auditRecord struct {
@@ -134,10 +143,36 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 		}
 		return nil, fmt.Errorf("reconcile dynamic operation ledger: %w", err)
 	}
+	service := &Service{store: store, records: records, dynamicOperations: dynamicOperations, dynamicCapabilities: dynamicCapabilities, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}
+	// Recover AgentService-owned directory transactions during startup, not
+	// only immediately before a later import.  A pending/unreadable record is
+	// retained as a fail-closed admission condition while read-only APIs remain
+	// usable for diagnosis.
+	if _, pending, recoverErr := service.recoverAgentSkillInstallCompensations(); recoverErr != nil || pending > 0 {
+		service.skillInstallRecoveryBlocked = true
+	}
 	if setter, ok := executor.(interface{ SetDynamicOperationLedger(DynamicOperationLedger) }); ok {
 		setter.SetDynamicOperationLedger(dynamicOperations)
 	}
-	return &Service{store: store, records: records, dynamicOperations: dynamicOperations, dynamicCapabilities: dynamicCapabilities, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
+	return service, nil
+}
+
+// recoverAgentSkillInstallCompensations replays only AgentService-owned
+// directory transactions. AgentService's registry is derived from the
+// filesystem, so restoring the serialized config snapshot is intentionally a
+// no-op; the shared recovery routine still restores directories and removes
+// only transaction-owned artifacts. A non-empty pending count is an admission
+// failure for future writes, while read-only listing remains available.
+func (s *Service) recoverAgentSkillInstallCompensations() (recovered int, pending int, err error) {
+	if s == nil {
+		return 0, 0, fmt.Errorf("service is unavailable")
+	}
+	return skill.RecoverPendingEvolutionCompensationsForActionPrefixAndScope(
+		"agentservice_install",
+		s.dataRoot,
+		func([]corelib.NLSkillEntry) error { return nil },
+		nil,
+	)
 }
 
 // Close releases process-held resources (e.g. SQLite record store). Safe to call
@@ -172,6 +207,36 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }
+
+// hasPendingSkillCompensation is a fail-closed admission check for runtime
+// operations. The queue is process-global, so headless services must scope
+// the check to their own data root before executing or uploading a Skill.
+func (s *Service) hasPendingSkillCompensation(skillName string) bool {
+	if s == nil {
+		return true
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	return s.hasPendingSkillCompensationLocked(skillName)
+}
+
+func (s *Service) hasPendingSkillCompensationLocked(skillName string) bool {
+	if s == nil {
+		return true
+	}
+	// Startup recovery failure means the service cannot prove filesystem
+	// consistency. Retry recovery at the next admission check; a pending,
+	// malformed, or out-of-scope record remains fail-closed.
+	if s.skillInstallRecoveryBlocked {
+		s.skillInstallRecoveryBlocked = false
+		if _, pending, err := s.recoverAgentSkillInstallCompensations(); err != nil || pending > 0 {
+			s.skillInstallRecoveryBlocked = true
+			return true
+		}
+	}
+	p := &skill.EvolutionPipeline{}
+	return p.HasPendingCompensationForScope(skillName, s.dataRoot)
+}
 
 // DynamicCapabilityContracts returns the read-only Service-owned contract
 // resolver for runtime bridges. Publication is intentionally unavailable from

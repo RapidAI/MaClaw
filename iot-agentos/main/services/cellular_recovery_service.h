@@ -52,3 +52,9 @@ void cellular_recovery_service_note_wifi_ready(void);
  * ABORT restores only that generation after a failed parent transaction. */
 device_status_t cellular_recovery_service_prepare_system_sleep(uint32_t timeout_ms);
 void cellular_recovery_service_abort_system_sleep_prepare(void);
+
+/* Terminal fault-domain fence for the retry coordinator. The caller must
+ * commit it before stopping a physical network root; COMMIT deliberately
+ * leaves recovery admission closed and does not deinitialize a modem/UART. */
+device_status_t cellular_recovery_service_prepare_network_restart(uint32_t timeout_ms);
+device_status_t cellular_recovery_service_commit_prepared_network_restart(void);

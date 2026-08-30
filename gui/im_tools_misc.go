@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -269,6 +270,16 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	if h.getSkillExecutor() == nil {
 		return "Skill Executor 未初始化"
 	}
+	if h.app != nil {
+		if err := ensureSkillEvolutionMutationAdmission(h.app, skillID); err != nil {
+			return "Skill 安装已阻断: " + err.Error()
+		}
+		if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+			return "Skill 安装已阻断: 补偿队列不可用: " + err.Error()
+		}
+		h.getSkillExecutor().suspendStatusOverlayPersistence()
+		defer h.getSkillExecutor().resumeStatusOverlayPersistence()
+	}
 
 	runtimePlatform := consumeRuntimePlatformFromToolArgs(args)
 	installPolicyOwnerID, explicitRuntimeOwner := h.toolArgsOrCurrentRuntimePolicyOwnerState(args)
@@ -350,8 +361,82 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		cskill.CleanupStaging(stagingDir)
 		return fmt.Sprintf("安装失败 (%s): %s", sourceLabel, err.Error())
 	}
+	if entry == nil {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Sprintf("安装失败 (%s): SkillHub 返回空结果", sourceLabel)
+	}
+	// A standalone IM handler cannot persist the config snapshot and durable
+	// compensation record required for a filesystem-backed install. Reject the
+	// write rather than allowing the non-checked index refresh path to hide a
+	// partially committed skill.
+	if h.app == nil && (stagingDir != "" || strings.TrimSpace(entry.SkillDir) != "") {
+		cskill.CleanupStaging(stagingDir)
+		return "Skill 安装失败: 缺少可持久化事务上下文"
+	}
 
+	var existingInstall *corelib.NLSkillEntry
+	if h.app != nil && stagingDir != "" {
+		existingInstall = h.app.installedSkillForInstall(entry)
+		if existingInstall != nil && skillInstallAlreadyCurrent(existingInstall, entry) {
+			cskill.CleanupStaging(stagingDir)
+			return fmt.Sprintf("Skill「%s」已是最新版本，无需重复安装。", entry.Name)
+		}
+	}
+	useSharedCreate := h.app != nil && stagingDir != "" && existingInstall == nil && !h.app.skillNameAlreadyRegistered(entry.Name)
 	var installScanReport *cskill.ScanReport
+	var installCompensation cskill.EvolutionCompensationRecord
+	installTxnActive := false
+	installRequestID := fmt.Sprintf("evo_im_tool_install_%d", time.Now().UnixNano())
+	if !useSharedCreate && h.app != nil && (stagingDir != "" || strings.TrimSpace(entry.SkillDir) != "") {
+		finalRoot, rootErr := h.app.primarySkillsDir()
+		if rootErr != nil {
+			cskill.CleanupStaging(stagingDir)
+			return "Skill 安装失败: " + rootErr.Error()
+		}
+		finalDir := strings.TrimSpace(entry.SkillDir)
+		if stagingDir != "" || finalDir == "" {
+			finalDir = cskill.PlannedSkillDir(finalRoot, entry.Name)
+		}
+		installCompensation = cskill.NewEvolutionCompensationRecord(installRequestID, entry.Name, "install", "", nil, false, h.getSkillExecutor().loadSkills(), "im_tool_install_rollback_incomplete")
+		installCompensation.SetCreatedDirectories([]string{finalDir})
+		if _, statErr := os.Stat(finalDir); statErr == nil {
+			installCompensation.SetDirectoryBackupIntent(finalDir, finalDir+".prev")
+		} else if !os.IsNotExist(statErr) {
+			cskill.CleanupStaging(stagingDir)
+			return "Skill 安装失败: 检查目标目录失败: " + statErr.Error()
+		}
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+			"skill": entry.Name, "action": "install", "decision": "pending", "via": "im_tool",
+			"request_id": installRequestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return "Skill 安装失败: 审计预检失败: " + err.Error()
+		}
+		if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return "Skill 安装失败: 保存回滚快照失败: " + err.Error()
+		}
+		installTxnActive = true
+		defer func() {
+			if !installTxnActive {
+				return
+			}
+			if rollbackErr := cskill.RestoreEvolutionCompensation(installCompensation, func(skills []corelib.NLSkillEntry) error { return h.getSkillExecutor().restoreSkillsSnapshot(skills) }, func() error { return h.app.refreshSkillIndexesAfterMutationChecked(installCompensation.Skill) }); rollbackErr != nil {
+				installCompensation.LastError = rollbackErr.Error()
+				installCompensation.TransactionState = "audit_pending"
+				installCompensation.CleanupStatus = "pending"
+				_ = cskill.PersistEvolutionCompensation(installCompensation)
+			} else {
+				installCompensation.TransactionState = "rolled_back"
+				installCompensation.CleanupStatus = "pending"
+				if clearErr := cskill.ClearEvolutionCompensation(installCompensation.RequestID, installCompensation.Skill, "install"); clearErr != nil {
+					installCompensation.LastError = clearErr.Error()
+					_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+				}
+			}
+		}()
+	}
 
 	// Security review: pattern scan plus optional agent scan; policy decides whether findings block.
 	// Developer mode records scan findings but never blocks installation.
@@ -437,8 +522,19 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		}
 	}
 
+	// Fresh directory-backed installs use the shared durable transaction. Keep
+	// the legacy adapter below only for replacements and config-only entries,
+	// whose source-specific behavior still needs a separate migration.
+	if useSharedCreate {
+		requestID := fmt.Sprintf("evo_im_tool_install_%d", time.Now().UnixNano())
+		if err := h.app.commitStagedSkillInstall(ctx, entry, stagingDir, effectiveSource, installScanReport, requestID, skillEvolutionConfigRevision(h.app)); err != nil {
+			return "Skill 安装失败: " + err.Error()
+		}
+		go h.app.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
+		return fmt.Sprintf("Skill「%s」已安装。", entry.Name)
+	}
+
 	// Commit staging → final location.
-	committedDir := ""
 	if stagingDir != "" {
 		finalDir, commitErr := cskill.CommitStaging(stagingDir, entry.Name)
 		if commitErr != nil {
@@ -446,7 +542,15 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			return fmt.Sprintf("安装失败（提交到最终目录）: %s", commitErr.Error())
 		}
 		entry.SkillDir = finalDir
-		committedDir = finalDir
+		if h.app != nil {
+			if _, statErr := os.Stat(finalDir + ".prev"); statErr == nil {
+				installCompensation.SetDirectoryBackup(finalDir, finalDir+".prev", true)
+			}
+			installCompensation.SetDirectoryPublished(true)
+			if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+				return "Skill 安装失败: 保存发布后回滚快照失败: " + err.Error()
+			}
+		}
 	}
 
 	// Verify package integrity BEFORE normalization (normalization modifies files,
@@ -455,9 +559,6 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		if manifest, _ := cskill.ReadPackageManifest(entry.SkillDir); manifest != nil {
 			if verifyErr := cskill.VerifyPackageIntegrity(entry.SkillDir, manifest); verifyErr != nil {
 				log.Printf("[skill-install] integrity check failed for %s: %v", entry.Name, verifyErr)
-				if committedDir != "" {
-					_ = os.RemoveAll(committedDir)
-				}
 				return fmt.Sprintf("安装失败（包完整性校验不通过）: %s\n\n可能原因：包在传输过程中被篡改或损坏。请重新安装。", verifyErr.Error())
 			}
 		}
@@ -479,9 +580,6 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	if installScanReport != nil && preNormalizeScanHash != "" {
 		if err := writeSkillScanCacheForReportStatus(entry, entry.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
-			if committedDir != "" {
-				_ = os.RemoveAll(committedDir)
-			}
 			return fmt.Sprintf("瀹夎澶辫触锛堝啓鍏ュ畨鍏ㄦ壂鎻忕紦瀛橈級: %s", err.Error())
 		}
 	}
@@ -499,10 +597,6 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	// Register locally.
 	if err := h.getSkillExecutor().Register(*entry); err != nil {
-
-		if committedDir != "" {
-			_ = os.RemoveAll(committedDir)
-		}
 		return fmt.Sprintf("注册失败: %s", err.Error())
 	}
 	go h.appInstallSkillDepsIfMissing(entry.SkillDir, entry.Name)
@@ -510,7 +604,15 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	// Refresh skill BM25 index so the router picks up the new skill
 	// for skill-aware routing (enrichRunSkillDescription).
 	if h.getAppToolRouter() != nil {
-		h.getAppToolRouter().RefreshSkillIndex()
+		if h.app != nil {
+			if err := h.app.refreshSkillIndexesAfterMutationChecked(entry.Name, *entry); err != nil {
+				return "Skill 安装失败: 刷新索引失败: " + err.Error()
+			}
+		} else {
+			if err := h.getAppToolRouter().RefreshSkillIndexChecked(); err != nil {
+				return "Skill 安装失败: 刷新索引失败: " + err.Error()
+			}
+		}
 	}
 
 	// Audit log
@@ -534,6 +636,31 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			PolicyAction: policyAction,
 			Result:       fmt.Sprintf("installed skill %s (%s) from %s, trust: %s", entry.Name, skillID, hubURL, entry.TrustLevel),
 		})
+	}
+	if h.app != nil && installTxnActive {
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_installed", map[string]string{
+			"skill": entry.Name, "action": "install", "decision": "applied", "via": "im_tool",
+			"request_id": installRequestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return "Skill 已写入但最终审计失败，已进入补偿队列: " + err.Error()
+		}
+		// Persist the business commit before queue cleanup. A crash after the
+		// final audit must never replay rollback against the audited definition.
+		installCompensation.TransactionState = "committed"
+		installCompensation.CleanupStatus = "pending"
+		installCompensation.FailureReason = "post_commit_cleanup_pending"
+		if err := cskill.ReplaceEvolutionCompensation(installCompensation); err != nil {
+			installTxnActive = false
+			return "Skill 已提交但清理状态无法持久化: " + err.Error()
+		}
+		installTxnActive = false
+		if err := cskill.ClearEvolutionCompensation(installRequestID, entry.Name, "install"); err != nil {
+			installCompensation.LastError = err.Error()
+			installCompensation.FailureReason = "post_commit_cleanup_failed"
+			_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+			return "Skill 已提交但补偿清理待处理: " + err.Error()
+		}
 	}
 
 	// Auto-run: default to true unless explicitly set to false.
@@ -1823,11 +1950,36 @@ func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("PDF 生成失败: %s", err.Error())
 	}
+	// The marker name is the user-facing delivery name (artifact Ref.Name and
+	// the saved file both derive from it). docgen's fileNameForSpec is ASCII-only
+	// by design for internal artifacts; the delivery name keeps the CJK title.
+	fileName = pdfDisplayFileName(title, fileName)
 
 	if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
 		return fmt.Sprintf("[file_base64|%s|application/pdf|%s]%s", fileName, msgFlag, b64Data)
 	}
 	return fmt.Sprintf("[file_base64|%s|application/pdf]%s", fileName, b64Data)
+}
+
+// pdfDisplayFileName derives the user-facing delivery name from the document
+// title, keeping CJK characters. Only path separators, Windows-illegal
+// characters and control runes are stripped; when nothing usable remains the
+// ASCII fallback (docgen's internal name) is used.
+func pdfDisplayFileName(title, fallback string) string {
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r == '<' || r == '>' || r == ':' || r == '"' || r == '/' || r == '\\' || r == '|' || r == '?' || r == '*':
+			return -1
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(title))
+	name = strings.Trim(name, " .")
+	if name == "" {
+		return fallback
+	}
+	return name + ".pdf"
 }
 
 // toolMemory merges save/list/delete/recall memory operations into a single tool.
@@ -1864,7 +2016,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		}
 	}
 	if anchored && taskAnchorBlocksMemoryRead(anchor, action, stringVal(args, "_user_text")) {
-		return "[system rejected] 当前任务已绑定对象和源文件。请先重读当前来源完成续写/浓缩；只有用户在本轮明确要求使用长期记忆时，才能召回或浏览记忆。"
+		return "[system rejected] 当前任务已绑定目标。请先完成当前任务；只有用户在本轮明确要求使用长期记忆时，才能召回或浏览记忆。"
 	}
 	return corememory.HandleTool(h.memoryStore, args, corememory.ToolOptions{
 		ProjectPath: projectPath,

@@ -204,12 +204,24 @@ func TestFetchWithExplicitIsolationDoesNotUseCookieJarOrBrowserAuthFallback(t *t
 	}
 }
 
+func TestFetchDispatchesFTPSchemeCaseInsensitively(t *testing.T) {
+	_, err := FetchCtx(context.Background(), "FTPS://example.com/file", &FetchOptions{TimeoutS: 1})
+	if err == nil || !strings.Contains(err.Error(), "FTPS") {
+		t.Fatalf("uppercase FTPS must use parsed-scheme dispatch, err=%v", err)
+	}
+}
+
 func TestFetchPublicModeRejectsPrivateTargets(t *testing.T) {
 	for _, rawURL := range []string{
 		"http://127.0.0.1:8080/internal",
 		"http://localhost:8080/internal",
 		"http://192.168.1.10/internal",
 		"http://[::1]/internal",
+		"https://example.invalid/skip",
+		"example.invalid/skip",
+		"//example.invalid/skip",
+		"https://probe.test/file",
+		"https://docs.example/page",
 	} {
 		_, err := FetchCtx(context.Background(), rawURL, &FetchOptions{PublicNetworkOnly: true})
 		if err == nil || !strings.Contains(err.Error(), "not public") {

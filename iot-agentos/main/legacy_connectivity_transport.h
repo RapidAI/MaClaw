@@ -29,6 +29,8 @@ esp_err_t legacy_connectivity_transport_prepare_cellular(void);
 esp_err_t legacy_connectivity_transport_start_cellular(uint32_t timeout_ms);
 bool legacy_connectivity_transport_cellular_ready(void);
 esp_err_t legacy_connectivity_transport_quiesce_cellular(uint32_t timeout_ms);
+esp_err_t legacy_connectivity_transport_deinit_cellular(uint32_t timeout_ms);
+esp_err_t legacy_connectivity_transport_reinitialize_cellular(uint32_t timeout_ms);
 esp_err_t legacy_connectivity_transport_http_request(
     const device_connectivity_http_request_t *request);
 esp_err_t legacy_connectivity_transport_http_stream_request(

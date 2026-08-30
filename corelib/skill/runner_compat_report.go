@@ -108,38 +108,49 @@ func AssessRunnerCompatibility(entry *corelib.NLSkillEntry, runner string) Runne
 	return report
 }
 
+// AgentGuidedWorkflowInstructions returns the craft_tool SKILL.md body when
+// entry is an imported agent-guided workflow. Empty means it is not one.
+// Callers that need the documentation (prompt injection) share this path with
+// the runner-compat classifier so alias params (prompt/instruction) and the
+// multi-agent heuristic stay in one place.
+func AgentGuidedWorkflowInstructions(entry *corelib.NLSkillEntry) string {
+	if entry == nil || len(entry.Steps) != 1 {
+		return ""
+	}
+	// Only imported marketplace sources use the SKILL.md -> craft_tool adapter.
+	// A manually-authored craft_tool can legitimately describe a richer task and
+	// must not be silently reclassified merely because it uses similar words.
+	if !isImportedMarkdownWorkflowSource(entry.Source) {
+		return ""
+	}
+	step := NormalizeStepForRunnerCopy(entry.Steps[0], entry.SkillDir)
+	if NormalizeStepActionName(step.Action) != "craft_tool" {
+		return ""
+	}
+	instructions, _ := step.Params["instructions"].(string)
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" || !isAgentGuidedWorkflowText(strings.ToLower(instructions)) {
+		return ""
+	}
+	return instructions
+}
+
 // IsAgentGuidedWorkflowSkill reports whether an imported Markdown skill is a
 // project workflow that needs an interactive agent rather than a single GUI
 // runner invocation. It deliberately requires multiple independent signals so
 // ordinary craft_tool skills that merely mention Node, Playwright, or a script
 // continue to run normally.
 func IsAgentGuidedWorkflowSkill(entry *corelib.NLSkillEntry) bool {
-	if entry == nil || len(entry.Steps) != 1 {
-		return false
-	}
-	// Only imported marketplace sources use the SKILL.md -> craft_tool adapter.
-	// A manually-authored craft_tool can legitimately describe a richer task and
-	// must not be silently reclassified merely because it uses similar words.
-	if !isImportedMarkdownWorkflowSource(entry.Source) {
-		return false
-	}
-	step := NormalizeStepForRunnerCopy(entry.Steps[0], entry.SkillDir)
-	if NormalizeStepActionName(step.Action) != "craft_tool" {
-		return false
-	}
-	instructions, _ := step.Params["instructions"].(string)
-	text := strings.ToLower(strings.TrimSpace(instructions))
-	if text == "" {
-		return false
-	}
+	return AgentGuidedWorkflowInstructions(entry) != ""
+}
 
+func isAgentGuidedWorkflowText(text string) bool {
 	// One explicit multi-agent requirement plus two workflow-management signals
 	// is intentionally conservative. This catches Book-PDF-style SKILL.md files
 	// without treating a normal executable recipe as documentation-only.
-	multiAgent := containsRunnerCompatAny(text,
+	if !containsRunnerCompatAny(text,
 		"multi-agent", "multi agent", "background agent", "background agents",
-		"多agent", "多 agent", "多个agent", "多个 agent", "多智能体", "并行写作")
-	if !multiAgent {
+		"多agent", "多 agent", "多个agent", "多个 agent", "多智能体", "并行写作") {
 		return false
 	}
 	signals := 0

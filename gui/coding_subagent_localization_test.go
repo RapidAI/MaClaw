@@ -959,7 +959,18 @@ func TestLocalizationEvidenceCannotAuthorizeEditAfterStaticSurfaceReplacement(t 
 		t.Fatalf("current revision evidence should authorize root edit: %s", blocked)
 	}
 	_ = cb.BuildToolsForModelRequest("fix parser bug again", 1)
-	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); !strings.Contains(blocked, "submit report_localization") {
+	if cb.currentControlPlaneRevision() != 1 {
+		t.Fatalf("identical tool surface must keep control-plane revision, got %d", cb.currentControlPlaneRevision())
+	}
+	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); blocked != "" {
+		t.Fatalf("same-surface later turn must still authorize the reported file: %s", blocked)
+	}
+	if rev := cb.setStaticCompatibilitySurface([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "read_file"}},
+	}); rev != 2 {
+		t.Fatalf("name-set replacement revision=%d", rev)
+	}
+	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); !strings.Contains(blocked, "submit report_localization") || !strings.Contains(blocked, "older control-plane surface") {
 		t.Fatalf("replacement must invalidate old localization evidence, got %q", blocked)
 	}
 }
@@ -979,8 +990,157 @@ func TestRemoteLocalizationEvidenceCannotAuthorizeEditAfterStaticSurfaceReplacem
 		t.Fatalf("current remote revision evidence should authorize root edit: %s", blocked)
 	}
 	_ = cb.BuildToolsForModelRequest("fix parser bug again", 1)
-	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, true); !strings.Contains(blocked, "submit report_localization") {
+	if cb.currentControlPlaneRevision() != 1 {
+		t.Fatalf("identical remote tool surface must keep control-plane revision, got %d", cb.currentControlPlaneRevision())
+	}
+	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, true); blocked != "" {
+		t.Fatalf("same-surface later remote turn must still authorize the reported file: %s", blocked)
+	}
+	if rev := cb.setStaticCompatibilitySurface([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "ssh_read_file"}},
+	}); rev != 2 {
+		t.Fatalf("remote name-set replacement revision=%d", rev)
+	}
+	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, true); !strings.Contains(blocked, "submit report_localization") || !strings.Contains(blocked, "older control-plane surface") {
 		t.Fatalf("remote replacement must invalidate old localization evidence, got %q", blocked)
+	}
+}
+
+func TestCorrelatedRemoteLocalizationSurvivesSameSurfaceRerender(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent:       &RemoteCodingSubAgent{correlatedRemoteExecution: true},
+		task:        "fix parser bug",
+		taskContext: "existing parser crashes",
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug", 0)
+	report := cb.executeRemoteReportLocalization(map[string]interface{}{
+		"root_cause_file": "root.go", "causal_path": []interface{}{"request -> root"},
+		"reproduction": "focused test fails", "supporting_evidence": []interface{}{"stack trace"},
+		"research_decision": "not_needed", "research_reason": "repository-only", "confidence": .8,
+	})
+	if !strings.Contains(report, "control_plane_revision=1") {
+		t.Fatalf("report=%q", report)
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug again", 1)
+	if cb.currentControlPlaneRevision() != 1 {
+		t.Fatalf("correlated same-surface re-render must keep revision, got %d", cb.currentControlPlaneRevision())
+	}
+	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, true); blocked != "" {
+		t.Fatalf("correlated later turn must still authorize the reported file: %s", blocked)
+	}
+}
+
+func TestRemoteKnownExistingWriteUsesStaleEvidenceAfterSurfaceReplacement(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent:         &RemoteCodingSubAgent{},
+		task:          "fix parser bug",
+		taskContext:   "existing parser crashes",
+		knownExisting: map[string]bool{"root.go": true},
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug", 0)
+	_ = cb.executeRemoteReportLocalization(map[string]interface{}{
+		"root_cause_file": "root.go", "causal_path": []interface{}{"request -> root"},
+		"reproduction": "focused test fails", "supporting_evidence": []interface{}{"stack trace"},
+		"research_decision": "not_needed", "research_reason": "repository-only", "confidence": .8,
+	})
+	if rev := cb.setStaticCompatibilitySurface([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "ssh_read_file"}},
+	}); rev != 2 {
+		t.Fatalf("replacement revision=%d", rev)
+	}
+	blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, false)
+	if strings.Contains(blocked, "determine whether the target exists") {
+		t.Fatalf("known existing write must not be treated as existence-unknown after replacement: %q", blocked)
+	}
+	if !strings.Contains(blocked, "older control-plane surface") {
+		t.Fatalf("known existing write after replacement must require a fresh report, got %q", blocked)
+	}
+}
+
+func TestRemoteNewFileWriteSkipsLocalizationWhenExistenceIsKnownAbsent(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent:         &RemoteCodingSubAgent{},
+		task:          "fix parser bug",
+		taskContext:   "existing parser crashes",
+		knownExisting: map[string]bool{"new_helper.go": false},
+	}
+	if blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "new_helper.go"}, false); blocked != "" {
+		t.Fatalf("known-absent file must be exempt from the existing-file gate, got %q", blocked)
+	}
+}
+
+func TestRemoteUnreadPathIsNotTreatedAsNewFile(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		agent:         &RemoteCodingSubAgent{},
+		task:          "fix parser bug",
+		taskContext:   "existing parser crashes",
+		knownExisting: map[string]bool{"root.go": true},
+	}
+	blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "other.go"}, false)
+	if !strings.Contains(blocked, "determine whether the target exists") {
+		t.Fatalf("an unread path must not bypass the gate as a new file, got %q", blocked)
+	}
+}
+
+func TestRemoteWriteWithoutExistenceTrackingStaysBlocked(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}, task: "fix parser bug", taskContext: "existing parser crashes"}
+	blocked := cb.requireRemoteLocalizationBeforeBugEdit(map[string]interface{}{"path": "root.go"}, false)
+	if !strings.Contains(blocked, "determine whether the target exists") {
+		t.Fatalf("write with unknown existence must ask for a read first, got %q", blocked)
+	}
+}
+
+func TestQuarantineInvalidatesLocalizationEvidence(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Title: "fix parser bug", Description: "existing parser crashes"},
+	}
+	_ = cb.BuildToolsForModelRequest("fix parser bug", 0)
+	_ = cb.executeReportLocalization(map[string]interface{}{
+		"root_cause_file": "root.go", "causal_path": []interface{}{"request -> root"},
+		"reproduction": "focused test fails", "supporting_evidence": []interface{}{"stack trace"},
+		"research_decision": "not_needed", "research_reason": "repository-only", "confidence": .8,
+	})
+	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); blocked != "" {
+		t.Fatalf("pre-quarantine evidence should authorize: %s", blocked)
+	}
+	cb.quarantineStaticCompatibilitySurface()
+	if cb.currentControlPlaneRevision() != 2 {
+		t.Fatalf("quarantine must replace the name set and advance revision, got %d", cb.currentControlPlaneRevision())
+	}
+	if blocked := cb.requireLocalizationBeforeExistingBugEdit("root.go", false); !strings.Contains(blocked, "older control-plane surface") {
+		t.Fatalf("quarantine must invalidate leftover localization evidence, got %q", blocked)
+	}
+}
+
+func TestRemoteIncompleteLocalizationReportIsFailedOutcome(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}, task: "fix parser bug"}
+	got := cb.executeRemoteReportLocalization(map[string]interface{}{
+		"root_cause_file": "/home/testprj-2/src/main.cpp",
+		"confidence":      0.92,
+	})
+	if remoteCodingToolOutcome(got) != "failed" {
+		t.Fatalf("incomplete report must be a failed tool outcome, got %q from %q", remoteCodingToolOutcome(got), got)
+	}
+	if !strings.Contains(got, "missing required fields") {
+		t.Fatalf("incomplete report should list missing fields, got %q", got)
+	}
+}
+
+func TestLocalizationEvidenceFromArgsReportsMissingRequiredFieldsTogether(t *testing.T) {
+	_, err := localizationEvidenceFromArgs(map[string]interface{}{
+		"root_cause_file":   "/home/testprj-2/src/main.cpp",
+		"root_cause_symbol": "main",
+		"confidence":        0.92,
+	}, CodingSubAgentBugSignal{})
+	if err == nil {
+		t.Fatal("incomplete report must be rejected")
+	}
+	got := err.Error()
+	for _, field := range []string{"causal_path", "reproduction", "supporting_evidence", "research_decision", "research_reason"} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("missing-field error should list %q, got %q", field, got)
+		}
 	}
 }
 
@@ -1106,7 +1266,21 @@ func TestBugFixEditRevalidatesLocalizationResearchAudit(t *testing.T) {
 	if got := cb.requireLocalizationBeforeExistingBugEdit(path, false); !strings.Contains(got, "research evidence") {
 		t.Fatalf("stale/directly injected research evidence should not authorize an edit, got %q", got)
 	}
-	cb.trackSearchResult("web_search", map[string]interface{}{"query": "SDK error"}, "https://vendor.example/docs", true)
+	// The audit now requires a genuinely relevant query (identity-token overlap
+	// with the bug context; "sdk"/"error" are stoplisted) and, for
+	// version-sensitive tasks, an audited web_fetch of the declared source with
+	// read-range metadata and a resolved URL (see line 982 in the validator).
+	cb.trackSearchResult("web_search", map[string]interface{}{"query": "exact SDK error"}, "https://vendor.example/docs", true)
+	cb.searchesRun = append(cb.searchesRun, CodingSubAgentSearchResult{
+		Tool: "web_fetch", Query: "https://vendor.example/docs", Succeeded: true,
+		Summary:          "Vendor documentation body covering the exact SDK error and request handling.",
+		FetchAuditKnown:  true,
+		FetchRangeKnown:  true,
+		FetchNextOffset:  66,
+		FetchTotalChars:  66,
+		FetchResolvedURL: "https://vendor.example/docs",
+		seq:              2,
+	})
 	if got := cb.requireLocalizationBeforeExistingBugEdit(path, false); got != "" {
 		t.Fatalf("audited research should authorize the covered edit: %s", got)
 	}

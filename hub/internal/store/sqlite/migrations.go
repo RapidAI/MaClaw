@@ -95,6 +95,8 @@ func RunMigrations(db *sql.DB) error {
 			smart_route INTEGER NOT NULL DEFAULT 0,
 			email_verified INTEGER NOT NULL DEFAULT 0,
 			email_verified_at TEXT NOT NULL DEFAULT '',
+			billing_timezone TEXT NOT NULL DEFAULT '',
+			billing_timezone_updated_at TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(tenant_id, email)
@@ -222,6 +224,7 @@ func RunMigrations(db *sql.DB) error {
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			requested_microcredits INTEGER NOT NULL DEFAULT 0,
 			deducted_microcredits INTEGER NOT NULL DEFAULT 0,
+			provider_multiplier REAL NOT NULL DEFAULT 1,
 			billing_group_multiplier REAL NOT NULL DEFAULT 1,
 			pricing_json TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
@@ -1119,6 +1122,12 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN email_verified_at TEXT NOT NULL DEFAULT ''`)
 	alterStmts = append(alterStmts, `ALTER TABLE knowledge_shares ADD COLUMN expires_at TEXT`)
 	alterStmts = append(alterStmts, `ALTER TABLE user_usage_daily ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN billing_timezone TEXT NOT NULL DEFAULT ''`)
+	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN billing_timezone_updated_at TEXT NOT NULL DEFAULT ''`)
+	// The initial audit ledger stored only a group multiplier. Add the
+	// HubCenter-owned factor separately so historic row shape remains compatible
+	// while new settlements explain both components of the effective debit.
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN provider_multiplier REAL NOT NULL DEFAULT 1`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_user_usage_daily_tenant_user_day ON user_usage_daily(tenant_id, user_id, day)`)
 
 	// machine_heartbeat_log: stores timestamped heartbeats for accurate
@@ -1200,6 +1209,13 @@ func RunMigrations(db *sql.DB) error {
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (workspace_id, sha256)
 	)`)
+	alterStmts = append(alterStmts,
+		`ALTER TABLE cloud_workspace_objects ADD COLUMN plain_size_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE cloud_workspace_objects ADD COLUMN stored_size_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE cloud_workspace_objects ADD COLUMN compression TEXT NOT NULL DEFAULT 'none'`,
+		`ALTER TABLE cloud_workspace_objects ADD COLUMN compression_level INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE cloud_workspace_objects ADD COLUMN encryption_version TEXT NOT NULL DEFAULT 'aes-gcm-v1'`,
+	)
 	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS cloud_workspace_manifest_entries (
 		workspace_id TEXT NOT NULL,
 		path TEXT NOT NULL,
@@ -1208,6 +1224,20 @@ func RunMigrations(db *sql.DB) error {
 		PRIMARY KEY (workspace_id, path)
 	)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_manifest_sha ON cloud_workspace_manifest_entries(workspace_id, sha256)`)
+	alterStmts = append(alterStmts,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_files (
+			workspace_id TEXT NOT NULL, path TEXT NOT NULL, file_revision TEXT NOT NULL,
+			object_sha256 TEXT, plain_size_bytes INTEGER NOT NULL DEFAULT 0,
+			tombstone INTEGER NOT NULL DEFAULT 0, updated_seq INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (workspace_id, path))`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_events (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL,
+			op_id TEXT NOT NULL UNIQUE, path TEXT NOT NULL, kind TEXT NOT NULL,
+			base_file_revision TEXT, new_file_revision TEXT NOT NULL,
+			object_sha256 TEXT, client_instance_id TEXT NOT NULL DEFAULT '',
+			conflict_of_seq INTEGER, created_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_events_workspace_seq ON cloud_workspace_events(workspace_id, seq)`,
+	)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {

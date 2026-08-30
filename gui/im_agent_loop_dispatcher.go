@@ -26,6 +26,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			ResponseSource: "budget_gate",
 		}
 	}
+	if ctx != nil && ctx.IsCancelled() {
+		return h.cancelledExitResponse(userID, history, userText)
+	}
 	// Publish the runtime before choosing the shared/legacy implementation so a
 	// busy-turn steer has one exact consumer regardless of which loop path wins.
 	// Earlier pre-loop phases may still short-circuit and therefore must not

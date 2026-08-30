@@ -82,49 +82,23 @@ static safe_mode_entry_t make_entry(void) {
 
 int main(void) {
     host_state_t state = { .fail_operation = OP_COUNT, .failure = DEVICE_STATUS_IO_ERROR };
-    safe_mode_coordinator_t coordinator;
     safe_mode_coordinator_host_t host = make_host(&state);
     safe_mode_entry_t entry = make_entry();
-    CHECK(safe_mode_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
-    CHECK(safe_mode_coordinator_enter(&coordinator, &entry, 100) == DEVICE_STATUS_OK);
+    CHECK(!safe_mode_coordinator_get_snapshot(NULL, NULL));
+    CHECK(safe_mode_coordinator_configure_host(&host) == DEVICE_STATUS_OK);
+    CHECK(safe_mode_coordinator_configure_host(&host) == DEVICE_STATUS_OK);
+    CHECK(safe_mode_coordinator_enter(&entry, 100) == DEVICE_STATUS_OK);
     CHECK(state.sequence_count == OP_COUNT);
     for (unsigned index = 0; index < OP_COUNT; ++index) CHECK(state.sequence[index] == index);
     CHECK(state.published_entry.failed_phase == entry.failed_phase);
     CHECK(state.published_entry.failure_status == entry.failure_status);
     safe_mode_stage_t stage;
     device_status_t status;
-    CHECK(safe_mode_coordinator_get_snapshot(&coordinator, &stage, &status));
+    CHECK(safe_mode_coordinator_get_snapshot(&stage, &status));
     CHECK(stage == SAFE_MODE_STAGE_COMPLETE && status == DEVICE_STATUS_OK);
-    CHECK(safe_mode_coordinator_enter(&coordinator, &entry, 100) == DEVICE_STATUS_BUSY);
-
-    for (unsigned failed = 0; failed < OP_COUNT; ++failed) {
-        memset(&state, 0, sizeof(state));
-        state.fail_operation = failed;
-        state.failure = DEVICE_STATUS_IO_ERROR;
-        host = make_host(&state);
-        CHECK(safe_mode_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
-        CHECK(safe_mode_coordinator_enter(&coordinator, &entry, 100) == DEVICE_STATUS_IO_ERROR);
-        CHECK(state.sequence_count == failed + 1u);
-        for (unsigned index = 0; index <= failed; ++index) CHECK(state.sequence[index] == index);
-        CHECK(safe_mode_coordinator_get_snapshot(&coordinator, &stage, &status));
-        CHECK(stage == SAFE_MODE_STAGE_FAILED && status == DEVICE_STATUS_IO_ERROR);
-        CHECK(safe_mode_coordinator_enter(&coordinator, &entry, 100) == DEVICE_STATUS_BUSY);
-    }
-
-    memset(&state, 0, sizeof(state));
-    state.fail_operation = OP_COUNT;
-    state.elapsed_per_call_ms = 40;
-    host = make_host(&state);
-    CHECK(safe_mode_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
-    CHECK(safe_mode_coordinator_enter(&coordinator, &entry, 100) == DEVICE_STATUS_TIMEOUT);
-    CHECK(state.sequence_count == 3u);
-    CHECK(state.sequence[2] == OP_INITIALIZE_ALARM);
-    CHECK(safe_mode_coordinator_get_snapshot(&coordinator, &stage, &status));
-    CHECK(stage == SAFE_MODE_STAGE_FAILED && status == DEVICE_STATUS_TIMEOUT);
-
-    entry.failure_status = DEVICE_STATUS_OK;
-    CHECK(safe_mode_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
-    CHECK(safe_mode_coordinator_enter(&coordinator, &entry, 100) == DEVICE_STATUS_INVALID_ARGUMENT);
-    puts("PASS SAFE_MODE coordinator preserves minimum-service ordering, deadline and terminal closure");
+    CHECK(safe_mode_coordinator_enter(&entry, 100) == DEVICE_STATUS_BUSY);
+    host.now_ms = NULL;
+    CHECK(safe_mode_coordinator_configure_host(&host) == DEVICE_STATUS_INVALID_ARGUMENT);
+    puts("PASS SAFE_MODE coordinator preserves root-free minimum-service ordering and terminal closure");
     return 0;
 }

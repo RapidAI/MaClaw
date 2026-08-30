@@ -1123,6 +1123,61 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 	}
 }
 
+type setLLMServiceBillingTimezoneRequest struct {
+	Timezone string `json:"timezone"`
+}
+
+type billingTimezoneUserRepository interface {
+	SetBillingTimezoneIfUnset(ctx context.Context, tenantID, userID, timezone string) (string, error)
+}
+
+// SetLLMServiceBillingTimezoneHandler accepts the desktop's detected IANA
+// timezone once, after viewer authentication. It deliberately never updates
+// an already-bound value: timezone changes need a separate, delayed billing
+// policy rather than an unaudited client request.
+func SetLLMServiceBillingTimezoneHandler(identity *auth.IdentityService, system store.SystemSettingsRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		var req setLLMServiceBillingTimezoneRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		timezone := llmservice.NormalizeBillingTimezone(req.Timezone)
+		if timezone == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_TIMEZONE", "timezone must be an IANA location, for example Asia/Shanghai")
+			return
+		}
+		if users := identity.UsersRepo(); users != nil {
+			if repo, ok := users.(billingTimezoneUserRepository); ok {
+				stored, err := repo.SetBillingTimezoneIfUnset(r.Context(), principal.TenantID, principal.UserID, timezone)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "USER_TIMEZONE_SAVE_FAILED", err.Error())
+					return
+				}
+				if stored = llmservice.NormalizeBillingTimezone(stored); stored != "" {
+					timezone = stored
+				}
+			}
+		}
+		effective, err := llmservice.SetUserBillingTimezone(
+			security.WithTenant(r.Context(), principal.TenantID),
+			scopedSystemSettingsForTenant(principal.TenantID, system),
+			principal.Email,
+			timezone,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_TIMEZONE_SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"timezone": effective})
+	}
+}
+
 func GetLLMServiceEntitlementDiagnosticHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := RequestTenantID(r)

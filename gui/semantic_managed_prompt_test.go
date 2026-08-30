@@ -180,3 +180,24 @@ func TestTheManagedSurfaceBlockStaysOffLegacyTurns(t *testing.T) {
 		t.Fatal("a managed turn did not get the surface description")
 	}
 }
+
+// The fence once listed download_file among "do not call from memory" names
+// while host messages (anti-bot 403 hints, the binary advisory) actively
+// direct the model to it — the model obeyed the fence and never petitioned
+// the download capability that sat whitelisted the whole time (production
+// 2026-08-26/27 ragdoll deck turns). The fence must teach the petition
+// exception through tools_search and must not forbid any petitionable name.
+func TestManagedSurfaceFenceNamesPetitionableCapabilities(t *testing.T) {
+	prompt := guiPostSSHRules(t, true)
+	if !strings.Contains(prompt, "可请愿能力") || !strings.Contains(prompt, "tools_search") {
+		t.Fatal("managed fence does not teach petitioning through tools_search")
+	}
+	for _, name := range []string{"web_search", "web_fetch", "download_file", "bash", "office"} {
+		if !strings.Contains(prompt, name) {
+			t.Fatalf("managed fence does not name petitionable example %q", name)
+		}
+	}
+	if strings.Contains(prompt, "discover_tool、download_file") || strings.Contains(prompt, "凭记忆调用 manage_skill、call_mcp_tool、discover_tool、download_file") {
+		t.Fatal("fence still forbids the petitionable download_file by name")
+	}
+}

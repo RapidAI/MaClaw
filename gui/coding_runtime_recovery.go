@@ -269,7 +269,14 @@ func guiRuntimeSSHSessionAlive(session *remote.SSHManagedSession) bool {
 	if session == nil || session.Handle == nil || !session.Handle.IsAlive() {
 		return false
 	}
-	return remote.SessionStatus(session.GetSummary().Status).IsRunning()
+	// A live SSH PTY can legitimately be reported as busy while the previous
+	// command's output is being drained, or as waiting_input while the shell is
+	// idle.  Both states are usable for a runtime-bound command.  Only terminal
+	// states make the frozen session unavailable; requiring exactly "running"
+	// caused a race after remote-isolate/bootstrap commands and produced the
+	// misleading "session is unavailable" failure.
+	status := remote.SessionStatus(session.GetSummary().Status)
+	return status != remote.SessionExited && status != remote.SessionError
 }
 
 // guiRuntimeRemoteProbeMarkers creates an unpredictable begin/end pair for a

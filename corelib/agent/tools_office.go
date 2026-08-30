@@ -104,6 +104,55 @@ func ToolWriteExcel(args map[string]interface{}) string {
 	return text
 }
 
+// normalizeExcelPlainCells reconciles the two cell contracts that reach the
+// writer. Every model-facing schema (legacy write_excel and the governed
+// office surface) advertises rows of plain cells ("rows": [["a", "b"]]),
+// while excel.WriteData unmarshal requires {"value": ...} objects. Rewriting
+// plain cells here — the single choke point for all write_excel callers —
+// keeps the advertised schema truthful instead of pushing the translation
+// onto every model (2026-08-26: managed-surface spreadsheet writes always
+// died at the writer unmarshal). Cells already in object form pass through;
+// structurally unexpected input is returned unchanged so the WriteData
+// unmarshal reports the same malformed-data error as before.
+func normalizeExcelPlainCells(jsonBytes []byte) []byte {
+	var generic map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &generic); err != nil {
+		return jsonBytes
+	}
+	sheets, ok := generic["sheets"].([]interface{})
+	if !ok {
+		return jsonBytes
+	}
+	for _, rawSheet := range sheets {
+		sheet, ok := rawSheet.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		rows, ok := sheet["rows"].([]interface{})
+		if !ok {
+			continue
+		}
+		for rowIdx, rawRow := range rows {
+			cells, ok := rawRow.([]interface{})
+			if !ok {
+				continue
+			}
+			for cellIdx, cell := range cells {
+				if _, isObject := cell.(map[string]interface{}); !isObject {
+					cells[cellIdx] = map[string]interface{}{"value": cell}
+				}
+			}
+			rows[rowIdx] = cells
+		}
+		sheet["rows"] = rows
+	}
+	normalized, err := json.Marshal(generic)
+	if err != nil {
+		return jsonBytes
+	}
+	return normalized
+}
+
 // WriteExcelDetailed is ToolWriteExcel with the verdict kept in the error
 // instead of only in the prose. The legacy registry surface has room for a
 // string and nothing else, but a caller that must know whether the file was
@@ -135,6 +184,8 @@ func WriteExcelDetailed(args map[string]interface{}) (string, error) {
 			return fmt.Sprintf("data 参数格式错误: %v", err), fmt.Errorf("office_write_data_malformed: %v", err)
 		}
 	}
+
+	jsonBytes = normalizeExcelPlainCells(jsonBytes)
 
 	var writeData excel.WriteData
 	if err := json.Unmarshal(jsonBytes, &writeData); err != nil {
@@ -189,6 +240,53 @@ func ToolReadPPTX(args map[string]interface{}) string {
 		return formatOfficeReadFailure(filePath, "pptx", err)
 	}
 	return string(data)
+}
+
+// ToolWritePPTX writes a .pptx deck from a JSON outline.
+func ToolWritePPTX(args map[string]interface{}) string {
+	text, _ := WritePPTXDetailed(args)
+	return text
+}
+
+// WritePPTXDetailed is ToolWritePPTX with the verdict kept in the error, for
+// the same reason as WriteExcelDetailed: the legacy surface has room for a
+// string and nothing else.
+func WritePPTXDetailed(args map[string]interface{}) (string, error) {
+	filePath := officeFilePathArg(args)
+	if filePath == "" {
+		return "缺少 file_path 参数（也可用 path）", fmt.Errorf("office_write_path_required")
+	}
+	filePath = resolveOfficeToolPath(filePath)
+
+	rawData, ok := args["data"]
+	if !ok || rawData == nil {
+		return "缺少 data 参数（格式: {\"title\": \"...\", \"slides\": [{\"title\": \"...\", \"bullets\": [\"...\"], \"notes\": \"...\", \"images\": [...], \"charts\": [...]}]}）", fmt.Errorf("office_write_data_required")
+	}
+
+	var jsonBytes []byte
+	switch v := rawData.(type) {
+	case string:
+		jsonBytes = []byte(v)
+	default:
+		var err error
+		jsonBytes, err = json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("data 参数格式错误: %v", err), fmt.Errorf("office_write_data_malformed: %v", err)
+		}
+	}
+
+	var outline pptx.Outline
+	if err := json.Unmarshal(jsonBytes, &outline); err != nil {
+		return fmt.Sprintf("data 参数格式错误: %v", err), fmt.Errorf("office_write_data_malformed: %v", err)
+	}
+
+	if err := pptx.WriteFile(filePath, outline); err != nil {
+		return err.Error(), fmt.Errorf("office_write_failed: %v", err)
+	}
+	if !strings.EqualFold(filepath.Ext(filePath), ".pptx") {
+		filePath += ".pptx"
+	}
+	return fmt.Sprintf("已成功写入 PPTX 文件: %s", filePath), nil
 }
 
 func structuredOfficeMaxSlides(args map[string]interface{}) int {

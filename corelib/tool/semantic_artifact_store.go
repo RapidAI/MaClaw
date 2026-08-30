@@ -23,9 +23,15 @@ import (
 // location. Content is only returned to the trusted executor after it has
 // matched both the invocation scope and the consuming artifact contract.
 type ArtifactRef struct {
-	ID                string
-	Kind              string
-	MIMEType          string
+	ID       string
+	Kind     string
+	MIMEType string
+	// Name is a display-only file name (for example "南京天气报告.pdf") used
+	// when a host flow materializes the payload to disk or attaches it to a
+	// channel message. It is deliberately not part of the artifact identity:
+	// sameArtifactIdentity and the integrity digest never consider it, and an
+	// empty Name simply falls back to the MIME-derived name at render time.
+	Name              string
 	IntegrityDigest   string
 	ProducerSelection string
 	Scope             InvocationScope
@@ -633,6 +639,9 @@ func (s *SQLiteArtifactStore) init() error {
 	if err := s.ensurePayloadBytesColumn(); err != nil {
 		return err
 	}
+	if err := s.ensureArtifactNameColumn(); err != nil {
+		return err
+	}
 	if err := s.ensureDeliveryFencingColumns(); err != nil {
 		return err
 	}
@@ -655,6 +664,17 @@ func (s *SQLiteArtifactStore) ensurePayloadBytesColumn() error {
 		- (substr(payload_base64, length(payload_base64)-1, 1) = '=')
 		WHERE payload_bytes < 0`)
 	return err
+}
+
+// ensureArtifactNameColumn adds the display-name column. Legacy rows keep the
+// empty default and render through the MIME-derived fallback name, so
+// pre-existing databases stay fully readable.
+func (s *SQLiteArtifactStore) ensureArtifactNameColumn() error {
+	_, err := s.db.Exec(`ALTER TABLE semantic_artifacts ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 // ensureDeliveryFencingColumns adds the outbox fencing/claim-holder columns to
@@ -795,7 +815,7 @@ func (s *SQLiteArtifactStore) Publish(payload ArtifactPayload) (ArtifactRef, err
 	if err != nil {
 		return ArtifactRef{}, err
 	}
-	_, err = s.db.Exec(`INSERT OR IGNORE INTO semantic_artifacts(artifact_key, root_task_id, plan_id, session_id, turn_id, principal_id, artifact_id, kind, mime_type, integrity_digest, producer_selection, payload_base64, payload_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, key, ref.Scope.RootTaskID, ref.Scope.PlanID, ref.Scope.SessionID, ref.Scope.TurnID, ref.Scope.PrincipalID, ref.ID, ref.Kind, ref.MIMEType, ref.IntegrityDigest, ref.ProducerSelection, stored, len(decoded), artifactStoreTime(ref.CreatedAt))
+	_, err = s.db.Exec(`INSERT OR IGNORE INTO semantic_artifacts(artifact_key, root_task_id, plan_id, session_id, turn_id, principal_id, artifact_id, kind, mime_type, name, integrity_digest, producer_selection, payload_base64, payload_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, key, ref.Scope.RootTaskID, ref.Scope.PlanID, ref.Scope.SessionID, ref.Scope.TurnID, ref.Scope.PrincipalID, ref.ID, ref.Kind, ref.MIMEType, ref.Name, ref.IntegrityDigest, ref.ProducerSelection, stored, len(decoded), artifactStoreTime(ref.CreatedAt))
 	if err != nil {
 		return ArtifactRef{}, err
 	}
@@ -891,7 +911,7 @@ func (s *SQLiteArtifactStore) PublishedArtifacts(scope InvocationScope, producer
 	if producerSelection == "" {
 		return nil, fmt.Errorf("artifact_producer_selection_required")
 	}
-	rows, err := s.db.Query(`SELECT artifact_id, kind, mime_type, integrity_digest, producer_selection, payload_base64, created_at FROM semantic_artifacts WHERE root_task_id=? AND plan_id=? AND session_id=? AND turn_id=? AND principal_id=? AND producer_selection=? ORDER BY created_at ASC, artifact_id ASC`, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, producerSelection)
+	rows, err := s.db.Query(`SELECT artifact_id, kind, mime_type, name, integrity_digest, producer_selection, payload_base64, created_at FROM semantic_artifacts WHERE root_task_id=? AND plan_id=? AND session_id=? AND turn_id=? AND principal_id=? AND producer_selection=? ORDER BY created_at ASC, artifact_id ASC`, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, producerSelection)
 	if err != nil {
 		return nil, err
 	}
@@ -900,7 +920,7 @@ func (s *SQLiteArtifactStore) PublishedArtifacts(scope InvocationScope, producer
 	for rows.Next() {
 		var payload ArtifactPayload
 		var createdAt string
-		if err := rows.Scan(&payload.Ref.ID, &payload.Ref.Kind, &payload.Ref.MIMEType, &payload.Ref.IntegrityDigest, &payload.Ref.ProducerSelection, &payload.Base64, &createdAt); err != nil {
+		if err := rows.Scan(&payload.Ref.ID, &payload.Ref.Kind, &payload.Ref.MIMEType, &payload.Ref.Name, &payload.Ref.IntegrityDigest, &payload.Ref.ProducerSelection, &payload.Base64, &createdAt); err != nil {
 			return nil, err
 		}
 		payload.Ref.Scope = scope
@@ -1156,7 +1176,7 @@ func (s *SQLiteArtifactStore) ReconcileStaleDeliveryDispatches(now time.Time, ma
 
 func (s *SQLiteArtifactStore) byID(scope InvocationScope, artifactID string) (ArtifactPayload, error) {
 	key := artifactStoreKey(scope, artifactID)
-	payload, err := scanArtifactPayload(s.db.QueryRow(`SELECT artifact_id, kind, mime_type, integrity_digest, producer_selection, payload_base64, created_at FROM semantic_artifacts WHERE artifact_key=?`, key), scope)
+	payload, err := scanArtifactPayload(s.db.QueryRow(`SELECT artifact_id, kind, mime_type, name, integrity_digest, producer_selection, payload_base64, created_at FROM semantic_artifacts WHERE artifact_key=?`, key), scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ArtifactPayload{}, ErrArtifactNotFound
 	}
@@ -1180,7 +1200,7 @@ func (s *SQLiteArtifactStore) byID(scope InvocationScope, artifactID string) (Ar
 func scanArtifactPayload(row *sql.Row, scope InvocationScope) (ArtifactPayload, error) {
 	var payload ArtifactPayload
 	var created string
-	err := row.Scan(&payload.Ref.ID, &payload.Ref.Kind, &payload.Ref.MIMEType, &payload.Ref.IntegrityDigest, &payload.Ref.ProducerSelection, &payload.Base64, &created)
+	err := row.Scan(&payload.Ref.ID, &payload.Ref.Kind, &payload.Ref.MIMEType, &payload.Ref.Name, &payload.Ref.IntegrityDigest, &payload.Ref.ProducerSelection, &payload.Base64, &created)
 	if err != nil {
 		return ArtifactPayload{}, err
 	}

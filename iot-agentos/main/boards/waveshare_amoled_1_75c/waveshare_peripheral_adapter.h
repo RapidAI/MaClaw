@@ -225,7 +225,13 @@ static bool waveshare_peripheral_power_get(unsigned *level_percent, bool *chargi
     uint8_t state = 0;
     if (waveshare_axp2101_read(0xA4, &capacity) != ESP_OK ||
         waveshare_axp2101_read(0x00, &state) != ESP_OK) return false;
-    if (level_percent) *level_percent = capacity > 100 ? 100 : capacity;
+    /* AXP2101 reports a normalized percentage. Values above 100 indicate a
+     * corrupted/stale register read or an adapter contract violation; do not
+     * clamp them to a fabricated full battery because Battery Policy would
+     * otherwise lose its protection path. The shared Platform Power bridge
+     * applies the same fail-closed rule to every profile. */
+    if (capacity > 100u) return false;
+    if (level_percent) *level_percent = capacity;
     if (charging) *charging = ((state >> 5) & 0x03u) == 1u;
     return true;
 }

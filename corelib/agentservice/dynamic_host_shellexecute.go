@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -215,11 +216,15 @@ func (c *coreAgentCallbacks) ExecuteReviewedHostShell(ctx context.Context, princ
 	defer cancel()
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(runCtx, "cmd", "/c", command)
+		// cmd /c via Go argument escaping eats inner quotes and mangles CJK
+		// paths; NewWindowsShellCommand passes the line verbatim. UTF-8 env
+		// keeps child (e.g. Python) stdio out of the GBK console codepage.
+		cmd = coretool.NewWindowsShellCommand(runCtx, command, c.workspace)
 	} else {
 		cmd = exec.CommandContext(runCtx, "bash", "-lc", command)
+		cmd.Dir = c.workspace
 	}
-	cmd.Dir = c.workspace
+	cmd.Env = coretool.AppendUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

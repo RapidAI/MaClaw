@@ -26,6 +26,9 @@ func TestSkillDocInject_KnowledgeSkillInlined(t *testing.T) {
 
 	assertContains(t, result, "### Skill: git-guide")
 	assertContains(t, result, "Git Guide")
+
+	githubOnly := runInjection(t, skills, "帮我看看 github 上的项目", 0)
+	assertNotContains(t, githubOnly, "git-guide")
 }
 
 // TestSkillDocInject_ExecutableWithSKILLMD verifies that executable skills
@@ -157,6 +160,159 @@ func TestSkillDocInject_TokenBudgetTruncation(t *testing.T) {
 	}
 }
 
+func TestSkillDocInject_BookPDFAgentGuidedWorkflowFromInstructions(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:     "Book-PDF: 书籍级PDF手册全流程",
+			Type:     "executable",
+			Status:   "active",
+			Source:   "clawhub",
+			Triggers: []string{"huashu-book-pdf"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "craft_tool",
+				Params: map[string]interface{}{
+					"instructions": "# Book-PDF：书籍级PDF手册全流程\n\n五个阶段：调研 → 规划 → 写作 → 构建 → 版本更新。\n启动多个background agent并行调研，多Agent并行写作。\n与用户确认大纲后进入写作。使用 templates/ 和 scripts/init-project.sh。version.json 记录语义化版本。",
+				},
+			}},
+		},
+	}
+
+	for _, msg := range []string{
+		"使用book-pdf skill 编写人工智能数学入门教授，先列个大纲",
+		"book pdf 已经安装",
+		"按书籍级PDF手册全流程写一本入门教程",
+	} {
+		result := runInjection(t, skills, msg, 0)
+		if !strings.Contains(result, "### Skill: Book-PDF: 书籍级PDF手册全流程") {
+			t.Fatalf("msg %q did not inject Book-PDF skill docs:\n%s", msg, result)
+		}
+		if !strings.Contains(result, "五个阶段") {
+			t.Fatalf("msg %q dropped the workflow body:\n%s", msg, result)
+		}
+		if !strings.Contains(result, "不要 discover_tool") {
+			t.Fatalf("msg %q missing agent-guided lead-in:\n%s", msg, result)
+		}
+	}
+
+	unrelated := runInjection(t, skills, "南京天气，生成pdf报告", 0)
+	if strings.Contains(unrelated, "Book-PDF") || strings.Contains(unrelated, "五个阶段") {
+		t.Fatalf("unrelated PDF request must not inject Book-PDF:\n%s", unrelated)
+	}
+	for _, msg := range []string{
+		"facebook pdf 怎么导出",
+		"handbook pdf 在哪",
+		"handbook-pdf 在哪",
+		"facebook-pdf 怎么导出",
+	} {
+		got := runInjection(t, skills, msg, 0)
+		if strings.Contains(got, "Book-PDF") {
+			t.Fatalf("msg %q must not inject Book-PDF via compact-token overlap:\n%s", msg, got)
+		}
+	}
+
+	shortName := []NLSkillDefinition{{
+		Name:     "Book-PDF",
+		Type:     "executable",
+		Status:   "active",
+		Source:   "clawhub",
+		Triggers: []string{"huashu-book-pdf"},
+		Steps:    skills[0].Steps,
+	}}
+	if got := runInjection(t, shortName, "handbook-pdf 在哪", 0); strings.Contains(got, "Book-PDF") {
+		t.Fatalf("bare name Book-PDF must not substring-match handbook-pdf:\n%s", got)
+	}
+	if got := runInjection(t, shortName, "使用 book_pdf 编写教程", 0); !strings.Contains(got, "### Skill: Book-PDF") {
+		t.Fatalf("underscore variant of the skill name must still inject:\n%s", got)
+	}
+
+	promptAlias := []NLSkillDefinition{{
+		Name:     skills[0].Name,
+		Type:     "executable",
+		Status:   "active",
+		Source:   "clawhub",
+		Triggers: []string{"huashu-book-pdf"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{
+				"prompt": skills[0].Steps[0].Params["instructions"],
+			},
+		}},
+	}}
+	if got := runInjection(t, promptAlias, "使用book-pdf skill 编写教程", 0); !strings.Contains(got, "五个阶段") {
+		t.Fatalf("craft_tool prompt alias must still load the workflow body:\n%s", got)
+	}
+
+	manual := []NLSkillDefinition{{
+		Name:     skills[0].Name,
+		Type:     "executable",
+		Status:   "active",
+		Source:   "manual",
+		Triggers: skills[0].Triggers,
+		Steps:    skills[0].Steps,
+	}}
+	if got := runInjection(t, manual, "使用book-pdf skill 编写教程", 0); strings.Contains(got, "五个阶段") {
+		t.Fatalf("manual craft_tool must not inject as agent-guided docs:\n%s", got)
+	}
+
+	if !agentGuidedSkillDocsMatch(skills, "按书籍级PDF手册全流程写一本入门教程") {
+		t.Fatal("agent-guided Book-PDF must match the inject phrase without the word skill")
+	}
+	if !agentGuidedSkillDocsMatch(skills, "使用book pdf生成书籍") {
+		t.Fatal("agent-guided Book-PDF must match the spaced skill name without the word skill")
+	}
+	if agentGuidedSkillDocsMatch(manual, "使用book-pdf skill 编写教程") {
+		t.Fatal("manual craft_tool must not count as an agent-guided named skill turn")
+	}
+	if agentGuidedSkillDocsMatch(skills, "南京天气，生成pdf报告") {
+		t.Fatal("unrelated PDF request must not count as an agent-guided named skill turn")
+	}
+}
+
+func TestSkillDocInject_EmptyTriggersNotInjectedByName(t *testing.T) {
+	skills := []NLSkillDefinition{
+		{
+			Name:    "office",
+			Type:    "knowledge",
+			Status:  "active",
+			Content: "# Office\nShould not appear without triggers.",
+		},
+	}
+	got := runInjection(t, skills, "帮我处理一份 office 文档", 0)
+	if strings.Contains(got, "Should not appear") {
+		t.Fatalf("skills without triggers must not inject:\n%s", got)
+	}
+}
+
+func TestSkillDocPhraseOccursRequiresBoundary(t *testing.T) {
+	if !skillDocPhraseOccurs("使用book-pdf skill", "book-pdf") {
+		t.Fatal("hyphenated alias must match")
+	}
+	if !skillDocPhraseOccurs("book pdf 已经安装", "book-pdf") {
+		t.Fatal("spaced alias must match")
+	}
+	if !skillDocPhraseOccurs("使用book\uff0dpdf skill", "book-pdf") {
+		t.Fatal("fullwidth hyphen must count as a separator")
+	}
+	if skillDocPhraseOccurs("facebook pdf 怎么导出", "book-pdf") {
+		t.Fatal("embedded 'book pdf' inside facebook must not match")
+	}
+	if skillDocPhraseOccurs("handbook pdf 在哪", "book-pdf") {
+		t.Fatal("embedded 'book pdf' inside handbook must not match")
+	}
+	if skillDocPhraseOccurs("bookpdf 已经安装", "book-pdf") {
+		t.Fatal("concatenated bookpdf must not match book-pdf")
+	}
+	if skillDocPhraseOccurs("handbook-pdf 在哪", "book-pdf") {
+		t.Fatal("hyphenated handbook-pdf must not substring-match book-pdf")
+	}
+	if !skillDocPhraseOccurs("使用 book_pdf 编写", "book-pdf") {
+		t.Fatal("underscore must count as a separator")
+	}
+	if !skillDocPhraseOccurs("使用book\u2015pdf skill", "book-pdf") {
+		t.Fatal("horizontal bar must count as a separator")
+	}
+}
+
 func TestBuildParamSchemaForSkillCompletesPartialSchema(t *testing.T) {
 	schema := buildParamSchemaForSkill(NLSkillDefinition{
 		Name: "partial-schema",
@@ -185,75 +341,12 @@ func runInjection(t *testing.T, skills []NLSkillDefinition, userMessage string, 
 		tokenBudget = defaultKnowledgeSkillTokenBudget
 	}
 
-	msgLower := strings.ToLower(userMessage)
-
-	var matched []matchedKnowledgeSkill
-	for _, s := range skills {
-		if s.Status != "active" {
-			continue
-		}
-		if isShellBrowserAutomationSkill(s) {
-			continue
-		}
-
-		var content string
-		switch {
-		case s.Type == "knowledge" && s.Content != "":
-			content = s.Content
-		case s.Type != "knowledge" && s.SkillDir != "":
-			content = loadSkillDocContent(s.SkillDir)
-		}
-		if content == "" {
-			continue
-		}
-
-		triggers := s.Triggers
-		if len(triggers) == 0 {
-			continue
-		}
-		score := countTriggerMatches(triggers, msgLower)
-		if score == 0 && strings.Contains(msgLower, strings.ToLower(s.Name)) {
-			score = 1
-		}
-		if score == 0 {
-			continue
-		}
-
-		matched = append(matched, matchedKnowledgeSkill{
-			Name:    s.Name,
-			Content: content,
-			Score:   score,
-		})
-	}
-
+	matched := collectMatchedSkillDocs(skills, userMessage)
 	if len(matched) == 0 {
 		return ""
 	}
-
-	sortMatchedKnowledgeSkills(matched)
-
 	var b strings.Builder
-	totalTokensUsed := 0
-	b.WriteString("\n## Skill 使用文档\n")
-	for _, m := range matched {
-		if totalTokensUsed >= tokenBudget {
-			break
-		}
-		content := m.Content
-		contentTokens := estimateTokens(content)
-		remaining := tokenBudget - totalTokensUsed
-		if contentTokens > remaining {
-			content = truncateToTokenBudget(content, remaining)
-			contentTokens = estimateTokens(content)
-		}
-		totalTokensUsed += contentTokens
-		b.WriteString("\n### Skill: " + m.Name + "\n")
-		b.WriteString(content)
-		if !strings.HasSuffix(content, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("\n---\n")
-	}
+	writeMatchedSkillDocs(&b, matched, tokenBudget)
 	return b.String()
 }
 

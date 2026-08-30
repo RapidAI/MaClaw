@@ -75,6 +75,94 @@ func WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID string, cont
 	return writeCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, tigerProxyCodexProviderName, tigerProxyCodexWireAPI, corelib.CodeGenClientName, true, contextWindow, autoCompactTokenLimit)
 }
 
+// CodexCredentialSyncResult describes whether an active TigerProxy Codex
+// configuration was found and whether its saved credential changed.
+type CodexCredentialSyncResult struct {
+	Configured bool
+	Updated    bool
+}
+
+// SyncTigerProxyCodexAPIKeyIfConfigured updates Codex's saved credential when
+// its active provider is TigerProxy. It deliberately leaves every other
+// provider untouched, so generating a new TigerProxy key cannot overwrite an
+// official OpenAI or unrelated third-party credential.
+//
+// The update is atomic, but a running Codex process may need to be restarted
+// before it reads the new credential.
+func SyncTigerProxyCodexAPIKeyIfConfigured(apiKey string) (CodexCredentialSyncResult, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return CodexCredentialSyncResult{}, fmt.Errorf("TigerProxy API key is required")
+	}
+
+	codexDir := filepath.Dir(CodexAuthPath())
+	configPath := filepath.Join(codexDir, "config.toml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return CodexCredentialSyncResult{}, nil
+		}
+		return CodexCredentialSyncResult{}, fmt.Errorf("read Codex config: %w", err)
+	}
+	if !codexConfigUsesProvider(string(config), tigerProxyCodexProviderName) {
+		return CodexCredentialSyncResult{}, nil
+	}
+	result := CodexCredentialSyncResult{Configured: true}
+
+	authPath := filepath.Join(codexDir, "auth.json")
+	auth := map[string]interface{}{}
+	if data, err := os.ReadFile(authPath); err == nil {
+		if err := json.Unmarshal(data, &auth); err != nil {
+			// Do not overwrite a malformed credential file: it may contain
+			// recoverable user data, and the caller needs an actionable warning.
+			return result, fmt.Errorf("parse Codex auth: %w", err)
+		}
+		if auth == nil {
+			// JSON null is valid JSON but not a credential object. Treat it as
+			// invalid rather than panicking while assigning OPENAI_API_KEY.
+			return result, fmt.Errorf("parse Codex auth: expected a JSON object")
+		}
+	} else if !os.IsNotExist(err) {
+		return result, fmt.Errorf("read Codex auth: %w", err)
+	}
+	if savedKey, _ := auth["OPENAI_API_KEY"].(string); savedKey == apiKey {
+		return result, nil
+	}
+
+	auth["OPENAI_API_KEY"] = apiKey
+	if err := AtomicWriteJSON(authPath, auth); err != nil {
+		return result, fmt.Errorf("write Codex auth: %w", err)
+	}
+	result.Updated = true
+	return result, nil
+}
+
+func codexConfigUsesProvider(content, providerName string) bool {
+	currentSection := ""
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if section := codexTomlSectionName(trimmed); section != "" {
+			currentSection = section
+			continue
+		}
+		if currentSection != "" || codexTomlKey(trimmed) != "model_provider" {
+			continue
+		}
+		_, rawValue, ok := strings.Cut(trimmed, "=")
+		if !ok {
+			continue
+		}
+		value, _, ok := readTomlString(splitTomlValue(rawValue))
+		return ok && strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(providerName))
+	}
+	return false
+}
+
+func splitTomlValue(raw string) string {
+	value, _ := splitTomlValueComment(raw)
+	return value
+}
+
 // WriteCodexConfigAt writes auth.json and config.toml under codexDir using the
 // same conservative switching path as WriteCodexConfig. It exists for
 // project-scoped Codex config directories.

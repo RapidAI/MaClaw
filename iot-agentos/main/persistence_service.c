@@ -29,6 +29,7 @@ typedef enum {
     PERSIST_OP_WRITE_BLOB,
     PERSIST_OP_ERASE_KEY,
     PERSIST_OP_READ_I64,
+    PERSIST_OP_WRITE_I64,
     PERSIST_OP_READ_I32,
     PERSIST_OP_READ_U8,
     PERSIST_OP_WRITE_U8,
@@ -45,6 +46,7 @@ typedef struct {
     size_t *inout_size;
     size_t size;
     uint8_t u8_value;
+    int64_t i64_value;
     device_status_t result;
 }
  persist_request_t;
@@ -224,6 +226,10 @@ static device_status_t execute_inline(const persist_request_t *req) {
         case PERSIST_OP_READ_I64:
             status = platform_nvs_read_i64(req->name_space, req->key,
                                            req->value);
+            break;
+        case PERSIST_OP_WRITE_I64:
+            status = platform_nvs_write_i64(req->name_space, req->key,
+                                            req->i64_value);
             break;
         case PERSIST_OP_READ_I32:
             status = platform_nvs_read_i32(req->name_space, req->key,
@@ -720,6 +726,18 @@ device_status_t persistence_service_read_i64(const char *name_space, const char 
         .value = out_value,
     }
 ;
+    return execute(&request);
+}
+
+device_status_t persistence_service_write_i64(const char *name_space, const char *key,
+                                        int64_t value) {
+    if (!valid_name(name_space) || !valid_name(key)) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    persist_request_t request = {
+        .op = PERSIST_OP_WRITE_I64, .name_space = name_space, .key = key,
+        .i64_value = value,
+    };
     return execute(&request);
 }
 

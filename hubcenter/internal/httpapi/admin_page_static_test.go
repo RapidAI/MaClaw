@@ -86,6 +86,80 @@ func assertContainsAll(t *testing.T, haystack string, context string, snippets [
 	}
 }
 
+var cssBackgroundShorthand = regexp.MustCompile(`(^|[^-\w])background\s*:`)
+
+func assertNoBackgroundShorthand(t *testing.T, css, context string, selectorNeedles []string) {
+	t.Helper()
+	rule := regexp.MustCompile(`([^{}]+)\{([^{}]+)\}`)
+	for _, match := range rule.FindAllStringSubmatch(css, -1) {
+		sel, body := match[1], match[2]
+		hit := false
+		for _, needle := range selectorNeedles {
+			if strings.Contains(sel, needle) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		if cssBackgroundShorthand.MatchString(body) {
+			t.Fatalf("%s selector %q uses the background shorthand (resets background-image); body=%q", context, strings.TrimSpace(sel), strings.TrimSpace(body))
+		}
+	}
+}
+
+func TestAdminFeatureIcons(t *testing.T) {
+	html := readAdminPageHTML(t)
+	css := readAdminAsset(t, "admin/assets/css/admin-responsive.css")
+	proUI := readAdminAsset(t, "pro-ui.css")
+	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
+	assertContainsAll(t, html, "hubcenter feature icons html", []string{
+		`data-icon="globe"`,
+		`item-title" data-icon="mail" id="mailCardTitle"`,
+		`item-title" data-icon="activity" id="routingDiagnosticsTitle"`,
+		`id="llmSubTabProviders" data-icon="spark"`,
+		`admin-responsive.css?v=feature-icons-20260828-9`,
+		`pro-ui.css?v=feature-icons-20260828-9`,
+	})
+	assertContainsAll(t, css, "hubcenter feature icons css", []string{
+		`--icon-cloud`,
+		`.item-title[data-icon]`,
+		`[data-icon="mail"]`,
+		`[data-icon="book"]`,
+		`.llm-subtabs button[data-icon]::before`,
+		`-webkit-mask:var(--feature-icon)`,
+		`mask-mode:alpha`,
+		`.head h3{--feature-icon:var(--head-icon)}`,
+		`.item-title[data-icon]::after{content:""`,
+		`background-color:currentColor!important`,
+		`#tab-system{--head-icon:var(--icon-sliders)}`,
+		`#tab-ha{--head-icon:var(--icon-sync)}`,
+	})
+	assertNoBackgroundShorthand(t, proUI, "pro-ui.css", []string{
+		".item-title",
+		"h3::after",
+		"h3::before",
+		".head h3",
+	})
+	assertNoBackgroundShorthand(t, css, "admin-responsive.css", []string{
+		".item-title[data-icon]",
+		".head h3::after",
+		"button[data-icon]::before",
+	})
+	assertContainsAll(t, proUI, "hubcenter feature icons pro-ui", []string{
+		`.item-title:not([data-icon])::before`,
+		`background-color: #2563eb !important`,
+	})
+	assertContainsAll(t, core, "hubcenter page tab icons", []string{
+		`TAB_ICONS.petstore=`,
+		`TAB_ICONS.userrankings=`,
+		`TAB_ICONS.problemreports=`,
+		`TAB_ICONS.usermgmt=`,
+		`window.TAB_ICONS=TAB_ICONS`,
+	})
+}
+
 func TestAdminPageHAStaticContract(t *testing.T) {
 	content := readAdminPageHTML(t)
 	if !utf8.ValidString(content) {
@@ -270,10 +344,10 @@ func TestAdminPageBundleIncludesSharedAndSplitAssets(t *testing.T) {
 
 func TestAdminPageStylesheetOrder(t *testing.T) {
 	html := readAdminPageHTML(t)
-	assertContainsAll(t, html, "admin page stylesheet contract", []string{`href="/pro-ui.css"`, `href="/admin/assets/css/admin-shell.css`, `href="/admin/assets/css/admin-responsive.css"`})
-	shared := strings.Index(html, `href="/pro-ui.css"`)
+	assertContainsAll(t, html, "admin page stylesheet contract", []string{`href="/pro-ui.css`, `href="/admin/assets/css/admin-shell.css`, `href="/admin/assets/css/admin-responsive.css`})
+	shared := strings.Index(html, `href="/pro-ui.css`)
 	shell := strings.Index(html, `href="/admin/assets/css/admin-shell.css`)
-	responsive := strings.Index(html, `href="/admin/assets/css/admin-responsive.css"`)
+	responsive := strings.Index(html, `href="/admin/assets/css/admin-responsive.css`)
 	if !(shared < shell && shell < responsive) {
 		t.Fatalf("admin stylesheet order must be shared baseline, shell, responsive; got indexes %d, %d, %d", shared, shell, responsive)
 	}
@@ -369,12 +443,12 @@ func TestExpertMarketAdminUsesCompactDelegatedReviewCards(t *testing.T) {
 	core := readAdminAsset(t, "admin/assets/js/admin-core.js")
 
 	assertContainsAll(t, html, "expert market cache version", []string{
-		`/admin/assets/js/expertmarket-admin.js?v=expert-market-admin-20260815-5`,
+		`/admin/assets/js/expertmarket-admin.js`,
 	})
 	if strings.Contains(html, `<option value="approved">`) {
 		t.Fatal("expert market filter must not expose the retired approved state")
 	}
-	assertContainsAll(t, html, "expert market terminal status filter", []string{`<option value="purged">Purged</option>`, `admin-shell.css?v=service-group-traffic-20260823-8`})
+	assertContainsAll(t, html, "expert market terminal status filter", []string{`<option value="purged">Purged</option>`, `/admin/assets/css/admin-shell.css`})
 	assertContainsAll(t, js, "expert market compact review actions", []string{
 		`class="expert-market-card"`,
 		`data-expert-reason`,
@@ -459,7 +533,7 @@ func TestIndustryManagementAdminI18n(t *testing.T) {
 		`data-i18n="industryManagementTitle"`,
 		`data-i18n="industryCreateTitle"`,
 		`data-i18n="industryAssetsTitle"`,
-		`/admin/assets/js/industry-management-admin.js?v=industry-management-i18n-20260819-5`,
+		`/admin/assets/js/industry-management-admin.js`,
 	})
 	assertContainsAll(t, core, "industry management i18n keys", []string{
 		`navIndustryManagement:'行业管理'`,
@@ -502,8 +576,8 @@ func TestLLMServiceAdminTitleI18n(t *testing.T) {
 		`data-tab="llmservice"`,
 		`data-i18n="navLLMService"`,
 		`data-i18n="llmServiceTitle"`,
-		`/admin/assets/js/admin-core.js?v=nav-llm-20260819-5`,
-		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/admin-core.js`,
+		`/admin/assets/js/llm-service-tab.js`,
 	})
 	assertContainsAll(t, core, "llm service title keys", []string{
 		`llmservice:['llmServiceTitle','llmServiceDesc']`,
@@ -547,7 +621,7 @@ func TestAdminPageEmbeddingModelRuntimeCard(t *testing.T) {
 		`id="llmSubViewClassHead"`,
 		`id="llmEmbeddingModelCard"`,
 		`id="sgClassHead"`,
-		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/llm-service-tab.js`,
 	})
 	classHead := strings.Index(html, `id="llmSubViewClassHead"`)
 	embedCard := strings.Index(html, `id="llmEmbeddingModelCard"`)
@@ -621,7 +695,7 @@ func TestAdminPageUserRankingsContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "user rankings script", []string{
-		`/admin/assets/js/user-rankings-tab.js?v=user-rankings-20260624-1`,
+		`/admin/assets/js/user-rankings-tab.js`,
 	})
 	assertContainsAll(t, core, "user rankings lazy tab restore", []string{
 		`requested==='usermgmt'||requested==='userrankings'`,
@@ -646,7 +720,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
-		`/admin/assets/css/admin-shell.css?v=service-group-traffic-20260823-8`,
+		`/admin/assets/css/admin-shell.css`,
 		`/admin/assets/js/compute-market-tab.js?v=sold-card-compact-20260821-5`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{
@@ -817,8 +891,8 @@ func TestAdminPageLLMProviderSequenceCards(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "llm provider sequence cache", []string{
-		`/admin/assets/css/admin-shell.css?v=service-group-traffic-20260823-8`,
-		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/css/admin-shell.css`,
+		`/admin/assets/js/llm-service-tab.js`,
 	})
 	assertContainsAll(t, js, "llm provider sequence cards", []string{
 		`function sortedProviders()`,
@@ -933,13 +1007,15 @@ func TestAdminPageLLMServiceGroupTrafficCards(t *testing.T) {
 
 	assertContainsAll(t, html, "llm service group traffic switch", []string{
 		`id="llmServiceGroupTrafficSwitch" class="provider-traffic-switch" hidden`,
-		`admin-shell.css?v=service-group-traffic-20260823-8`,
-		`admin-responsive.css?v=service-group-traffic-20260823-8`,
-		`llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/css/admin-shell.css`,
+		`/admin/assets/css/admin-responsive.css`,
+		`/admin/assets/js/llm-service-tab.js`,
 	})
 	assertContainsAll(t, html, "llm service subtabs accessibility", []string{
 		`class="filter-group llm-subtabs" role="tablist"`,
-		`id="llmSubTabProviders" type="button" role="tab" aria-selected="true"`,
+		`id="llmSubTabProviders"`,
+		`role="tab"`,
+		`aria-selected="true"`,
 		`aria-controls="llmSubViewGroups"`,
 		`id="llmSubViewClassHead" class="hidden-view" role="tabpanel" aria-labelledby="llmSubTabClassHead"`,
 	})
@@ -984,7 +1060,7 @@ func TestAdminPageLLMProviderDialogI18n(t *testing.T) {
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 
 	assertContainsAll(t, html, "llm provider dialog i18n cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/llm-service-tab.js`,
 	})
 	assertContainsAll(t, js, "llm provider dialog local i18n", []string{
 		`t('providerProbeModels')`,
@@ -1033,7 +1109,7 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "llm provider billing cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/llm-service-tab.js`,
 	})
 	assertContainsAll(t, js, "llm provider billing editor", []string{
 		`id="llmPrvTimezone"`,
@@ -1110,8 +1186,8 @@ func TestAdminPageLLMServiceGroupOfficialBandCopy(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "official band cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=service-group-traffic-20260823-8`,
-		`/admin/assets/css/admin-shell.css?v=service-group-traffic-20260823-8`,
+		`/admin/assets/js/llm-service-tab.js`,
+		`/admin/assets/css/admin-shell.css`,
 		`id="llmSubTabClassHead"`,
 		`id="llmSubViewClassHead"`,
 		`switchLLMSubTab('classHead')`,

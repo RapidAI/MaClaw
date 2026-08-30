@@ -4,6 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $testSource = Join-Path $PSScriptRoot 'host_tests\test_safe_mode_coordinator.c'
+$failureTestSource = Join-Path $PSScriptRoot 'host_tests\test_safe_mode_coordinator_failure.c'
 $source = Join-Path $projectRoot 'main\services\safe_mode_coordinator.c'
 $header = Join-Path $projectRoot 'main\services\safe_mode_coordinator.h'
 $configurationSource = Join-Path $projectRoot 'main\configuration_service.c'
@@ -11,7 +12,7 @@ $failureInjectionHeader = Join-Path $projectRoot 'main\provisioning_failure_inje
 $failureInjectionSource = Join-Path $projectRoot 'main\provisioning_failure_injection.c'
 $rootSource = Join-Path $projectRoot 'main\main.c'
 $failures = @()
-foreach ($path in @($testSource, $source, $header, (Join-Path $projectRoot 'main\device_api.h'),
+foreach ($path in @($testSource, $failureTestSource, $source, $header, (Join-Path $projectRoot 'main\device_api.h'),
         $configurationSource, $failureInjectionHeader, $failureInjectionSource, $rootSource)) {
     if (-not (Test-Path -LiteralPath $path)) { $failures += "missing $path" }
 }
@@ -26,6 +27,7 @@ if ($failures.Count -eq 0) {
             'SAFE_MODE_STAGE_INITIALIZE_ALARM',
             'SAFE_MODE_STAGE_PUBLISH_DIAGNOSTIC_SURFACE',
             'SAFE_MODE_STAGE_FAILED',
+            'safe_mode_coordinator_configure_host',
             'safe_mode_coordinator_enter')) {
         if ($headerText -notmatch [regex]::Escape($required) -and
             $sourceText -notmatch [regex]::Escape($required)) {
@@ -51,6 +53,9 @@ if ($failures.Count -eq 0) {
         $failures += 'C7 force-setup fault seam must fail after durable read and before clearing the flag'
     }
     $rootText = Get-Content -LiteralPath $rootSource -Raw
+    if ($rootText -match '\bs_safe_mode_coordinator\b') {
+        $failures += 'main.c must not retain SAFE_MODE coordinator state'
+    }
     if ($rootText -notmatch '(?s)static\s+void\s+startup_enter_safe_mode_terminal_failure\s*\([^)]*\).*?lifecycle_service_degrade.*?ordinary startup rollback is intentionally skipped') {
         $failures += 'SAFE_MODE bridge failure requires its own terminal fail-closed transition'
     }
@@ -83,6 +88,22 @@ if (-not $cc) {
         & $exe
         if ($LASTEXITCODE -ne 0) {
             $failures += "host SAFE_MODE coordinator test failed (exit $LASTEXITCODE)"
+        }
+    }
+    $failureExe = Join-Path $outDir 'test_safe_mode_coordinator_failure.exe'
+    if ($failures.Count -eq 0) {
+        & $cc.Source -std=c11 -Wall -Wextra -Werror "-I$(Join-Path $projectRoot 'main')" `
+            $failureTestSource $source -o $failureExe
+        if ($LASTEXITCODE -ne 0) {
+            $failures += "host SAFE_MODE coordinator failure compile failed (exit $LASTEXITCODE)"
+        } else {
+            foreach ($argumentList in @(@('0'), @('1'), @('2'), @('3'), @('99', '40'))) {
+                & $failureExe @argumentList
+                if ($LASTEXITCODE -ne 0) {
+                    $failures += "host SAFE_MODE coordinator failure test failed (args $($argumentList -join ' '), exit $LASTEXITCODE)"
+                    break
+                }
+            }
         }
     }
 }

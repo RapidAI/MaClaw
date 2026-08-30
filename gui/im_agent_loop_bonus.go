@@ -63,7 +63,11 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 	}
 
 	conversation := opts.Conversation
-	conversation = trimConversation(conversation, opts.EffectiveTokenLimit, opts.ToolsTokenBudget, nil)
+	// Use the same summarizer as the main loop: bonus rounds run after the
+	// iteration budget is exhausted, i.e. exactly when the conversation of a
+	// long-running task is largest — silently dropping history here loses the
+	// task context right before the final status check.
+	conversation = trimConversation(conversation, opts.EffectiveTokenLimit, opts.ToolsTokenBudget, guardedCompactionSummarizer(opts.Config, opts.HTTPClient))
 	if opts.OnNewRound != nil {
 		opts.OnNewRound()
 	}

@@ -49,6 +49,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if resp, handled := h.handleBackgroundIMRoute(msg, opts.ProvidedLoopContext, opts.HTTPClient, opts.OnProgress); handled {
 		return resp
 	}
+	if h.hasCancelledTaskBoundary(msg.UserID) {
+		return &IMAgentResponse{Text: cancelledTaskReplyText(msg.Text)}
+	}
 	// Dedicated local/remote coding is already an armed workbench. Do not
 	// open the legacy confirmation card, unfinished-slot recover prompt, or
 	// chat [Status] milestone — those belong to the shared IM loop.
@@ -116,10 +119,22 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.SkipNeedsConfirmGate,
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
+	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
+	defer h.endInFlightTurn(msg.UserID, loopCtx)
+	if loopCtx.IsCancelled() || h.hasCancelledTaskBoundary(msg.UserID) {
+		hist, _ := drainHistory()
+		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
+			return resp
+		}
+	}
 	turnGeneration := loopCtx.SemanticTurnGeneration()
 	turnCtx, cleanupTurnCtx, turnCurrent := loopCtx.SemanticTurnContext(turnGeneration)
 	defer cleanupTurnCtx()
 	if !turnCurrent {
+		hist, _ := drainHistory()
+		if resp := h.preLoopCancelResponse(msg, loopCtx, hist, msg.Text); resp != nil {
+			return resp
+		}
 		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
 	}
 	bindLoopResumeWorkingState(loopCtx, opts.ResumeWorkingState, opts.AskUserContext)
@@ -159,6 +174,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	var history []agent.ConversationEntry
 	var historyElapsed time.Duration
 	historyDrained := false
+	abortIfCancelled := func() *IMAgentResponse {
+		return h.preLoopCancelResponse(msg, loopCtx, history, agentLoopUserText)
+	}
 	// Dedicated local/remote coding does not wait for WorkflowAgentLoop.
 	// SkipWorkflowRouting or a missing marker used to skip this consume,
 	// then UIC HostRejected a real coding-tab follow-up. Re-arm once more
@@ -181,6 +199,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			}
 			loopCtx.SkipWorkflowDocCapture = true
 			imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", time.Since(loopCtxStart), "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", "coding_subagent", "exec_task", "coding")
+			if resp := abortIfCancelled(); resp != nil {
+				return resp
+			}
 			return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, true, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 		}
 	}
@@ -191,8 +212,13 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// must not pay UIC / semanticCallSurfaceForSharedTurn. That catalog
 	// HostRejects coding follow-ups. Workflow execution still runs below.
 	if !codingWorkbench {
-		executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemanticContext(turnCtx, msg, opts.WorkflowAgentLoop, opts.AskUserContext != "" || opts.PendingUserReplyContext != "", recentHistoryTexts(history, 6))
+		isPendingAnswerTurn := opts.AskUserContext != "" || opts.PendingUserReplyContext != ""
+		classifyMsg := classificationMessage(msg.UserID, msg.Text, history)
+		executionProfile, semanticIntent := h.classifyIMExecutionProfileAndSemanticContext(turnCtx, msg, opts.WorkflowAgentLoop, isPendingAnswerTurn, classifyMsg.RecentHistory)
 		if err := semanticRoutingRequestErr(turnCtx); err != nil || !loopCtx.SemanticTurnCurrent(turnGeneration) {
+			if resp := abortIfCancelled(); resp != nil {
+				return resp
+			}
 			return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}
 		}
 		if semanticIntent != nil {
@@ -200,10 +226,27 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				copied := replayed
 				semanticIntent = &copied
 				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			} else if semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn) {
+				// The bare message classified nowhere actionable, or this turn
+				// answers a pending question with a weak standalone verdict.
+				// An answer takes its meaning from the question — a 16-rune
+				// reply ("1. 布娃 2。可爱风 3。没有") has no reliable intent of
+				// its own (production 2026-08-27: bare tree verdict coding@0.80
+				// routed the PPT continuation onto the coding surface and the
+				// task died there). Retry once with the recent user task intent
+				// merged in; only a confident bare verdict overrides.
+				if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6)); ok {
+					semanticIntent = &merged
+					executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+				}
 			}
 		}
 		loopCtx.Runtime.Execution = executionProfile
+		loopCtx.Runtime.ClassificationMessage = classifyMsg
 		bindLoopSemanticIntent(loopCtx, semanticIntent)
+	}
+	if resp := abortIfCancelled(); resp != nil {
+		return resp
 	}
 	applyStagedImageUnderstandRuntime(loopCtx, msg.Text, msg.Attachments)
 	loopCtxElapsed := time.Since(loopCtxStart)
@@ -219,6 +262,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 
 	if !codingWorkbench {
 		if resp, handled := h.tryDirectExecutionProfile(msg, loopCtx, history); handled {
+			if abort := abortIfCancelled(); abort != nil {
+				return abort
+			}
 			imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", 0, "history_len", len(history), "prompt_len", 0, "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
 			return resp
 		}
@@ -233,6 +279,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 
 	if !codingWorkbench || opts.WorkflowAgentLoop {
 		if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
+			if updatedHistory != nil {
+				history = updatedHistory
+			}
+			if abort := abortIfCancelled(); abort != nil {
+				return abort
+			}
 			return resp
 		} else {
 			history = updatedHistory
@@ -246,12 +298,19 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 	imPerfLog("im_pre_loop", execStart, requestID, msg.UserID, "gates", gatesDone, "history_load", historyElapsed, "loop_ctx", loopCtxElapsed, "system_prompt", promptElapsed, "history_len", len(history), "prompt_len", len(systemPrompt), "exec_layer", loopCtx.Runtime.Execution.Layer, "exec_task", loopCtx.Runtime.Execution.TaskType)
 
-	// V2 SubAgent execution: check the dedicated marker (not stashedPhasePrompt
+	if resp := abortIfCancelled(); resp != nil {
+		return resp
+	}
+
+	// V2 SubAgent execution: check the dedicated marker (not stashedPhasePrompt)
 	// which gets consumed by system prompt builder via LoadAndDelete).
 	if opts.WorkflowAgentLoop && !opts.WorkflowDocPhase {
 		if execResp, handled := h.consumePendingTemplateSubAgentExecution(msg, agentLoopUserText, loopCtx, requestID, opts.OnProgress, opts.OnToken); handled {
 			if execResp != nil {
 				loopCtx.SkipWorkflowDocCapture = true
+				if abort := abortIfCancelled(); abort != nil {
+					return abort
+				}
 				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 			}
 			log.Printf("[workflow-v2] template SubAgent execution returned nil, falling back to workflow execution")
@@ -268,6 +327,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			}
 			execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken, loopCtx)
 			if execResp != nil {
+				if abort := abortIfCancelled(); abort != nil {
+					return abort
+				}
 				return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 			}
 			log.Printf("[workflow-v2] SubAgent execution returned nil, falling back to agent loop")

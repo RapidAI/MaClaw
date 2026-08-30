@@ -388,6 +388,11 @@ bool device_connectivity_is_cellular_transport_ready(void) {
            connectivity_service_is_cellular_transport_ready();
 }
 
+bool device_connectivity_has_cellular_transport_session(void) {
+    return device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT) &&
+           connectivity_service_has_cellular_transport_session();
+}
+
 device_status_t device_connectivity_quiesce_cellular_transport(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     if (!device_profile_has_capability(DEVICE_CAPABILITY_CELLULAR_TRANSPORT)) {

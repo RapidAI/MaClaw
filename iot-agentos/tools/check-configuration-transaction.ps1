@@ -9,6 +9,7 @@ $testC = Join-Path $PSScriptRoot 'host_tests\test_configuration_transaction.c'
 $configurationC = Join-Path $projectRoot 'main\configuration_service.c'
 $configurationH = Join-Path $projectRoot 'main\configuration_service.h'
 $revisionC = Join-Path $projectRoot 'main\configuration_revision.c'
+$enterpriseTrustC = Join-Path $projectRoot 'main\wifi_enterprise_trust_policy.c'
 $failures = @()
 
 foreach ($path in @($modelC, $modelH, $testC, $configurationC, $configurationH, $revisionC)) {
@@ -104,7 +105,7 @@ if (-not $cc) {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $exe = Join-Path $outDir 'test_configuration_transaction.exe'
     & $cc.Source -std=c11 -Wall -Wextra -Werror `
-        "-I$(Join-Path $projectRoot 'main')" $testC $modelC $revisionC -o $exe
+        "-I$(Join-Path $projectRoot 'main')" $testC $modelC $revisionC $enterpriseTrustC -o $exe
     if ($LASTEXITCODE -ne 0) {
         $failures += "host configuration transaction compile failed (exit $LASTEXITCODE)"
     } else {

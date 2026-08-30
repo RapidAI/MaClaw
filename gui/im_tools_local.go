@@ -372,14 +372,30 @@ func projectPathFromUserID(userID string) string {
 }
 
 // trustedPrincipalBoundWorkspace returns the explicit tab bind or
-// desktop-user:<project> path. It does not fall back to ~/.maclaw/workspace.
+// desktop-user:<project> path. The main local tab is special: its 切换目录
+// choice is an explicit user decision too, but SetTabWorkingDir stores it in
+// the global working_directory config rather than the per-owner map, so a
+// plain "desktop-user" principal resolves to that configured directory. It
+// deliberately does not fall back to the built-in ~/.maclaw/workspace
+// default, and isolated owners (project/expert/ACP/group sessions) never
+// inherit the main tab's directory.
 func trustedPrincipalBoundWorkspace(h *IMMessageHandler, principalID string) string {
 	if h != nil && h.app != nil {
 		if dir := strings.TrimSpace(h.app.BoundWorkingDirForOwner(principalID)); dir != "" {
 			return dir
 		}
 	}
-	return strings.TrimSpace(projectPathFromUserID(principalID))
+	if dir := strings.TrimSpace(projectPathFromUserID(principalID)); dir != "" {
+		return dir
+	}
+	if strings.TrimSpace(principalID) == desktopUserID && h != nil && h.app != nil {
+		if cfg, err := h.app.LoadConfig(); err == nil {
+			if dir := strings.TrimSpace(cfg.WorkingDirectory); dir != "" {
+				return filepath.Clean(dir)
+			}
+		}
+	}
+	return ""
 }
 
 func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {

@@ -278,11 +278,17 @@ func (c *codingSubAgentCallbacks) BuildToolsForModelRequest(userText string, ite
 		return nil
 	}
 	base := c.BuildTools("")
-	// Until an eligible S1-C adapter supplies real request/response/tool-call
-	// correlation, do not expose effectful workspace/provider families through
-	// this name-dispatch compatibility belt. The remaining control-plane names
-	// are governed independently by the S3 callback-local state machine.
-	base = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostLocal, base)
+	// The S0.5 effect containment applies only while this request has no
+	// correlation boundary. On the host-verified local desktop boundary RunLoop
+	// mints a fresh surface epoch per request and attaches the provider
+	// ResponseID before dispatch, so the effectful static families may be
+	// rendered; ExecuteToolCallWithContext rejects any effectful dispatch that
+	// arrives without both correlation values. Uncorrelated requests keep the
+	// read-only compatibility subset, and control-plane names remain governed
+	// independently by the S3 callback-local state machine.
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		base = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostLocal, base)
+	}
 	revision := c.setStaticCompatibilitySurface(base)
 	base = annotateCodingTodoDefinitionForControlPlane(base, revision, c.todos.controlPlaneSnapshot().Version)
 	c.recordStaticCompatibilitySurface(base, revision)
@@ -317,6 +323,13 @@ func (c *codingSubAgentCallbacks) OnToolSurfaceAttemptFinished(_ agent.ToolCallE
 func rejectedCodingStaticCompatibilityTool(name string) agent.ToolExecutionResult {
 	return agent.ToolExecutionResult{
 		Result:  "[system rejected] static_surface_unavailable: " + strings.TrimSpace(name),
+		Outcome: agent.ToolExecutionOutcomeError,
+	}
+}
+
+func rejectedCodingStaticCorrelationTool(name string) agent.ToolExecutionResult {
+	return agent.ToolExecutionResult{
+		Result:  "[system rejected] static_response_correlation_missing: " + strings.TrimSpace(name),
 		Outcome: agent.ToolExecutionOutcomeError,
 	}
 }
@@ -364,6 +377,20 @@ func (c *codingSubAgentCallbacks) ExecuteToolCallWithContext(name, argsJSON, cal
 	}
 	if !c.staticCompatibilityExecutionEpochAllowed(execution.SurfaceEpoch) {
 		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	// Effectful static families additionally require both correlation values
+	// that RunLoop owns at the response boundary: the per-request surface epoch
+	// binds the call to this exact request surface, and the provider-issued
+	// ResponseID binds it to the concrete consumed response. A model dispatch
+	// without either (an epoch-less compatibility caller, or a provider that
+	// omitted the ID) must never run a workspace mutation, command, spawn, or
+	// artifact acquisition — this stays fail-closed on every surface, including
+	// the correlated local desktop one that renders these families.
+	if item, ok := codingStaticCompatibilityInventoryLookup(codingStaticCompatibilityHostLocal, name); ok &&
+		!codingStaticCompatibilityItemAllowedWithoutTransportCorrelation(item) {
+		if strings.TrimSpace(execution.SurfaceEpoch) == "" || strings.TrimSpace(execution.ResponseID) == "" {
+			return rejectedCodingStaticCorrelationTool(name)
+		}
 	}
 	_ = callID
 	// Keep model dispatch on the context-aware branch through to the canonical

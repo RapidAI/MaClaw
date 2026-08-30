@@ -255,12 +255,14 @@ func TestUpsertRemovesTargetStopsProcessForward(t *testing.T) {
 	}
 
 	// Evaluate with the same jobs list processMessage would use (no real IM delivery).
+	// Jobs are stamped with the default bot profile on upsert, so evaluation
+	// must use that profile — Process("") only matches legacy unscoped jobs.
 	eng := svc.engine
 	msgRemoved := lansengerwatch.Incoming{
 		IsGroup: true, GroupID: "g1", SpeakerID: "u1", SpeakerName: "Alice",
 		Text: "hello from removed target",
 	}
-	resRemoved := eng.Process(t.Context(), cached, msgRemoved)
+	resRemoved := eng.ProcessForBot(t.Context(), cached, corelib.DefaultLansengerBotProfileID, msgRemoved)
 	if len(resRemoved.Forwards) != 0 {
 		t.Fatalf("removed target still forwarded: %+v", resRemoved.Forwards)
 	}
@@ -268,7 +270,7 @@ func TestUpsertRemovesTargetStopsProcessForward(t *testing.T) {
 		IsGroup: true, GroupID: "g1", SpeakerID: "u2", SpeakerName: "Bob",
 		Text: "hello from kept target",
 	}
-	resKept := eng.Process(t.Context(), cached, msgKept)
+	resKept := eng.ProcessForBot(t.Context(), cached, corelib.DefaultLansengerBotProfileID, msgKept)
 	if len(resKept.Forwards) != 1 || resKept.Forwards[0].Reason != "target_speech" {
 		t.Fatalf("kept target should speech-forward: %+v", resKept.Forwards)
 	}
@@ -289,7 +291,7 @@ func TestUpsertRemovesTargetStopsProcessForward(t *testing.T) {
 	if len(cachedEmpty) != 1 || len(cachedEmpty[0].TargetStaffIDs) != 0 {
 		t.Fatalf("empty targets not applied: %+v", cachedEmpty)
 	}
-	resEmpty := eng.Process(t.Context(), cachedEmpty, msgKept)
+	resEmpty := eng.ProcessForBot(t.Context(), cachedEmpty, corelib.DefaultLansengerBotProfileID, msgKept)
 	if len(resEmpty.Forwards) != 0 {
 		t.Fatalf("empty targets must not speech-forward: %+v", resEmpty.Forwards)
 	}

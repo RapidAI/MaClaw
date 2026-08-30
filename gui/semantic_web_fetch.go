@@ -65,6 +65,9 @@ func semanticTrustedWebFetchArgsAllowed(args map[string]interface{}) (string, er
 	if rawURL == "" {
 		return "", fmt.Errorf("trusted_web_fetch_url_required")
 	}
+	if websearch.IsPlaceholderFetchHost(websearch.FetchURLHostname(rawURL)) {
+		return "", fmt.Errorf("trusted_web_fetch_url_host_rejected")
+	}
 	return rawURL, nil
 }
 
@@ -112,7 +115,19 @@ func semanticTrustedWebFetchProjection(result *websearch.FetchResult) string {
 		fmt.Fprintf(&b, "URL: %s\n", pageURL)
 	}
 	fmt.Fprintf(&b, "Type: %s | Size: %d bytes\n\n", result.ContentType, result.BytesRead)
-	b.WriteString(result.Content)
+	if strings.HasPrefix(strings.TrimSpace(result.Content), "[二进制") {
+		// The fetch layer's binary advisory is written for the legacy surface
+		// ("请使用 save_path 参数") — this adapter's schema is closed over url
+		// alone, so that advice is literally uncallable here, and it never names
+		// the real petitionable capability. Production 2026-08-26 (ragdoll
+		// birthday deck): the model fetched three images, could not act on the
+		// advisory, concluded "无法直接下载图片" and shipped a text-only PPT
+		// while download_file sat unused in the petition whitelist. Replace the
+		// legacy advisory with guidance that is actionable on THIS surface.
+		fmt.Fprintf(&b, "[binary content: %s, %d bytes — web_fetch extracts text only. To save the file to disk, call download_file with {\"url\": %q}; the destination is host-bound. To place images in a presentation, call office with slides[].images. Native charts go in slides[].charts.]", result.ContentType, result.BytesRead, strings.TrimSpace(result.URL))
+	} else {
+		b.WriteString(result.Content)
+	}
 	if result.Truncated {
 		b.WriteString("\n...(truncated)")
 	}
@@ -123,9 +138,12 @@ func semanticTrustedWebFetchResultProjection(text string) (string, error) {
 	if strings.Contains(text, "[voice_base64") || strings.Contains(text, "[file_base64") {
 		return "", fmt.Errorf("trusted_web_fetch_delivery_token")
 	}
-	if strings.Contains(text, "web_fetch") || strings.Contains(text, "download_file") || strings.Contains(text, "save_path") {
-		return "", fmt.Errorf("trusted_web_fetch_legacy_name")
-	}
+	// No tool-name token scan here. Fetched content cannot grant capabilities —
+	// the semantic router renders the tool list and gates every call — while a
+	// literal scan rejected legitimate pages and even the fetch layer's own
+	// binary advisory ("[二进制内容 … 请使用 save_path 参数下载]") with an opaque
+	// trusted_web_fetch_legacy_name, burning the fetch grant on a host-made
+	// message (production 2026-08-26, ragdoll birthday deck turn).
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", fmt.Errorf("trusted_web_fetch_empty")

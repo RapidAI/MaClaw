@@ -233,6 +233,9 @@ func TestEntitlementForDisabledStillListsOwnRows(t *testing.T) {
 	if ent.Enabled {
 		t.Fatal("mode off should disable")
 	}
+	if ent.Reason != ReasonNotGranted {
+		t.Fatalf("reason=%q want %q", ent.Reason, ReasonNotGranted)
+	}
 	if ent.Quota != 5 || ent.Used != 0 || len(ent.Deleted) != 1 {
 		t.Fatalf("ent=%+v", ent)
 	}

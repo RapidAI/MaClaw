@@ -1114,12 +1114,45 @@ func TestInstallMaclawAppDependenciesUsesSkillMarketForMarketAppDependency(t *te
 	}
 }
 
+// stubPaperPDFTranslatorSkillMarket pins the legacy wrapper tests to a
+// deterministic SkillMarket. The dependency preflight searches the live
+// market, which now IDs this skill by a UUID; that made these tests depend on
+// volatile remote data instead of the wrapper-authority invariants they verify.
+func stubPaperPDFTranslatorSkillMarket(t *testing.T, app *App) {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"urls": []string{server.URL}, "ttl_seconds": 60})
+		case "/api/v1/skillmarket/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []SkillSearchResult{{
+				ID: "paper_pdf_translator", Name: "paper_pdf_translator", Version: "1.0.0",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	app.hubCenterCache = remote.NewHubCenterSelectionCache(time.Minute)
+	app.hubCenterCache.Set(server.URL, []string{server.URL})
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = server.URL
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+}
+
 func TestInstallMaclawAppDependenciesUpgradesKnownLegacyLocalDependencyForMarketApp(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
 	app := &App{testHomeDir: tmpHome}
+	stubPaperPDFTranslatorSkillMarket(t, app)
 	app.maclawAppInstallMixedSkill = func(source, id, installRef string) error {
 		if source != "skillmarket" || id != "paper_pdf_translator" || strings.TrimSpace(installRef) == "" {
 			t.Fatalf("legacy market dependency should install from SkillMarket, got source=%q id=%q ref=%q", source, id, installRef)
@@ -1187,6 +1220,7 @@ func TestInstallMaclawAppDependenciesDerivesSkillMarketProvenanceFromInstalledWr
 	}
 
 	app := &App{testHomeDir: tmpHome}
+	stubPaperPDFTranslatorSkillMarket(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1590,6 +1624,7 @@ func TestInstallMaclawAppDependenciesDoesNotAcceptResolvedMetadataForInstalledWr
 		t.Fatalf("write wrapper app definition: %v", err)
 	}
 	app := &App{testHomeDir: tmpHome}
+	stubPaperPDFTranslatorSkillMarket(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1653,6 +1688,7 @@ func TestInstallMaclawAppDependenciesDoesNotAcceptBundleForInstalledWrapper(t *t
 		t.Fatalf("write wrapper app definition: %v", err)
 	}
 	app := &App{testHomeDir: tmpHome}
+	stubPaperPDFTranslatorSkillMarket(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

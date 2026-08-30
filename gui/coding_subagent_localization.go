@@ -639,26 +639,78 @@ func localizationHTTPURLTokens(text string) []string {
 	return out
 }
 
+func localizationMissingRequiredFields(e CodingSubAgentLocalizationEvidence) []string {
+	var missing []string
+	if strings.TrimSpace(e.RootCauseFile) == "" {
+		missing = append(missing, "root_cause_file")
+	}
+	if len(e.CausalPath) == 0 {
+		missing = append(missing, "causal_path")
+	}
+	if strings.TrimSpace(e.Reproduction) == "" {
+		missing = append(missing, "reproduction")
+	}
+	if len(e.SupportingEvidence) == 0 {
+		missing = append(missing, "supporting_evidence")
+	}
+	if strings.TrimSpace(e.ResearchDecision) == "" {
+		missing = append(missing, "research_decision")
+	}
+	if strings.TrimSpace(e.ResearchReason) == "" {
+		missing = append(missing, "research_reason")
+	}
+	if e.Confidence == 0 {
+		missing = append(missing, "confidence")
+	}
+	return missing
+}
+
+func (s *codingSubAgentLocalizationState) evidenceRevision() (uint64, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.evidence == nil {
+		return 0, false
+	}
+	return s.revision, true
+}
+
+func localizationStaleControlPlaneEvidenceDetail(state *codingSubAgentLocalizationState, currentRevision uint64) string {
+	stored, ok := state.evidenceRevision()
+	if !ok {
+		return "missing localization evidence"
+	}
+	return fmt.Sprintf("previous report is bound to an older control-plane surface (evidence_revision=%d current_revision=%d); re-submit the full report_localization including causal_path, reproduction, supporting_evidence, research_decision, research_reason, and confidence", stored, currentRevision)
+}
+
+func localizationEvidenceAcceptedText(revision uint64, evidenceJSON string) string {
+	return fmt.Sprintf("localization evidence accepted (control_plane_revision=%d). Matching edits stay authorized on later turns until the tool surface actually changes.\n%s", revision, evidenceJSON)
+}
+
+func localizationBugFixEditBlocked(remote bool, detail string) string {
+	target := "an existing file"
+	if remote {
+		target = "remote code"
+	}
+	return "bug-fix edit blocked: submit report_localization with root-cause evidence before modifying " + target + ": " + detail
+}
+
 func validateLocalizationEvidence(e *CodingSubAgentLocalizationEvidence, expectedPath string) error {
 	if e == nil {
 		return fmt.Errorf("missing localization evidence")
 	}
 	normalized := normalizeLocalizationEvidence(*e)
 	e = &normalized
+	if missing := localizationMissingRequiredFields(*e); len(missing) > 0 {
+		return fmt.Errorf("missing required fields: %s", strings.Join(missing, ", "))
+	}
 	if err := validateLocalizationEvidencePath("root_cause_file", e.RootCauseFile); err != nil {
 		return err
 	}
 	if expectedPath != "" && !localizationEvidenceCoversPath(e, expectedPath) {
 		return fmt.Errorf("root cause/candidates do not cover edit target %q", expectedPath)
-	}
-	if len(e.CausalPath) == 0 {
-		return fmt.Errorf("causal_path must contain at least one symptom-to-cause step")
-	}
-	if strings.TrimSpace(e.Reproduction) == "" {
-		return fmt.Errorf("reproduction evidence or an explicit reason it is unavailable is required")
-	}
-	if len(e.SupportingEvidence) == 0 {
-		return fmt.Errorf("supporting_evidence is required")
 	}
 	for i, candidate := range e.Candidates {
 		candidate = normalizeLocalizationCandidate(candidate)
@@ -680,20 +732,12 @@ func validateLocalizationEvidence(e *CodingSubAgentLocalizationEvidence, expecte
 			return fmt.Errorf("candidates[%d].score must be greater than 0 when supporting_evidence is present", i)
 		}
 	}
-	switch strings.ToLower(strings.TrimSpace(e.ResearchDecision)) {
-	case "searched":
-		if strings.TrimSpace(e.ResearchReason) == "" {
-			return fmt.Errorf("research_reason is required when external research was used")
-		}
-		if len(e.ExternalSources) == 0 {
-			return fmt.Errorf("external_sources is required when research_decision is searched")
-		}
-	case "not_needed", "unavailable":
-		if strings.TrimSpace(e.ResearchReason) == "" {
-			return fmt.Errorf("research_reason must explain why web research was not used")
-		}
-	default:
+	decision := strings.ToLower(strings.TrimSpace(e.ResearchDecision))
+	if decision != "searched" && decision != "not_needed" && decision != "unavailable" {
 		return fmt.Errorf("research_decision must be searched, not_needed, or unavailable")
+	}
+	if decision == "searched" && len(e.ExternalSources) == 0 {
+		return fmt.Errorf("external_sources is required when research_decision is searched")
 	}
 	if math.IsNaN(e.Confidence) || math.IsInf(e.Confidence, 0) || e.Confidence <= 0 || e.Confidence > 1 {
 		return fmt.Errorf("confidence must be greater than 0 and at most 1")
@@ -1715,7 +1759,7 @@ func (c *codingSubAgentCallbacks) executeReportLocalization(args map[string]inte
 		len(e.Candidates), e.Confidence, localizationResearchDebugSummary(text, &e, searches))
 	accepted := c.localization.snapshotForRevision(revision)
 	out, _ := json.MarshalIndent(accepted, "", "  ")
-	return codingToolExecutionResult{Text: fmt.Sprintf("localization evidence accepted (control_plane_revision=%d)\n%s", revision, string(out)), Outcome: codingToolOutcomeSuccess}
+	return codingToolExecutionResult{Text: localizationEvidenceAcceptedText(revision, string(out)), Outcome: codingToolOutcomeSuccess}
 }
 
 func (c *codingSubAgentCallbacks) requireLocalizationBeforeExistingBugEdit(path string, created bool) string {
@@ -1723,10 +1767,16 @@ func (c *codingSubAgentCallbacks) requireLocalizationBeforeExistingBugEdit(path 
 		return ""
 	}
 	e := c.localizationForCurrentControlPlaneRevision()
+	if e == nil {
+		detail := localizationStaleControlPlaneEvidenceDetail(&c.localization, c.currentControlPlaneRevision())
+		log.Printf("[coding-localization] edit blocked stage=evidence task=%d path=%q error=%q",
+			taskDisplayNumber(c.task), compactCodingSubAgentLogText(c.displayProjectPath(path), 300), compactCodingSubAgentLogText(detail, 500))
+		return localizationBugFixEditBlocked(false, detail)
+	}
 	if err := validateLocalizationEvidence(e, c.displayProjectPath(path)); err != nil {
 		log.Printf("[coding-localization] edit blocked stage=evidence task=%d path=%q error=%q",
 			taskDisplayNumber(c.task), compactCodingSubAgentLogText(c.displayProjectPath(path), 300), compactCodingSubAgentLogText(err.Error(), 500))
-		return "bug-fix edit blocked: submit report_localization with root-cause evidence before modifying an existing file: " + err.Error()
+		return localizationBugFixEditBlocked(false, err.Error())
 	}
 	searches := c.getSearchesRun()
 	if err := validateLocalizationResearchEvidence(c.task.Title+"\n"+c.task.Description, e, searches); err != nil {
@@ -1763,7 +1813,7 @@ func (c *remoteCodingCallbacks) executeRemoteReportLocalization(args map[string]
 		localizationResearchDebugSummary(c.task+"\n"+c.taskContext, &e, c.searchesRun))
 	accepted := c.localization.snapshotForRevision(revision)
 	out, _ := json.MarshalIndent(accepted, "", "  ")
-	return fmt.Sprintf("localization evidence accepted (control_plane_revision=%d)\n%s", revision, string(out))
+	return localizationEvidenceAcceptedText(revision, string(out))
 }
 
 func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[string]interface{}, definitelyExisting bool) string {
@@ -1778,20 +1828,30 @@ func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[
 	// new file, but when localization already points elsewhere it must not bypass
 	// the root-cause gate by rewriting that existing target wholesale.
 	e := c.localizationForCurrentControlPlaneRevision()
-	if !definitelyExisting && c.knownExisting != nil && !c.knownExisting[remoteCleanPath(c.resolvePath(path))] {
-		log.Printf("[remote-localization] edit exempt reason=new_file project=%q path=%q",
-			remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300))
-		return ""
+	if !definitelyExisting {
+		resolved := remoteCleanPath(c.resolvePath(path))
+		exists, tracked := c.knownExisting[resolved]
+		if !tracked {
+			log.Printf("[remote-localization] edit blocked stage=existence project=%q path=%q error=%q",
+				remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300), "target existence is unknown")
+			return "bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before rewriting existing code"
+		}
+		if !exists {
+			log.Printf("[remote-localization] edit exempt reason=new_file project=%q path=%q",
+				remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300))
+			return ""
+		}
 	}
-	if !definitelyExisting && e == nil {
-		log.Printf("[remote-localization] edit blocked stage=existence project=%q path=%q error=%q",
-			remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300), "target existence is unknown")
-		return "bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before rewriting existing code"
+	if e == nil {
+		detail := localizationStaleControlPlaneEvidenceDetail(&c.localization, c.currentControlPlaneRevision())
+		log.Printf("[remote-localization] edit blocked stage=evidence project=%q path=%q error=%q",
+			remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300), compactCodingSubAgentLogText(detail, 500))
+		return localizationBugFixEditBlocked(true, detail)
 	}
 	if err := validateLocalizationEvidence(e, path); err != nil {
 		log.Printf("[remote-localization] edit blocked stage=evidence project=%q path=%q error=%q",
 			remoteLocalizationLogProject(c), compactCodingSubAgentLogText(path, 300), compactCodingSubAgentLogText(err.Error(), 500))
-		return "bug-fix edit blocked: submit report_localization with root-cause evidence before modifying remote code: " + err.Error()
+		return localizationBugFixEditBlocked(true, err.Error())
 	}
 	if err := validateLocalizationResearchEvidence(c.task+"\n"+c.taskContext, e, c.searchesRun); err != nil {
 		log.Printf("[remote-localization] edit blocked stage=research project=%q path=%q %s error=%q",

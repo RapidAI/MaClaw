@@ -27,8 +27,8 @@ func (r *llmBillingLedgerRepo) RecordSettlement(ctx context.Context, settlement 
 	result, err := r.db.ExecContext(ctx, `INSERT OR IGNORE INTO llm_billing_ledger (
 		tenant_id, request_id, user_id, email, provider_id, service_group_ids_json,
 		input_tokens, output_tokens, requested_microcredits, deducted_microcredits,
-		billing_group_multiplier, pricing_json, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		provider_multiplier, billing_group_multiplier, pricing_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		normalizeTenantID(settlement.TenantID),
 		strings.TrimSpace(settlement.RequestID),
 		strings.TrimSpace(settlement.UserID),
@@ -39,6 +39,7 @@ func (r *llmBillingLedgerRepo) RecordSettlement(ctx context.Context, settlement 
 		settlement.OutputTokens,
 		settlement.RequestedMicrocredits,
 		settlement.DeductedMicrocredits,
+		settlement.ProviderMultiplier,
 		settlement.BillingGroupMultiplier,
 		strings.TrimSpace(settlement.PricingJSON),
 		createdAt.UTC().Format(time.RFC3339),

@@ -84,6 +84,60 @@ describe('AssistantTitleBar', () => {
         expect(screen.queryByTestId('workflow-toggle-btn')).toBeNull();
     });
 
+    it('keeps primary actions directly after the assistant title', () => {
+        render(
+            <AssistantTitleBar
+                clearHistory={vi.fn()}
+                inline={false}
+                lang="zh"
+                maximized={false}
+                onClose={vi.fn()}
+                onSaveCurrentTask={vi.fn()}
+                onToggleSkillRecording={vi.fn()}
+                projectSearchOpen={false}
+                refreshNews={vi.fn()}
+                showMaximizeToggle={false}
+                theme={overlayTheme}
+                themeMode="light"
+                title="AI 助手"
+                trialReflectEnabled={false}
+                toggleProjectSearch={vi.fn()}
+            />,
+        );
+
+        const title = screen.getByTestId('ai-titlebar-title');
+        const actions = screen.getByTestId('ai-titlebar-primary-actions');
+        expect(title.style.flex).toBe('0 1 auto');
+        expect(actions.style.display).toBe('flex');
+        expect(actions.style.gap).toBe('4px');
+        expect(actions.previousElementSibling).toBe(title);
+    });
+
+    it('shows the Preview toggle for cloud workspaces even when the panel is closed', () => {
+        render(
+            <AssistantTitleBar
+                clearHistory={vi.fn()}
+                inline={false}
+                lang="zh"
+                maximized={false}
+                onClose={vi.fn()}
+                onTogglePreviewPanel={vi.fn()}
+                previewAvailable
+                previewPanelOpen={false}
+                projectSearchOpen={false}
+                refreshNews={vi.fn()}
+                showMaximizeToggle={false}
+                theme={overlayTheme}
+                themeMode="light"
+                title="AI 助手"
+                trialReflectEnabled={false}
+                toggleProjectSearch={vi.fn()}
+            />,
+        );
+        expect(screen.getByTestId('workflow-preview-toggle-btn')).toBeTruthy();
+        expect(screen.getByTestId('workflow-preview-toggle-btn').getAttribute('aria-checked')).toBe('false');
+    });
+
     it('opens the full notification text from the list', () => {
         const notice = {
             id: 'invite-1',

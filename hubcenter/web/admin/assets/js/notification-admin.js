@@ -430,11 +430,11 @@ function renderNotifDetail(id) {
       + '<div class="item"><div class="item-title">' + tr('notifDetailRead') + '</div><strong>' + (n.read_count || 0) + '</strong></div>'
       + '<div class="item"><div class="item-title">' + tr('notifDetailReadRate') + '</div><strong>' + (n.read_rate || '0%') + '</strong></div></div>';
     var cascadeHtml = notifCascadeTableHtml(n.cascade_results || []);
-    var contentHtml = '<div class="item section-gap"><div class="item-title">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div></div>';
+    var contentHtml = '<div class="item section-gap"><div class="item-title" data-icon="file">' + tr('notifFormContent') + '</div><div class="notif-content-preview">' + escapeHtml(n.content || '') + '</div></div>';
     root.innerHTML = '<div class="head"><div><h3>' + escapeHtml(n.title || '') + '</h3><div class="desc">' + catLabel + ' ' + statusBadge + '</div></div>'
       + '<div class="actions"><button class="btn-ghost" onclick="renderNotifList()">' + tr('notifDetailBack') + '</button>' + revokeBtn + deleteBtn + '</div></div>'
       + contentHtml
-      + '<div class="item section-gap"><div class="item-title">' + tr('notifDetailStats') + '</div>' + statsHtml + '</div>'
+      + '<div class="item section-gap"><div class="item-title" data-icon="chart">' + tr('notifDetailStats') + '</div>' + statsHtml + '</div>'
       + cascadeHtml;
   }).catch(function(err) {
     root.innerHTML = '<div class="hint danger">' + tr('notifLoadFailed', { error: escapeHtml(err.message) }) + '</div>'
@@ -450,7 +450,7 @@ function notifCascadeTableHtml(results) {
     var time = r.pushed_at ? new Date(r.pushed_at).toLocaleString() : '-';
     return '<tr><td>' + escapeHtml(r.hub_name || r.hub_id || '-') + '</td><td>' + escapeHtml(time) + '</td><td><span class="badge ' + statusCls + '">' + tr(statusKey) + '</span></td></tr>';
   }).join('');
-  return '<div class="item section-gap"><div class="item-title">' + tr('notifCascadeTitle') + '</div>'
+  return '<div class="item section-gap"><div class="item-title" data-icon="tree">' + tr('notifCascadeTitle') + '</div>'
     + '<table class="notif-cascade-table"><thead><tr><th>' + tr('notifCascadeHub') + '</th><th>' + tr('notifCascadeTime') + '</th><th>' + tr('notifCascadeStatus') + '</th></tr></thead>'
     + '<tbody>' + rows + '</tbody></table></div>';
 }

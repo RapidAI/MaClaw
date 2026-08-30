@@ -3,7 +3,7 @@ import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAn
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
-import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { PROVIDER_LOGOS } from "./providerLogos";
@@ -43,7 +43,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
     const [providerLoadSlow, setProviderLoadSlow] = useState(false);
     const [maxIter, setMaxIter] = useState(0);
     const [subAgentConc, setSubAgentConc] = useState(2);
-    const [thinkingMode, setThinkingMode] = useState("");
+    const [thinkingMode, setThinkingMode] = useState<"enabled" | "disabled">("enabled");
     const [thinkingModeSaving, setThinkingModeSaving] = useState(false);
     const thinkingModeSavingRef = useRef(false);
     const [thinkingModeError, setThinkingModeError] = useState<string | null>(null);
@@ -131,7 +131,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         void loadHubServiceStatus();
     }, [loadHubServiceStatus]);
 
-    const saveThinkingMode = useCallback(async (mode: "" | "enabled" | "disabled") => {
+    const saveThinkingMode = useCallback(async (mode: "enabled" | "disabled") => {
         if (thinkingModeSavingRef.current || mode === thinkingMode) return;
         const previous = thinkingMode;
         thinkingModeSavingRef.current = true;
@@ -305,10 +305,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
 
             if (thinkingResult.status === "fulfilled") {
                 const mode = thinkingResult.value;
-                setThinkingMode(mode === "enabled" || mode === "disabled" ? mode : "");
+                // Unset/legacy "auto" resolves to enabled on the backend.
+                setThinkingMode(mode === "disabled" ? "disabled" : "enabled");
                 console.info("[LLMConfigPanel] thinking mode loaded");
             } else {
-                setThinkingMode("");
+                setThinkingMode("enabled");
                 console.warn("[LLMConfigPanel] thinking mode load failed", thinkingResult.reason);
             }
 
@@ -980,8 +981,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 </div>
             )}
 
-            {/* Usage display for OAuth providers */}
-            {!isNone && providers.find(p => p.name === currentName)?.auth_type === "oauth" && (
+            {canQueryOpenAIOrganizationCosts(providers.find(p => p.name === currentName)) && (
                 <div style={{ marginBottom: 16 }}>
                     <UsageDisplay lang={lang || ""} />
                 </div>
@@ -1060,11 +1060,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     </label>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label={t("Thinking mode", "推理模式")} aria-busy={thinkingModeSaving}>
-                    {(["", "enabled", "disabled"] as const).map(mode => {
+                    {(["enabled", "disabled"] as const).map(mode => {
                         const active = thinkingMode === mode;
                         return (
-                            <button key={mode || "auto"}
-                                data-testid={`thinking-mode-${mode || "auto"}`}
+                            <button key={mode}
+                                data-testid={`thinking-mode-${mode}`}
                                 type="button"
                                 aria-pressed={active}
                                 disabled={thinkingModeSaving}
@@ -1076,7 +1076,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                                     border: `1px solid ${active ? colors.primary : colors.border}`,
                                     borderRadius: 4, transition: "all 0.15s", opacity: thinkingModeSaving ? 0.7 : 1,
                                 }}>
-                                {mode === "" ? t("Auto", "自动") : mode === "enabled" ? t("On", "开启") : t("Off", "关闭")}
+                                {mode === "enabled" ? t("On", "开启") : t("Off", "关闭")}
                             </button>
                         );
                     })}
@@ -1084,9 +1084,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "6px 0 0 0", lineHeight: 1.4 }}>
                     {thinkingMode === "enabled"
                         ? t("Enabled on new requests using the provider's native control. The chat panel shows reasoning only when the provider returns it.", "已在后续请求中按服务商原生参数开启；仅当服务商返回推理内容时，助手面板才会显示“思考过程”。")
-                        : thinkingMode === "disabled"
-                            ? t("Disabled on new requests using the provider's native control. Models without a hard off switch use their lowest reasoning level.", "已在后续请求中按服务商原生参数关闭；没有硬关闭能力的模型会使用最低推理强度。")
-                            : t("Auto: uses the model default (DeepSeek thinking models are explicitly enabled when required).", "自动：沿用模型默认行为（需要显式开启的 DeepSeek 思考模型会自动开启）。")}
+                        : t("Disabled on new requests using the provider's native control. Models without a hard off switch use their lowest reasoning level.", "已在后续请求中按服务商原生参数关闭；没有硬关闭能力的模型会使用最低推理强度。")}
                 </p>
                 {thinkingModeError && <p role="alert" style={{ fontSize: "0.7rem", color: colors.danger, margin: "6px 0 0", lineHeight: 1.4 }}>{thinkingModeError}</p>}
             </div>

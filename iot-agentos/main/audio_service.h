@@ -113,6 +113,10 @@ device_status_t audio_service_playback_end(bool playback_succeeded);
 void audio_service_request_playback_stop(void);
 void audio_service_request_capture_stop(void);
 void audio_service_reset_capture_stop(void);
+device_status_t audio_service_preempt_for_alarm(uint32_t timeout_ms);
+bool audio_service_consume_alarm_interruption(int expected_session);
+void audio_service_alarm_transaction_begin(void);
+void audio_service_alarm_transaction_end(void);
 
 device_status_t audio_service_wake_word_start(device_wake_word_cb_t on_wake,
                                               void *context);

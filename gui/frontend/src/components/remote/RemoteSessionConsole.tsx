@@ -362,7 +362,7 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
         return (
             <div key={key} style={{ display: "flex", minHeight: "1.4em", minWidth: 0, paddingLeft: indentPad }}>
                 <span style={{ color: "#94a3b8", ...orderedListMarkerLayoutStyle }}>{ordered.marker}</span>
-                <span style={{ flex: 1, overflowWrap: "anywhere", wordBreak: "break-word", minWidth: 0 }}>{renderInlineMarkdown(ordered.body)}</span>
+                <span style={{ flex: 1, overflowWrap: "break-word", minWidth: 0 }}>{renderInlineMarkdown(ordered.body)}</span>
             </div>
         );
     }

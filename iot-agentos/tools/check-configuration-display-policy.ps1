@@ -44,7 +44,7 @@ if (Test-Path -LiteralPath $mainSource) {
     $text = Get-Content -LiteralPath $mainSource -Raw
     foreach ($required in @(
             'persist_hub_display_policy\s*\(',
-            'request\.display_policy',
+            'request->display_policy',
             'configuration_service_apply_display_policy_with_policy\s*\(',
             'display policy persistence failed; no Display/Power apply',
             'configuration_reconcile_service_reconcile\s*\(',

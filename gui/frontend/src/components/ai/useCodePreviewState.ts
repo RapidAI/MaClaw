@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { isCloudWorkspacePath } from "./codingTaskMode";
 
 // ── Data Models ──
 
@@ -201,7 +202,12 @@ export function shouldAcceptCodeEventForProject(eventProjectPath?: string, activ
         return true;
     }
     // Worktree / isolate dirs live under the main project — still show in preview.
-    if (eventPath.startsWith(activePath + "/") || activePath.startsWith(eventPath + "/")) {
+    // Only plausible hierarchical paths (drive-letter or rooted) get this nested
+    // acceptance; otherwise backslash→slash normalization could fabricate a fake
+    // hierarchy out of degenerate inputs (e.g. " !\" → "!" matching "!/_tabB").
+    const hierarchical = (p: string) => /^[a-z]:\//i.test(p) || p.startsWith('/');
+    if (hierarchical(eventPath) && hierarchical(activePath)
+        && (eventPath.startsWith(activePath + "/") || activePath.startsWith(eventPath + "/"))) {
         return true;
     }
     return false;
@@ -778,7 +784,7 @@ export function useCodePreviewState(activeTabProjectPath?: string, previewEnable
                 sessionID: data.session_id || "",
                 filePath: data.file_path,
                 fileName: data.file_name || data.file_path.split(/[/\\]/).pop() || data.file_path,
-                absPath: data.abs_path || undefined,
+                absPath: isCloudWorkspacePath(data.abs_path || data.file_path) ? undefined : (data.abs_path || undefined),
                 content: data.content,
                 original,
                 opType,

@@ -3,6 +3,7 @@
 #include "configuration_runtime_override_store.h"
 #include "configuration_revision.h"
 #include "configuration_transaction.h"
+#include "configuration_migration_journal.h"
 #include "provisioning_failure_injection.h"
 
 #include <stddef.h>
@@ -16,6 +17,11 @@
 
 #define CONFIGURATION_NAMESPACE "maclaw"
 #define CONFIGURATION_STORE_KEY "configuration"
+#define CONFIGURATION_MIGRATION_JOURNAL_KEY "configuration_migration_journal"
+#define CONFIGURATION_MIGRATION_FINGERPRINT_KEY \
+    "configuration_migration_source_fingerprint"
+#define CONFIGURATION_MIGRATION_TARGET_FINGERPRINT_KEY \
+    "configuration_migration_target_fingerprint"
 #define CONFIGURATION_STORE_MAGIC 0x43464731u /* CFG1 */
 #define CONFIGURATION_STORE_VERSION 7u
 
@@ -200,6 +206,7 @@ static configuration_store_t *s_scratch_store;
  * by the same admission/mutation lock as the durable snapshot so a caller can
  * receive one coherent durable+override copied result. */
 static configuration_runtime_override_store_t *s_runtime_override_store;
+static device_status_t configuration_status_from_legacy_error(esp_err_t err);
 static bool s_stopping;
 /* System Sleep retains Configuration's scratch and mutex but closes every
  * direct mutation/read admission while Power establishes its durable fence. */
@@ -380,6 +387,246 @@ static esp_err_t import_legacy_display_policy(configuration_snapshot_t *snapshot
                                               bool *out_found);
 static esp_err_t write_store_locked(const configuration_store_t *store);
 
+static esp_err_t clear_migration_journal_locked(void) {
+    const device_status_t status = persistence_service_erase_key(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_JOURNAL_KEY);
+    return status == DEVICE_STATUS_OK || status == DEVICE_STATUS_NOT_FOUND
+               ? ESP_OK : device_status_to_platform_error(status);
+}
+
+static esp_err_t clear_migration_fingerprint_locked(void) {
+    const device_status_t status = persistence_service_erase_key(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_FINGERPRINT_KEY);
+    return status == DEVICE_STATUS_OK || status == DEVICE_STATUS_NOT_FOUND
+               ? ESP_OK : device_status_to_platform_error(status);
+}
+
+static esp_err_t clear_migration_target_fingerprint_locked(void) {
+    const device_status_t status = persistence_service_erase_key(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_TARGET_FINGERPRINT_KEY);
+    return status == DEVICE_STATUS_OK || status == DEVICE_STATUS_NOT_FOUND
+               ? ESP_OK : device_status_to_platform_error(status);
+}
+
+static uint32_t migration_fingerprint(const uint8_t *bytes, size_t size) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+/* The journal ABI intentionally keeps only a bounded source length.  Record
+ * a separate digest before publishing PREPARED so a same-sized replacement
+ * of the legacy blob cannot be mistaken for the original source after a
+ * reset.  The digest contains no secret material and is erased with the
+ * journal once recovery has established the target/source relationship. */
+static esp_err_t persist_migration_fingerprint_locked(size_t source_size) {
+    if (source_size == 0u) return ESP_ERR_INVALID_ARG;
+    uint8_t *source = heap_caps_malloc(source_size,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!source) return ESP_ERR_NO_MEM;
+    size_t size = source_size;
+    device_status_t status = persistence_service_read_blob(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, source, &size);
+    if (status != DEVICE_STATUS_OK || size != source_size) {
+        memset(source, 0, source_size);
+        heap_caps_free(source);
+        return status == DEVICE_STATUS_OK ? ESP_ERR_INVALID_STATE
+                                          : device_status_to_platform_error(status);
+    }
+    const uint32_t digest = migration_fingerprint(source, size);
+    memset(source, 0, source_size);
+    heap_caps_free(source);
+    return device_status_to_platform_error(persistence_service_write_blob(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_FINGERPRINT_KEY,
+        &digest, sizeof(digest)));
+}
+
+static bool migration_fingerprint_matches_locked(size_t source_size) {
+    if (source_size == 0u) return false;
+    uint32_t expected = 0;
+    size_t digest_size = sizeof(expected);
+    if (persistence_service_read_blob(
+            CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_FINGERPRINT_KEY,
+            &expected, &digest_size) != DEVICE_STATUS_OK ||
+        digest_size != sizeof(expected)) {
+        return false;
+    }
+    uint8_t *source = heap_caps_malloc(source_size,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!source) return false;
+    size_t size = source_size;
+    device_status_t status = persistence_service_read_blob(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, source, &size);
+    const bool matches = status == DEVICE_STATUS_OK && size == source_size &&
+                         migration_fingerprint(source, size) == expected;
+    memset(source, 0, source_size);
+    heap_caps_free(source);
+    return matches;
+}
+
+static esp_err_t persist_migration_target_fingerprint_locked(
+    const configuration_store_t *store) {
+    if (!store || !valid_store(store)) return ESP_ERR_INVALID_ARG;
+    const uint32_t digest = migration_fingerprint((const uint8_t *)store,
+                                                  sizeof(*store));
+    return device_status_to_platform_error(persistence_service_write_blob(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_TARGET_FINGERPRINT_KEY,
+        &digest, sizeof(digest)));
+}
+
+static bool migration_source_size_supported(size_t size) {
+    return size == sizeof(configuration_store_v1_t) ||
+           size == sizeof(configuration_store_v2_t) ||
+           size == sizeof(configuration_store_v3_t) ||
+           size == sizeof(configuration_store_v4_t) ||
+           size == sizeof(configuration_store_v5_t) ||
+           size == sizeof(configuration_store_v6_t);
+}
+
+static bool migration_target_fingerprint_matches_locked(
+    const configuration_store_t *store) {
+    if (!store || !valid_store(store)) return false;
+    uint32_t expected = 0;
+    size_t digest_size = sizeof(expected);
+    if (persistence_service_read_blob(
+            CONFIGURATION_NAMESPACE,
+            CONFIGURATION_MIGRATION_TARGET_FINGERPRINT_KEY,
+            &expected, &digest_size) != DEVICE_STATUS_OK ||
+        digest_size != sizeof(expected)) {
+        return false;
+    }
+    return migration_fingerprint((const uint8_t *)store, sizeof(*store)) == expected;
+}
+
+
+static esp_err_t load_legacy(configuration_snapshot_t *snapshot, bool *out_found,
+                             bool *out_force_setup);
+static bool legacy_scalar_target_matches_locked(
+    const configuration_migration_journal_t *journal);
+static void seed_snapshot(configuration_snapshot_t *snapshot);
+
+static esp_err_t persist_migration_journal_locked(
+    const configuration_migration_journal_t *journal) {
+    uint8_t bytes[sizeof(*journal)] = {0};
+    if (!configuration_migration_journal_encode(journal, bytes)) return ESP_ERR_INVALID_STATE;
+    return device_status_to_platform_error(persistence_service_write_blob(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_JOURNAL_KEY,
+        bytes, sizeof(bytes)));
+}
+
+static esp_err_t recover_migration_journal_locked(bool target_record_present,
+                                                  size_t current_record_bytes) {
+    uint8_t bytes[sizeof(configuration_migration_journal_t)] = {0};
+    size_t size = sizeof(bytes);
+    device_status_t status = persistence_service_read_blob(
+        CONFIGURATION_NAMESPACE, CONFIGURATION_MIGRATION_JOURNAL_KEY,
+        bytes, &size);
+    if (status == DEVICE_STATUS_NOT_FOUND) {
+        /* A digest can be left behind only if power failed between its
+         * preparation and the journal publication. It is orphan evidence,
+         * not a migration record; remove it before admitting normal config
+         * loading, but preserve any erase failure as a hard error. */
+        esp_err_t clear_err = clear_migration_fingerprint_locked();
+        if (clear_err == ESP_OK) clear_err = clear_migration_target_fingerprint_locked();
+        return clear_err;
+    }
+    if (status != DEVICE_STATUS_OK) return device_status_to_platform_error(status);
+    configuration_migration_journal_t journal = {0};
+    if (!configuration_migration_journal_decode(bytes, size, &journal)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool discard_source = false;
+    if (!configuration_migration_journal_recover(&journal, &discard_source)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Bind recovery evidence to the record observed in this boot. Before the
+     * target write, PREPARED/VALIDATED must still describe the legacy source
+     * blob. Once COMMITTED is durable, the target V7 record must be present;
+     * its size necessarily differs from the source size. */
+    const bool committed_target =
+        journal.stage == CONFIGURATION_MIGRATION_STAGE_COMMITTED;
+    /* VALIDATED is persisted before publication, so a reset can observe it
+     * either with the legacy source still present or after the V7 target has
+     * been written.  In the latter window the target revision is the durable
+     * publication evidence and must be verified, just as for COMMITTED. */
+    const bool validated_target =
+        journal.stage == CONFIGURATION_MIGRATION_STAGE_VALIDATED &&
+        target_record_present;
+    const bool prepared_target =
+        journal.stage == CONFIGURATION_MIGRATION_STAGE_PREPARED &&
+        target_record_present;
+    const bool legacy_scalar_source =
+        journal.source_bytes == CONFIGURATION_MIGRATION_LEGACY_SCALAR_SOURCE_BYTES;
+    const bool size_matches_stage = (committed_target || validated_target ||
+                                     prepared_target)
+        ? (target_record_present && current_record_bytes == sizeof(configuration_store_t))
+        : legacy_scalar_source
+            ? (!target_record_present || current_record_bytes == sizeof(configuration_store_t))
+            : (current_record_bytes != 0u && journal.source_bytes == current_record_bytes);
+    if (!size_matches_stage ||
+        journal.target_version != CONFIGURATION_STORE_VERSION) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* VALIDATED is the handoff point at which the converted value has passed
+     * semantic checks and is ready to be consumed as a target publication.
+     * If power is lost before that target is observable, the source may have
+     * been partially touched and this ABI carries no undo record.  Do not
+     * clear the marker and silently retry from an unproven source; leave the
+     * boot fail-closed until an explicit recovery path establishes the target
+     * record (or an operator handles the journal). */
+    if (journal.stage == CONFIGURATION_MIGRATION_STAGE_VALIDATED &&
+        !target_record_present) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* For a legacy blob, PREPARED without a target is safe to retry only when
+     * the exact source bytes observed before the migration are still present.
+     * A same-sized replacement must never satisfy a size-only journal. */
+    if (!committed_target && !validated_target && !prepared_target &&
+        !legacy_scalar_source && target_record_present == false &&
+        !migration_fingerprint_matches_locked(journal.source_bytes)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (committed_target || validated_target || prepared_target ||
+        (legacy_scalar_source && target_record_present)) {
+        /* COMMITTED is only consumable when its generation names the exact
+         * durable V7 publication observed in this boot. Read the target
+         * record before clearing the journal; a same-sized replacement from a
+         * later migration must never satisfy stale evidence. */
+        if (!s_scratch_store || current_record_bytes != sizeof(*s_scratch_store)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        size_t target_size = sizeof(*s_scratch_store);
+        device_status_t target_status = persistence_service_read_blob(
+            CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY,
+            s_scratch_store, &target_size);
+        if (target_status != DEVICE_STATUS_OK || target_size != sizeof(*s_scratch_store) ||
+            !valid_store(s_scratch_store) || journal.generation != s_scratch_store->revision ||
+            !migration_target_fingerprint_matches_locked(s_scratch_store) ||
+            (legacy_scalar_source &&
+             !legacy_scalar_target_matches_locked(&journal))) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    /* A committed journal is meaningful only when the target publication is
+     * present.  Scalar-key migrations need the same, stricter treatment even
+     * before COMMITTED: unlike a legacy blob, their source has no durable
+     * length/fingerprint in this ABI.  If the target is absent after a reset,
+     * silently clearing PREPARED/VALIDATED evidence could allow a partially
+     * changed scalar set to be re-imported as if it were the original source.
+     * Keep the marker and fail closed until an operator/recovery path can
+     * establish the source explicitly.
+     */
+    if (legacy_scalar_source && !target_record_present) return ESP_ERR_INVALID_STATE;
+    if (!discard_source && !target_record_present) return ESP_ERR_INVALID_STATE;
+    esp_err_t clear_err = clear_migration_journal_locked();
+    if (clear_err == ESP_OK) clear_err = clear_migration_fingerprint_locked();
+    if (clear_err == ESP_OK) clear_err = clear_migration_target_fingerprint_locked();
+    return clear_err;
+}
+
 static esp_err_t migrate_v6_locked(configuration_store_t *store) {
     configuration_store_v6_t *legacy =
         heap_caps_calloc(1, sizeof(*legacy), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -410,8 +657,7 @@ static esp_err_t migrate_v6_locked(configuration_store_t *store) {
          valid_snapshot(&store->provisioning.staged_snapshot));
     heap_caps_free(legacy);
     if (!valid) return ESP_ERR_INVALID_STATE;
-    return device_status_to_platform_error(persistence_service_write_blob(
-        CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, store, sizeof(*store)));
+    return ESP_OK;
 }
 
 static esp_err_t migrate_v5_locked(configuration_store_t *store) {
@@ -446,8 +692,7 @@ static esp_err_t migrate_v5_locked(configuration_store_t *store) {
          valid_snapshot(&store->provisioning.staged_snapshot));
     heap_caps_free(legacy);
     if (!valid) return ESP_ERR_INVALID_STATE;
-    return device_status_to_platform_error(persistence_service_write_blob(
-        CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, store, sizeof(*store)));
+    return ESP_OK;
 }
 
 static esp_err_t migrate_v4_locked(configuration_store_t *store) {
@@ -477,8 +722,7 @@ static esp_err_t migrate_v4_locked(configuration_store_t *store) {
          valid_snapshot(&store->provisioning.staged_snapshot));
     heap_caps_free(legacy);
     if (!valid) return ESP_ERR_INVALID_STATE;
-    return device_status_to_platform_error(persistence_service_write_blob(
-        CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, store, sizeof(*store)));
+    return ESP_OK;
 }
 
 static esp_err_t read_optional_string(const char *key, char *out, size_t capacity,
@@ -552,6 +796,48 @@ static esp_err_t load_legacy(configuration_snapshot_t *snapshot, bool *out_found
     return valid_snapshot(snapshot) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+/* A scalar-source marker intentionally carries no secret material or source
+ * blob digest.  Before consuming it, rebuild the exact V7 publication from
+ * the currently present legacy keys and compare the complete value record.
+ * This prevents an unrelated V7 revision-1 record (or a changed/partial
+ * scalar set) from satisfying stale recovery evidence. */
+static bool legacy_scalar_target_matches_locked(
+    const configuration_migration_journal_t *journal) {
+    if (!journal || !s_scratch_store ||
+        journal->source_bytes != CONFIGURATION_MIGRATION_LEGACY_SCALAR_SOURCE_BYTES ||
+        journal->generation != s_scratch_store->revision) {
+        return false;
+    }
+    configuration_snapshot_t *legacy_snapshot = heap_caps_calloc(
+        1, sizeof(*legacy_snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    configuration_store_t *expected = heap_caps_calloc(
+        1, sizeof(*expected), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!legacy_snapshot || !expected) {
+        if (legacy_snapshot) heap_caps_free(legacy_snapshot);
+        if (expected) heap_caps_free(expected);
+        return false;
+    }
+    bool found = false;
+    bool force_setup = false;
+    seed_snapshot(legacy_snapshot);
+    const esp_err_t err = load_legacy(legacy_snapshot, &found, &force_setup);
+    if (err == ESP_OK && found) {
+        sync_networks_from_primary(legacy_snapshot);
+        expected->magic = CONFIGURATION_STORE_MAGIC;
+        expected->version = CONFIGURATION_STORE_VERSION;
+        expected->provisioning.confirmed_snapshot = *legacy_snapshot;
+        expected->force_setup = force_setup ? 1u : 0u;
+        expected->revision = journal->generation;
+    }
+    const bool matches = err == ESP_OK && found && valid_store(expected) &&
+                         memcmp(expected, s_scratch_store, sizeof(*expected)) == 0;
+    memset(legacy_snapshot, 0, sizeof(*legacy_snapshot));
+    memset(expected, 0, sizeof(*expected));
+    heap_caps_free(legacy_snapshot);
+    heap_caps_free(expected);
+    return matches;
+}
+
 static esp_err_t import_legacy_display_policy(configuration_snapshot_t *snapshot,
                                               bool *out_found);
 
@@ -594,9 +880,7 @@ static esp_err_t migrate_v1_locked(configuration_store_t *store) {
     } else if (transport_err != ESP_ERR_NOT_FOUND) {
         return transport_err;
     }
-    return device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
-                                          CONFIGURATION_STORE_KEY,
-                                          store, sizeof(*store)));
+    return ESP_OK;
 }
 
 /* V2 -> V3：快照尾部追加多热点列表。store 已被调用方清零，前缀整体拷贝后
@@ -625,9 +909,7 @@ static esp_err_t migrate_v2_locked(configuration_store_t *store) {
     heap_caps_free(legacy);
     if (!valid_snapshot(&store->provisioning.confirmed_snapshot)) return ESP_ERR_INVALID_STATE;
     sync_networks_from_primary(&store->provisioning.confirmed_snapshot);
-    return device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
-                                          CONFIGURATION_STORE_KEY,
-                                          store, sizeof(*store)));
+    return ESP_OK;
 }
 
 static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
@@ -649,6 +931,12 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
     esp_err_t err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
                                                   CONFIGURATION_STORE_KEY,
                                                   NULL, &size));
+    err = recover_migration_journal_locked(err == ESP_OK && size == sizeof(*store),
+                                           err == ESP_OK ? size : 0u);
+    if (err != ESP_OK) return err;
+    err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
+                                                  CONFIGURATION_STORE_KEY,
+                                                  NULL, &size));
     if (err == ESP_ERR_NOT_FOUND) {
         bool legacy_found = false;
         err = load_legacy(inout_snapshot, &legacy_found, out_force_setup);
@@ -660,14 +948,90 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
             store->provisioning.confirmed_snapshot = *inout_snapshot;
             store->force_setup = *out_force_setup ? 1u : 0u;
             store->revision = 1u;
-            err = device_status_to_platform_error(persistence_service_write_blob(CONFIGURATION_NAMESPACE,
-                                                 CONFIGURATION_STORE_KEY,
-                                                 store, sizeof(*store)));
+            /* Scattered legacy scalar keys have no source blob size. Still
+             * journal this migration with an explicit sentinel source identity
+             * so a reset cannot leave an un-audited irreversible rewrite. */
+            configuration_migration_journal_t legacy_journal = {0};
+            if (!configuration_migration_journal_begin(
+                    &legacy_journal,
+                    CONFIGURATION_MIGRATION_LEGACY_SCALAR_SOURCE_BYTES,
+                    CONFIGURATION_STORE_VERSION, 1u) ||
+                persist_migration_journal_locked(&legacy_journal) != ESP_OK) {
+                return ESP_ERR_INVALID_STATE;
+            }
+            /* Bind the target revision while the marker is still PREPARED,
+             * then publish the target.  If reset occurs after the target
+             * write but before VALIDATED/COMMITTED, recovery can verify the
+             * exact V7 revision and safely consume the scalar marker.  The
+             * inverse ordering would leave a VALIDATED marker with no target
+             * and no scalar fingerprint, forcing an unrecoverable ambiguity. */
+            if (!configuration_migration_journal_set_generation(
+                    &legacy_journal, store->revision) ||
+                persist_migration_journal_locked(&legacy_journal) != ESP_OK) {
+                err = ESP_ERR_INVALID_STATE;
+            } else {
+                /* Publish the target fingerprint while PREPARED is still
+                 * durable, then publish the target store.  A reset after the
+                 * store write but before VALIDATED can therefore prove the
+                 * exact target publication from the PREPARED journal instead
+                 * of encountering an unverifiable target-without-digest
+                 * window. */
+                if (persist_migration_target_fingerprint_locked(store) != ESP_OK) {
+                    err = ESP_ERR_INVALID_STATE;
+                } else {
+                    err = write_store_locked(store);
+                }
+            }
+            if (err == ESP_OK &&
+                !configuration_migration_journal_transition(
+                    &legacy_journal, CONFIGURATION_MIGRATION_STAGE_VALIDATED)) {
+                err = ESP_ERR_INVALID_STATE;
+            }
+            if (err == ESP_OK &&
+                persist_migration_journal_locked(&legacy_journal) != ESP_OK) {
+                err = ESP_ERR_INVALID_STATE;
+            }
+            if (err == ESP_OK &&
+                !configuration_migration_journal_transition(
+                    &legacy_journal, CONFIGURATION_MIGRATION_STAGE_COMMITTED)) {
+                err = ESP_ERR_INVALID_STATE;
+            }
+            if (err == ESP_OK &&
+                persist_migration_journal_locked(&legacy_journal) != ESP_OK) {
+                err = ESP_ERR_INVALID_STATE;
+            }
+            if (err == ESP_OK) err = clear_migration_journal_locked();
+            if (err == ESP_OK) err = clear_migration_fingerprint_locked();
+            /* Scalar-key migrations have no source blob fingerprint, but they
+             * still publish a target fingerprint while the journal is live.
+             * Remove both evidence records together after the terminal
+             * marker is cleared; otherwise a later boot would inherit an
+             * orphan target digest unrelated to any active migration. */
+            if (err == ESP_OK) err = clear_migration_target_fingerprint_locked();
         }
         return err;
     }
     if (err != ESP_OK) return err;
     bool migrated = false;
+    configuration_migration_journal_t migration_journal = {0};
+    bool journal_active = false;
+    /* Journal source_bytes is a fixed 32-bit ABI field. Refuse to narrow a
+     * storage-reported size before recording migration evidence; truncation
+     * could make a later boot accept an unrelated blob. */
+    if (size != sizeof(*store)) {
+        if (size > UINT32_MAX || !migration_source_size_supported(size)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (persist_migration_fingerprint_locked(size) != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        journal_active = configuration_migration_journal_begin(
+            &migration_journal, (uint32_t)size, CONFIGURATION_STORE_VERSION, 1u);
+        if (!journal_active) return ESP_ERR_INVALID_STATE;
+        if (persist_migration_journal_locked(&migration_journal) != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
     if (size == sizeof(configuration_store_v1_t)) {
         err = migrate_v1_locked(store);
         if (err != ESP_OK) return err;
@@ -714,8 +1078,52 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
     }
     if (!valid_store(store)) return ESP_ERR_INVALID_STATE;
     if (migrated || legacy_display_found) {
+        if (journal_active && !configuration_migration_journal_set_generation(
+                &migration_journal, store->revision)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        /* Keep PREPARED as the durable publication-window marker until the
+         * target evidence is staged.  The target fingerprint is written
+         * before the target store so a reset after target publication can
+         * validate both pieces without guessing. */
+        if (journal_active &&
+            persist_migration_target_fingerprint_locked(store) != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
         err = write_store_locked(store);
         if (err != ESP_OK) return err;
+        /* Advance only after target publication is durable. */
+        if (journal_active && !configuration_migration_journal_transition(
+                &migration_journal, CONFIGURATION_MIGRATION_STAGE_VALIDATED)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (journal_active && persist_migration_journal_locked(&migration_journal) != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (journal_active && !configuration_migration_journal_transition(
+                &migration_journal, CONFIGURATION_MIGRATION_STAGE_COMMITTED)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        /* Publish the terminal journal state before removing the marker.  A
+         * reset between target publication and marker cleanup must observe a
+         * durable COMMITTED record and verify the V7 target, rather than
+         * mistaking a torn cleanup for an unvalidated migration. */
+        if (journal_active && persist_migration_journal_locked(&migration_journal) != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (journal_active && clear_migration_journal_locked() != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (journal_active && clear_migration_fingerprint_locked() != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        /* The target digest is part of the same migration evidence set.  Do
+         * not leave it behind after the journal/source markers are retired:
+         * a later boot must never inherit an orphan digest from an already
+         * completed generation. */
+        if (journal_active && clear_migration_target_fingerprint_locked() != ESP_OK) {
+            return ESP_ERR_INVALID_STATE;
+        }
     }
     *inout_snapshot = store->provisioning.confirmed_snapshot;
     *out_force_setup = store->force_setup != 0;
@@ -963,8 +1371,7 @@ static esp_err_t migrate_v3_locked(configuration_store_t *store) {
     store->force_setup = legacy->force_setup;
     store->revision = 1u;
     heap_caps_free(legacy);
-    return device_status_to_platform_error(persistence_service_write_blob(
-        CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, store, sizeof(*store)));
+    return ESP_OK;
 }
 
 device_status_t configuration_service_prepare_system_sleep(uint32_t timeout_ms) {
@@ -1759,6 +2166,26 @@ device_status_t configuration_service_load_revisioned_snapshot(
     configuration_revisioned_snapshot_t *out_snapshot) {
     return configuration_status_from_legacy_error(
         configuration_service_load_revisioned_snapshot_legacy(out_snapshot));
+}
+
+device_status_t configuration_service_checkpoint_current_snapshot(
+    uint64_t *out_revision) {
+    if (!out_revision || !lock()) return DEVICE_STATUS_INVALID_ARGUMENT;
+    configuration_snapshot_t snapshot;
+    seed_snapshot(&snapshot);
+    bool force_setup = false;
+    esp_err_t err = load_locked(&snapshot, &force_setup);
+    (void)force_setup;
+    if (err == ESP_OK) {
+        if (!s_scratch_store || !valid_store(s_scratch_store)) {
+            err = ESP_ERR_INVALID_STATE;
+        } else {
+            err = commit_store_locked(s_scratch_store);
+            if (err == ESP_OK) *out_revision = s_scratch_store->revision;
+        }
+    }
+    unlock();
+    return configuration_status_from_legacy_error(err);
 }
 
 device_status_t configuration_service_apply_runtime_override(

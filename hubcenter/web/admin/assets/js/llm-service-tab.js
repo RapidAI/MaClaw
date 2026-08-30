@@ -2443,7 +2443,7 @@ if (typeof I18N_ZH !== 'undefined') {
     var ready = !!(data.ready && data.embedder_ready);
     var status = data.status || (ready ? 'ready' : (data.downloading ? 'downloading' : (data.warming ? 'warming' : (data.ready ? 'partial' : 'missing'))));
     var path = data.serving_path || data.model_dir || '';
-    root.innerHTML = '<div class="item-head"><div class="llm-embed-title"><div class="item-title">'+esc(t('runtimeTitle'))+'</div>'+embeddingRuntimeBadge(status)
+    root.innerHTML = '<div class="item-head"><div class="llm-embed-title"><div class="item-title" data-icon="cpu">'+esc(t('runtimeTitle'))+'</div>'+embeddingRuntimeBadge(status)
       +'<div class="item-meta">'+esc(t('runtimeDesc'))+'</div></div>'
       +'<div class="actions"><button class="btn-ghost" type="button" onclick="loadLLMEmbeddingModelRuntime()">'+esc(t('runtimeRefresh'))+'</button>'
       +'<button class="btn-secondary" type="button" onclick="triggerLLMEmbeddingModelDownload()">'+esc(t('runtimeTrigger'))+'</button></div></div>'

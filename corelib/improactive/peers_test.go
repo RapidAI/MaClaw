@@ -84,3 +84,58 @@ func TestPeersPatchSkipsNoopWrite(t *testing.T) {
 		}
 	}
 }
+
+func TestPeersPatchPersistsSecondBotMapEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peers.json")
+	s := NewStore(path)
+	// First entry creates the map on disk.
+	if err := s.Patch(func(p *Peers) {
+		p.LansengerPrivateUserIDsByBotID = map[string]string{"support": "staff-support"}
+	}); err != nil {
+		t.Fatalf("Patch first entry: %v", err)
+	}
+	// Regression: adding a second bot mutates the already-loaded map in place.
+	// The no-op detection used to compare the shared map against itself and
+	// silently skip the write, so only the first bot's peer survived a restart.
+	if err := s.Patch(func(p *Peers) {
+		p.LansengerPrivateUserIDsByBotID["sales"] = "staff-sales"
+	}); err != nil {
+		t.Fatalf("Patch second entry: %v", err)
+	}
+
+	back := NewStore(path).LoadOrEmpty()
+	if back.LansengerPrivateUserIDsByBotID["support"] != "staff-support" {
+		t.Fatalf("support peer lost: %#v", back.LansengerPrivateUserIDsByBotID)
+	}
+	if back.LansengerPrivateUserIDsByBotID["sales"] != "staff-sales" {
+		t.Fatalf("second bot entry was not persisted: %#v", back.LansengerPrivateUserIDsByBotID)
+	}
+}
+
+func TestPeersPatchNoopOnSameMapContents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peers.json")
+	s := NewStore(path)
+	if err := s.Patch(func(p *Peers) {
+		p.LansengerPrivateUserIDsByBotID = map[string]string{"support": "staff-support"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info1, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rewriting the identical value must still be detected as a no-op.
+	time.Sleep(20 * time.Millisecond)
+	if err := s.Patch(func(p *Peers) {
+		p.LansengerPrivateUserIDsByBotID["support"] = "staff-support"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info2, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info1.ModTime().Equal(info2.ModTime()) && info1.Size() != info2.Size() {
+		t.Fatalf("same-content map patch should not rewrite file")
+	}
+}

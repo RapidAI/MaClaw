@@ -130,6 +130,17 @@ func (s *Store) Patch(fn func(*Peers)) error {
 		return err
 	}
 	before := p
+	// Peers is a struct but its map field is a reference: fn mutates that map
+	// in place, which would also rewrite before's view and make peersEqual
+	// report a no-op — silently dropping every second-and-later bot entry.
+	// Snapshot the map so the change detection compares real contents.
+	if p.LansengerPrivateUserIDsByBotID != nil {
+		snapshot := make(map[string]string, len(p.LansengerPrivateUserIDsByBotID))
+		for id, userID := range p.LansengerPrivateUserIDsByBotID {
+			snapshot[id] = userID
+		}
+		before.LansengerPrivateUserIDsByBotID = snapshot
+	}
 	fn(&p)
 	// Skip disk I/O when the patch was a no-op (common for same-peer re-notes).
 	if peersEqual(before, p) {

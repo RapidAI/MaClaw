@@ -35,6 +35,28 @@ export function isOpenCodeProvider(provider: Pick<LLMProvider, "name" | "agent_t
     return provider.name === "OpenCode" || (provider.agent_type || "").trim() === "OpenCode";
 }
 
+/** OpenAI organization costs require an Admin API key, not ChatGPT/Codex or other OAuth tokens. */
+export function canQueryOpenAIOrganizationCosts(
+    provider?: Pick<LLMProvider, "name" | "url" | "key" | "auth_type"> | null,
+): boolean {
+    if (!provider) return false;
+    const key = (provider.key || "").trim();
+    if (!key.startsWith("sk-admin-")) return false;
+    const authType = (provider.auth_type || "").trim().toLowerCase();
+    if (authType === "oauth") return false;
+    const url = (provider.url || "").trim();
+    const urlLower = url.toLowerCase();
+    if (urlLower.includes("chatgpt.com")) return false;
+    const name = (provider.name || "").trim().toLowerCase();
+    if (name === "openai" || name === "openai official") return true;
+    try {
+        const parsed = url.includes("://") ? url : `https://${url}`;
+        return new URL(parsed).hostname.toLowerCase() === "api.openai.com";
+    } catch {
+        return urlLower.includes("api.openai.com");
+    }
+}
+
 export const NONE_PROVIDER = "__none__";
 export const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // Must match Go hubServiceProviderName.
 export const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;

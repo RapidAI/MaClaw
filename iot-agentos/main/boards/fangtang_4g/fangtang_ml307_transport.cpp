@@ -607,7 +607,12 @@ private:
 
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (*type == "header") {
-            if (!argument_int(arguments, 2, &status_code_)) {
+            const std::string *encoded_headers = nullptr;
+            if (arguments.size() < 5u ||
+                !argument_int(arguments, 2, &status_code_) ||
+                status_code_ < 100 || status_code_ > 599 ||
+                arguments[3].type != AtArgumentValue::Type::Int ||
+                !argument_string(arguments, 4, &encoded_headers)) {
                 error_ = true;
             } else {
                 headers_received_ = true;
@@ -615,14 +620,14 @@ private:
                 // content URC; let the reader complete immediately.
                 if (method_ == "HEAD" || status_code_ == 204 || status_code_ == 304) {
                     eof_ = true;
-                } else if (arguments.size() >= 5) {
-                    const std::string *encoded_headers = nullptr;
-                    if (argument_string(arguments, 4, &encoded_headers)) {
-                        std::string decoded = uart_->DecodeHex(*encoded_headers);
+                } else {
+                    std::string decoded;
+                    if (!uart_->DecodeHexAppend(decoded, encoded_headers->data(), encoded_headers->size())) {
+                        error_ = true;
+                    } else {
                         std::transform(decoded.begin(), decoded.end(), decoded.begin(),
                                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                        response_chunked_ =
-                            decoded.find("transfer-encoding: chunked") != std::string::npos;
+                        response_chunked_ = decoded.find("transfer-encoding: chunked") != std::string::npos;
                         if (decoded.find("content-length: 0") != std::string::npos) eof_ = true;
                     }
                 }
@@ -631,18 +636,37 @@ private:
             int content_length = 0;
             int received_length = 0;
             int current_length = 0;
-            if (!argument_int(arguments, 2, &content_length) ||
+            if (arguments.size() < 5u ||
+                !argument_int(arguments, 2, &content_length) ||
                 !argument_int(arguments, 3, &received_length) ||
                 !argument_int(arguments, 4, &current_length)) {
                 error_ = true;
             } else {
-                if (current_length > 0 && arguments.size() >= 6) {
+                if (content_length < 0 || received_length < 0 || current_length < 0 ||
+                    current_length > received_length ||
+                    (!response_chunked_ && received_length > content_length)) {
+                    error_ = true;
+                } else if (current_length > 0 && arguments.size() >= 6) {
                     const std::string *encoded = nullptr;
                     if (argument_string(arguments, 5, &encoded)) {
-                        uart_->DecodeHexAppend(body_, encoded->data(), encoded->size());
+                        std::string decoded;
+                        if (!uart_->DecodeHexAppend(decoded, encoded->data(), encoded->size()) ||
+                            decoded.size() != static_cast<size_t>(current_length) ||
+                            body_.size() != static_cast<size_t>(received_length - current_length) ||
+                            body_.size() + decoded.size() != static_cast<size_t>(received_length)) {
+                            ESP_LOGE(TAG, "ML307 cellular HTTP body contains malformed hex");
+                            body_.clear();
+                            error_ = true;
+                            eof_ = true;
+                            state_cv_.notify_all();
+                            return;
+                        }
+                        body_.append(decoded);
                     } else {
                         error_ = true;
                     }
+                } else if (current_length > 0) {
+                    error_ = true;
                 }
                 // Non-chunked firmware reports total/accumulated bytes;
                 // chunked firmware terminates with a zero-length content URC.
@@ -785,6 +809,52 @@ extern "C" esp_err_t ml307_transport_quiesce(uint32_t timeout_ms) {
      * deliberately does not claim a full modem deinit/restart contract. */
     ESP_LOGI(TAG, "ML307 transport admission closed; probe and HTTP borrowers quiesced");
     return ESP_OK;
+}
+
+extern "C" esp_err_t ml307_transport_deinit(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(s_system_sleep_mutex);
+    if (s_system_sleep_preparing) return ESP_ERR_INVALID_STATE;
+    s_network_probe_restart_after_stop.store(false);
+    esp_err_t err = close_transport_and_drain(timeout_ms);
+    if (err != ESP_OK) {
+        /* Admission remains closed after a partial drain.  The caller must
+         * retry or enter a terminal fault state; destroying the modem here
+         * would race a borrower that has not completed MHTTPDEL/callback
+         * retirement. */
+        return err;
+    }
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(s_lifecycle_mutex);
+        /* AtModem::Shutdown unregisters its URC callback before stopping the
+         * shared AtUart receive/event tasks.  Resetting the unique_ptr only
+         * after borrower drain makes UART/DMA destruction deterministic. */
+        if (s_modem && !s_modem->Shutdown(timeout_ms)) {
+            ESP_LOGW(TAG, "ML307 modem/UART shutdown did not meet deadline");
+            return ESP_ERR_TIMEOUT;
+        }
+        s_modem.reset();
+    }
+    s_start_stop_requested.store(false);
+    ESP_LOGI(TAG, "ML307 transport generation deinitialized");
+    return ESP_OK;
+}
+
+extern "C" esp_err_t ml307_transport_reinitialize(int tx_gpio, int rx_gpio,
+                                                    int baud_rate, int timeout_ms,
+                                                    const char *apn) {
+    if (timeout_ms <= 0 || tx_gpio < 0 || rx_gpio < 0 || baud_rate <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(s_lifecycle_mutex);
+        if (s_modem || s_start_in_progress.load()) return ESP_ERR_INVALID_STATE;
+    }
+    /* A successful terminal deinit leaves admission closed. Reopen it only
+     * for this explicit fresh-generation start; no stale worker can reuse the
+     * old modem pointer because s_modem was reset after borrower drain. */
+    s_admission_open.store(true);
+    return ml307_transport_start(tx_gpio, rx_gpio, baud_rate, timeout_ms, apn);
 }
 
 extern "C" esp_err_t ml307_transport_prepare_system_sleep(uint32_t timeout_ms) {

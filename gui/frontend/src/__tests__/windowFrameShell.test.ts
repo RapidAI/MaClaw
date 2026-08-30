@@ -54,6 +54,12 @@ describe('frameless window shell regression guards', () => {
         expect(readSource('App.tsx')).toContain('data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined}');
     });
 
+    it('keeps the env-check mascot proportional instead of stretching it', () => {
+        const css = readSource('App.css');
+        expect(css).toMatch(/\.app-loading-mascot\s*\{[^}]*aspect-ratio:\s*192\s*\/\s*220;/s);
+        expect(css).toMatch(/\.app-loading-mascot__mark\s*\{[^}]*object-fit:\s*contain;/s);
+    });
+
     it('applies the DWM top-safe inset to the startup shell too', () => {
         const css = readSource('App.css');
 

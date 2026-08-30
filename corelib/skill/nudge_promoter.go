@@ -5,11 +5,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"gopkg.in/yaml.v3"
 )
 
 // PromotionThreshold defines when a nudge candidate is ready for automatic
@@ -135,6 +137,13 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 	if err != nil {
 		return nil, fmt.Errorf("generate skill YAML: %w", err)
 	}
+	// Pin the registry identity and lifecycle state in the durable definition.
+	// Otherwise a restart that scans the directory without the config overlay
+	// could silently rename the skill or promote it back to active.
+	yamlContent, err = normalizeGeneratedSkillYAML(yamlContent, skillName)
+	if err != nil {
+		return nil, fmt.Errorf("normalize generated skill YAML: %w", err)
+	}
 
 	// Step 3: Write to skill directory.
 	skillDir := filepath.Join(p.SkillsDir, skillName)
@@ -165,9 +174,11 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 
 	// Step 5: Register.
 	entry := &corelib.NLSkillEntry{
-		Name:           skillName,
-		Description:    candidate.Description,
-		Status:         "active",
+		Name:        skillName,
+		Description: candidate.Description,
+		// Auto-discovered skills are staged until a user approves them and a
+		// runtime proof is recorded. Staged entries are not routable/executable.
+		Status:         "staged",
 		Source:         "auto_discovered",
 		SkillDir:       skillDir,
 		CreatedAt:      time.Now().Format(time.RFC3339),
@@ -183,7 +194,22 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 	} else {
 		parseErr = readErr
 	}
-	if parseErr == nil {
+	if parseErr != nil || parsed == nil {
+		// A generated definition must be syntactically and structurally valid
+		// before it can enter the skill registry.  Leaving a malformed file on
+		// disk creates an active-but-unexecutable skill and can also expose it to
+		// routing or auto-upload.
+		_ = os.RemoveAll(skillDir)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse generated skill YAML: %w", parseErr)
+		}
+		return nil, fmt.Errorf("parse generated skill YAML: empty definition")
+	}
+	if err := validateGeneratedSkillDefinition(parsed, skillName); err != nil {
+		_ = os.RemoveAll(skillDir)
+		return nil, fmt.Errorf("validate generated skill YAML: %w", err)
+	}
+	{
 		entry.Description = parsed.Description
 		entry.RequiredArgs = parsed.RequiredArgs
 		if len(parsed.Steps) > 0 {
@@ -223,6 +249,214 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 		SkillDir:    skillDir,
 		Explanation: fmt.Sprintf("auto-discovered from %d successful executions of [%s]", candidate.Evidence, strings.Join(candidate.ToolSequence, " → ")),
 	}, nil
+}
+
+// validateGeneratedSkillDefinition is the semantic admission gate for LLM
+// generated definitions. YAML syntax alone is insufficient: an empty skill or
+// an action outside the GUI runner contract would otherwise be registered and
+// later appear as a broken capability.
+func validateGeneratedSkillDefinition(def *SkillYAMLFile, expectedName string) error {
+	if def == nil {
+		return fmt.Errorf("empty definition")
+	}
+	if strings.TrimSpace(def.Name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	if expectedName != "" && !strings.EqualFold(strings.TrimSpace(def.Name), strings.TrimSpace(expectedName)) {
+		return fmt.Errorf("name %q does not match requested skill %q", def.Name, expectedName)
+	}
+	if strings.TrimSpace(def.Description) == "" {
+		return fmt.Errorf("description is required")
+	}
+	if len(def.Steps) == 0 {
+		return fmt.Errorf("at least one executable step is required")
+	}
+	if err := validateGeneratedSkillParams(def); err != nil {
+		return err
+	}
+	mode := strings.ToLower(strings.TrimSpace(def.Mode))
+	if mode != "" && mode != "sequential" && mode != "interactive" && mode != "api_workflow" && mode != "pipeline" {
+		return fmt.Errorf("unsupported mode %q", def.Mode)
+	}
+	execMode := strings.ToLower(strings.TrimSpace(def.ExecMode))
+	if execMode != "" && execMode != "all" && execMode != "first" && execMode != "named" {
+		return fmt.Errorf("unsupported exec_mode %q", def.ExecMode)
+	}
+	if mode == "api_workflow" && len(def.Operations) == 0 {
+		return fmt.Errorf("api_workflow requires at least one operation")
+	}
+	if mode != "api_workflow" && len(def.Operations) > 0 {
+		return fmt.Errorf("operations require mode api_workflow")
+	}
+	if def.GlobalTimeout < 0 || def.GlobalTimeout > 86400 {
+		return fmt.Errorf("global_timeout must be between 0 and 86400 seconds")
+	}
+	for i, step := range def.Steps {
+		if strings.TrimSpace(step.Action) == "" {
+			return fmt.Errorf("step %d has empty action", i)
+		}
+		normalized := NormalizeStepForRunnerCopy(corelib.NLSkillStep{Action: step.Action, Params: step.Params}, "")
+		if err := EnsureStepActionSupported(RunnerBackendGUI, normalized.Action); err != nil {
+			return fmt.Errorf("step %d action %q unsupported: %w", i, step.Action, err)
+		}
+		switch NormalizeStepActionName(normalized.Action) {
+		case "bash":
+			if strings.TrimSpace(fmt.Sprint(normalized.Params["command"])) == "" {
+				return fmt.Errorf("step %d bash command is required", i)
+			}
+		case "craft_tool":
+			if strings.TrimSpace(fmt.Sprint(normalized.Params["instructions"])) == "" {
+				return fmt.Errorf("step %d craft_tool instructions are required", i)
+			}
+		case "call_mcp_tool":
+			if len(normalized.Params) == 0 {
+				return fmt.Errorf("step %d call_mcp_tool params are required", i)
+			}
+		}
+		onError := strings.ToLower(strings.TrimSpace(step.OnError))
+		if onError != "" && onError != "stop" && onError != "skip" && onError != "continue" {
+			return fmt.Errorf("step %d has invalid on_error %q", i, step.OnError)
+		}
+		if step.TimeoutSeconds < 0 || step.TimeoutSeconds > 86400 {
+			return fmt.Errorf("step %d timeout must be between 0 and 86400 seconds", i)
+		}
+		if step.Capture != nil {
+			for name, pattern := range step.Capture {
+				if !validGeneratedParamName(name) {
+					return fmt.Errorf("step %d capture name %q is invalid", i, name)
+				}
+				re, err := regexp.Compile(pattern)
+				if err != nil || re.NumSubexp() == 0 {
+					if err == nil {
+						err = fmt.Errorf("regex must contain a capture group")
+					}
+					return fmt.Errorf("step %d capture %q is invalid: %w", i, name, err)
+				}
+			}
+		}
+		if poll := step.Poll; poll != nil {
+			if poll.Interval <= 0 || poll.Interval > 86400 || poll.MaxAttempts <= 0 || poll.MaxAttempts > 10000 {
+				return fmt.Errorf("step %d poll interval/max_attempts out of range", i)
+			}
+			if strings.TrimSpace(poll.UntilMatch) == "" && strings.TrimSpace(poll.UntilStatus) == "" {
+				return fmt.Errorf("step %d poll requires until_match or until_status", i)
+			}
+			if poll.UntilMatch != "" {
+				if _, err := regexp.Compile(poll.UntilMatch); err != nil {
+					return fmt.Errorf("step %d poll until_match is invalid: %w", i, err)
+				}
+			}
+		}
+		if loop := step.Loop; loop != nil {
+			if loop.MaxIterations <= 0 || loop.MaxIterations > 1000 {
+				return fmt.Errorf("step %d loop max_iterations out of range", i)
+			}
+			if loop.UntilMatch != "" {
+				if _, err := regexp.Compile(loop.UntilMatch); err != nil {
+					return fmt.Errorf("step %d loop until_match is invalid: %w", i, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+var generatedParamNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validGeneratedParamName(name string) bool {
+	return generatedParamNameRE.MatchString(strings.TrimSpace(name))
+}
+
+func validateGeneratedSkillParams(def *SkillYAMLFile) error {
+	declared := map[string]bool{}
+	required := map[string]bool{}
+	for _, raw := range def.RequiredArgs {
+		name := strings.TrimSpace(raw)
+		if !validGeneratedParamName(name) {
+			return fmt.Errorf("required_args contains invalid name %q", raw)
+		}
+		key := strings.ToLower(name)
+		if declared[key] {
+			return fmt.Errorf("required_args contains duplicate name %q", name)
+		}
+		declared[key] = true
+		required[key] = true
+	}
+	paramNames := map[string]bool{}
+	for _, param := range def.Params {
+		name := strings.TrimSpace(param.Name)
+		if !validGeneratedParamName(name) {
+			return fmt.Errorf("params contains invalid name %q", param.Name)
+		}
+		key := strings.ToLower(name)
+		if paramNames[key] {
+			return fmt.Errorf("params contains duplicate name %q", name)
+		}
+		paramNames[key] = true
+		declared[key] = true
+		if param.Required && strings.TrimSpace(param.Default) == "" {
+			required[key] = true
+		}
+	}
+	placeholders := map[string]bool{}
+	var visit func(interface{})
+	visit = func(value interface{}) {
+		switch v := value.(type) {
+		case string:
+			for _, key := range ExtractPlaceholderKeys(v) {
+				if !validGeneratedParamName(key) {
+					return
+				}
+				placeholders[strings.ToLower(strings.TrimSpace(key))] = true
+			}
+		case map[string]interface{}:
+			for _, child := range v {
+				visit(child)
+			}
+		case []interface{}:
+			for _, child := range v {
+				visit(child)
+			}
+		}
+	}
+	for _, step := range def.Steps {
+		visit(step.Params)
+		visit(step.When)
+		visit(step.Condition)
+	}
+	for key := range placeholders {
+		if !declared[key] {
+			return fmt.Errorf("placeholder %q is not declared in required_args or params", key)
+		}
+	}
+	// A required declaration must be consumable by the generated definition.
+	// Explicit input-only arguments are allowed only when represented in the
+	// parameter schema; this prevents stale required_args from silently making
+	// every invocation impossible to replay.
+	for key := range required {
+		if !placeholders[key] && !paramNames[key] {
+			return fmt.Errorf("required argument %q is not used by any step or parameter schema", key)
+		}
+	}
+	return nil
+}
+
+func normalizeGeneratedSkillYAML(content, skillName string) (string, error) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal([]byte(content), &raw); err != nil {
+		return "", fmt.Errorf("YAML parse error: %w", err)
+	}
+	if raw == nil {
+		return "", fmt.Errorf("empty definition")
+	}
+	raw["name"] = strings.TrimSpace(skillName)
+	raw["status"] = "staged"
+	raw["source"] = "auto_discovered"
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // --- LLM Skill Generation ---

@@ -58,6 +58,31 @@ func TestRepeatFamilyCollapsesSiblingsAndLeavesOthersAlone(t *testing.T) {
 	}
 }
 
+func TestRepeatSiblingRequiredKeepsOnlyTheFirstInvocationObligatory(t *testing.T) {
+	if !RepeatSiblingRequired(true, 0) || RepeatSiblingRequired(true, 1) || RepeatSiblingRequired(true, 4) {
+		t.Fatal("a required template must require only its first sibling")
+	}
+	if RepeatSiblingRequired(false, 0) || RepeatSiblingRequired(false, 1) {
+		t.Fatal("an optional family stays optional as a whole")
+	}
+	if !RepeatSiblingRequired(true, -1) {
+		t.Fatal("negative index is still the historical first sibling")
+	}
+}
+
+func TestIsRepeatCeilingIDSplitsOnlyMintedSiblings(t *testing.T) {
+	base := "need:information.search.web:abc123def456"
+	if IsRepeatCeilingID(base) || IsRepeatCeilingID(RepeatSiblingNeedID(base, 0)) {
+		t.Fatal("the family base is not a ceiling sibling")
+	}
+	if !IsRepeatCeilingID(RepeatSiblingNeedID(base, 1)) || !IsRepeatCeilingID("selection:"+RepeatSiblingNeedID(base, 2)) {
+		t.Fatal("minted #02/#03 siblings are ceiling ids")
+	}
+	if IsRepeatCeilingID("need:information.lookup:c0ffee#tag") || IsRepeatCeilingID("") {
+		t.Fatal("unrelated hashes and empty ids must not look like ceiling siblings")
+	}
+}
+
 func TestRepeatSiblingBudgetTreatsSilenceAsSingleInvocation(t *testing.T) {
 	for _, declared := range []int{-5, 0, 1} {
 		if got := RepeatSiblingBudget(declared); got != 1 {

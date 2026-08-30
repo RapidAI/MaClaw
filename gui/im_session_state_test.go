@@ -5,6 +5,46 @@ import (
 	"time"
 )
 
+func TestClearPerUserSessionStateClearsInFlightTurn(t *testing.T) {
+	const userID = "u-session-reset-inflight"
+	loopCtx := NewLoopContext("chat", 3, nil)
+	h := &IMMessageHandler{}
+	h.beginInFlightTurn(userID, "draft", loopCtx)
+	other := NewLoopContext("chat", 3, nil)
+	h.beginInFlightTurn("u-other", "other", other)
+
+	h.clearPerUserSessionState(userID)
+
+	if !loopCtx.IsCancelled() {
+		t.Fatal("reset must cancel the target user's in-flight pre-loop")
+	}
+	if h.inFlightTurnForUser(userID) != nil {
+		t.Fatal("reset must clear the target user's in-flight pre-loop")
+	}
+	if other.IsCancelled() {
+		t.Fatal("reset must not cancel another user's in-flight pre-loop")
+	}
+	if got := h.inFlightTurnForUser("u-other"); got == nil || got.ctx != other {
+		t.Fatal("reset must leave another user's in-flight pre-loop")
+	}
+}
+
+func TestClearPerUserSessionStateClearsPendingForegroundText(t *testing.T) {
+	const userID = "u-session-reset-pending"
+	h := &IMMessageHandler{}
+	h.setPendingForegroundText(userID, "draft")
+	h.setPendingForegroundText("u-other", "other")
+
+	h.clearPerUserSessionState(userID)
+
+	if h.pendingForegroundText(userID) != "" {
+		t.Fatal("reset must clear pending foreground text")
+	}
+	if h.pendingForegroundText("u-other") != "other" {
+		t.Fatal("reset must leave another user's pending foreground text")
+	}
+}
+
 func TestClearPerUserSessionStateClearsPendingConfirmation(t *testing.T) {
 	userID := "u-session-reset"
 	store := newAIConfirmationStore("")

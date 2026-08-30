@@ -327,6 +327,9 @@ func codingAgentRunnerNoteVisible(note string) bool {
 	lower := strings.ToLower(note)
 	return strings.Contains(lower, "stopped after") ||
 		strings.Contains(lower, "cancelled") ||
+		// Transient provider pause ("paused to avoid retry storms") is a
+		// user-actionable stop reason and must survive into the final report.
+		strings.Contains(lower, "paused") ||
 		strings.Contains(lower, "deadlock") ||
 		strings.Contains(lower, "no runnable") ||
 		strings.Contains(lower, "blocked by")

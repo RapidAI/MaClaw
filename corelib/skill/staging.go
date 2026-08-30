@@ -73,6 +73,17 @@ func CommitStaging(stagingDir, skillName string) (string, error) {
 	return CommitStagingToDir(stagingDir, skillName, finalRoot)
 }
 
+// PlannedSkillDir returns the deterministic final directory used by
+// CommitStagingToDir for a skill name. Transaction callers use it when they
+// must persist a compensation record before the staging directory is moved.
+func PlannedSkillDir(finalRoot, skillName string) string {
+	safe := sanitizeDirName(skillName)
+	if safe == "" {
+		safe = "unnamed"
+	}
+	return filepath.Join(finalRoot, safe)
+}
+
 // CommitStagingToDir moves a staged skill into the provided final root.
 func CommitStagingToDir(stagingDir, skillName, finalRoot string) (string, error) {
 	safe := sanitizeDirName(skillName)
@@ -81,21 +92,34 @@ func CommitStagingToDir(stagingDir, skillName, finalRoot string) (string, error)
 	}
 
 	finalDir := filepath.Join(finalRoot, safe)
+	backupDir := finalDir + ".prev"
+	// A stale backup is recovery evidence even when the live target directory
+	// has already disappeared (for example after a crash between renames). Never
+	// publish a new version beside it: doing so would make recovery ambiguous and
+	// could silently orphan the only known-good copy.
+	if _, backupErr := os.Stat(backupDir); backupErr == nil {
+		return "", fmt.Errorf("commit staging: previous backup already exists at %s", filepath.Base(backupDir))
+	} else if !os.IsNotExist(backupErr) {
+		return "", fmt.Errorf("commit staging: inspect previous backup: %w", backupErr)
+	}
 
 	// If target already exists, backup to .prev instead of deleting.
 	// This preserves user-added config files, API keys, custom scripts, etc.
 	if _, statErr := os.Stat(finalDir); statErr == nil {
-		backupDir := finalDir + ".prev"
-		_ = os.RemoveAll(backupDir) // Remove any previous backup
+		// A stale backup is recovery evidence, not disposable cache data. Do not
+		// delete it implicitly: doing so could destroy the only copy of a prior
+		// version after a crash or an interrupted update. Require explicit
+		// operator cleanup/recovery instead.
 		if renameErr := os.Rename(finalDir, backupDir); renameErr != nil {
-			// Rename failed (cross-device, permission, locked file, etc.) — fallback to delete.
-			if rmErr := os.RemoveAll(finalDir); rmErr != nil {
-				return "", fmt.Errorf("commit staging: cannot move existing %s to backup (%v) and cannot remove it (%v)", filepath.Base(finalDir), renameErr, rmErr)
-			}
+			// Rename failed (cross-device, permission, locked file, etc.). Never
+			// fall back to deleting the existing installation: that would turn a
+			// recoverable update into irreversible data loss.
+			return "", fmt.Errorf("commit staging: cannot move existing %s to backup: %w", filepath.Base(finalDir), renameErr)
 		}
 	} else {
-		// Target doesn't exist or stat error — ensure it's clean.
-		_ = os.RemoveAll(finalDir)
+		if !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("commit staging: inspect target %s: %w", filepath.Base(finalDir), statErr)
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(finalDir), 0o755); err != nil {
@@ -118,6 +142,21 @@ func CleanupStaging(stagingDir string) {
 		return
 	}
 	_ = os.RemoveAll(stagingDir)
+}
+
+// CleanupStagingChecked is the fail-closed counterpart to CleanupStaging. It
+// is used by transactional callers whose result must distinguish a completed
+// post-commit cleanup from a cleanup that still needs durable retry. The
+// operation is idempotent: an already-removed path is success.
+func CleanupStagingChecked(stagingDir string) error {
+	stagingDir = strings.TrimSpace(stagingDir)
+	if stagingDir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(stagingDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cleanup staging directory: %w", err)
+	}
+	return nil
 }
 
 // CleanupAllStale removes staging directories older than maxAge.

@@ -430,7 +430,7 @@ func TestImplicitInFlightRecoveryDecisionKeepsEmptyInputNeutral(t *testing.T) {
 	}
 }
 
-func TestResolveIMEntryContextBindsInFlightRecoveryForExplicitContinuation(t *testing.T) {
+func TestResolveIMEntryContextDoesNotBindInFlightRecoveryOnPhraseAlone(t *testing.T) {
 	memory := agent.NewConversationMemory()
 	t.Cleanup(memory.Stop)
 	const userID = "inflight-entry-resume"
@@ -457,18 +457,19 @@ func TestResolveIMEntryContextBindsInFlightRecoveryForExplicitContinuation(t *te
 	if result.Handled {
 		t.Fatalf("entry context unexpectedly handled response: %#v", result.Response)
 	}
-	if active := memory.ActiveUnfinishedSlot(userID); active == nil || active.SlotID != slot.SlotID {
-		t.Fatalf("active slot = %#v, want bound recovery slot %q", active, slot.SlotID)
+	// Phrase-based recovery binding was removed by design
+	// (applyImplicitInFlightRecoveryDecision is a no-op): a "continue"-like
+	// message alone must neither bind nor dismiss the slot — the unified
+	// task-context classifier owns that decision.
+	if result.Decision.ResumeSlotID != "" || result.Decision.StartNewTask || result.Decision.DismissSlotID != "" {
+		t.Fatalf("phrase alone must not decide recovery, decision = %#v", result.Decision)
 	}
-	if result.UnfinishedSlot == nil || result.UnfinishedSlot.SlotID != slot.SlotID {
-		t.Fatalf("entry context slot = %#v, want bound recovery slot", result.UnfinishedSlot)
-	}
-	if result.Decision.ResumeSlotID != slot.SlotID {
-		t.Fatalf("entry context decision = %#v, want resume slot %q", result.Decision, slot.SlotID)
+	if active := memory.GetUnfinishedSlot(userID); active == nil || active.SlotID != slot.SlotID {
+		t.Fatalf("recovery slot must stay untouched without a classifier decision, got %#v", active)
 	}
 }
 
-func TestResolveIMEntryContextStartsFreshTaskForOrdinaryInFlightRecoveryInput(t *testing.T) {
+func TestResolveIMEntryContextKeepsInFlightRecoverySlotForOrdinaryInput(t *testing.T) {
 	memory := agent.NewConversationMemory()
 	t.Cleanup(memory.Stop)
 	const userID = "inflight-entry-new-task"
@@ -499,14 +500,14 @@ func TestResolveIMEntryContextStartsFreshTaskForOrdinaryInFlightRecoveryInput(t 
 	if result.Handled {
 		t.Fatalf("entry context unexpectedly handled response: %#v", result.Response)
 	}
-	if !result.FreshTask {
-		t.Fatal("ordinary recovery input did not start a fresh task")
+	// A new-topic message alone must not dismiss the recovery slot either:
+	// starting a fresh task is the unified task-context classifier's call,
+	// not a wording rule (applyImplicitInFlightRecoveryDecision is a no-op).
+	if result.FreshTask || result.Decision.StartNewTask || result.Decision.DismissSlotID != "" {
+		t.Fatalf("phrase alone must not start a fresh task, fresh=%v decision=%#v", result.FreshTask, result.Decision)
 	}
-	if slot := memory.GetUnfinishedSlot(userID); slot != nil {
-		t.Fatalf("unfinished slot = %#v, want dismissed", slot)
-	}
-	if got := memory.Load(userID); len(got) != 0 {
-		t.Fatalf("history = %#v, want cleared for fresh task", got)
+	if slot := memory.GetUnfinishedSlot(userID); slot == nil || slot.SlotID != "slot-recovery" {
+		t.Fatalf("recovery slot must stay pending without a classifier decision, got %#v", slot)
 	}
 }
 

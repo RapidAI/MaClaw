@@ -28,7 +28,17 @@ static bool s_system_sleep_preparing;
 static bool s_system_sleep_was_running;
 static bool s_system_sleep_was_admitted;
 static bool s_system_sleep_restart_pending;
+static bool s_network_restart_preparing;
 static bool s_retiring;
+/* Gateway startup crosses this service's value seam synchronously. Reserve
+ * that tiny handoff so System Sleep cannot park the recovery domain between
+ * the final admission check and the host's Gateway generation creation. */
+static bool s_gateway_rearm_inflight;
+/* Cold-start establish is a synchronous physical modem operation, not the
+ * retry task. Keep its fact beside the recovery admission so System Sleep
+ * PREPARE cannot report a safe point while an initial ML307 registration is
+ * still touching the selected Connectivity generation. */
+static bool s_initial_establishing;
 static esp_err_t s_exit_status = ESP_OK;
 static bool s_registry_retirement_failed;
 static bool s_initialized;
@@ -67,6 +77,39 @@ static bool stop_requested(void) {
     return requested;
 }
 
+/* A synchronous establish may complete after a parent lifecycle operation
+ * closes this service's admission. Re-check the same logical generation
+ * before publishing success or rearming Gateway; the physical Connectivity
+ * operation has its own drain fence below this service. */
+static bool recovery_admitted(void) {
+    taskENTER_CRITICAL(&s_lock);
+    const bool admitted = s_initialized && s_admission_open &&
+                          !s_system_sleep_preparing && !s_retiring &&
+                          !s_network_restart_preparing &&
+                          !s_registry_retirement_failed && !s_initial_establishing &&
+                          !s_stop_requested;
+    taskEXIT_CRITICAL(&s_lock);
+    return admitted;
+}
+
+static bool begin_gateway_rearm(void) {
+    taskENTER_CRITICAL(&s_lock);
+    const bool admitted = s_initialized && s_admission_open &&
+                          !s_system_sleep_preparing && !s_retiring &&
+                          !s_network_restart_preparing &&
+                          !s_registry_retirement_failed && !s_initial_establishing &&
+                          !s_stop_requested && !s_gateway_rearm_inflight;
+    if (admitted) s_gateway_rearm_inflight = true;
+    taskEXIT_CRITICAL(&s_lock);
+    return admitted;
+}
+
+static void end_gateway_rearm(void) {
+    taskENTER_CRITICAL(&s_lock);
+    s_gateway_rearm_inflight = false;
+    taskEXIT_CRITICAL(&s_lock);
+}
+
 static void publish_network_ready(bool ready) {
     cellular_recovery_service_host_t host;
     taskENTER_CRITICAL(&s_lock);
@@ -86,11 +129,14 @@ static bool should_restart_gateway(void) {
 }
 
 static bool start_gateway(void) {
+    if (!begin_gateway_rearm()) return false;
     cellular_recovery_service_host_t host;
     taskENTER_CRITICAL(&s_lock);
     host = s_host;
     taskEXIT_CRITICAL(&s_lock);
-    return host.start_gateway_startup && host.start_gateway_startup(host.context);
+    const bool started = host.start_gateway_startup && host.start_gateway_startup(host.context);
+    end_gateway_rearm();
+    return started;
 }
 
 /* Wi-Fi boards use this service only for the value-level Gateway rearm
@@ -128,7 +174,10 @@ static bool ensure_cellular_task_primitives(void) {
 static void restart_gateway_after_wifi_ready(void) {
     cellular_recovery_service_host_t host;
     taskENTER_CRITICAL(&s_lock);
-    const bool admitted = s_initialized && !s_system_sleep_preparing;
+    const bool admitted = s_initialized && s_admission_open &&
+                          !s_system_sleep_preparing && !s_retiring &&
+                          !s_registry_retirement_failed && !s_initial_establishing &&
+                          !s_stop_requested;
     host = s_host;
     taskEXIT_CRITICAL(&s_lock);
     if (!admitted || device_connectivity_is_provisioning_active() ||
@@ -139,7 +188,7 @@ static void restart_gateway_after_wifi_ready(void) {
         return;
     }
     ESP_LOGI(TAG, "restarting gateway startup after Wi-Fi recovery");
-    if (!host.start_gateway_startup(host.context)) {
+    if (!start_gateway()) {
         ESP_LOGE(TAG, "cannot restart gateway startup after Wi-Fi recovery");
     }
 }
@@ -156,7 +205,7 @@ static void recovery_task(void *arg) {
 
     uint32_t retry_ms = CELLULAR_RECOVERY_RETRY_INITIAL_MS;
     bool needs_gateway_restart = !device_connectivity_is_cellular_transport_ready();
-    while (!stop_requested() && !device_connectivity_is_provisioning_active() &&
+    while (recovery_admitted() && !device_connectivity_is_provisioning_active() &&
            device_connectivity_is_active_cellular()) {
         if (!device_connectivity_is_cellular_transport_ready()) {
             needs_gateway_restart = true;
@@ -170,12 +219,13 @@ static void recovery_task(void *arg) {
                 retry_ms = cellular_recovery_policy_next_retry_ms(retry_ms);
                 continue;
             }
+            if (!recovery_admitted()) continue;
             publish_network_ready(true);
             ESP_LOGI(TAG, "cellular network recovered");
         }
 
         retry_ms = CELLULAR_RECOVERY_RETRY_INITIAL_MS;
-        if (!stop_requested() && needs_gateway_restart && should_restart_gateway()) {
+        if (recovery_admitted() && needs_gateway_restart && should_restart_gateway()) {
             ESP_LOGI(TAG, "restarting gateway startup after cellular recovery");
             if (start_gateway()) needs_gateway_restart = false;
         }
@@ -251,7 +301,8 @@ static esp_err_t stop_registry_entry(void *context, uint32_t timeout_ms) {
 static bool ensure_running_internal(void) {
     taskENTER_CRITICAL(&s_lock);
     const bool admitted = s_initialized && s_admission_open && !s_system_sleep_preparing &&
-                          !s_registry_retirement_failed;
+                          !s_network_restart_preparing && !s_registry_retirement_failed &&
+                          !s_initial_establishing;
     const bool already_running = s_starting || s_task != NULL || s_retiring;
     if (admitted && !already_running) s_starting = true;
     taskEXIT_CRITICAL(&s_lock);
@@ -330,7 +381,10 @@ device_status_t cellular_recovery_service_init(
     s_system_sleep_was_running = false;
     s_system_sleep_was_admitted = false;
     s_system_sleep_restart_pending = false;
+    s_network_restart_preparing = false;
     s_retiring = false;
+    s_gateway_rearm_inflight = false;
+    s_initial_establishing = false;
     s_exit_status = ESP_OK;
     s_registry_retirement_failed = false;
     s_initialized = true;
@@ -341,13 +395,30 @@ device_status_t cellular_recovery_service_init(
 device_status_t cellular_recovery_service_establish_initial(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     taskENTER_CRITICAL(&s_lock);
-    const bool initialized = s_initialized;
+    const bool admitted = s_initialized && s_admission_open &&
+                          !s_system_sleep_preparing && !s_retiring &&
+                          !s_network_restart_preparing &&
+                          !s_registry_retirement_failed && !s_initial_establishing &&
+                          !s_starting && !s_task;
+    if (admitted) s_initial_establishing = true;
     taskEXIT_CRITICAL(&s_lock);
-    if (!initialized) return DEVICE_STATUS_UNAVAILABLE;
+    if (!admitted) {
+        taskENTER_CRITICAL(&s_lock);
+        const bool initialized = s_initialized;
+        taskEXIT_CRITICAL(&s_lock);
+        return initialized ? DEVICE_STATUS_BUSY : DEVICE_STATUS_UNAVAILABLE;
+    }
     publish_network_ready(false);
     const device_status_t status =
         device_connectivity_establish_cellular_transport(timeout_ms);
-    if (status == DEVICE_STATUS_OK) {
+    taskENTER_CRITICAL(&s_lock);
+    const bool publish_ready = status == DEVICE_STATUS_OK && s_initialized &&
+                               s_admission_open && !s_system_sleep_preparing &&
+                               !s_network_restart_preparing && !s_retiring &&
+                               !s_registry_retirement_failed;
+    s_initial_establishing = false;
+    taskEXIT_CRITICAL(&s_lock);
+    if (publish_ready) {
         publish_network_ready(true);
         ESP_LOGI(TAG, "cellular network ready");
     }
@@ -371,8 +442,9 @@ device_status_t cellular_recovery_service_prepare_system_sleep(uint32_t timeout_
         taskEXIT_CRITICAL(&s_lock);
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    if (s_system_sleep_preparing || (s_starting && !s_task) || s_retiring ||
-        s_registry_retirement_failed) {
+    if (s_system_sleep_preparing || s_network_restart_preparing || s_initial_establishing ||
+        s_gateway_rearm_inflight ||
+        (s_starting && !s_task) || s_retiring || s_registry_retirement_failed) {
         taskEXIT_CRITICAL(&s_lock);
         return DEVICE_STATUS_BUSY;
     }
@@ -405,4 +477,48 @@ void cellular_recovery_service_abort_system_sleep_prepare(void) {
     if (restart && !ensure_running_internal()) {
         ESP_LOGW(TAG, "cannot restore cellular recovery after sleep abort");
     }
+}
+
+device_status_t cellular_recovery_service_prepare_network_restart(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    bool was_running;
+    taskENTER_CRITICAL(&s_lock);
+    if (!s_initialized) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    /* An establish/rearm handoff may still touch the selected Connectivity
+     * generation. Refuse to certify the retry domain quiescent until it has
+     * reached its own value-level safe point. */
+    if (s_system_sleep_preparing || s_network_restart_preparing ||
+        s_initial_establishing || s_gateway_rearm_inflight ||
+        (s_starting && !s_task) || s_retiring || s_registry_retirement_failed) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    s_network_restart_preparing = true;
+    s_admission_open = false;
+    was_running = s_task != NULL;
+    taskEXIT_CRITICAL(&s_lock);
+    return was_running ? stop_task(timeout_ms) : DEVICE_STATUS_OK;
+}
+
+device_status_t cellular_recovery_service_commit_prepared_network_restart(void) {
+    taskENTER_CRITICAL(&s_lock);
+    if (!s_initialized) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    if (!s_network_restart_preparing || s_task || s_starting || s_retiring ||
+        s_initial_establishing || s_gateway_rearm_inflight) {
+        taskEXIT_CRITICAL(&s_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    /* Never turn this into a modem lifecycle claim. It only proves that the
+     * common retry worker cannot publish/rearm against the retiring root. */
+    s_network_restart_preparing = false;
+    s_stop_requested = true;
+    s_system_sleep_restart_pending = false;
+    taskEXIT_CRITICAL(&s_lock);
+    return DEVICE_STATUS_OK;
 }

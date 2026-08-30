@@ -36,6 +36,12 @@ func TestBuildAll_ExcludesEmptyDescriptionTools(t *testing.T) {
 	})
 	// Real tool — should appear in output.
 	r.Register(RegisteredTool{
+		Name: "generate_pdf", Description: "生成 PDF", Status: RegToolAvailable,
+	})
+	// Legacy dynamic gateway — even with a description it is a managed-surface
+	// capability only and must never become legacy model authority
+	// (tool.IsLegacyModelDynamicGateway).
+	r.Register(RegisteredTool{
 		Name: "manage_skill", Description: "Skill 管理", Status: RegToolAvailable,
 	})
 
@@ -51,8 +57,11 @@ func TestBuildAll_ExcludesEmptyDescriptionTools(t *testing.T) {
 	if !names["browser"] {
 		t.Error("expected 'browser' (has description) in BuildAll output")
 	}
-	if !names["manage_skill"] {
-		t.Error("expected 'manage_skill' (has description) in BuildAll output")
+	if !names["generate_pdf"] {
+		t.Error("expected 'generate_pdf' (has description) in BuildAll output")
+	}
+	if names["manage_skill"] {
+		t.Error("'manage_skill' is a legacy dynamic gateway and must NOT appear in BuildAll output")
 	}
 	if names["browser_navigate"] {
 		t.Error("'browser_navigate' (empty description) must NOT appear in BuildAll output")

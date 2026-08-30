@@ -36,6 +36,7 @@ var ManageSkillActions = []ManageSkillAction{
 	{"maintenance_drafts", "收集需人审的 patch_draft / merge_draft 与排队自修复项（只读 dry-run；不修改 Skill）"},
 	{"execute_maintenance_plan", "执行已批准的 Skill 维护动作，默认 dry_run 预演"},
 	{"evolution_status", "查询 Skill 自进化管道状态（自修复/优化/自动发现是否启用、排队数、冷却时间等；只读）"},
+	{"evolution_compensations", "查询待恢复补偿队列的安全摘要（只读；不暴露快照内容、不触发恢复）"},
 	{"evolution_audit", "查询 Skill 自进化持久审计日志（只读；limit 默认 50 最大 200；可选 name 过滤技能；路径 ~/.maclaw/skill_evolution/audit.jsonl）"},
 	{"set_evolution_enabled", "开关自动自进化（enabled=true/false 必填；写入 skill_evolution_enabled 配置；true 时同时清除 session 禁用；不影响手动 trigger_repair/trigger_optimize；环境变量 MACLAW_DISABLE_SKILL_EVOLUTION 仍优先强制关闭）"},
 	{"trigger_repair", "立即对指定 Skill 尝试 LLM 自修复（name 必填；force=true 时跳过成功率门槛但仍受安全与次数限制；wait=true 时同步等待结果）"},
@@ -104,6 +105,8 @@ func NormalizeManageSkillAction(action string) string {
 		return "info"
 	case "evolution", "evol_status", "self_repair_status", "optimize_status":
 		return "evolution_status"
+	case "compensations", "recovery_queue", "audit_pending":
+		return "evolution_compensations"
 	case "evolution_log", "audit", "audit_log", "evolution_history", "skill_evolution_audit":
 		return "evolution_audit"
 	case "list_drafts", "review_drafts", "patch_drafts", "governance_drafts":

@@ -762,15 +762,18 @@ func TestMergeGroupDiscussionSummariesKeepsLocalInitiatedSessions(t *testing.T) 
 	}
 }
 
-func TestMergeGroupDiscussionSummariesSortsByUpdatedAt(t *testing.T) {
+func TestMergeGroupDiscussionSummariesKeepsStableCreatedPlacement(t *testing.T) {
 	base := time.Now().UTC()
+	// Placement is stable by creation time (falling back to updated_at when
+	// created_at is zero): later activity must not move an entry. See
+	// sortGroupDiscussionSummariesByCreated.
 	live := []a2a.HubDiscussionSummary{{ID: "older-live", Role: "review", Status: "open", UpdatedAt: base}}
 	cached := []a2a.HubDiscussionSummary{{ID: "newer-cached", Role: "initiator", Status: "open", UpdatedAt: base.Add(time.Minute)}}
 	got := mergeGroupDiscussionSummaries(live, cached, "all")
-	if len(got) != 2 || got[0].ID != "newer-cached" || got[1].ID != "older-live" {
-		t.Fatalf("merged summaries not sorted by updated_at desc: %+v", got)
+	if len(got) != 2 || got[0].ID != "older-live" || got[1].ID != "newer-cached" {
+		t.Fatalf("merged summaries not in stable created placement: %+v", got)
 	}
-	if got[0].LocalRelation != "initiated_by_me" || got[0].Readonly || got[1].LocalRelation != "owned_ve_invited" || !got[1].Readonly {
+	if got[1].LocalRelation != "initiated_by_me" || got[1].Readonly || got[0].LocalRelation != "owned_ve_invited" || !got[0].Readonly {
 		t.Fatalf("merged summaries not normalized: %+v", got)
 	}
 }

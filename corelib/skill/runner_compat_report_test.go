@@ -172,6 +172,34 @@ func TestAssessRunnerCompatibility_RecognizesSkillHubImportedWorkflow(t *testing
 	}
 }
 
+func TestAgentGuidedWorkflowInstructions_UsesPromptAliasAndRejectsManual(t *testing.T) {
+	body := "阶段1 调研，启动多个background agent并行调研；与用户确认大纲；多Agent并行写作；从 templates/ 复制项目骨架；维护 version.json。"
+	imported := &corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Source: "clawhub",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"prompt": body},
+		}},
+	}
+	got := AgentGuidedWorkflowInstructions(imported)
+	if got != body {
+		t.Fatalf("imported prompt alias = %q, want the SKILL.md body", got)
+	}
+	if !IsAgentGuidedWorkflowSkill(imported) {
+		t.Fatal("prompt alias must still classify as agent-guided")
+	}
+
+	manual := &corelib.NLSkillEntry{
+		Name:   "Book-PDF",
+		Source: "manual",
+		Steps:  imported.Steps,
+	}
+	if AgentGuidedWorkflowInstructions(manual) != "" || IsAgentGuidedWorkflowSkill(manual) {
+		t.Fatal("manual craft_tool must not look like an imported workflow")
+	}
+}
+
 func TestAssessRunnerCompatibility_RecognizesSkillMarketImportedWorkflow(t *testing.T) {
 	entry := &corelib.NLSkillEntry{
 		Name:   "Book-PDF",

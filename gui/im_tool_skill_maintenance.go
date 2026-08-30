@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -101,42 +102,83 @@ func (h *IMMessageHandler) toolExecuteSkillMaintenancePlan(args map[string]inter
 	var updated []corelib.NLSkillEntry
 	var result cskill.SkillMaintenanceExecutionResult
 	var repairTargets []corelib.NLSkillEntry
-	if err := exec.withSkillListMutate(func() error {
-		skills := exec.loadSkills()
-		planOpts := cskill.SkillMaintenancePlanOptions{
-			Now:                 time.Now(),
-			StaleAfterDays:      skillMaintenanceIntArg(args, "stale_after_days"),
-			MinFailureRuns:      skillMaintenanceIntArg(args, "min_failure_runs"),
-			MaxActions:          skillMaintenanceIntArg(args, "max_actions"),
-			DuplicateSimilarity: skillMaintenanceFloatArg(args, "duplicate_similarity"),
+	skills := exec.loadSkills()
+	planOpts := cskill.SkillMaintenancePlanOptions{
+		Now:                 time.Now(),
+		StaleAfterDays:      skillMaintenanceIntArg(args, "stale_after_days"),
+		MinFailureRuns:      skillMaintenanceIntArg(args, "min_failure_runs"),
+		MaxActions:          skillMaintenanceIntArg(args, "max_actions"),
+		DuplicateSimilarity: skillMaintenanceFloatArg(args, "duplicate_similarity"),
+	}
+	plan = cskill.BuildSkillMaintenancePlan(skills, planOpts)
+	if len(approvedDraftIDs) > 0 {
+		updated, result = cskill.ExecuteReviewedGovernanceDrafts(skills, cskill.GovernanceDraftExecutionOptions{
+			Now:                  time.Now(),
+			DryRun:               dryRun,
+			ReviewedDraftIDs:     approvedDraftIDs,
+			PlanOptions:          planOpts,
+			AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
+		})
+	} else {
+		updated, result = cskill.ExecuteSkillMaintenancePlan(skills, plan, cskill.SkillMaintenanceExecutionOptions{
+			Now:                  time.Now(),
+			DryRun:               dryRun,
+			ApprovedActions:      approvedActions,
+			AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
+		})
+	}
+	repairTargets = skillMaintenanceRepairTargets(updated, result)
+	if !dryRun && result.OK {
+		requestID := fmt.Sprintf("evo_im_maintenance_%d", time.Now().UnixNano())
+		configRevision := skillEvolutionConfigRevision(h.app)
+		commitSkillName := ""
+		if len(updated) > 0 {
+			commitSkillName = strings.TrimSpace(updated[0].Name)
 		}
-		plan = cskill.BuildSkillMaintenancePlan(skills, planOpts)
-		if len(approvedDraftIDs) > 0 {
-			updated, result = cskill.ExecuteReviewedGovernanceDrafts(skills, cskill.GovernanceDraftExecutionOptions{
-				Now:                  time.Now(),
-				DryRun:               dryRun,
-				ReviewedDraftIDs:     approvedDraftIDs,
-				PlanOptions:          planOpts,
-				AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
-			})
-		} else {
-			updated, result = cskill.ExecuteSkillMaintenancePlan(skills, plan, cskill.SkillMaintenanceExecutionOptions{
-				Now:                  time.Now(),
-				DryRun:               dryRun,
-				ApprovedActions:      approvedActions,
-				AllowDuplicateRetire: skillMaintenanceBoolArg(args, "allow_duplicate_retire", false),
-			})
+		if commitSkillName == "" {
+			result.OK = false
+			result.Error = "skill maintenance produced no identifiable skill entry"
 		}
-		repairTargets = skillMaintenanceRepairTargets(updated, result)
-		if !dryRun && result.OK {
-			if err := exec.saveSkills(updated); err != nil {
-				result.OK = false
-				result.Error = "skill maintenance save failed: " + err.Error()
-				return err
-			}
+		if !result.OK {
+			// Keep the failure in the structured result; do not attempt a commit
+			// with a synthetic skill identity.
+			goto maintenanceCommitDone
 		}
-		return nil
-	}); err != nil {
+		committer := &cskill.SkillCommitter{
+			SkillLoader: func() []corelib.NLSkillEntry { return exec.loadSkills() },
+			SkillSaver: func(entries []corelib.NLSkillEntry) error {
+				return exec.withSkillListMutate(func() error { return exec.saveSkills(entries) })
+			},
+			RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+				return exec.withSkillListMutate(func() error { return exec.restoreSkillsSnapshot(entries) })
+			},
+			EntriesMutator: func([]corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+				return updated, nil
+			},
+			DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+			IndexRefresher: func() error {
+				if h.app == nil {
+					return fmt.Errorf("app not initialized")
+				}
+				return h.app.refreshSkillIndexesAfterMutationChecked("")
+			},
+			FinalAuditor: func(event string, data map[string]string) error {
+				return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+			},
+			ConfigRevision: configRevision,
+		}
+		commitResult := committer.Commit(cskill.WithEvolutionRequestMetadata(context.Background(), requestID, 1), commitSkillName, &updated[0], "skill:maintenance_plan_applied", map[string]string{
+			"skill": "maintenance", "action": "maintenance_plan", "decision": "applied", "via": "operator",
+			"request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none",
+		})
+		if commitResult.State != "committed" || commitResult.CleanupStatus != "clear" {
+			result.OK = false
+			result.Error = fmt.Sprintf("skill maintenance not committed: %s (%s)", commitResult.State, commitResult.FailureReason)
+		}
+	}
+
+maintenanceCommitDone:
+	if !result.OK && !dryRun {
 		auditErr := h.recordSkillDraftExecutionAudit(approvedReviewTraceIDs, skillDraftExecutionBlocked, result.Error)
 		return skillMaintenanceExecutionPayload(map[string]interface{}{
 			"ok":                           false,
@@ -157,9 +199,6 @@ func (h *IMMessageHandler) toolExecuteSkillMaintenancePlan(args map[string]inter
 	}
 	auditErr := h.recordSkillDraftExecutionAudit(approvedReviewTraceIDs, auditStatus, skillMaintenanceExecutionAuditNote(result))
 
-	if result.RequiresIndexRefresh && !dryRun && result.OK {
-		h.refreshSkillIndexesAfterMutation("")
-	}
 	triggeredRepairs := 0
 	if !dryRun && result.OK && len(repairTargets) > 0 {
 		if runner := h.getSkillRunner(); runner != nil {

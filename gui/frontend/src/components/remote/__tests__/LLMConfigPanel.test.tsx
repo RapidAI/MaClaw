@@ -67,7 +67,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 vi.mock('../../providerLogos', () => ({ PROVIDER_LOGOS: {} }));
-vi.mock('../UsageDisplay', () => ({ UsageDisplay: () => null }));
+vi.mock('../UsageDisplay', () => ({ UsageDisplay: () => <div>OpenAI Usage</div> }));
 vi.mock('../TokenUsagePanel', () => ({ TokenUsagePanel: () => null }));
 vi.mock('../LLMProfileAssignments', () => ({
     LLMProfileAssignments: ({ descriptionAction }: { descriptionAction?: unknown }) => descriptionAction ?? null,
@@ -81,7 +81,7 @@ vi.mock('../../CustomDialog', () => ({
 }));
 
 import { LLMConfigPanel } from '../LLMConfigPanel';
-import { formatProviderTestError, formatProviderTestErrorOrFallback, hubOfficialStatus, isProviderTestCancelMessage } from '../LLMConfigPanelShared';
+import { canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubOfficialStatus, isProviderTestCancelMessage } from '../LLMConfigPanelShared';
 
 describe('LLMConfigPanel test-and-save flow', () => {
     beforeEach(() => {
@@ -324,19 +324,21 @@ describe('LLMConfigPanel test-and-save flow', () => {
     });
 
     it('persists the global thinking mode via the thinking card', async () => {
+        // The Auto option was removed: unset now defaults to enabled, so the
+        // card only offers On/Off.
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
         const onButton = await screen.findByTestId('thinking-mode-enabled');
-        const autoButton = screen.getByTestId('thinking-mode-auto');
+        const offButton = screen.getByTestId('thinking-mode-disabled');
+
+        fireEvent.click(offButton);
+        await waitFor(() => {
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('disabled');
+        });
 
         fireEvent.click(onButton);
         await waitFor(() => {
             expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('enabled');
-        });
-
-        fireEvent.click(autoButton);
-        await waitFor(() => {
-            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('');
         });
     });
 
@@ -424,14 +426,15 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        const onButton = await screen.findByTestId('thinking-mode-enabled');
-        fireEvent.click(onButton);
+        // Default is enabled; switching off fails and must roll back to On.
+        const offButton = await screen.findByTestId('thinking-mode-disabled');
+        fireEvent.click(offButton);
 
         await waitFor(() => {
-            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('enabled');
+            expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledWith('disabled');
             expect(screen.getByRole('alert').textContent).toContain("Couldn't save the reasoning setting");
         });
-        expect(screen.getByTestId('thinking-mode-auto').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('thinking-mode-enabled').getAttribute('aria-pressed')).toBe('true');
     });
 
     it('prevents duplicate reasoning saves before React applies the disabled state', async () => {
@@ -440,13 +443,13 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
 
-        const onButton = await screen.findByTestId('thinking-mode-enabled');
-        fireEvent.click(onButton);
-        fireEvent.click(onButton);
+        const offButton = await screen.findByTestId('thinking-mode-disabled');
+        fireEvent.click(offButton);
+        fireEvent.click(offButton);
         expect(SetMaclawLLMThinkingModeMock).toHaveBeenCalledTimes(1);
 
         act(() => { resolveSave?.(); });
-        await waitFor(() => expect((onButton as HTMLButtonElement).disabled).toBe(false));
+        await waitFor(() => expect((offButton as HTMLButtonElement).disabled).toBe(false));
     });
 
     it('disables model fetch for Volcengine Agent Plan (preset model, enter manually)', async () => {
@@ -1227,6 +1230,60 @@ describe('formatProviderTestErrorOrFallback', () => {
 
     it('fills in a generic reason when unwrap leaves nothing', () => {
         expect(formatProviderTestErrorOrFallback('Error:   ', t)).toMatch(/Check the API URL, key, and model/);
+    });
+});
+
+describe('canQueryOpenAIOrganizationCosts', () => {
+    it('rejects ChatGPT/Codex OAuth and other OAuth providers', () => {
+        expect(canQueryOpenAIOrganizationCosts({
+            name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: 'xai-token', auth_type: 'oauth',
+        })).toBe(false);
+        expect(canQueryOpenAIOrganizationCosts({
+            name: 'OpenAI', url: 'https://chatgpt.com/backend-api/codex', key: 'chatgpt-jwt', auth_type: 'oauth',
+        })).toBe(false);
+        expect(canQueryOpenAIOrganizationCosts({
+            name: 'OpenAI Official', url: 'https://api.openai.com/v1', key: 'sk-proj-abc',
+        })).toBe(false);
+    });
+
+    it('accepts an OpenAI Admin API key', () => {
+        expect(canQueryOpenAIOrganizationCosts({
+            name: 'OpenAI Official', url: 'https://api.openai.com/v1', key: 'sk-admin-real',
+        })).toBe(true);
+        expect(canQueryOpenAIOrganizationCosts({
+            name: 'openai official', url: 'https://api.openai.com/v1', key: 'sk-admin-real',
+        })).toBe(true);
+        expect(canQueryOpenAIOrganizationCosts({
+            name: 'Custom OpenAI', url: 'api.openai.com/v1', key: 'sk-admin-real',
+        })).toBe(true);
+    });
+});
+
+describe('OpenAI organization costs card', () => {
+    it('does not show OpenAI usage for an xAI-Grok OAuth provider', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'xAI-Grok', url: 'https://api.x.ai/v1', key: 'oauth-token', model: 'grok-4.6', protocol: 'openai', auth_type: 'oauth', wire_api: 'responses' },
+            ],
+            current: 'xAI-Grok',
+        });
+
+        render(<LLMConfigPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+        expect(await screen.findByText('xAI-Grok')).toBeTruthy();
+        expect(screen.queryByText('OpenAI Usage')).toBeNull();
+    });
+
+    it('shows OpenAI usage only when the current provider has an Admin API key', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'OpenAI Official', url: 'https://api.openai.com/v1', key: 'sk-admin-real', model: 'gpt-5.4', protocol: 'openai' },
+            ],
+            current: 'OpenAI Official',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        expect(await screen.findByText('OpenAI Official')).toBeTruthy();
+        expect(screen.getByText('OpenAI Usage')).toBeTruthy();
     });
 });
 

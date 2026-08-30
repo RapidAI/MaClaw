@@ -1,5 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { GetOpenAIUsage } from "../../../wailsjs/go/main/App";
+import { formatProviderTestError } from "./LLMConfigPanelShared";
 
 interface UsageData {
     total_granted: number;
@@ -18,26 +19,38 @@ export function UsageDisplay({ lang }: Props) {
     const [usage, setUsage] = useState<UsageData | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const fetchSeqRef = useRef(0);
 
-    const fetchUsage = async () => {
+    useEffect(() => () => { fetchSeqRef.current += 1; }, []);
+
+    const fetchUsage = useCallback(async () => {
+        const seq = ++fetchSeqRef.current;
         setLoading(true);
         setError("");
         try {
             const data = await GetOpenAIUsage();
-            setUsage(data);
+            if (seq !== fetchSeqRef.current) return;
+            setUsage({
+                total_granted: Number(data?.total_granted) || 0,
+                total_used: Number(data?.total_used) || 0,
+                total_available: Number(data?.total_available) || 0,
+            });
         } catch (e) {
-            setError(String(e));
+            if (seq !== fetchSeqRef.current) return;
+            setUsage(null);
+            setError(formatProviderTestError(String(e), t) || String(e));
+        } finally {
+            if (seq === fetchSeqRef.current) setLoading(false);
         }
-        setLoading(false);
-    };
+    }, [t]);
 
     return (
         <div className="usage-display">
             <div className="usage-display__header">
                 <span className="usage-display__title">
-                    {t("OpenAI Usage", "OpenAI 用量")}
+                    {t("OpenAI organization costs", "OpenAI 组织账单")}
                 </span>
-                <button onClick={fetchUsage} disabled={loading} className="usage-display__button">
+                <button type="button" onClick={fetchUsage} disabled={loading} className="usage-display__button">
                     {loading ? t("Loading...", "查询中...") : t("Check", "查询")}
                 </button>
             </div>

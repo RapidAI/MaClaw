@@ -783,3 +783,21 @@ D2 的宿主终态桥也已开始：每个 SubAgent 有 execution-scoped owner�
 改造不允许 callback 直接把 steer 翻译为 `CloseForLifecycle`：正确 owner 是 `RunLoop`。local/remote callback 共同维护仅来自 host `LoopContext` 的 observed revision；hooks 必须在 drain 前快照、完成 transform 后只提交该快照（空可见 payload 的 accepted steer 也在该边界消费，drain 期间新到 revision 保持可见）；`LLMRequestContext` 在 scheduler 等待前安装可取消 operation；`LLMReplanRequested` 用 `ReplanRequestedSince` 检查；`TryFinalizeLLMResponse` 用 `TrySealReplans` 关闭 final-response race。`RunLoop` 因而是唯一发出 `steered` disposition 的位置，relay 只按 exact reservation tuple 退休 holder。
 
 D2a 的 local/remote 对称回归已通过真实 `codingagent.Run` 覆盖 request context 的 live steer cancellation、successor 注入内容、finalization 拒绝，以及已消费/后续 steering watermark。D2b 的首个 callback/holder conformance 也已通过：qualification-disabled 的 test-only relay 使用 real holder、channel tuple 和 durable coordinator；仅测试可见的 `{Protocol, ConnectionID, SurfaceEpoch}` reservation ledger 证明 predecessor 恰有一次 `steered`，其 alias 为 `stale_surface`，而重复/迟到 predecessor disposition 不会关闭新 reservation。D2 仍未完成：必须补 tool-batch durability、request 中 steer、transform/request race、response/finalization race、cancel/steer race、runtime/nested/route terminal 的全组合。每项负向断言均包含零静态 name-dispatch fallback、零额外 provider I/O/alias materialization。即使 D2 完成，仍须 D3 的 fixed cohort 与 kill-switch production conformance；此前 dynamic Skill/MCP alias 继续 zero materialization。
+
+### 9.10 第七次复审修订：本地桌面已验证 ingress 的 correlation-gated 静态面恢复（2026-08-25）
+
+**背景事故**：S0.5 的 `filterUncorrelatedCodingStaticCompatibilityEffects` 对所有非 horizon 请求无条件生效，把"桌面 in-process 全功能编程工作台"（Wails 签发 verified task relation + host workspace binding + scope approval + audit）与真正无 correlation 的远程 HTTP/SSE 适配器一刀切。生产症状：编程子代理只拿到只读工具，模型按兼容提示词输出"请启动后续执行工作流"的计划文本，宿主却因"有检索证据"判 passed——零产出绿勾，且空跑被技能自学习沉淀为"只写 todo 就停"的坏配方。
+
+**关键事实变化**：S0.5 收口的前提"Coding 拿不到 request/response 相关性"对本地路径已不成立。shared `RunLoop` 在每个真实出站请求边界 mint surface epoch（`BeginToolSurfaceEpoch`），并在派发任何工具调用前把 provider wire 的 `ResponseID` 写入 `ToolCallExecutionContext`（解析器对同流冲突 ID fail-closed）。本地 in-process 回环由此具备请求级相关性：迟到/重放 response 因 epoch 不匹配被拒，ambiguous delivery 触发 quarantine，名称围栏只认当次渲染面。
+
+**决议（经产品 owner 评审）**：新增 host 血缘事实 `correlatedLocalExecution`——仅当 root attempt 从 verified desktop ingress 解析出 durable identity 且持有 host 签发的 local workspace binding 时置位；嵌套 child 只经宿主 spawn 路径继承该事实，绝不复制 parent 的 identity/handle/surface/grant，也绝不从任务文本、配置、路径或 runtime ID 推导。该事实为 true 时，本地静态面恢复渲染 effectful family（write/edit/bash/download/spawn），否则维持 S0.5 只读兼容面。
+
+**配套门禁与诚实性约束**（同一切片落地，缺一不可）：
+
+1. 派发双校验：inventory 中所有非 `codingStaticCompatibilityItemAllowedWithoutTransportCorrelation` 的 family，在 `ExecuteToolCallWithContext` 必须同时携带非空 `SurfaceEpoch` 与 `ResponseID`，缺一即 `static_response_correlation_missing` fail-closed；该校验在所有面上生效，含已恢复面。
+2. 兼容面诚实判败：uncorrelated 面上的 implementation/operational 任务，无文件且无命令证据时不得判 passed（该面提示词本就指示模型只出计划，而产品里并不存在所谓"后续执行工作流"）。
+3. 技能自学习守卫：零生效证据（无写/无命令/无 spawn）的 coding 会话不进入技能沉淀，防止把"检索后停止"固化为配方。
+
+**明确不解锁**：dynamic Skill/MCP alias 维持 zero materialization（S1-C qualification 仍 disabled）；remote Coding 维持完整 S0.5 只读收口；epoch-less 的宿主维护直调不得携带 effectful 调用（本切片前 `executeLoopTool` 已无生产调用者）。S1 静态面语义化迁移（planner/materialization 全链）仍是终态；本节是把本地桌面路径从"误伤的 containment"恢复到"有 correlation 证据的受控执行"，不是放弃迁移。
+
+**回归证据**：`gui/coding_correlated_runloop_test.go` 以真实 `agent.RunLoop` + 带/不带 wire `id` 的假 provider 验证写盘成功/拦截；`gui/coding_correlated_local_surface_test.go` 覆盖渲染面、门禁、诚实判败与技能守卫；既有 uncorrelated local/remote containment 测试不变且全绿。

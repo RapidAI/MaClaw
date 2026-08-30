@@ -329,3 +329,88 @@ func TestHubManagedSecurityConfigCannotBeOverwrittenLocally(t *testing.T) {
 		t.Fatalf("unmanaged language should remain changed, got %q", next.Language)
 	}
 }
+
+func TestNameLevelRejection(t *testing.T) {
+	centralized := corelib.AppConfig{
+		HubSecurityCentralized: true,
+		SandboxMode:            "os",
+		FileOutboundEnabled:    false,
+		ImageOutboundEnabled:   false,
+	}
+	for _, name := range []string{"bash", "send_file", "send_to_im", "screenshot"} {
+		if ok, reason := NameLevelRejection(centralized, name); !ok || reason == "" {
+			t.Fatalf("%s must be name-level rejected under %v, got ok=%v", name, centralized, ok)
+		}
+	}
+	// Argument-dependent and unaffected tools never report a name-level rejection.
+	for _, name := range []string{"web_fetch", "im_message", "read_file", "office", "generate_pdf"} {
+		if ok, _ := NameLevelRejection(centralized, name); ok {
+			t.Fatalf("%s must not be name-level rejected", name)
+		}
+	}
+	// Without centralization or with the feature enabled, nothing is rejected.
+	if ok, _ := NameLevelRejection(corelib.AppConfig{SandboxMode: "os"}, "bash"); ok {
+		t.Fatal("non-centralized config must not reject bash at name level")
+	}
+	if ok, _ := NameLevelRejection(corelib.AppConfig{HubSecurityCentralized: true, SandboxMode: "none"}, "bash"); ok {
+		t.Fatal("sandbox_mode=none must not reject bash")
+	}
+	open := corelib.AppConfig{HubSecurityCentralized: true, SandboxMode: "os", FileOutboundEnabled: true, ImageOutboundEnabled: true}
+	if ok, _ := NameLevelRejection(open, "send_file"); ok {
+		t.Fatal("file outbound enabled must not reject send_file")
+	}
+	if ok, _ := NameLevelRejection(open, "screenshot"); ok {
+		t.Fatal("image outbound enabled must not reject screenshot")
+	}
+}
+
+// Regression: generate_pdf performs no network I/O (the doc generator renders
+// Markdown locally), so a report whose prose merely mentions a source URL must
+// not trip the intranet/allowlist network gate. The production failure was the
+// host-owned auto PDF for a weather report whose content cited weather sites.
+func TestEnforceConfigAllowlistIgnoresProseEmbeddedURLsInOfflineTools(t *testing.T) {
+	cfg := corelib.AppConfig{HubSecurityCentralized: true, NetworkLevel: "allowlist", NetworkAllowlist: []string{"api.example.com"}, FileOutboundEnabled: true, ImageOutboundEnabled: true}
+
+	prose := map[string]interface{}{
+		"title":   "南京天气报告",
+		"content": "数据来源：中国天气网 https://weather.com.cn 与 https://example.org/report。今日多云 25-32°C。",
+	}
+	for _, name := range []string{"generate_pdf", "write_file", "office"} {
+		if ok, reason := EnforceConfig(cfg, name, prose); !ok {
+			t.Fatalf("%s with prose-embedded URLs blocked reason=%q; offline tools must not be network-gated by payload text", name, reason)
+		}
+	}
+	// Network level "none" behaves the same for offline tools.
+	cfg.NetworkLevel = "none"
+	if ok, reason := EnforceConfig(cfg, "generate_pdf", prose); !ok {
+		t.Fatalf("generate_pdf with prose URLs blocked under level=none reason=%q", reason)
+	}
+}
+
+// The endpoint-focused gate must still catch arguments that a tool would
+// plausibly consume as a network endpoint.
+func TestEnforceConfigAllowlistStillChecksEndpointArgs(t *testing.T) {
+	cfg := corelib.AppConfig{HubSecurityCentralized: true, NetworkLevel: "allowlist", NetworkAllowlist: []string{"api.example.com"}, FileOutboundEnabled: true, ImageOutboundEnabled: true}
+
+	// Endpoint-designated keys are checked even for tools not on the static
+	// network-tool list (unknown/custom tools, MCP payloads).
+	endpointArgs := map[string]interface{}{"target": "see https://evil.example.org/feed for details"}
+	if ok, reason := EnforceConfig(cfg, "call_mcp_tool", endpointArgs); ok || !strings.Contains(reason, "allowlist") {
+		t.Fatalf("endpoint-key URL allowed=%v reason=%q, want allowlist rejection", ok, reason)
+	}
+	// A value that is itself a URL counts regardless of the key name.
+	bareURL := map[string]interface{}{"query": "https://evil.example.org"}
+	if ok, reason := EnforceConfig(cfg, "custom_tool", bareURL); ok || !strings.Contains(reason, "allowlist") {
+		t.Fatalf("bare URL value allowed=%v reason=%q, want allowlist rejection", ok, reason)
+	}
+	// Command/script payloads containing URLs remain network evidence.
+	scriptArgs := map[string]interface{}{"script": "invoke-webrequest https://evil.example.org/x"}
+	if ok, reason := EnforceConfig(cfg, "custom_runner", scriptArgs); ok || !strings.Contains(reason, "allowlist") {
+		t.Fatalf("script URL allowed=%v reason=%q, want allowlist rejection", ok, reason)
+	}
+	// Allowlisted endpoints still pass.
+	allowed := map[string]interface{}{"url": "https://api.example.com/v1"}
+	if ok, reason := EnforceConfig(cfg, "call_mcp_tool", allowed); !ok {
+		t.Fatalf("allowlisted endpoint URL blocked reason=%q", reason)
+	}
+}

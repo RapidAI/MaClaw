@@ -22,10 +22,8 @@ const (
 	// noticeable than waiting for a roughly 100-rune synthesis/encode operation.
 	deviceVoiceChunkRunes   = 64
 	deviceVoiceMaxPartBytes = 500 * 1024
-	// Compatibility names retained for tests and callers predating MP3 delivery.
-	deviceVoiceMaxRunes      = deviceVoiceChunkRunes
-	deviceVoiceRetryMaxRunes = 48
-	deviceVoiceMaxWAVBytes   = deviceVoiceMaxPartBytes
+	// Compatibility name retained for tests and callers predating MP3 delivery.
+	deviceVoiceMaxRunes = deviceVoiceChunkRunes
 )
 
 // The MP3 encoder and the local synthesizer are both CPU/memory intensive.
@@ -330,8 +328,9 @@ func speechChunkRunes(parts []string) int {
 	return total
 }
 
-// synthesizeDeviceWAV synthesizes speak and converts it to 16kHz mono 16-bit
-// WAV, the only audio format ESP32 firmware accepts.
+// synthesizeDeviceWAV synthesizes speak and normalizes it to 16kHz mono 16-bit
+// WAV — the canonical in-process intermediate each voice part is MP3-encoded
+// from before delivery to the ESP32 firmware.
 func synthesizeDeviceWAV(synth tts.TextSynthesizer, speak, platform string) ([]byte, error) {
 	wav, err := synth.SynthesizeText(speak)
 	if err != nil {

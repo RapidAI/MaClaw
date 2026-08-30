@@ -19,6 +19,15 @@ device_status_t gateway_lifecycle_service_prepare_system_sleep(uint32_t timeout_
  * not reopen Connectivity admission or configure physical Wi-Fi/4G hardware. */
 void gateway_lifecycle_service_abort_system_sleep_prepare(void);
 
+/* Establishes the same bounded Gateway/Meeting retirement fence for a
+ * Connectivity fault-domain restart. Unlike the System Sleep entry point,
+ * this function has no paired ABORT contract: its caller must follow it only
+ * with commit_prepared_network_restart(), which permanently retires the old
+ * generation before a physical network root is stopped. It exists so runtime
+ * restart policy never has to describe a terminal fault-domain transition as
+ * a reversible sleep transaction. */
+device_status_t gateway_lifecycle_service_prepare_network_restart(uint32_t timeout_ms);
+
 /* Commits a fully prepared network-restart fence. This is intentionally not
  * a System Sleep COMMIT: it only retires Gateway/Meeting worker generations
  * so a subsequent physical-network stop cannot leave a worker eligible for

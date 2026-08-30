@@ -154,6 +154,9 @@ func reviewedHostDownloadFileName(rawURL string) (string, error) {
 	if parsed.User != nil {
 		return "", fmt.Errorf("host_file_download_url_rejected")
 	}
+	if websearch.IsBlockedPublicHost(websearch.FetchURLHostname(rawURL)) {
+		return "", fmt.Errorf("host_file_download_url_rejected")
+	}
 	name := path.Base(parsed.EscapedPath())
 	if unescaped, unescapeErr := url.PathUnescape(name); unescapeErr == nil {
 		name = unescaped

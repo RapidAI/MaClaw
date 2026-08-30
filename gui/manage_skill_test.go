@@ -204,6 +204,9 @@ func TestToolManageSkillMaintenancePlanReturnsReadOnlyPlan(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	// Load-time skill status reconciliation persists overlays asynchronously;
+	// drain it before t.TempDir cleanup removes the config directory.
+	t.Cleanup(app.skillExecutor.waitForStatusOverlayPersistence)
 	h := &IMMessageHandler{app: app}
 
 	raw := h.toolManageSkill(context.Background(), map[string]interface{}{
@@ -458,6 +461,12 @@ func TestToolManageSkillExecuteMaintenancePlanDoesNotOvercountRepairWithoutLLM(t
 	cfg.MaclawLLMCurrentProvider = "Custom1"
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so the deliberately-unconfigured LLM fixture must go
+	// through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
 	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillRunner = NewSkillRunner(app.skillExecutor)

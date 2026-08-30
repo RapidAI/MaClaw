@@ -166,12 +166,12 @@ func (h *IMMessageHandler) administerTrustedConfig(principalID string, maxIterat
 
 func semanticTrustedConfigProjection(app *App) string {
 	maxIterations := config.MaxAgentIterationsCap
-	mode := "auto"
+	// Unset thinking mode resolves to enabled (default-on), never "auto".
+	mode := "enabled"
 	if app != nil {
 		maxIterations = config.EffectiveMaxIterations(app.GetMaclawAgentMaxIterations())
-		mode = strings.TrimSpace(app.GetMaclawLLMThinkingMode())
-		if mode == "" {
-			mode = "auto"
+		if m := strings.TrimSpace(app.GetMaclawLLMThinkingMode()); m != "" {
+			mode = m
 		}
 	}
 	return fmt.Sprintf("当前配置:\n- max_iterations: %d\n- thinking_mode: %s\nLLM 服务商由宿主管理，不能在此切换。", maxIterations, mode)

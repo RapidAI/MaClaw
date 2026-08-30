@@ -489,6 +489,10 @@ func (a *App) GetDownloadsFolder() (string, error) {
 	return filepath.Join(home, "Downloads"), nil
 }
 
+func startSystemOpenWindows(string) error {
+	return fmt.Errorf("windows-only")
+}
+
 func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, pythonEnv string, projectDir string, env map[string]string, modelId string) error {
 	tm := NewToolManager(a)
 	status := tm.GetToolStatus(binaryName)

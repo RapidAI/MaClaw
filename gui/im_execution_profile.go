@@ -103,11 +103,7 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx cont
 	// re-enter the legacy router.
 	var semantic *intent.ClassificationResult
 	if uic := h.getUnifiedClassifier(); uic != nil {
-		result := uic.ClassifyContext(ctx, intent.MessageContext{
-			Text:          semanticUserIntentText(msg.Text),
-			UserID:        msg.UserID,
-			RecentHistory: recentHistory,
-		})
+		result := uic.ClassifyContext(ctx, classificationMessageFromHistory(msg.UserID, msg.Text, recentHistory))
 		semantic = &result
 	}
 	normalizeSemanticClassificationForTurn(semantic)
@@ -229,7 +225,7 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 		}
 	}
 	readOnlyHint := semanticReadOnlyGovernedHint(*result)
-	if result.Degraded && !readOnlyHint {
+	if result.Degraded && !readOnlyHint && !semanticOfficeGovernedHint(*result) {
 		return fullExecutionProfile("semantic classifier degraded")
 	}
 	if result.WorkflowType != "" {

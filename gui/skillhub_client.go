@@ -366,7 +366,11 @@ func (c *SkillHubClient) CheckUpdate(ctx context.Context, skillID string, curren
 	var item hubSkillItem
 	base, _, err := c.getJSON(ctx, path, &item)
 	if err != nil {
-		return nil, nil
+		// An unavailable or malformed update endpoint is not equivalent to
+		// "already current". Callers use nil metadata as a no-op signal, so
+		// swallowing this error would silently suppress a failed update check and
+		// make the UI report a false healthy state.
+		return nil, fmt.Errorf("check skill update %q: %w", skillID, err)
 	}
 
 	if item.Version == "" || item.Version == currentVersion {

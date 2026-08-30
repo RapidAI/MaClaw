@@ -111,7 +111,17 @@ device_status_t connectivity_service_start_cellular_transport(uint32_t timeout_m
  * across a failed or late ML307 restart. UI/gateway policy stays above it. */
 device_status_t connectivity_service_establish_cellular_transport(uint32_t timeout_ms);
 bool connectivity_service_is_cellular_transport_ready(void);
+/* Lifecycle evidence only: terminal root teardown uses this to determine
+ * whether a prior cellular session remains to be drained after durable policy
+ * switched back to Wi-Fi. It is not a live uplink-switch request. */
+bool connectivity_service_has_cellular_transport_session(void);
 device_status_t connectivity_service_quiesce_cellular_transport(uint32_t timeout_ms);
+/* Terminally destroys a drained cellular physical generation.  A failed
+ * drain leaves admission closed and the old generation intact for retry. */
+device_status_t connectivity_service_deinit_cellular_transport(uint32_t timeout_ms);
+/* Explicit fresh-generation start after terminal deinit; never lazy-starts
+ * from a stale readiness callback. */
+device_status_t connectivity_service_reinitialize_cellular_transport(uint32_t timeout_ms);
 device_status_t connectivity_service_cellular_http_request(
     const device_connectivity_http_request_t *request);
 device_status_t connectivity_service_cellular_http_stream_request(

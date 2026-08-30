@@ -8,6 +8,7 @@ import { IconRankBadge } from '../ai/WorkbenchIcons';
 import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
+import { utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 
 type SidebarNavRailProps = {
@@ -244,7 +245,8 @@ export const SidebarNavRail = ({
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = miniAppShortLabel(lang);
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
-    const resolvedUtilitiesLabel = utilitiesLabel || (lang === 'zh-Hans' || lang === 'zh-Hant' ? '实用工具' : 'Utilities');
+    const resolvedUtilitiesLabel = utilitiesLabel || utilitiesNavLabel(lang);
+    const resolvedUtilitiesTitle = utilitiesLabel || utilitiesPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'settings', icon: <SettingsIcon />, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
@@ -266,7 +268,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} showUtilitiesEntry={showUtilitiesEntry} switchTool={switchTool} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} showUtilitiesEntry={showUtilitiesEntry} switchTool={switchTool} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"

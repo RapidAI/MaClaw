@@ -51,6 +51,19 @@ function setBusy(button, busy, text) {
   }
 }
 
+function codexSyncNotice(successMessage, sync) {
+  if (!sync) return { message: successMessage, kind: "ok" };
+  if (sync.error) {
+    return {
+      message: `${successMessage}；Codex 凭据未同步：${sync.error}。请修复 ~/.codex/auth.json 后重新配置 Codex。`,
+      kind: "error",
+    };
+  }
+  if (!sync.configured) return { message: successMessage, kind: "ok" };
+  if (sync.updated) return { message: `${successMessage}；Codex 凭据已同步，请重启 Codex。`, kind: "ok" };
+  return { message: `${successMessage}；Codex 凭据已是最新，请重启 Codex。`, kind: "ok" };
+}
+
 async function refresh() {
   try {
     const status = await api.Status();
@@ -160,7 +173,7 @@ async function save(options = {}) {
     if (codexAutoCompactTokenLimit >= codexContextWindow) {
       throw new Error("Codex 压缩启动长度必须小于上下文长度");
     }
-    await api.SaveSettings({
+    const status = await api.SaveSettings({
       listen_address: $("listenAddress").value,
       api_key: $("apiKey").value,
       base_url: $("baseURL").value,
@@ -171,7 +184,8 @@ async function save(options = {}) {
     });
     await refresh();
     if (!options.silent) {
-      notify("已保存");
+      const notice = codexSyncNotice("已保存", status?.codex_credential_sync);
+      notify(notice.message, notice.kind);
     }
   } finally {
     setBusy(saveBtn, false);
@@ -201,7 +215,7 @@ $("loginBtn").addEventListener("click", async () => {
 $("logoutBtn").addEventListener("click", async () => {
   try { await api.Logout(); await refresh(); notify("已退出登录"); } catch (err) { notify(errorMessage(err), "error"); }
 });
-$("genKeyBtn").addEventListener("click", async () => { const btn = $("genKeyBtn"); btn.disabled = true; try { $("apiKey").value = await api.GenerateAPIKey(); await refresh(); notify("已生成并保存新的 API Key"); } catch(err) { notify(errorMessage(err), "error"); } finally { btn.disabled = false; } });
+$("genKeyBtn").addEventListener("click", async () => { const btn = $("genKeyBtn"); btn.disabled = true; try { const result = await api.GenerateAPIKey(); $("apiKey").value = result.api_key; await refresh(); const notice = codexSyncNotice("已生成并保存新的 API Key", result.codex_credential_sync); notify(notice.message, notice.kind); } catch(err) { notify(errorMessage(err), "error"); } finally { btn.disabled = false; } });
 $("hideBtn").addEventListener("click", async () => { await api.WindowHide(); });
 $("autoStart").addEventListener("change", async (event) => {
   const checkbox = event.currentTarget;

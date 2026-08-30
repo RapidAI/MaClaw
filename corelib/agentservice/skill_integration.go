@@ -186,7 +186,8 @@ func (b *SkillToolBridge) entriesFromSnapshot(ctx context.Context, p Principal, 
 func (b *SkillToolBridge) entriesFromSnapshotWithContracts(ctx context.Context, p Principal, items []corelib.NLSkillEntry, contracts SkillDynamicContractResolver) []SkillToolEntry {
 	entries := make([]SkillToolEntry, 0, len(items))
 	for _, item := range items {
-		if item.Status == "disabled" {
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if status != "" && status != "active" {
 			continue
 		}
 		entry := SkillToolEntry{
@@ -358,8 +359,12 @@ func (b *SkillToolBridge) runSkillEntry(ctx context.Context, p Principal, entry 
 	if entry == nil {
 		return "", fmt.Errorf("skill entry is required")
 	}
-	if entry.Status == "disabled" {
-		return "", fmt.Errorf("skill %q is disabled", entry.Name)
+	if b == nil || b.svc == nil || b.svc.hasPendingSkillCompensation(entry.Name) {
+		return "", fmt.Errorf("skill %q is blocked by pending compensation", entry.Name)
+	}
+	status := strings.ToLower(strings.TrimSpace(entry.Status))
+	if status != "" && status != "active" {
+		return "", fmt.Errorf("skill %q is not active (status=%s)", entry.Name, status)
 	}
 
 	// Normalize the skill for execution.
@@ -479,7 +484,7 @@ func (b *SkillToolBridge) resolveBoundSkill(ctx context.Context, p Principal, bi
 		copy := item
 		target = &copy
 	}
-	if target == nil || target.Status == "disabled" ||
+	if target == nil || !isActiveSkillStatus(target.Status) ||
 		strings.TrimSpace(target.Name) != strings.TrimSpace(binding.Name) ||
 		strings.TrimSpace(target.Version) != strings.TrimSpace(binding.Version) ||
 		skillContentDigest(*target) != strings.TrimSpace(binding.ContentDigest) {
@@ -491,6 +496,11 @@ func (b *SkillToolBridge) resolveBoundSkill(ctx context.Context, p Principal, bi
 		return nil, fmt.Errorf("skill_binding_stale")
 	}
 	return target, nil
+}
+
+func isActiveSkillStatus(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return status == "" || status == "active"
 }
 
 func (b *SkillToolBridge) runSkillTimeoutSec(p Principal, entry *corelib.NLSkillEntry) int {
@@ -716,6 +726,13 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 			Result:  `{"ok":true,"non_executing":true,"pipeline_started":false,"enable_repair":false,"enable_optimizer":false,"enable_promoter":false,"note":"skill evolution pipeline is a desktop/TUI feature"}`,
 			Outcome: agent.ToolExecutionOutcomeOK,
 		}
+	case "evolution_compensations":
+		items, err := skill.ListEvolutionCompensationSummaries()
+		if err != nil {
+			return agent.ToolExecutionResult{Result: fmt.Sprintf(`{"ok":false,"error":%q,"fail_closed":true}`, err.Error()), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		data, _ := json.Marshal(map[string]interface{}{"ok": true, "non_executing": true, "items": items, "count": len(items), "note": "desktop pipeline recovery is startup-controlled"})
+		return agent.ToolExecutionResult{Result: string(data), Outcome: agent.ToolExecutionOutcomeOK}
 	case "evolution_audit":
 		// Best-effort: if the shared audit file exists on this host, return it.
 		limit := 50

@@ -124,7 +124,7 @@ func taskIdentityAnchorFromToolArgs(args map[string]interface{}) (taskIdentityAn
 		return taskIdentityAnchor{}, false
 	}
 	anchor, ok := args["_task_identity_anchor"].(taskIdentityAnchor)
-	if !ok || (anchor.Subject == "" && len(anchor.SourcePaths) == 0) {
+	if !ok || !taskIdentityAnchorActive(anchor) {
 		return taskIdentityAnchor{}, false
 	}
 	return anchor, true

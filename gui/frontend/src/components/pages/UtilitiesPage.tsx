@@ -50,6 +50,7 @@ import type { ExpertDefinition } from '../ai/expertTypes';
 import type { CodingTaskLaunch } from '../ai/codingTaskLaunch';
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
 import { VirtualRepositoryWorkspace } from './VirtualRepositoryWorkspace';
+import { utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
@@ -896,7 +897,7 @@ export const UtilitiesPage = ({
     };
 
     const t = useMemo(() => ({
-        title: isZh ? '实用工具' : 'Utilities',
+        title: utilitiesPageTitle(lang),
         subtitle: isZh
             ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'
             : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)',

@@ -36,6 +36,28 @@ func TestWindowsSystemExecutableUsesSystemRootWhenPathIsStripped(t *testing.T) {
 	}
 }
 
+func TestStartSystemOpenWindowsRejectsEmptyPath(t *testing.T) {
+	if err := startSystemOpenWindows(""); err == nil {
+		t.Fatal("expected error for empty path")
+	}
+	if err := startSystemOpenWindows("   "); err == nil {
+		t.Fatal("expected error for whitespace path")
+	}
+}
+
+func TestStartSystemOpenWindowsReportsMissingFile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		if err := startSystemOpenWindows(`C:\maclaw-open-missing-xyz.pdf`); err == nil {
+			t.Fatal("non-windows stub must error")
+		}
+		return
+	}
+	missing := filepath.Join(t.TempDir(), "maclaw-open-missing-xyz.pdf")
+	if err := startSystemOpenWindows(missing); err == nil {
+		t.Fatal("expected error for a missing file")
+	}
+}
+
 func TestOpenFileOrShowInFolderExpandsTildeBeforeStat(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {

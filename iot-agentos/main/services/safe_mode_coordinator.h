@@ -59,25 +59,18 @@ typedef struct {
     void *context;
 } safe_mode_coordinator_host_t;
 
-typedef struct {
-    safe_mode_coordinator_host_t host;
-    safe_mode_stage_t stage;
-    device_status_t terminal_status;
-    bool initialized;
-    bool in_progress;
-} safe_mode_coordinator_t;
-
-device_status_t safe_mode_coordinator_init(
-    safe_mode_coordinator_t *coordinator,
+/* The coordinator owns its single boot-lifetime transaction state.  The
+ * composition root only installs the value-only bridges; it must not retain a
+ * duplicate coordinator instance that could be reused against an old
+ * quiesced generation. A different host cannot replace a configured host. */
+device_status_t safe_mode_coordinator_configure_host(
     const safe_mode_coordinator_host_t *host);
 
 /* Runs exactly one fail-closed SAFE_MODE entry transaction.  COMPLETE and
  * FAILED instances require explicit reinitialization against a new proven
  * dependency generation; callers cannot reuse old callback admission. */
-device_status_t safe_mode_coordinator_enter(safe_mode_coordinator_t *coordinator,
-                                            const safe_mode_entry_t *entry,
+device_status_t safe_mode_coordinator_enter(const safe_mode_entry_t *entry,
                                             uint32_t timeout_ms);
 
-bool safe_mode_coordinator_get_snapshot(const safe_mode_coordinator_t *coordinator,
-                                        safe_mode_stage_t *out_stage,
+bool safe_mode_coordinator_get_snapshot(safe_mode_stage_t *out_stage,
                                         device_status_t *out_terminal_status);

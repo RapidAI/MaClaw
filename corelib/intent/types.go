@@ -105,8 +105,9 @@ const (
 	//   - memory_manage reads or updates the agent memory store; knowledge_*
 	//     remain the knowledge-base labels.
 	//   - task_track maintains the local task list; goal_manage maintains
-	//     persistent long-running goals; workflow_task remains the multi-phase
-	//     design workflow label.
+	//     persistent long-running goals; workflow_task is a workflow_v2
+	//     project started from /workflow or the workflow panel, not a named
+	//     skill run in the current conversation.
 	//   - template_manage administers session templates.
 	//   - session_manage administers external coding sessions/providers; coding
 	//     remains the "do the coding work" label.
@@ -258,6 +259,13 @@ type ClassificationResult struct {
 	// execution turn after losing the authority that selects its capability
 	// surface.
 	ControlPlaneFailure bool `json:"-"`
+
+	// RunnerUp is the second-strongest label from an ambiguous embedding pass,
+	// carried purely as escalation evidence for a later layer. It is never an
+	// authorized intent on its own: only the L3 synthesis may promote it into a
+	// declared composite after the tree supplies the complementary half.
+	RunnerUp      IntentLabel `json:"-"`
+	RunnerUpScore float64     `json:"-"`
 }
 
 // Labels returns the primary label followed by any secondary labels.

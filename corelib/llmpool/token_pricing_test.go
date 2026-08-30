@@ -41,6 +41,37 @@ func TestResolveTokenPricingRejectsEmptyCreditPrice(t *testing.T) {
 	}
 }
 
+func TestEffectiveRouteTokenPricingPrefersConfiguredProviderPrice(t *testing.T) {
+	provider := ProviderConfig{TokenPricing: TokenPricing{
+		InputCreditsPer10K:  2,
+		OutputCreditsPer10K: 8,
+		InputRMBPer10K:      0.02,
+		OutputRMBPer10K:     0.06,
+	}}
+	route := ModelProviderConfig{TokenPricing: TokenPricing{
+		InputCreditsPer10K:  1,
+		OutputCreditsPer10K: 4,
+		InputRMBPer10K:      0.01,
+		OutputRMBPer10K:     0.03,
+	}}
+	got := EffectiveRouteTokenPricing(route, provider)
+	if got.InputCreditsPer10K != provider.TokenPricing.InputCreditsPer10K ||
+		got.OutputCreditsPer10K != provider.TokenPricing.OutputCreditsPer10K ||
+		got.InputRMBPer10K != provider.TokenPricing.InputRMBPer10K ||
+		got.OutputRMBPer10K != provider.TokenPricing.OutputRMBPer10K {
+		t.Fatalf("effective route pricing = %#v", got)
+	}
+
+	provider.TokenPricing = TokenPricing{}
+	got = EffectiveRouteTokenPricing(route, provider)
+	if got.InputCreditsPer10K != route.TokenPricing.InputCreditsPer10K ||
+		got.OutputCreditsPer10K != route.TokenPricing.OutputCreditsPer10K ||
+		got.InputRMBPer10K != route.TokenPricing.InputRMBPer10K ||
+		got.OutputRMBPer10K != route.TokenPricing.OutputRMBPer10K {
+		t.Fatalf("legacy route fallback pricing = %#v", got)
+	}
+}
+
 func TestTokenPricingSnapshotRoundTrip(t *testing.T) {
 	snapshot := TokenPricingSnapshot{
 		ProviderID:    "official-a",
@@ -147,20 +178,42 @@ func TestEstimateTokenPricingMicrocreditsAppliesMinimumAfterMultiplier(t *testin
 	}
 }
 
+func TestTokenPricingCreditComponentsMatchFixedPointDebit(t *testing.T) {
+	pricing := ResolvedTokenPricing{TokenPricing: TokenPricing{
+		InputCreditsPer10K:    1.2345,
+		OutputCreditsPer10K:   4.5678,
+		MinimumRequestCredits: 0.3333,
+	}}
+	input, output, minimum, ok := TokenPricingCreditComponents(17, 9, pricing, 1.17)
+	if !ok {
+		t.Fatal("expected fixed-point components")
+	}
+	if input <= 0 || output <= 0 || minimum <= 0 {
+		t.Fatalf("components = input=%v output=%v minimum=%v, want positive values", input, output, minimum)
+	}
+	debit, ok := EstimateTokenPricingMicrocredits(17, 9, pricing, 1.17)
+	if !ok {
+		t.Fatal("expected fixed-point debit")
+	}
+	if got := input + output + minimum; got > MicrocreditsToCredits(debit)+0.0005 {
+		t.Fatalf("unrounded components %v exceed rounded debit %v", got, MicrocreditsToCredits(debit))
+	}
+}
+
 func TestNewPricingQuoteSnapshotFreezesMaximumDebit(t *testing.T) {
 	pricing := ResolvedTokenPricing{TokenPricing: TokenPricing{
 		InputCreditsPer10K:  1,
 		OutputCreditsPer10K: 4,
 	}}
 	expiresAt := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	quote, ok := NewPricingQuoteSnapshot("req-1", "attempt-1", "provider-1", pricing, 2, 20_000, 5_000, expiresAt)
+	quote, ok := NewPricingQuoteSnapshot("req-1", "attempt-1", "provider-1", pricing, 1, 2, 20_000, 5_000, expiresAt)
 	if !ok {
 		t.Fatal("expected quote")
 	}
 	if quote.ReservedMicrocredits != 8*MicrocreditsPerCredit || !quote.ExpiresAt.Equal(expiresAt) {
 		t.Fatalf("unexpected quote: %#v", quote)
 	}
-	if _, ok := NewPricingQuoteSnapshot("", "attempt-1", "provider-1", pricing, 1, 1, 1, expiresAt); ok {
+	if _, ok := NewPricingQuoteSnapshot("", "attempt-1", "provider-1", pricing, 1, 1, 1, 1, expiresAt); ok {
 		t.Fatal("quote without request ID must be rejected")
 	}
 }

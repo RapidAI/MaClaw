@@ -123,7 +123,10 @@ func TestProjectImageExplainForToolRemovesPathBearingResultAndCitationFields(t *
 			ErrorMessage: privatePath,
 		},
 		Media: &SearchResultMedia{
-			AssetID:      "safe-image-asset",
+			// The managed asset ID must belong to the source (equal to the
+			// source ID or sourceID_-prefixed); cross-source IDs are dropped
+			// by design.
+			AssetID:      "safe-image-id_media-image-1",
 			ThumbnailURL: "file://" + privatePath + "/thumbnail",
 			PreviewURL:   privatePath + "/preview",
 			OriginalURL:  privatePath + "/original",
@@ -142,7 +145,7 @@ func TestProjectImageExplainForToolRemovesPathBearingResultAndCitationFields(t *
 	if projected.Source.ID != "safe-image-id" || citation.SourceID != "safe-image-id" {
 		t.Fatalf("projection lost safe image identity: result=%#v citation=%#v", projected, citation)
 	}
-	if projected.Media == nil || projected.Media.AssetID != "safe-image-asset" {
+	if projected.Media == nil || projected.Media.AssetID != "safe-image-id_media-image-1" {
 		t.Fatalf("projection lost safe managed asset identity: %#v", projected.Media)
 	}
 	for _, value := range []string{

@@ -176,16 +176,17 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 			return
 		}
 		quote, err := cfg.Quotes.Put(ProxyQuote{
-			RequestDigest:  proxyRequestDigest(bodyBytes),
-			HubID:          hubID,
-			TenantID:       tenantID,
-			RequestID:      requestID,
-			ServiceGroupID: dispatch.matchedGroup.ID,
-			LogicalModel:   dispatch.model,
-			ProviderID:     dispatch.provider.ID,
-			UpstreamModel:  upstreamModel,
-			Pricing:        pricing.Pricing,
-			ExpiresAt:      time.Now().Add(proxyQuoteTTL),
+			RequestDigest:      proxyRequestDigest(bodyBytes),
+			HubID:              hubID,
+			TenantID:           tenantID,
+			RequestID:          requestID,
+			ServiceGroupID:     dispatch.matchedGroup.ID,
+			LogicalModel:       dispatch.model,
+			ProviderID:         dispatch.provider.ID,
+			UpstreamModel:      upstreamModel,
+			Pricing:            pricing.Pricing,
+			ProviderMultiplier: pricing.ProviderMultiplier,
+			ExpiresAt:          time.Now().Add(proxyQuoteTTL),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -296,7 +297,7 @@ func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig
 	if resolved := strings.TrimSpace(proxyReq.Model); resolved != "" {
 		w.Header().Set(llmpool.ResolvedModelHeader, resolved)
 	}
-	if multiplier, ok := proxySharedCreditMultiplier(dispatches, proxyRequestStartedAt(proxyReq)); ok {
+	if multiplier, ok := proxySharedCreditMultiplier(proxyReq, dispatches, proxyRequestStartedAt(proxyReq)); ok {
 		w.Header().Set(llmpool.CreditMultiplierHeader, llmpool.FormatCreditMultiplierHeader(multiplier))
 	}
 	if len(dispatches) == 1 && dispatches[0] != nil && dispatches[0].provider != nil {
@@ -356,9 +357,10 @@ func writeProxyStreamBillingTrailers(w http.ResponseWriter, req *ProxyRequest, d
 	if w == nil || dispatch == nil || dispatch.provider == nil {
 		return
 	}
-	// Directional pricing exposes only the service-group route markup; legacy
-	// routes retain their combined provider × route multiplier.
-	multiplier := proxyDispatchCreditMultiplier(dispatch, proxyRequestStartedAt(req))
+	// The trailer preserves the full settled multiplier for compatibility
+	// consumers. New Hub callers use the authenticated pricing snapshot, which
+	// carries the provider factor separately so it is applied exactly once.
+	multiplier := proxyDispatchCreditMultiplier(req, dispatch, proxyRequestStartedAt(req))
 	w.Header().Set(llmpool.CreditMultiplierHeader, llmpool.FormatCreditMultiplierHeader(multiplier))
 	w.Header().Set(llmpool.ProviderIDHeader, dispatch.provider.ID)
 	upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
@@ -374,12 +376,14 @@ func proxyDispatchTokenPricingSnapshot(req *ProxyRequest, dispatch *proxyDispatc
 		return nil
 	}
 	if dispatch.pricing != nil {
+		providerMultiplier := proxyProviderMultiplierForRequest(req, dispatch.provider, dispatch.provider.ID, proxyRequestStartedAt(req))
 		return &llmpool.TokenPricingSnapshot{
-			ProviderID:    dispatch.provider.ID,
-			UpstreamModel: strings.TrimSpace(upstreamModel),
-			Pricing:       *dispatch.pricing,
-			InputTokens:   dispatch.billingInputTokens,
-			OutputTokens:  dispatch.billingOutputTokens,
+			ProviderID:         dispatch.provider.ID,
+			UpstreamModel:      strings.TrimSpace(upstreamModel),
+			Pricing:            *dispatch.pricing,
+			ProviderMultiplier: providerMultiplier,
+			InputTokens:        dispatch.billingInputTokens,
+			OutputTokens:       dispatch.billingOutputTokens,
 		}
 	}
 	return proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))

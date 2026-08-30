@@ -139,7 +139,10 @@ func (d *CapabilityGapDetector) confirmSkillReview(ctx context.Context, skillNam
 	if d.confirmCallback != nil {
 		return d.confirmCallback(skillName, riskDetails)
 	}
-	return true
+	// A review callback is the only authoritative approval channel for a
+	// risk-gated install.  Never treat a missing callback as approval: headless
+	// callers must fail closed and let the caller surface a pending review.
+	return false
 }
 
 // SetUnifiedClassifier sets the UIC instance for intent-aware gap detection.
@@ -203,6 +206,89 @@ func (d *CapabilityGapDetector) Resolve(
 	sendStatus func(string),
 ) (skillName string, result string, err error) {
 	// Developer mode still records scan findings; policy helpers suppress blocking.
+	// Capability-gap resolution is an installation transaction, not a best-effort
+	// helper. Keep a durable compensation record alive from the first filesystem
+	// mutation until the final strict audit succeeds. This closes the historical
+	// window where Resolve committed a directory and only then registered it.
+	var installCompensation cskill.EvolutionCompensationRecord
+	var installTxnActive bool
+	var overlaySuspended bool
+	finalSkillsRoot := ""
+	requestID := fmt.Sprintf("evo_capability_gap_%d", time.Now().UnixNano())
+	if d == nil {
+		return "", "", fmt.Errorf("capability gap detector not initialized")
+	}
+	defer func() {
+		if installTxnActive && err != nil && d != nil && d.app != nil {
+			rollbackErr := cskill.RestoreEvolutionCompensation(installCompensation,
+				func(skills []corelib.NLSkillEntry) error {
+					if d.skillExecutor == nil {
+						return fmt.Errorf("skill executor not initialized")
+					}
+					return d.skillExecutor.restoreSkillsSnapshot(skills)
+				}, func() error { return d.app.refreshSkillIndexesAfterMutationChecked(installCompensation.Skill) })
+			if rollbackErr != nil {
+				installCompensation.LastError = fmt.Sprintf("%v (rollback: %v)", err, rollbackErr)
+				installCompensation.TransactionState = "audit_pending"
+				installCompensation.CleanupStatus = "pending"
+				_ = cskill.PersistEvolutionCompensation(installCompensation)
+				err = fmt.Errorf("%v; install rollback incomplete; compensation queued", err)
+			} else {
+				installCompensation.TransactionState = "rolled_back"
+				installCompensation.CleanupStatus = "pending"
+				if clearErr := cskill.ClearEvolutionCompensation(installCompensation.RequestID, installCompensation.Skill, "install"); clearErr != nil {
+					installCompensation.LastError = clearErr.Error()
+					_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+					err = fmt.Errorf("%v; install rolled back but compensation cleanup failed: %w", err, clearErr)
+				} else {
+					err = fmt.Errorf("%v; install rolled back", err)
+				}
+			}
+		}
+		if overlaySuspended && d != nil && d.skillExecutor != nil {
+			d.skillExecutor.resumeStatusOverlayPersistence()
+		}
+	}()
+	if d.app == nil {
+		// Standalone detector instances retain their historical read-only/test
+		// behavior, but desktop installs must always pass the queue admission gate.
+	} else if err = ensureSkillEvolutionMutationAdmission(d.app, "capability-gap"); err != nil {
+		return "", "", err
+	}
+	if d.skillExecutor == nil {
+		return "", "", fmt.Errorf("skill executor not initialized")
+	}
+	originalSkills := d.skillExecutor.loadSkills()
+	prepareInstallCompensation := func(entry *corelib.NLSkillEntry, finalDir string) error {
+		if d.app == nil || entry == nil {
+			return nil
+		}
+		if err := ensureSkillEvolutionMutationAdmission(d.app, entry.Name); err != nil {
+			return err
+		}
+		installCompensation = cskill.NewEvolutionCompensationRecord(requestID, entry.Name, "install", "", nil, false, originalSkills, "capability_gap_install_rollback_incomplete")
+		installCompensation.SetCreatedDirectories([]string{finalDir})
+		if _, statErr := os.Stat(finalDir); statErr == nil {
+			installCompensation.SetDirectoryBackupIntent(finalDir, finalDir+".prev")
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect skill destination: %w", statErr)
+		}
+		if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+			return fmt.Errorf("persist capability-gap install compensation: %w", err)
+		}
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+			"skill": entry.Name, "action": "install", "decision": "pending", "via": "capability_gap",
+			"request_id": requestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(d.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			_ = cskill.ClearEvolutionCompensation(requestID, entry.Name, "install")
+			return fmt.Errorf("capability-gap install audit preflight failed: %w", err)
+		}
+		d.skillExecutor.suspendStatusOverlayPersistence()
+		overlaySuspended = true
+		installTxnActive = true
+		return nil
+	}
 
 	// Step 1: Extract capability query from user message.
 	query := d.extractCapabilityQuery(ctx, userMessage, conversationHistory)
@@ -280,13 +366,11 @@ func (d *CapabilityGapDetector) Resolve(
 
 		// Security review: pattern scan plus optional agent scan; policy decides whether findings block.
 		// Developer mode records scan findings but never blocks installation.
-		var githubScanReport *cskill.ScanReport
 		{
 			var scanReport *cskill.ScanReport
 			if d.app == nil || !d.app.isRiskGuardrailOffMode() {
 				scanner := NewSkillSecurityScanner(d.app, nil)
 				scanReport = scanner.ScanInstallStaged(ctx, imported, imported.SkillDir, sendStatus)
-				githubScanReport = scanReport
 			}
 			if d.app != nil && d.app.skillInstallScanShouldBlock(scanReport) {
 				if d.auditLog != nil {
@@ -303,7 +387,9 @@ func (d *CapabilityGapDetector) Resolve(
 			}
 			if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
 				riskDetails := FormatScanReportForUser(scanReport, imported.Name)
-				confirmed := d.confirmCallbackWithContext == nil && d.confirmCallback == nil
+				// A scan that requires confirmation must have an explicit approval
+				// callback.  Missing UI/approval plumbing is not consent.
+				confirmed := false
 				if d.confirmCallbackWithContext != nil || d.confirmCallback != nil {
 					sendStatus(localizedSkillInstallReviewStatus(lang, scanReport.Summary))
 					confirmed = d.confirmSkillReview(ctx, imported.Name, riskDetails)
@@ -345,30 +431,35 @@ func (d *CapabilityGapDetector) Resolve(
 		// Override source to indicate auto-installation by CapabilityGapDetector.
 		imported.Source = "auto_github"
 		sendStatus(localizedSkillInstallInstallingStatus(lang, imported.Name, true))
-		if err := d.skillExecutor.Register(*imported); err != nil {
-			return "", "", fmt.Errorf("register github skill: %w", err)
-		}
-
-		// Audit log for GitHub install.
-		if d.auditLog != nil {
-			riskLevel := security.RiskLow
-			policyAction := security.PolicyAllow
-			if githubScanReport != nil {
-				riskLevel = githubScanReport.FinalLevel
-				if d.app != nil {
-					policyAction = d.app.skillInstallFinalAuditAction(githubScanReport)
-				} else if githubScanReport.NeedsUserReview() {
-					policyAction = security.PolicyAudit
-				}
+		if d.app != nil {
+			// GitHub definitions are usually config-only (no local directory), but
+			// they still need the same durable config/index/final-audit boundary as
+			// directory installs. This removes the last capability-gap GitHub path
+			// that could register and audit through a bespoke sequence.
+			committer := &cskill.SkillCommitter{
+				SkillLoader: func() []corelib.NLSkillEntry { return d.skillExecutor.loadSkills() },
+				SkillSaver: func(entries []corelib.NLSkillEntry) error {
+					return d.skillExecutor.withSkillListMutate(func() error { return d.skillExecutor.saveSkills(entries) })
+				},
+				IndexRefresher: func() error { return d.app.refreshSkillIndexesAfterMutationChecked(imported.Name, *imported) },
+				FinalAuditor: func(event string, data map[string]string) error {
+					return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+				},
+				ConfigRevision: skillEvolutionConfigRevision(d.app),
+				AllowCreate:    true,
 			}
-			_ = d.auditLog.Log(security.AuditEntry{
-				Timestamp:    time.Now(),
-				Action:       security.AuditActionHubSkillInstall,
-				ToolName:     "github_skill_install",
-				RiskLevel:    riskLevel,
-				PolicyAction: policyAction,
-				Result:       fmt.Sprintf("installed github skill %s from %s", imported.Name, ghCandidates[0].RepoURL),
+			result := committer.Commit(ctx, imported.Name, imported, "skill:definition_installed", map[string]string{
+				"skill": imported.Name, "action": "install", "decision": "applied", "via": "capability_gap_github",
+				"request_id": requestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(d.app),
+				"schema_version": "2", "evidence_mode": "none",
 			})
+			if result.State != "committed" || result.CleanupStatus != "clear" {
+				return "", "", fmt.Errorf("github install not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
+			}
+		} else {
+			if err := d.skillExecutor.Register(*imported); err != nil {
+				return "", "", fmt.Errorf("register github skill: %w", err)
+			}
 		}
 
 		execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*imported, skillExecutionRunArgs(userMessage))
@@ -399,6 +490,10 @@ func (d *CapabilityGapDetector) Resolve(
 		cskill.CleanupStaging(stagingDir)
 		return "", "", fmt.Errorf("install skill: %w", err)
 	}
+	if skill == nil {
+		cskill.CleanupStaging(stagingDir)
+		return "", "", fmt.Errorf("skill hub returned an empty skill")
+	}
 
 	// Step 5: Security review: pattern scan plus optional agent scan; policy decides whether findings block.
 	// Developer mode records scan findings but never blocks installation.
@@ -424,7 +519,9 @@ func (d *CapabilityGapDetector) Resolve(
 		}
 		if d.app != nil && d.app.skillInstallReviewNeedsConfirmationForSource(scanReport, "skillhub") {
 			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
-			confirmed := d.confirmCallbackWithContext == nil && d.confirmCallback == nil
+			// A scan that requires confirmation must have an explicit approval
+			// callback.  Missing UI/approval plumbing is not consent.
+			confirmed := false
 			if d.confirmCallbackWithContext != nil || d.confirmCallback != nil {
 				sendStatus(localizedSkillInstallReviewStatus(lang, scanReport.Summary))
 				confirmed = d.confirmSkillReview(ctx, chosen.Name, riskDetails)
@@ -458,12 +555,86 @@ func (d *CapabilityGapDetector) Resolve(
 		}
 	}
 
-	finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
-	if err != nil {
+	// A fresh Hub package is a directory-backed create. Reuse the shared
+	// committer so this path has the same durable compensation, checked index,
+	// final-audit and post-commit cleanup semantics as explicit GUI installs.
+	// Existing identities remain on the legacy adapter below until their
+	// source-specific replacement semantics are migrated as well.
+	if d.app != nil && strings.TrimSpace(skill.SkillDir) != "" {
+		var existingEntry *corelib.NLSkillEntry
+		for _, installed := range d.skillExecutor.loadSkills() {
+			if installed.Name == skill.Name || installed.MatchesName(skill.Name) {
+				copy := installed
+				existingEntry = &copy
+				break
+			}
+		}
+		if existingEntry != nil && skillInstallAlreadyCurrent(existingEntry, skill) {
+			cskill.CleanupStaging(stagingDir)
+			skill = existingEntry
+			skillName = skill.Name
+			sendStatus(localizedSkillInstallExecutingStatus(lang, skill.Name))
+			execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*skill, skillExecutionRunArgs(userMessage))
+			go d.autoRate(ctx, chosen.ID, execResult, execErr)
+			return skill.Name, execResult, execErr
+		}
+		if existingEntry == nil && d.app.skillNameAlreadyRegistered(skill.Name) {
+			cskill.CleanupStaging(stagingDir)
+			return "", "", fmt.Errorf("capability-gap install refused: skill name %q is already registered under a different identity", skill.Name)
+		}
+		skill.Source = "auto_hub"
+		var commitErr error
+		if existingEntry == nil {
+			commitErr = d.app.commitStagedSkillInstall(ctx, skill, skill.SkillDir, "capability_gap", scanReport, requestID, skillEvolutionConfigRevision(d.app))
+		} else {
+			commitErr = d.app.commitStagedSkillInstallWithExisting(ctx, skill, skill.SkillDir, "capability_gap", scanReport, requestID, skillEvolutionConfigRevision(d.app), existingEntry)
+		}
+		if commitErr != nil {
+			return "", "", fmt.Errorf("capability-gap install commit failed: %w", commitErr)
+		}
+		skillName = skill.Name
+		sendStatus(localizedSkillInstallExecutingStatus(lang, skill.Name))
+		execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*skill, skillExecutionRunArgs(userMessage))
+		go d.autoRate(ctx, chosen.ID, execResult, execErr)
+		return skill.Name, execResult, execErr
+	}
+
+	var finalDir string
+	if d.app != nil {
+		var rootErr error
+		finalSkillsRoot, rootErr = d.app.primarySkillsDir()
+		if rootErr != nil {
+			cskill.CleanupStaging(stagingDir)
+			return "", "", rootErr
+		}
+		// Persist the rollback intent before moving the staged directory. The
+		// initial snapshot closes the crash window; the post-move update below
+		// records whether a .prev backup was created.
+		if prepErr := prepareInstallCompensation(skill, cskill.PlannedSkillDir(finalSkillsRoot, skill.Name)); prepErr != nil {
+			cskill.CleanupStaging(stagingDir)
+			return "", "", prepErr
+		}
+	}
+	var commitErr error
+	if finalSkillsRoot != "" {
+		finalDir, commitErr = cskill.CommitStagingToDir(stagingDir, skill.Name, finalSkillsRoot)
+	} else {
+		finalDir, commitErr = cskill.CommitStaging(stagingDir, skill.Name)
+	}
+	if commitErr != nil {
 		cskill.CleanupStaging(stagingDir)
-		return "", "", fmt.Errorf("commit staged skill: %w", err)
+		return "", "", fmt.Errorf("commit staged skill: %w", commitErr)
 	}
 	skill.SkillDir = finalDir
+	if d.app != nil {
+		if _, statErr := os.Stat(finalDir + ".prev"); statErr == nil {
+			installCompensation.SetDirectoryBackup(finalDir, finalDir+".prev", true)
+		}
+		installCompensation.SetDirectoryPublished(true)
+		if persistErr := cskill.PersistEvolutionCompensation(installCompensation); persistErr != nil {
+			return "", "", fmt.Errorf("persist post-move capability-gap compensation: %w", persistErr)
+		}
+	}
 	preNormalizeScanHash := ""
 	if scanReport != nil {
 		if hash, err := skillContentHash(skill); err == nil {
@@ -480,7 +651,6 @@ func (d *CapabilityGapDetector) Resolve(
 			if d.app != nil {
 				d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", skill.Name, err))
 			}
-			_ = os.RemoveAll(finalDir)
 			return "", "", fmt.Errorf("write skill scan cache: %w", err)
 		}
 	}
@@ -490,20 +660,17 @@ func (d *CapabilityGapDetector) Resolve(
 	skill.Source = "auto_hub"
 	sendStatus("正在注册 Skill...")
 	if err := d.skillExecutor.Register(*skill); err != nil {
-		_ = os.RemoveAll(finalDir)
 		return "", "", fmt.Errorf("register skill: %w", err)
 	}
-
-	// Step 7: Execute immediately.
-	sendStatus(localizedSkillInstallExecutingStatus(lang, skill.Name))
-	execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*skill, skillExecutionRunArgs(userMessage))
-
-	// Audit log.
-	if d.auditLog != nil {
-		auditResult := execResult
-		if execErr != nil {
-			auditResult = execErr.Error()
+	if d.app != nil {
+		if err := d.app.refreshSkillIndexesAfterMutationChecked(skill.Name, *skill); err != nil {
+			return "", "", fmt.Errorf("refresh capability-gap skill index: %w", err)
 		}
+	}
+
+	// Final strict audit is the commit point. Do not execute or publish before
+	// this succeeds; a failed audit must still be recoverable by the defer.
+	if d.auditLog != nil {
 		riskLevel := security.RiskLow
 		policyAction := security.PolicyAllow
 		if scanReport != nil {
@@ -520,9 +687,36 @@ func (d *CapabilityGapDetector) Resolve(
 			ToolName:     "hub_skill_install",
 			RiskLevel:    riskLevel,
 			PolicyAction: policyAction,
-			Result:       fmt.Sprintf("installed and executed skill %s from %s: %s", skill.Name, chosen.HubURL, auditResult),
+			Result:       fmt.Sprintf("installed skill %s from %s", skill.Name, chosen.HubURL),
 		})
 	}
+	if d.app != nil {
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_installed", map[string]string{
+			"skill": skill.Name, "action": "install", "decision": "applied", "via": "capability_gap",
+			"request_id": requestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(d.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return "", "", fmt.Errorf("capability-gap install audit commit failed: %w", err)
+		}
+		installCompensation.TransactionState = "committed"
+		installCompensation.CleanupStatus = "pending"
+		installCompensation.FailureReason = "post_commit_cleanup_pending"
+		if err := cskill.ReplaceEvolutionCompensation(installCompensation); err != nil {
+			installTxnActive = false
+			return "", "", fmt.Errorf("capability-gap install committed but cleanup state could not be persisted: %w", err)
+		}
+		installTxnActive = false
+		if err := cskill.ClearEvolutionCompensation(requestID, skill.Name, "install"); err != nil {
+			installCompensation.LastError = err.Error()
+			installCompensation.FailureReason = "post_commit_cleanup_failed"
+			_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+			return "", "", fmt.Errorf("capability-gap install committed but compensation cleanup failed: %w", err)
+		}
+	}
+
+	// Step 7: Execute immediately, after the installation has committed.
+	sendStatus(localizedSkillInstallExecutingStatus(lang, skill.Name))
+	execResult, execErr := d.skillExecutor.ExecuteInstalledWithArgs(*skill, skillExecutionRunArgs(userMessage))
 
 	// Step 8: Auto-rate the skill based on execution result.
 	go d.autoRate(ctx, chosen.ID, execResult, execErr)

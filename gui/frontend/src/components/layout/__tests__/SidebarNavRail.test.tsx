@@ -121,15 +121,39 @@ describe('SidebarNavRail favorite employees', () => {
     });
 
     it('renders and opens the Utilities entry when enabled', () => {
-        const props = renderRail({ utilitiesLabel: 'Utilities' });
+        const props = renderRail({ utilitiesLabel: 'Experts & Tools' });
 
         const utilitiesEntry = screen.getByTestId('sidebar-utilities-nav');
         expect(utilitiesEntry).toBeTruthy();
         expect(utilitiesEntry.getAttribute('style')).not.toContain('display: none');
+        expect(utilitiesEntry.textContent).toContain('Experts & Tools');
 
         fireEvent.click(utilitiesEntry);
 
         expect(props.switchTool).toHaveBeenCalledWith('utilities');
+    });
+
+    it('defaults the utilities rail label to 专家&工具 in Simplified Chinese', () => {
+        renderRail({ lang: 'zh-Hans' });
+
+        const utilitiesEntry = screen.getByTestId('sidebar-utilities-nav');
+        expect(utilitiesEntry.textContent).toContain('专家&工具');
+        expect(utilitiesEntry.getAttribute('title')).toBe('专家&工具');
+        expect(screen.getByTestId('sidebar-expert-icon')).toBeTruthy();
+    });
+
+    it('defaults Traditional Chinese utilities rail label', () => {
+        renderRail({ lang: 'zh-Hant' });
+        expect(screen.getByTestId('sidebar-utilities-nav').textContent).toContain('專家&工具');
+    });
+
+    it('shortens the English rail label and keeps the full name as the tooltip', () => {
+        renderRail({ lang: 'en' });
+        const utilitiesEntry = screen.getByTestId('sidebar-utilities-nav');
+        expect(utilitiesEntry.textContent).toContain('Experts');
+        expect(utilitiesEntry.textContent).not.toContain('Experts & Tools');
+        expect(utilitiesEntry.getAttribute('title')).toBe('Experts & Tools');
+        expect(screen.getByTestId('sidebar-expert-icon')).toBeTruthy();
     });
 
     it('hides the Utilities entry when disabled', () => {
@@ -173,18 +197,24 @@ describe('SidebarNavRail favorite employees', () => {
         expect(iconBadge).toBeTruthy();
         expect(icon).toBeTruthy();
         // Glyph inherits badge color via currentColor; dark theme sets --ai-icon-inactive-fg.
+        expect(aiEntry.tagName).toBe('BUTTON');
+        expect((aiEntry as HTMLButtonElement).type).toBe('button');
         expect(icon?.getAttribute('stroke')).toBe('currentColor');
-        expect(icon?.getAttribute('stroke-width')).toBe('2');
+        expect(icon?.getAttribute('stroke-width')).toBe('1.8');
+        expect(aiEntry.getAttribute('aria-current')).toBeNull();
         expect(document.querySelector('.left-nav-item--ai.active')).toBeNull();
     });
 
-    it('marks AI nav active for selected high-contrast badge state', () => {
+    it('marks AI nav active for selected badge state', () => {
         renderRail({ navTab: 'ai' });
 
         const aiEntry = screen.getByTitle('AI Asst');
+        expect(aiEntry.tagName).toBe('BUTTON');
         expect(aiEntry.classList.contains('active')).toBe(true);
+        expect(aiEntry.getAttribute('aria-current')).toBe('page');
         expect(aiEntry.querySelector('.ai-nav-icon-badge')).toBeTruthy();
         expect(aiEntry.querySelector('.ai-nav-icon')?.getAttribute('stroke')).toBe('currentColor');
+        expect(aiEntry.getAttribute('style')).toBeNull();
     });
 
     it('shows a pending ranking mark for registered users without a ranking yet', () => {

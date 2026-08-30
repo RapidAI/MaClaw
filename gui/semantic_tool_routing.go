@@ -39,11 +39,19 @@ type semanticCallSurface struct {
 	epochMu      sync.RWMutex
 	activeEpoch  string
 	epochVersion uint64
-	issuer       *tool.InvocationIssuer
-	executor     *tool.PlanExecutor
-	routeState   tool.RouteStateStore
-	hostCalls    tool.HostCallJournal
-	coordinator  *tool.SQLiteSemanticExecutionCoordinator
+	// epochSnapshot is the binding the most recently issued epoch observed:
+	// which repeat family each stable function name held, on which plan. It
+	// survives invalidateEpoch so a batched call from that exact epoch can
+	// prove it is a same-family continuation rather than a late response
+	// binding a successor materialization; beginEpoch replaces it, so a
+	// straggler from an older request never matches. cancelSemanticCallSurface
+	// clears it together with the epoch.
+	epochSnapshot semanticEpochSnapshot
+	issuer        *tool.InvocationIssuer
+	executor      *tool.PlanExecutor
+	routeState    tool.RouteStateStore
+	hostCalls     tool.HostCallJournal
+	coordinator   *tool.SQLiteSemanticExecutionCoordinator
 	// removeTurnFence is installed only for a managed surface owned by a live
 	// LoopContext. It is detached when that loop ends normally; replacement and
 	// cancellation retain the fence long enough to revoke authority durably.
@@ -66,9 +74,22 @@ type semanticCallSurface struct {
 	replan *semanticReplanInput
 }
 
+// semanticEpochSnapshot records what one issued model-request epoch saw: the
+// plan (route revision) and, per stable function name, the repeat family its
+// grant belonged to at issuance. It is host-private correlation data, never
+// model-visible.
+type semanticEpochSnapshot struct {
+	epoch    string
+	planID   string
+	families map[string]string
+}
+
 // invalidateEpoch retires every outstanding model-request correlation before
 // mutating the rendered grant set. A late response can then never resolve a
 // stable function name (for example web_search) against a successor surface.
+// The snapshot is deliberately retained: it is the only record of which
+// family each name held under the retired epoch, and the same-family batch
+// continuation gate needs it for exactly one comparison per late call.
 func (s *semanticCallSurface) invalidateEpoch() {
 	if s == nil {
 		return
@@ -184,6 +205,11 @@ func (s *semanticCallSurface) beginEpoch() string {
 		parts = append(parts, name+":"+s.grants[name].Token)
 	}
 	s.activeEpoch = "surface:" + tool.SchemaDigest([]byte(strings.Join(parts, "\x00")))
+	families := make(map[string]string, len(s.grants))
+	for name, grant := range s.grants {
+		families[name] = tool.RepeatFamilyID(grant.SelectionID)
+	}
+	s.epochSnapshot = semanticEpochSnapshot{epoch: s.activeEpoch, planID: s.plan.ID, families: families}
 	return s.activeEpoch
 }
 
@@ -194,6 +220,59 @@ func (s *semanticCallSurface) epochIsCurrent(epoch string) bool {
 	s.epochMu.RLock()
 	defer s.epochMu.RUnlock()
 	return epoch == s.activeEpoch
+}
+
+// retireEpochSnapshots drops the continuation evidence together with the
+// epoch. Cancellation/replacement is terminal: no late call may bind anything
+// on this surface afterwards, so the snapshot must not outlive the fence.
+func (s *semanticCallSurface) retireEpochSnapshots() {
+	if s == nil {
+		return
+	}
+	s.epochMu.Lock()
+	s.epochSnapshot = semanticEpochSnapshot{}
+	s.epochMu.Unlock()
+}
+
+// staleEpochSameFamilyContinuation admits exactly one stale-epoch shape: a
+// call from the most recently issued epoch whose model response batched
+// several calls into one message. The core loop drains a batch sequentially,
+// so when an earlier batched call succeeded, the surface advanced, retired
+// the epoch, and issued the family's next sibling under the SAME stable name
+// — the late call is then stale only because it carries the retired epoch.
+//
+// The admission re-proves the binding rather than trusting the name:
+//
+//  1. the snapshot belongs to the caller's epoch — a successor model request
+//     has not begun since (beginEpoch replaces the snapshot), so a straggler
+//     from an older response can never bind the current grant;
+//  2. the route revision is unchanged — a petition child or a failure replan
+//     publishes a new plan and replaces the surface, so this snapshot cannot
+//     outlive it;
+//  3. the name still holds a LIVE grant (a retired name stays rejected);
+//  4. that grant's selection belongs to the same repeat family the name held
+//     at issuance — cross-family rebinding stays rejected.
+//
+// Authorization is not widened: the call binds the grant the surface itself
+// just issued for the family's next sibling — the exact grant the model would
+// have received had it waited one round — and the normal admission path
+// (validation, journal, one-shot consumption) applies unchanged.
+func (s *semanticCallSurface) staleEpochSameFamilyContinuation(epoch, name string) bool {
+	if s == nil || strings.TrimSpace(epoch) == "" || strings.TrimSpace(name) == "" {
+		return false
+	}
+	s.epochMu.RLock()
+	snapshot := s.epochSnapshot
+	s.epochMu.RUnlock()
+	if snapshot.epoch != epoch || snapshot.planID == "" || snapshot.planID != s.plan.ID {
+		return false
+	}
+	grant, live := s.grants[name]
+	if !live {
+		return false
+	}
+	issued, known := snapshot.families[name]
+	return known && issued == tool.RepeatFamilyID(grant.SelectionID)
 }
 
 func (s *semanticCallSurface) liveGrantNames() map[string]bool {
@@ -218,6 +297,18 @@ type semanticReplanInput struct {
 	Classification intent.ClassificationResult
 	Attachments    []MessageAttachment
 	Attempts       uint8
+	// ConversationLookupReused is the host-trusted record that the parent
+	// plan dropped its lookup legs on same-topic conversation evidence. A
+	// petition expansion re-plans without user text, so it reads this flag
+	// instead of re-deriving the heuristic.
+	ConversationLookupReused bool
+	// BundleKey is the archetype key the published plan's bundle offers were
+	// derived with. A petition expansion or failure replan re-derives needs
+	// from a classification that may now declare a document-production label
+	// the original plan did not expand with; without this record the child
+	// would swap archetype bundles and gain legs the expansion/replan
+	// validators must reject.
+	BundleKey intent.IntentLabel
 }
 
 type semanticRouteDiagnostic struct {
@@ -238,6 +329,12 @@ type semanticPlanPreparation struct {
 	turnID         string
 	documentInputs []semanticTrustedArtifactInput
 	audioInputs    []semanticTrustedArtifactInput
+	// conversationLookupReused records that same-topic conversation evidence
+	// dropped this plan's lookup legs. It is a host/trusted planning
+	// observation carried into the replan input: a later petition expansion
+	// re-plans without the turn's user text and must mirror the drop instead
+	// of resurrecting non-petitioned lookup legs.
+	conversationLookupReused bool
 }
 
 func newIMSemanticCapabilityRegistry() *tool.CapabilityRegistry {
@@ -357,9 +454,15 @@ var imSemanticIntentRuleSet = map[intent.IntentLabel][]agentservice.IntentCapabi
 	// Stable reference lookup and changing public facts use the same
 	// implementation contract but retain distinct outcome qualifiers. This
 	// allows a future provider/policy to specialize freshness without adding
-	// a tool-name branch to request routing.
+	// a tool-name branch to request routing. Research turns are iterative by
+	// nature ("全网搜索X" needs a broad query plus one or two refinements);
+	// a single search grant strands them on a policy denial and pushes the
+	// model into fetch petitions it cannot form (production 2026-08-26, the
+	// 张惠妹 discography turn). Three matches the observed shape: initial
+	// query + refinements, still bounded visible plan nodes (5 matches the
+	// no-progress breaker's tolerance; bash-style iteration budgets are 8).
 	intent.LabelSearch: {
-		{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "reference"}, Required: true},
+		{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "reference"}, Required: true, MaxInvocations: 5},
 	},
 	intent.LabelLiveData: {
 		{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "current"}, Required: true},
@@ -400,8 +503,20 @@ var imSemanticIntentRuleSet = map[intent.IntentLabel][]agentservice.IntentCapabi
 	// Sensitive builtin families migrated in the S2a slice. The need is an
 	// outcome contract only; the catalog decides which registered builtin
 	// implementation satisfies it.
+	// Office writes produce a workspace document the user almost always wants
+	// back in the conversation, so the rule carries the same generate+deliver
+	// pair as LabelDocumentGenerate: without the delivery leg the turn could
+	// write the deck/sheet and then die on an unrendered send_file call.
+	// The leg stays optional: channels without file delivery (e.g. VE) deny the
+	// capability, and a required leg would HostReject office turns that worked
+	// there before (business_data read leg precedent). The write itself gets a
+	// two-invocation budget: draft-then-revise is the natural deck workflow
+	// (write the frame, acquire the assets, rewrite with them embedded —
+	// production 2026-08-26 PPT turn: photos landed after the first write and
+	// the single-shot grant blocked the revision).
 	intent.LabelOffice: {
-		{Capability: tool.CapabilityDocumentWriteOffice, Required: true},
+		{Capability: tool.CapabilityDocumentWriteOffice, Required: true, MaxInvocations: 2},
+		{Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "file"}, Required: false},
 	},
 	// Business data is planned as both halves rather than one. The label does
 	// not say whether the turn intends to read or to write, and guessing from
@@ -440,8 +555,11 @@ var imSemanticIntentRuleSet = map[intent.IntentLabel][]agentservice.IntentCapabi
 	intent.LabelGitMutate: {
 		{Capability: tool.CapabilityRepoMutateVCS, Required: true},
 	},
+	// Page fetches follow searches: a research turn reads a few result pages,
+	// not exactly one. Three matches the search budget above, read-only and
+	// bounded.
 	intent.LabelWebFetch: {
-		{Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{Capability: tool.CapabilityInformationFetchWeb, Required: true, MaxInvocations: 5},
 	},
 	intent.LabelAudioTranscribe: {
 		{Capability: tool.CapabilityAudioTranscribeSpeech, Required: true},
@@ -460,8 +578,14 @@ var imSemanticIntentRuleSet = map[intent.IntentLabel][]agentservice.IntentCapabi
 	intent.LabelFileWrite: {
 		{Capability: tool.CapabilityFSWriteLocal, Required: true},
 	},
+	// Shell work is iterative by nature — write a script, run it, read the
+	// error, fix, rerun — so one invocation cannot express the meaning. Eight
+	// matches the coding family's edit budget: enough for a real craft-and-run
+	// loop, still bounded as plan nodes that review can see. This matters most
+	// for petitioned shell legs (an office/PPT turn crafting its own deck via a
+	// script), which would otherwise strand after a single command.
 	intent.LabelShellCommand: {
-		{Capability: tool.CapabilityShellExecuteLocal, Required: true},
+		{Capability: tool.CapabilityShellExecuteLocal, Required: true, MaxInvocations: 8},
 	},
 	intent.LabelAudioRecord: {
 		{Capability: tool.CapabilityAudioCaptureMicrophone, Required: true},
@@ -474,8 +598,11 @@ var imSemanticIntentRuleSet = map[intent.IntentLabel][]agentservice.IntentCapabi
 	intent.LabelAppLaunch: {
 		{Capability: tool.CapabilitySystemLaunchLocal, Required: true},
 	},
+	// A deck or report usually embeds a handful of remote assets, not exactly
+	// one: three bounded acquires cover a photo set without opening an
+	// unbounded download plan.
 	intent.LabelFileDownload: {
-		{Capability: tool.CapabilityArtifactAcquireRemote, Required: true},
+		{Capability: tool.CapabilityArtifactAcquireRemote, Required: true, MaxInvocations: 3},
 	},
 	intent.LabelConfigManage: {
 		{Capability: tool.CapabilityConfigManageSelf, Required: true},
@@ -671,8 +798,14 @@ func semanticReadOnlyLookupFamily(result intent.ClassificationResult) bool {
 }
 
 // semanticDeclaredLookupGenerateComposite is the generate half of the declared
-// {search,live_data}×{document_generate} pair. Other mutating labels stay
-// outside this exception.
+// {search,live_data,web_fetch}×{document_generate} pair. Other mutating labels
+// stay outside this exception. The lookup half must match semanticLookupHalf
+// exactly: the L3 tree's natural verdict for a lookup task is web_fetch, and
+// excluding it here dropped the declared pair at every downstream planning
+// gate (2026-08-28 张惠妹 turn: tree-synthesized web_fetch(0.62)+
+// document_generate(0.683) composite planned no surface at all, and the
+// generate_pdf petition then expanded nothing because the label was already
+// declared).
 func semanticDeclaredLookupGenerateComposite(result intent.ClassificationResult) bool {
 	if !semanticLookupHalf(result) || !classificationHasLabel(result, intent.LabelDocumentGenerate) {
 		return false
@@ -682,7 +815,7 @@ func semanticDeclaredLookupGenerateComposite(result intent.ClassificationResult)
 			continue
 		}
 		switch label {
-		case intent.LabelSearch, intent.LabelLiveData, intent.LabelDocumentGenerate:
+		case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch, intent.LabelDocumentGenerate:
 		default:
 			return false
 		}
@@ -699,7 +832,7 @@ func semanticDeclaredLookupVisualComposite(result intent.ClassificationResult) b
 			continue
 		}
 		switch label {
-		case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual:
+		case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch, intent.LabelLiveDataVisual:
 		default:
 			return false
 		}
@@ -707,15 +840,13 @@ func semanticDeclaredLookupVisualComposite(result intent.ClassificationResult) b
 	return true
 }
 
+// semanticReadOnlyGovernedLabel reports whether a rule label is governed and
+// read-only. semanticReadOnlyGovernedLabels is the single source for this
+// set: the planning gates below and the petition budget/group-policy gate
+// must agree on what "read-only" means, or a weak classification could plan a
+// leg the petition path treats as effectful (or vice versa).
 func semanticReadOnlyGovernedLabel(label intent.IntentLabel) bool {
-	switch label {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelDocumentRead, intent.LabelFileRead,
-		intent.LabelKnowledgeRead, intent.LabelAuditRead, intent.LabelCurrentTime,
-		intent.LabelGitInspect, intent.LabelWebFetch:
-		return true
-	default:
-		return false
-	}
+	return semanticReadOnlyGovernedLabels[label]
 }
 
 func semanticReadOnlyGovernedFamily(result intent.ClassificationResult) bool {
@@ -756,6 +887,21 @@ func semanticReadOnlyUnderstandHint(result intent.ClassificationResult) bool {
 
 func semanticReadOnlyGovernedHint(result intent.ClassificationResult) bool {
 	return semanticReadOnlyLookupHint(result) || semanticReadOnlyUnderstandHint(result)
+}
+
+// semanticOfficeGovernedHint is the mutating counterpart of the read-only
+// hint gate: an L2 office guess that met the lookup floor but whose tree
+// ruling timed out. The office family plans through the same governed
+// catalog as a tree-confirmed verdict (fit-proof bound, one-shot grants), so
+// keeping the hint cannot mint bash or arbitrary writes — it only stops a
+// slow hub from stripping document tools off 「生成PPT/报告」 turns.
+// Generate/coding secondaries never reach here: the classifier collapses
+// those composites to unknown before this gate.
+func semanticOfficeGovernedHint(result intent.ClassificationResult) bool {
+	if result.Primary != intent.LabelOffice || !result.Degraded {
+		return false
+	}
+	return result.Confidence >= semanticLookupHintFloor
 }
 
 func semanticNeedsChatProjection(result intent.ClassificationResult) bool {
@@ -1087,13 +1233,64 @@ func semanticTreeConfirmedClassification(result intent.ClassificationResult) boo
 
 // semanticClassificationPlansBelowResolverFloor is the only way a score below
 // 0.78 may still mint needs. 0.78 is the resolver/L2 write-grant floor, not a
-// second vote after the tree already named the family. No family allowlist:
-// office/screenshot/generate use the same tree rule as shell.
+// second vote after the tree already named the family. Read-only hints and
+// degraded office hints at the lookup floor plan; every other degraded
+// mutating family stays a miss.
+//
+// A declared lookup+generate/visual composite plans too — even under the 0.70
+// tree floor. That shape is two independent authorities agreeing on the
+// reviewed pair (L2 runner-up evidence plus the tree verdict on the lookup
+// half), which is stronger than any single weak score; the classifier's
+// synthesis comment calls dropping it at 0.68 the incident being fixed
+// ("PDF 生成工具不可用", 2026-08-25), yet the planning gate here re-created
+// exactly that drop for the web_fetch-verdict shape on 2026-08-28. The
+// predicate still bounds what can be minted: only the declared pair's own
+// legs. Degraded stays a miss — a timeout guess must not mint writes.
+//
+// A non-degraded, non-tree classification whose declared capability labels
+// are all governed read-only labels plans as well, at any score below the
+// floor (semanticSubFloorGovernedReadOnlyClassification). For L2 verdicts
+// Degraded is the trust boundary: a non-degraded result means the embedding
+// actually named this family (the 2026-08-28 张惠妹 turn: search at 0.69,
+// layer 2, tree unavailable). Dropping it re-opened the legacy name router,
+// which does not carry the managed tools at all, and the petition rescue
+// could not fire without a semantic surface. The planning projection only
+// mints the declared read-only legs; effectful capabilities such as
+// generate_pdf/send_file still arrive through the petition path, with its
+// budget and expansion validator as the safety boundary. Weak effectful
+// labels (generate/office/bash …), tree scores under the 0.70 signal floor,
+// and every Degraded shape stay a miss.
 func semanticClassificationPlansBelowResolverFloor(result intent.ClassificationResult) bool {
-	if semanticReadOnlyGovernedHint(result) {
+	if semanticReadOnlyGovernedHint(result) || semanticOfficeGovernedHint(result) {
+		return true
+	}
+	if semanticSubFloorGovernedReadOnlyClassification(result) {
+		return true
+	}
+	if !result.Degraded && (semanticDeclaredLookupGenerateComposite(result) || semanticDeclaredLookupVisualComposite(result)) {
 		return true
 	}
 	return semanticTreeConfirmedClassification(result)
+}
+
+// semanticSubFloorGovernedReadOnlyClassification is the defect-1 planning
+// gate: not degraded, a non-tree verdict, and every declared capability label
+// is a governed read-only label. Tree/fusion scores (layer 3/23) live on a
+// different scale and stay governed by semanticTreeConfirmedClassification's
+// 0.70 signal floor — a 0.55 tree pick is noise, not a hint. For an L2
+// verdict, non-degraded is the trust signal: the embedding actually named
+// this family and the tree was unavailable. The read-only set is the single
+// source shared with the petition gate, so a label either is or is not
+// read-only governed everywhere. Non-capability labels
+// (unknown/continuation/…) ride along.
+func semanticSubFloorGovernedReadOnlyClassification(result intent.ClassificationResult) bool {
+	if result.Degraded {
+		return false
+	}
+	if result.Layer == 3 || result.Layer == 23 {
+		return false
+	}
+	return semanticReadOnlyGovernedFamily(result)
 }
 
 // semanticLookupClassificationForPlanning is a resolver-only projection.
@@ -1181,7 +1378,275 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 	if resolution.Managed && intent.WantsAmbientRetrieval(result.Primary) {
 		resolution.Needs = agentservice.AppendAmbientRetrievalNeeds(registry, resolution.Needs)
 	}
+	resolution.Needs = semanticArchetypeBundleNeeds(registry, result, resolution.Managed, resolution.Needs, semanticArchetypeBundleKeyFor(ctx, result))
 	return resolution.Needs, resolution.Managed, nil
+}
+
+// semanticArchetypeBundles maps a classification primary label to the
+// companion labels of its task archetype. A task class almost always reaches
+// for the same small family of capabilities — a document-producing turn looks
+// material up, fetches pages, downloads assets, and reads local files — so
+// those legs ride along as optional offers on every turn of the class instead
+// of depending on secondary-label classification confidence. The same PPT
+// request routed to three different surfaces on 2026-08-26 (office leg /
+// browser leg / pdf leg) because whether the lookup leg was planned depended
+// on a single classification sample; the last three production incidents
+// shared that small-face root cause. Determinism here comes from the bundle
+// being a fixed table plus the existing budget/fence machinery, not from
+// shrinking the face.
+//
+// Four design constraints, all pinned by test:
+//
+//  1. Members are labels, and their needs are derived from
+//     imSemanticIntentRuleSet templates — no hand-maintained capability
+//     approximations that can drift from the rule set (§4.18).
+//  2. The repeat budget lives in the templates (MaxInvocations), and the
+//     effective budget of one capability is the MAX across its sources: a
+//     bundle offer raises a lower-budget declared family in place (never a
+//     second family — one stable function name cannot bind two families), and
+//     never shrinks a higher one. Classification jitter between labels that
+//     declare the same capability therefore cannot shrink the turn's budget
+//     (production 2026-08-28 PPT turn).
+//  3. Delivery legs (artifact.deliver.*) never enter a bundle: delivery is
+//     carried by the producing label's own rule and unlocked by the plan DAG
+//     phase, so a bundle offering it would duplicate the leg and blur the
+//     producer/consumer phase boundary.
+//  4. bash/delegate stay out of bundles on purpose: they are general
+//     fallbacks, not archetype members, and the petition mechanism already
+//     covers them — bundles cover the high-frequency head, petitions the
+//     long tail.
+//
+// Callers must treat the map as read-only.
+var semanticArchetypeBundles = map[intent.IntentLabel][]intent.IntentLabel{
+	// Document production: lookup + acquire + local read.
+	intent.LabelOffice:           {intent.LabelSearch, intent.LabelWebFetch, intent.LabelFileDownload, intent.LabelFileRead},
+	intent.LabelDocumentGenerate: {intent.LabelSearch, intent.LabelWebFetch, intent.LabelFileDownload, intent.LabelFileRead},
+	// Retrieval research: search and fetch carry each other; the capability
+	// duplicate (information.search.web is already declared on a search turn)
+	// is absorbed by the dedup rule in semanticArchetypeBundleNeeds.
+	intent.LabelSearch:   {intent.LabelWebFetch, intent.LabelSearch},
+	intent.LabelLiveData: {intent.LabelWebFetch, intent.LabelSearch},
+	intent.LabelWebFetch: {intent.LabelWebFetch, intent.LabelSearch},
+	// Local files: read and write travel together.
+	intent.LabelFileRead:     {intent.LabelFileRead, intent.LabelFileWrite},
+	intent.LabelFileWrite:    {intent.LabelFileRead, intent.LabelFileWrite},
+	intent.LabelDocumentRead: {intent.LabelFileRead, intent.LabelFileWrite},
+	// Command/coding: shell and delegated work iterate over local files.
+	intent.LabelShellCommand: {intent.LabelFileRead, intent.LabelFileWrite},
+	intent.LabelDelegateTask: {intent.LabelFileRead, intent.LabelFileWrite},
+	// Desktop automation: observe the screen, launch the target app.
+	intent.LabelBrowser:     {intent.LabelScreenshot, intent.LabelAppLaunch},
+	intent.LabelComputerUse: {intent.LabelScreenshot, intent.LabelAppLaunch},
+}
+
+// semanticArchetypeBundleKey picks the archetype whose bundle the turn
+// expands with. A LOOKUP-primary classification (search/live_data/web_fetch —
+// the normalized lookup+generate composite keeps live_data as primary) that
+// also declares document production is a document-archetype turn: keying the
+// bundle on the primary alone stranded the 2026-08-28 birthday-PPT turn —
+// download_file stayed petition-only, the model spent the turn's single
+// effectful petition on it, and the office petition the task actually needed
+// then hit the spent budget. The document bundle is a superset of the
+// retrieval pair, so a lookup+document composite loses nothing. The override
+// is deliberately scoped to lookup primaries: a coding primary that declares
+// document_generate keeps the coding face and must not gain web_search from
+// the document bundle.
+func semanticArchetypeBundleKey(result intent.ClassificationResult) intent.IntentLabel {
+	switch result.Primary {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch:
+		if classificationHasLabel(result, intent.LabelOffice) {
+			return intent.LabelOffice
+		}
+		if classificationHasLabel(result, intent.LabelDocumentGenerate) {
+			return intent.LabelDocumentGenerate
+		}
+	}
+	return result.Primary
+}
+
+// semanticArchetypeBundleKeyOverrideKey carries the bundle key a published
+// plan was built with into a later re-plan. A petition expansion adds one
+// label to the classification; if that label is office/document_generate, an
+// overriding re-derivation would also swap the archetype bundle and the child
+// would gain bundle-offer legs the strict-superset expansion validator must
+// (correctly) reject. The re-plan therefore reuses the parent plan's recorded
+// key: the petition adds exactly the petitioned label's template legs.
+type semanticArchetypeBundleKeyOverrideKey struct{}
+
+func withSemanticArchetypeBundleKeyOverride(ctx context.Context, key intent.IntentLabel) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(string(key)) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, semanticArchetypeBundleKeyOverrideKey{}, key)
+}
+
+func semanticArchetypeBundleKeyFor(ctx context.Context, result intent.ClassificationResult) intent.IntentLabel {
+	if ctx != nil {
+		if override, ok := ctx.Value(semanticArchetypeBundleKeyOverrideKey{}).(intent.IntentLabel); ok && strings.TrimSpace(string(override)) != "" {
+			return override
+		}
+	}
+	return semanticArchetypeBundleKey(result)
+}
+
+// semanticArchetypeBundleNeeds appends the turn's archetype bundle (chosen by
+// semanticArchetypeBundleKey) to the resolved needs as optional offers
+// the resolved needs as optional offers (Required:false — an offer, never an
+// obligation). The same classification always expands to the same face:
+// iteration follows the fixed bundle order, each companion label contributes
+// its rule templates in template order, and each template emits
+// RepeatSiblingBudget(MaxInvocations) sibling needs (one when the template
+// declares no budget). Need IDs derive exactly like the resolver's:
+// capability+polarity+qualifiers digest plus the sibling index.
+//
+// Dedup is by capability regardless of qualifiers: a capability the resolved
+// needs already carry (declared or ambient) never grows a SECOND family from
+// the bundle, and neither does a capability an earlier bundle label already
+// offered — a search turn never ends up with two search families. Two
+// families bound to the same capability would render the same stable function
+// name (web_search) and collide on the surface, so a qualifier-keyed coexistence
+// is deliberately not an option.
+//
+// Within that one-family rule the budget is the MAX across sources, not
+// first-declared-wins: when the bundle template budgets a capability higher
+// than the family the resolved needs already carry, the existing family grows
+// the missing siblings in place (keeping its own ID base, qualifiers and
+// polarity). Production 2026-08-28 PPT turn: the classification carried
+// live_data (one-off freshness=current search) instead of search, and
+// capability-only dedup let that single invocation shadow the archetype's
+// five — web_search died after one success on a turn that still needed more
+// lookups. The classifier cannot tell a one-shot weather lookup from an
+// iterative research turn at label granularity, so the ceiling must not
+// depend on which label happened to declare the capability. The added
+// siblings stay bundle offers (Required:false, bundle evidence): the declared
+// leg keeps its required invocation, while the raised ceiling is an offer the
+// planner sheds first under a tight planning budget — a MaxSelections=1 turn
+// still keeps its one search instead of losing the whole wave. The upgrade
+// applies only while the capability still has exactly one family; a
+// classification that legitimately declared two qualifier-distinct families
+// (search+live_data) keeps both untouched. Bundle needs whose capability the
+// registry does not know are skipped rather than failing the turn: an offer
+// must never gate the required legs. Bundle needs are appended only for
+// managed classifications.
+func semanticArchetypeBundleNeeds(registry *tool.CapabilityRegistry, result intent.ClassificationResult, managed bool, needs []tool.CapabilityNeed, bundleKey intent.IntentLabel) []tool.CapabilityNeed {
+	if !managed {
+		return needs
+	}
+	companions, ok := semanticArchetypeBundles[bundleKey]
+	if !ok || len(companions) == 0 {
+		return needs
+	}
+	// offered records, per capability, the needs-range of the single family
+	// already carrying it. A capability with two qualifier-distinct families
+	// is marked as ambiguous and never upgraded in place.
+	type familyRange struct {
+		start, count int
+		ambiguous    bool
+	}
+	offered := make(map[tool.CapabilityID]familyRange, len(needs))
+	for index, need := range needs {
+		family := tool.RepeatFamilyID(need.ID)
+		entry, exists := offered[need.Capability]
+		if !exists {
+			offered[need.Capability] = familyRange{start: index, count: 1}
+			continue
+		}
+		if tool.RepeatFamilyID(needs[entry.start].ID) != family {
+			entry.ambiguous = true
+		}
+		entry.count++
+		offered[need.Capability] = entry
+	}
+	out := needs
+	for _, label := range companions {
+		for _, template := range imSemanticIntentRuleSet[label] {
+			// Delivery legs stay out of bundles by construction (constraint 3
+			// above); the skip is also enforced here so a future label whose
+			// rule pairs produce+deliver (screenshot, live_data_visual) can
+			// still lend its producer half to a bundle.
+			if strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
+				continue
+			}
+			budget := tool.RepeatSiblingBudget(template.MaxInvocations)
+			if entry, exists := offered[template.Capability]; exists {
+				// The capability is already carried. Raise the family's
+				// ceiling to the max across sources by appending the missing
+				// siblings to the existing family; never shrink it, never
+				// spawn a second family, and leave a legitimately
+				// qualifier-split capability alone. The appended siblings stay
+				// optional bundle offers even when the base leg is required:
+				// the ceiling is an offer, not an obligation, and a tight
+				// planning budget sheds these before touching the declared
+				// required invocation.
+				if entry.ambiguous || budget <= entry.count {
+					continue
+				}
+				base := out[entry.start]
+				baseID := tool.RepeatFamilyID(base.ID)
+				for index := entry.count; index < budget; index++ {
+					out = append(out, tool.CapabilityNeed{
+						ID:         tool.RepeatSiblingNeedID(baseID, index),
+						Capability: base.Capability, Qualifiers: semanticArchetypeCloneQualifiers(base.Qualifiers), Polarity: base.Polarity,
+						Required: false, Confidence: result.Confidence, EvidenceIDs: []string{"intent:archetype_bundle"},
+					})
+				}
+				entry.count = budget
+				offered[template.Capability] = entry
+				continue
+			}
+			if _, exists := registry.Lookup(template.Capability); !exists {
+				continue
+			}
+			offered[template.Capability] = familyRange{start: len(out), count: budget}
+			polarity := template.Polarity
+			if polarity == "" {
+				polarity = tool.NeedRequire
+			}
+			key := string(template.Capability) + "\x00" + string(polarity) + "\x00" + semanticArchetypeQualifierKey(template.Qualifiers)
+			baseID := "need:" + string(template.Capability) + ":" + tool.SchemaDigest([]byte(key))[:12]
+			// Siblings share the optional flag as a family: the whole leg
+			// stays an offer, never an obligation, and lands in the plan's
+			// omitted list together when no provider serves it.
+			for index := 0; index < tool.RepeatSiblingBudget(template.MaxInvocations); index++ {
+				out = append(out, tool.CapabilityNeed{
+					ID:         tool.RepeatSiblingNeedID(baseID, index),
+					Capability: template.Capability, Qualifiers: semanticArchetypeCloneQualifiers(template.Qualifiers), Polarity: polarity,
+					Required: false, Confidence: result.Confidence, EvidenceIDs: []string{"intent:archetype_bundle"},
+				})
+			}
+		}
+	}
+	return out
+}
+
+// semanticArchetypeQualifierKey renders qualifiers exactly like the resolver's
+// need-ID key (sorted k=v pairs), so a bundle offer and a label-declared need
+// for the same contract share one need identity.
+func semanticArchetypeQualifierKey(values map[string]string) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, strings.TrimSpace(key)+"="+strings.TrimSpace(values[key]))
+	}
+	return strings.Join(parts, "\x1f")
+}
+
+func semanticArchetypeCloneQualifiers(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 // semanticTrustedArtifactInput is a channel-authorized payload normalized at
@@ -1291,7 +1756,7 @@ func semanticNeedsForTrustedDocumentInputs(needs []tool.CapabilityNeed, inputs [
 	}
 	hasGenerate := false
 	for _, need := range needs {
-		if need.Capability == "document.generate.file" {
+		if need.Capability == "document.generate.file" || need.Capability == tool.CapabilityDocumentWriteOffice {
 			hasGenerate = true
 			break
 		}
@@ -1305,8 +1770,8 @@ func semanticNeedsForTrustedDocumentInputs(needs []tool.CapabilityNeed, inputs [
 				continue
 			}
 			if hasGenerate {
-				// Generate's file deliver consumes the generate ArtifactRef.
-				// It must not look up a MessageAttachment.
+				// A generate/office-write file deliver consumes the in-turn
+				// producer ArtifactRef. It must not look up a MessageAttachment.
 				continue
 			}
 		default:
@@ -1363,6 +1828,10 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 		}
 	}
 	defer removeReplacementCancel()
+	h.releaseNamedSkillOnLoopIntent(ctx, userID, userText)
+	if ctx != nil {
+		h.adoptLateTreeSemanticIntent(ctx, userID, userText, ctx.History)
+	}
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, userText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
 	if handled && err == nil && surface != nil && ctx != nil {
 		removeFence, current := ctx.RegisterSemanticTurnFence(turnGeneration, func() {
@@ -1477,7 +1946,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		hostConnectionID: "agent-loop-surface:" + newSemanticEphemeralIdentity(),
 		completed:        make(map[string]bool), materialized: make(map[string]bool), schemas: prepared.definitions, parameterSchemas: prepared.schemas,
 		grants: make(map[string]tool.InvocationGrant), retiredGrants: make(map[string]tool.InvocationGrant), rendered: make(map[string]bool), artifacts: newSemanticArtifactBroker(scope, artifactStore, routeState, coordinator), pendingArtifacts: make(map[string][]tool.ArtifactPayload),
-		replan: &semanticReplanInput{UserID: userID, Channel: channel, RootTaskID: prepared.rootTaskID, Classification: classVal, Attachments: cloneSemanticMessageAttachments(attachments)},
+		replan: &semanticReplanInput{UserID: userID, Channel: channel, RootTaskID: prepared.rootTaskID, Classification: classVal, Attachments: cloneSemanticMessageAttachments(attachments), ConversationLookupReused: prepared.conversationLookupReused, BundleKey: semanticArchetypeBundleKey(classVal)},
 	}
 	for _, input := range prepared.documentInputs {
 		if err := semanticRoutingRequestErr(requestCtx); err != nil {
@@ -1731,6 +2200,54 @@ func semanticSpentBudgetNote(surface *semanticCallSurface, selectionID string) s
 	return fmt.Sprintf("\n\n[system] %s reached its limit of %d calls for this turn and is no longer available. Continue from what you already have, and state plainly what remains unfinished.", capability, budget)
 }
 
+// semanticTurnDeliveryComplete reports that the turn's goal is fully reached:
+// every REQUIRED planned selection completed and at least one completed
+// selection is a current-channel delivery adapter. The closing LLM round trip
+// after this point only produces summary text, so the loop may stop cleanly
+// instead of paying one more call's latency and outage exposure. Optional
+// offers never gate completion: the ambient knowledge/memory lookups and the
+// archetype bundle offers are open offers the model may ignore, and
+// holding the stop hostage to them would make it dead code — production
+// 2026-08-26 turns never called the ambient legs, so the all-selections
+// variant never fired. A turn whose delivery finished while a required
+// selection is still open (deliver, then remind me) does not match: the loop
+// continues.
+func semanticTurnDeliveryComplete(surface *semanticCallSurface) bool {
+	if surface == nil || len(surface.plan.Selections) == 0 || surface.registry == nil || surface.replan == nil {
+		return false
+	}
+	// Optionality is need-level and the plan does not retain needs; recompute
+	// them deterministically from the stored classification (rule templates
+	// only, no LLM) under the bundle key the plan was published with. Unknown
+	// need IDs fail toward required — a selection whose optionality cannot be
+	// proven must still complete.
+	needsCtx := withSemanticArchetypeBundleKeyOverride(context.Background(), surface.replan.BundleKey)
+	needs, _, err := semanticNeedsFromClassificationContext(needsCtx, surface.registry, surface.replan.Classification)
+	if err != nil {
+		return false
+	}
+	optionalByNeed := make(map[string]bool, len(needs))
+	for _, need := range needs {
+		if !need.Required {
+			optionalByNeed[need.ID] = true
+		}
+	}
+	delivered := false
+	for _, selection := range surface.plan.Selections {
+		if !surface.completed[selection.ID] {
+			if !optionalByNeed[selection.NeedID] {
+				return false
+			}
+			continue
+		}
+		switch selection.AdapterName {
+		case "semantic_deliver_current_file", "semantic_deliver_current_image", "semantic_deliver_current_voice":
+			delivered = true
+		}
+	}
+	return delivered
+}
+
 func refreshSemanticCallSurface(surface *semanticCallSurface) ([]map[string]interface{}, error) {
 	return refreshSemanticCallSurfaceSkipping(surface, nil)
 }
@@ -1937,6 +2454,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// A phase turn that still sounds like the workflow it belongs to is not
 	// asking for an unserved capability.
 	classification = semanticClassificationForWorkflowLoop(semanticWorkflowAgentLoop(requestCtx), classification)
+	// Named skill runs belong to the current agent (skill-doc inject + loop),
+	// the same path the main assistant uses. workflow_task is only a
+	// workflow_v2 panel start and must not HostReject that turn. Agent-guided
+	// inject (Book-PDF) is the same act even when the user omitted "skill".
+	h.releaseNamedSkillIntercept(&classification, userID, userText)
 	// Unmapped capability labels (coding, bug_fix, …) must HostReject before
 	// the managed-for-loop gate. Checking managed first reopened the legacy
 	// name router for those families.
@@ -1967,8 +2489,10 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// second vote after L3 already named the family. Tree-confirmed (layer
 	// 3/23, not degraded, ≥ 0.70) plans; leftover is for unknown/hint, not
 	// for a named shell_command at 0.75. Read-only lookup hints still plan
-	// above 0.70. Degraded mutating families stay a miss so leftover cannot
-	// mint bash from a timeout guess. Weak L2 generate stays a miss.
+	// above 0.70, and a degraded L2 office hint at the lookup floor plans
+	// through the governed office surface. Other degraded mutating families
+	// stay a miss so leftover cannot mint bash from a timeout guess. Weak L2
+	// generate stays a miss.
 	declaredManaged, unmapped := imSemanticIntentCoverage(classification)
 	planning := classification
 	if !semanticClassificationMeetsResolverFloor(classification) {
@@ -2038,7 +2562,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// Lookup->generate Requires means "facts needed", not "search again".
 	// Same-topic conversation evidence drops the this-turn lookup need so
 	// generate_pdf is issued on the first model request.
-	needs = semanticNeedsForReusableConversationLookup(needs, requestCtx, userText)
+	needs, conversationLookupReused := semanticNeedsForReusableConversationLookupReport(needs, requestCtx, userText)
+	// A petition expansion re-plan has no user text, so the drop above cannot
+	// re-fire; when the parent surface recorded it, mirror it here for every
+	// lookup leg except the petitioned label's own templates.
+	needs = semanticNeedsForPetitionExpansionLookup(needs, requestCtx)
 	catalog := tool.NewToolCatalog(registry)
 	// A semantic provider's registered schema is the trusted source for its
 	// model-facing definition.  Do not build the legacy presentation surface
@@ -2617,7 +3145,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// A managed family never falls through to old name routing: the caller sees
 	// a planner result only. Missing capability providers are explicit errors.
 	if len(plan.Unmet) > 0 {
-		return &semanticPlanPreparation{registry: registry, plan: plan, definitions: defsByName, schemas: semanticSchemas, rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs}, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
+		return &semanticPlanPreparation{registry: registry, plan: plan, definitions: defsByName, schemas: semanticSchemas, rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs, conversationLookupReused: conversationLookupReused}, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
 	}
 	// Confirmation is represented as a plan dependency and therefore has no
 	// executable tool surface in this phase. The existing confirmation UX owns
@@ -2627,7 +3155,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 			return nil, true, errSemanticAwaitingConfirmation
 		}
 	}
-	return &semanticPlanPreparation{registry: registry, plan: plan, definitions: defsByName, schemas: semanticSchemas, rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs}, true, nil
+	return &semanticPlanPreparation{registry: registry, plan: plan, definitions: defsByName, schemas: semanticSchemas, rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs, conversationLookupReused: conversationLookupReused}, true, nil
 }
 
 // semanticInvocationSchema converts either a full JSON Schema definition or a
@@ -2726,13 +3254,20 @@ func semanticGeneratePDFDefinition() map[string]interface{} {
 	}
 }
 
-// semanticGrantPromptFence is appended on every governed turn. Names are
-// stable host spellings (web_search, generate_pdf); each listing is still a
-// one-time grant. Later DAG steps appear after the current grant succeeds.
-const semanticGrantPromptFence = "\nGoverned tools: only listed names are valid. Those names are stable (web_search, generate_pdf, send_file) and are one-time grants. Later steps such as PDF or trusted live-data image render unlock after the current grant succeeds, in this same reply; when a render or delivery tool is listed, call it immediately and do not say please wait; do not tell the user a tool is missing. Do not invent previous_turn_tool or reuse leftover invoke_* names. Do not fetch a search-engine page.\n"
+// semanticGrantPromptFence is appended on every governed turn. Listed names
+// stay stable for the whole turn; each listing is still a one-time grant.
+// Later DAG steps appear after the current grant succeeds.
+// semanticGrantPromptFence is appended on every governed turn. It must
+// describe the real contract and nothing else: the live tool list is the
+// ground truth (a listed name is callable, and a name that leaves after a
+// success may reappear for a later step in the same turn), and lookup tools
+// are legitimately reusable within their turn budget. Earlier wording
+// ("one-time grants") contradicted the repeat-sibling budget and taught the
+// model to declare used tools dead without ever retrying them.
+const semanticGrantPromptFence = "\nGoverned tools: the live tool list is the ground truth — call any listed name, and call it again while it stays listed. After a successful call a name may briefly leave the list and reappear for a later step in this same turn; lookup tools (search, fetch) are expected to be used several times. Call ONE tool per response: the list is a state machine, not a static catalog — every result changes what is listed next, so a batched second call races the first call's outcome and is rejected. Unlisted capability? Query tools_search for the exact name; a name it marks 可请愿 (petitionable) — for example an unlisted web_search, web_fetch, bash, or office — may be called once even though unlisted: the host may authorize it on the spot. A name it marks planned, exhausted, or unavailable stays invalid. Later steps such as PDF or image render unlock after the current step succeeds, in this same reply; when a render or delivery tool is listed, call it immediately and do not say please wait; do not tell the user a tool is missing. Never claim a tool is used up or unavailable unless its own denial message just said so — an untried petitionable name is available, so try it instead of concluding it is gone. Do not narrate tool limits or availability mechanics to the user; just do the work or state plainly what could not be done. Do not invent previous_turn_tool or reuse leftover invoke_* names. Do not fetch a search-engine page.\n"
 
 func ensureSemanticGrantPromptFence(prompt string) string {
-	if strings.Contains(prompt, "one-time grant") {
+	if strings.Contains(prompt, "Governed tools:") {
 		return prompt
 	}
 	return prompt + semanticGrantPromptFence
@@ -3609,8 +4144,16 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 		return nil, nil, fmt.Errorf("semantic replan attempt exhausted")
 	}
 	input := *surface.replan
+	// The replan re-derives needs from the stored classification; keep the
+	// archetype bundle key the published plan was built with so a petitioned
+	// document label on the classification cannot swap bundles mid-lineage.
+	bundleKey := input.BundleKey
+	if strings.TrimSpace(string(bundleKey)) == "" {
+		bundleKey = semanticArchetypeBundleKey(input.Classification)
+	}
+	planCtx := withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachmentsWithSession(
-		requestCtx, input.UserID, "", input.Channel, input.RootTaskID,
+		planCtx, input.UserID, "", input.Channel, input.RootTaskID,
 		semanticReplanTurnID(surface.scope.TurnID, input.Attempts+1), surface.scope.SessionID, &input.Classification, cloneSemanticMessageAttachments(input.Attachments),
 	)
 	if err != nil {
@@ -3629,6 +4172,18 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 			return nil, nil, err
 		}
 	}
+	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: input.Classification, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts + 1, ConversationLookupReused: input.ConversationLookupReused, BundleKey: bundleKey},
+		"replan", strings.TrimSpace(reasonCode))
+}
+
+// publishSemanticChildRevision is the shared durable tail of surface
+// succession: both a failure replan and a petitioned composite expansion end
+// as exactly one child revision published against the current parent state,
+// with inherited materializations and the executor's completed-set projected
+// forward. The caller owns admission (eligibility, subset/expansion
+// validation); this helper owns publication mechanics only.
+func (h *IMMessageHandler) publishSemanticChildRevision(requestCtx context.Context, surface *semanticCallSurface, prepared *semanticPlanPreparation, childReplan *semanticReplanInput, traceSubject, traceReason string) (*semanticCallSurface, []map[string]interface{}, error) {
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
 		return nil, nil, err
 	}
@@ -3643,7 +4198,7 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 		return nil, nil, err
 	}
 	prepared.plan.Trace.Events = append(prepared.plan.Trace.Events, tool.TraceEvent{
-		Stage: tool.TraceStageRecovery, Subject: "replan", Event: "child_published", ReasonCode: strings.TrimSpace(reasonCode),
+		Stage: tool.TraceStageRecovery, Subject: traceSubject, Event: "child_published", ReasonCode: traceReason,
 	})
 	publishRequest := tool.RouteRevisionPublishRequest{
 		Scope: childScope, Plan: prepared.plan, ExpectedParent: &current, SnapshotDigest: prepared.plan.SnapshotDigest,
@@ -3667,7 +4222,7 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 		hostConnectionID: "agent-loop-surface:" + newSemanticEphemeralIdentity(),
 		completed:        make(map[string]bool), materialized: make(map[string]bool), schemas: prepared.definitions, parameterSchemas: prepared.schemas,
 		grants: make(map[string]tool.InvocationGrant), retiredGrants: make(map[string]tool.InvocationGrant), rendered: make(map[string]bool), artifacts: newSemanticArtifactBroker(childScope, artifactStore, surface.routeState, surface.coordinator), pendingArtifacts: make(map[string][]tool.ArtifactPayload),
-		replan: &semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: input.Classification, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts + 1},
+		replan: childReplan,
 	}
 	for _, materialization := range state.Materializations {
 		if materialization.State == tool.RouteMaterializationExposed {
@@ -3710,6 +4265,291 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 
 func semanticReplanTurnID(parentTurnID string, attempt uint8) string {
 	return "replan:" + tool.SchemaDigest([]byte(strings.TrimSpace(parentTurnID) + fmt.Sprintf(":%d", attempt)))[:24]
+}
+
+// semanticPetitionTurnID derives the expansion child's turn identity from the
+// parent turn and the added label, keeping it distinct from failure-replan
+// identities without consuming the failure-replan attempt budget.
+func semanticPetitionTurnID(parentTurnID string, label intent.IntentLabel) string {
+	return "petition:" + tool.SchemaDigest([]byte(strings.TrimSpace(parentTurnID) + ":" + strings.TrimSpace(string(label))))[:24]
+}
+
+// semanticPetitionableCapabilities is the closed name→capability inventory a
+// model petition may reference. It covers every stable model-visible name the
+// planner can render on a managed chat surface whose capability carries an
+// owner-reviewed rule label: the agent decides what it needs, and the harness
+// only enforces deterministic safety policy (the group-policy gate, the
+// one-petition-per-class turn budget, and the strict-superset expansion
+// validator). A name enters this map only when its capability resolves to a
+// rule label whose expansion renders exactly this name — legacy aliases the
+// managed catalog unpublished (list_directory, search_files, edit_file),
+// quarantined capabilities with no rule label (send_im_text), and names with
+// no stable render spelling (trusted document read, tts_local, channel
+// dispatch) stay out and fail closed before any planning work happens.
+var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
+	// Read-only lookup/inspection legs.
+	"web_search":       "information.search.web",
+	"web_fetch":        tool.CapabilityInformationFetchWeb,
+	"current_datetime": "information.current_time",
+	"read_file":        tool.CapabilityFSReadLocal,
+	"git_status":       tool.CapabilityRepoInspectVCS,
+	"knowledge_search": tool.CapabilityKnowledgeReadLocal,
+	"session_search":   tool.CapabilitySecurityAuditRead,
+	"asr":              tool.CapabilityAudioTranscribeSpeech,
+	// Effectful legs: the agent's general problem-solving fallback. A turn
+	// whose plan under-rendered the means to finish — the 2026-08-26 PPT turn
+	// died because the model could not reach a command runner to craft the
+	// deck itself — may petition one of them once per turn, subject to the
+	// group-policy gate in PetitionToolCall.
+	"bash":                tool.CapabilityShellExecuteLocal,
+	"delegate_task":       tool.CapabilityAgentDelegateSubtask,
+	"download_file":       tool.CapabilityArtifactAcquireRemote,
+	"office":              tool.CapabilityDocumentWriteOffice,
+	"generate_pdf":        "document.generate.file",
+	"send_file":           "artifact.deliver.current_channel",
+	"send_to_im":          "artifact.deliver.specified_target",
+	"screenshot":          "visual.capture.desktop",
+	"open":                tool.CapabilitySystemLaunchLocal,
+	"ssh":                 tool.CapabilityShellExecuteRemoteHost,
+	"browser":             tool.CapabilityBrowserControlWeb,
+	"computer_use":        tool.CapabilityComputerControlDesktop,
+	"write_file":          tool.CapabilityFSWriteLocal,
+	"git_commit":          tool.CapabilityRepoMutateVCS,
+	"record_audio":        tool.CapabilityAudioCaptureMicrophone,
+	"knowledge_save_text": tool.CapabilityKnowledgeIngestLocal,
+	"knowledge_maintain":  tool.CapabilityKnowledgeAdminMaintenance,
+	"memory":              tool.CapabilityMemoryManageAgent,
+	"task":                tool.CapabilityTaskTrackLocal,
+	"goal":                tool.CapabilityGoalManageLongRunning,
+	"manage_template":     tool.CapabilityTemplateManageSession,
+	"list_sessions":       tool.CapabilitySessionManageCoding,
+	"manage_schedule":     tool.CapabilityScheduleAdministerLocal,
+	"manage_config":       tool.CapabilityConfigManageSelf,
+	"mis_data":            tool.CapabilityBusinessDataMIS,
+}
+
+// semanticReadOnlyGovernedLabels are the rule labels whose templates carry no
+// mutation, delivery, or external effect. This is the single source for
+// read-only governed membership: the planning-side family/hint gates
+// (semanticReadOnlyGovernedLabel) and the petition budget/group-policy gate
+// both consult it. For petitions, read-only labels are admitted in
+// group-restricted contexts (restrictive policy can still fail the
+// expansion), while every other label is effectful and denied outright there.
+// A label not listed here is effectful by default, so a newly added rule
+// label can never accidentally inherit the read-only gate.
+var semanticReadOnlyGovernedLabels = map[intent.IntentLabel]bool{
+	intent.LabelSearch:          true,
+	intent.LabelLiveData:        true,
+	intent.LabelWebFetch:        true,
+	intent.LabelFileRead:        true,
+	intent.LabelGitInspect:      true,
+	intent.LabelKnowledgeRead:   true,
+	intent.LabelAuditRead:       true,
+	intent.LabelCurrentTime:     true,
+	intent.LabelDocumentRead:    true,
+	intent.LabelAudioTranscribe: true,
+}
+
+// semanticPetitionLookupLabels is the deterministic preference order used when
+// one capability is backed by several rule labels (information.search.web is
+// the sole required template of both search and live_data). Labels not listed
+// here fall back to lexicographic label-name order.
+var semanticPetitionLookupLabels = []intent.IntentLabel{intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch}
+
+// semanticPetitionLabelForCapability resolves the intent label a petition for
+// the capability may add, derived deterministically from the rule set rather
+// than from the turn's classification: a label whose single required template
+// is exactly this capability wins (LabelFileRead for fs.read.local, LabelOffice
+// for document.write.office — its delivery leg stays optional); when no such
+// label exists, any label whose templates mention the capability qualifies
+// (LabelDocumentGenerate for document.generate.file, LabelScreenshot for
+// visual.capture.desktop), because the expansion validator admits exactly the
+// label's template needs either way. Ties break by semanticPetitionLookupLabels
+// preference, then by label name. A capability no rule label backs is not
+// petitionable.
+func semanticPetitionLabelForCapability(capability tool.CapabilityID) (intent.IntentLabel, bool) {
+	var sole, mentioned []intent.IntentLabel
+	for label, templates := range imSemanticIntentRuleSet {
+		required := 0
+		requiredMatch := false
+		contains := false
+		for _, template := range templates {
+			if template.Required {
+				required++
+			}
+			if template.Capability == capability {
+				contains = true
+				if template.Required {
+					requiredMatch = true
+				}
+			}
+		}
+		if required == 1 && requiredMatch {
+			sole = append(sole, label)
+		} else if contains {
+			mentioned = append(mentioned, label)
+		}
+	}
+	if label, ok := semanticPetitionPreferredLabel(sole); ok {
+		return label, true
+	}
+	return semanticPetitionPreferredLabel(mentioned)
+}
+
+// semanticPetitionPreferredLabel picks one candidate deterministically:
+// semanticPetitionLookupLabels preference order first, then label name.
+func semanticPetitionPreferredLabel(candidates []intent.IntentLabel) (intent.IntentLabel, bool) {
+	if len(candidates) == 0 {
+		return "", false
+	}
+	for _, preferred := range semanticPetitionLookupLabels {
+		for _, candidate := range candidates {
+			if candidate == preferred {
+				return candidate, true
+			}
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i] < candidates[j] })
+	return candidates[0], true
+}
+
+// semanticPetitionIsEffectful reports whether the petitioned name resolves to
+// an effectful rule label rather than a read-only one. The caller applies the
+// group-policy gate and the separate effectful budget to these; read-only
+// petitions keep their own budget and no group gate.
+func semanticPetitionIsEffectful(name string) bool {
+	capability, ok := semanticPetitionableCapabilities[strings.TrimSpace(name)]
+	if !ok {
+		return false
+	}
+	label, ok := semanticPetitionLabelForCapability(capability)
+	if !ok {
+		return false
+	}
+	return !semanticReadOnlyGovernedLabels[label]
+}
+
+// validateSemanticPetitionExpansion is the strict-superset whitelist for a
+// petitioned child revision: every parent selection must survive with
+// unchanged authority (a refreshed provider binding is allowed), and every
+// added selection must be one of the petitioned label's rule template needs.
+func validateSemanticPetitionExpansion(parent, child tool.ToolPlan, label intent.IntentLabel) error {
+	if strings.TrimSpace(parent.RootTaskID) == "" || parent.RootTaskID != child.RootTaskID {
+		return fmt.Errorf("semantic petition expansion root task mismatch")
+	}
+	if len(child.Unmet) > 0 {
+		return fmt.Errorf("semantic petition expansion has unmet needs")
+	}
+	templates := imSemanticIntentRuleSet[label]
+	if len(templates) == 0 {
+		return fmt.Errorf("semantic petition label has no rule template")
+	}
+	parentByNeed := make(map[string]tool.PlannedSelection, len(parent.Selections))
+	for _, selection := range parent.Selections {
+		needID := strings.TrimSpace(selection.NeedID)
+		if needID == "" {
+			return fmt.Errorf("semantic petition parent needs are not identifiable")
+		}
+		if _, exists := parentByNeed[needID]; exists {
+			return fmt.Errorf("semantic petition parent needs are not unique")
+		}
+		parentByNeed[needID] = selection
+	}
+	childByNeed := make(map[string]tool.PlannedSelection, len(child.Selections))
+	for _, selection := range child.Selections {
+		needID := strings.TrimSpace(selection.NeedID)
+		if needID == "" {
+			return fmt.Errorf("semantic petition child needs are not identifiable")
+		}
+		if _, exists := childByNeed[needID]; exists {
+			return fmt.Errorf("semantic petition child needs are not unique")
+		}
+		childByNeed[needID] = selection
+	}
+	for needID, selection := range parentByNeed {
+		replacement, ok := childByNeed[needID]
+		if !ok || !sameSemanticSelectionAuthorityIgnoringProvider(selection, replacement) {
+			return fmt.Errorf("semantic petition expansion alters parent authority")
+		}
+	}
+	added := 0
+	for needID, selection := range childByNeed {
+		if _, ok := parentByNeed[needID]; ok {
+			continue
+		}
+		matched := false
+		for _, template := range templates {
+			if selection.FitProof.MatchedCapability == template.Capability && sameSemanticQualifiers(selection.FitProof.QualifierBindings, template.Qualifiers) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("semantic petition expansion adds a need outside the petitioned label")
+		}
+		added++
+	}
+	if added == 0 {
+		return fmt.Errorf("semantic petition expansion added no governed need")
+	}
+	return nil
+}
+
+// petitionExpandSemanticCallSurface publishes one child revision that adds the
+// petitioned label's rule template needs to the turn's plan. It reuses the
+// original trusted classification plus that single label — never model output,
+// tool arguments, or prompt text — and the expansion validator guarantees the
+// child plan is exactly the parent plan plus the label's template needs. A
+// missing provider or a restrictive policy fails the re-plan or the validator
+// and the petition is denied cleanly.
+func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.Context, surface *semanticCallSurface, label intent.IntentLabel) (*semanticCallSurface, []map[string]interface{}, error) {
+	if surface == nil || surface.replan == nil || surface.routeState == nil || surface.issuer == nil || surface.executor == nil || surface.registry == nil {
+		return nil, nil, fmt.Errorf("semantic replan state is unavailable")
+	}
+	if err := semanticRoutingRequestErr(requestCtx); err != nil {
+		return nil, nil, err
+	}
+	input := *surface.replan
+	expanded := input.Classification
+	if !classificationHasLabel(expanded, label) {
+		expanded.Secondary = append(append([]intent.IntentLabel(nil), expanded.Secondary...), label)
+	}
+	// The expansion adds exactly the petitioned label's template legs. The
+	// archetype bundle must NOT re-derive from the expanded classification —
+	// a petitioned office/document_generate label would otherwise swap the
+	// bundle and add offer legs the strict-superset validator rejects.
+	bundleKey := input.BundleKey
+	if strings.TrimSpace(string(bundleKey)) == "" {
+		bundleKey = semanticArchetypeBundleKey(input.Classification)
+	}
+	planCtx := withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)
+	if input.ConversationLookupReused {
+		// The parent dropped its lookup legs on same-topic conversation
+		// evidence; this re-plan has no user text to re-derive that, so mirror
+		// the recorded drop for every lookup leg except the petitioned one.
+		planCtx = withSemanticPetitionKeptLookup(planCtx, label)
+	}
+	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachmentsWithSession(
+		planCtx, input.UserID, "", input.Channel, input.RootTaskID,
+		semanticPetitionTurnID(surface.scope.TurnID, label), surface.scope.SessionID, &expanded, cloneSemanticMessageAttachments(input.Attachments),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !handled || prepared == nil {
+		return nil, nil, fmt.Errorf("semantic petition expansion no governed candidate")
+	}
+	if err := validateSemanticPetitionExpansion(surface.plan, prepared.plan, label); err != nil {
+		return nil, nil, err
+	}
+	// The child keeps the parent's failure-replan attempt budget: a petition is
+	// not a binding failure, and the expanded classification must survive a
+	// later legitimate replan. The child's lookup legs — including the just
+	// petitioned one — are published parent authority now, so the reuse-drop
+	// record must not follow: a later expansion may not drop them again.
+	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey},
+		"petition", "petition_expand:"+strings.TrimSpace(string(label)))
 }
 
 func validateSemanticReplanSubset(parent, child tool.ToolPlan) error {
@@ -3990,6 +4830,15 @@ func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByNam
 		}
 		if item.adapter == semanticTrustedLiveDataVisualAdapter {
 			provider.Produces = []tool.ArtifactContract{{Kind: "image", MIMEType: "image/png", Required: true}}
+		}
+		if item.adapter == semanticTrustedOfficeWriteAdapter {
+			// The concrete MIME is only known once the model picks .xlsx or
+			// .pptx, so the producer declares both reviewed document contracts;
+			// the execution adapter registers exactly the one it wrote.
+			provider.Produces = []tool.ArtifactContract{
+				{Kind: "document", MIMEType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Required: true},
+				{Kind: "document", MIMEType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", Required: true},
+			}
 		}
 		*providers = append(*providers, provider)
 	}

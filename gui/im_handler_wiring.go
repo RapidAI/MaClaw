@@ -143,6 +143,10 @@ type IMMessageHandler struct {
 	// optional workspace subdirectory, never a command line.
 	semanticTrustedBuildVerify func(userID, task, target string) (string, error)
 
+	// surfaceSecurityConfig is a test/runtime seam for the policy-rejected
+	// surface filter. Nil means the app's effective Hub security config.
+	surfaceSecurityConfig func() corelib.AppConfig
+
 	// Security firewall (Phase 2 upgrade).
 	firewall *SecurityFirewall
 
@@ -464,6 +468,12 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *pendingCapabilityGapResult.
 	pendingCapabilityGap sync.Map
 
+	// stickyAgentGuidedSkill is the last agent-guided workflow this owner
+	// named. Follow-up turns ("保存大纲", "继续") do not repeat the skill
+	// name; without this they fall through to remote skill search.
+	// Keyed by userID, value is the skill name string.
+	stickyAgentGuidedSkill sync.Map
+
 	// pendingSlotUserText stores the user's original task text when it was
 	// intercepted by the unfinished-slot hint. When the user clicks a slot
 	// action button (dismiss / start-new), the saved text replaces the
@@ -564,6 +574,13 @@ type IMMessageHandler struct {
 	// task's history.
 	// Keyed by userID, value is time.Time.
 	cancelledTaskBoundary sync.Map
+
+	// inFlightTurns tracks a request that has prepared a LoopContext but has
+	// not yet published it via beginAgentLoopRuntime (the UIC / pre-loop
+	// window). Cancel must find this context; otherwise the GUI stop button is
+	// a no-op and the next user message is merged into the still-running turn.
+	// Keyed by userID, value is *inFlightTurn.
+	inFlightTurns sync.Map
 
 	// interruptHandler bridges IM gateways to the running agent loop's
 	// cancel/merge/status mechanisms. Set during construction.
@@ -1066,6 +1083,17 @@ func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTool
 }
 
 func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult) []map[string]interface{} {
+	routed, _ := h.routeSessionToolsWithRanking(userID, userMessage, allTools, skipUnifiedClassifier, preResolved, nil)
+	return routed
+}
+
+// routeSessionToolsWithRanking additionally returns the router's raw ranked
+// selection names (before the IM-management/ambient merges). The closed
+// legacy replacement uses them to grade routing evidence: only the router's
+// own tail is prunable under the plan count guard, while pipeline-mandated
+// additions (channel delivery, ambient retrieval, result reader) are never
+// silently removed.
+func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult, ctx *LoopContext) ([]map[string]interface{}, []string) {
 	h.toolsMu.RLock()
 	router := h.toolRouter
 	h.toolsMu.RUnlock()
@@ -1087,11 +1115,14 @@ func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTool
 		}
 		// The router can be unavailable briefly during startup. Explicit IM task
 		// management must still work in that window; otherwise conditional tools
-		// such as manage_schedule and im_message are silently hidden.
+		// such as manage_schedule and im_message are silently hidden. The fallback
+		// catalog order doubles as the deterministic pruning order for the closed
+		// replacement's count guard; the mandatory merges below stay unranked.
+		rankedNames := agentLoopToolNamesForLog(filtered)
 		if isIMManagementRequest(userMessage) {
 			filtered = ensureIMManagementToolsRouted(filtered, allTools, userMessage)
 		}
-		return mergeAmbientRetrievalTools(filtered, allTools)
+		return mergeAmbientRetrievalTools(filtered, allTools), rankedNames
 	}
 	// IM task and message management are safe, shared-state tools. Keep them
 	// available for the current request when its intent is explicit, so every
@@ -1109,8 +1140,12 @@ func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTool
 		SkipUnifiedClassifier: skipUnifiedClassifier,
 		PreferEmbeddingOnly:   true,
 		PreResolved:           preResolved,
+		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, userMessage, loopHistory(ctx)),
 	}
 	routed := router.RouteForSession(userID, userMessage, allTools, routeOpts)
+	// Capture the router's raw ranked selection before the mandatory merges
+	// below; it is the closed replacement's pruning order, not an authority.
+	rankedNames := agentLoopToolNamesForLog(routed)
 	if isIMManagementRequest(userMessage) {
 		routed = ensureIMManagementToolsRouted(routed, allTools, userMessage)
 	}
@@ -1141,7 +1176,7 @@ func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTool
 		}
 		routed = kept
 	}
-	return routed
+	return routed, rankedNames
 }
 
 // unmanagedRetrievalToolForNeed is the host-owned name that satisfies an
@@ -1171,6 +1206,103 @@ func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
 		unmanagedRetrievalNeeds = agentservice.AppendAmbientRetrievalNeeds(newIMSemanticCapabilityRegistry(), nil)
 	})
 	return unmanagedRetrievalNeeds
+}
+
+var classifierTimeoutWebLookupToolNames = []string{"web_search", "web_fetch"}
+
+func (h *IMMessageHandler) pinClassifierTimeoutWebLookup(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}) []map[string]interface{} {
+	if !loopContextHasClassifierTimeoutLookup(ctx) {
+		return tools
+	}
+	before := namedToolPresence(tools, classifierTimeoutWebLookupToolNames)
+	tools = ensureNamedToolsPresent(tools, catalog, classifierTimeoutWebLookupToolNames)
+	after := namedToolPresence(tools, classifierTimeoutWebLookupToolNames)
+	added := false
+	for _, name := range classifierTimeoutWebLookupToolNames {
+		if after[name] && !before[name] {
+			added = true
+			break
+		}
+	}
+	if !added {
+		return tools
+	}
+	// Allow-lists already ran on the pre-pin surface. Re-apply only if this
+	// leftover actually introduced web_search/web_fetch. Length is not a
+	// reliable signal: the budget guard may evict as many tail tools as it adds.
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
+	return tools
+}
+
+func namedToolPresence(tools []map[string]interface{}, names []string) map[string]bool {
+	present := make(map[string]bool, len(names))
+	if len(names) == 0 {
+		return present
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	for _, item := range tools {
+		name := extractToolName(item)
+		if wanted[name] {
+			present[name] = true
+		}
+	}
+	return present
+}
+
+func ensureNamedToolsPresent(routed, allTools []map[string]interface{}, names []string) []map[string]interface{} {
+	if len(allTools) == 0 || len(names) == 0 {
+		return routed
+	}
+	available := make(map[string]map[string]interface{}, len(allTools))
+	for _, item := range allTools {
+		if name := extractToolName(item); name != "" {
+			available[name] = item
+		}
+	}
+	selected := make(map[string]bool, len(routed))
+	for _, item := range routed {
+		selected[extractToolName(item)] = true
+	}
+	required := make(map[string]bool, len(names))
+	missing := make([]map[string]interface{}, 0, len(names))
+	for _, name := range names {
+		required[name] = true
+		item, ok := available[name]
+		if !ok || selected[name] {
+			continue
+		}
+		missing = append(missing, item)
+	}
+	if len(missing) == 0 {
+		return routed
+	}
+	// Make room for every missing required tool before appending any of them.
+	// Replacing the tail one-by-one can evict a just-appended required tool
+	// when several names are needed.
+	toRemove := len(routed) + len(missing) - maxToolBudget
+	if toRemove > 0 {
+		keptReversed := make([]map[string]interface{}, 0, len(routed)-toRemove)
+		removed := 0
+		for i := len(routed) - 1; i >= 0; i-- {
+			name := extractToolName(routed[i])
+			if removed < toRemove && !required[name] {
+				removed++
+				continue
+			}
+			keptReversed = append(keptReversed, routed[i])
+		}
+		routed = make([]map[string]interface{}, len(keptReversed))
+		for i := range keptReversed {
+			routed[len(keptReversed)-1-i] = keptReversed[i]
+		}
+	}
+	return append(routed, missing...)
 }
 
 // mergeAmbientRetrievalTools is the unmanaged retrieval Need path. It walks
@@ -1207,59 +1339,7 @@ func mergeAmbientRetrievalTools(routed, allTools []map[string]interface{}) []map
 }
 
 func ensureIMManagementToolsRouted(routed, allTools []map[string]interface{}, userMessage string) []map[string]interface{} {
-	if len(allTools) == 0 {
-		return routed
-	}
-	requested := imManagementToolNames(userMessage)
-	if len(requested) == 0 {
-		return routed
-	}
-	available := make(map[string]map[string]interface{}, len(allTools))
-	for _, item := range allTools {
-		if name := extractToolName(item); name != "" {
-			available[name] = item
-		}
-	}
-	selected := make(map[string]bool, len(routed))
-	for _, item := range routed {
-		selected[extractToolName(item)] = true
-	}
-	missing := make([]map[string]interface{}, 0, len(requested))
-	required := make(map[string]bool, len(requested))
-	for _, name := range requested {
-		required[name] = true
-		item, ok := available[name]
-		if !ok || selected[name] {
-			continue
-		}
-		missing = append(missing, item)
-	}
-	if len(missing) == 0 {
-		return routed
-	}
-
-	// Make room for all missing explicit tools before appending any of them.
-	// Replacing the tail one-by-one can evict a management tool appended in the
-	// previous iteration when several explicit tools are needed (for example,
-	// scheduling a task that pushes its result to an IM channel).
-	toRemove := len(routed) + len(missing) - maxToolBudget
-	if toRemove > 0 {
-		keptReversed := make([]map[string]interface{}, 0, len(routed)-toRemove)
-		removed := 0
-		for i := len(routed) - 1; i >= 0; i-- {
-			name := extractToolName(routed[i])
-			if removed < toRemove && !required[name] {
-				removed++
-				continue
-			}
-			keptReversed = append(keptReversed, routed[i])
-		}
-		routed = make([]map[string]interface{}, len(keptReversed))
-		for i := range keptReversed {
-			routed[len(keptReversed)-1-i] = keptReversed[i]
-		}
-	}
-	return append(routed, missing...)
+	return ensureNamedToolsPresent(routed, allTools, imManagementToolNames(userMessage))
 }
 
 func imManagementToolNames(userMessage string) []string {

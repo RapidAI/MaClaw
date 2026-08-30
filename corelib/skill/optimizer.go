@@ -189,15 +189,19 @@ func (o *SkillOptimizer) Optimize(ctx context.Context, skill *corelib.NLSkillEnt
 	}
 
 	// Verify through RepairGate if available.
-	if o.Gate != nil && len(historicalArgs) > 0 {
+	if o.Gate != nil {
 		gateResult, gateErr := o.Gate.Verify(ctx, skill, result.NewSteps, historicalArgs)
 		if gateErr != nil {
 			return nil, fmt.Errorf("optimization gate verification: %w", gateErr)
 		}
 		result.GateResult = gateResult
-		if !gateResult.Passed {
+		if !gateResult.IsRealPass() {
 			result.Optimized = false
-			result.Explanation = "optimization proposed but failed gate verification: " + gateResult.Reason
+			reason := "gate did not provide real passing evidence"
+			if gateResult != nil && gateResult.Reason != "" {
+				reason = gateResult.Reason
+			}
+			result.Explanation = "optimization proposed but failed gate verification: " + reason
 			log.Printf("[skill-optimizer] gate REJECTED for skill=%s: %s", skill.Name, gateResult.Reason)
 			return result, nil
 		}

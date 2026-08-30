@@ -213,12 +213,13 @@ type OfficialForwardResult struct {
 // provider route and one resolved directional price. Token is transport-only:
 // callers must never store it in a billing ledger or expose it to users.
 type OfficialPricingQuote struct {
-	Token         string                       `json:"token"`
-	ProviderID    string                       `json:"provider_id"`
-	UpstreamModel string                       `json:"upstream_model"`
-	Pricing       llmpool.ResolvedTokenPricing `json:"pricing"`
-	ExpiresAt     time.Time                    `json:"expires_at"`
-	targetURL     string
+	Token              string                       `json:"token"`
+	ProviderID         string                       `json:"provider_id"`
+	UpstreamModel      string                       `json:"upstream_model"`
+	Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
+	ProviderMultiplier float64                      `json:"provider_multiplier"`
+	ExpiresAt          time.Time                    `json:"expires_at"`
+	targetURL          string
 }
 
 // OfficialBillingAttempt is HubCenter's authenticated reconciliation response.
@@ -495,10 +496,11 @@ func (c *MaClawProviderClient) quoteTo(ctx context.Context, httpClient *http.Cli
 	defer resp.Body.Close()
 	var payload struct {
 		Quote struct {
-			ProviderID    string                       `json:"provider_id"`
-			UpstreamModel string                       `json:"upstream_model"`
-			Pricing       llmpool.ResolvedTokenPricing `json:"pricing"`
-			ExpiresAt     time.Time                    `json:"expires_at"`
+			ProviderID         string                       `json:"provider_id"`
+			UpstreamModel      string                       `json:"upstream_model"`
+			Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
+			ProviderMultiplier float64                      `json:"provider_multiplier"`
+			ExpiresAt          time.Time                    `json:"expires_at"`
 		} `json:"quote"`
 		Token string `json:"token"`
 	}
@@ -511,7 +513,7 @@ func (c *MaClawProviderClient) quoteTo(ctx context.Context, httpClient *http.Cli
 	if strings.TrimSpace(payload.Token) == "" || strings.TrimSpace(payload.Quote.ProviderID) == "" || payload.Quote.ExpiresAt.IsZero() {
 		return OfficialPricingQuote{}, resp.StatusCode, fmt.Errorf("maclaw official: malformed quote response")
 	}
-	return OfficialPricingQuote{Token: payload.Token, ProviderID: payload.Quote.ProviderID, UpstreamModel: payload.Quote.UpstreamModel, Pricing: payload.Quote.Pricing, ExpiresAt: payload.Quote.ExpiresAt}, resp.StatusCode, nil
+	return OfficialPricingQuote{Token: payload.Token, ProviderID: payload.Quote.ProviderID, UpstreamModel: payload.Quote.UpstreamModel, Pricing: payload.Quote.Pricing, ProviderMultiplier: llmpool.NormalizeCreditMultiplier(payload.Quote.ProviderMultiplier), ExpiresAt: payload.Quote.ExpiresAt}, resp.StatusCode, nil
 }
 
 func officialForwardBilling(resp *http.Response) (float64, string) {

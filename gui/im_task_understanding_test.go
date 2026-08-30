@@ -94,7 +94,7 @@ func TestFormatTaskUnderstandingSummary(t *testing.T) {
 	if !strings.Contains(summary, "任务理解：搜集美发师") {
 		t.Errorf("missing summary line: %s", summary)
 	}
-	if !strings.Contains(summary, "• 查找从业经历") {
+	if !strings.Contains(summary, "- 查找从业经历") {
 		t.Errorf("missing goal: %s", summary)
 	}
 	if !strings.Contains(summary, "1. 搜索相关网页") {

@@ -46,9 +46,10 @@ type rolePrefixStreamFilter struct {
 var rolePrefixLineRe = regexp.MustCompile(`^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
 
 // rolePrefixReasoningRe matches the same role-prefix pattern anywhere in a
-// multi-line reasoning buffer. Reasoning is hidden/internal, so once a role
-// prefix appears we keep only content before it instead of trying to preserve
-// text after the prefix.
+// multi-line buffer. It is retained for sanitizeTraceStoredText (trace-event
+// storage sanitization). The reasoning display path no longer uses it:
+// stripRolePrefixReasoningForDisplay only strips a prefix at the very start,
+// because reasoning legitimately narrates Browser/Tool usage mid-thought.
 var rolePrefixReasoningRe = regexp.MustCompile(`(?m)^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)`)
 
 // midLineRolePrefixRe matches a role prefix that appears after a \n
@@ -214,6 +215,11 @@ func (f *rolePrefixStreamFilter) checkMidLinePrefix() {
 	log.Printf("[stream-roleprefix] checkMidLinePrefix halt: prefix found at offset %d in lineBuf", loc[0])
 }
 
+// stripRolePrefixReasoningForDisplay removes a hallucinated role prefix only
+// when it appears at the very start of the reasoning text. Unlike the content
+// path, reasoning is hidden/internal and routinely narrates tool usage
+// ("Browser: ...", "Tool: ...") in the middle of a thought, so a mid-text
+// prefix must never truncate the remaining reasoning.
 func stripRolePrefixReasoningForDisplay(s string) string {
 	if s == "" {
 		return s
@@ -221,9 +227,12 @@ func stripRolePrefixReasoningForDisplay(s string) string {
 	if !strings.Contains(s, "Browser") && !strings.Contains(s, "Tool") {
 		return s
 	}
-	loc := rolePrefixReasoningRe.FindStringIndex(s)
+	// rolePrefixLineRe is anchored at the start of the string (no (?m)), so
+	// only a leading prefix — optionally preceded by whitespace/Markdown
+	// markers — is stripped. Everything after it is kept verbatim.
+	loc := rolePrefixLineRe.FindStringIndex(s)
 	if loc == nil {
 		return s
 	}
-	return strings.TrimRight(s[:loc[0]], " \t\r\n")
+	return s[loc[1]:]
 }

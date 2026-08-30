@@ -34,6 +34,12 @@ bool compact_connectivity_service_is_cellular_transport_ready(void) {
 esp_err_t compact_connectivity_service_quiesce_cellular_transport(uint32_t timeout_ms) {
     return compact_connectivity_adapter_quiesce_cellular_transport(timeout_ms);
 }
+esp_err_t compact_connectivity_service_deinit_cellular_transport(uint32_t timeout_ms) {
+    return compact_connectivity_adapter_deinit_cellular_transport(timeout_ms);
+}
+esp_err_t compact_connectivity_service_reinitialize_cellular_transport(uint32_t timeout_ms) {
+    return compact_connectivity_adapter_reinitialize_cellular_transport(timeout_ms);
+}
 esp_err_t compact_connectivity_service_prepare_system_sleep(uint32_t timeout_ms) {
     return compact_connectivity_adapter_prepare_system_sleep(timeout_ms);
 }

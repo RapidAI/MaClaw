@@ -166,6 +166,50 @@ describe('useAssistantOutputScroll', () => {
         expect(scrollIntoViewMock).not.toHaveBeenCalled();
     });
 
+    it('re-pins the tail when a new user message arrives after scrolling up', () => {
+        const user1 = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user1, assistant]} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        scrollIntoViewMock.mockClear();
+        // Mirror the real send flow: the user message and the assistant
+        // placeholder are appended together, so the tail role is assistant.
+        const user2 = makeMsg({ id: 'u2', role: 'user', content: 'New question' });
+        const placeholder = makeMsg({ id: 'a2', role: 'assistant', content: '' });
+        rerender(<ScrollHarness messages={[user1, assistant, user2, placeholder]} />);
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
+    it('resumes following streamed tokens after a new user message re-pins the tail', () => {
+        const user1 = makeMsg({ role: 'user', content: 'Earlier question' });
+        const assistant1 = makeMsg({ id: 'a1', role: 'assistant', content: 'Earlier answer' });
+        const user2 = makeMsg({ id: 'u2', role: 'user', content: 'New question' });
+        const assistant2 = makeMsg({ id: 'a2', role: 'assistant', content: '' });
+        const { getByTestId, rerender } = render(<ScrollHarness messages={[user1, assistant1]} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        rerender(<ScrollHarness messages={[user1, assistant1, user2, assistant2]} />);
+        scrollIntoViewMock.mockClear();
+        rerender(<ScrollHarness messages={[user1, assistant1, user2, { ...assistant2, content: 'Reply token' }]} />);
+        rerender(<ScrollHarness messages={[user1, assistant1, user2, { ...assistant2, content: 'Reply token plus more' }]} />);
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
     it('exposes scrollToBottom for forced pins', () => {
         const { result } = renderHook(() => useAssistantOutputScroll({
             hasConversation: true,
@@ -176,5 +220,54 @@ describe('useAssistantOutputScroll', () => {
             result.current.scrollToBottom('auto', true);
         });
         expect(result.current.userScrolledUpRef.current).toBe(false);
+    });
+
+    it('follows content growth reported by ResizeObserver while pinned', () => {
+        const callbacks: Array<() => void> = [];
+        class MockResizeObserver {
+            constructor(cb: () => void) { callbacks.push(cb); }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        vi.stubGlobal('ResizeObserver', MockResizeObserver);
+        // The observer coalesces notifications through requestAnimationFrame;
+        // run the frame synchronously for the assertion.
+        vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 1; });
+        const user = makeMsg({ role: 'user', content: 'question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        render(<ScrollHarness messages={[user, assistant]} />);
+        expect(callbacks.length).toBeGreaterThan(0);
+
+        scrollIntoViewMock.mockClear();
+        act(() => { callbacks.forEach((cb) => cb()); });
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
+    it('ignores ResizeObserver growth when the user scrolled up', () => {
+        const callbacks: Array<() => void> = [];
+        class MockResizeObserver {
+            constructor(cb: () => void) { callbacks.push(cb); }
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+        vi.stubGlobal('ResizeObserver', MockResizeObserver);
+        vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 1; });
+        const user = makeMsg({ role: 'user', content: 'question' });
+        const assistant = makeMsg({ id: 'a1', role: 'assistant', content: 'answer' });
+        const { getByTestId } = render(<ScrollHarness messages={[user, assistant]} />);
+        const box = getByTestId('scroll-box');
+        Object.defineProperties(box, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(box, { deltaY: -40 });
+        fireEvent.scroll(box);
+
+        scrollIntoViewMock.mockClear();
+        act(() => { callbacks.forEach((cb) => cb()); });
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
     });
 });

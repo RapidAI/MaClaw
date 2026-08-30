@@ -17,6 +17,8 @@ if (Test-Path -LiteralPath $header) {
     $text = Get-Content -LiteralPath $header -Raw
     foreach ($required in @(
             'configuration_reconcile_service_init\s*\(',
+            'configuration_reconcile_service_prepare_system_sleep\s*\(',
+            'configuration_reconcile_service_abort_system_sleep_prepare\s*\(',
             'configuration_reconcile_service_reconcile\s*\(',
             'configuration_reconcile_service_apply_runtime_override\s*\(',
             'configuration_reconcile_service_get_snapshot\s*\(',
@@ -69,6 +71,8 @@ if (Test-Path -LiteralPath $source) {
             's_retry_generation',
             's_retry_delivered_generation',
             's_retry_delivered_generation\s*==\s*s_retry_generation',
+            's_retry_armed\s*=\s*false',
+            's_retry_due_us\s*=\s*0u',
             'esp_timer_start_once\(s_retry_timer, delay_us\)\s*==\s*ESP_OK',
             'retryable_status\(status\)',
             'rearm_expiry_timer_under_mutex\s*\(',
@@ -78,6 +82,11 @@ if (Test-Path -LiteralPath $source) {
             'DEVICE_STATUS_UNAVAILABLE',
             'CONFIGURATION_APPLY_OBSERVATION_UNKNOWN')) {
         if ($text -notmatch $required) { $failures += "reconcile service implementation missing $required" }
+    }
+    if ($text -notmatch 's_system_sleep_preparing' -or
+        $text -notmatch '!s_system_sleep_preparing' -or
+        $text -notmatch 'still_admitted') {
+        $failures += 'reconcile service missing reversible sleep/destructive mutation fence'
     }
     if ($text -notmatch 'return\s+observation\s*==\s*CONFIGURATION_APPLY_OBSERVATION_APPLIED\s*\?\s*DEVICE_STATUS_OK\s*:\s*DEVICE_STATUS_INTERNAL_ERROR') {
         $failures += 'receipt mismatch must not be returned as a successful reconciliation'
@@ -101,7 +110,10 @@ if (Test-Path -LiteralPath $source) {
     } else {
         $reconcile = $text.Substring($reconcileStart, $reconcileEnd - $reconcileStart)
         $schedule = $reconcile.IndexOf('schedule_or_cancel_retry(status, reason, authorization)')
-        $release = $reconcile.IndexOf('xSemaphoreGive(s_mutex)')
+        # The owner has an early admission-failure release before loading the
+        # snapshot. Audit the terminal release after the retry/expiry
+        # decisions, not that guarded fast-path unlock.
+        $release = $reconcile.LastIndexOf('xSemaphoreGive(s_mutex)')
         if ($schedule -lt 0 -or $release -lt 0 -or $schedule -gt $release) {
             $failures += 'retry timer decision must occur before serialized reconcile mutex release'
         }

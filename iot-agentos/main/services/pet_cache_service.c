@@ -113,6 +113,11 @@ static esp_err_t perform_job(pet_cache_job_t *job) {
     if (!s_host.storage_mounted(s_host.context) ||
         !s_host.allows_optional_flash_work(s_host.context)) return ESP_ERR_INVALID_STATE;
     if (job->operation == PET_CACHE_CLEAR) {
+        /* A clear can remove several retained files. Re-check immediately
+         * before the irreversible storage operation so a superseded startup
+         * withdrawal cannot erase a newer descriptor's cache after waiting
+         * for the internal Flash worker. */
+        if (job_cancelled(job)) return ESP_ERR_INVALID_STATE;
         pet_asset_cache_storage_clear();
         return ESP_OK;
     }

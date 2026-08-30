@@ -587,6 +587,10 @@ device_status_t device_connectivity_start_cellular_transport(uint32_t timeout_ms
  * hardware-neutral Connectivity Service. */
 device_status_t device_connectivity_establish_cellular_transport(uint32_t timeout_ms);
 bool device_connectivity_is_cellular_transport_ready(void);
+/* Lifecycle evidence only: a terminal root teardown may use this to decide
+ * whether it must drain a prior cellular session. It neither selects an
+ * uplink nor requests modem/UART restart or deinitialization. */
+bool device_connectivity_has_cellular_transport_session(void);
 
 /* Stops new cellular transport/start admission and transport-owned recovery
  * coordination. It does not promise ML307/UART deinitialization or cancellation

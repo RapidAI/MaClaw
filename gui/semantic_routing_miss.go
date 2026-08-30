@@ -14,12 +14,14 @@ const (
 )
 
 // routingMissPrivilegeTools expand power when a precise surface missed.
-// Parent invariant 11: a failed plan must not dump bash / writers / gateways.
+// Parent invariant 11 (revised): a failed plan must not dump editors,
+// gateways, downloaders or governed publishers — but bash and write_file are
+// the guaranteed basic capability floor. They stay available even on a
+// routing-miss leftover turn, so a degraded or offline planner never leaves
+// the desktop agent unable to run a command or write a file.
 // Lexical pins (screenshot, office, IM) are not in this set; they stay if the
 // leftover router already selected them.
 var routingMissPrivilegeTools = map[string]bool{
-	"bash":                     true,
-	"write_file":               true,
 	"edit_file":                true,
 	"edit_lines":               true,
 	"download_file":            true,
@@ -108,6 +110,7 @@ func resetLoopSemanticLeftoverState(ctx *LoopContext) {
 		semanticIntentHasLeftoverReason(ctx.Runtime.SemanticIntent)
 	ctx.Runtime.RoutingMissFallback = false
 	ctx.Runtime.HostAdapterLeftover = false
+	ctx.Runtime.ClassifierTimeoutLookup = false
 	if dropIntent {
 		ctx.Runtime.SemanticIntent = nil
 		return
@@ -123,6 +126,7 @@ func bindLoopSemanticIntent(ctx *LoopContext, result *intent.ClassificationResul
 	ctx.Runtime.SemanticIntent = result
 	ctx.Runtime.RoutingMissFallback = false
 	ctx.Runtime.HostAdapterLeftover = false
+	ctx.Runtime.ClassifierTimeoutLookup = false
 }
 
 func leftoverToolCatalog(h *IMMessageHandler, ctx *LoopContext, known []map[string]interface{}) []map[string]interface{} {

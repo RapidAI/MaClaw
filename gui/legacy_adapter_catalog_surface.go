@@ -46,15 +46,58 @@ func legacyDefinitionHasLiveProvision(definition map[string]interface{}) bool {
 // provision. The host-policy pipeline has already performed its current-turn
 // filters at this point, so every selected definition is recorded as a
 // host-policy selection; no history or registry-wide fallback is consulted.
+// rankedCandidates carries the router-ranked names in fused-score order so the
+// plan's count/token guards prune the router's own tail instead of rejecting
+// the whole surface when pipeline-mandated additions push past the guard.
 //
 // The bool is false only when the surface includes a dynamic/unmigrated
 // definition. Those callers retain snapshot admission until they gain a real
 // provider binding; they must not be papered over with a made-up provision.
-func renderReviewedLegacySurface(userText string, definitions []map[string]interface{}) ([]map[string]interface{}, bool, error) {
+//
+// legacyRoutingMissFloorToolNames is the parent-invariant-11 basic capability
+// floor: the desktop agent must always be able to run a command or write a
+// file, even on a degraded leftover turn. Keeping them host_policy_required
+// stops the closed plan's count guard from pruning them as optional retrieval
+// candidates when flat retrieval scores rank them last (mirrors the documented
+// floor in semantic_routing_miss.go).
+var legacyRoutingMissFloorToolNames = map[string]bool{
+	"bash":       true,
+	"write_file": true,
+}
+
+// unionMissFloorToolsForSurface appends the invariant-11 floor tool
+// definitions (bash/write_file) found in baseTools to the current surface when
+// absent. baseTools is the loop's plan-rendered base surface, so the union
+// keeps every definition digest-bound; it never invents or revives a raw
+// registry definition.
+func unionMissFloorToolsForSurface(tools, baseTools []map[string]interface{}) []map[string]interface{} {
+	seen := make(map[string]bool, len(tools))
+	for _, def := range tools {
+		seen[extractToolName(def)] = true
+	}
+	out := tools
+	for _, def := range baseTools {
+		name := extractToolName(def)
+		if !legacyRoutingMissFloorToolNames[name] || seen[name] {
+			continue
+		}
+		out = append(out, def)
+		seen[name] = true
+	}
+	return out
+}
+
+func renderReviewedLegacySurface(userText string, definitions []map[string]interface{}, rankedCandidates []string) ([]map[string]interface{}, bool, error) {
 	if !legacyDefinitionsHaveLiveProvisions(definitions) {
 		return definitions, false, nil
 	}
 	now := time.Now().UTC()
+	candidateRank := make(map[string]int, len(rankedCandidates))
+	for i, name := range rankedCandidates {
+		if _, ok := candidateRank[name]; !ok {
+			candidateRank[name] = i
+		}
+	}
 	evidence := make([]tool.RoutingEvidence, 0, len(definitions))
 	for _, definition := range definitions {
 		name := strings.TrimSpace(extractToolName(definition))
@@ -63,12 +106,16 @@ func renderReviewedLegacySurface(userText string, definitions []map[string]inter
 			return nil, false, fmt.Errorf("legacy definition %q lost its reviewed provision", name)
 		}
 		reason := "host_policy_required"
+		score := 1.0
 		if tool.LegacyBootstrapToolNames[name] {
 			reason = "bootstrap"
+		} else if rank, ranked := candidateRank[name]; ranked && !legacyRoutingMissFloorToolNames[name] {
+			reason = "retrieval_candidate"
+			score = float64(len(rankedCandidates) - rank)
 		}
 		evidence = append(evidence, tool.RoutingEvidence{
 			ToolName: name, Capability: provision.Capability, AdapterContract: provision.AdapterContract,
-			Reason: reason, Score: 1,
+			Reason: reason, Score: score,
 		})
 	}
 	plan, err := tool.BuildLegacyAdapterPlan(tool.LegacyAdapterPlanInput{
@@ -98,9 +145,14 @@ func renderReviewedLegacySurface(userText string, definitions []map[string]inter
 // are separately bound to ClientToolContext for this request, so they are
 // added only after the host replacement surface is closed and only if they do
 // not collide with an exposed host name.
-func (h *IMMessageHandler) renderClosedLegacyReplacementSurface(policyText string, ctx *LoopContext, definitions []map[string]interface{}) ([]map[string]interface{}, []string, bool, error) {
-	hostDefinitions := h.legacyHostDefinitionsForReplacement(ctx, definitions)
-	rendered, planBacked, err := renderReviewedLegacySurface(policyText, hostDefinitions)
+func (h *IMMessageHandler) renderClosedLegacyReplacementSurface(policyText string, ctx *LoopContext, definitions []map[string]interface{}, rankedCandidates []string) ([]map[string]interface{}, []string, bool, error) {
+	// The initial route filters policy-rejected tools in prepareAgentLoopTools;
+	// injection and recovery enter here directly, so the closed boundary must
+	// apply the same name-level policy fence or a mid-loop refresh could
+	// reintroduce a tool that can never execute (e.g. bash under a mandated
+	// sandbox). prepareAgentLoopTools' earlier pass makes this idempotent.
+	hostDefinitions := h.filterPolicyRejectedSurfaceTools(h.legacyHostDefinitionsForReplacement(ctx, definitions))
+	rendered, planBacked, err := renderReviewedLegacySurface(policyText, hostDefinitions, rankedCandidates)
 	if err != nil {
 		return nil, nil, false, err
 	}

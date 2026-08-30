@@ -17,6 +17,9 @@ type ToolRouter struct {
 	generator *ToolDefinitionGenerator
 	hubClient *SkillHubClient
 	registry  *ToolRegistry
+	// refreshSkillIndexOverride is test-only injection for transactional
+	// callers; production uses the checked core Router boundary.
+	refreshSkillIndexOverride func() error
 }
 
 // NewToolRouter creates a new ToolRouter.
@@ -130,10 +133,33 @@ func (r *ToolRouter) SetSkillProvider(provider tool.SkillProvider) {
 	r.inner.SetSkillProvider(provider)
 }
 
+// SetSkillIndexProvider exposes the checked core index boundary to GUI tests
+// and alternate providers. Production callers normally retain the default
+// in-memory BM25 provider; injected providers may return rebuild errors that
+// must cause the surrounding Skill transaction to compensate.
+func (r *ToolRouter) SetSkillIndexProvider(provider tool.SkillIndexProvider) {
+	if r == nil || r.inner == nil {
+		return
+	}
+	r.inner.SetSkillIndexProvider(provider)
+}
+
 // RefreshSkillIndex delegates to corelib/tool.Router.RefreshSkillIndex.
 // Call after installing or removing skills to update the BM25 index.
 func (r *ToolRouter) RefreshSkillIndex() {
-	r.inner.RefreshSkillIndex()
+	_ = r.RefreshSkillIndexChecked()
+}
+
+// RefreshSkillIndexChecked makes index rebuild failures observable to commit
+// transactions. Callers must treat a non-nil error as a rollback condition.
+func (r *ToolRouter) RefreshSkillIndexChecked() error {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	if r.refreshSkillIndexOverride != nil {
+		return r.refreshSkillIndexOverride()
+	}
+	return r.inner.RefreshSkillIndexChecked()
 }
 
 // ActivateSessionTool is a compatibility no-op. Historical tool names do not

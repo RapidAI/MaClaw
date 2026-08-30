@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -211,9 +212,17 @@ func (s *CachedSkillScanner) scan() {
 			}
 		}
 		for key, sk := range s.pendingUpserts {
-			if _, ok := byKey[key]; ok {
-				// Prefer the on-disk scan result when present; only keep the
-				// pending entry when the concurrent scan missed the new dir.
+			if idx, ok := byKey[key]; ok {
+				// A pending upsert is an explicit mutation result, not merely a
+				// hint that a new directory may exist.  The scan may have started
+				// before the mutation and still hold the pre-mutation (or failed
+				// update) bytes in allSkills.  Always replace the same-identity row
+				// so rollback snapshots and freshly installed versions cannot be
+				// overwritten by an in-flight stale scan when it stores its result.
+				allSkills[idx] = sk
+				if nameKey := skillNameIdentityKey(sk.Name); nameKey != "" {
+					seen[nameKey] = true
+				}
 				continue
 			}
 			// Match disk-scan name dedup (case-insensitive): do not surface a
@@ -310,6 +319,43 @@ func (s *CachedSkillScanner) RemoveByDir(skillDir string) {
 	}
 	s.version.Add(1)
 	s.removalsMu.Unlock()
+}
+
+// RemoveByName synchronously removes matching entries from the current cache
+// and records their identities as pending removals. It is a safety net for
+// lifecycle operations whose directory was already removed or renamed and
+// therefore cannot rely on a stable pre-mutation SkillDir key alone.
+func (s *CachedSkillScanner) RemoveByName(skillName string) {
+	if s == nil || strings.TrimSpace(skillName) == "" {
+		return
+	}
+	want := strings.ToLower(strings.TrimSpace(skillName))
+	s.removalsMu.Lock()
+	defer s.removalsMu.Unlock()
+	entry := s.cache.Load()
+	if entry == nil {
+		s.version.Add(1)
+		return
+	}
+	filtered := make([]corelib.NLSkillEntry, 0, len(entry.skills))
+	removed := false
+	for _, sk := range entry.skills {
+		if strings.ToLower(strings.TrimSpace(sk.Name)) == want {
+			removed = true
+			if s.pendingRemovals == nil {
+				s.pendingRemovals = make(map[string]struct{})
+			}
+			if key := skillCacheIdentityKey(sk); key != "" {
+				s.pendingRemovals[key] = struct{}{}
+			}
+			continue
+		}
+		filtered = append(filtered, sk)
+	}
+	if removed {
+		s.cache.Store(&skillCacheEntry{skills: filtered, createdAt: entry.createdAt, stale: entry.stale})
+	}
+	s.version.Add(1)
 }
 
 // skillCacheIdentityKey returns a stable identity for cache merge/dedup.
@@ -420,4 +466,25 @@ func (s *CachedSkillScanner) UpsertSkills(skills []corelib.NLSkillEntry) {
 	s.removalsMu.Unlock()
 
 	s.triggerBackgroundScan()
+}
+
+// ReplaceSkills installs an authoritative snapshot after a failed
+// transaction rollback. Unlike UpsertSkills, it removes rows that were
+// created by the failed forward mutation and clears pending upserts/removals.
+func (s *CachedSkillScanner) ReplaceSkills(skills []corelib.NLSkillEntry) {
+	if s == nil {
+		return
+	}
+	cp := make([]corelib.NLSkillEntry, len(skills))
+	for i := range skills {
+		if cloned := skill.CloneNLSkillEntry(&skills[i]); cloned != nil {
+			cp[i] = *cloned
+		}
+	}
+	s.removalsMu.Lock()
+	s.pendingRemovals = nil
+	s.pendingUpserts = nil
+	s.cache.Store(&skillCacheEntry{skills: cp, createdAt: time.Now(), stale: false})
+	s.version.Add(1)
+	s.removalsMu.Unlock()
 }

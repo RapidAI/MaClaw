@@ -25,6 +25,9 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 		return "", fmt.Errorf("no active session to cancel")
 	}
 	ctx.Cancel()
+	if uid := strings.TrimSpace(ctx.UserID); uid != "" {
+		h.markTaskCancelledByUser(uid)
+	}
 	// Wait for the loop goroutine to finish so the per-session mutex is released
 	// before the caller sends a new message.
 	select {
@@ -42,12 +45,16 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 		return "", fmt.Errorf("missing userID")
 	}
 	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
-	ctx := h.getSessionLoopCtx(userID)
-	taskText := h.sessionLoopTaskText(userID)
+	ctx, taskText, published := h.loopContextForCancel(userID)
 	if ctx == nil {
-		ctx, taskText, _ = h.legacyLoopSnapshotForUser(userID)
-	}
-	if ctx == nil {
+		if taskText != "" {
+			// Serialization lock is held but LoopContext is not registered yet
+			// (gates / prepare). Fence the next message and let abortIfCancelled
+			// stop this turn once it observes the boundary.
+			h.markTaskCancelledByUser(userID)
+			log.Printf("[CancelSessionForUser] cancelled pending foreground turn user=%s", userID)
+			return taskText, nil
+		}
 		if cancelledHorizon {
 			return "horizon", nil
 		}
@@ -58,6 +65,14 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 	// slip in after the clear and be acknowledged against a loop that is already
 	// being cancelled.
 	h.markTaskCancelledByUser(userID)
+	if !published {
+		// Pre-loop (UIC / profile classify) has a LoopContext but has not
+		// published it or started runAgentLoop, so DoneC will not close until
+		// the dying goroutine returns. Do not wait: the next message is fenced
+		// by cancelledTaskBoundary, and executePreparedIMEntry aborts on CancelC.
+		log.Printf("[CancelSessionForUser] cancelled in-flight pre-loop user=%s", userID)
+		return taskText, nil
+	}
 	select {
 	case <-ctx.DoneC:
 	case <-time.After(30 * time.Second):
@@ -83,12 +98,13 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 		return "", fmt.Errorf("missing userID")
 	}
 	cancelledHorizon := h.cancelHorizonSessionWithReason(userID, "session")
-	ctx := h.getSessionLoopCtx(userID)
-	taskText := h.sessionLoopTaskText(userID)
+	ctx, taskText, published := h.loopContextForCancel(userID)
 	if ctx == nil {
-		ctx, taskText, _ = h.legacyLoopSnapshotForUser(userID)
-	}
-	if ctx == nil {
+		if taskText != "" {
+			h.markTaskCancelledByUser(userID)
+			log.Printf("[RequestCancelSessionForUser] cancelled pending foreground turn user=%s", userID)
+			return taskText, nil
+		}
 		if cancelledHorizon {
 			return "horizon", nil
 		}
@@ -98,7 +114,48 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 	// Close steering acceptance before clearing pending bags. Otherwise a guide
 	// can be acknowledged after the stop command but before the loop observes it.
 	h.markTaskCancelledByUser(userID)
+	if !published {
+		log.Printf("[RequestCancelSessionForUser] cancelled in-flight pre-loop user=%s", userID)
+	}
 	return taskText, nil
+}
+
+// loopContextForCancel resolves the LoopContext an explicit user cancel must
+// stop. Prefer the published session loop; if that is empty, cancel the
+// in-flight pre-loop turn before falling back to the legacy global pointer.
+// A stale last-user leftover must not win over the UIC window or the cancel
+// button waits on a DoneC that will never close and never stops the live turn.
+func (h *IMMessageHandler) loopContextForCancel(userID string) (ctx *LoopContext, taskText string, published bool) {
+	ctx = h.getSessionLoopCtx(userID)
+	taskText = h.sessionLoopTaskText(userID)
+	if ctx != nil {
+		return ctx, taskText, true
+	}
+	if turn := h.inFlightTurnForUser(userID); turn != nil {
+		return turn.ctx, turn.userText, false
+	}
+	if pending := h.pendingForegroundText(userID); pending != "" {
+		return nil, pending, false
+	}
+	ctx, taskText, _ = h.legacyLoopSnapshotForUser(userID)
+	if ctx != nil {
+		return ctx, taskText, true
+	}
+	return nil, "", false
+}
+
+func (h *IMMessageHandler) preLoopCancelResponse(msg IMUserMessage, loopCtx *LoopContext, history []agent.ConversationEntry, userText string) *IMAgentResponse {
+	if loopCtx == nil {
+		return nil
+	}
+	if !loopCtx.IsCancelled() && !h.hasCancelledTaskBoundary(msg.UserID) {
+		return nil
+	}
+	if !loopCtx.IsCancelled() {
+		loopCtx.Cancel()
+	}
+	log.Printf("[IM] pre-loop cancelled user=%s request_id=%s", msg.UserID, imRequestID(msg))
+	return h.cancelledExitResponse(msg.UserID, history, userText)
 }
 
 // cancelAllSessionsForShutdown is a non-blocking lifecycle cancellation used
@@ -121,6 +178,13 @@ func (h *IMMessageHandler) cancelAllSessionsForShutdown() {
 		if ctx != nil {
 			ctx.Cancel()
 		}
+		return true
+	})
+	h.inFlightTurns.Range(func(key, value any) bool {
+		if turn, ok := value.(*inFlightTurn); ok && turn != nil && turn.ctx != nil {
+			turn.ctx.Cancel()
+		}
+		h.inFlightTurns.CompareAndDelete(key, value)
 		return true
 	})
 	h.activeBtwSubAgents.Range(func(_, value any) bool {
@@ -189,11 +253,19 @@ func (h *IMMessageHandler) sessionLoopTaskText(userID string) string {
 	return ""
 }
 
+type cancelledTaskFence struct {
+	at  time.Time
+	gen uint64
+}
+
 func (h *IMMessageHandler) markTaskCancelledByUser(userID string) {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return
 	}
-	h.cancelledTaskBoundary.Store(userID, time.Now())
+	h.cancelledTaskBoundary.Store(userID, cancelledTaskFence{
+		at:  time.Now(),
+		gen: h.pendingForegroundGen(userID),
+	})
 	h.pendingInjection.Delete(userID)
 	h.pendingPreLoopGuide.Delete(userID)
 	if h.interruptHandler != nil {
@@ -209,12 +281,37 @@ func (h *IMMessageHandler) hasCancelledTaskBoundary(userID string) bool {
 	return ok
 }
 
+func cancelledTaskFenceFrom(raw any) (cancelledTaskFence, bool) {
+	switch v := raw.(type) {
+	case cancelledTaskFence:
+		return v, true
+	case time.Time:
+		return cancelledTaskFence{at: v}, true
+	default:
+		return cancelledTaskFence{}, false
+	}
+}
+
 func (h *IMMessageHandler) consumeCancelledTaskBoundary(userID string) bool {
 	if h == nil || strings.TrimSpace(userID) == "" {
 		return false
 	}
-	_, ok := h.cancelledTaskBoundary.LoadAndDelete(userID)
-	return ok
+	raw, ok := h.cancelledTaskBoundary.Load(userID)
+	if !ok {
+		return false
+	}
+	fence, ok := cancelledTaskFenceFrom(raw)
+	if !ok {
+		h.cancelledTaskBoundary.Delete(userID)
+		return true
+	}
+	// The request that currently holds state.mu set pendingGen before this
+	// cancel. Consuming that fence here would treat the cancelled message as
+	// a brand-new task and let it run. Leave it for pre-loop abort instead.
+	if gen := h.pendingForegroundGen(userID); gen != 0 && gen == fence.gen {
+		return false
+	}
+	return h.cancelledTaskBoundary.CompareAndDelete(userID, raw)
 }
 
 // InjectSupplementary stores a supplementary message for the running agent
@@ -930,6 +1027,7 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 	state.userText = userText
 	state.endedAt = time.Time{}
 	state.stateMu.Unlock()
+	h.endInFlightTurn(userID, ctx)
 	// A guide can be accepted while the session mutex is held during preflight,
 	// before loopCtx is visible. Drain that pre-loop handoff only after publishing
 	// this exact consumer so accepted=true always leads to a reachable iteration.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +55,48 @@ func semanticTrustedFileWriteInvocationSchema() map[string]interface{} {
 		"required":             []string{"path"},
 		"additionalProperties": false,
 	}
+}
+
+// semanticFileWriteInvocationArgs washes model-supplied file-write arguments
+// before canonical schema validation, the same boundary role as
+// semanticOfficeWriteInvocationArgs. Models trained on legacy tool soup
+// habitually write file_path for path and text for content; strict admission
+// burns the one-shot grant on those aliases. Aliases fold only when the
+// canonical key is absent — a real conflict (both path and file_path) passes
+// through unchanged so admission still fails closed. Null values carry no
+// intent and are dropped.
+func semanticFileWriteInvocationArgs(argsJSON string) string {
+	var parsed map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &parsed) != nil || parsed == nil {
+		return argsJSON
+	}
+	changed := false
+	for key, raw := range parsed {
+		if raw == nil {
+			delete(parsed, key)
+			changed = true
+		}
+	}
+	fold := func(alias, canonical string) {
+		if _, ok := parsed[canonical]; ok {
+			return
+		}
+		if value, ok := parsed[alias]; ok {
+			delete(parsed, alias)
+			parsed[canonical] = value
+			changed = true
+		}
+	}
+	fold("file_path", "path")
+	fold("text", "content")
+	if !changed {
+		return argsJSON
+	}
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		return argsJSON
+	}
+	return string(body)
 }
 
 // trustedFileWriteRequest is the decoded shape of one managed mutation. edit

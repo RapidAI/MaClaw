@@ -9,6 +9,19 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func TestResolveLegacySkillPackagePath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	if got, want := resolveLegacySkillPackagePath("demo.zip", root), filepath.Join(root, "demo.zip"); got != want {
+		t.Fatalf("bare package path = %q, want %q", got, want)
+	}
+	if got := resolveLegacySkillPackagePath(filepath.Join(root, "demo.zip"), filepath.Join(t.TempDir(), "other")); got != filepath.Join(root, "demo.zip") {
+		t.Fatalf("explicit package path was rewritten: %q", got)
+	}
+	if got := resolveLegacySkillPackagePath("", root); got != "" {
+		t.Fatalf("empty package path = %q, want empty", got)
+	}
+}
+
 func TestSkillExecutorListUsesScanCacheUntilInvalidated(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

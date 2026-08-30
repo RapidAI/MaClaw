@@ -4,6 +4,7 @@ import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
 import { EVENT_MACLAW_CONFIG_CHANGED } from '../../constants/events';
 import { miniAppEntryLabel } from '../../i18n/maclawMiniAppLabels';
+import { utilitiesEntryLabel } from '../../i18n/utilitiesLabels';
 import { GeneralSettingsOptionGrid } from './GeneralSettingsOptionGrid';
 
 type GeneralSettingsPanelProps = {
@@ -190,7 +191,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                 </label>
                 <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
                     <input type="checkbox" checked={effectiveConfig?.show_utilities_entry !== false} onChange={(e) => saveConfigPatch({ show_utilities_entry: e.target.checked })} />
-                    <span>{textForLang(lang, 'Utilities entry', '\u5b9e\u7528\u5de5\u5177\u5165\u53e3', '\u5be6\u7528\u5de5\u5177\u5165\u53e3')}</span>
+                    <span>{utilitiesEntryLabel(lang)}</span>
                 </label>
                 <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
                     <input type="checkbox" checked={effectiveConfig?.survey_enabled !== false} onChange={(e) => saveConfigPatch({ survey_enabled: e.target.checked })} />

@@ -217,6 +217,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     NormalizeVoiceCommand: vi.fn(async (text: string) => ({ is_command: true, corrected_text: text, confidence: 1 })),
     CorrectASRText: vi.fn(async (text: string) => text),
     IsCodingWorkbenchVSCodeAvailable: vi.fn().mockResolvedValue(false),
+    GetCodingWorkbenchDirectory: vi.fn().mockResolvedValue({ entries: [] }),
+    DeleteCodingWorkbenchEntry: vi.fn().mockResolvedValue(undefined),
+    CloudWorkspaceEntitlement: vi.fn().mockResolvedValue({ enabled: true, workspaces: [] }),
 }));
 
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
@@ -367,6 +370,15 @@ describe('AIAssistantPanel property tests', () => {
         else delete (URL as any).createObjectURL;
         if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
         else delete (URL as any).revokeObjectURL;
+    });
+
+    it('publishes no task identity while the local AI assistant tab is active', async () => {
+        const onActiveAssistantTaskChange = vi.fn();
+        renderPanel({ onActiveAssistantTaskChange });
+        await waitFor(() => {
+            expect(onActiveAssistantTaskChange).toHaveBeenCalled();
+        });
+        expect(onActiveAssistantTaskChange).toHaveBeenLastCalledWith(null);
     });
 
     it('does not allow coding preview panes on digital employee tabs', () => {
@@ -1293,7 +1305,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(output.style.overflowX).toBe('hidden');
         expect(output.style.whiteSpace).toBe('normal');
         expect(output.style.wordBreak).toBe('normal');
-        expect(output.style.overflowWrap).toBe('anywhere');
+        expect(output.style.overflowWrap).toBe('break-word');
 
         const inputBar = getByTestId('ai-input-bar');
         expect(inputBar.style.flexShrink).toBe('0');
@@ -1895,6 +1907,43 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.textContent).toContain('final final');
     });
 
+    it('renders a long streaming reasoning trail incrementally and cleanly re-renders it after the stream ends', () => {
+        const user = makeMsg({ role: 'user', content: 'Nanjing weather' });
+        const reasoningHead = 'Thinking step one.\n\n';
+        const reasoningTail = 'final reasoning note.';
+        const assistant = makeMsg({
+            id: 'a-long-reasoning',
+            role: 'assistant',
+            content: '',
+            reasoning: reasoningHead + 'mid reasoning sentence. '.repeat(120) + '\n\n' + reasoningTail,
+        });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        const streamingDetails = container.querySelector('details');
+        expect(streamingDetails).toHaveProperty('open', true);
+        expect(streamingDetails?.textContent).toContain('Thinking step one.');
+        expect(streamingDetails?.textContent).toContain(reasoningTail);
+
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, sending: true, streaming: false }}
+            />,
+        );
+
+        const finalDetails = container.querySelector('details');
+        expect(finalDetails).toHaveProperty('open', false);
+        // The post-stream full parse must still contain both ends of the trail
+        // (no stale frozen-segment leftovers from incremental rendering).
+        expect(finalDetails?.textContent).toContain('Thinking step one.');
+        expect(finalDetails?.textContent).toContain(reasoningTail);
+    });
+
     it('does not wait for a quiet window before following streamed assistant text', () => {
         vi.useFakeTimers();
         try {
@@ -2113,14 +2162,14 @@ describe('AIAssistantPanel property tests', () => {
         expect(input.placeholder).toBe('Working... (you can keep typing)');
     });
 
-    it('shows processing placeholder and visible busy hint after streaming stops but the request is still active', () => {
-        const { getAllByText, getByTestId, getByText } = renderPanel({
+    it('shows model connection placeholder and visible busy hint before streaming starts', () => {
+        const { getByTestId, getByText } = renderPanel({
             state: { messages: [], sending: true, streaming: false, ready: true, visualBusy: false },
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Running tools... (you can keep typing)');
-        expect(getByText('Running tools... (you can keep typing)')).toBeTruthy();
+        expect(input.placeholder).toBe('Connecting to model...');
+        expect(getByText('Connecting to model...')).toBeTruthy();
     });
 
     it('does not send when Enter confirms an active IME composition', () => {
@@ -2440,6 +2489,52 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, 'restored first', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'restored second', expect.objectContaining({ tabId: 'local' })));
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('holds the type-ahead queue while an unfinished task card is unresolved', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'held-by-slot', text: 'queued behind unfinished card', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
+        props.state = {
+            ...props.state,
+            messages: [makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task.',
+                unfinishedSlot: {
+                    slotID: 'slot-hold',
+                    title: 'previous task',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-hold', style: 'default' },
+                    ],
+                },
+            })],
+            sending: false,
+            streaming: false,
+            ready: true,
+        };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        // The unresolved card intercepts every new turn, so the queue must not
+        // drain into it and burn each queued command into a duplicate card.
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        await new Promise(resolve => setTimeout(resolve, 50));
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        // Resolving the card (its actions are cleared) releases the held queue.
+        props.state = {
+            ...props.state,
+            messages: [makeMsg({
+                role: 'assistant',
+                content: 'Task is continuing.',
+                unfinishedSlot: { slotID: 'slot-hold', status: 'resumed', title: 'previous task', actions: [] },
+            })],
+        };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued behind unfinished card', expect.objectContaining({ tabId: 'local' })));
     });
 
     it('does not start the next restored queue entry until the current one is accepted', async () => {
@@ -3084,6 +3179,26 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(readyChip);
         await waitFor(() => expect(getByTestId('coding-control-popover')).toBeTruthy());
         expect(getByTestId('coding-session-plan')).toBeTruthy();
+    });
+
+    it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            is_default: false,
+        });
+        const { findByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'C:/Users/me/.maclaw/data/tasks/yun-duan-gong-zuo-qu-ren-wu-1',
+                taskTitle: '云端工作区任务1',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        const workspace = await findByTestId('code-preview-workspace', {}, { timeout: 8000 });
+        expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
     });
 
     it('shows a remote coding environment banner with host for remote_coding_dev tabs', async () => {
@@ -5272,6 +5387,27 @@ describe('AIAssistantPanel property tests', () => {
         });
     });
 
+    it('opens cloud workspace saved files from the local cache', async () => {
+        const cachePath = 'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\人工智能数学入门教程.pdf';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: cachePath,
+            }),
+        ];
+
+        const { getByTitle } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTitle('人工智能数学入门教程.pdf'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith(cachePath);
+        });
+    });
+
     it('opens inline detected file paths when clicked', async () => {
         const messages: ChatMessage[] = [
             makeMsg({
@@ -6480,5 +6616,45 @@ describe('expert tabs', () => {
             expect(raw).toContain('expert-exp-1');
             expect(raw).toContain('fresh answer');
         }, { timeout: 3000 });
+    });
+});
+
+describe('thinking panel auto-expands with real hook state shape', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    it('auto-expands when streamingSessionKeys lists the active session', () => {
+        const user = makeMsg({ role: 'user', content: 'Nanjing weather' });
+        const assistant = makeMsg({ id: 'a-repro-expand', role: 'assistant', content: '', reasoning: '• 执行环境已就绪\n• 正在同步会话上下文' });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: {
+                ...props.state,
+                messages: [user, assistant],
+                sending: true,
+                streaming: false,
+                streamingSessionKey: 'desktop-user',
+                streamingSessionKeys: [],
+                ready: true,
+            } as any,
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        expect(container.querySelector('details')).toHaveProperty('open', false);
+
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{
+                    ...initialProps.state,
+                    streaming: true,
+                    streamingSessionKeys: ['desktop-user'],
+                } as any}
+            />,
+        );
+
+        expect(container.querySelector('details')).toHaveProperty('open', true);
     });
 });

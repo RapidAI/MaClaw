@@ -267,6 +267,11 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 	isDeepSeekFlash := IsDeepSeekFlashOpenAICompat(cfg)
 	isGLMCodingPlan := IsGLMCodingPlanOpenAICompat(cfg)
 	ApplyReasoningControls(cfg, body, ReasoningAPIChat)
+	// The caller may have stated reasoning intent in a spelling the upstream
+	// does not accept (for example a DeepSeek-style thinking object forwarded
+	// to Agnes, which only honors reasoning_effort). Retarget it here so a
+	// thinking request survives the forward instead of being silently ignored.
+	RetargetReasoningControlsForUpstream(cfg, body, ReasoningAPIChat)
 	if IsAutoThinkingMode(cfg.ThinkingMode) && IsDeepSeekThinkingModeModel(cfg) {
 		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
 		// returns reasoning_content. Required for deepseek-v4-flash and similar.

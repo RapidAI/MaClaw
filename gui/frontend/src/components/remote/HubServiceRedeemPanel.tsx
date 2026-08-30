@@ -53,6 +53,8 @@ type PeriodEntry = {
     rolling: boolean;
 };
 
+type Translate = (en: string, zhHans: string, zhHant?: string) => string;
+
 interface HubLLMServiceStatus {
     active: boolean;
     skip_llm_config: boolean;
@@ -113,6 +115,10 @@ function formatCredits(value?: number): string {
     const num = Number(value || 0);
     if (!Number.isFinite(num)) return "0";
     return num.toFixed(2).replace(/\.00$/, "").replace(/(\.\d*[1-9])0$/, "$1");
+}
+
+function nonNegativeNumeric(value: unknown): number {
+    return Math.max(0, numeric(value));
 }
 
 function formatUnlimitedCredits(lang?: string): string {
@@ -287,9 +293,9 @@ function periodAllowanceSummary(
     if (!limits) return t("No period limit", "未设周期限额", "未設週期限額");
     const parts: string[] = [];
     const append = (label: string, limit?: number, used?: number) => {
-        const safeLimit = numeric(limit);
+        const safeLimit = nonNegativeNumeric(limit);
         if (safeLimit <= 0) return;
-        parts.push(`${label} ${t("available", "可用", "可用")} ${formatCredits(Math.max(0, safeLimit - numeric(used)))} / ${formatCredits(safeLimit)}`);
+        parts.push(`${label} ${t("remaining", "剩余", "剩餘")} ${formatCredits(Math.max(0, safeLimit - nonNegativeNumeric(used)))} / ${t("limit", "上限", "上限")} ${formatCredits(safeLimit)}`);
     };
     append(t("5h", "5小时", "5小時"), limits.five_hour, usage?.five_hour?.credits_used);
     append(t("Today", "今日", "今日"), limits.daily, usage?.daily?.credits_used);
@@ -332,6 +338,42 @@ function formatRetryDuration(seconds: number, lang?: string): string {
     if (hours < 24) return zh ? `${hours} 小时` : `${hours}h`;
     const days = Math.ceil(hours / 24);
     return zh ? `${days} 天` : `${days}d`;
+}
+
+function PeriodLimitCard({ entry, t }: { entry: PeriodEntry; t: Translate }) {
+    const remaining = Math.max(0, entry.limit - entry.used);
+    const pct = entry.limit > 0 ? Math.max(0, Math.min(100, Math.round((entry.used / entry.limit) * 100))) : 0;
+    const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
+    const accessibleSummary = t(
+        `${entry.label}: ${formatCredits(remaining)} remaining out of ${formatCredits(entry.limit)}; ${formatCredits(entry.used)} used.`,
+        `${entry.label}：剩余 ${formatCredits(remaining)}，上限 ${formatCredits(entry.limit)}，已用 ${formatCredits(entry.used)}。`,
+        `${entry.label}：剩餘 ${formatCredits(remaining)}，上限 ${formatCredits(entry.limit)}，已用 ${formatCredits(entry.used)}。`,
+    );
+    return (
+        <div className="hub-service-redeem__period-card" data-period={entry.key} data-kind={barKind} role="group" aria-label={accessibleSummary}>
+            <div className="hub-service-redeem__period-label">{entry.label}</div>
+            <div className="hub-service-redeem__period-values">
+                <span className="hub-service-redeem__period-available">{formatCredits(remaining)}</span>
+                <span className="hub-service-redeem__period-available-label">{t("remaining", "剩余", "剩餘")}</span>
+                <span className="hub-service-redeem__period-sep">/</span>
+                <span className="hub-service-redeem__period-available-label">{t("limit", "上限", "上限")}</span>
+                <span className="hub-service-redeem__period-limit">{formatCredits(entry.limit)}</span>
+            </div>
+            <div className="hub-service-redeem__period-bar" data-kind={barKind}>
+                <div className="hub-service-redeem__period-bar-fill" style={{ width: `${pct}%` }} />
+            </div>
+            <div className="hub-service-redeem__period-footer">
+                <span className="hub-service-redeem__period-pct">{t(`Used ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`)} · {pct}%</span>
+                {entry.resetIn && (
+                    <span className="hub-service-redeem__period-reset">
+                        {entry.rolling
+                            ? t(`Recovers in ${entry.resetIn}`, `${entry.resetIn}后恢复`, `${entry.resetIn}後恢復`)
+                            : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
+                    </span>
+                )}
+            </div>
+        </div>
+    );
 }
 
 function grantRetrySeconds(grant: HubLLMActiveGrant): number {
@@ -458,15 +500,25 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     // a new inline arrow function → loadStatus is recreated → useEffect fires →
     // setLoading(true) destroys the DOM → input loses focus + page flickers.
     const onStatusChangeRef = useRef(onStatusChange);
+    const latestStatusRequestRef = useRef(0);
     onStatusChangeRef.current = onStatusChange;
 
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) => (
         lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
     ), [lang]);
 
+    // Discard responses from superseded requests and after unmount. A delayed
+    // cached event response must not replace a newer status refresh.
+    useEffect(() => () => {
+        latestStatusRequestRef.current += 1;
+    }, []);
+
     // forceRefresh: bypass the 30s local status cache (open panel / manual refresh).
     // Event-driven silent reloads keep the cache so token ticks do not hammer Hub.
     const loadStatus = useCallback(async (silent?: boolean, forceRefresh: boolean = true) => {
+        const requestID = latestStatusRequestRef.current + 1;
+        latestStatusRequestRef.current = requestID;
+        const isLatest = () => requestID === latestStatusRequestRef.current;
         if (silent) setRefreshing(true);
         else setLoading(true);
         setLoadError(null);
@@ -474,11 +526,14 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
             const next = await callBackend(() => (
                 forceRefresh ? RefreshHubLLMServiceStatus() : GetHubLLMServiceStatus()
             )) as HubLLMServiceStatus;
+            if (!isLatest()) return;
             setStatus(next);
             onStatusChangeRef.current?.(next);
         } catch (error) {
+            if (!isLatest()) return;
             setLoadError(String(error || ""));
         } finally {
+            if (!isLatest()) return;
             setLoading(false);
             setRefreshing(false);
         }
@@ -491,16 +546,31 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     useEffect(() => {
         const timers = new Set<number>();
+        let reloadTimer: number | undefined;
+        let settleTimer: number | undefined;
         const scheduleReload = (delayMs: number) => {
-            const timer = window.setTimeout(() => {
-                timers.delete(timer);
+            if (reloadTimer !== undefined) window.clearTimeout(reloadTimer);
+            reloadTimer = window.setTimeout(() => {
+                timers.delete(reloadTimer!);
+                reloadTimer = undefined;
                 void loadStatus(true, false);
             }, delayMs);
-            timers.add(timer);
+            timers.add(reloadTimer);
+        };
+        const scheduleSettledReload = () => {
+            if (settleTimer !== undefined) window.clearTimeout(settleTimer);
+            settleTimer = window.setTimeout(() => {
+                timers.delete(settleTimer!);
+                settleTimer = undefined;
+                void loadStatus(true, false);
+            }, 2500);
+            timers.add(settleTimer);
         };
         const handler = () => {
-            void loadStatus(true, false);
-            scheduleReload(2500);
+            // Token usage emits in bursts. Coalesce it into one cached reload,
+            // then a short trailing reload to catch a just-finished Hub write.
+            scheduleReload(150);
+            scheduleSettledReload();
         };
         const offTokenUsageChanged = safeEventsOn("llm-token-usage-changed", handler);
         const offHubLLMServiceChanged = safeEventsOn("hub-llm-service-changed", handler);
@@ -576,18 +646,18 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         for (const g of withPeriod) {
             const pl = g.period_limits!;
             const pu = g.period_usage;
-            agg.five_hour.limit += numeric(pl.five_hour);
-            agg.five_hour.used += numeric(pu?.five_hour?.credits_used);
+            agg.five_hour.limit += nonNegativeNumeric(pl.five_hour);
+            agg.five_hour.used += nonNegativeNumeric(pu?.five_hour?.credits_used);
             agg.five_hour.rolling = agg.five_hour.rolling || Boolean(pu?.five_hour?.rolling);
             if (pu?.five_hour?.window_end && (!agg.five_hour.windowEnd || pu.five_hour.window_end > agg.five_hour.windowEnd)) agg.five_hour.windowEnd = pu.five_hour.window_end;
-            agg.daily.limit += numeric(pl.daily);
-            agg.daily.used += numeric(pu?.daily?.credits_used);
+            agg.daily.limit += nonNegativeNumeric(pl.daily);
+            agg.daily.used += nonNegativeNumeric(pu?.daily?.credits_used);
             if (pu?.daily?.window_end && (!agg.daily.windowEnd || pu.daily.window_end > agg.daily.windowEnd)) agg.daily.windowEnd = pu.daily.window_end;
-            agg.weekly.limit += numeric(pl.weekly);
-            agg.weekly.used += numeric(pu?.weekly?.credits_used);
+            agg.weekly.limit += nonNegativeNumeric(pl.weekly);
+            agg.weekly.used += nonNegativeNumeric(pu?.weekly?.credits_used);
             if (pu?.weekly?.window_end && (!agg.weekly.windowEnd || pu.weekly.window_end > agg.weekly.windowEnd)) agg.weekly.windowEnd = pu.weekly.window_end;
-            agg.monthly.limit += numeric(pl.monthly);
-            agg.monthly.used += numeric(pu?.monthly?.credits_used);
+            agg.monthly.limit += nonNegativeNumeric(pl.monthly);
+            agg.monthly.used += nonNegativeNumeric(pu?.monthly?.credits_used);
             if (pu?.monthly?.window_end && (!agg.monthly.windowEnd || pu.monthly.window_end > agg.monthly.windowEnd)) agg.monthly.windowEnd = pu.monthly.window_end;
         }
         const computeResetIn = (windowEnd: string): string => {
@@ -600,7 +670,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         };
         const entries: PeriodEntry[] = [];
         if (agg.five_hour.limit > 0) entries.push({ key: "five_hour", label: agg.five_hour.rolling ? t("Rolling 5-Hour Limit", "5小时滚动限额", "5小時滾動限額") : t("5-Hour Limit", "5小时限额", "5小時限額"), limit: agg.five_hour.limit, used: agg.five_hour.used, resetIn: computeResetIn(agg.five_hour.windowEnd), rolling: agg.five_hour.rolling });
-        if (agg.daily.limit > 0) entries.push({ key: "daily", label: t("Daily Limit", "日限额", "日限額"), limit: agg.daily.limit, used: agg.daily.used, resetIn: computeResetIn(agg.daily.windowEnd), rolling: false });
+        if (agg.daily.limit > 0) entries.push({ key: "daily", label: t("Today's Cumulative Limit", "今日累计限额", "今日累計限額"), limit: agg.daily.limit, used: agg.daily.used, resetIn: computeResetIn(agg.daily.windowEnd), rolling: false });
         if (agg.weekly.limit > 0) entries.push({ key: "weekly", label: t("Weekly Limit", "周限额", "週限額"), limit: agg.weekly.limit, used: agg.weekly.used, resetIn: computeResetIn(agg.weekly.windowEnd), rolling: false });
         if (agg.monthly.limit > 0) entries.push({ key: "monthly", label: t("Monthly Limit", "月限额", "月限額"), limit: agg.monthly.limit, used: agg.monthly.used, resetIn: computeResetIn(agg.monthly.windowEnd), rolling: false });
         return entries.length > 0 ? entries : null;
@@ -807,6 +877,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             <div>
                                 <div className="hub-service-redeem__label hub-service-redeem__label--section">{t("New-user period benefit", "新用户周期福利", "新用戶週期福利")}</div>
                                 <p>{t("This is a recurring usage allowance, not an account credit balance.", "这是可循环使用的限额，不是账户总点数。", "這是可循環使用的限額，不是帳戶總點數。")}</p>
+                                <p>{t("Each card shows the remaining allowance within its own time window; a day includes multiple 5-hour windows.", "每张卡显示各自统计窗口的剩余量；今日累计包含多个 5 小时窗口。", "每張卡顯示各自統計視窗的剩餘量；今日累計包含多個 5 小時視窗。")}</p>
                                 <p className="hub-service-redeem__period-scope-note">{t("Each service group has an independent allowance; the limits below are not added together.", "每个服务组的限额彼此独立，以下数值不会相加。", "每個服務組的限額彼此獨立，以下數值不會相加。")}</p>
                             </div>
                         </div>
@@ -824,34 +895,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                         </span>
                                     </div>
                                     <div className="hub-service-redeem__period-grid">
-                                        {group.periodInfo.map((entry) => {
-                                            const pct = entry.limit > 0 ? Math.min(100, Math.round((entry.used / entry.limit) * 100)) : 0;
-                                            const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
-                                            return (
-                                                <div key={entry.key} className="hub-service-redeem__period-card">
-                                                    <div className="hub-service-redeem__period-label">{entry.label}</div>
-                                                    <div className="hub-service-redeem__period-values">
-                                                        <span className="hub-service-redeem__period-available">{formatCredits(Math.max(0, entry.limit - entry.used))}</span>
-                                                        <span className="hub-service-redeem__period-available-label">{t("available", "可用", "可用")}</span>
-                                                        <span className="hub-service-redeem__period-sep">/</span>
-                                                        <span className="hub-service-redeem__period-limit">{formatCredits(entry.limit)}</span>
-                                                    </div>
-                                                    <div className="hub-service-redeem__period-bar" data-kind={barKind}>
-                                                        <div className="hub-service-redeem__period-bar-fill" style={{ width: `${pct}%` }} />
-                                                    </div>
-                                                    <div className="hub-service-redeem__period-footer">
-                                                        <span className="hub-service-redeem__period-pct">{t(`Used ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`)} · {pct}%</span>
-                                                        {entry.resetIn && (
-                                                            <span className="hub-service-redeem__period-reset">
-                                                                {entry.rolling
-                                                                    ? t(`Recovers in ${entry.resetIn}`, `${entry.resetIn}后恢复`, `${entry.resetIn}後恢復`)
-                                                                    : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
+                                        {group.periodInfo.map((entry) => <PeriodLimitCard key={entry.key} entry={entry} t={t} />)}
                                     </div>
                                 </section>
                             ))}
@@ -865,34 +909,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             {t("Account credit period limits", "账户点数周期限额", "帳戶點數週期限額")}
                         </div>
                         <div className="hub-service-redeem__period-grid">
-                            {meteredPeriodInfo.map((entry) => {
-                                const pct = entry.limit > 0 ? Math.min(100, Math.round((entry.used / entry.limit) * 100)) : 0;
-                                const barKind = pct >= 100 ? "exhausted" : pct >= 80 ? "warning" : "normal";
-                                return (
-                                    <div key={entry.key} className="hub-service-redeem__period-card">
-                                        <div className="hub-service-redeem__period-label">{entry.label}</div>
-                                        <div className="hub-service-redeem__period-values">
-                                            <span className="hub-service-redeem__period-available">{formatCredits(Math.max(0, entry.limit - entry.used))}</span>
-                                            <span className="hub-service-redeem__period-available-label">{t("available", "可用", "可用")}</span>
-                                            <span className="hub-service-redeem__period-sep">/</span>
-                                            <span className="hub-service-redeem__period-limit">{formatCredits(entry.limit)}</span>
-                                        </div>
-                                        <div className="hub-service-redeem__period-bar" data-kind={barKind}>
-                                            <div className="hub-service-redeem__period-bar-fill" style={{ width: `${pct}%` }} />
-                                        </div>
-                                        <div className="hub-service-redeem__period-footer">
-                                            <span className="hub-service-redeem__period-pct">{t(`Used ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`, `已用 ${formatCredits(entry.used)}`)} · {pct}%</span>
-                                            {entry.resetIn && (
-                                                <span className="hub-service-redeem__period-reset">
-                                                    {entry.rolling
-                                                        ? t(`Recovers in ${entry.resetIn}`, `${entry.resetIn}后恢复`, `${entry.resetIn}後恢復`)
-                                                        : t(`Resets in ${entry.resetIn}`, `${entry.resetIn}后重置`, `${entry.resetIn}後重置`)}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })}
+                            {meteredPeriodInfo.map((entry) => <PeriodLimitCard key={entry.key} entry={entry} t={t} />)}
                         </div>
                     </div>
                 )}

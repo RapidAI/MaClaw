@@ -26,7 +26,11 @@ bool platform_power_profile_get_telemetry(uint8_t *out_level_percent,
     if (!compact_peripheral_service_get_power_status(&level, &charging)) {
         return false;
     }
-    *out_level_percent = (uint8_t)(level > 100 ? 100 : level);
+    /* A profile adapter must publish a normalized percentage. Clamping an
+     * impossible value would hide calibration/configuration faults and could
+     * make Battery Policy act on a fabricated full-battery observation. */
+    if (level > 100u) return false;
+    *out_level_percent = (uint8_t)level;
     *out_charging = charging;
     return true;
 }

@@ -41,17 +41,21 @@ type SystemSettingsRepository interface {
 }
 
 type Registry struct {
-	ModelServiceGroups          []ModelServiceGroup `json:"model_service_groups"`
-	GlobalServiceGroupIDs       []string            `json:"global_service_group_ids,omitempty"`
-	GroupBindings               []GroupBinding      `json:"group_bindings,omitempty"`
-	UserBindings                []UserBinding       `json:"user_bindings,omitempty"`
-	Cards                       []RechargeCard      `json:"cards,omitempty"`
-	Grants                      []Grant             `json:"grants,omitempty"`
-	SystemDefaultServiceGroupID string              `json:"system_default_service_group_id,omitempty"`
-	DefaultNewUserServiceGroups []string            `json:"default_new_user_service_groups,omitempty"`
-	DefaultNewUserDurationDays  int                 `json:"default_new_user_duration_days,omitempty"`
-	DefaultNewUserCredits       float64             `json:"default_new_user_credits,omitempty"`
-	DefaultNewUserBenefitMode   string              `json:"default_new_user_benefit_mode"`
+	ModelServiceGroups    []ModelServiceGroup `json:"model_service_groups"`
+	GlobalServiceGroupIDs []string            `json:"global_service_group_ids,omitempty"`
+	GroupBindings         []GroupBinding      `json:"group_bindings,omitempty"`
+	UserBindings          []UserBinding       `json:"user_bindings,omitempty"`
+	Cards                 []RechargeCard      `json:"cards,omitempty"`
+	Grants                []Grant             `json:"grants,omitempty"`
+	// UserBillingTimezones is the authoritative, account-scoped IANA timezone
+	// used for calendar quota windows. It is intentionally separate from grants:
+	// a later top-up must inherit the same account policy rather than reset it.
+	UserBillingTimezones        map[string]string `json:"user_billing_timezones,omitempty"`
+	SystemDefaultServiceGroupID string            `json:"system_default_service_group_id,omitempty"`
+	DefaultNewUserServiceGroups []string          `json:"default_new_user_service_groups,omitempty"`
+	DefaultNewUserDurationDays  int               `json:"default_new_user_duration_days,omitempty"`
+	DefaultNewUserCredits       float64           `json:"default_new_user_credits,omitempty"`
+	DefaultNewUserBenefitMode   string            `json:"default_new_user_benefit_mode"`
 	// DefaultNewUserLimitCard is a separate, unmetered entitlement for new
 	// users. Unlike DefaultNewUserCredits, it grants access to a binding-active
 	// service group and constrains consumption only through period limits.
@@ -74,8 +78,11 @@ type BillingReservation struct {
 	ServiceGroupIDs []string `json:"service_group_ids,omitempty"`
 	Credits         float64  `json:"credits"`
 	ProviderID      string   `json:"provider_id,omitempty"`
-	// BillingGroupMultiplier is frozen at admission so delayed reconciliation
-	// never reinterprets usage under a later group-price change.
+	// ProviderMultiplier and BillingGroupMultiplier are frozen at admission so
+	// delayed reconciliation never reinterprets usage under later provider or
+	// service-group price changes. A zero ProviderMultiplier means an older
+	// reservation and is treated as the legacy default of 1.
+	ProviderMultiplier     float64 `json:"provider_multiplier,omitempty"`
 	BillingGroupMultiplier float64 `json:"billing_group_multiplier,omitempty"`
 	// SentAt is recorded immediately before an upstream request is dispatched.
 	// It prevents expiry recovery from treating an ambiguous network outcome as
@@ -99,8 +106,12 @@ type BillingLedgerEntry struct {
 	DeductedCredits  float64  `json:"deducted_credits"`
 	// Requested/DeductedMicrocredits are the authoritative fixed-point amounts.
 	// Float fields remain for compatibility with existing JSON consumers.
-	RequestedMicrocredits  int64                         `json:"requested_microcredits,omitempty"`
-	DeductedMicrocredits   int64                         `json:"deducted_microcredits,omitempty"`
+	RequestedMicrocredits int64 `json:"requested_microcredits,omitempty"`
+	DeductedMicrocredits  int64 `json:"deducted_microcredits,omitempty"`
+	// ProviderMultiplier is HubCenter's request-frozen provider/time-of-use
+	// factor; BillingGroupMultiplier belongs to Hub's service group. Keeping
+	// both factors makes the immutable ledger explain the exact debit.
+	ProviderMultiplier     float64                       `json:"provider_multiplier,omitempty"`
 	BillingGroupMultiplier float64                       `json:"billing_group_multiplier"`
 	Pricing                *llmpool.ResolvedTokenPricing `json:"pricing,omitempty"`
 	CreatedAt              time.Time                     `json:"created_at"`
@@ -210,9 +221,13 @@ func (c RechargeCard) PlainCode() string {
 }
 
 type Grant struct {
-	ID              string    `json:"id"`
-	UserID          string    `json:"user_id,omitempty"`
-	Email           string    `json:"email"`
+	ID     string `json:"id"`
+	UserID string `json:"user_id,omitempty"`
+	Email  string `json:"email"`
+	// BillingTimezone is a materialized copy of the account timezone used when
+	// this grant was last evaluated. Empty means legacy UTC until the account is
+	// backfilled by the authenticated desktop client.
+	BillingTimezone string    `json:"billing_timezone,omitempty"`
 	ServiceGroupID  string    `json:"service_group_id"`
 	Source          string    `json:"source"`
 	CardID          string    `json:"card_id,omitempty"`
@@ -537,6 +552,17 @@ func (r *Registry) Normalize() {
 	if r == nil {
 		return
 	}
+	if len(r.UserBillingTimezones) > 0 {
+		normalized := make(map[string]string, len(r.UserBillingTimezones))
+		for email, timezone := range r.UserBillingTimezones {
+			email = normalizeEmail(email)
+			timezone = normalizeBillingTimezone(timezone)
+			if email != "" && timezone != "" {
+				normalized[email] = timezone
+			}
+		}
+		r.UserBillingTimezones = normalized
+	}
 	r.ensureBuiltinModelServiceGroups()
 	r.ensureDefaultNewUserSettings()
 	for i := range r.ModelServiceGroups {
@@ -628,6 +654,20 @@ func (r *Registry) Normalize() {
 	// visible in the tenant System Settings UI.
 	r.DefaultNewUserLimitCard.PeriodLimits.Weekly = 0
 	r.DefaultNewUserLimitCard.PeriodLimits.Monthly = 0
+	// A new-user limit card is a qualification, not a policy snapshot. Its
+	// effective limits and validity are projected at runtime from the tenant
+	// settings; only the qualification identity, start time, and usage ledger
+	// belong to a user grant. Clear legacy snapshots while normalizing so a
+	// later settings change cannot leave two sources of truth in storage.
+	for i := range r.Grants {
+		if !strings.EqualFold(strings.TrimSpace(r.Grants[i].Source), "new_user_limit_card") {
+			continue
+		}
+		r.Grants[i].ExpiresAt = time.Time{}
+		r.Grants[i].Permanent = false
+		r.Grants[i].PeriodLimits = CreditPeriodLimits{}
+		r.Grants[i].RollingFiveHour = false
+	}
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
 	}

@@ -52,8 +52,10 @@ func (h *IMMessageHandler) toolOffice(args map[string]interface{}) string {
 		return agent.ToolWriteExcel(args)
 	case "read_pptx":
 		return agent.ToolReadPPTX(args)
+	case "write_pptx", "generate_pptx":
+		return agent.ToolWritePPTX(args)
 	default:
-		return fmt.Sprintf("未知的 office action: %q。支持的 action: generate_pdf, read_document, read_doc, read_docx, read_pdf, read_excel, write_excel, read_pptx", action)
+		return fmt.Sprintf("未知的 office action: %q。支持的 action: generate_pdf, read_document, read_doc, read_docx, read_pdf, read_excel, write_excel, read_pptx, write_pptx", action)
 	}
 }
 

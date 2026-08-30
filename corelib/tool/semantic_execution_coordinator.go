@@ -467,9 +467,25 @@ func issueSurfaceReadyGrantsTx(tx *sql.Tx, issuer *InvocationIssuer, plan ToolPl
 		return nil, fmt.Errorf("semantic surface grant input invalid")
 	}
 	now := issuer.now().UTC()
+	ready := plan.ReadySelections(completed)
+	// The model must see one call per repeat family at a time
+	// (NextRepeatSelections). Both host refresh paths already apply that
+	// closure; the issuing path must too. A budgeted need (for example the
+	// coding family's fs.read.local x12 siblings) otherwise materializes every
+	// sibling at once, and their token-independent rendered function names
+	// collide when the surface opens.
+	allowed := NextRepeatSelections(RepeatExposure{
+		Ready:     ready,
+		Completed: completed,
+		Granted:   map[string]bool{},
+		Live:      map[string]bool{},
+	})
 	grants := make([]InvocationGrant, 0)
-	for _, selection := range plan.ReadySelections(completed) {
+	for _, selection := range ready {
 		if completed[selection.ID] {
+			continue
+		}
+		if !allowed[selection.ID] {
 			continue
 		}
 		if strings.TrimSpace(selection.ID) == "" || strings.TrimSpace(selection.AdapterName) == "" || strings.TrimSpace(selection.FitProof.Digest) == "" {
@@ -840,7 +856,7 @@ func (c *SQLiteSemanticExecutionCoordinator) complete(a SemanticExecutionAdmissi
 			if err != nil {
 				return HostCallRecord{}, err
 			}
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO semantic_artifacts(artifact_key, root_task_id, plan_id, session_id, turn_id, principal_id, artifact_id, kind, mime_type, integrity_digest, producer_selection, payload_base64, payload_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, key, ref.Scope.RootTaskID, ref.Scope.PlanID, ref.Scope.SessionID, ref.Scope.TurnID, ref.Scope.PrincipalID, ref.ID, ref.Kind, ref.MIMEType, ref.IntegrityDigest, ref.ProducerSelection, stored, len(decoded), artifactStoreTime(ref.CreatedAt)); err != nil {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO semantic_artifacts(artifact_key, root_task_id, plan_id, session_id, turn_id, principal_id, artifact_id, kind, mime_type, name, integrity_digest, producer_selection, payload_base64, payload_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, key, ref.Scope.RootTaskID, ref.Scope.PlanID, ref.Scope.SessionID, ref.Scope.TurnID, ref.Scope.PrincipalID, ref.ID, ref.Kind, ref.MIMEType, ref.Name, ref.IntegrityDigest, ref.ProducerSelection, stored, len(decoded), artifactStoreTime(ref.CreatedAt)); err != nil {
 				return HostCallRecord{}, err
 			}
 		} else if scanErr != nil {

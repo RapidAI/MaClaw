@@ -275,7 +275,7 @@ func (s *BlobStore) Put(ctx context.Context, tenantID, userID, workspaceID strin
 		return PutResult{}, err
 	}
 	if _, err := os.Stat(path); err == nil {
-		if err := s.recordObject(ctx, workspaceID, sum, int64(len(plaintext))); err != nil {
+		if err := s.refreshObjectMetadata(ctx, workspaceID, sum, int64(len(plaintext))); err != nil {
 			return PutResult{}, err
 		}
 		return PutResult{SHA256: sum, SizeBytes: int64(len(plaintext)), Existed: true}, nil
@@ -284,12 +284,13 @@ func (s *BlobStore) Put(ctx context.Context, tenantID, userID, workspaceID strin
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return PutResult{}, err
 	}
+	stored, compression, level := compressObject(plaintext)
 	master, err := loadMasterKey(s.keyDir())
 	if err != nil {
 		return PutResult{}, err
 	}
 	dek := deriveDEK(master, tenantID, userID, workspaceID)
-	sealed, err := seal(dek, objectAAD(tenantID, userID, workspaceID), plaintext)
+	sealed, err := seal(dek, objectAAD(tenantID, userID, workspaceID), stored)
 	if err != nil {
 		return PutResult{}, err
 	}
@@ -299,14 +300,22 @@ func (s *BlobStore) Put(ctx context.Context, tenantID, userID, workspaceID strin
 	if err := fileutil.AtomicWriteFile(path, sealed, 0o600); err != nil {
 		return PutResult{}, err
 	}
-	if err := s.recordObject(ctx, workspaceID, sum, int64(len(plaintext))); err != nil {
+	if err := s.recordObjectMeta(ctx, workspaceID, sum, int64(len(plaintext)), int64(len(sealed)), compression, level); err != nil {
 		return PutResult{}, err
 	}
 	return PutResult{SHA256: sum, SizeBytes: int64(len(plaintext))}, nil
 }
 
+func (s *BlobStore) refreshObjectMetadata(ctx context.Context, workspaceID, sha string, plainSize int64) error {
+	if s == nil || s.DB == nil {
+		return nil
+	}
+	_, err := s.DB.ExecContext(ctx, `UPDATE cloud_workspace_objects SET size_bytes = CASE WHEN size_bytes = 0 THEN ? ELSE size_bytes END, plain_size_bytes = CASE WHEN plain_size_bytes = 0 THEN ? ELSE plain_size_bytes END, stored_size_bytes = CASE WHEN stored_size_bytes = 0 THEN size_bytes ELSE stored_size_bytes END WHERE workspace_id = ? AND sha256 = ?`, plainSize, plainSize, workspaceID, sha)
+	return err
+}
+
 // Get decrypts {sha256}.enc and checks the plaintext hash.
-func (s *BlobStore) Get(_ context.Context, tenantID, userID, workspaceID, sha256hex string) ([]byte, error) {
+func (s *BlobStore) Get(ctx context.Context, tenantID, userID, workspaceID, sha256hex string) ([]byte, error) {
 	path, err := s.ObjectPath(tenantID, userID, workspaceID, sha256hex)
 	if err != nil {
 		return nil, err
@@ -326,7 +335,12 @@ func (s *BlobStore) Get(_ context.Context, tenantID, userID, workspaceID, sha256
 		return nil, err
 	}
 	dek := deriveDEK(master, tenantID, userID, workspaceID)
-	plain, err := open(dek, objectAAD(tenantID, userID, workspaceID), blob)
+	stored, err := open(dek, objectAAD(tenantID, userID, workspaceID), blob)
+	if err != nil {
+		return nil, err
+	}
+	compression, plainSize := s.objectCompression(ctx, workspaceID, sha256hex, int64(len(stored)))
+	plain, err := decompressObject(stored, compression, plainSize)
 	if err != nil {
 		return nil, err
 	}
@@ -366,16 +380,35 @@ func (s *BlobStore) statObject(path string) (os.FileInfo, error) {
 }
 
 func (s *BlobStore) recordObject(ctx context.Context, workspaceID, sha256hex string, sizeBytes int64) error {
+	return s.recordObjectMeta(ctx, workspaceID, sha256hex, sizeBytes, sizeBytes, "none", 0)
+}
+
+func (s *BlobStore) recordObjectMeta(ctx context.Context, workspaceID, sha256hex string, plainSize, storedSize int64, compression string, level int) error {
 	if s == nil || s.DB == nil {
 		return nil
 	}
 	ts := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR IGNORE INTO cloud_workspace_objects (workspace_id, sha256, size_bytes, ref_count, created_at)
-		VALUES (?, ?, ?, 0, ?)`,
-		workspaceID, sha256hex, sizeBytes, ts,
+		INSERT OR IGNORE INTO cloud_workspace_objects (workspace_id, sha256, size_bytes, plain_size_bytes, stored_size_bytes, compression, compression_level, encryption_version, ref_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'aes-gcm-v1', 0, ?)`,
+		workspaceID, sha256hex, plainSize, plainSize, storedSize, compression, level, ts,
 	)
 	return err
+}
+
+func (s *BlobStore) objectCompression(ctx context.Context, workspaceID, sha string, fallback int64) (string, int64) {
+	if s == nil || s.DB == nil {
+		return "none", fallback
+	}
+	var compression string
+	var plainSize int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT compression, plain_size_bytes FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha).Scan(&compression, &plainSize); err != nil {
+		return "none", fallback
+	}
+	if plainSize <= 0 {
+		plainSize = fallback
+	}
+	return compression, plainSize
 }
 
 // PartDir is {objects}/{sha256}.part for plaintext chunk staging.

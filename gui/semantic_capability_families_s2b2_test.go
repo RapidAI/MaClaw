@@ -60,11 +60,34 @@ func TestSemanticS2b2FamiliesAreManagedAndMapToGovernedNeeds(t *testing.T) {
 				t.Fatalf("coverage managed=%v unmapped=%q, want managed without unmapped", managed, unmapped)
 			}
 			needs, resolvedManaged, err := semanticIntentNeedsFromClassification(registry, classification)
-			if err != nil || !resolvedManaged || len(needs) != 1 {
+			if err != nil || !resolvedManaged || len(needs) == 0 {
 				t.Fatalf("needs=%#v managed=%v err=%v", needs, resolvedManaged, err)
 			}
-			if needs[0].Capability != tc.capability || !needs[0].Required {
-				t.Fatalf("need=%+v, want required %s", needs[0], tc.capability)
+			// Repeat budgets expand one meaning into sibling needs. Only the
+			// first sibling is required; later siblings are an optional
+			// ceiling of the same capability. The archetype bundle may add
+			// further optional offers on top.
+			bundled := make(map[tool.CapabilityID]bool)
+			for _, companion := range semanticArchetypeBundles[tc.label] {
+				for _, template := range imSemanticIntentRuleSet[companion] {
+					if !strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
+						bundled[template.Capability] = true
+					}
+				}
+			}
+			for i, need := range needs {
+				if !need.Required {
+					if need.Capability == tc.capability && tool.IsRepeatCeilingID(need.ID) {
+						continue
+					}
+					if !bundled[need.Capability] {
+						t.Fatalf("need[%d]=%+v is neither the family capability nor a bundle offer", i, need)
+					}
+					continue
+				}
+				if need.Capability != tc.capability {
+					t.Fatalf("need[%d]=%+v, want required %s", i, need, tc.capability)
+				}
 			}
 		})
 	}

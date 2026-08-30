@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // skillHintWordBoundaryRe matches a skill preference hint as a whole word,
@@ -20,16 +22,16 @@ func shouldPreferSkillForTask(text string) bool {
 	if lower == "" {
 		return false
 	}
+	// Naming a skill ("使用 book-pdf skill") is the execution request. It must
+	// not wait for a document-type hint such as "pdf" / "报告".
+	if intent.ExplicitSkillInvocation(text) {
+		return true
+	}
 
 	// Intent-capability pre-check: if the user's intent is clearly a
-	// query/inspect action (缁熻/鎼滅储/鏌ユ壘/鍒楀嚭/鎵撳紑/璇诲彇), skills are
-	// unlikely to help 鈥?the user wants to operate on existing files, not
-	// generate new ones. Only enter the skill preference path when the
-	// intent is compatible with generation (the dominant skill capability).
-	//
-	// This prevents "缁熻d鐩樹笂鐨刾df鏂囦欢" from triggering skill search
-	// just because it contains "pdf". The user wants to COUNT files, not
-	// CONVERT them.
+	// query/inspect action, skills are unlikely to help — the user wants to
+	// operate on existing files, not generate new ones. Only enter the skill
+	// preference path when the intent is compatible with generation.
 	if !isIntentSkillPreferenceCompatible(text) {
 		return false
 	}
@@ -81,67 +83,179 @@ func (h *IMMessageHandler) consumePendingCapabilityGapContext(userID string) str
 // agentDomain confines the choice to the caller's experience pool so the loop
 // never steers a coding turn into a skill distilled from unrelated chat.
 func matchPreferredLocalSkill(exec *SkillExecutor, userText, agentDomain string) (string, string) {
+	name, reason, _ := matchPreferredLocalSkillMode(exec, userText, agentDomain)
+	return name, reason
+}
+
+func matchPreferredLocalSkillMode(exec *SkillExecutor, userText, agentDomain string) (string, string, skillPreferenceMode) {
 	if exec == nil {
-		return "", ""
+		return "", "", skillPreferenceNone
 	}
 	lower := strings.ToLower(strings.TrimSpace(userText))
 	if lower == "" {
-		return "", ""
+		return "", "", skillPreferenceNone
 	}
 	candidates := filterSkillsForExperienceDomain(agentDomain, exec.List())
-	// Extract intent once, reuse for all skill comparisons.
 	userIntent := extractUserIntentCategory(userText)
 	bestName := ""
 	bestReason := ""
 	bestScore := 0
-	for _, skill := range candidates {
-		if strings.TrimSpace(skill.Name) == "" {
+	bestGuided := false
+	for _, sk := range candidates {
+		if strings.TrimSpace(sk.Name) == "" {
 			continue
 		}
-		score := 0
-		for _, trigger := range skill.Triggers {
-			trigger = strings.ToLower(strings.TrimSpace(trigger))
-			if trigger == "" {
-				continue
-			}
-			if strings.Contains(lower, trigger) {
-				score += 3
-			}
+		st := normalizeSkillEntryStatus(sk.Status)
+		if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
+			continue
 		}
-		desc := strings.ToLower(strings.TrimSpace(skill.Description))
-		if desc != "" {
-			for _, token := range []string{"pdf", "鎶ュ憡", "鏂囨。", "缁艰堪", "markdown", "daily papers"} {
-				if strings.Contains(lower, token) && strings.Contains(desc, token) {
-					score += 2
-				}
-			}
-			// Word-boundary tokens: require whole-word match in user text
-			// to avoid false positives from domain names / URLs.
-			if skillHintWordBoundaryRe.MatchString(lower) {
-				for _, token := range []string{"paper", "report"} {
-					if strings.Contains(desc, token) {
-						score += 2
-					}
-				}
-			}
+		score, identity := preferredLocalSkillScore(sk, lower)
+		if score <= 0 {
+			continue
 		}
-		// Intent-capability compatibility gate: even if topic tokens match,
-		// reject the skill when the user's action verb is incompatible with
-		// the skill's declared capability. This prevents "缁熻 PDF 鏂囦欢"
-		// (query intent) from matching "xh-md-to-pdf" (generate capability).
-		if score > 0 && !isIntentCategoryCompatibleWithSkill(userIntent, skill.Description) {
+		// Identity (name/trigger) is the user naming the skill. The generate-vs-query
+		// gate is only for weak document-type overlap, or "看看 book-pdf" would lose
+		// to remote search because the SKILL.md says 生成.
+		if !identity && !isIntentCategoryCompatibleWithSkill(userIntent, sk.Description) {
 			continue
 		}
 		if score > bestScore {
 			bestScore = score
-			bestName = skill.Name
-			bestReason = firstNonEmptyTraceText(skill.Description, strings.Join(skill.Triggers, ", "))
+			bestName = sk.Name
+			bestReason = firstNonEmptyTraceText(sk.Description, strings.Join(sk.Triggers, ", "))
+			bestGuided = nlSkillIsAgentGuided(sk)
 		}
 	}
 	if bestScore <= 0 {
-		return "", ""
+		return "", "", skillPreferenceNone
 	}
-	return bestName, bestReason
+	if bestGuided {
+		return bestName, bestReason, skillPreferenceAgentGuided
+	}
+	return bestName, bestReason, skillPreferenceLocalOnly
+}
+
+// preferredLocalSkillScore ranks an installed skill against the current turn.
+// Identity (name aliases, then triggers) outranks document-type token overlap
+// so "book-pdf skill" cannot lose to a learned weather-PDF recipe. Agent-guided
+// workflows only score on identity: volunteering them because SKILL.md mentions
+// "pdf" is how an unrelated "生成pdf报告" hijacks Book-PDF.
+func preferredLocalSkillScore(sk NLSkillDefinition, msgLower string) (score int, identity bool) {
+	if skillDocNameAliasOccurs(sk.Name, msgLower) {
+		score += 20
+		identity = true
+	}
+	if countTriggerMatches(sk.Triggers, msgLower) > 0 {
+		score += 10
+		identity = true
+	}
+	if nlSkillIsAgentGuided(sk) {
+		return score, identity
+	}
+	desc := strings.ToLower(strings.TrimSpace(sk.Description))
+	if desc == "" {
+		return score, identity
+	}
+	for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers"} {
+		if strings.Contains(msgLower, token) && strings.Contains(desc, token) {
+			score += 2
+		}
+	}
+	if skillHintWordBoundaryRe.MatchString(msgLower) {
+		for _, token := range []string{"paper", "report"} {
+			if strings.Contains(desc, token) {
+				score += 2
+			}
+		}
+	}
+	return score, identity
+}
+
+func skillDocNameAliasOccurs(name, msgLower string) bool {
+	for _, alias := range skillDocMatchAliases(name, nil) {
+		if skillDocPhraseOccurs(msgLower, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func nlSkillIsAgentGuided(s NLSkillDefinition) bool {
+	return cskill.IsAgentGuidedWorkflowSkill(skillDefinitionAsEntry(s))
+}
+
+// agentGuidedSkillOwnerID is the session owner used for sticky workflow
+// memory. Prompt construction often passes PolicyOwnerID; the loop keys
+// phase state by LoopContext.UserID. Mixing them made follow-up turns keep
+// agent-guided tools but drop SKILL.md injection.
+func agentGuidedSkillOwnerID(ctx *LoopContext, fallback string) string {
+	if ctx != nil {
+		if id := strings.TrimSpace(ctx.UserID); id != "" {
+			return id
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (h *IMMessageHandler) rememberAgentGuidedSkill(userID, name string) {
+	if h == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	h.stickyAgentGuidedSkill.Store(userID, name)
+}
+
+func (h *IMMessageHandler) forgetAgentGuidedSkill(userID string) {
+	if h == nil {
+		return
+	}
+	h.stickyAgentGuidedSkill.Delete(userID)
+}
+
+func (h *IMMessageHandler) recallAgentGuidedSkill(userID string, exec *SkillExecutor) string {
+	if h == nil || exec == nil {
+		return ""
+	}
+	raw, ok := h.stickyAgentGuidedSkill.Load(userID)
+	if !ok {
+		return ""
+	}
+	name, _ := raw.(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		h.forgetAgentGuidedSkill(userID)
+		return ""
+	}
+	for _, sk := range exec.List() {
+		if sk.Name == name && nlSkillIsAgentGuided(sk) {
+			st := normalizeSkillEntryStatus(sk.Status)
+			if st == skillEntryStatusActive || st == skillEntryStatusUnknown {
+				return name
+			}
+		}
+	}
+	h.forgetAgentGuidedSkill(userID)
+	return ""
+}
+
+func looksLikeAgentGuidedContinuation(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" {
+		return false
+	}
+	for _, cue := range []string{
+		"继续", "然后", "下一步", "大纲", "按这个", "开始写", "接着",
+		"部分", "章节", "好的", "可以", "收到",
+		"continue", "go ahead", "outline", "okay",
+	} {
+		if strings.Contains(t, cue) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldBypassSkillPreference(toolCalls []llm.ToolCall) bool {
@@ -162,6 +276,9 @@ func isSkillProgressToolName(name string) bool {
 }
 
 func shouldRestrictToSkillSearch(phase agentLoopPhase) bool {
+	if phase.SkillMode == skillPreferenceAgentGuided {
+		return false
+	}
 	return phase.ForceSkillPreference && phase.SkillMode == skillPreferenceRemoteRequired && !phase.RemoteSearchExhausted
 }
 
@@ -216,6 +333,9 @@ func buildSkillPreferenceConvergePrompt(phase agentLoopPhase) string {
 	if phase.Stage != agentStageOrient || !phase.ForceSkillPreference {
 		return ""
 	}
+	if phase.SkillMode == skillPreferenceAgentGuided && strings.TrimSpace(phase.PreferredSkillName) != "" {
+		return fmt.Sprintf("[Skill preference]\n%q is an installed agent-guided workflow, not a tool name. Follow ## Skill 使用文档 with host tools (bash, read_file, write_file, edit_file). Do not call discover_tool or search_and_install_skill to look it up. Do not substitute generate_pdf. Do not call manage_skill.\n[/Skill preference]", phase.PreferredSkillName)
+	}
 	if shouldRestrictToSkillSearch(phase) {
 		return "[Skill preference]\nThis task should prefer a reusable Skill, but no matching local Skill is available. This round must search/install a reusable Skill before using craft_tool or bash.\n[/Skill preference]"
 	}
@@ -230,6 +350,68 @@ func buildSkillPreferenceConvergePrompt(phase agentLoopPhase) string {
 	return prompt
 }
 
+var agentGuidedSuppressedToolNames = map[string]bool{
+	"discover_tool":            true,
+	"search_and_install_skill": true,
+	"search_skill_hub":         true,
+	"install_skill_hub":        true,
+	"generate_pdf":             true,
+	"tools_search":             true,
+}
+
+var agentGuidedHostToolNames = []string{"bash", "read_file", "write_file", "edit_file", "list_directory"}
+
+func applyAgentGuidedWorkflowSurface(tools, catalog []map[string]interface{}) []map[string]interface{} {
+	return ensureAgentGuidedHostTools(filterToolsForAgentGuidedWorkflow(tools), catalog)
+}
+
+func isAgentGuidedHostToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "bash", "read_file", "write_file", "edit_file", "edit_lines", "list_directory":
+		return true
+	default:
+		return false
+	}
+}
+
+func filterToolsForAgentGuidedWorkflow(toolDefs []map[string]interface{}) []map[string]interface{} {
+	if len(toolDefs) == 0 {
+		return toolDefs
+	}
+	filtered := make([]map[string]interface{}, 0, len(toolDefs))
+	for _, def := range toolDefs {
+		if agentGuidedSuppressedToolNames[extractToolName(def)] {
+			continue
+		}
+		filtered = append(filtered, def)
+	}
+	return filtered
+}
+
+func ensureAgentGuidedHostTools(tools, allTools []map[string]interface{}) []map[string]interface{} {
+	if len(allTools) == 0 {
+		return tools
+	}
+	seen := make(map[string]bool, len(tools))
+	for _, def := range tools {
+		seen[extractToolName(def)] = true
+	}
+	out := tools
+	need := make(map[string]bool, len(agentGuidedHostToolNames))
+	for _, name := range agentGuidedHostToolNames {
+		need[name] = true
+	}
+	for _, def := range allTools {
+		name := extractToolName(def)
+		if !need[name] || seen[name] {
+			continue
+		}
+		out = append(out, def)
+		seen[name] = true
+	}
+	return out
+}
+
 func processSkillPreferenceToolResults(phase *agentLoopPhase, toolCalls []llm.ToolCall, toolResults []string, toolOutcomes []toolOutcome, toolExecResults []toolExecutionResult) {
 	if len(toolExecResults) == len(toolCalls) {
 		processSkillPreferenceToolExecutions(phase, toolCalls, toolExecResults)
@@ -239,7 +421,18 @@ func processSkillPreferenceToolResults(phase *agentLoopPhase, toolCalls []llm.To
 }
 
 func processSkillPreferenceToolExecutions(phase *agentLoopPhase, toolCalls []llm.ToolCall, toolExecResults []toolExecutionResult) {
-	if phase == nil || !shouldBypassSkillPreference(toolCalls) {
+	if phase == nil {
+		return
+	}
+	if phase.SkillMode == skillPreferenceAgentGuided {
+		for _, tc := range toolCalls {
+			if isAgentGuidedHostToolName(tc.Function.Name) {
+				phase.SkillAttempted = true
+				break
+			}
+		}
+	}
+	if !shouldBypassSkillPreference(toolCalls) {
 		return
 	}
 	phase.SkillAttempted = true

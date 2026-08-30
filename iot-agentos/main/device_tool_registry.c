@@ -7,6 +7,8 @@
 #include "fall_detection_service.h"
 #include "sleep_schedule_service.h"
 #include "update_service.h"
+#include "services/factory_reset_service.h"
+#include "configuration_factory_reset_policy.h"
 
 static esp_err_t alarm_execute(const char *name, cJSON *arguments,
                                const char *idempotency_key, cJSON **out_result,
@@ -27,6 +29,46 @@ static esp_err_t update_execute(const char *name, cJSON *arguments,
                                 char *error, size_t error_size) {
     (void)idempotency_key;
     return update_service_execute_tool(name, arguments, out_result, error, error_size);
+}
+
+static esp_err_t factory_reset_execute(const char *name, cJSON *arguments,
+                                       const char *idempotency_key,
+                                       cJSON **out_result, char *error,
+                                       size_t error_size) {
+    if (out_result) *out_result = NULL;
+    if (error && error_size) error[0] = '\0';
+    if (!name || strcmp(name, "factory_reset") || !arguments || !out_result ||
+        !idempotency_key || !idempotency_key[0] || strlen(idempotency_key) > 63u) {
+        if (error && error_size) strlcpy(error, "idempotencyKey is required and must be 1..63 characters", error_size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *confirm = cJSON_GetObjectItemCaseSensitive(arguments, "explicitConfirmation");
+    cJSON *generation = cJSON_GetObjectItemCaseSensitive(arguments, "generation");
+    if (!cJSON_IsTrue(confirm) || !cJSON_IsNumber(generation) ||
+        generation->valuedouble < 1.0 || generation->valuedouble > UINT32_MAX ||
+        generation->valuedouble != (double)(uint64_t)generation->valuedouble) {
+        if (error && error_size) strlcpy(error, "explicitConfirmation and positive integer generation are required", error_size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    configuration_factory_reset_request_t request = {
+        .struct_size = sizeof(request),
+        .abi_version = CONFIGURATION_FACTORY_RESET_POLICY_ABI_VERSION,
+        .source = CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
+        .authenticated = true,
+        .explicit_confirmation = true,
+        .generation = (uint64_t)generation->valuedouble,
+        .classes = CONFIGURATION_FACTORY_RESET_CLASS_ALL,
+    };
+    device_status_t status = factory_reset_service_execute(&request);
+    if (status != DEVICE_STATUS_OK) {
+        if (error && error_size) strlcpy(error, "factory reset failed", error_size);
+        return status == DEVICE_STATUS_BUSY ? ESP_ERR_TIMEOUT : ESP_ERR_INVALID_STATE;
+    }
+    *out_result = cJSON_CreateObject();
+    if (!*out_result || !cJSON_AddStringToObject(*out_result, "status", "reset_complete")) {
+        cJSON_Delete(*out_result); *out_result = NULL; return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t fall_detection_execute(const char *name, cJSON *arguments,
@@ -75,6 +117,7 @@ static bool ready(void) { return true; }
 static bool alarm_ready(void) { return alarm_manager_is_initialized(); }
 static bool fall_detection_ready(void) { return fall_detection_service_is_initialized(); }
 static bool update_ready(void) { return update_service_is_initialized(); }
+static bool factory_reset_ready(void) { return factory_reset_service_is_initialized(); }
 
 static const device_tool_definition_t s_tools[] = {
     {"alarm_create", true, "{\"name\":\"alarm_create\",\"description\":\"Create one alarm on this device. Resolve relative spoken time to an absolute future epoch in the device timezone before calling.\",\"risk\":\"write\",\"timeoutMs\":5000,\"inputSchema\":{\"type\":\"object\",\"properties\":{\"triggerAtEpochMs\":{\"type\":\"integer\",\"description\":\"Absolute Unix epoch milliseconds in the future\"},\"label\":{\"type\":\"string\",\"maxLength\":48}},\"required\":[\"triggerAtEpochMs\"]},\"outputSchema\":{\"type\":\"object\"}}", alarm_execute, alarm_ready},
@@ -91,6 +134,7 @@ static const device_tool_definition_t s_tools[] = {
     {"update_status", false, "{\"name\":\"update_status\",\"description\":\"Read local firmware update reminder status.\",\"risk\":\"read\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}", update_execute, update_ready},
     {"update_remind_later", true, "{\"name\":\"update_remind_later\",\"description\":\"Defer the current firmware update reminder. Does not download or install firmware.\",\"risk\":\"write\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}", update_execute, update_ready},
     {"update_dismiss_version", true, "{\"name\":\"update_dismiss_version\",\"description\":\"Temporarily dismiss the current non-critical firmware update. Does not download or install firmware.\",\"risk\":\"write\",\"timeoutMs\":3000,\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}", update_execute, update_ready},
+    {"factory_reset", true, "{\"name\":\"factory_reset\",\"description\":\"Erase all paired configuration and personal data, then require setup again. This is irreversible.\",\"risk\":\"destructive\",\"timeoutMs\":10000,\"inputSchema\":{\"type\":\"object\",\"properties\":{\"explicitConfirmation\":{\"type\":\"boolean\",\"const\":true},\"generation\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"explicitConfirmation\",\"generation\"]}}", factory_reset_execute, factory_reset_ready},
 };
 
 bool device_tool_registry_find(const char *name, const device_tool_definition_t **out_definition) {

@@ -181,3 +181,28 @@ func TestRecordEvolutionEventPassesThroughStatusAndVia(t *testing.T) {
 		t.Errorf("status not passed through: %+v", events[2])
 	}
 }
+
+func TestRecordEvolutionEventPassesThroughStructuredLifecycleFields(t *testing.T) {
+	oldBaseDir := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBaseDir) })
+	if err := RecordEvolutionEventStrict(EventSkillEvolutionTimedOut, map[string]string{
+		"request_id": "evo_test_1", "attempt": "1", "skill": "timeout-skill",
+		"termination": "worker_timeout", "failure_reason": "deadline_exceeded",
+		"config_revision": "sha256:abc", "evidence_mode": "none", "schema_version": "2",
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ListEvolutionAudit(DefaultEvolutionAuditPath(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events=%d, want 1", len(events))
+	}
+	ev := events[0]
+	if ev.RequestID != "evo_test_1" || ev.Attempt != "1" || ev.Termination != "worker_timeout" ||
+		ev.FailureReason != "deadline_exceeded" || ev.ConfigRevision != "sha256:abc" || ev.EvidenceMode != "none" {
+		t.Fatalf("structured fields not persisted: %+v", ev)
+	}
+}

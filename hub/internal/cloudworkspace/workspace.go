@@ -21,6 +21,9 @@ const (
 	StatusActive  = "active"
 	StatusDeleted = "deleted"
 
+	ReasonMachineUnbound = "machine_unbound"
+	ReasonNotGranted     = "not_granted"
+
 	idPrefix          = "cws_"
 	maxNameRunes      = 64
 	defaultNamePrefix = "工作区 "
@@ -139,6 +142,8 @@ type EntitlementWorkspace struct {
 	Name        string            `json:"name"`
 	UsedBytes   int64             `json:"used_bytes"`
 	UpdatedAt   string            `json:"updated_at"`
+	TaskName    string            `json:"task_name,omitempty"`
+	TaskMode    string            `json:"task_mode,omitempty"`
 	Lease       *EntitlementLease `json:"lease,omitempty"`
 	LeaseInUse  bool              `json:"lease_in_use,omitempty"`
 	LeaseHolder string            `json:"lease_holder,omitempty"`
@@ -162,6 +167,7 @@ type Entitlement struct {
 	MaxWorkspaceBytes int64                         `json:"max_workspace_bytes"`
 	Workspaces        []EntitlementWorkspace        `json:"workspaces"`
 	Deleted           []EntitlementDeletedWorkspace `json:"deleted"`
+	Reason            string                        `json:"reason,omitempty"`
 }
 
 func emptyEntitlement(settings Settings) Entitlement {
@@ -186,14 +192,22 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 		return Entitlement{}, err
 	}
 	out.Enabled = granted
-	if s.Workspaces == nil {
+	if !granted {
+		if strings.TrimSpace(principal.UserID) == "" {
+			out.Reason = ReasonMachineUnbound
+		} else {
+			out.Reason = ReasonNotGranted
+		}
+	}
+	userID := strings.TrimSpace(principal.UserID)
+	if s.Workspaces == nil || userID == "" {
 		return out, nil
 	}
-	rows, err := s.Workspaces.ListOwned(ctx, tenantID, strings.TrimSpace(principal.UserID))
+	rows, err := s.Workspaces.ListOwned(ctx, tenantID, userID)
 	if err != nil {
 		return Entitlement{}, err
 	}
-	leases, err := s.Workspaces.ListActiveLeases(ctx, tenantID, strings.TrimSpace(principal.UserID))
+	leases, err := s.Workspaces.ListActiveLeases(ctx, tenantID, userID)
 	if err != nil {
 		return Entitlement{}, err
 	}
@@ -210,6 +224,10 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 				Name:      ws.Name,
 				UsedBytes: ws.UsedBytes,
 				UpdatedAt: ws.UpdatedAt,
+			}
+			if task := s.taskSidecarFor(ctx, tenantID, userID, ws.ID); task.Name != "" || task.Mode != "" {
+				item.TaskName = task.Name
+				item.TaskMode = task.Mode
 			}
 			if lease := leases[ws.ID]; lease != nil {
 				item.Lease = &EntitlementLease{
@@ -293,4 +311,43 @@ func (s *Service) RestoreWorkspace(ctx context.Context, principal auth.MachinePr
 	}
 	settings := s.LoadTenantSettings(ctx, principal.TenantID)
 	return s.Workspaces.Restore(ctx, principal.TenantID, principal.UserID, id, settings.Quota, s.now())
+}
+
+// HardDeleteDeletedWorkspace permanently removes an owned soft-deleted workspace.
+func (s *Service) HardDeleteDeletedWorkspace(ctx context.Context, principal auth.MachinePrincipal, id string) error {
+	if s == nil || s.Workspaces == nil {
+		return ErrUnavailable
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrNotFound
+	}
+	// Remove encrypted objects and sidecars before dropping the database row.
+	// Keep the row when filesystem cleanup fails so the operation can be retried.
+	if s.Blobs == nil {
+		return ErrUnavailable
+	}
+	{
+		rows, err := s.Workspaces.ListOwned(ctx, principal.TenantID, principal.UserID)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, row := range rows {
+			if row != nil && row.ID == id {
+				if row.Status != StatusDeleted {
+					return ErrNotFound
+				}
+				found = true
+				if err := s.Blobs.RemoveWorkspace(row.TenantID, row.UserID, row.ID); err != nil {
+					return err
+				}
+				break
+			}
+		}
+		if !found {
+			return ErrNotFound
+		}
+	}
+	return s.Workspaces.HardDeleteDeleted(ctx, principal.TenantID, principal.UserID, id)
 }

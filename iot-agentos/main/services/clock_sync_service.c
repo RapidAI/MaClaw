@@ -1,6 +1,8 @@
 #include "services/clock_sync_service.h"
+#include "trusted_time_policy.h"
 
 #include <limits.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -39,6 +41,12 @@ static bool s_retiring;
  * start/ABORT admission if bookkeeping cannot prove that retirement. */
 static esp_err_t s_exit_status = ESP_OK;
 static bool s_registry_retirement_failed;
+static trusted_time_state_t s_time_state;
+/* settimeofday() is performed outside the critical section, so serialize the
+ * whole admit -> apply -> publish window explicitly.  This prevents a SNTP
+ * callback and an authenticated Hub sample from both validating against the
+ * same prior state and then applying in reverse order. */
+static bool s_time_apply_inflight;
 
 static uint32_t remaining_ms(int64_t deadline_us) {
     const int64_t remaining_us = deadline_us - esp_timer_get_time();
@@ -67,12 +75,26 @@ static esp_err_t status_to_esp_err(device_status_t status) {
     }
 }
 
-static void publish_trusted_epoch(int64_t epoch_sec) {
+static void publish_trusted_epoch(int64_t epoch_sec,
+                                  trusted_time_source_t source) {
     if (epoch_sec < 1672531200) return; /* 2023-01-01 UTC */
+    trusted_time_sample_t sample = {
+        .struct_size = sizeof(sample),
+        .abi_version = TRUSTED_TIME_SAMPLE_ABI_VERSION,
+        .source = source,
+        .epoch_sec = epoch_sec,
+        .usec = 0,
+    };
+    const uint64_t monotonic_ms = (uint64_t)(esp_timer_get_time() / 1000);
     clock_sync_service_host_t host;
+    trusted_time_state_t candidate_state;
     bool admitted = false;
     taskENTER_CRITICAL(&s_lock);
-    if (!s_system_sleep_preparing) {
+    candidate_state = s_time_state;
+    if (s_initialized && !s_system_sleep_preparing && !s_time_apply_inflight &&
+        trusted_time_policy_state_observe(&candidate_state, &sample,
+                                          monotonic_ms)) {
+        s_time_apply_inflight = true;
         ++s_system_sleep_callback_users;
         admitted = true;
     }
@@ -82,6 +104,11 @@ static void publish_trusted_epoch(int64_t epoch_sec) {
      * deadline state after the System Sleep boundary. */
     if (!admitted) return;
 
+    /* SNTP invokes this callback after applying its accepted sample.  Only
+     * authenticated Hub input performs an explicit settimeofday() below. */
+    taskENTER_CRITICAL(&s_lock);
+    s_time_state = candidate_state;
+    taskEXIT_CRITICAL(&s_lock);
     host.note_wall_clock(epoch_sec, host.context);
     taskENTER_CRITICAL(&s_lock);
     s_complete = true;
@@ -90,17 +117,93 @@ static void publish_trusted_epoch(int64_t epoch_sec) {
     ESP_LOGI(TAG, "clock synchronized: epoch=%lld", (long long)epoch_sec);
 
     taskENTER_CRITICAL(&s_lock);
+    s_time_apply_inflight = false;
     if (s_system_sleep_callback_users) --s_system_sleep_callback_users;
     taskEXIT_CRITICAL(&s_lock);
 }
 
 static void sntp_sync_cb(struct timeval *tv) {
     if (!tv) return;
-    publish_trusted_epoch((int64_t)tv->tv_sec);
+    publish_trusted_epoch((int64_t)tv->tv_sec, TRUSTED_TIME_SOURCE_SNTP);
 }
 
-void clock_sync_service_note_authenticated_epoch(int64_t epoch_sec) {
-    publish_trusted_epoch(epoch_sec);
+static device_status_t wait_time_callbacks_drained(int64_t deadline_us) {
+    for (;;) {
+        taskENTER_CRITICAL(&s_lock);
+        const bool drained = s_system_sleep_callback_users == 0u &&
+                             !s_time_apply_inflight;
+        taskEXIT_CRITICAL(&s_lock);
+        if (drained) return DEVICE_STATUS_OK;
+        const uint32_t remaining = remaining_ms(deadline_us);
+        if (remaining == 0u) return DEVICE_STATUS_TIMEOUT;
+        vTaskDelay(1);
+    }
+}
+
+bool clock_sync_service_apply_authenticated_millis(double epoch_ms) {
+    trusted_time_sample_t sample = {
+        .struct_size = sizeof(sample),
+        .abi_version = TRUSTED_TIME_SAMPLE_ABI_VERSION,
+    };
+    if (!trusted_time_policy_from_millis(
+            epoch_ms, TRUSTED_TIME_SOURCE_HUB_AUTHENTICATED, &sample)) {
+        ESP_LOGW(TAG, "ignored invalid authenticated server time");
+        return false;
+    }
+
+    const uint64_t monotonic_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    clock_sync_service_host_t host;
+    trusted_time_state_t candidate_state;
+    bool admitted = false;
+    taskENTER_CRITICAL(&s_lock);
+    candidate_state = s_time_state;
+    if (s_initialized && !s_system_sleep_preparing && !s_time_apply_inflight &&
+        trusted_time_policy_state_observe(&candidate_state, &sample,
+                                          monotonic_ms)) {
+        s_time_apply_inflight = true;
+        ++s_system_sleep_callback_users;
+        admitted = true;
+    }
+    host = s_host;
+    taskEXIT_CRITICAL(&s_lock);
+    if (!admitted) {
+        ESP_LOGW(TAG, "ignored authenticated server time trust-state anomaly");
+        return false;
+    }
+
+    struct timeval tv = {
+        .tv_sec = (time_t)sample.epoch_sec,
+        .tv_usec = (suseconds_t)sample.usec,
+    };
+    if (settimeofday(&tv, NULL) != 0) {
+        ESP_LOGW(TAG, "cannot apply authenticated server time: errno=%d", errno);
+        taskENTER_CRITICAL(&s_lock);
+        s_time_apply_inflight = false;
+        if (s_system_sleep_callback_users) --s_system_sleep_callback_users;
+        taskEXIT_CRITICAL(&s_lock);
+        return false;
+    }
+    /* Commit the trust state only after the platform clock accepted the
+     * sample.  A failed settimeofday must not poison anomaly/rollback state.
+     * If SNTP concurrently published a newer sample, preserve that newer
+     * state rather than overwriting it with this stale candidate. */
+    taskENTER_CRITICAL(&s_lock);
+    s_time_state = candidate_state;
+    taskEXIT_CRITICAL(&s_lock);
+    host.note_wall_clock(sample.epoch_sec, host.context);
+    /* Authenticated Hub time on cellular has no SNTP callback to start the
+     * standby cadence; use the same host hook as the monitor path. */
+    host.ensure_ambient_clock(host.context);
+    taskENTER_CRITICAL(&s_lock);
+    s_complete = true;
+    taskEXIT_CRITICAL(&s_lock);
+    host.notify_wall_clock_updated(host.context);
+    ESP_LOGI(TAG, "clock source: gateway serverTime");
+    taskENTER_CRITICAL(&s_lock);
+    s_time_apply_inflight = false;
+    if (s_system_sleep_callback_users) --s_system_sleep_callback_users;
+    taskEXIT_CRITICAL(&s_lock);
+    return true;
 }
 
 static bool stop_requested(void) {
@@ -187,9 +290,7 @@ static void clock_sync_task(void *arg) {
     vTaskDelete(NULL);
 }
 
-static device_status_t stop_monitor(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+static device_status_t stop_monitor_until_deadline(int64_t deadline_us) {
     TaskHandle_t task;
     taskENTER_CRITICAL(&s_lock);
     s_stop_requested = true;
@@ -214,6 +315,12 @@ static device_status_t stop_monitor(uint32_t timeout_ms) {
     return status_from_esp_err(exit_status);
 }
 
+static device_status_t stop_monitor(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    return stop_monitor_until_deadline(deadline_us);
+}
+
 static esp_err_t stop_registry_entry(void *context, uint32_t timeout_ms) {
     TaskHandle_t task;
     taskENTER_CRITICAL(&s_lock);
@@ -223,16 +330,23 @@ static esp_err_t stop_registry_entry(void *context, uint32_t timeout_ms) {
     return status_to_esp_err(stop_monitor(timeout_ms));
 }
 
-device_status_t clock_sync_service_stop(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    const device_status_t monitor_status = stop_monitor(remaining_ms(deadline_us));
+static device_status_t stop_until_deadline(int64_t deadline_us) {
+    const device_status_t monitor_status = stop_monitor_until_deadline(deadline_us);
     if (monitor_status != DEVICE_STATUS_OK) return monitor_status;
+    /* The monitor task and SNTP singleton are independent of callback
+     * delivery.  A Hub-authenticated sample may still be between admission
+     * and consumer notification, so wait for that immutable callback lease
+     * before deinitializing ESP-NETIF's SNTP state. */
+    const device_status_t callback_status = wait_time_callbacks_drained(deadline_us);
+    if (callback_status != DEVICE_STATUS_OK) return callback_status;
     bool initialized;
     taskENTER_CRITICAL(&s_lock);
     initialized = s_sntp_initialized;
     taskEXIT_CRITICAL(&s_lock);
-    if (!initialized) return DEVICE_STATUS_OK;
+    if (!initialized) {
+        return remaining_ms(deadline_us) == 0u ? DEVICE_STATUS_TIMEOUT
+                                              : DEVICE_STATUS_OK;
+    }
     /* ESP-NETIF deinit has no timeout. It is safe only after the monitor join
      * above proves no task can query or restart the singleton. */
     esp_netif_sntp_deinit();
@@ -240,7 +354,14 @@ device_status_t clock_sync_service_stop(uint32_t timeout_ms) {
     s_sntp_initialized = false;
     taskEXIT_CRITICAL(&s_lock);
     ESP_LOGI(TAG, "SNTP service deinitialized");
-    return DEVICE_STATUS_OK;
+    return remaining_ms(deadline_us) == 0u ? DEVICE_STATUS_TIMEOUT
+                                          : DEVICE_STATUS_OK;
+}
+
+device_status_t clock_sync_service_stop(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    return stop_until_deadline(deadline_us);
 }
 
 static void start_internal(bool system_sleep_resume) {
@@ -358,8 +479,7 @@ device_status_t clock_sync_service_start(bool system_sleep_resume) {
 
 device_status_t clock_sync_service_prepare_system_sleep(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    const TickType_t started = xTaskGetTickCount();
-    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     bool was_initialized;
     taskENTER_CRITICAL(&s_lock);
     if (!s_initialized) {
@@ -381,15 +501,15 @@ device_status_t clock_sync_service_prepare_system_sleep(uint32_t timeout_ms) {
         const bool drained = s_system_sleep_callback_users == 0;
         taskEXIT_CRITICAL(&s_lock);
         if (drained) break;
-        if ((xTaskGetTickCount() - started) >= budget) return DEVICE_STATUS_TIMEOUT;
+        if (remaining_ms(deadline_us) == 0u) return DEVICE_STATUS_TIMEOUT;
         vTaskDelay(1);
     }
     if (!was_initialized) return DEVICE_STATUS_OK;
-    const TickType_t elapsed = xTaskGetTickCount() - started;
-    const TickType_t remaining_ticks = elapsed >= budget ? 0 : budget - elapsed;
-    uint32_t remaining = (uint32_t)(remaining_ticks * portTICK_PERIOD_MS);
-    if (remaining_ticks && remaining == 0) remaining = 1;
-    return remaining ? clock_sync_service_stop(remaining) : DEVICE_STATUS_TIMEOUT;
+    /* This preserves the historical clock_sync_service_stop(remaining)
+     * PREPARE seam while retaining the original parent deadline instead of
+     * starting a fresh child budget. */
+    return remaining_ms(deadline_us) ? stop_until_deadline(deadline_us)
+                                    : DEVICE_STATUS_TIMEOUT;
 }
 
 void clock_sync_service_abort_system_sleep_prepare(void) {
@@ -431,6 +551,7 @@ device_status_t clock_sync_service_init(const clock_sync_service_host_t *host) {
     }
     taskENTER_CRITICAL(&s_lock);
     s_host = *host;
+    trusted_time_policy_state_init(&s_time_state);
     s_start_gate = start_gate;
     s_stopped = stopped;
     s_initialized = true;

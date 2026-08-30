@@ -449,20 +449,32 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 		plan.Selections = append(plan.Selections, selection)
 	}
 	attachArtifactDependencies(&plan, req.Facts, req.Now)
-	attachLookupGenerateDependencies(&plan)
+	attachLookupGenerateDependencies(&plan, needs)
 	attachScheduleDispatchDependencies(&plan)
 	attachGenerateCurrentDeliverDependencies(&plan)
 	attachRenderCurrentVoiceDeliverDependencies(&plan)
 	attachCaptureCurrentImageDeliverDependencies(&plan)
-	attachLiveDataVisualDependencies(&plan)
+	attachLiveDataVisualDependencies(&plan, needs)
 	applyPlanningBudget(&plan, req.Budget, needs)
 	recordExplainTrace(&plan, needs)
 	return plan, nil
 }
 
-func isLookupCapability(capability CapabilityID) bool {
+// IsWebLookupCapability reports whether a need fetches public web evidence.
+// Conversation reuse and tool-result provenance use this, not the clock:
+// a prior web_search must not drop a required current_time leg.
+func IsWebLookupCapability(capability CapabilityID) bool {
 	id := strings.TrimSpace(string(capability))
-	return strings.HasPrefix(id, "information.search.") || id == "information.current_time"
+	return strings.HasPrefix(id, "information.search.") || id == string(CapabilityInformationFetchWeb)
+}
+
+// IsLookupCapability reports whether a need produces evidence another
+// selection may wait for. Search, fetch, and the clock are the after-edge
+// lookup family: generate_pdf and live-data render bind to one successful
+// invocation, not to the whole repeat ceiling.
+func IsLookupCapability(capability CapabilityID) bool {
+	id := strings.TrimSpace(string(capability))
+	return IsWebLookupCapability(capability) || id == "information.current_time"
 }
 
 func isDocumentGenerateFile(capability CapabilityID) bool {
@@ -511,43 +523,76 @@ func isCurrentChannelImageDeliver(capability CapabilityID, qualifiers map[string
 	return strings.TrimSpace(qualifiers["format"]) == "image"
 }
 
+// familyBaseSelectionIDs returns one selection ID per repeat family among
+// matching selections: the earliest remaining sibling. Ceiling siblings
+// (id#02…) are an exposure budget, not extra after-edge obligations; if
+// the historical base was omitted, the lowest remaining ID still unlocks
+// the producer after one successful invocation.
+func familyBaseSelectionIDs(selections []PlannedSelection, match func(PlannedSelection) bool) []string {
+	best := make(map[string]string)
+	for _, selection := range selections {
+		if !match(selection) {
+			continue
+		}
+		family := RepeatFamilyID(selection.NeedID)
+		if family == "" {
+			family = RepeatFamilyID(selection.ID)
+		}
+		if current, exists := best[family]; exists && current <= selection.ID {
+			continue
+		}
+		best[family] = selection.ID
+	}
+	ids := make([]string, 0, len(best))
+	for _, id := range best {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func requiredLookupBaseSelectionIDs(plan *ToolPlan, needs []CapabilityNeed) []string {
+	if plan == nil {
+		return nil
+	}
+	requiredFamilies := make(map[string]bool, len(needs))
+	for _, need := range needs {
+		if need.Required && IsLookupCapability(need.Capability) {
+			requiredFamilies[RepeatFamilyID(need.ID)] = true
+		}
+	}
+	return familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return IsLookupCapability(selection.FitProof.MatchedCapability) && requiredFamilies[RepeatFamilyID(selection.NeedID)]
+	})
+}
+
+func requireSelectionIDs(plan *ToolPlan, dependant func(PlannedSelection) bool, required []string) {
+	if plan == nil || len(required) == 0 {
+		return
+	}
+	for i := range plan.Selections {
+		if !dependant(plan.Selections[i]) {
+			continue
+		}
+		plan.Selections[i].Requires = appendUniqueRequirements(plan.Selections[i].Requires, required)
+	}
+}
+
 // attachGenerateCurrentDeliverDependencies records a capability-level after
 // edge: PDF generate must complete before current-channel file deliver so
 // deliver consumes the published ArtifactRef. Echo-only turns have no
-// generate selection and are unchanged.
+// generate selection and are unchanged. Repeat generate siblings are a
+// ceiling; deliver waits for the family base, then consumes the latest
+// artifact of that family.
 func attachGenerateCurrentDeliverDependencies(plan *ToolPlan) {
 	if plan == nil {
 		return
 	}
-	var generateIDs []string
-	var deliverIdx []int
-	for i, selection := range plan.Selections {
-		if isDocumentGenerateFile(selection.FitProof.MatchedCapability) {
-			generateIDs = append(generateIDs, selection.ID)
-		}
-		if isCurrentChannelFileDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings) {
-			deliverIdx = append(deliverIdx, i)
-		}
-	}
-	if len(generateIDs) == 0 || len(deliverIdx) == 0 {
-		return
-	}
-	sort.Strings(generateIDs)
-	for _, index := range deliverIdx {
-		selection := &plan.Selections[index]
-		seen := make(map[string]bool, len(selection.Requires))
-		for _, requirement := range selection.Requires {
-			seen[requirement] = true
-		}
-		for _, generateID := range generateIDs {
-			if seen[generateID] {
-				continue
-			}
-			selection.Requires = append(selection.Requires, generateID)
-			seen[generateID] = true
-		}
-		sort.Strings(selection.Requires)
-	}
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isCurrentChannelFileDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
+	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return isDocumentGenerateFile(selection.FitProof.MatchedCapability)
+	}))
 }
 
 // attachRenderCurrentVoiceDeliverDependencies records a capability-level
@@ -559,35 +604,11 @@ func attachRenderCurrentVoiceDeliverDependencies(plan *ToolPlan) {
 	if plan == nil {
 		return
 	}
-	var renderIDs []string
-	var deliverIdx []int
-	for i, selection := range plan.Selections {
-		if isAudioRenderSpeech(selection.FitProof.MatchedCapability) {
-			renderIDs = append(renderIDs, selection.ID)
-		}
-		if isCurrentChannelVoiceDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings) {
-			deliverIdx = append(deliverIdx, i)
-		}
-	}
-	if len(renderIDs) == 0 || len(deliverIdx) == 0 {
-		return
-	}
-	sort.Strings(renderIDs)
-	for _, index := range deliverIdx {
-		selection := &plan.Selections[index]
-		seen := make(map[string]bool, len(selection.Requires))
-		for _, requirement := range selection.Requires {
-			seen[requirement] = true
-		}
-		for _, renderID := range renderIDs {
-			if seen[renderID] {
-				continue
-			}
-			selection.Requires = append(selection.Requires, renderID)
-			seen[renderID] = true
-		}
-		sort.Strings(selection.Requires)
-	}
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isCurrentChannelVoiceDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
+	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return isAudioRenderSpeech(selection.FitProof.MatchedCapability)
+	}))
 }
 
 // attachCaptureCurrentImageDeliverDependencies records a capability-level
@@ -599,73 +620,39 @@ func attachCaptureCurrentImageDeliverDependencies(plan *ToolPlan) {
 	if plan == nil {
 		return
 	}
-	var captureIDs []string
-	var deliverIdx []int
-	for i, selection := range plan.Selections {
-		if isVisualCaptureDesktop(selection.FitProof.MatchedCapability) {
-			captureIDs = append(captureIDs, selection.ID)
-		}
-		if isCurrentChannelImageDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings) {
-			deliverIdx = append(deliverIdx, i)
-		}
-	}
-	if len(captureIDs) == 0 || len(deliverIdx) == 0 {
-		return
-	}
-	sort.Strings(captureIDs)
-	for _, index := range deliverIdx {
-		selection := &plan.Selections[index]
-		seen := make(map[string]bool, len(selection.Requires))
-		for _, requirement := range selection.Requires {
-			seen[requirement] = true
-		}
-		for _, captureID := range captureIDs {
-			if seen[captureID] {
-				continue
-			}
-			selection.Requires = append(selection.Requires, captureID)
-			seen[captureID] = true
-		}
-		sort.Strings(selection.Requires)
-	}
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isCurrentChannelImageDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
+	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return isVisualCaptureDesktop(selection.FitProof.MatchedCapability)
+	}))
 }
 
 // attachLiveDataVisualDependencies closes the realtime image pipeline:
 // trusted lookup facts -> host renderer -> current-channel image delivery.
 // The renderer receives no model-controlled source, path, URL, or bytes; it
 // consumes only host-recorded lookup evidence and publishes an ArtifactRef.
-func attachLiveDataVisualDependencies(plan *ToolPlan) {
+//
+// Only the REQUIRED lookup family's base sibling gates the renderer,
+// mirroring attachLookupGenerateDependencies. Optional offers and repeat
+// ceiling siblings (declared MaxInvocations or a raised bundle budget)
+// must not all complete before the renderer can run.
+func attachLiveDataVisualDependencies(plan *ToolPlan, needs []CapabilityNeed) {
 	if plan == nil {
 		return
 	}
-	var lookupIDs, renderIDs []string
-	var deliverIdx []int
-	for i, selection := range plan.Selections {
-		if isLookupCapability(selection.FitProof.MatchedCapability) {
-			lookupIDs = append(lookupIDs, selection.ID)
-		}
-		if isVisualRenderLiveData(selection.FitProof.MatchedCapability) {
-			renderIDs = append(renderIDs, selection.ID)
-		}
-		if isCurrentChannelImageDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings) {
-			deliverIdx = append(deliverIdx, i)
-		}
-	}
+	lookupIDs := requiredLookupBaseSelectionIDs(plan, needs)
+	renderIDs := familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return isVisualRenderLiveData(selection.FitProof.MatchedCapability)
+	})
 	if len(renderIDs) == 0 {
 		return
 	}
-	sort.Strings(lookupIDs)
-	sort.Strings(renderIDs)
-	for i := range plan.Selections {
-		selection := &plan.Selections[i]
-		if !isVisualRenderLiveData(selection.FitProof.MatchedCapability) {
-			continue
-		}
-		selection.Requires = appendUniqueRequirements(selection.Requires, lookupIDs)
-	}
-	for _, index := range deliverIdx {
-		plan.Selections[index].Requires = appendUniqueRequirements(plan.Selections[index].Requires, renderIDs)
-	}
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isVisualRenderLiveData(selection.FitProof.MatchedCapability)
+	}, lookupIDs)
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isCurrentChannelImageDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
+	}, renderIDs)
 }
 
 func appendUniqueRequirements(current, required []string) []string {
@@ -683,44 +670,23 @@ func appendUniqueRequirements(current, required []string) []string {
 	return current
 }
 
-// attachLookupGenerateDependencies records a capability-level after edge:
-// lookup selections (search / current_time) must complete before PDF generate
-// so generate can consume their facts. This is independent of artifact
+// attachLookupGenerateDependencies wires a REQUIRED lookup as a prerequisite
+// of document generation: a weather-style PDF must be rendered from fetched
+// evidence, never from model memory. This is independent of artifact
 // consume/produce matching. Hosts may omit the lookup need before Plan when
-// the conversation already has same-topic facts; this edge then does not exist.
-func attachLookupGenerateDependencies(plan *ToolPlan) {
-	if plan == nil {
-		return
-	}
-	var lookupIDs []string
-	var generateIdx []int
-	for i, selection := range plan.Selections {
-		if isLookupCapability(selection.FitProof.MatchedCapability) {
-			lookupIDs = append(lookupIDs, selection.ID)
-		}
-		if isDocumentGenerateFile(selection.FitProof.MatchedCapability) {
-			generateIdx = append(generateIdx, i)
-		}
-	}
-	if len(lookupIDs) == 0 || len(generateIdx) == 0 {
-		return
-	}
-	sort.Strings(lookupIDs)
-	for _, index := range generateIdx {
-		selection := &plan.Selections[index]
-		seen := make(map[string]bool, len(selection.Requires))
-		for _, requirement := range selection.Requires {
-			seen[requirement] = true
-		}
-		for _, lookupID := range lookupIDs {
-			if seen[lookupID] {
-				continue
-			}
-			selection.Requires = append(selection.Requires, lookupID)
-			seen[lookupID] = true
-		}
-		sort.Strings(selection.Requires)
-	}
+// the conversation already has same-topic facts; this edge then does not
+// exist. An OPTIONAL lookup need (the deterministic composite companion a
+// document-producing turn always carries) does not gate generation — it is an
+// offer the model may use, and holding generate_pdf hostage to an uncalled
+// optional search would dead-lock pure-content turns.
+//
+// Repeat siblings of a required lookup are an exposure ceiling, not extra
+// prerequisites: the earliest remaining sibling of each required family is
+// attached. Waiting for id#02…#05 dead-locks generate on unused refinements.
+func attachLookupGenerateDependencies(plan *ToolPlan, needs []CapabilityNeed) {
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isDocumentGenerateFile(selection.FitProof.MatchedCapability)
+	}, requiredLookupBaseSelectionIDs(plan, needs))
 }
 
 // attachScheduleDispatchDependencies records a capability-level after edge:
@@ -731,35 +697,11 @@ func attachScheduleDispatchDependencies(plan *ToolPlan) {
 	if plan == nil {
 		return
 	}
-	var administerIDs []string
-	var dispatchIdx []int
-	for i, selection := range plan.Selections {
-		if isScheduleAdministerLocal(selection.FitProof.MatchedCapability) {
-			administerIDs = append(administerIDs, selection.ID)
-		}
-		if isScheduleDispatchChannel(selection.FitProof.MatchedCapability) {
-			dispatchIdx = append(dispatchIdx, i)
-		}
-	}
-	if len(administerIDs) == 0 || len(dispatchIdx) == 0 {
-		return
-	}
-	sort.Strings(administerIDs)
-	for _, index := range dispatchIdx {
-		selection := &plan.Selections[index]
-		seen := make(map[string]bool, len(selection.Requires))
-		for _, requirement := range selection.Requires {
-			seen[requirement] = true
-		}
-		for _, administerID := range administerIDs {
-			if seen[administerID] {
-				continue
-			}
-			selection.Requires = append(selection.Requires, administerID)
-			seen[administerID] = true
-		}
-		sort.Strings(selection.Requires)
-	}
+	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
+		return isScheduleDispatchChannel(selection.FitProof.MatchedCapability)
+	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
+		return isScheduleAdministerLocal(selection.FitProof.MatchedCapability)
+	}))
 }
 
 const reasonOptionalBudgetOmitted = "optional_budget_omitted"

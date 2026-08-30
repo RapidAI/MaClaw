@@ -122,7 +122,7 @@ async function renderTenantIndustrySettings() {
   let root = tenantPanel.querySelector('[data-im-tenant-settings]');
   const draft = imCaptureTenantIndustryDrafts(root);
   if (!root) { root = document.createElement('div'); root.dataset.imTenantSettings = 'true'; root.className = 'item section-gap-sm'; tenantPanel.appendChild(root); }
-  root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="item-meta">${imEsc(imT('tenantSettingsLoadingDesc'))}</div><div class="hint section-gap">${imEsc(imT('loading'))}</div>`;
+  root.innerHTML = `<div class="item-title" data-icon="building">${imEsc(imT('tenantSettingsTitle'))}</div><div class="item-meta">${imEsc(imT('tenantSettingsLoadingDesc'))}</div><div class="hint section-gap">${imEsc(imT('loading'))}</div>`;
   try {
     const [industryData, assignment] = await Promise.all([
       imAPI('/api/admin/industry-management/industries'),
@@ -137,10 +137,10 @@ async function renderTenantIndustrySettings() {
     const status = await imAPI(`/api/admin/hubs/${encodeURIComponent(hubID)}/tenants/${encodeURIComponent(tenantID)}/industry-expert-status`);
     if (seq !== imTenantRenderSeq || !document.contains(root)) return;
     const defaultHint = assignment?.using_default && !(draft && draft.length) ? `<div class="hint section-gap-sm">${imEsc(imT('tenantDefaultHint'))}</div>` : '';
-    root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="item-meta">${imEsc(imT('tenantSettingsDesc'))}</div>${defaultHint}<div class="item-meta section-gap-sm">${imEsc(imT('catalogueRevision'))}: ${imNumber(status?.revision)} · ${imEsc(imT('experts'))}: ${imNumber(status?.expert_count)}</div><div class="stack-gap-sm section-gap">${items.length ? items.map(item => `<label class="inline-check"><input type="checkbox" data-im-tenant-industry="${imEsc(item.id)}"${assigned.has(String(item.id)) ? ' checked' : ''}> <span>${imEsc(item.icon || '🏷️')} ${imEsc(item.name)}</span></label>`).join('') : `<div class="hint">${imEsc(imT('noIndustries'))}</div>`}</div><div class="actions section-gap"><button class="btn-primary" type="button" data-im-save-tenant-industries>${imEsc(imT('saveTenantSettings'))}</button></div>`;
+    root.innerHTML = `<div class="item-title" data-icon="building">${imEsc(imT('tenantSettingsTitle'))}</div><div class="item-meta">${imEsc(imT('tenantSettingsDesc'))}</div>${defaultHint}<div class="item-meta section-gap-sm">${imEsc(imT('catalogueRevision'))}: ${imNumber(status?.revision)} · ${imEsc(imT('experts'))}: ${imNumber(status?.expert_count)}</div><div class="stack-gap-sm section-gap">${items.length ? items.map(item => `<label class="inline-check"><input type="checkbox" data-im-tenant-industry="${imEsc(item.id)}"${assigned.has(String(item.id)) ? ' checked' : ''}> <span>${imEsc(item.icon || '🏷️')} ${imEsc(item.name)}</span></label>`).join('') : `<div class="hint">${imEsc(imT('noIndustries'))}</div>`}</div><div class="actions section-gap"><button class="btn-primary" type="button" data-im-save-tenant-industries>${imEsc(imT('saveTenantSettings'))}</button></div>`;
   } catch (error) {
     if (seq !== imTenantRenderSeq || !document.contains(root)) return;
-    root.innerHTML = `<div class="item-title">${imEsc(imT('tenantSettingsTitle'))}</div><div class="hint">${imEsc(imT('failed', { error: imError(error) }))}</div>`;
+    root.innerHTML = `<div class="item-title" data-icon="building">${imEsc(imT('tenantSettingsTitle'))}</div><div class="hint">${imEsc(imT('failed', { error: imError(error) }))}</div>`;
   }
 }
 async function saveTenantIndustrySettings(button) {

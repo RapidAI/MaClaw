@@ -138,6 +138,17 @@ type CodingSubAgent struct {
 	verifiedTaskSubject         verifiedCodingSubject
 	verifiedTaskHandle          *verifiedCodingTaskHandle
 
+	// correlatedLocalExecution records that this subagent runs inside the
+	// host-verified local desktop coding boundary: the root attempt resolved a
+	// durable invocation identity from a verified desktop task relation plus a
+	// host-issued local workspace binding, and nested children receive the fact
+	// only from the host spawn path. It is never derived from task text, model
+	// output, configuration, or runtime IDs. It gates only the S0.5 static
+	// surface posture: every model dispatch still requires the per-request
+	// surface epoch, and effectful families additionally require the provider
+	// ResponseID attached by RunLoop at the response boundary.
+	correlatedLocalExecution bool
+
 	// horizonPosture freezes a LongHorizon CLI episode: no knowledge recall,
 	// no MCP/skills/spawn, and ExecuteTool is limited to horizonToolSurface.
 	horizonPosture      bool
@@ -784,6 +795,14 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeLocalizationQuality(task.Title+"\n"+task.Description, existingFilesModified, cb.localization.snapshot(), allSearchesRun))
 		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
 	}
+	// A request on the S0.5 uncorrelated compatibility surface carries no write
+	// or command authority at all, and its prompt instructs the model to answer
+	// with a plan instead of executing. Judging such a plan-only turn by the
+	// generic "any inspection evidence" rule green-checks a task that produced
+	// nothing (and there is no follow-up execution workflow to run the plan).
+	// Implementation/operational tasks therefore require artifact or command
+	// evidence before they may pass; inquiry stays read-only by design.
+	status, errMsg = applyUncorrelatedCompatibilitySurfaceOutcome(status, errMsg, inquiry, cb, audit)
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 	}
@@ -1356,11 +1375,19 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 }
 
 // usesUncorrelatedStaticCompatibilityModelSurface is intentionally transport
-// policy, not an intent classifier. All non-horizon Coding model requests
-// currently use the legacy static belt and therefore require its constrained
-// prompt. Horizon owns a separate frozen episode surface.
+// policy, not an intent classifier. Horizon owns a separate frozen episode
+// surface. A local subagent inside the host-verified desktop coding boundary
+// runs in-process: RunLoop mints a fresh surface epoch at every request
+// boundary and attaches the provider-issued ResponseID before dispatch, so the
+// request surface may carry the effectful static families and every dispatch
+// is correlation-checked in ExecuteToolCallWithContext. Every other Coding
+// request (unverified ingress, or any transport without that boundary) keeps
+// the S0.5 read-only compatibility surface.
 func (c *codingSubAgentCallbacks) usesUncorrelatedStaticCompatibilityModelSurface() bool {
-	return c != nil && c.subagent != nil && !c.subagent.horizonPosture
+	if c == nil || c.subagent == nil || c.subagent.horizonPosture {
+		return false
+	}
+	return !c.subagent.correlatedLocalExecution
 }
 
 // trajectoryToolSurfaceSnapshot does not mint an execution epoch or mutate the
@@ -1533,21 +1560,20 @@ func (c *codingSubAgentCallbacks) setStaticCompatibilitySurface(definitions []ma
 	if c == nil {
 		return 0
 	}
-	c.staticCompatibilitySurfaceMu.Lock()
 	// Horizon definitions are already selected by a frozen host-issued episode
 	// policy. The recorded set must nevertheless come from the definitions that
 	// were actually rendered: adding the whole policy list here would let an
 	// absent registry definition reach the host dispatcher.
-	c.staticCompatibilitySurface = codingStaticCompatibilitySurfaceNames(definitions)
 	// RunLoop creates this request's epoch before it invokes the request-bound
 	// renderer. Do not clear it while installing the exact definitions that the
 	// same request will send: doing so turns every correctly correlated response
 	// into a stale one before it can reach execution. The next real outbound
 	// request advances the epoch before rendering its own replacement, which
 	// invalidates the predecessor without creating an epoch-less admission gap.
-	c.staticCompatibilityRevision++
-	revision := c.staticCompatibilityRevision
-	c.staticCompatibilitySurfaceMu.Unlock()
+	// The control-plane revision is a surface-generation fence, not a per-request
+	// counter: identical name sets keep the current grant so a report accepted
+	// on this turn can authorize the following turn's edit.
+	revision := replaceCodingStaticCompatibilitySurface(&c.staticCompatibilitySurfaceMu, &c.staticCompatibilitySurface, &c.staticCompatibilityRevision, definitions)
 	// Control-plane checklist mutations are revision/version CAS-protected.
 	// This local fence neither publishes authority nor identifies a provider
 	// response; it just makes a replacement reject stale model todo payloads.
@@ -1681,14 +1707,14 @@ func (c *codingSubAgentCallbacks) quarantineStaticCompatibilitySurface() {
 	if c == nil {
 		return
 	}
-	c.staticCompatibilitySurfaceMu.Lock()
 	// The operation is idempotent because transport code may report a terminal
 	// error and a caller may subsequently observe cancellation of the same
 	// attempt. Never recreate a request surface from this callback afterwards.
-	c.staticCompatibilityQuarantined = true
-	c.staticCompatibilitySurface = map[string]struct{}{}
-	c.staticCompatibilityEpoch = ""
-	c.staticCompatibilitySurfaceMu.Unlock()
+	// Emptying the name set is a real surface replacement, so leftover
+	// localization evidence cannot authorize an edit if a later path forgets
+	// the quarantine admission check.
+	revision := quarantineCodingStaticCompatibilitySurface(&c.staticCompatibilitySurfaceMu, &c.staticCompatibilityQuarantined, &c.staticCompatibilityEpoch, &c.staticCompatibilityRevision, &c.staticCompatibilitySurface)
+	c.todos.bindControlPlaneRevision(revision)
 }
 
 func filterCodingToolsForRole(tools []map[string]interface{}, sa *CodingSubAgent) []map[string]interface{} {
@@ -7543,6 +7569,12 @@ func summarizeSubAgentScopeEvidence(task *TaskItem, modelSummary string, filesMo
 	if len(outside) == 0 {
 		return ""
 	}
+	// An explicit scope-expansion rationale (or directly naming the extra
+	// file) in the model summary acknowledges the deviation; only silent
+	// out-of-scope changes warn.
+	if subAgentSummaryExplainsScopeExpansion(modelSummary, outside) {
+		return ""
+	}
 	return fmt.Sprintf("changed files outside listed task scope: %s", compactSubAgentFileList(outside, 5))
 }
 
@@ -13185,6 +13217,23 @@ func applySubAgentQualityOutcome(status TaskExecStatus, errMsg string, qualitySt
 	return TaskExecFailed, compactSubAgentErrorSummary(qualitySummary)
 }
 
+// applyUncorrelatedCompatibilitySurfaceOutcome keeps the S0.5 read-only
+// compatibility surface honest: an implementation or operational task on that
+// surface cannot have produced files or command results, so a plan-only turn
+// must end as a visible capability-gap failure rather than a green check.
+// Inquiry tasks are read-only by design and unaffected, and the correlated
+// local desktop boundary (where write/command tools are rendered and every
+// dispatch is correlation-checked) is unaffected as well.
+func applyUncorrelatedCompatibilitySurfaceOutcome(status TaskExecStatus, errMsg string, inquiry bool, cb *codingSubAgentCallbacks, audit codingSubAgentAudit) (TaskExecStatus, string) {
+	if status != TaskExecPassed || inquiry || cb == nil || !cb.usesUncorrelatedStaticCompatibilityModelSurface() {
+		return status, errMsg
+	}
+	if len(audit.AllFilesModified) > 0 || len(audit.AllFilesCreated) > 0 || len(audit.AllCommandsRun) > 0 {
+		return status, errMsg
+	}
+	return TaskExecFailed, compactSubAgentErrorSummary("当前编程执行面为只读兼容模式（未授权写文件/命令执行），任务未产出任何文件或命令结果，不能判定为完成")
+}
+
 func subAgentQualityFailureDiagnostic(qualitySummary string, qualityIssueCount int) string {
 	qualitySummary = strings.TrimSpace(qualitySummary)
 	if qualitySummary == "" {
@@ -14163,7 +14212,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
-	b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code.\n")
+	b.WriteString("5. For bug fixes, call code_navigation, reproduce or explain why not, reject a plausible alternative, and make an explicit research decision. Unknown/current/third-party facts require web_search of the exact error plus component/version; then submit report_localization before editing existing code. Once accepted, keep editing the reported files on later turns; resubmit only if the report was rejected, the root cause changed, or the gate says the previous report is bound to an older surface.\n")
 	b.WriteString("\n**Before finalizing**:\n")
 	b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
 	b.WriteString("2. Write the final answer as an engineer: lead with the result, name real files and verification commands in prose, and mention remaining risk only when it is real. Do not emit audit headings.\n\n")
@@ -14677,7 +14726,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
-- 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。纯仓内逻辑问题可以不联网，但必须在 report_localization 中说明理由。
+- 外部知识判定是故障定位的必做步骤：遇到陌生概念/报错、第三方依赖/API/协议、版本或兼容性问题时，必须先 web_search 搜索精确错误与官方文档，再用 web_fetch 阅读最相关来源；不要靠记忆猜测。若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次；provider/网络/配置明确失败则不要重复空转。纯仓内逻辑问题可以不联网，但必须在 report_localization 中说明理由。report_localization 被接受后，后续同任务轮次可直接改根因文件；不要把同一份完整报告再交一遍，除非门禁明确要求重交。
 - 子代理（Codex 风格）：复杂/可并行工作时用 spawn_coding_agent 派生子代理。
   - explorer：只读探查（搜索/阅读），返回结构化发现
   - worker：隔离 git worktree / 远程 isolate 实现/修复；必须声明 files 写集合；不可再嵌套 spawn
@@ -14886,7 +14935,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 ## Quality audit gates
 - Enforced hard gates: explore before existing-file edits, verify changed tasks, run git_diff, and give inspection/verification evidence for no-change tasks or project-context evidence for new files.
 	- The host already supplies an authoritative workspace inventory, including an explicit empty-directory result. For a greenfield task in an empty workspace, that inventory is sufficient project-context evidence; do not run a redundant search solely to satisfy an audit gate.
-	- Bug fixes: localize with code_navigation, reproduction and alternatives, make an explicit research decision, then report_localization before editing. Unknown/current/third-party facts require web_search (exact error + component/version) and authoritative sources.
+	- Bug fixes: localize with code_navigation, reproduction and alternatives, make an explicit research decision, then report_localization before editing. Once accepted, do not resubmit the same report on later turns. Unknown/current/third-party facts require web_search (exact error + component/version) and authoritative sources.
 - Verification evidence must be fresh after the final edit and include real execution output. Empty/weak evidence does not count: blank, "(无输出)", "no tests found", "no tests collected", "[no test files]", "0 tests", "0 examples", list/help/collect-only/dry-run.
 
 ## Tool-call JSON reliability
@@ -15625,6 +15674,12 @@ func runTaskWithSubAgentRuntimeOptions(
 			_ = registerTrustedCodingInvocationIdentity(store, request, sa.verifiedInvocationIdentity)
 			sa.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
 		}
+		// The correlated local boundary exists only when the durable identity
+		// and the host-issued local workspace binding are both present. Either
+		// one missing keeps the S0.5 read-only compatibility surface; neither is
+		// ever reconstructed from projectPath, task text, or runtime fields.
+		sa.correlatedLocalExecution = sa.dynamicInvocationIdentity != nil &&
+			sa.dynamicInvocationIdentity.complete() && sa.staticWorkspaceBinding.complete()
 		// S1-A only: prepare a project-bound, read-only shadow plan whenever the
 		// durable semantic identity exists, including when the host workspace
 		// binding is absent. The incomplete envelope must become a plan with
@@ -15666,6 +15721,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	}
 	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity, sa.verifiedInvocationIdentity = nil, nil, nil, nil
 	sa.staticWorkspaceBinding, sa.staticShadowPlan = codingStaticWorkspaceBinding{}, nil
+	sa.correlatedLocalExecution = false
 	sa.verifiedTaskRelationService, sa.verifiedTaskHandle = nil, nil
 	sa.verifiedTaskSubject = verifiedCodingSubject{}
 	if ledgerErr != nil {

@@ -95,8 +95,8 @@ func TestBuildVEFileAttachmentMessageRejectsOversizedFile(t *testing.T) {
 	}
 
 	_, err = (&App{}).buildVEFileAttachmentMessage("session-1", path, "", "")
-	if err == nil || !strings.Contains(err.Error(), "50 MB") {
-		t.Fatalf("expected 50 MB limit error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "50 MiB") {
+		t.Fatalf("expected 50 MiB limit error, got %v", err)
 	}
 }
 

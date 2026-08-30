@@ -15,8 +15,13 @@ import (
 // EvolutionAuditEvent is one durable row in the skill evolution audit log.
 // Stored as JSONL under DefaultEvolutionAuditPath().
 type EvolutionAuditEvent struct {
-	Timestamp   string `json:"timestamp"`
-	Kind        string `json:"kind"` // repaired | optimized | discovered | failed | queue_full | other
+	Timestamp string `json:"timestamp"`
+	Kind      string `json:"kind"` // repaired | optimized | discovered | failed | queue_full | other
+	// RequestID links events belonging to one evolution request. Legacy rows
+	// may omit it and are treated as having unknown correlation.
+	RequestID string `json:"request_id,omitempty"`
+	// Attempt is the one-based attempt number within RequestID.
+	Attempt     string `json:"attempt,omitempty"`
 	Skill       string `json:"skill,omitempty"`
 	Explanation string `json:"explanation,omitempty"`
 	Source      string `json:"source,omitempty"` // desktop | tui | cli | test
@@ -26,7 +31,21 @@ type EvolutionAuditEvent struct {
 	Status string `json:"status,omitempty"`
 	// Via carries the channel marker from the event payload (e.g.
 	// "reviewed_draft" / "reviewed_draft_disable").
-	Via string `json:"via,omitempty"`
+	Via            string `json:"via,omitempty"`
+	Action         string `json:"action,omitempty"`
+	Decision       string `json:"decision,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	GateStatus     string `json:"gate_status,omitempty"`
+	EvidenceDigest string `json:"evidence_digest,omitempty"`
+	BackupVersion  string `json:"backup_version,omitempty"`
+	Operator       string `json:"operator,omitempty"`
+	Trigger        string `json:"trigger,omitempty"`
+	SchemaVersion  string `json:"schema_version,omitempty"`
+	ConfigRevision string `json:"config_revision,omitempty"`
+	EvidenceMode   string `json:"evidence_mode,omitempty"`
+	FailureReason  string `json:"failure_reason,omitempty"`
+	Termination    string `json:"termination,omitempty"`
 }
 
 const (
@@ -37,6 +56,57 @@ const (
 )
 
 var evolutionAuditMu sync.Mutex
+
+// EvolutionAuditHealthSnapshot describes whether the local audit sink is
+// currently writable. It is intentionally process-local: the JSONL file is
+// the durable source of events, while this snapshot lets UI and write gates
+// react immediately when the sink becomes unavailable.
+type EvolutionAuditHealthSnapshot struct {
+	Available     bool   `json:"audit_available"`
+	LastError     string `json:"last_audit_error,omitempty"`
+	FailureCount  uint64 `json:"audit_failure_count"`
+	LastSuccessAt string `json:"last_audit_success_at,omitempty"`
+}
+
+var evolutionAuditHealth struct {
+	mu            sync.RWMutex
+	available     bool
+	lastError     string
+	failureCount  uint64
+	lastSuccessAt string
+}
+
+// EvolutionAuditHealth returns a snapshot for GUI diagnostics and policy
+// decisions. A sink is considered healthy until the first failed write.
+func EvolutionAuditHealth() EvolutionAuditHealthSnapshot {
+	evolutionAuditHealth.mu.RLock()
+	defer evolutionAuditHealth.mu.RUnlock()
+	return EvolutionAuditHealthSnapshot{
+		Available:     evolutionAuditHealth.available || evolutionAuditHealth.lastError == "",
+		LastError:     evolutionAuditHealth.lastError,
+		FailureCount:  evolutionAuditHealth.failureCount,
+		LastSuccessAt: evolutionAuditHealth.lastSuccessAt,
+	}
+}
+
+func markEvolutionAuditFailure(err error) {
+	if err == nil {
+		return
+	}
+	evolutionAuditHealth.mu.Lock()
+	evolutionAuditHealth.available = false
+	evolutionAuditHealth.lastError = err.Error()
+	evolutionAuditHealth.failureCount++
+	evolutionAuditHealth.mu.Unlock()
+}
+
+func markEvolutionAuditSuccess() {
+	evolutionAuditHealth.mu.Lock()
+	evolutionAuditHealth.available = true
+	evolutionAuditHealth.lastError = ""
+	evolutionAuditHealth.lastSuccessAt = time.Now().UTC().Format(time.RFC3339)
+	evolutionAuditHealth.mu.Unlock()
+}
 
 // DefaultEvolutionAuditPath returns ~/.maclaw/skill_evolution/audit.jsonl
 // (or the process MaclawBaseDir equivalent).
@@ -80,17 +150,43 @@ func KindFromEventName(event string) string {
 // RecordEvolutionEvent appends a durable audit row for a pipeline event.
 // Failures are silent (best-effort) so audit never blocks the evolution path.
 func RecordEvolutionEvent(event string, data map[string]string, source string) {
+	_ = RecordEvolutionEventStrict(event, data, source)
+}
+
+// RecordEvolutionEventStrict is the checked variant used by critical write
+// paths. Unlike the legacy best-effort helper it returns sink failures, while
+// still updating the process health snapshot.
+func RecordEvolutionEventStrict(event string, data map[string]string, source string) error {
 	ev := EvolutionAuditEvent{
 		Kind:   KindFromEventName(event),
 		Source: strings.TrimSpace(source),
 	}
 	if data != nil {
+		ev.RequestID = strings.TrimSpace(data["request_id"])
+		ev.Attempt = strings.TrimSpace(data["attempt"])
 		ev.Skill = strings.TrimSpace(data["skill"])
 		ev.Explanation = strings.TrimSpace(data["explanation"])
 		ev.Status = strings.TrimSpace(data["status"])
 		ev.Via = strings.TrimSpace(data["via"])
+		ev.Action = strings.TrimSpace(data["action"])
+		ev.Decision = strings.TrimSpace(data["decision"])
+		ev.Reason = strings.TrimSpace(data["reason"])
+		ev.Risk = strings.TrimSpace(data["risk"])
+		ev.GateStatus = strings.TrimSpace(data["gate_status"])
+		ev.EvidenceDigest = strings.TrimSpace(data["evidence_digest"])
+		ev.BackupVersion = strings.TrimSpace(data["backup_version"])
+		ev.Operator = strings.TrimSpace(data["operator"])
+		ev.Trigger = strings.TrimSpace(data["trigger"])
+		ev.SchemaVersion = strings.TrimSpace(data["schema_version"])
+		ev.ConfigRevision = strings.TrimSpace(data["config_revision"])
+		ev.EvidenceMode = strings.TrimSpace(data["evidence_mode"])
+		ev.FailureReason = strings.TrimSpace(data["failure_reason"])
+		ev.Termination = strings.TrimSpace(data["termination"])
 	}
-	_ = AppendEvolutionAudit(DefaultEvolutionAuditPath(), ev)
+	if err := AppendEvolutionAudit(DefaultEvolutionAuditPath(), ev); err != nil {
+		return err
+	}
+	return nil
 }
 
 // AppendEvolutionAudit writes one event to path (JSONL). Creates parent dirs.
@@ -116,20 +212,25 @@ func AppendEvolutionAudit(path string, ev EvolutionAuditEvent) error {
 	defer evolutionAuditMu.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		markEvolutionAuditFailure(err)
 		return err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		markEvolutionAuditFailure(err)
 		return err
 	}
 	_, werr := f.Write(line)
 	cerr := f.Close()
 	if werr != nil {
+		markEvolutionAuditFailure(werr)
 		return werr
 	}
 	if cerr != nil {
+		markEvolutionAuditFailure(cerr)
 		return cerr
 	}
+	markEvolutionAuditSuccess()
 
 	// Best-effort size trim so the log cannot grow without bound.
 	if st, err := os.Stat(path); err == nil && st.Size() > evolutionAuditMaxFileBytes {

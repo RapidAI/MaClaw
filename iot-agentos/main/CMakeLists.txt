@@ -35,6 +35,10 @@ if((NOT DEFINED MACLAW_PROFILE OR MACLAW_PROFILE STREQUAL "")
    AND DEFINED ENV{MACLAW_PROFILE})
     set(MACLAW_PROFILE "$ENV{MACLAW_PROFILE}")
 endif()
+
+# Entropy service is shared by all profiles and remains behind a value-only
+# credential/randomness boundary.
+set(MACLAW_EXTRA_SRCS "services/entropy_service.c" "services/credential_service.c" "trusted_time_policy.c" "wifi_enterprise_trust_policy.c")
 # ESP-IDF evaluates component requirements in a separate ``cmake -P`` pass
 # before Kconfig is available.  Keep a profile hint captured from the wrapper
 # environment for that pass: the normal pass may later refine MACLAW_PROFILE
@@ -155,7 +159,7 @@ endif()
 set(MACLAW_COMPONENT_REQUIRES
     esp_app_format esp_event esp_wifi wpa_supplicant esp_http_client esp-tls
     esp_timer esp_netif nvs_flash cjson esp_lcd esp_driver_gpio esp_driver_spi
-    esp_driver_i2c esp_driver_i2s esp_driver_ledc esp_adc esp_http_server spiffs
+    esp_driver_i2c esp_driver_i2s esp_driver_ledc esp_driver_uart esp_adc esp_http_server spiffs
     mbedtls spi_flash esp_psram espressif__qrcode
     espressif__esp-sr espressif__esp_audio_codec)
 if(MACLAW_DEPENDENCY_PROFILE STREQUAL "echoear-2st")
@@ -216,12 +220,69 @@ if(CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C)
     list(APPEND MACLAW_EMBED_FILES "waveshare_totem.rgb565")
 endif()
 
-idf_component_register(
-    SRCS "main.c" "app_ui.c" "app_intent_service.c" "operation_context.c" "alarm_manager.c" "fall_detection_classifier.c" "fall_detection_service.c" "sleep_schedule_service.c" "wake_deadline_service.c" "wake_service.c" "resource_pressure_service.c" "battery_policy_service.c" "persistence_service.c" "task_registry.c" "weather_cache_service.c" "meeting_recovery_service.c" "meeting_recording_storage.c" "configuration_policy.c" "configuration_source_priority.c" "configuration_effective_policy.c" "configuration_runtime_override_store.c" "configuration_apply_state.c" "configuration_reconcile_retry_policy.c" "configuration_reconcile_service.c" "configuration_revision.c" "configuration_reconcile.c" "transport_selection_transaction.c" "shared_bus_lifecycle.c" "shared_bus_recovery_transaction.c" "configuration_transaction.c" "configuration_service.c" "device_tool_registry.c" "update_service.c" "provisioning_failure_injection.c" "mp3_player.c" "firmware_identity.c" "device_api.c" "device_profile_validation.c" "fault_domain.c" "audio_service.c" "display_service.c" "connectivity_service.c" "input_service.c" "lifecycle_service.c" "motion_service.c" "storage_service.c" "pet_asset_cache_storage.c" "services/command_service.c" "services/reply_service.c" "services/meeting_service.c" "services/alarm_service.c" "services/interaction_service.c" "services/foreground_coordinator.c" "services/gateway_dispatcher.c" "services/gateway_transport.c" "services/gateway_lifecycle_service.c" "services/gateway_capability_projection.c" "services/cellular_recovery_policy.c" "services/cellular_recovery_service.c" "services/clock_sync_service.c" "services/ambient_service.c" "services/pet_asset_service.c" "services/pet_cache_service.c" "services/startup_pet_retry_service.c" "services/startup_pet_worker_service.c" "services/audio_arbitration_service.c" "services/provisioning_service.c" "services/provisioning_network_owner.c" "services/connectivity_network_core_owner.c" "services/connectivity_wifi_driver_owner.c" "services/connectivity_network_root_owner.c" "services/connectivity_restart_coordinator.c" "services/safe_mode_coordinator.c" "presentation/input_binding.c" "presentation/safe_mode_input_policy.c" "presentation/scene_presenter.c" "platform_bootstrap.c" ${PLATFORM_BOOTSTRAP_PROFILE_SOURCE} "platform_audio.c" ${PLATFORM_AUDIO_PROFILE_SOURCE} "platform_connectivity.c" ${PLATFORM_CONNECTIVITY_PROFILE_SOURCE} "platform_display.c" ${PLATFORM_DISPLAY_PROFILE_SOURCE} "platform_input.c" ${PLATFORM_INPUT_PROFILE_SOURCE} "platform_lifecycle.c" ${PLATFORM_LIFECYCLE_PROFILE_SOURCE} "platform_power.c" ${PLATFORM_POWER_PROFILE_SOURCE} "platform_wake.c" ${PLATFORM_WAKE_PROFILE_SOURCE} "platform_resource.c" "platform_sensor.c" ${PLATFORM_SENSOR_PROFILE_SOURCE} "platform_storage.c" ${PLATFORM_STORAGE_PROFILE_SOURCE} "platform_nvs.c" "power_service.c" "power_lease_service.c" ${ROUND_INPUT_SERVICE_SOURCE} ${ROUND_INPUT_PROFILE_SERVICE_SOURCE} ${ROUND_AUDIO_SERVICE_SOURCE} ${ROUND_WAKE_SERVICE_SOURCE} ${ROUND_DISPLAY_SERVICE_SOURCE} ${ROUND_VISUAL_PROFILE_SERVICE_SOURCE} ${ROUND_PERIPHERAL_SERVICE_SOURCE} ${COMPACT_DISPLAY_SERVICE_SOURCE} ${COMPACT_AUDIO_SERVICE_SOURCE} ${COMPACT_WAKE_SERVICE_SOURCE} ${COMPACT_INPUT_SERVICE_SOURCE} ${COMPACT_CONNECTIVITY_SERVICE_SOURCE} ${COMPACT_PERIPHERAL_SERVICE_SOURCE} ${COMPACT_VISUAL_PROFILE_SERVICE_SOURCE} "${BOARD_PROFILE_SOURCE}" "${RENDERER_SOURCE}" ${MACLAW_BOARD_SRCS}
+    idf_component_register(
+    SRCS "main.c" "app_ui.c" "app_intent_service.c" "operation_context.c" "alarm_manager.c" "fall_detection_classifier.c" "fall_detection_service.c" "sleep_schedule_service.c" "wake_deadline_service.c" "wake_service.c" "resource_pressure_service.c" "battery_policy_service.c" "persistence_service.c" "task_registry.c" "weather_cache_service.c" "meeting_recovery_service.c" "meeting_recording_storage.c" "configuration_policy.c" "configuration_source_priority.c" "configuration_effective_policy.c" "configuration_runtime_override_store.c" "configuration_apply_state.c" "configuration_reconcile_retry_policy.c" "configuration_reconcile_service.c" "configuration_revision.c" "configuration_reconcile.c" "transport_selection_transaction.c" "shared_bus_lifecycle.c" "shared_bus_recovery_transaction.c" "configuration_transaction.c" "configuration_service.c" "configuration_factory_reset_policy.c" "device_tool_registry.c" "update_service.c" "provisioning_failure_injection.c" "mp3_player.c" "firmware_identity.c" "device_api.c" "device_profile_validation.c" "fault_domain.c" "audio_service.c" "display_service.c" "connectivity_service.c" "input_service.c" "lifecycle_service.c" "motion_service.c" "storage_service.c" "pet_asset_cache_storage.c" "services/factory_reset_service.c" "services/command_service.c" "services/reply_service.c" "services/meeting_service.c" "services/alarm_service.c" "services/interaction_service.c" "services/foreground_coordinator.c" "services/gateway_dispatcher.c" "services/gateway_transport.c" "services/gateway_lifecycle_service.c" "services/gateway_capability_projection.c" "services/cellular_recovery_policy.c" "services/cellular_recovery_service.c" "services/clock_sync_service.c" "services/ambient_service.c" "services/pet_asset_service.c" "services/pet_asset_download_service.c" "services/pet_asset_apply_service.c" "services/pet_asset_runtime_service.c" "services/pet_asset_startup_service.c" "services/pet_asset_restore_service.c" "services/pet_asset_retry_service.c" "services/pet_asset_profile_service.c" "services/startup_pet_asset_admission_service.c" "services/startup_pet_asset_sleep_service.c" "services/startup_pet_asset_state_service.c" "services/pet_cache_service.c" "services/startup_pet_retry_service.c" "services/startup_pet_worker_service.c" "services/audio_arbitration_service.c" "services/provisioning_service.c" "services/provisioning_qr_service.c" "services/provisioning_network_owner.c" "services/connectivity_network_core_owner.c" "services/connectivity_wifi_driver_owner.c" "services/connectivity_network_root_owner.c" "services/connectivity_network_lifecycle_service.c" "services/connectivity_restart_coordinator.c" "services/safe_mode_coordinator.c" "presentation/input_binding.c" "presentation/safe_mode_input_policy.c" "presentation/scene_presenter.c" "platform_bootstrap.c" ${PLATFORM_BOOTSTRAP_PROFILE_SOURCE} "platform_audio.c" ${PLATFORM_AUDIO_PROFILE_SOURCE} "platform_connectivity.c" ${PLATFORM_CONNECTIVITY_PROFILE_SOURCE} "platform_display.c" ${PLATFORM_DISPLAY_PROFILE_SOURCE} "platform_input.c" ${PLATFORM_INPUT_PROFILE_SOURCE} "platform_lifecycle.c" ${PLATFORM_LIFECYCLE_PROFILE_SOURCE} "platform_power.c" ${PLATFORM_POWER_PROFILE_SOURCE} "platform_wake.c" ${PLATFORM_WAKE_PROFILE_SOURCE} "platform_resource.c" "platform_sensor.c" ${PLATFORM_SENSOR_PROFILE_SOURCE} "platform_storage.c" ${PLATFORM_STORAGE_PROFILE_SOURCE} "platform_nvs.c" "power_service.c" "power_lease_service.c" ${ROUND_INPUT_SERVICE_SOURCE} ${ROUND_INPUT_PROFILE_SERVICE_SOURCE} ${ROUND_AUDIO_SERVICE_SOURCE} ${ROUND_WAKE_SERVICE_SOURCE} ${ROUND_DISPLAY_SERVICE_SOURCE} ${ROUND_VISUAL_PROFILE_SERVICE_SOURCE} ${ROUND_PERIPHERAL_SERVICE_SOURCE} ${COMPACT_DISPLAY_SERVICE_SOURCE} ${COMPACT_AUDIO_SERVICE_SOURCE} ${COMPACT_WAKE_SERVICE_SOURCE} ${COMPACT_INPUT_SERVICE_SOURCE} ${COMPACT_CONNECTIVITY_SERVICE_SOURCE} ${COMPACT_PERIPHERAL_SERVICE_SOURCE} ${COMPACT_VISUAL_PROFILE_SERVICE_SOURCE} "${BOARD_PROFILE_SOURCE}" "${RENDERER_SOURCE}" ${MACLAW_BOARD_SRCS}
     INCLUDE_DIRS "."
     EMBED_FILES ${MACLAW_EMBED_FILES}
     REQUIRES ${MACLAW_COMPONENT_REQUIRES}
 )
+target_sources(${COMPONENT_LIB} PRIVATE ${MACLAW_EXTRA_SRCS} "alarm_wake_plan.c")
+
+# Some managed components used by Fangtang have numeric registry namespaces
+# (``78__...``).  ESP-IDF records these targets in the dependency graph, but
+# older Component Manager/CMake combinations can omit their public include
+# directories from the compiling component's transitive usage requirements.
+# Resolve the selected component directories explicitly after registration;
+# this keeps the workaround profile-private and leaves generated managed
+# checkouts untouched.
+if(MACLAW_PROFILE STREQUAL "fangtang-4g" OR CONFIG_MACLAW_BOARD_FANGTANG_4G)
+    foreach(_fangtang_dep IN ITEMS 78__esp_lcd_nv3023 78__esp-ml307 78__uart-uhci)
+        idf_component_get_property(_fangtang_dep_dir ${_fangtang_dep} COMPONENT_DIR)
+        if(_fangtang_dep_dir)
+            target_include_directories(${COMPONENT_LIB} PRIVATE
+                "${_fangtang_dep_dir}/include" "${_fangtang_dep_dir}")
+        endif()
+    endforeach()
+endif()
+
+# Some ESP-IDF/Component-Manager combinations do not propagate the public
+# include directory of the Waveshare carrier's managed dependencies through
+# the `main` target during the early component-requirements pass. Resolve the
+# selected profile-private directories explicitly, mirroring the Fangtang
+# workaround above. These paths remain PRIVATE and are never visible through
+# Device/Platform headers or shared services.
+if(MACLAW_PROFILE STREQUAL "waveshare-amoled-1.75c" OR
+   CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C)
+    foreach(_waveshare_dep IN ITEMS espressif__esp_lcd_co5300
+                                    espressif__esp_lcd_touch
+                                    waveshare__esp_lcd_touch_cst9217)
+        idf_component_get_property(_waveshare_dep_dir ${_waveshare_dep} COMPONENT_DIR)
+        if(_waveshare_dep_dir)
+            target_include_directories(${COMPONENT_LIB} PRIVATE
+                "${_waveshare_dep_dir}/include" "${_waveshare_dep_dir}")
+        endif()
+    endforeach()
+endif()
+
+# The restore worker owns its bounded FreeRTOS lifecycle; its transaction is
+# injected by the composition root and remains value-only.
+target_sources(${COMPONENT_LIB} PRIVATE
+    "services/gateway_ack_outbox_policy.c"
+    "services/gateway_tool_result_outbox_policy.c"
+    "configuration_migration_journal.c"
+    "configuration_factory_reset_policy.c"
+    "services/factory_reset_service.c"
+    "services/pet_asset_integrity_service.c"
+    "services/pet_asset_restore_worker_service.c"
+    "services/media_transfer_service.c"
+    "services/server_audio_presentation_service.c"
+    "services/startup_welcome_service.c"
+    "services/startup_runtime_state_service.c"
+    "services/wifi_runtime_configuration_service.c"
+    "services/wifi_startup_service.c"
+    "services/configuration_persistence_worker_service.c"
+    "services/deferred_setup_worker_service.c"
+    "services/wake_restart_worker_service.c")
 
 # Both display boards must render arbitrary Chinese replies without depending
 # on glyphs downloaded at runtime. Embed the packed 24-dot CJK fallback in the

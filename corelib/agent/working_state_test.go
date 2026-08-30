@@ -520,6 +520,20 @@ func TestNewWorkingStateClipsGoal(t *testing.T) {
 	}
 }
 
+func TestNextContinueDoesNotLockOntoDiscoveryTools(t *testing.T) {
+	state := &WorkingState{Goal: "book-pdf skill"}
+	got := nextContinue(state, "discover_tool", "")
+	if strings.Contains(got, "discover_tool") {
+		t.Fatalf("discovery tool became the continue path: %q", got)
+	}
+	if got != "继续完成 book-pdf skill" {
+		t.Fatalf("got %q", got)
+	}
+	if got := nextContinue(state, "bash", ""); !strings.Contains(got, "bash") {
+		t.Fatalf("host tool should remain the continue path: %q", got)
+	}
+}
+
 func TestAppendNextHintDoesNotCopySection(t *testing.T) {
 	state := &WorkingState{Goal: "G", Next: "读 main.go", LastAction: ActionTrust}
 	got := AppendNextHint(FinishNudgeMessage(), state)

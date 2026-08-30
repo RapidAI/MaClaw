@@ -73,7 +73,7 @@ func validatePublicHTTPURL(raw string) (*url.URL, error) {
 		// redirect where the target URL contains userinfo.
 		return nil, fmt.Errorf("public fetch URLs must not contain credentials")
 	}
-	if isBlockedPublicHost(u.Hostname()) {
+	if IsBlockedPublicHost(u.Hostname()) {
 		return nil, fmt.Errorf("URL host %q is not public", u.Hostname())
 	}
 	u.Fragment = ""
@@ -144,15 +144,101 @@ func resolvePublicIPs(ctx context.Context, host string) ([]net.IP, error) {
 	return public, nil
 }
 
-func isBlockedPublicHost(host string) bool {
-	host = strings.Trim(strings.ToLower(host), "[]")
-	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+// CanonicalFetchURL returns the URL string FetchCtx would request after the
+// schemeless https:// default. Protocol-relative //host/path becomes
+// https://host/path. Already-schemed input is returned unchanged.
+func CanonicalFetchURL(raw string) string {
+	return fetchURLWithScheme(raw)
+}
+
+// fetchURLWithScheme applies the schemeless https:// default without rewriting
+// an already-schemed URL. Protocol-relative //host/path becomes https://host/path.
+func fetchURLWithScheme(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return raw
+	}
+	if u.Scheme != "" {
+		return raw
+	}
+	if strings.TrimSpace(u.Host) != "" {
+		return "https:" + raw
+	}
+	return "https://" + raw
+}
+
+func parseFetchURL(raw string) *url.URL {
+	raw = fetchURLWithScheme(raw)
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return nil
+	}
+	return u
+}
+
+// FetchURLHostname returns the host FetchCtx would contact after schemeless
+// inputs are treated as https://.
+func FetchURLHostname(raw string) string {
+	u := parseFetchURL(raw)
+	if u == nil {
+		return ""
+	}
+	return normalizePublicHost(u.Hostname())
+}
+
+// IsPlaceholderFetchHost reports skip-token and RFC 2606 / RFC 6761 special-use
+// names (example.invalid, localhost, loopback). Desktop download_file may still
+// reach a LAN host; PublicNetworkOnly uses IsBlockedPublicHost for that.
+func IsPlaceholderFetchHost(host string) bool {
+	host = normalizePublicHost(host)
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
 		return true
 	}
-	if strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".lan") || strings.HasSuffix(host, ".home") {
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+		return true
+	}
+	return isReservedSpecialUseHost(host)
+}
+
+// IsBlockedPublicHost reports names that must never be fetched as a public
+// resource: placeholders, .local/.lan, and RFC1918 / link-local addresses.
+func IsBlockedPublicHost(host string) bool {
+	host = normalizePublicHost(host)
+	if host == "" || IsPlaceholderFetchHost(host) {
+		return true
+	}
+	if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") ||
+		strings.HasSuffix(host, ".lan") || strings.HasSuffix(host, ".home") {
 		return true
 	}
 	return isBlockedPublicIP(net.ParseIP(host))
+}
+
+func isReservedSpecialUseHost(host string) bool {
+	host = normalizePublicHost(host)
+	if host == "invalid" || host == "test" || host == "example" {
+		return true
+	}
+	for _, suffix := range []string{".invalid", ".test", ".example", ".localhost"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizePublicHost(host string) string {
+	return strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
 }
 
 func isBlockedPublicIP(ip net.IP) bool {

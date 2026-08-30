@@ -293,6 +293,7 @@ static void alarm_task(void *arg) {
         foreground_coordinator_observe_acquire(FOREGROUND_OWNER_ALARM,
                                                FOREGROUND_PRIORITY_ALARM_DUE,
                                                FOREGROUND_SCENE_ALARM_RING);
+        audio_arbitration_alarm_transaction_begin();
         for (unsigned attempt = 1; attempt <= ALARM_MAX_ATTEMPTS && !stop_requested(); ++attempt) {
             taskENTER_CRITICAL(&s_state_lock);
             s_ringing = true;
@@ -343,6 +344,7 @@ static void alarm_task(void *arg) {
         }
         alarm_service_publish_scheduled();
         set_ring_state(false, false);
+        audio_arbitration_alarm_transaction_end();
         foreground_coordinator_observe_release(FOREGROUND_OWNER_ALARM);
         device_power_lease_release(ring_lease);
         if (!stop_requested()) {
@@ -889,11 +891,35 @@ void alarm_service_request_dismiss(void) {
 
 device_status_t alarm_service_active_alarm_present(uint32_t timeout_ms,
                                                    bool *out_present) {
+    if (!out_present || timeout_ms == 0u) return DEVICE_STATUS_INVALID_ARGUMENT;
     if (!s_lock) return DEVICE_STATUS_UNAVAILABLE;
     if (xSemaphoreTake(s_lock, stop_timeout_ticks(timeout_ms)) != pdTRUE) {
         return DEVICE_STATUS_TIMEOUT;
     }
+    if (!s_initialized || s_stop_requested) {
+        xSemaphoreGive(s_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
     *out_present = s_store.active_valid;
+    xSemaphoreGive(s_lock);
+    return DEVICE_STATUS_OK;
+}
+
+device_status_t alarm_service_earliest_queued_alarm(uint32_t timeout_ms,
+                                                    bool *out_present,
+                                                    int64_t *out_epoch_ms) {
+    if (!s_lock || !out_present || !out_epoch_ms || timeout_ms == 0u) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    if (xSemaphoreTake(s_lock, stop_timeout_ticks(timeout_ms)) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (!s_initialized || s_stop_requested) {
+        xSemaphoreGive(s_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+    *out_present = s_store.count > 0u;
+    *out_epoch_ms = *out_present ? s_store.items[0].trigger_at_ms : 0;
     xSemaphoreGive(s_lock);
     return DEVICE_STATUS_OK;
 }

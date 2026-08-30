@@ -29,9 +29,9 @@ func TestIMSemanticWebSearchUsesClosedHostAdapter(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	selection := surface.plan.Selections[0]
-	if selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.MatchedCapability != semanticTrustedWebSearchCapability {
-		t.Fatalf("selection=%+v", selection)
+	selection, ok := semanticSelectionForCapability(surface.plan, semanticTrustedWebSearchCapability)
+	if !ok || selection.AdapterName != semanticTrustedWebSearchAdapter {
+		t.Fatalf("selection=%+v found=%v", selection, ok)
 	}
 	if selection.FitProof.QualifierBindings["freshness"] != "reference" {
 		t.Fatalf("search freshness=%#v", selection.FitProof.QualifierBindings)
@@ -39,10 +39,14 @@ func TestIMSemanticWebSearchUsesClosedHostAdapter(t *testing.T) {
 	if semanticSelectionRequiresReceipt(selection) {
 		t.Fatalf("read-only web search must not require a receipt: %+v", selection.Effects)
 	}
-	definition := defs[0]["function"].(map[string]interface{})
-	name := extractToolName(defs[0])
-	if name != "web_search" || definition["name"] != "web_search" {
+	name := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	def := semanticDefForGrantName(defs, name)
+	if name != "web_search" || def == nil {
 		t.Fatalf("managed web search name=%q, want web_search", name)
+	}
+	definition := def["function"].(map[string]interface{})
+	if definition["name"] != "web_search" {
+		t.Fatalf("managed web search def name=%q, want web_search", definition["name"])
 	}
 	if selection.AdapterName == "web_search" || selection.AdapterName == "web_fetch" || selection.AdapterName == "download_file" {
 		t.Fatalf("managed web search leaked registry adapter %q", selection.AdapterName)
@@ -82,7 +86,7 @@ func TestIMSemanticWebSearchExecutesQueryWithoutKeywordBranch(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	got := cb.ExecuteTool(name, `{"query":"channels"}`)
 	if !strings.Contains(got, "Public web results") || strings.Contains(got, "web_search") || strings.Contains(got, "max_results") {
@@ -91,8 +95,15 @@ func TestIMSemanticWebSearchExecutesQueryWithoutKeywordBranch(t *testing.T) {
 	if seenUser != "user-1" || seenQuery != "channels" {
 		t.Fatalf("dispatch user=%q query=%q", seenUser, seenQuery)
 	}
-	if replay := cb.ExecuteTool(name, `{"query":"channels"}`); !strings.Contains(replay, "invocation_grant_replayed") {
-		t.Fatalf("replay=%q", replay)
+	// The turn budget is five searches: repeat siblings re-execute under the
+	// same stable name, and the sixth call finds every grant consumed.
+	for i := 2; i <= 5; i++ {
+		if again := cb.ExecuteTool(name, `{"query":"channels"}`); !strings.Contains(again, "Public web results") {
+			t.Fatalf("repeat search %d must re-execute through a sibling grant: %q", i, again)
+		}
+	}
+	if exhausted := cb.ExecuteTool(name, `{"query":"channels"}`); strings.Contains(exhausted, "Public web results") {
+		t.Fatalf("sixth search must be denied, budget exhausted: %q", exhausted)
 	}
 }
 
@@ -107,7 +118,7 @@ func TestIMSemanticWebSearchRejectsFieldPresenceAndDeliveryTokens(t *testing.T) 
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"query":"go","channel":"lansenger"}`); !strings.Contains(got, "parameter_unknown_field") && !strings.Contains(got, "parameter_reserved_field") && !strings.Contains(got, "trusted_web_search_arguments_rejected") {
 		t.Fatalf("extra field=%q", got)
@@ -119,7 +130,7 @@ func TestIMSemanticWebSearchRejectsFieldPresenceAndDeliveryTokens(t *testing.T) 
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("second defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name = extractToolName(defs[0])
+	name = semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
 	cb = &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"query":"go"}`); !strings.Contains(got, "trusted_web_search_delivery_token") {
 		t.Fatalf("delivery token=%q", got)
@@ -154,8 +165,36 @@ func TestIMSemanticLiveDataUsesHostSearchCurrentFreshness(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	selection := surface.plan.Selections[0]
-	if selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.QualifierBindings["freshness"] != "current" {
-		t.Fatalf("live data selection=%+v", selection)
+	selection, ok := semanticSelectionForCapability(surface.plan, "information.search.web")
+	if !ok || selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.QualifierBindings["freshness"] != "current" {
+		t.Fatalf("live data selection=%+v found=%v", selection, ok)
+	}
+}
+
+// A denial after a consumed grant must acknowledge the earlier success. The
+// generic policy denial reads as "the capability is unavailable this turn"
+// and made the production model discard 8 valid search results (2026-08-26).
+func TestIMSemanticWebSearchConsumedGrantDenialAcknowledgesSuccess(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSearch)}
+	h.semanticTrustedWebSearch = func(userID, query string) (string, error) { return "results", nil }
+	registerBuiltinTools(h.registry, h)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "find Go concurrency documentation", "lansenger", "root-search-deny", "turn-search-deny", webSearchClassification(),
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
+	for i := 0; i < 5; i++ {
+		if got := cb.ExecuteTool("web_search", `{"query":"go"}`); !strings.Contains(got, "results") {
+			t.Fatalf("search %d=%q", i+1, got)
+		}
+	}
+	allowed, reason := cb.IsToolCallAllowed("web_search", `{"query":"go"}`)
+	if allowed {
+		t.Fatal("exhausted search budget must deny the sixth call")
+	}
+	if !strings.Contains(reason, "already ran successfully") || !strings.Contains(reason, "still stands") {
+		t.Fatalf("consumed-grant denial must acknowledge the earlier success: %q", reason)
 	}
 }

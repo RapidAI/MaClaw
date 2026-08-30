@@ -2046,6 +2046,8 @@ describe('useAIAssistant property tests', () => {
         expect(sanitizeAIAssistantStreamText('\x01private\u0000 reasoning')).toBe('\x01private reasoning');
         expect(sanitizeAIAssistantStreamText('I am \uEB90Kate')).toBe('I am Kate');
         expect(sanitizeAIAssistantStreamText('\x01think\uEB90ing')).toBe('\x01thinking');
+        expect(sanitizeAIAssistantStreamText('reason\u25A1ing\uFFFC\uFFFD')).toBe('reasoning');
+        expect(sanitizeAIAssistantStreamText('\x01The\u0001 user')).toBe('\x01The user');
     });
 
     it('parses Wails JSON-string heartbeats before applying timeout activity', async () => {
@@ -3928,6 +3930,33 @@ describe('useAIAssistant property tests', () => {
         // Cache is only included when raw.cache_read_tokens is set (not field labels).
         expect(assistantMsg?.fields).toEqual([
             { label: 'Turn', value: 'in=120 out=30' },
+        ]);
+    });
+
+    it('hides internal cost fields from the assistant response chips', async () => {
+        mockSendResponse = {
+            text: 'done',
+            error: '',
+            fields: [
+                { label: 'session_est_cost_rmb', value: '0.0377', internal: true },
+                { label: 'session_tokens', value: 'in=33150 out=2200 total=35350', internal: true },
+            ],
+            actions: null,
+            input_tokens: 33150,
+            output_tokens: 2200,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('usage with cost');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        // Money must never render as a chip; token session totals stay visible.
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'session_tokens', value: 'in=33150 out=2200 total=35350' },
+            { label: 'Turn', value: 'in=33k out=2.2k' },
         ]);
     });
 

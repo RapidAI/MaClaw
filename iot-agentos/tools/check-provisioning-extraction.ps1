@@ -30,10 +30,37 @@ foreach ($ident in @(
 Assert-FileLacks $mainC '#include\s+"esp_http_server.h"' "httpd include must leave main.c"
 
 $svc = Join-Path $projectRoot 'main\services\provisioning_service.c'
+$entropySvc = Join-Path $projectRoot 'main\services\entropy_service.c'
+$entropyHdr = Join-Path $projectRoot 'main\services\entropy_service.h'
+$qrSvc = Join-Path $projectRoot 'main\services\provisioning_qr_service.c'
 $hdr = Join-Path $projectRoot 'main\services\provisioning_service.h'
 $defaults = Join-Path $projectRoot 'sdkconfig.defaults'
 if (-not (Test-Path -LiteralPath $svc)) { $failures += 'missing services/provisioning_service.c' }
 if (-not (Test-Path -LiteralPath $hdr)) { $failures += 'missing services/provisioning_service.h' }
+if (-not (Test-Path -LiteralPath $entropySvc)) { $failures += 'missing services/entropy_service.c' }
+if (-not (Test-Path -LiteralPath $entropyHdr)) { $failures += 'missing services/entropy_service.h' }
+if (-not (Test-Path -LiteralPath $qrSvc)) { $failures += 'missing services/provisioning_qr_service.c' }
+
+Assert-FileLacks $mainC '\besp_fill_random\s*\(' 'composition root must use Entropy Service'
+if (Test-Path -LiteralPath $svc) { Assert-FileLacks $svc '\besp_fill_random\s*\(' 'Provisioning Service must use Entropy Service' }
+if (Test-Path -LiteralPath $entropyHdr) {
+    Assert-FileLacks $entropyHdr '#include\s*[<"](?:esp_|freertos/)' 'Entropy public header leaked SDK/RTOS detail'
+}
+if (Test-Path -LiteralPath $entropySvc) {
+    $entropyText = Get-Content -LiteralPath $entropySvc -Raw
+    if ($entropyText -notmatch 'esp_fill_random\s*\(') { $failures += 'Entropy Service lacks hardware RNG source owner' }
+}
+if (Test-Path -LiteralPath $qrSvc) {
+    $qrText = Get-Content -LiteralPath $qrSvc -Raw
+    foreach ($required in @(
+            '#include\s+"mbedtls/platform_util.h"',
+            'char payload\[128\]',
+            'mbedtls_platform_zeroize\(payload, sizeof\(payload\)\)')) {
+        if ($qrText -notmatch $required) {
+            $failures += "QR service lacks credential payload cleanup (${required})"
+        }
+    }
+}
 
 foreach ($path in @($svc, $hdr)) {
     if (Test-Path -LiteralPath $path) {
@@ -161,7 +188,7 @@ if ($mainText -match 'WIFI_AUTH_OPEN' -or $mainText -match 'WIFI:T:nopass') {
 }
 foreach ($required in @(
         'provisioning_host_wifi_configure_protected_ap\s*\(',
-        'WIFI:T:WPA;S:%s;P:%s;;',
+        'provisioning_qr_service_show\s*\(',
         '\.wifi_configure_protected_ap\s*=')) {
     if ($mainText -notmatch $required) {
         $failures += "composition root lacks protected-AP implementation (${required})"
@@ -330,7 +357,8 @@ foreach ($required in @(
             'configuration_service_commit_gateway_pairing_token\s*\(',
             'candidate retry budget expired',
             'configuration_service_rollback_staged_provisioning\s*\(',
-            's_boot_provisioning_staged',
+            'startup_runtime_state_service_capture_staged_provisioning\s*\(',
+            'startup_runtime_state_service_staged_provisioning_pending\s*\(',
             'unconfirmed provisioning candidate has no uplink')) {
     if ($mainText -notmatch $required) {
         $failures += "composition root lacks staged provisioning connectivity rollback (${required})"
@@ -338,6 +366,16 @@ foreach ($required in @(
 }
 if (Test-Path -LiteralPath $gatewayTransport) {
     $gatewayText = Get-Content -LiteralPath $gatewayTransport -Raw
+    foreach ($required in @(
+            'mbedtls_platform_zeroize\(destination, capacity\)',
+            'replace_secret\(s_gateway_token',
+            'replace_secret\(s_pair_code',
+            'mbedtls_platform_zeroize\(authorization, sizeof\(authorization\)\)',
+            'mbedtls_platform_zeroize\(response->data, response->capacity\)')) {
+        if ($gatewayText -notmatch $required) {
+            $failures += "gateway transport lacks credential zeroization fence (${required})"
+        }
+    }
     Assert-FileLacks $gatewayTransport '#include\s+"configuration_service\.h"' "gateway transport must not depend directly on Configuration Service"
     Assert-FileLacks $gatewayTransport 'configuration_service_' "gateway transport must receive Configuration evidence through its host contract"
     foreach ($required in @(
@@ -355,7 +393,7 @@ Assert-FileLacks $mainC 'configuration_service_set_gateway_token\s*\(' "Gateway 
 Assert-FileLacks $mainC 'configuration_service_has_staged_provisioning\s*\(' "candidate evidence must be captured during the authoritative boot snapshot load"
 Assert-FileLacks $mainC '\bs_pair_code\b' "composition root must not own a pairing-code runtime mirror"
 if ($mainText -notmatch 'transport_host_staged_provisioning_pending\s*\(' -or
-    $mainText -notmatch 'return\s+s_boot_provisioning_staged\s*;' -or
+    $mainText -notmatch 'return\s+startup_runtime_state_service_staged_provisioning_pending\s*\(\s*\)\s*;' -or
     $mainText -notmatch '\.staged_provisioning_pending\s*=\s*transport_host_staged_provisioning_pending') {
     $failures += 'composition root must wire Configuration candidate evidence into Gateway Transport host contract'
 }

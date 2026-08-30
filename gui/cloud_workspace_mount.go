@@ -24,6 +24,7 @@ const (
 	cloudWorkspaceHeartbeatInterval      = 30 * time.Second
 	cloudWorkspaceShutdownReleaseTimeout = 8 * time.Second
 	cloudWorkspaceWatchDebounce          = time.Second
+	cloudWorkspaceFilesChangedEvent      = "cloud-workspace-files-changed"
 )
 
 // PreparedCloudWorkspace is the PrepareCloudWorkspace result.
@@ -141,6 +142,71 @@ func (a *App) cloudWorkspaceTenantID() string {
 
 func (a *App) cloudWorkspaceCachePath(tenantID, workspaceID string) string {
 	return filepath.Join(a.GetDataDir(), "cloud-workspaces", tenantID, workspaceID)
+}
+
+func isCloudWorkspaceCachePath(dataDir, path string) bool {
+	root := normalizeProjectSessionPath(filepath.Join(dataDir, "cloud-workspaces"))
+	return cloudWorkspacePathInsideRoot(root, path)
+}
+
+func cloudWorkspacePathInsideRoot(root, path string) bool {
+	root = normalizeProjectSessionPath(root)
+	path = normalizeProjectSessionPath(path)
+	if root == "" || path == "" {
+		return false
+	}
+	if path == root {
+		return true
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+func (a *App) isAppCloudWorkspaceCachePath(path string) bool {
+	if a == nil {
+		return false
+	}
+	return isCloudWorkspaceCachePath(a.GetDataDir(), path)
+}
+
+// cloudWorkspaceExecutionDir is this task's cache mount (or a directory inside it).
+func (a *App) cloudWorkspaceExecutionDir(projectPath string) string {
+	if a == nil {
+		return ""
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	canonical := ""
+	if id := a.lookupCloudWorkspaceIDForProject(projectPath); id != "" {
+		canonical = normalizeProjectSessionPath(a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), id))
+	}
+	if wd := a.recentTaskWorkingDir(projectPath); canonical != "" && cloudWorkspacePathInsideRoot(canonical, wd) {
+		return wd
+	}
+	if canonical != "" {
+		return canonical
+	}
+	if a.isAppCloudWorkspaceCachePath(projectPath) {
+		return projectPath
+	}
+	return ""
+}
+
+func (a *App) seedCloudWorkspaceTabWorkingDir(session *TabSessionData, projectPath string) bool {
+	if session == nil {
+		return false
+	}
+	cloudDir := a.cloudWorkspaceExecutionDir(projectPath)
+	if cloudDir == "" {
+		return false
+	}
+	current := normalizeProjectSessionPath(session.WorkingDir)
+	if cloudWorkspacePathInsideRoot(cloudDir, current) {
+		return false
+	}
+	session.WorkingDir = cloudDir
+	return true
 }
 
 func parseCloudWorkspaceInUse(data []byte) *cloudWorkspaceInUseError {
@@ -427,8 +493,17 @@ func (a *App) scheduleCloudWorkspacePush(mount *cloudWorkspaceHeldMount) {
 		if readOnly || strings.TrimSpace(root) == "" {
 			return
 		}
+		a.emitEvent(cloudWorkspaceFilesChangedEvent, map[string]string{
+			"workspace_id": id,
+			"path":         root,
+		})
 		ctx, cancel := a.cloudWorkspaceSyncContext()
 		defer cancel()
+		// Reconcile remote operations first so this machine never builds a new
+		// operation from a stale file revision.
+		if err := a.cloudWorkspaceProtocol(id).PullEvents(ctx, root); err != nil {
+			log.Printf("[cloud_workspace] watch pull failed workspace=%s err=%v", id, err)
+		}
 		if _, err := a.pushCloudWorkspace(ctx, id, root); err != nil {
 			log.Printf("[cloud_workspace] watch push failed workspace=%s err=%v", id, err)
 		}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { GetHubUserInvitationsPage, RotateHubUserInvitation } from '../../wailsjs/go/main/App';
+import { useDialog } from './CustomDialog';
 import { usePortalThemeAttributes } from '../hooks/usePortalThemeAttributes';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 
@@ -20,7 +21,9 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const requestSerialRef = useRef(0);
   const dialogSessionRef = useRef(0);
+  const rotateConfirmOpenRef = useRef(false);
   const onCloseRef = useRef(onClose);
+  const { showConfirm } = useDialog();
   const [data, setData] = useState<InvitationData | null>(null);
   const [initialLoading, setInitialLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(false);
@@ -84,6 +87,7 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
     setRotating(false);
     setRotateError(null);
     setCopyUnavailable(false);
+    rotateConfirmOpenRef.current = false;
     void load(1, true);
     const timer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
     const onKeyDown = (event: KeyboardEvent) => {
@@ -141,8 +145,20 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
   };
 
   const rotate = async () => {
-    if (rotating || !window.confirm(t('Replace this link? The old invitation link will stop working.', '替换邀请链接？旧链接将立即失效。'))) return;
+    if (rotating || rotateConfirmOpenRef.current) return;
+    rotateConfirmOpenRef.current = true;
     const dialogSession = dialogSessionRef.current;
+    const confirmed = await showConfirm(
+      t('The old invitation link will stop working immediately.', '旧链接将立即失效。'),
+      t('Refresh invitation link?', '刷新邀请链接？'),
+      {
+        confirmText: t('OK', '确定'),
+        cancelText: t('Cancel', '取消'),
+        confirmVariant: 'danger',
+      },
+    );
+    rotateConfirmOpenRef.current = false;
+    if (!confirmed || rotating || dialogSession !== dialogSessionRef.current) return;
     setRotating(true);
     setRotateError(null);
     try {
@@ -203,9 +219,9 @@ export function HubInvitationDialog({ open, onClose, lang }: { open: boolean; on
               <div className="hub-invitation-dialog__link-actions">
                 <input id="hub-invitation-link" readOnly value={data.invite_url} aria-label={t('Your invitation link', '你的邀请链接')} />
                 <button className="hub-invitation-dialog__button hub-invitation-dialog__button--primary" type="button" onClick={() => void copy()}>{copied ? t('Copied', '已复制') : t('Copy', '复制')}</button>
-                <button className="hub-invitation-dialog__button" type="button" onClick={() => void rotate()} disabled={rotating}>{rotating ? t('Rotating…', '正在替换…') : t('Rotate', '替换')}</button>
+                <button className="hub-invitation-dialog__button" type="button" onClick={() => void rotate()} disabled={rotating}>{rotating ? t('Refreshing…', '正在刷新…') : t('Refresh', '刷新')}</button>
               </div>
-              {rotateError && <p className="hub-invitation-dialog__rotate-error" role="alert">{t('Could not replace the invitation link. Your current link is still active.', '无法替换邀请链接，当前链接仍然有效。')}</p>}
+              {rotateError && <p className="hub-invitation-dialog__rotate-error" role="alert">{t('Could not refresh the invitation link. Your current link is still active.', '无法刷新邀请链接，当前链接仍然有效。')}</p>}
               {copyUnavailable && <p className="hub-invitation-dialog__copy-hint" role="status">{t('Copy is unavailable here. Select the link and copy it manually.', '当前无法自动复制，请选中链接后手动复制。')}</p>}
               <p>{t(`Each reward expires ${data.duration_days || 30} days after the invited user registers.`, `每笔奖励从受邀用户注册成功起 ${data.duration_days || 30} 天内有效。`)}</p>
             </div>

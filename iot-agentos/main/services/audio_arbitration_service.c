@@ -79,6 +79,28 @@ void audio_arbitration_observe_request(audio_arbitration_kind_t request,
 }
 
 device_status_t audio_arbitration_play_alarm_burst(void) {
+    audio_service_snapshot_t snapshot = {0};
+    (void)audio_service_get_snapshot(&snapshot);
+    audio_arbitration_kind_t current = AUDIO_ARBITRATION_KIND_IDLE;
+    switch (snapshot.foreground_session) {
+        case AUDIO_SERVICE_SESSION_COMMAND_CAPTURE:
+            current = AUDIO_ARBITRATION_KIND_COMMAND_CAPTURE; break;
+        case AUDIO_SERVICE_SESSION_MEETING_STREAM:
+            current = AUDIO_ARBITRATION_KIND_MEETING_STREAM; break;
+        case AUDIO_SERVICE_SESSION_WAV_PLAYBACK:
+            current = AUDIO_ARBITRATION_KIND_WAV_PLAYBACK; break;
+        case AUDIO_SERVICE_SESSION_PCM_PLAYBACK:
+            current = AUDIO_ARBITRATION_KIND_PCM_PLAYBACK; break;
+        case AUDIO_SERVICE_SESSION_ALARM_BURST:
+            current = AUDIO_ARBITRATION_KIND_ALARM_BURST; break;
+        default: break;
+    }
+    if (audio_arbitration_alarm_preemption_allowed(
+            AUDIO_ARBITRATION_KIND_ALARM_BURST, current,
+            audio_arbitration_is_authoritative())) {
+        const device_status_t preempt = audio_service_preempt_for_alarm(300u);
+        if (preempt != DEVICE_STATUS_OK) return preempt;
+    }
     return audio_service_play_alarm_burst();
 }
 
@@ -139,6 +161,35 @@ void audio_arbitration_request_capture_stop(void) {
 
 void audio_arbitration_reset_capture_stop(void) {
     audio_service_reset_capture_stop();
+}
+
+void audio_arbitration_alarm_transaction_begin(void) {
+    audio_service_alarm_transaction_begin();
+}
+
+void audio_arbitration_alarm_transaction_end(void) {
+    audio_service_alarm_transaction_end();
+}
+
+device_status_t audio_arbitration_preempt_for_alarm(uint32_t timeout_ms) {
+    if (!audio_arbitration_is_authoritative()) return DEVICE_STATUS_BUSY;
+    return audio_service_preempt_for_alarm(timeout_ms);
+}
+
+bool audio_arbitration_consume_alarm_interruption(audio_arbitration_kind_t expected_kind) {
+    audio_service_session_t expected_session = AUDIO_SERVICE_SESSION_IDLE;
+    switch (expected_kind) {
+        case AUDIO_ARBITRATION_KIND_COMMAND_CAPTURE:
+            expected_session = AUDIO_SERVICE_SESSION_COMMAND_CAPTURE; break;
+        case AUDIO_ARBITRATION_KIND_MEETING_STREAM:
+            expected_session = AUDIO_SERVICE_SESSION_MEETING_STREAM; break;
+        case AUDIO_ARBITRATION_KIND_WAV_PLAYBACK:
+            expected_session = AUDIO_SERVICE_SESSION_WAV_PLAYBACK; break;
+        case AUDIO_ARBITRATION_KIND_PCM_PLAYBACK:
+            expected_session = AUDIO_SERVICE_SESSION_PCM_PLAYBACK; break;
+        default: return false;
+    }
+    return audio_service_consume_alarm_interruption((int)expected_session);
 }
 
 device_status_t audio_arbitration_wake_word_start(device_wake_word_cb_t on_wake,

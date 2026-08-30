@@ -83,12 +83,33 @@ $startupPetWorkerParticipant = @{
 # registration/unregistration. The remaining root workers must nevertheless
 # retain closed admission until that bridge's resumer executes the paired ABORT.
 $mainCompositionParticipants = @(
-    @{ Prepare = 'prepare_startup_pet_asset_system_sleep'; Abort = 'abort_startup_pet_asset_system_sleep_prepare'; Marker = 's_startup_pet_system_sleep_preparing' },
-    @{ Prepare = 'prepare_wake_restart_system_sleep'; Abort = 'abort_wake_restart_system_sleep_prepare'; Marker = 's_wake_restart_system_sleep_preparing' },
-    @{ Prepare = 'prepare_deferred_setup_system_sleep'; Abort = 'abort_deferred_setup_system_sleep_prepare'; Marker = 's_deferred_setup_system_sleep_preparing' },
-    @{ Prepare = 'prepare_output_volume_persist_system_sleep'; Abort = 'abort_output_volume_persist_system_sleep_prepare'; Marker = 's_output_volume_persist_system_sleep_preparing' }
+    @{ Prepare = 'prepare_wake_restart_system_sleep'; Abort = 'abort_wake_restart_system_sleep_prepare'; Marker = 'wake_restart_worker_service_prepare_system_sleep' },
+    @{ Prepare = 'prepare_deferred_setup_system_sleep'; Abort = 'abort_deferred_setup_system_sleep_prepare'; Marker = 'deferred_setup_worker_service_prepare_system_sleep' }
 )
 $failures = @()
+
+# Startup-pet sleep composes four independently owned participants below the
+# root. Its PREPARE may fail but must never invoke reverse rollback itself;
+# Connectivity/Power own the later paired ABORT transaction.
+$startupPetSleepPath = Join-Path $projectRoot 'main\services\startup_pet_asset_sleep_service.c'
+if (-not (Test-Path -LiteralPath $startupPetSleepPath)) {
+    $failures += "missing $startupPetSleepPath"
+} else {
+    $startupPetSleepText = Get-Content -LiteralPath $startupPetSleepPath -Raw
+    $startupPetSleepPreparePattern =
+        'device_status_t\s+startup_pet_asset_sleep_service_prepare\s*\([^\)]*\)\s*\{([\s\S]*?)\n\}\s*\n\s*void\s+startup_pet_asset_sleep_service_abort'
+    $startupPetSleepPrepareMatch = [regex]::Match(
+        $startupPetSleepText, $startupPetSleepPreparePattern)
+    if (-not $startupPetSleepPrepareMatch.Success) {
+        $failures += 'main/services/startup_pet_asset_sleep_service.c: cannot inspect startup pet sleep PREPARE through paired ABORT'
+    } else {
+        $startupPetSleepPrepareBody = $startupPetSleepPrepareMatch.Groups[1].Value
+        if ($startupPetSleepPrepareBody -match '\bstartup_pet_asset_sleep_service_abort\s*\(' -or
+            $startupPetSleepPrepareBody -match '\babort_(?:state|worker|retry|cache)\s*\(') {
+            $failures += 'main/services/startup_pet_asset_sleep_service.c: PREPARE failure must retain pet participants closed until root rollback'
+        }
+    }
+}
 
 foreach ($participant in $participants) {
     $path = Join-Path $projectRoot $participant.File
@@ -134,6 +155,57 @@ if (-not (Test-Path -LiteralPath $cellularRecoveryPath)) {
             $cellularRecoveryPrepareBody -match 's_system_sleep_preparing\s*=\s*false') {
             $failures += 'main/services/cellular_recovery_service.c: Cellular Recovery PREPARE failure must remain closed until Connectivity rollback'
         }
+        if ($cellularRecoveryPrepareBody -notmatch 's_initial_establishing') {
+            $failures += 'main/services/cellular_recovery_service.c: Cellular Recovery PREPARE must reject an in-flight initial modem establish before declaring the recovery domain parked'
+        }
+        if ($cellularRecoveryText -notmatch 'static\s+bool\s+recovery_admitted\s*\(' -or
+            $cellularRecoveryText -notmatch 'device_connectivity_establish_cellular_transport[\s\S]*?if\s*\(\s*!recovery_admitted\s*\(\s*\)\s*\)\s*continue\s*;[\s\S]*?publish_network_ready\s*\(\s*true\s*\)') {
+            $failures += 'main/services/cellular_recovery_service.c: recovery success must not publish ready after System Sleep or retirement closes admission'
+        }
+        if ($cellularRecoveryText -notmatch 'static\s+bool\s+begin_gateway_rearm\s*\([\s\S]*?s_gateway_rearm_inflight' -or
+            $cellularRecoveryPrepareBody -notmatch 's_gateway_rearm_inflight') {
+            $failures += 'main/services/cellular_recovery_service.c: System Sleep PREPARE must reject a Gateway rearm handoff already admitted by recovery'
+        }
+    }
+}
+
+# A terminal Connectivity restart shares the bounded retire mechanics but must
+# never reuse the reversible System Sleep ABORT path. Inspect the three
+# root-owned participants independently so a later refactor cannot leave an
+# old wake/portal/retry generation eligible to revive against a retired root.
+$terminalRestartParticipants = @(
+    @{ File = 'main\services\wake_restart_worker_service.c'; Prepare = 'wake_restart_worker_service_prepare_network_restart'; Commit = 'wake_restart_worker_service_commit_prepared_network_restart' },
+    @{ File = 'main\services\deferred_setup_worker_service.c'; Prepare = 'deferred_setup_worker_service_prepare_network_restart'; Commit = 'deferred_setup_worker_service_commit_prepared_network_restart' },
+    @{ File = 'main\services\cellular_recovery_service.c'; Prepare = 'cellular_recovery_service_prepare_network_restart'; Commit = 'cellular_recovery_service_commit_prepared_network_restart' }
+)
+foreach ($participant in $terminalRestartParticipants) {
+    $path = Join-Path $projectRoot $participant.File
+    if (-not (Test-Path -LiteralPath $path)) {
+        $failures += "missing $path"
+        continue
+    }
+    $text = Get-Content -LiteralPath $path -Raw
+    $preparePattern = 'device_status_t\s+' + [regex]::Escape($participant.Prepare) +
+                      '\s*\([^)]*\)\s*\{([\s\S]*?)\n\}\s*\n\s*device_status_t\s+' +
+                      [regex]::Escape($participant.Commit)
+    $prepareMatch = [regex]::Match($text, $preparePattern)
+    if (-not $prepareMatch.Success) {
+        $failures += "$($participant.File): cannot inspect terminal network-restart PREPARE through COMMIT"
+        continue
+    }
+    $prepareBody = $prepareMatch.Groups[1].Value
+    if ($prepareBody -match 'abort_system_sleep_prepare\s*\(' -or
+        $prepareBody -notmatch 's_network_restart_preparing\s*=\s*true' -or
+        $prepareBody -notmatch 's_admission_open\s*=\s*false') {
+        $failures += "$($participant.File): terminal network-restart PREPARE must close admission without System Sleep ABORT"
+    }
+    $commitPattern = 'device_status_t\s+' + [regex]::Escape($participant.Commit) +
+                     '\s*\([^)]*\)\s*\{([\s\S]*?)\n\}'
+    $commitMatch = [regex]::Match($text, $commitPattern)
+    if (-not $commitMatch.Success -or
+        $commitMatch.Groups[1].Value -match 'abort_system_sleep_prepare\s*\(' -or
+        $commitMatch.Groups[1].Value -match 's_admission_open\s*=\s*true') {
+        $failures += "$($participant.File): terminal network-restart COMMIT must retain old generation admission closed"
     }
 }
 
@@ -319,33 +391,35 @@ if (-not (Test-Path -LiteralPath $displayServicePath)) {
     }
 }
 
-# The remaining root-owned internal-stack persistence worker must apply the
-# same retirement rule as the extracted cache worker: a completed task whose
-# immutable Storage Registry identity could not be removed is terminally
+# The extracted internal-stack configuration persistence worker must apply the
+# same retirement rule as cache/persistence workers: a completed task whose
+# immutable Storage Registry identity could not be removed remains terminally
 # closed, and System Sleep ABORT cannot reopen request admission.
-$rootPersistencePath = Join-Path $projectRoot 'main\main.c'
-if (-not (Test-Path -LiteralPath $rootPersistencePath)) {
-    $failures += "missing $rootPersistencePath"
+$configurationPersistenceWorkerPath = Join-Path $projectRoot 'main\services\configuration_persistence_worker_service.c'
+if (-not (Test-Path -LiteralPath $configurationPersistenceWorkerPath)) {
+    $failures += "missing $configurationPersistenceWorkerPath"
 } else {
-    $rootPersistenceText = Get-Content -LiteralPath $rootPersistencePath -Raw
+    $configurationPersistenceWorkerText = Get-Content -LiteralPath $configurationPersistenceWorkerPath -Raw
     foreach ($persistenceFence in @(
-            's_output_volume_persist_exit_status',
-            's_output_volume_persist_retiring',
-            's_output_volume_persist_registry_retirement_failed',
+            's_start_gate',
+            's_exit_status',
+            's_retiring',
+            's_registry_retirement_failed',
             'const esp_err_t registry_err = task_registry_unregister_with_timeout\s*\(',
-            's_output_volume_persist_exit_status\s*=\s*registry_err',
-            's_output_volume_persist_stop_requested\s*=\s*true',
-            '!s_output_volume_persist_registry_retirement_failed')) {
-        if ($rootPersistenceText -notmatch $persistenceFence) {
-            $failures += "main/main.c: root Storage worker retirement fence is incomplete ($persistenceFence)"
+            's_exit_status\s*=\s*registry_err',
+            's_stop_requested\s*=\s*true',
+            '!s_registry_retirement_failed')) {
+        if ($configurationPersistenceWorkerText -notmatch $persistenceFence) {
+            $failures += "main/services/configuration_persistence_worker_service.c: Storage worker retirement fence is incomplete ($persistenceFence)"
         }
     }
-    $rootPersistenceAbortPattern =
-        'static\s+void\s+abort_output_volume_persist_system_sleep_prepare\s*\([^\)]*\)\s*\{([\s\S]*?)\n\}'
-    $rootPersistenceAbortMatch = [regex]::Match($rootPersistenceText, $rootPersistenceAbortPattern)
-    if (-not $rootPersistenceAbortMatch.Success -or
-        $rootPersistenceAbortMatch.Groups[1].Value -notmatch 's_output_volume_persist_registry_retirement_failed') {
-        $failures += 'main/main.c: root Storage System Sleep ABORT must retain failed Registry retirement closed'
+    $configurationPersistenceAbortPattern =
+        'void\s+configuration_persistence_worker_service_abort_system_sleep_prepare\s*\([^\)]*\)\s*\{([\s\S]*?)\n\}'
+    $configurationPersistenceAbortMatch = [regex]::Match(
+        $configurationPersistenceWorkerText, $configurationPersistenceAbortPattern)
+    if (-not $configurationPersistenceAbortMatch.Success -or
+        $configurationPersistenceAbortMatch.Groups[1].Value -notmatch 's_registry_retirement_failed') {
+        $failures += 'main/services/configuration_persistence_worker_service.c: Storage System Sleep ABORT must retain failed Registry retirement closed'
     }
 }
 
@@ -353,26 +427,19 @@ if (-not (Test-Path -LiteralPath $rootPersistencePath)) {
 # but each publishes an immutable Registry identity. Their task handles and
 # completion semaphores must not turn a failed retirement into a false success
 # or let ABORT recreate a replacement against the old identity.
-if (-not (Test-Path -LiteralPath $rootPersistencePath)) {
-    $failures += "missing $rootPersistencePath"
+if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'main\main.c'))) {
+    $failures += "missing $(Join-Path $projectRoot 'main\main.c')"
 } else {
-    $rootCoordinatorText = Get-Content -LiteralPath $rootPersistencePath -Raw
+    $rootCoordinatorText = Get-Content -LiteralPath (Join-Path $projectRoot 'main\main.c') -Raw
     foreach ($coordinatorFence in @(
-            's_wake_restart_exit_status',
-            's_wake_restart_registry_retirement_failed',
-            's_deferred_setup_exit_status',
-            's_deferred_setup_registry_retirement_failed',
-            's_wake_restart_exit_status\s*=\s*registry_err',
-            's_deferred_setup_exit_status\s*=\s*registry_err',
-            '!s_wake_restart_registry_retirement_failed',
-            '!s_deferred_setup_registry_retirement_failed')) {
+            'wake_restart_worker_service_stop\s*\(')) {
         if ($rootCoordinatorText -notmatch $coordinatorFence) {
             $failures += "main/main.c: root coordinator retirement fence is incomplete ($coordinatorFence)"
         }
     }
     foreach ($abortRequirement in @(
-            @{ Function = 'abort_wake_restart_system_sleep_prepare'; Marker = 's_wake_restart_registry_retirement_failed' },
-            @{ Function = 'abort_deferred_setup_system_sleep_prepare'; Marker = 's_deferred_setup_registry_retirement_failed' })) {
+            @{ Function = 'abort_wake_restart_system_sleep_prepare'; Marker = 'wake_restart_worker_service_abort_system_sleep_prepare' },
+            @{ Function = 'abort_deferred_setup_system_sleep_prepare'; Marker = 'deferred_setup_worker_service_abort_system_sleep_prepare' })) {
         $abortPattern = 'static\s+void\s+' + [regex]::Escape($abortRequirement.Function) +
                         '\s*\([^\)]*\)\s*\{([\s\S]*?)\n\}'
         $abortMatch = [regex]::Match($rootCoordinatorText, $abortPattern)

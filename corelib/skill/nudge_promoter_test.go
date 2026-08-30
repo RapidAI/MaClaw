@@ -2,6 +2,8 @@ package skill
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -130,8 +132,8 @@ steps:
 	if registrar.registered.Source != "auto_discovered" {
 		t.Errorf("source = %q, want %q", registrar.registered.Source, "auto_discovered")
 	}
-	if registrar.registered.Status != "active" {
-		t.Errorf("status = %q, want %q", registrar.registered.Status, "active")
+	if registrar.registered.Status != "staged" {
+		t.Errorf("status = %q, want %q", registrar.registered.Status, "staged")
 	}
 }
 
@@ -157,6 +159,25 @@ func TestTryPromote_SecurityBlocked(t *testing.T) {
 	}
 	if !result.Blocked {
 		t.Error("should be marked as blocked")
+	}
+}
+
+func TestTryPromote_InvalidGeneratedDefinitionIsNotRegistered(t *testing.T) {
+	llm := &mockLLMRepairer{response: "name: invalid\ndescription: invalid\nsteps:\n  - action: totally_unknown_action\n"}
+	registrar := &mockSkillRegistrar{}
+	dir := t.TempDir()
+	promoter := NewNudgePromoter(llm, nil, registrar, dir)
+	result, err := promoter.TryPromote(tool.ToolSkillNudgeCandidate{
+		Evidence: 6, SuccessRate: .95, Confidence: .8, SuggestedName: "invalid-skill",
+	})
+	if err == nil || result != nil {
+		t.Fatalf("expected semantic validation error and no result, result=%#v err=%v", result, err)
+	}
+	if registrar.registered != nil {
+		t.Fatal("invalid generated definition must not be registered")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "invalid-skill")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid generated skill directory should be removed, stat err=%v", statErr)
 	}
 }
 

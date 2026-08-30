@@ -167,13 +167,12 @@ func (t *agentLoopTelemetry) Attach(resp *IMAgentResponse) {
 			resp.PromptSavedTokens = t.PromptFullTokens - t.PromptLightTokens
 		}
 	}
-	// Always-on compact Turn chip for chat UI (route + tokens + est. cost + prompt).
+	// Always-on compact Turn chip for chat UI (route + tokens + prompt; no cost).
 	resp.Fields = mergeIMResponseFields(resp.Fields, turnMetaResponseField(
 		t.Route,
 		resp.InputTokens,
 		resp.OutputTokens,
 		resp.CacheReadTokens,
-		resp.EstCostRMB,
 		resp.PromptProfile,
 		resp.PromptSavedTokens,
 		resp.PromptUpgraded,

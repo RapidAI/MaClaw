@@ -98,6 +98,21 @@ static inline esp_err_t compact_connectivity_adapter_quiesce_cellular_transport(
     return ml307_transport_quiesce(timeout_ms);
 }
 
+static inline esp_err_t compact_connectivity_adapter_deinit_cellular_transport(
+    uint32_t timeout_ms) {
+    return ml307_transport_deinit(timeout_ms);
+}
+
+static inline esp_err_t compact_connectivity_adapter_reinitialize_cellular_transport(
+    uint32_t timeout_ms) {
+    if (timeout_ms == 0 || timeout_ms > INT_MAX) return ESP_ERR_INVALID_ARG;
+    return ml307_transport_reinitialize(CONFIG_MACLAW_FANGTANG_MODEM_UART_TX_GPIO,
+                                        CONFIG_MACLAW_FANGTANG_MODEM_UART_RX_GPIO,
+                                        CONFIG_MACLAW_FANGTANG_MODEM_UART_BAUD,
+                                        (int)timeout_ms,
+                                        CONFIG_MACLAW_FANGTANG_MODEM_APN);
+}
+
 static inline esp_err_t compact_connectivity_adapter_prepare_system_sleep(
     uint32_t timeout_ms) {
     return ml307_transport_prepare_system_sleep(timeout_ms);
@@ -216,13 +231,11 @@ static inline bool compact_connectivity_adapter_apply_startup_transport_toggle(
     return true;
 }
 
-/* ML307R-DL-MBRH0S01 cannot negotiate the standard Hub's ECDSA-only TLS
- * certificate.  Rewrite only that origin; custom endpoints remain unchanged. */
+/* Preserve the configured HTTPS origin. TLS capability failures must remain
+ * fail-closed; silently rewriting to cleartext would violate the trust policy. */
 static inline void compact_connectivity_adapter_adapt_gateway_url(
     char *gateway_url, size_t capacity, bool cellular_active) {
-    if (!gateway_url || capacity == 0 || !cellular_active) return;
-    if (!strcmp(gateway_url, "https://hub.mypapers.top") ||
-        !strcmp(gateway_url, "http://hub.mypapers.top")) {
-        strlcpy(gateway_url, "http://hub.mypapers.top:9399", capacity);
-    }
+    (void)gateway_url;
+    (void)capacity;
+    (void)cellular_active;
 }

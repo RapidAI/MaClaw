@@ -8,15 +8,18 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func TestRepairGate_NilExecutor_PassesByDefault(t *testing.T) {
+func TestRepairGate_NilExecutor_Unverified(t *testing.T) {
 	gate := &RepairGate{Config: defaultRepairGateConfig(RepairGateConfig{})}
 	// No executor → passes by default.
 	result, err := gate.Verify(context.Background(), &corelib.NLSkillEntry{Name: "test"}, nil, []map[string]string{{"input": "x"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Passed {
-		t.Errorf("expected pass with nil executor, got: %s", result.Reason)
+	if result.Passed || result.Status != "unverified" {
+		t.Errorf("expected unverified with nil executor, got status=%s passed=%v: %s", result.Status, result.Passed, result.Reason)
+	}
+	if result.EvidenceMode != "none" {
+		t.Fatalf("nil executor evidence mode=%q, want none", result.EvidenceMode)
 	}
 }
 
@@ -58,14 +61,49 @@ func TestDefaultSandboxNormalizesShellToolToBash(t *testing.T) {
 	}
 }
 
-func TestRepairGate_EmptyHistoricalArgs_PassesByDefault(t *testing.T) {
+func TestRepairGate_EmptyHistoricalArgs_Unverified(t *testing.T) {
 	gate := NewRepairGate(RepairGateConfig{}, &mockSandboxExecutor{alwaysFail: true})
 	result, err := gate.Verify(context.Background(), &corelib.NLSkillEntry{Name: "test"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Passed {
-		t.Errorf("expected pass with empty args, got: %s", result.Reason)
+	if result.Passed || result.Status != "unverified" {
+		t.Errorf("expected unverified with empty args, got status=%s passed=%v: %s", result.Status, result.Passed, result.Reason)
+	}
+}
+
+func TestRepairGate_NonBashWithoutAdapter_Unverified(t *testing.T) {
+	gate := NewRepairGate(RepairGateConfig{}, &mockSandboxExecutor{})
+	result, err := gate.Verify(context.Background(), &corelib.NLSkillEntry{Name: "craft"}, []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "summarize"}}}, []map[string]string{{"input": "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "unverified" || result.EvidenceMode != "none" || result.Passed {
+		t.Fatalf("result = %+v, want fail-closed unverified", result)
+	}
+}
+
+func TestRepairGate_NonBashMockCannotPass(t *testing.T) {
+	gate := NewRepairGate(RepairGateConfig{}, &mockSandboxExecutor{})
+	gate.NonBashAdapter = mockNonBashReplayAdapter{mode: "mock", success: true}
+	result, err := gate.Verify(context.Background(), &corelib.NLSkillEntry{Name: "craft"}, []corelib.NLSkillStep{{Action: "craft_tool", Params: map[string]interface{}{"instructions": "summarize"}}}, []map[string]string{{"input": "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "unverified" || result.EvidenceMode != "mock" || result.Passed {
+		t.Fatalf("result = %+v, mock evidence must not pass", result)
+	}
+}
+
+func TestRepairGate_NonBashRealAdapterCanPass(t *testing.T) {
+	gate := NewRepairGate(RepairGateConfig{MinPassRate: 1}, &mockSandboxExecutor{})
+	gate.NonBashAdapter = mockNonBashReplayAdapter{mode: "real", success: true}
+	result, err := gate.Verify(context.Background(), &corelib.NLSkillEntry{Name: "craft"}, []corelib.NLSkillStep{{Action: "call_mcp_tool", Params: map[string]interface{}{"tool": "x"}}}, []map[string]string{{"input": "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsRealPass() {
+		t.Fatalf("result = %+v, real adapter evidence should pass", result)
 	}
 }
 
@@ -84,6 +122,9 @@ func TestRepairGate_AllSucceed_Passes(t *testing.T) {
 	}
 	if !result.Passed {
 		t.Errorf("expected pass with all successes, got: %s", result.Reason)
+	}
+	if result.EvidenceMode != "real" {
+		t.Fatalf("successful replay evidence mode=%q, want real", result.EvidenceMode)
 	}
 	if result.PassRate != 1.0 {
 		t.Errorf("expected pass rate 1.0, got %f", result.PassRate)
@@ -187,6 +228,15 @@ type mockSandboxExecutor struct {
 	failIndices map[int]bool
 	callCount   int
 	delay       time.Duration
+}
+
+type mockNonBashReplayAdapter struct {
+	mode    string
+	success bool
+}
+
+func (m mockNonBashReplayAdapter) ReplayNonBash(context.Context, *corelib.NLSkillEntry, []corelib.NLSkillStep, map[string]string, time.Duration) (NonBashReplayResult, error) {
+	return NonBashReplayResult{Success: m.success, EvidenceMode: m.mode, Output: "adapter replay"}, nil
 }
 
 func (m *mockSandboxExecutor) RunInSandbox(ctx context.Context, skill *corelib.NLSkillEntry, steps []corelib.NLSkillStep, args map[string]string, timeout time.Duration) (bool, string, error) {

@@ -451,12 +451,22 @@ if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-fangtang-battery-calibration.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-firmware-identity-system-sleep.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wake-deadline-system-sleep.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-alarm-wake-plan.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
@@ -501,6 +511,11 @@ if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-connectivity-network-lifecycle-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-safe-mode-coordinator.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
@@ -521,7 +536,59 @@ if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wifi-startup-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wifi-runtime-configuration-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-persistence-worker-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-deferred-setup-worker-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wake-restart-worker-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-media-transfer-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-server-audio-presentation-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-startup-welcome-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-startup-runtime-state-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-main-composition-root-state.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-capability-projection.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-ack-outbox.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-tool-result-outbox.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
@@ -532,6 +599,7 @@ if errorlevel 1 (
   goto :done
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-pet-asset-service.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-pet-asset-integrity-service.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
@@ -547,6 +615,7 @@ if errorlevel 1 (
   goto :done
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-revision.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-configuration-migration-journal.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done
@@ -577,6 +646,31 @@ if errorlevel 1 (
   goto :done
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-provisioning-extraction.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-provisioning-qr-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-entropy-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-trusted-time-policy.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-credential-service.ps1"
+if errorlevel 1 (
+  set "MACLAW_RESULT=%ERRORLEVEL%"
+  goto :done
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-wifi-enterprise-trust-policy.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done

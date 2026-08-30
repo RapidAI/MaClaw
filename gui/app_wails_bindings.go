@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -277,8 +278,7 @@ func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, d
 	return err
 }
 
-func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installRef, downloadLocator, expectedPackageSHA256, expectedPackageSignature string) (skillHubDownloadTrace, error) {
-	var trace skillHubDownloadTrace
+func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installRef, downloadLocator, expectedPackageSHA256, expectedPackageSignature string) (trace skillHubDownloadTrace, retErr error) {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}); err != nil {
 		return trace, err
 	}
@@ -286,6 +286,42 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 	if a.skillExecutor == nil {
 		return trace, fmt.Errorf("skill executor not initialized")
 	}
+	if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+		return trace, fmt.Errorf("skill install blocked: evolution compensation queue unavailable: %w", err)
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	requestID := fmt.Sprintf("evo_install_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	originalSkills := a.skillExecutor.loadSkills()
+	var installCompensation cskill.EvolutionCompensationRecord
+	var installTxnActive bool
+	defer func() {
+		if !installTxnActive || retErr == nil {
+			return
+		}
+		rollbackErr := cskill.RestoreEvolutionCompensation(installCompensation,
+			func(skills []corelib.NLSkillEntry) error {
+				return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(skills) })
+			}, func() error { return a.refreshSkillIndexesAfterMutationChecked(installCompensation.Skill) })
+		if rollbackErr != nil {
+			installCompensation.LastError = fmt.Sprintf("%v (rollback: %v)", retErr, rollbackErr)
+			installCompensation.TransactionState = "audit_pending"
+			installCompensation.CleanupStatus = "pending"
+			_ = cskill.PersistEvolutionCompensation(installCompensation)
+			retErr = fmt.Errorf("%v; install rollback incomplete; compensation queued", retErr)
+			return
+		}
+		installCompensation.TransactionState = "rolled_back"
+		installCompensation.CleanupStatus = "pending"
+		if clearErr := cskill.ClearEvolutionCompensation(requestID, installCompensation.Skill, "install"); clearErr != nil {
+			installCompensation.LastError = clearErr.Error()
+			_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+			retErr = fmt.Errorf("%v; install rolled back but compensation cleanup failed: %w", retErr, clearErr)
+			return
+		}
+		retErr = fmt.Errorf("%v; install rolled back", retErr)
+	}()
 	guardArgs := map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}
 	switch skillSearchSourceFromStatus(source) {
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
@@ -314,6 +350,46 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 		if reason, blocked := cfg.CapabilityMarketPolicy.RejectNonEnterpriseInstall(string(kind), cfg.RemoteHubURL); blocked {
 			return trace, fmt.Errorf("%s", reason)
 		}
+	}
+	commitSimpleInstall := func(entry *corelib.NLSkillEntry, report *cskill.ScanReport) error {
+		if entry == nil {
+			return fmt.Errorf("empty skill install result")
+		}
+		// ClawHub/GitHub mixed installs are config-only registrations. Route them
+		// through the shared committer so config, checked index, final audit and
+		// durable compensation have exactly the same semantics as repair/update.
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+			"skill": entry.Name, "action": "install", "decision": "pending", "via": "operator",
+			"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return fmt.Errorf("install audit preflight failed: %w", err)
+		}
+		auditData := map[string]string{
+			"skill": entry.Name, "action": "install", "decision": "applied", "via": "operator",
+			"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+			"schema_version": "2", "evidence_mode": "none",
+		}
+		committer := &cskill.SkillCommitter{
+			SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+			SkillSaver: func(entries []corelib.NLSkillEntry) error {
+				return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(entries) })
+			},
+			IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(entry.Name, *entry) },
+			FinalAuditor: func(event string, data map[string]string) error {
+				return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+			},
+			ConfigRevision: configRevision,
+			AllowCreate:    true,
+		}
+		result := committer.Commit(ctx, entry.Name, entry, "skill:definition_installed", auditData)
+		if result.State != "committed" || result.CleanupStatus != "clear" {
+			return fmt.Errorf("install not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
+		}
+		if report != nil {
+			a.emitSkillInstallProgress(entry.Name, "done", "Skill installed successfully.", report)
+		}
+		return nil
 	}
 	switch kind {
 	case skillSearchSourceEnterpriseHub:
@@ -359,8 +435,49 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 			cskill.CleanupStaging(stagingDir)
 			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
-		committedDir := ""
+		// New directory-backed mixed installs use the same shared transaction as
+		// direct Hub installs. Existing-version replacement still has additional
+		// maclaw.app dependency semantics below and remains on its legacy adapter
+		// until that path is migrated separately.
+		if existing == nil && strings.TrimSpace(skill.SkillDir) != "" {
+			// A display-name collision that is not the same Hub identity is a
+			// permanent conflict. Reject it before the shared committer can append
+			// a second config entry or publish a directory.
+			if a.skillNameAlreadyRegistered(skill.Name) {
+				cskill.CleanupStaging(stagingDir)
+				return trace, fmt.Errorf("skill %q already exists", skill.Name)
+			}
+			if err := a.commitStagedSkillInstall(ctx, skill, stagingDir, string(kind), report, requestID, configRevision); err != nil {
+				return trace, err
+			}
+			return trace, nil
+		}
+		if existing != nil && skillInstallAlreadyCurrent(existing, skill) {
+			// The package identity was verified above, but no filesystem/config
+			// mutation is needed when the installed version is already current.
+			cskill.CleanupStaging(stagingDir)
+			return trace, nil
+		}
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+			"skill": skill.Name, "action": "install", "decision": "pending", "via": "operator",
+			"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return trace, fmt.Errorf("install audit preflight failed: %w", err)
+		}
+		installCompensation = cskill.NewEvolutionCompensationRecord(requestID, skill.Name, "install", "", nil, false, originalSkills, "skill_install_rollback_incomplete")
+		if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return trace, fmt.Errorf("persist install compensation: %w", err)
+		}
+		installTxnActive = true
 		if strings.TrimSpace(skill.SkillDir) != "" {
+			finalRoot, rootErr := a.primarySkillsDir()
+			if rootErr != nil {
+				cskill.CleanupStaging(stagingDir)
+				return trace, rootErr
+			}
 			if existing != nil {
 				// Preserve the public skill name and replace its directory atomically.
 				// This is the update path for HubCenter packages; Register deliberately
@@ -375,11 +492,6 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 				}
 				targetDir := strings.TrimSpace(existing.SkillDir)
 				if targetDir == "" {
-					finalRoot, rootErr := a.primarySkillsDir()
-					if rootErr != nil {
-						cskill.CleanupStaging(stagingDir)
-						return trace, rootErr
-					}
 					targetDir = filepath.Join(finalRoot, skill.Name)
 				}
 				if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
@@ -387,6 +499,14 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 					return trace, fmt.Errorf("create update directory for skill %q: %w", skill.Name, err)
 				}
 				backupDir := targetDir + ".bak-" + shortRandomHex()
+				// Record the intended backup path before moving the old directory.
+				// This closes the crash window in which the old directory has been
+				// moved aside but the replacement is not yet published.
+				installCompensation.SetDirectoryBackupIntent(targetDir, backupDir)
+				if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+					cskill.CleanupStaging(stagingDir)
+					return trace, fmt.Errorf("persist update directory compensation: %w", err)
+				}
 				hadExistingDir := false
 				if err := os.Rename(targetDir, backupDir); err == nil {
 					hadExistingDir = true
@@ -400,23 +520,26 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 					}
 					return trace, fmt.Errorf("replace existing skill %q: %w", skill.Name, err)
 				}
-				committedDir = targetDir
+				installCompensation.SetDirectoryBackup(targetDir, backupDir, hadExistingDir)
+				installCompensation.SetCreatedDirectories([]string{targetDir})
+				installCompensation.SetDirectoryPublished(true)
+				if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+					return trace, fmt.Errorf("persist published update compensation: %w", err)
+				}
 				skill.SkillDir = targetDir
 				if err := a.updateRegisteredMaclawAppDependencySkill(*skill); err != nil {
-					_ = os.RemoveAll(targetDir)
-					if hadExistingDir {
-						_ = os.Rename(backupDir, targetDir)
-					}
+					// The durable install compensation owns directory/config
+					// restoration. Do not perform an ad-hoc delete/rename here: a
+					// partial Windows move could otherwise destroy the only backup
+					// before the deferred rollback can inspect it.
 					return trace, err
-				}
-				if hadExistingDir {
-					_ = os.RemoveAll(backupDir)
 				}
 			} else {
-				finalRoot, err := a.primarySkillsDir()
-				if err != nil {
+				plannedDir := cskill.PlannedSkillDir(finalRoot, skill.Name)
+				installCompensation.SetCreatedDirectories([]string{plannedDir})
+				if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
 					cskill.CleanupStaging(stagingDir)
-					return trace, err
+					return trace, fmt.Errorf("persist new install directory compensation: %w", err)
 				}
 				finalDir, err := cskill.CommitStagingToDir(stagingDir, skill.Name, finalRoot)
 				if err != nil {
@@ -424,22 +547,20 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 					return trace, err
 				}
 				skill.SkillDir = finalDir
-				committedDir = finalDir
+				installCompensation.SetCreatedDirectories([]string{finalDir})
+				installCompensation.SetDirectoryPublished(true)
+				if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+					return trace, fmt.Errorf("persist published install compensation: %w", err)
+				}
 			}
 		} else {
 			cskill.CleanupStaging(stagingDir)
 		}
 		if existing == nil {
 			if a.skillNameAlreadyRegistered(skill.Name) {
-				if committedDir != "" {
-					_ = os.RemoveAll(committedDir)
-				}
 				return trace, fmt.Errorf("skill %q already exists", skill.Name)
 			}
 			if err := a.skillExecutor.Register(*skill); err != nil {
-				if committedDir != "" {
-					_ = os.RemoveAll(committedDir)
-				}
 				return trace, err
 			}
 		}
@@ -447,6 +568,43 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 			a.cachedSkillScanner.UpsertSkills([]corelib.NLSkillEntry{*skill})
 		}
 		a.skillExecutor.clearSkillListCache()
+		if err := a.refreshSkillIndexesAfterMutationChecked(skill.Name, *skill); err != nil {
+			return trace, fmt.Errorf("install index refresh failed: %w", err)
+		}
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_installed", map[string]string{
+			"skill": skill.Name, "action": "install", "decision": "applied", "via": "operator",
+			"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return trace, fmt.Errorf("install audit commit failed: %w", err)
+		}
+		// Cross the business-commit boundary before any cleanup. A crash or queue
+		// rewrite failure after this point must never restore the pre-install
+		// snapshot on restart.
+		installCompensation.TransactionState = "committed"
+		installCompensation.CleanupStatus = "pending"
+		installCompensation.FailureReason = "post_commit_cleanup_pending"
+		if err := cskill.ReplaceEvolutionCompensation(installCompensation); err != nil {
+			installTxnActive = false
+			return trace, fmt.Errorf("install committed but cleanup state could not be persisted: %w", err)
+		}
+		installTxnActive = false
+		// Cleanup is deliberately post-commit: if it fails, retain the durable
+		// record and keep admission blocked; never reverse an audited install.
+		if installCompensation.DirMoved && strings.TrimSpace(installCompensation.DirBackupPath) != "" {
+			if err := os.RemoveAll(installCompensation.DirBackupPath); err != nil {
+				installCompensation.LastError = err.Error()
+				installCompensation.FailureReason = "post_commit_cleanup_failed"
+				_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+				return trace, fmt.Errorf("install committed but backup cleanup failed: %w", err)
+			}
+		}
+		if err := cskill.ClearEvolutionCompensation(requestID, skill.Name, "install"); err != nil {
+			installCompensation.LastError = err.Error()
+			installCompensation.FailureReason = "post_commit_cleanup_failed"
+			_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+			return trace, fmt.Errorf("install committed but compensation cleanup failed: %w", err)
+		}
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return trace, nil
 
@@ -465,10 +623,9 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
 			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
-		if err := a.skillExecutor.Register(*skill); err != nil {
+		if err := commitSimpleInstall(skill, report); err != nil {
 			return trace, err
 		}
-		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return trace, nil
 	case skillSearchSourceGitHub:
 		var candidate cskill.GitHubSkillCandidate
@@ -498,10 +655,9 @@ func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installR
 		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
 			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
-		if err := a.skillExecutor.Register(*skill); err != nil {
+		if err := commitSimpleInstall(skill, report); err != nil {
 			return trace, err
 		}
-		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return trace, nil
 	default:
 		return trace, fmt.Errorf("unsupported skill source %q", source)
@@ -565,6 +721,16 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
+	if err := ensureSkillEvolutionMutationAdmission(a, skillID); err != nil {
+		return err
+	}
+	if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+		return fmt.Errorf("skill install blocked: evolution compensation queue unavailable: %w", err)
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	requestID := fmt.Sprintf("evo_hub_install_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
 	ctx := context.Background()
 	stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(skillID, "hub-skill"))
 	if err != nil {
@@ -575,7 +741,18 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 		cskill.CleanupStaging(stagingDir)
 		return err
 	}
-	if a.skillNameAlreadyRegistered(entry.Name) {
+	if entry == nil {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("skill hub returned an empty skill")
+	}
+	if existing := a.installedSkillForInstall(entry); existing != nil {
+		if skillInstallAlreadyCurrent(existing, entry) {
+			// The package was downloaded and materialised only to obtain its
+			// authoritative version/digest. Do not scan, publish, refresh the
+			// index, or emit a committed event for an already-current package.
+			cskill.CleanupStaging(stagingDir)
+			return nil
+		}
 		cskill.CleanupStaging(stagingDir)
 		return fmt.Errorf("skill %q already exists", entry.Name)
 	}
@@ -584,24 +761,301 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 		cskill.CleanupStaging(stagingDir)
 		return err
 	}
-	finalDir, err := cskill.CommitStaging(stagingDir, entry.Name)
+	if err := a.commitStagedSkillInstall(ctx, entry, stagingDir, "skillhub", report, requestID, configRevision); err != nil {
+		return err
+	}
+	// Dependency preparation is deliberately a post-commit task. Its failure
+	// must not rewrite the audited Skill transaction; runtime admission handles
+	// any dependency-specific block separately.
+	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
+	return nil
+}
+
+// installedSkillForInstall resolves an existing installation by the stable Hub
+// identity first, then by name for legacy packages. It intentionally returns a
+// copy so callers cannot mutate the executor's authoritative slice.
+func (a *App) installedSkillForInstall(candidate *corelib.NLSkillEntry) *corelib.NLSkillEntry {
+	if a == nil || a.skillExecutor == nil || candidate == nil {
+		return nil
+	}
+	wantID := strings.TrimSpace(candidate.HubSkillID)
+	wantName := strings.TrimSpace(candidate.Name)
+	for _, existing := range a.skillExecutor.loadSkills() {
+		if wantID != "" && strings.EqualFold(strings.TrimSpace(existing.HubSkillID), wantID) {
+			copy := existing
+			return &copy
+		}
+	}
+	for _, existing := range a.skillExecutor.loadSkills() {
+		if wantName != "" && strings.EqualFold(strings.TrimSpace(existing.Name), wantName) {
+			copy := existing
+			return &copy
+		}
+	}
+	return nil
+}
+
+// skillInstallAlreadyCurrent applies the install idempotency rule. A declared
+// Hub/semantic version is authoritative; when a package has no version, compare
+// a stable definition fingerprint that excludes runtime paths and counters.
+func skillInstallAlreadyCurrent(existing, candidate *corelib.NLSkillEntry) bool {
+	if existing == nil || candidate == nil {
+		return false
+	}
+	// A present stable identity is authoritative. A different Hub package must
+	// never be treated as a no-op merely because its visible definition happens
+	// to have the same fields or because a legacy package omitted versions.
+	if candidateID, existingID := strings.TrimSpace(candidate.HubSkillID), strings.TrimSpace(existing.HubSkillID); candidateID != "" || existingID != "" {
+		if candidateID == "" || existingID == "" || !strings.EqualFold(candidateID, existingID) {
+			return false
+		}
+	}
+	if have := strings.TrimSpace(candidate.HubSkillID); have != "" && strings.EqualFold(have, strings.TrimSpace(existing.HubSkillID)) {
+		// When both authorities are supplied, all of them must match. Treating
+		// either field as sufficient could silently skip a semantic-version
+		// update when a Hub's internal counter was not bumped (or vice versa).
+		versionCompared := false
+		if want := strings.TrimSpace(candidate.Version); want != "" {
+			versionCompared = true
+			if !strings.EqualFold(want, strings.TrimSpace(existing.Version)) {
+				return false
+			}
+		}
+		if want := strings.TrimSpace(candidate.HubVersion); want != "" {
+			versionCompared = true
+			if !strings.EqualFold(want, strings.TrimSpace(existing.HubVersion)) {
+				return false
+			}
+		}
+		if versionCompared {
+			return true
+		}
+	}
+	return skillDefinitionFingerprint(existing) == skillDefinitionFingerprint(candidate)
+}
+
+func skillDefinitionFingerprint(entry *corelib.NLSkillEntry) string {
+	if entry == nil {
+		return ""
+	}
+	// Keep only authoritative package-definition fields. SkillDir, timestamps,
+	// status and usage/repair counters are local runtime state and must not make
+	// an otherwise identical install look like an update.
+	payload := struct {
+		SkillID, Name, Description                     string
+		Triggers                                       []string
+		Steps                                          []corelib.NLSkillStep
+		HubSkillID, HubVersion, Version, Type, Content string
+		Platforms                                      []string
+		RequiredArgs, RequiredEnv                      []string
+		Params                                         []corelib.NLSkillParam
+	}{
+		SkillID: entry.SkillID, Name: entry.Name,
+		Description: entry.Description,
+		Triggers:    entry.Triggers, Steps: entry.Steps, HubSkillID: entry.HubSkillID,
+		HubVersion: entry.HubVersion, Version: entry.Version, Type: entry.Type,
+		Content: entry.Content, Platforms: entry.Platforms, RequiredArgs: entry.RequiredArgs,
+		RequiredEnv: entry.RequiredEnv, Params: entry.Params,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+// commitStagedSkillInstall is the shared directory-install transaction used by
+// explicit Hub installs. The package is scanned while staged; only this helper
+// may publish the directory and register the definition. It keeps the durable
+// compensation snapshot inside SkillCommitter so config, directory, checked
+// index and final audit share one result boundary.
+func (a *App) commitStagedSkillInstall(ctx context.Context, entry *corelib.NLSkillEntry, stagingDir, source string, report *cskill.ScanReport, requestID, configRevision string) error {
+	return a.commitStagedSkillInstallWithExisting(ctx, entry, stagingDir, source, report, requestID, configRevision, nil)
+}
+
+// commitStagedSkillInstallWithExisting is the shared directory transaction for
+// both new installs and replacements.  The replacement caller supplies the
+// authoritative existing entry; the committer then preserves its runtime
+// counters while publishing the new package and retaining .prev for rollback.
+func (a *App) commitStagedSkillInstallWithExisting(ctx context.Context, entry *corelib.NLSkillEntry, stagingDir, source string, report *cskill.ScanReport, requestID, configRevision string, existing *corelib.NLSkillEntry) error {
+	if a == nil || a.skillExecutor == nil || entry == nil {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("skill install transaction is not configured")
+	}
+	if strings.TrimSpace(entry.Name) == "" || strings.TrimSpace(stagingDir) == "" {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("skill install transaction has empty name or staging directory")
+	}
+	// Keep idempotency at the shared transaction boundary as well as at
+	// individual callers. This closes races and protects newly added install
+	// entry points from accidentally publishing a package that is already
+	// authoritative locally.
+	if existing == nil {
+		existing = a.installedSkillForInstall(entry)
+	}
+	if existing != nil && skillInstallAlreadyCurrent(existing, entry) {
+		cskill.CleanupStaging(stagingDir)
+		return nil
+	}
+	if existing != nil && strings.TrimSpace(existing.Name) != "" {
+		// Replacement keeps the local display name stable even when the remote
+		// package changed its suggested name.
+		entry.Name = existing.Name
+	}
+	// Keep scan evidence inside the staged package. A cache write failure is
+	// therefore rejected before the directory publication boundary and cannot
+	// leave an apparently installed Skill with missing evidence.
+	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("write skill scan cache: %w", err)
+	}
+	finalRoot, err := a.primarySkillsDir()
 	if err != nil {
 		cskill.CleanupStaging(stagingDir)
 		return err
 	}
+	finalDir := cskill.PlannedSkillDir(finalRoot, entry.Name)
+	if _, statErr := os.Stat(finalDir); statErr == nil {
+		if existing == nil {
+			cskill.CleanupStaging(stagingDir)
+			return fmt.Errorf("skill directory %q already exists", filepath.Base(finalDir))
+		}
+	} else if !os.IsNotExist(statErr) {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("inspect skill destination: %w", statErr)
+	}
+	if _, backupErr := os.Stat(finalDir + ".prev"); backupErr == nil {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("skill destination has a stale previous backup: %s", filepath.Base(finalDir+".prev"))
+	} else if !os.IsNotExist(backupErr) {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("inspect previous skill backup: %w", backupErr)
+	}
+	if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+		"skill": entry.Name, "action": "install", "decision": "pending", "via": "operator", "source": source,
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("install audit preflight failed: %w", err)
+	}
+	// Set the final path before Commit builds its immutable updated list. The
+	// external callback then only publishes the already-authorized staging dir.
 	rewriteSkillStepWorkingDir(entry, finalDir)
 	entry.SkillDir = finalDir
-	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
-		_ = os.RemoveAll(finalDir)
-		return fmt.Errorf("write skill scan cache: %w", err)
+	published := false
+	// Keep an owned pre-image for derived-cache rollback. A normal index
+	// refresh invalidates the scanner and may let an in-flight scan re-upsert
+	// the failed candidate; rollback must instead seed the restored snapshot.
+	rollbackSkills := cloneSkillEntries(a.skillExecutor.loadSkills())
+	committer := &cskill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(entries) })
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			// Rollback is authoritative: preserve the complete pre-image and
+			// reseed the cached scanner instead of projecting disk entries through
+			// the normal overlay saver (which may intentionally omit them).
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(entries) })
+		},
+		EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+			if dst == nil || src == nil {
+				return
+			}
+			// A package replacement is a definition swap, not an evolution
+			// patch. Preserve local runtime statistics while replacing all
+			// authoritative package/provenance fields from the downloaded entry.
+			usage, success, failure, workaround := dst.UsageCount, dst.SuccessCount, dst.FailureCount, dst.WorkaroundCount
+			lastUsed, lastError := dst.LastUsedAt, dst.LastError
+			repairAttempts, lastRepair, history := dst.RepairAttemptCount, dst.LastRepairAt, dst.RepairHistory
+			optimized, lastOptimized := dst.OptimizationCount, dst.LastOptimizedAt
+			*dst = *cskill.CloneNLSkillEntry(src)
+			dst.UsageCount, dst.SuccessCount, dst.FailureCount, dst.WorkaroundCount = usage, success, failure, workaround
+			dst.LastUsedAt, dst.LastError = lastUsed, lastError
+			dst.RepairAttemptCount, dst.LastRepairAt, dst.RepairHistory = repairAttempts, lastRepair, history
+			dst.OptimizationCount, dst.LastOptimizedAt = optimized, lastOptimized
+		},
+		ExternalCommitWithCompensation: func(record *cskill.EvolutionCompensationRecord) error {
+			_, moveErr := cskill.CommitStagingToDir(stagingDir, entry.Name, finalRoot)
+			if moveErr != nil {
+				return moveErr
+			}
+			published = true
+			// Persist the exact publication boundary before config/index/audit are
+			// attempted. A crash in that window can therefore remove only this
+			// transaction's directory during recovery.
+			record.SetCreatedDirectories([]string{finalDir})
+			record.SetDirectoryPublished(true)
+			if existing != nil {
+				record.SetDirectoryBackup(finalDir, finalDir+".prev", true)
+			}
+			return nil
+		},
+		ExternalRollback: func() error {
+			// Remove only this transaction's published directory. For a
+			// replacement, restore the exact .prev directory; never delete an
+			// unrelated sibling or silently discard the previous version.
+			// The destination is deterministic and is owned by this transaction
+			// when no previous entry existed. Remove it even if publication
+			// failed halfway through a cross-device copy.
+			if published || existing == nil {
+				if err := os.RemoveAll(finalDir); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
+			if existing != nil {
+				if _, err := os.Stat(finalDir + ".prev"); err == nil {
+					return cskill.RetryDirectoryRename(finalDir+".prev", finalDir)
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
+			return nil
+		},
+		IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(entry.Name, *entry) },
+		RollbackIndexRefresher: func() error {
+			return a.refreshSkillIndexesAfterRollbackChecked(entry.Name, rollbackSkills)
+		},
+		FinalAuditor: func(event string, data map[string]string) error {
+			return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		CompensationMutator: func(record *cskill.EvolutionCompensationRecord) {
+			record.SetCreatedDirectories([]string{finalDir})
+			record.SetRollbackCleanupPaths([]string{stagingDir})
+			cleanup := []string{stagingDir}
+			if existing != nil {
+				record.SetDirectoryBackupIntent(finalDir, finalDir+".prev")
+				cleanup = append(cleanup, finalDir+".prev")
+			}
+			record.SetPostCommitCleanupPaths(cleanup)
+		},
+		PostCommitCleanup: func() error {
+			if err := cskill.CleanupStagingChecked(stagingDir); err != nil {
+				return err
+			}
+			if existing != nil {
+				if err := os.RemoveAll(finalDir + ".prev"); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("cleanup previous skill backup: %w", err)
+				}
+			}
+			return nil
+		},
+		ConfigRevision: configRevision,
+		AllowCreate:    true,
 	}
-	if err := a.skillExecutor.Register(*entry); err != nil {
-		_ = os.RemoveAll(finalDir)
-		return err
+	auditData := map[string]string{
+		"skill": entry.Name, "action": "install", "decision": "applied", "via": "operator", "source": source,
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}
+	result := committer.Commit(ctx, entry.Name, entry, "skill:definition_installed", auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		_ = cskill.CleanupStagingChecked(stagingDir)
+		return fmt.Errorf("install not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
 	}
 	a.emitSkillInstallProgress(entry.Name, "done", "Skill installed successfully.", report)
-	// Auto-install dependencies for file-backed skills (e.g. npm install, pip install).
-	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 	return nil
 }
 
@@ -2668,6 +3122,21 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	// cancelling the loop so a late runtime callback cannot bind an old handle
 	// after the user has explicitly discarded the session.
 	a.revokeDesktopCodingTaskRelation(targetUserID)
+	// Task history can be restored from the durable tab-session snapshot when
+	// in-memory conversation memory is absent. Clear those snapshots as part of
+	// the same user-visible "new conversation" action, before a no-op return
+	// from an uninitialized IM runtime can leave old history recoverable.
+	if projectPath := projectPathFromSessionOwnerID(targetUserID); projectPath != "" {
+		// SaveProjectTabConversation also holds this lifecycle lock. Taking it
+		// here fences a queued stale frontend flush behind the clear instead of
+		// allowing an old snapshot to be written immediately afterwards.
+		a.tabWorkingDirMu.Lock()
+		_, err := a.ensureProjectTabSessionPersist().ClearProjectSessionConversations(projectPath)
+		a.tabWorkingDirMu.Unlock()
+		if err != nil {
+			log.Printf("[AI assistant] clear persisted project conversations failed project=%q err=%v", projectPath, err)
+		}
+	}
 	a.ensureInteractionInfra()
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {

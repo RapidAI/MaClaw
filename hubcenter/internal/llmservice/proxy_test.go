@@ -4206,13 +4206,13 @@ func TestProxySharedCreditMultiplierOmitsHeaderWhenRatesDiffer(t *testing.T) {
 		}},
 	}
 	full := &llmpool.ProviderConfig{ID: "openai", Timezone: "Asia/Shanghai", CreditMultiplier: 1}
-	if _, ok := proxySharedCreditMultiplier([]*proxyDispatch{
+	if _, ok := proxySharedCreditMultiplier(nil, []*proxyDispatch{
 		{provider: cheap},
 		{provider: full},
 	}, offPeak); ok {
 		t.Fatal("expected mixed vendor rates to omit a shared multiplier header")
 	}
-	got, ok := proxySharedCreditMultiplier([]*proxyDispatch{{provider: cheap}, {provider: cheap}}, offPeak)
+	got, ok := proxySharedCreditMultiplier(nil, []*proxyDispatch{{provider: cheap}, {provider: cheap}}, offPeak)
 	if !ok || got != 0.5 {
 		t.Fatalf("shared off-peak = %v ok=%v, want 0.5 true", got, ok)
 	}
@@ -4762,7 +4762,7 @@ func TestProxyQuotePinsProviderAndDirectionalPrice(t *testing.T) {
 
 	svc := NewService(&mockSystemSettings{})
 	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{
-		{ID: "first", APIURL: first.URL}, {ID: "second", APIURL: second.URL},
+		{ID: "first", APIURL: first.URL, CreditMultiplier: 0.5}, {ID: "second", APIURL: second.URL},
 	}, ServiceGroups: []llmpool.ServiceGroup{{ID: "g", AccessPolicy: AccessPolicyFree, Models: []llmpool.ModelConfig{{Name: "m", ProviderConfigs: []llmpool.ModelProviderConfig{
 		{ProviderID: "first", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
 		{ProviderID: "second", Model: "m", BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 9, OutputCreditsPer10K: 10}},
@@ -4789,7 +4789,7 @@ func TestProxyQuotePinsProviderAndDirectionalPrice(t *testing.T) {
 	if err := json.NewDecoder(quoteResp.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Quote.ProviderID != "first" || payload.Quote.Pricing.InputCreditsPer10K != 1 {
+	if payload.Quote.ProviderID != "first" || payload.Quote.Pricing.InputCreditsPer10K != 1 || payload.Quote.ProviderMultiplier != 0.5 {
 		t.Fatalf("quote = %#v", payload.Quote)
 	}
 
@@ -4809,7 +4809,7 @@ func TestProxyQuotePinsProviderAndDirectionalPrice(t *testing.T) {
 		t.Fatalf("status = %d", proxyResp.StatusCode)
 	}
 	snapshot, ok := llmpool.DecodeTokenPricingSnapshot(proxyResp.Header.Get(llmpool.TokenPricingSnapshotHeader))
-	if !ok || snapshot.ProviderID != "first" || snapshot.Pricing.InputCreditsPer10K != 1 {
+	if !ok || snapshot.ProviderID != "first" || snapshot.Pricing.InputCreditsPer10K != 1 || snapshot.ProviderMultiplier != 0.5 {
 		t.Fatalf("pricing snapshot = %#v", snapshot)
 	}
 }
@@ -4895,11 +4895,14 @@ func TestHandleProxyRequestChargesDirectionalPriceWithGroupMultiplierOnce(t *tes
 
 	svc := NewService(&mockSystemSettings{})
 	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{
-		ID: "p", APIURL: upstream.URL, CreditMultiplier: 2,
+		ID: "p", APIURL: upstream.URL, CreditMultiplier: 1.5,
+		TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 2, OutputCreditsPer10K: 8},
 	}}, ServiceGroups: []llmpool.ServiceGroup{{
 		ID: "g", AccessPolicy: AccessPolicyGrantRequired,
 		Models: []llmpool.ModelConfig{{Name: "m", CreditMultiplier: 2, ProviderConfigs: []llmpool.ModelProviderConfig{{
 			ProviderID: "p", Model: "m", BillingMode: llmpool.BillingModePaid,
+			// This stale route price must not replace the selected provider's
+			// configured HubCenter input/output price.
 			TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4},
 		}}}},
 	}}}); err != nil {
@@ -4917,14 +4920,17 @@ func TestHandleProxyRequestChargesDirectionalPriceWithGroupMultiplierOnce(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := authRepo.auths[0].CreditsUsed; got != 2.8 {
-		t.Fatalf("credits used = %v, want 2.8 (directional price x group multiplier only)", got)
+	if got := authRepo.auths[0].CreditsUsed; got != 8.4 {
+		t.Fatalf("credits used = %v, want 8.4 (provider directional price x provider x group multiplier)", got)
 	}
-	if resp.CreditMultiplier != 2 {
-		t.Fatalf("response multiplier = %v, want service-group multiplier 2", resp.CreditMultiplier)
+	if resp.CreditMultiplier != 3 {
+		t.Fatalf("response multiplier = %v, want combined provider and service-group multiplier 3", resp.CreditMultiplier)
 	}
-	if len(usage.records) != 1 || usage.records[0].Credits != 2.8 {
-		t.Fatalf("usage records = %#v, want directional 2.8-credit debit", usage.records)
+	if resp.PricingSnapshot == nil || resp.PricingSnapshot.Pricing.InputCreditsPer10K != 2 || resp.PricingSnapshot.Pricing.OutputCreditsPer10K != 8 || resp.PricingSnapshot.ProviderMultiplier != 1.5 {
+		t.Fatalf("pricing snapshot = %#v, want provider price 2/8 and multiplier 1.5", resp.PricingSnapshot)
+	}
+	if len(usage.records) != 1 || usage.records[0].Credits != 8.4 {
+		t.Fatalf("usage records = %#v, want directional 8.4-credit debit", usage.records)
 	}
 }
 
@@ -5025,10 +5031,15 @@ func TestHandleProxyStreamRequestFreezesDirectionalPriceAtStart(t *testing.T) {
 	svc := NewService(&mockSystemSettings{})
 	if err := svc.SaveRegistry(context.Background(), &Registry{Providers: []llmpool.ProviderConfig{{
 		ID: "p", APIURL: upstream.URL, CreditMultiplier: 2,
+		TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4, Timezone: "Asia/Shanghai", PriceSchedule: []llmpool.TokenPriceWindow{{
+			ID: "peak", Days: []int{1}, Start: "12:00", End: "13:00", InputCreditsPer10K: &peakInput,
+		}}},
 	}}, ServiceGroups: []llmpool.ServiceGroup{{
 		ID: "g", AccessPolicy: AccessPolicyGrantRequired,
 		Models: []llmpool.ModelConfig{{Name: "m", CreditMultiplier: 2, ProviderConfigs: []llmpool.ModelProviderConfig{{
 			ProviderID: "p", Model: "m", BillingMode: llmpool.BillingModePaid,
+			// A legacy route value may remain, but the provider-owned schedule
+			// is authoritative for this request.
 			TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 4, Timezone: "Asia/Shanghai", PriceSchedule: []llmpool.TokenPriceWindow{{
 				ID: "peak", Days: []int{1}, Start: "12:00", End: "13:00", InputCreditsPer10K: &peakInput,
 			}}},
@@ -5050,11 +5061,11 @@ func TestHandleProxyStreamRequestFreezesDirectionalPriceAtStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := authRepo.auths[0].CreditsUsed; got != 6.8 {
-		t.Fatalf("credits used = %v, want 6.8 from frozen peak input price and group multiplier", got)
+	if got := authRepo.auths[0].CreditsUsed; got != 13.6 {
+		t.Fatalf("credits used = %v, want 13.6 from frozen provider peak price and both multipliers", got)
 	}
-	if len(usage.records) != 1 || usage.records[0].Credits != 6.8 {
-		t.Fatalf("usage records = %#v, want frozen directional 6.8-credit debit", usage.records)
+	if len(usage.records) != 1 || usage.records[0].Credits != 13.6 {
+		t.Fatalf("usage records = %#v, want frozen directional 13.6-credit debit", usage.records)
 	}
 }
 
@@ -5254,4 +5265,63 @@ func TestProxyBillingAttemptStoreScopesLookupAndExpires(t *testing.T) {
 	if _, ok := store.Get("hub-a", "tenant-a", "expired"); ok {
 		t.Fatal("expired billing attempt lookup succeeded")
 	}
+}
+
+// The hub stream path must translate a client-side reasoning request into the
+// upstream provider's native spelling: Agnes only honors reasoning_effort and
+// silently ignores the DeepSeek-style thinking object, which used to make the
+// desktop thinking panel stay empty despite thinking being enabled.
+func TestStreamProviderToWriterRetargetsReasoningControlsForAgnes(t *testing.T) {
+	newSSEClient := func(seen *map[string]any) *http.Client {
+		return &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if err := json.NewDecoder(req.Body).Decode(seen); err != nil {
+				t.Fatalf("decode upstream request: %v", err)
+			}
+			stream := "data: {\"id\":\"c1\",\"model\":\"agnes-2.5-flash\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n" +
+				"data: {\"id\":\"c2\",\"model\":\"agnes-2.5-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\n" +
+				"data: [DONE]\n\n"
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(stream)),
+			}, nil
+		})}
+	}
+	provider := &llmpool.ProviderConfig{ID: "agnes", Name: "Agnes", APIURL: "https://api.agnes-ai.cn/v1"}
+
+	t.Run("thinking object becomes reasoning effort", func(t *testing.T) {
+		var seen map[string]any
+		dst := newLockedResponseRecorder()
+		if _, err := streamProviderToWriter(context.Background(), newSSEClient(&seen), provider, map[string]any{
+			"model":    "auto",
+			"thinking": map[string]any{"type": "enabled"},
+		}, "agnes-2.5-flash", "auto", dst); err != nil {
+			t.Fatalf("streamProviderToWriter() error = %v", err)
+		}
+		if got := seen["reasoning_effort"]; got != "medium" {
+			t.Fatalf("upstream reasoning_effort = %#v, want medium", got)
+		}
+		if _, exists := seen["thinking"]; exists {
+			t.Fatalf("upstream request must not keep the thinking object: %#v", seen)
+		}
+		// reasoning_content must survive the proxy so the client can render it.
+		if out := dst.BodyString(); !strings.Contains(out, `"reasoning_content":"think"`) {
+			t.Fatalf("client stream = %q, want reasoning_content passthrough", out)
+		}
+	})
+
+	t.Run("auto body stays untouched", func(t *testing.T) {
+		var seen map[string]any
+		dst := newLockedResponseRecorder()
+		if _, err := streamProviderToWriter(context.Background(), newSSEClient(&seen), provider, map[string]any{
+			"model": "auto",
+		}, "agnes-2.5-flash", "auto", dst); err != nil {
+			t.Fatalf("streamProviderToWriter() error = %v", err)
+		}
+		for _, key := range []string{"thinking", "reasoning", "reasoning_effort", "enable_thinking"} {
+			if _, exists := seen[key]; exists {
+				t.Fatalf("auto upstream request gained %q: %#v", key, seen)
+			}
+		}
+	})
 }

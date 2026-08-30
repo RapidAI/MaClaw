@@ -359,3 +359,32 @@ func writeMinimalDOCXForOfficeTest(t *testing.T, path, text string) {
 		t.Fatalf("close file: %v", err)
 	}
 }
+
+func TestToolOfficeWritePPTXDispatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	h := &IMMessageHandler{}
+	got := h.toolOffice(map[string]interface{}{
+		"action": "write_pptx",
+		"path":   path,
+		"data": map[string]interface{}{
+			"title":  "生日会",
+			"slides": []interface{}{map[string]interface{}{"title": "封面", "bullets": []interface{}{"第一条"}}},
+		},
+	})
+	if !strings.Contains(got, "已成功写入 PPTX") {
+		t.Fatalf("write_pptx = %q", got)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("deck missing: %v", err)
+	}
+	// The alias reaches the same writer.
+	got = h.toolOffice(map[string]interface{}{
+		"action": "generate_pptx",
+		"path":   filepath.Join(dir, "alias.pptx"),
+		"data":   map[string]interface{}{"slides": []interface{}{map[string]interface{}{"title": "t"}}},
+	})
+	if !strings.Contains(got, "已成功写入 PPTX") {
+		t.Fatalf("generate_pptx = %q", got)
+	}
+}

@@ -21,7 +21,9 @@
 #include "firmware_identity.h"
 #include "services/command_service.h"
 #include "services/gateway_transport.h"
+#include "services/gateway_ack_outbox_policy.h"
 #include "services/reply_service.h"
+#include "persistence_service.h"
 #include "task_registry.h"
 
 /* Keep the log tag identical to the original main.c owner so existing poll /
@@ -33,6 +35,7 @@ static const char *TAG = "maclaw_client";
 #define RESPONSE_IMAGE_MAX_BYTES (RESPONSE_IMAGE_MAX_DIMENSION * RESPONSE_IMAGE_MAX_DIMENSION * 2)
 #define RESPONSE_IMAGE_MIME "application/vnd.maclaw.rgb565be"
 #define OUTGOING_RESPONSE_CAPACITY (256 * 1024)
+#define ACK_OUTBOX_CAPACITY GATEWAY_ACK_OUTBOX_CAPACITY
 
 static portMUX_TYPE s_dispatcher_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -53,6 +56,7 @@ static bool s_gateway_poll_retiring;
 static esp_err_t s_gateway_poll_exit_status = ESP_OK;
 static bool s_gateway_poll_registry_retirement_failed;
 static int64_t s_cursor;
+static bool s_cursor_loaded;
 
 static gateway_dispatcher_host_t s_host;
 static bool s_host_installed;
@@ -230,6 +234,61 @@ static uint32_t remaining_timeout_ms(int64_t deadline_us) {
     return rounded_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)rounded_ms;
 }
 
+/* ACKs are idempotent message-level mutations, but losing one between the
+ * transport call and a reboot would force the dispatcher to replay the page
+ * and repeat its business side effect. Keep one bounded ACK envelope in the
+ * Persistence Service until the Gateway confirms it. The poll lane is single
+ * reader, so no additional queue/mutex is needed here. */
+static device_status_t gateway_dispatcher_persist_ack_outbox(const char *payload) {
+    if (!payload || !payload[0]) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const size_t bytes = strlen(payload) + 1u;
+    if (bytes > ACK_OUTBOX_CAPACITY) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (gateway_ack_outbox_validate_record(payload, bytes, ACK_OUTBOX_CAPACITY) != DEVICE_STATUS_OK) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    /* ACK outbox is intentionally one slot because the poll lane is one
+     * message at a time. Never overwrite an older envelope if a future caller
+     * reaches this path concurrently or after an unknown erase outcome: doing
+     * so would lose the only durable evidence needed to replay that ACK. The
+     * existing record must be flushed (or the caller must remain blocked) first. */
+    char existing[ACK_OUTBOX_CAPACITY] = {0};
+    size_t existing_size = sizeof(existing);
+    const device_status_t existing_status = persistence_service_read_blob(
+        "gateway", "ack_outbox", existing, &existing_size);
+    if (existing_status == DEVICE_STATUS_OK) {
+        return gateway_ack_outbox_validate_record(existing, existing_size,
+                                                  sizeof(existing)) == DEVICE_STATUS_OK
+                   ? DEVICE_STATUS_BUSY
+                   : DEVICE_STATUS_IO_ERROR;
+    }
+    if (existing_status != DEVICE_STATUS_NOT_FOUND) return existing_status;
+    return persistence_service_write_blob("gateway", "ack_outbox", payload, bytes);
+}
+
+static esp_err_t gateway_dispatcher_flush_ack_outbox(void) {
+    char payload[ACK_OUTBOX_CAPACITY] = {0};
+    size_t size = sizeof(payload);
+    const device_status_t read_status = persistence_service_read_blob(
+        "gateway", "ack_outbox", payload, &size);
+    if (read_status == DEVICE_STATUS_NOT_FOUND) return ESP_OK;
+    if (read_status != DEVICE_STATUS_OK ||
+        gateway_ack_outbox_validate_record(payload, size, sizeof(payload)) != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "discarding malformed ACK outbox record: status=%d size=%u",
+                 (int)read_status, (unsigned)size);
+        return read_status == DEVICE_STATUS_OK ? ESP_ERR_INVALID_RESPONSE
+                                                : device_status_to_platform_error(read_status);
+    }
+    const esp_err_t ack_err = (esp_err_t)gateway_transport_ack_messages(payload);
+    if (ack_err != ESP_OK) return ack_err;
+    const device_status_t erase_status = persistence_service_erase_key(
+        "gateway", "ack_outbox");
+    if (erase_status != DEVICE_STATUS_OK && erase_status != DEVICE_STATUS_NOT_FOUND) {
+        ESP_LOGW(TAG, "ACK outbox cleanup failed: status=%d", (int)erase_status);
+        return device_status_to_platform_error(erase_status);
+    }
+    return ESP_OK;
+}
+
 bool gateway_dispatcher_current_task_is_poll_worker(void) {
     bool matches;
     taskENTER_CRITICAL(&s_dispatcher_lock);
@@ -256,6 +315,24 @@ static esp_err_t poll_reply(void) {
     int poll_timeout_seconds = s_host.welcome_gate_active()
                                    ? 0
                                    : (command_service_display_active() ? 2 : 5);
+    /* Drain the previous generation's ACK before asking for another page.
+     * Until this succeeds, do not re-run a message whose side effect may
+     * already have completed before the earlier transport outage. */
+    const esp_err_t outbox_err = gateway_dispatcher_flush_ack_outbox();
+    if (outbox_err != ESP_OK) {
+        ESP_LOGW(TAG, "pending gateway ACK could not be delivered: %s",
+                 esp_err_to_name(outbox_err));
+        return outbox_err;
+    }
+    if (s_host.flush_tool_result_outbox) {
+        const esp_err_t tool_outbox_err =
+            (esp_err_t)s_host.flush_tool_result_outbox();
+        if (tool_outbox_err != ESP_OK) {
+            ESP_LOGW(TAG, "pending tool-result outbox could not be delivered: %s",
+                     esp_err_to_name(tool_outbox_err));
+            return tool_outbox_err;
+        }
+    }
     int64_t poll_started_us = esp_timer_get_time();
     long long previous_cursor = (long long)s_cursor;
 	// A 64x64 RGB565 image expands to about 10.7 KiB in JSON. Fetch one
@@ -487,11 +564,17 @@ static esp_err_t poll_reply(void) {
                  active_reply_to[0] ? active_reply_to : "<none>");
         if (!skin && cJSON_IsObject(extra)) skin = json_string(extra, "pet_skin");
 		if (tool_message) {
-			esp_err_t tool_err = (esp_err_t)s_host.handle_tool_call(item);
-			tool_handled = tool_err == ESP_OK;
-			if (!tool_handled) {
-				ESP_LOGW(TAG, "client tool execution/result delivery failed: %s", esp_err_to_name(tool_err));
-				keep_cursor_for_retry = true;
+			if (s_host.tool_result_outbox_already_delivered &&
+				s_host.tool_result_outbox_already_delivered(item)) {
+				tool_handled = true;
+				ESP_LOGI(TAG, "skipping already-delivered client tool result");
+			} else {
+				esp_err_t tool_err = (esp_err_t)s_host.handle_tool_call(item);
+				tool_handled = tool_err == ESP_OK;
+				if (!tool_handled) {
+					ESP_LOGW(TAG, "client tool execution/result delivery failed: %s", esp_err_to_name(tool_err));
+					keep_cursor_for_retry = true;
+				}
 			}
 		}
         bool pet_profile_message = type && !strcmp(type, "pet_profile");
@@ -762,7 +845,7 @@ static esp_err_t poll_reply(void) {
                             }
                             audio_handled = play_err == ESP_OK;
                             audio_permanently_invalid =
-                                s_host.audio_error_is_permanent((int32_t)play_err);
+                                s_host.audio_presentation_error_is_permanent((int32_t)play_err);
                         }
                     } else if (audio) {
                         ESP_LOGW(TAG, "invalid server speech payload");
@@ -771,7 +854,7 @@ static esp_err_t poll_reply(void) {
                         ESP_LOGW(TAG, "server speech allocation failed: %u bytes",
                                  (unsigned)audio_capacity);
                     }
-                    free(audio);
+                    s_host.release_audio(audio);
                 } else {
                     ESP_LOGW(TAG, "ignored server audio payload: base64=%d size=%u",
                              decode_status, (unsigned)audio_capacity);
@@ -807,14 +890,15 @@ static esp_err_t poll_reply(void) {
                         }
                         audio_handled = play_err == ESP_OK;
                         audio_permanently_invalid =
-                            s_host.audio_error_is_permanent((int32_t)play_err);
+                                s_host.audio_presentation_error_is_permanent((int32_t)play_err);
                     }
                 } else {
                     ESP_LOGW(TAG, "server speech download failed: %s", esp_err_to_name(fetch_err));
-                    audio_permanently_invalid = s_host.audio_error_is_permanent((int32_t)fetch_err);
+                    audio_permanently_invalid =
+                        s_host.audio_download_error_is_permanent((int32_t)fetch_err);
                 }
             }
-            free(audio);
+            s_host.release_audio(audio);
         }
         // Do not acknowledge an audio message that we could neither fetch nor
         // play. Keeping it pending lets a transient network/I2S failure retry
@@ -921,16 +1005,17 @@ static esp_err_t poll_reply(void) {
             finish_wake_lease_and_restart();
             return ESP_ERR_NO_MEM;
         }
-        gateway_transport_response_t ack_resp;
-        esp_err_t ack_err = (esp_err_t)gateway_transport_request(
-            "POST", "/api/im-gateway/v1/ack", "application/json",
-            payload, (int32_t)strlen(payload), &ack_resp);
-        free(payload);
-        if (ack_err != ESP_OK || (ack_resp.status != 200 && ack_resp.status != 204)) {
-            ESP_LOGW(TAG, "gateway ack failed: err=%s status=%d",
-                     esp_err_to_name(ack_err), ack_resp.status);
-            esp_err_t result = ack_err == ESP_OK ? ESP_FAIL : ack_err;
-            gateway_transport_response_release(&ack_resp);
+        esp_err_t ack_err = (esp_err_t)gateway_transport_ack_messages(payload);
+        if (ack_err != ESP_OK) {
+            ESP_LOGW(TAG, "gateway ack failed: err=%s", esp_err_to_name(ack_err));
+            const device_status_t outbox_status =
+                gateway_dispatcher_persist_ack_outbox(payload);
+            if (outbox_status != DEVICE_STATUS_OK) {
+                ESP_LOGE(TAG, "cannot persist failed ACK for retry: status=%d",
+                         (int)outbox_status);
+            }
+            free(payload);
+            esp_err_t result = ack_err;
             cJSON_Delete(delivered_ack_ids);
             cJSON_Delete(failed_ack_ids);
             cJSON_Delete(json);
@@ -938,14 +1023,28 @@ static esp_err_t poll_reply(void) {
             finish_wake_lease_and_restart();
             return result;
         }
-        gateway_transport_response_release(&ack_resp);
+        free(payload);
     }
     cJSON_Delete(delivered_ack_ids);
     cJSON_Delete(failed_ack_ids);
     // Cursor is page-level while acknowledgements are message-level. If one
     // audio item was intentionally left unacknowledged, advancing the cursor
     // would hide it from the next poll despite the missing ACK.
-    if (!keep_cursor_for_retry) s_cursor = (int64_t)parsed_cursor;
+    if (!keep_cursor_for_retry && parsed_cursor != (long long)s_cursor) {
+        /* Cursor advancement is a durable checkpoint.  If flash is busy or
+         * unavailable, keep the old cursor so the page is replayed rather
+         * than silently skipping messages after a reboot. */
+        const device_status_t persist_status = persistence_service_write_i64(
+            "gateway", "out_cursor", (int64_t)parsed_cursor);
+        if (persist_status != DEVICE_STATUS_OK) {
+            ESP_LOGW(TAG, "cursor checkpoint failed: status=%d", (int)persist_status);
+            cJSON_Delete(json);
+            gateway_transport_response_release(&response);
+            if (server_audio_wake_lease_used) finish_wake_lease_and_restart();
+            return device_status_to_platform_error(persist_status);
+        }
+        s_cursor = (int64_t)parsed_cursor;
+    }
     cJSON_Delete(json);
     gateway_transport_response_release(&response);
     if (server_audio_wake_lease_used) {
@@ -1082,6 +1181,23 @@ static esp_err_t stop_gateway_poll_registry_entry(void *context, uint32_t timeou
 }
 
 bool gateway_dispatcher_ensure_poll_task(void) {
+    if (!s_cursor_loaded) {
+        int64_t stored_cursor = 0;
+        const device_status_t status = persistence_service_read_i64(
+            "gateway", "out_cursor", &stored_cursor);
+        if (status == DEVICE_STATUS_OK && stored_cursor >= 0) {
+            s_cursor = stored_cursor;
+            s_cursor_loaded = true;
+        } else if (status == DEVICE_STATUS_NOT_FOUND) {
+            s_cursor = 0;
+            s_cursor_loaded = true;
+        } else if (status != DEVICE_STATUS_BUSY) {
+            ESP_LOGW(TAG, "cursor checkpoint unavailable: status=%d; starting at zero",
+                     (int)status);
+            s_cursor = 0;
+            s_cursor_loaded = true;
+        }
+    }
     taskENTER_CRITICAL(&s_dispatcher_lock);
     if (!s_host_installed || s_system_sleep_preparing || s_system_sleep_restart_pending ||
         s_gateway_poll_registry_retirement_failed) {
@@ -1208,7 +1324,15 @@ device_status_t gateway_dispatcher_prepare_system_sleep(uint32_t timeout_ms) {
     if (!restart_poll) return DEVICE_STATUS_OK;
     uint32_t remaining_ms = remaining_timeout_ms(deadline_us);
     if (remaining_ms == 0) return DEVICE_STATUS_TIMEOUT;
-    return dispatcher_status_from_esp_err(stop_gateway_poll_task(remaining_ms));
+    const device_status_t status =
+        dispatcher_status_from_esp_err(stop_gateway_poll_task(remaining_ms));
+    /* A child may report success exactly as the parent budget expires.  Keep
+     * the PREPARE fence closed and fail closed rather than allowing a late
+     * success to advance the sleep transaction. */
+    if (status == DEVICE_STATUS_OK && esp_timer_get_time() >= deadline_us) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return status;
 }
 
 void gateway_dispatcher_abort_system_sleep_prepare(void) {
@@ -1253,8 +1377,11 @@ device_status_t gateway_dispatcher_init(const gateway_dispatcher_host_t *host) {
         !host->handle_tool_call || !host->handle_pet_profile ||
         !host->handle_hardware_config || !host->apply_glyphs || !host->apply_ambient ||
         !host->audio_url_allowed || !host->audio_mime_supported ||
-        !host->audio_error_is_permanent || !host->begin_server_audio_wake_lease ||
+        !host->audio_download_error_is_permanent ||
+        !host->audio_presentation_error_is_permanent ||
+        !host->begin_server_audio_wake_lease ||
         !host->finish_server_audio_wake_lease || !host->download_audio ||
+        !host->release_audio ||
         !host->play_audio_payload || !host->schedule_wake_restart ||
         !host->take_startup_pet_retry_due || !host->apply_deferred_startup_pet_asset) {
         return DEVICE_STATUS_INVALID_ARGUMENT;

@@ -28,7 +28,7 @@ func TestRenderReviewedLegacySurfaceReplacesWithPlanRenderer(t *testing.T) {
 		legacyReviewedDefinition("read_file"),
 		legacyReviewedDefinition("async_wait"),
 	}
-	rendered, planBacked, err := renderReviewedLegacySurface("read a local file", definitions)
+	rendered, planBacked, err := renderReviewedLegacySurface("read a local file", definitions, nil)
 	if err != nil || !planBacked {
 		t.Fatalf("renderReviewedLegacySurface() planBacked=%v err=%v", planBacked, err)
 	}
@@ -46,7 +46,7 @@ func TestRenderReviewedLegacySurfaceLeavesDynamicDefinitionInCompatibilityPath(t
 		legacyReviewedDefinition("read_file"),
 		legacyReviewedDefinition("dynamic_client_tool"),
 	}
-	rendered, planBacked, err := renderReviewedLegacySurface("test", definitions)
+	rendered, planBacked, err := renderReviewedLegacySurface("test", definitions, nil)
 	if err != nil || planBacked || len(rendered) != len(definitions) {
 		t.Fatalf("dynamic definition must not receive fabricated provision: planBacked=%v rendered=%d err=%v", planBacked, len(rendered), err)
 	}
@@ -61,7 +61,7 @@ func TestClosedLegacyReplacementRejectsUnprovisionedHostDefinition(t *testing.T)
 		legacyReviewedDefinition("read_file"),
 		legacyReviewedDefinition("unreviewed_host_tool"),
 	}
-	rendered, clientNames, planBacked, err := (&IMMessageHandler{}).renderClosedLegacyReplacementSurface("read file", nil, host)
+	rendered, clientNames, planBacked, err := (&IMMessageHandler{}).renderClosedLegacyReplacementSurface("read file", nil, host, nil)
 	if err == nil || planBacked || len(rendered) != 0 || len(clientNames) != 0 {
 		t.Fatalf("unprovisioned host definition must close the replacement surface: rendered=%#v clients=%v planBacked=%v err=%v", rendered, clientNames, planBacked, err)
 	}
@@ -83,7 +83,7 @@ func TestClosedLegacyReplacementRebuildsClientBindingAfterHostPlan(t *testing.T)
 		legacyReviewedDefinition("read_file"),
 		legacyReviewedDefinition("alarm_list"),
 	}
-	rendered, clientNames, planBacked, err := (&IMMessageHandler{}).renderClosedLegacyReplacementSurface("read file", ctx, staleSurface)
+	rendered, clientNames, planBacked, err := (&IMMessageHandler{}).renderClosedLegacyReplacementSurface("read file", ctx, staleSurface, nil)
 	if err != nil || !planBacked {
 		t.Fatalf("closed replacement = (%#v, %v, %v), want plan-backed host surface", rendered, planBacked, err)
 	}
@@ -112,7 +112,7 @@ func TestClientToolDoesNotDemoteReviewedHostSurfaceOrBypassItsProvision(t *testi
 		Name: "alarm_list", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"scope": map[string]any{"type": "string"}}},
 	}}
 	host := []map[string]interface{}{legacyReviewedDefinition("read_file")}
-	renderedHost, planBacked, err := renderReviewedLegacySurface("read file", host)
+	renderedHost, planBacked, err := renderReviewedLegacySurface("read file", host, nil)
 	if err != nil || !planBacked {
 		t.Fatalf("reviewed host surface = (%v, %v), want plan-backed", planBacked, err)
 	}
@@ -226,5 +226,25 @@ func TestLegacyModelManageSkillGatewayRejectsDynamicActionBeforeHandlerDispatch(
 	}
 	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected || !strings.Contains(result.Text, "dynamic_skill_requires_managed_surface") {
 		t.Fatalf("unexpected gateway result: %+v", result)
+	}
+}
+
+func TestUnionMissFloorToolsForSurface(t *testing.T) {
+	base := []map[string]interface{}{
+		legacyReviewedDefinition("bash"),
+		legacyReviewedDefinition("write_file"),
+		legacyReviewedDefinition("edit_file"),
+	}
+	// Missing floor tools are appended from the base surface.
+	got := unionMissFloorToolsForSurface([]map[string]interface{}{legacyReviewedDefinition("knowledge_search")}, base)
+	names := agentLoopToolNamesForLog(got)
+	if len(names) != 3 || names[0] != "knowledge_search" || names[1] != "bash" || names[2] != "write_file" {
+		t.Fatalf("union = %v, want knowledge_search + bash + write_file", names)
+	}
+	// Idempotent: existing floor tools are not duplicated, and non-floor base
+	// tools (edit_file) are never pulled in.
+	got = unionMissFloorToolsForSurface(got, base)
+	if names = agentLoopToolNamesForLog(got); len(names) != 3 {
+		t.Fatalf("union not idempotent: %v", names)
 	}
 }

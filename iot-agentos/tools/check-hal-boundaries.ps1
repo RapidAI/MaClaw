@@ -24,9 +24,29 @@ $headers = @(
     'main/platform_storage.h',
     'main/fault_domain.h',
     'main/services/pet_asset_service.h',
+    'main/services/pet_asset_integrity_service.h',
+    'main/services/pet_asset_download_service.h',
+    'main/services/pet_asset_apply_service.h',
+    'main/services/pet_asset_runtime_service.h',
+    'main/services/pet_asset_profile_service.h',
+    'main/services/startup_welcome_service.h',
+    'main/services/startup_runtime_state_service.h',
+    'main/services/pet_asset_startup_service.h',
+    'main/services/pet_asset_restore_service.h',
+    'main/services/pet_asset_restore_worker_service.h',
+    'main/services/startup_pet_asset_admission_service.h',
+    'main/services/startup_pet_asset_sleep_service.h',
+    'main/services/pet_asset_retry_service.h',
+    'main/services/startup_pet_asset_state_service.h',
     'main/services/pet_cache_service.h',
     'main/services/startup_pet_retry_service.h',
-    'main/services/gateway_capability_projection.h'
+    'main/services/wifi_startup_service.h',
+    'main/services/provisioning_qr_service.h',
+    'main/services/server_audio_presentation_service.h',
+    'main/services/connectivity_network_lifecycle_service.h',
+    'main/services/configuration_persistence_worker_service.h',
+    'main/services/gateway_capability_projection.h',
+    'main/alarm_wake_plan.h'
 )
 
 # Keep the check deliberately structural: it guards SDK/RTOS/driver object
@@ -130,6 +150,30 @@ $allCFiles = $allSourceFiles | Where-Object { $_.Extension -in @('.c','.h') }
 # lifetime still belong to their existing lower layers until later increments.
 $petAssetHeader = Join-Path $projectRoot 'main/services/pet_asset_service.h'
 $petAssetSource = Join-Path $projectRoot 'main/services/pet_asset_service.c'
+$petAssetApplyHeader = Join-Path $projectRoot 'main/services/pet_asset_apply_service.h'
+$petAssetApplySource = Join-Path $projectRoot 'main/services/pet_asset_apply_service.c'
+$petAssetDownloadHeader = Join-Path $projectRoot 'main/services/pet_asset_download_service.h'
+$petAssetIntegrityHeader = Join-Path $projectRoot 'main/services/pet_asset_integrity_service.h'
+$petAssetIntegritySource = Join-Path $projectRoot 'main/services/pet_asset_integrity_service.c'
+$petAssetDownloadSource = Join-Path $projectRoot 'main/services/pet_asset_download_service.c'
+$petAssetRuntimeHeader = Join-Path $projectRoot 'main/services/pet_asset_runtime_service.h'
+$petAssetRuntimeSource = Join-Path $projectRoot 'main/services/pet_asset_runtime_service.c'
+$petAssetProfileHeader = Join-Path $projectRoot 'main/services/pet_asset_profile_service.h'
+$petAssetProfileSource = Join-Path $projectRoot 'main/services/pet_asset_profile_service.c'
+$petAssetStartupHeader = Join-Path $projectRoot 'main/services/pet_asset_startup_service.h'
+$petAssetStartupSource = Join-Path $projectRoot 'main/services/pet_asset_startup_service.c'
+$startupPetAdmissionHeader = Join-Path $projectRoot 'main/services/startup_pet_asset_admission_service.h'
+$startupPetAdmissionSource = Join-Path $projectRoot 'main/services/startup_pet_asset_admission_service.c'
+$startupPetSleepHeader = Join-Path $projectRoot 'main/services/startup_pet_asset_sleep_service.h'
+$startupPetSleepSource = Join-Path $projectRoot 'main/services/startup_pet_asset_sleep_service.c'
+$petAssetRestoreHeader = Join-Path $projectRoot 'main/services/pet_asset_restore_service.h'
+$petAssetRestoreSource = Join-Path $projectRoot 'main/services/pet_asset_restore_service.c'
+$petAssetRestoreWorkerHeader = Join-Path $projectRoot 'main/services/pet_asset_restore_worker_service.h'
+$petAssetRestoreWorkerSource = Join-Path $projectRoot 'main/services/pet_asset_restore_worker_service.c'
+$petAssetRetryHeader = Join-Path $projectRoot 'main/services/pet_asset_retry_service.h'
+$petAssetRetrySource = Join-Path $projectRoot 'main/services/pet_asset_retry_service.c'
+$startupPetAssetStateHeader = Join-Path $projectRoot 'main/services/startup_pet_asset_state_service.h'
+$startupPetAssetStateSource = Join-Path $projectRoot 'main/services/startup_pet_asset_state_service.c'
 $petAssetCacheHeader = Join-Path $projectRoot 'main/pet_asset_cache_storage.h'
 $petAssetCacheSource = Join-Path $projectRoot 'main/pet_asset_cache_storage.c'
 $meetingRecordingStorageHeader = Join-Path $projectRoot 'main/meeting_recording_storage.h'
@@ -187,6 +231,408 @@ if (-not (Test-Path -LiteralPath $petAssetHeader) -or
     }
     if ($petAssetSourceText -match '\b(?:board_port|device_display|heap_caps|xTask|SemaphoreHandle_t|esp_http_client|esp_sleep|CONFIG_MACLAW_BOARD_)\b') {
         $violations += 'main/services/pet_asset_service.c: descriptor service must not absorb hardware, HTTP, allocator, RTOS, or board policy'
+    }
+}
+
+# Cache restore has the same boundary rule as runtime installation: the
+# coordinator owns validation/terminal cleanup, while physical storage, SHA,
+# allocation, renderer and boot-task mechanics remain host-owned.
+if (-not (Test-Path -LiteralPath $petAssetRestoreHeader) -or
+    -not (Test-Path -LiteralPath $petAssetRestoreSource)) {
+    $violations += 'main/services/pet_asset_restore_service.[ch]: cache restore transaction service is missing'
+} else {
+    $petAssetRestoreHeaderText = Get-Content -LiteralPath $petAssetRestoreHeader -Raw
+    $petAssetRestoreSourceText = Get-Content -LiteralPath $petAssetRestoreSource -Raw
+    foreach ($petRestoreRequirement in @(
+            'pet_asset_restore_service_host_t',
+            'read_descriptor',
+            'load_verified_frame',
+            'install_full',
+            'release_frames',
+            'clear_cache',
+            'apply_cached_profile',
+            'pet_asset_restore_service_restore\s*\(')) {
+        if ($petAssetRestoreHeaderText -notmatch $petRestoreRequirement -or
+            $petAssetRestoreSourceText -notmatch $petRestoreRequirement) {
+            $violations += "main/services/pet_asset_restore_service.[ch]: cache restore transaction is incomplete (${petRestoreRequirement})"
+        }
+    }
+    if ($petAssetRestoreHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_restore_service.h: public restore contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($petAssetRestoreSourceText -notmatch 'load_verified_frame\s*\(' -or
+        $petAssetRestoreSourceText -notmatch 'release_frames\s*\(' -or
+        $petAssetRestoreSourceText -notmatch 'clear_cache\s*\(') {
+        $violations += 'main/services/pet_asset_restore_service.c: must own ordered verification, terminal release, and invalid-cache cleanup'
+    }
+    if ($petAssetRestoreSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_restore_service.c: restore transaction must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# The bounded boot worker owns only task/join mechanics. Its public host seam
+# remains value-only, while the private source is the sole FreeRTOS owner.
+if (-not (Test-Path -LiteralPath $petAssetRestoreWorkerHeader) -or
+    -not (Test-Path -LiteralPath $petAssetRestoreWorkerSource)) {
+    $violations += 'main/services/pet_asset_restore_worker_service.[ch]: bounded restore worker is missing'
+} else {
+    $petAssetRestoreWorkerHeaderText = Get-Content -LiteralPath $petAssetRestoreWorkerHeader -Raw
+    $petAssetRestoreWorkerSourceText = Get-Content -LiteralPath $petAssetRestoreWorkerSource -Raw
+    foreach ($petRestoreWorkerRequirement in @(
+            'pet_asset_restore_worker_service_host_t',
+            'run_restore',
+            'pet_asset_restore_worker_service_run\s*\(',
+            'xTaskCreatePinnedToCoreWithCaps',
+            'xSemaphoreTake')) {
+        if ($petAssetRestoreWorkerHeaderText -notmatch $petRestoreWorkerRequirement -and
+            $petAssetRestoreWorkerSourceText -notmatch $petRestoreWorkerRequirement) {
+            $violations += "main/services/pet_asset_restore_worker_service.[ch]: bounded restore worker is incomplete (${petRestoreWorkerRequirement})"
+        }
+    }
+    if ($petAssetRestoreWorkerHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_restore_worker_service.h: public restore-worker contract must remain value-only and hardware/RTOS-neutral'
+    }
+    $restoreWorkerRootText = Get-Content -LiteralPath (Join-Path $projectRoot 'main\main.c') -Raw
+    if ($restoreWorkerRootText -match '\b(?:cached_pet_restore_task|start_cached_pet_restore_task)\b' -or
+        $restoreWorkerRootText -notmatch 'pet_asset_restore_worker_service_run\s*\(') {
+        $violations += 'main/main.c: cached pet restore FreeRTOS lifecycle must be owned by pet_asset_restore_worker_service'
+    }
+}
+
+# Runtime pet-profile orchestration is policy, not a composition-root state
+# machine. Physical Gateway/HTTP/PSA/media/Display/Storage owners remain host
+# callbacks, and the shared coordinator remains value-only.
+if (-not (Test-Path -LiteralPath $petAssetRuntimeHeader) -or
+    -not (Test-Path -LiteralPath $petAssetRuntimeSource)) {
+    $violations += 'main/services/pet_asset_runtime_service.[ch]: runtime pet transaction service is missing'
+} else {
+    $petAssetRuntimeHeaderText = Get-Content -LiteralPath $petAssetRuntimeHeader -Raw
+    $petAssetRuntimeSourceText = Get-Content -LiteralPath $petAssetRuntimeSource -Raw
+    foreach ($petRuntimeRequirement in @(
+            'pet_asset_runtime_service_host_t',
+            'capture_gateway_lease',
+            'capacity_available',
+            'drop_stale_cache',
+            'download',
+            'install_full',
+            'cache_in_background',
+            'release_frames',
+            'pet_asset_runtime_service_apply\s*\(')) {
+        if ($petAssetRuntimeHeaderText -notmatch $petRuntimeRequirement -or
+            $petAssetRuntimeSourceText -notmatch $petRuntimeRequirement) {
+            $violations += "main/services/pet_asset_runtime_service.[ch]: runtime transaction is incomplete (${petRuntimeRequirement})"
+        }
+    }
+    if ($petAssetRuntimeHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_runtime_service.h: public runtime contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($petAssetRuntimeSourceText -notmatch 'gateway_lease_current\s*\(' -or
+        $petAssetRuntimeSourceText -notmatch 'drop_stale_cache\s*\(' -or
+        $petAssetRuntimeSourceText -notmatch 'release_frames\s*\(') {
+        $violations += 'main/services/pet_asset_runtime_service.c: must own lease fence, stale-cache retry, and terminal frame release'
+    }
+    if ($petAssetRuntimeSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_runtime_service.c: runtime transaction must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# Gateway pet-profile update order is business policy. Its coordinator decides
+# latest-wins startup supersession and failed-ACK retry classification while the
+# root retains JSON, Display, HTTP, Gateway and Storage physical ownership.
+if (-not (Test-Path -LiteralPath $petAssetProfileHeader) -or
+    -not (Test-Path -LiteralPath $petAssetProfileSource)) {
+    $violations += 'main/services/pet_asset_profile_service.[ch]: runtime pet profile service is missing'
+} else {
+    $petAssetProfileHeaderText = Get-Content -LiteralPath $petAssetProfileHeader -Raw
+    $petAssetProfileSourceText = Get-Content -LiteralPath $petAssetProfileSource -Raw
+    foreach ($petProfileRequirement in @(
+            'pet_asset_profile_service_host_t',
+            'startup_profile_matches',
+            'set_startup_pending',
+            'apply_asset',
+            'clear_asset',
+            'note_transient_failure',
+            'retry_exhausted',
+            'pet_asset_profile_service_apply\s*\(')) {
+        if ($petAssetProfileHeaderText -notmatch $petProfileRequirement -or
+            $petAssetProfileSourceText -notmatch $petProfileRequirement) {
+            $violations += "main/services/pet_asset_profile_service.[ch]: profile transaction is incomplete (${petProfileRequirement})"
+        }
+    }
+    if ($petAssetProfileHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_profile_service.h: public profile contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($petAssetProfileSourceText -notmatch 'set_startup_pending\s*\(' -or
+        $petAssetProfileSourceText -notmatch 'retry_exhausted\s*\(' -or
+        $petAssetProfileSourceText -notmatch 'reset_retries\s*\(') {
+        $violations += 'main/services/pet_asset_profile_service.c: must own latest-wins, retry exhaustion, and retry reset ordering'
+    }
+    if ($petAssetProfileSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_profile_service.c: profile transaction must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# Cold-start pet orchestration is likewise business ordering. The service must
+# complete only its captured generation, while the root retains descriptor
+# state, HTTP/PSA/media, Display, Storage and worker ownership behind callbacks.
+if (-not (Test-Path -LiteralPath $petAssetStartupHeader) -or
+    -not (Test-Path -LiteralPath $petAssetStartupSource)) {
+    $violations += 'main/services/pet_asset_startup_service.[ch]: startup pet transaction service is missing'
+} else {
+    $petAssetStartupHeaderText = Get-Content -LiteralPath $petAssetStartupHeader -Raw
+    $petAssetStartupSourceText = Get-Content -LiteralPath $petAssetStartupSource -Raw
+    foreach ($petStartupRequirement in @(
+            'pet_asset_startup_service_host_t',
+            'snapshot',
+            'generation_admitted',
+            'capture_gateway_lease',
+            'download',
+            'install_full',
+            'cache_in_background',
+            'release_frames',
+            'finish_generation',
+            'pet_asset_startup_service_apply\s*\(')) {
+        if ($petAssetStartupHeaderText -notmatch $petStartupRequirement -or
+            $petAssetStartupSourceText -notmatch $petStartupRequirement) {
+            $violations += "main/services/pet_asset_startup_service.[ch]: startup transaction is incomplete (${petStartupRequirement})"
+        }
+    }
+    if ($petAssetStartupHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_startup_service.h: public startup contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($petAssetStartupSourceText -notmatch 'generation_admitted\s*\(' -or
+        $petAssetStartupSourceText -notmatch 'finish_generation\s*\(' -or
+        $petAssetStartupSourceText -notmatch 'release_frames\s*\(') {
+        $violations += 'main/services/pet_asset_startup_service.c: must own generation fence, terminal completion, and frame release'
+    }
+    if ($petAssetStartupSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_startup_service.c: startup transaction must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# Startup descriptor admission is business policy. It may decide capacity
+# backoff, worker admission and audio re-arm, but physical timer/worker,
+# Gateway, Display, Storage and media ownership remain host callbacks.
+if (-not (Test-Path -LiteralPath $startupPetAdmissionHeader) -or
+    -not (Test-Path -LiteralPath $startupPetAdmissionSource)) {
+    $violations += 'main/services/startup_pet_asset_admission_service.[ch]: startup pet admission service is missing'
+} else {
+    $startupPetAdmissionHeaderText = Get-Content -LiteralPath $startupPetAdmissionHeader -Raw
+    $startupPetAdmissionSourceText = Get-Content -LiteralPath $startupPetAdmissionSource -Raw
+    foreach ($startupPetAdmissionRequirement in @(
+            'startup_pet_asset_admission_service_host_t',
+            'capacity_available',
+            'drop_stale_cache',
+            'take_capacity_retry',
+            'schedule_retry',
+            'start_worker',
+            'startup_pet_asset_admission_service_admit_pending\s*\(',
+            'startup_pet_asset_admission_service_rearm_preempted\s*\(')) {
+        if ($startupPetAdmissionHeaderText -notmatch $startupPetAdmissionRequirement -or
+            $startupPetAdmissionSourceText -notmatch $startupPetAdmissionRequirement) {
+            $violations += "main/services/startup_pet_asset_admission_service.[ch]: admission transaction is incomplete (${startupPetAdmissionRequirement})"
+        }
+    }
+    if ($startupPetAdmissionHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/startup_pet_asset_admission_service.h: public admission contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($startupPetAdmissionSourceText -notmatch 'return_capacity_retry\s*\(' -or
+        $startupPetAdmissionSourceText -notmatch 'finish_generation\s*\(' -or
+        $startupPetAdmissionSourceText -notmatch 'set_pending\s*\(') {
+        $violations += 'main/services/startup_pet_asset_admission_service.c: must own retry reservation cleanup, generation finish, and re-arm reversal'
+    }
+    if ($startupPetAdmissionSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/startup_pet_asset_admission_service.c: admission service must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# The startup-pet System Sleep participant owns only reversible service order
+# and its shared deadline. State, retry timer, cache worker and startup worker
+# retain their own physical lifetimes behind the value-only host callbacks.
+if (-not (Test-Path -LiteralPath $startupPetSleepHeader) -or
+    -not (Test-Path -LiteralPath $startupPetSleepSource)) {
+    $violations += 'main/services/startup_pet_asset_sleep_service.[ch]: startup pet System Sleep coordinator is missing'
+} else {
+    $startupPetSleepHeaderText = Get-Content -LiteralPath $startupPetSleepHeader -Raw
+    $startupPetSleepSourceText = Get-Content -LiteralPath $startupPetSleepSource -Raw
+    foreach ($startupPetSleepRequirement in @(
+            'startup_pet_asset_sleep_service_host_t',
+            'prepare_state',
+            'prepare_worker',
+            'prepare_retry',
+            'prepare_cache',
+            'abort_state',
+            'abort_worker',
+            'abort_retry',
+            'abort_cache',
+            'startup_pet_asset_sleep_service_prepare\s*\(',
+            'startup_pet_asset_sleep_service_abort\s*\(')) {
+        if ($startupPetSleepHeaderText -notmatch $startupPetSleepRequirement -or
+            $startupPetSleepSourceText -notmatch $startupPetSleepRequirement) {
+            $violations += "main/services/startup_pet_asset_sleep_service.[ch]: System Sleep transaction is incomplete (${startupPetSleepRequirement})"
+        }
+    }
+    if ($startupPetSleepHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/startup_pet_asset_sleep_service.h: public sleep contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($startupPetSleepSourceText -notmatch 'remaining_timeout_ms\s*\(' -or
+        $startupPetSleepSourceText -notmatch 'abort_cache\s*\(' -or
+        $startupPetSleepSourceText -notmatch 'abort_retry\s*\(' -or
+        $startupPetSleepSourceText -notmatch 'abort_worker\s*\(') {
+        $violations += 'main/services/startup_pet_asset_sleep_service.c: must own shared deadline and reverse participant rollback ordering'
+    }
+    if ($startupPetSleepSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/startup_pet_asset_sleep_service.c: sleep coordinator must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# The ordered downlink retry counter is message/cursor policy, not a root
+# global. Keep its state value-only; Gateway Dispatcher owns the actual page
+# cursor and ACK, while HTTP, JSON and task ownership remain outside it.
+if (-not (Test-Path -LiteralPath $petAssetRetryHeader) -or
+    -not (Test-Path -LiteralPath $petAssetRetrySource)) {
+    $violations += 'main/services/pet_asset_retry_service.[ch]: pet ordered-retry value service is missing'
+} else {
+    $petAssetRetryHeaderText = Get-Content -LiteralPath $petAssetRetryHeader -Raw
+    $petAssetRetrySourceText = Get-Content -LiteralPath $petAssetRetrySource -Raw
+    foreach ($petRetryRequirement in @(
+            'pet_asset_retry_service_init\s*\(',
+            'pet_asset_retry_service_reset\s*\(',
+            'pet_asset_retry_service_note_failure\s*\(',
+            'pet_asset_retry_service_exhausted\s*\(')) {
+        if ($petAssetRetryHeaderText -notmatch $petRetryRequirement -or
+            $petAssetRetrySourceText -notmatch $petRetryRequirement) {
+            $violations += "main/services/pet_asset_retry_service.[ch]: ordered retry contract is incomplete (${petRetryRequirement})"
+        }
+    }
+    if ($petAssetRetryHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|gateway_)\b' -or
+        $petAssetRetrySourceText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|gateway_)\b') {
+        $violations += 'main/services/pet_asset_retry_service.[ch]: ordered retry state must remain value-only and free of platform/RTOS/JSON/crypto/Gateway ownership'
+    }
+}
+
+# Startup pet latest-wins state is a separate synchronized value boundary.
+# It may use a private FreeRTOS mutex, but must not pull HTTP, JSON, crypto,
+# renderer, gateway or board mechanics out of the composition root.
+if (-not (Test-Path -LiteralPath $startupPetAssetStateHeader) -or
+    -not (Test-Path -LiteralPath $startupPetAssetStateSource)) {
+    $violations += 'main/services/startup_pet_asset_state_service.[ch]: startup pet state service is missing'
+} else {
+    $startupPetAssetStateHeaderText = Get-Content -LiteralPath $startupPetAssetStateHeader -Raw
+    $startupPetAssetStateSourceText = Get-Content -LiteralPath $startupPetAssetStateSource -Raw
+    foreach ($startupPetStateRequirement in @(
+            'startup_pet_asset_state_service_init\s*\(',
+            'startup_pet_asset_state_service_record\s*\(',
+            'startup_pet_asset_state_service_snapshot\s*\(',
+            'startup_pet_asset_state_service_pending_generation\s*\(',
+            'startup_pet_asset_state_service_take_capacity_retry\s*\(',
+            'startup_pet_asset_state_service_return_capacity_retry\s*\(',
+            'startup_pet_asset_state_service_prepare_system_sleep\s*\(',
+            'startup_pet_asset_state_service_abort_system_sleep_prepare\s*\(',
+            'startup_pet_asset_state_service_system_sleep_preparing\s*\(',
+            'startup_pet_asset_state_service_preempt_for_audio\s*\(',
+            'startup_pet_asset_state_service_finish_generation\s*\(',
+            'startup_pet_asset_state_service_matches_profile\s*\(')) {
+        if ($startupPetAssetStateHeaderText -notmatch $startupPetStateRequirement -or
+            $startupPetAssetStateSourceText -notmatch $startupPetStateRequirement) {
+            $violations += "main/services/startup_pet_asset_state_service.[ch]: state transition contract is incomplete (${startupPetStateRequirement})"
+        }
+    }
+    if ($startupPetAssetStateHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|gateway_|scene_presenter|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/startup_pet_asset_state_service.h: public state contract must remain value-only and platform-neutral'
+    }
+    if ($startupPetAssetStateSourceText -notmatch 'next_generation\s*\(' -or
+        $startupPetAssetStateSourceText -notmatch 's_state\.generation\s*==' -or
+        $startupPetAssetStateSourceText -notmatch 's_capacity_retry_count' -or
+        $startupPetAssetStateSourceText -notmatch 's_system_sleep_preparing' -or
+        $startupPetAssetStateSourceText -notmatch 'xSemaphoreTake') {
+        $violations += 'main/services/startup_pet_asset_state_service.c: generation-fenced, synchronized latest-wins state is incomplete'
+    }
+    if ($startupPetAssetStateSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|cJSON|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/startup_pet_asset_state_service.c: state service must not absorb HTTP, crypto, allocator, JSON, renderer, gateway, or board ownership'
+    }
+    if ($startupPetAssetStateSourceText -notmatch 'startup_pet_asset_state_service_prepare_system_sleep[\s\S]*?s_system_sleep_preparing\s*=\s*true' -or
+        $startupPetAssetStateSourceText -notmatch 'startup_pet_asset_state_service_abort_system_sleep_prepare[\s\S]*?s_system_sleep_preparing\s*=\s*false') {
+        $violations += 'main/services/startup_pet_asset_state_service.c: System Sleep descriptor-state rollback fence is incomplete'
+    }
+}
+
+# A12's next increment moves descriptor traversal and bounded retry out of
+# the composition root. HTTP, PSA, media lease, FreeRTOS wait and Display
+# preview remain host callbacks, so the shared service contract cannot leak
+# those physical owners back into main-independent business code.
+if (-not (Test-Path -LiteralPath $petAssetDownloadHeader) -or
+    -not (Test-Path -LiteralPath $petAssetDownloadSource)) {
+    $violations += 'main/services/pet_asset_download_service.[ch]: pet download transaction service is missing'
+} else {
+    $petAssetDownloadHeaderText = Get-Content -LiteralPath $petAssetDownloadHeader -Raw
+    $petAssetDownloadSourceText = Get-Content -LiteralPath $petAssetDownloadSource -Raw
+    foreach ($petDownloadRequirement in @(
+            'pet_asset_download_service_host_t',
+            'transaction_admitted',
+            'gateway_lease_current',
+            'request_frame',
+            'verify_frame_sha256',
+            'release_frame',
+            'wait_before_retry',
+            'wait_before_pack_retry',
+            'install_first_frame_preview',
+            'pet_asset_download_service_fetch\s*\(',
+            'pet_asset_download_service_fetch_startup_pack\s*\(')) {
+        if ($petAssetDownloadHeaderText -notmatch $petDownloadRequirement -or
+            $petAssetDownloadSourceText -notmatch $petDownloadRequirement) {
+            $violations += "main/services/pet_asset_download_service.[ch]: download transaction is incomplete (${petDownloadRequirement})"
+        }
+    }
+    if ($petAssetDownloadHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_download_service.h: public download contract must remain value-only and hardware/RTOS/JSON/crypto-neutral'
+    }
+    if ($petAssetDownloadSourceText -notmatch 'PET_ASSET_DOWNLOAD_STARTUP_ATTEMPTS' -or
+        $petAssetDownloadSourceText -notmatch 'PET_ASSET_DOWNLOAD_STARTUP_PACK_ATTEMPTS' -or
+        $petAssetDownloadSourceText -notmatch 'http_status\s*>=\s*400' -or
+        $petAssetDownloadSourceText -notmatch 'startup_pack_retryable\s*\(' -or
+        $petAssetDownloadSourceText -notmatch 'transaction_current\s*\(') {
+        $violations += 'main/services/pet_asset_download_service.c: must own frame/pack bounded retries, permanent HTTP classification, and boundary admission checks'
+    }
+    if ($petAssetDownloadSourceText -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_download_service.c: download transaction must not absorb HTTP, crypto, allocator, RTOS, Display, transport, or board ownership'
+    }
+}
+
+# A12's pet-application coordinator owns the applied-revision state and the
+# Display serialization mutex.  The root may still own authenticated HTTP,
+# SHA verification, capability admission and cache policy, but it must not
+# grow a second renderer ownership state machine around this service.
+if (-not (Test-Path -LiteralPath $petAssetApplyHeader) -or
+    -not (Test-Path -LiteralPath $petAssetApplySource)) {
+    $violations += 'main/services/pet_asset_apply_service.[ch]: pet display-application coordinator is missing'
+} else {
+    $petAssetApplyHeaderText = Get-Content -LiteralPath $petAssetApplyHeader -Raw
+    $petAssetApplySourceText = Get-Content -LiteralPath $petAssetApplySource -Raw
+    foreach ($petApplyRequirement in @(
+            'pet_asset_apply_service_init\s*\(',
+            'pet_asset_apply_service_free_frames\s*\(',
+            'pet_asset_apply_service_revision_installed\s*\(',
+            'pet_asset_apply_service_install_preview\s*\(',
+            'pet_asset_apply_service_clear\s*\(',
+            'pet_asset_apply_service_admitted_fn',
+            'pet_asset_apply_service_install_full\s*\(')) {
+        if ($petAssetApplyHeaderText -notmatch $petApplyRequirement -or
+            $petAssetApplySourceText -notmatch $petApplyRequirement) {
+            $violations += "main/services/pet_asset_apply_service.[ch]: application coordinator is incomplete (${petApplyRequirement})"
+        }
+    }
+    if ($petAssetApplyHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_apply_service.h: public application contract must remain value-only and hardware/RTOS/JSON-neutral'
+    }
+    if ($petAssetApplySourceText -notmatch 'scene_presenter_set_pet_asset_consuming' -or
+        $petAssetApplySourceText -notmatch 'pet_asset_service_next_memory_fallback' -or
+        $petAssetApplySourceText -notmatch 's_loaded_revision' -or
+        $petAssetApplySourceText -notmatch 'admitted\s*&&\s*!admitted') {
+        $violations += 'main/services/pet_asset_apply_service.c: coordinator must own consuming install, fallback, applied revision and late-admission state'
+    }
+    if ($petAssetApplySourceText -match '\b(?:esp_http_client|psa_hash|cJSON|gateway_transport|pet_asset_cache_storage|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_apply_service.c: application coordinator must not absorb HTTP, crypto, JSON, cache, or board ownership'
     }
 }
 
@@ -931,6 +1377,65 @@ if (-not (Test-Path -LiteralPath $cellularRecoveryServiceSource) -or
         $cellularRecoveryText -notmatch 'restart_gateway_after_wifi_ready[\s\S]*?wifi_gateway_startup_recovery_allowed' -or
         $cellularRecoveryText -notmatch 'restart_gateway_after_wifi_ready[\s\S]*?!s_system_sleep_preparing') {
         $violations += 'main/services/cellular_recovery_service.c: Wi-Fi recovery must retain provisioning, startup-admission and System Sleep guards'
+    }
+    if ($cellularRecoveryText -notmatch 's_initial_establishing' -or
+        $cellularRecoveryText -notmatch 'cellular_recovery_service_establish_initial[\s\S]*?s_initial_establishing\s*=\s*true' -or
+        $cellularRecoveryText -notmatch 'cellular_recovery_service_establish_initial[\s\S]*?s_initial_establishing\s*=\s*false' -or
+        $cellularRecoveryText -notmatch 'cellular_recovery_service_prepare_system_sleep[\s\S]*?s_initial_establishing' -or
+        $cellularRecoveryText -notmatch 'ensure_running_internal[\s\S]*?!s_initial_establishing') {
+        $violations += 'main/services/cellular_recovery_service.c: initial cellular establish must close recovery/Sleep admission until the synchronous modem operation returns'
+    }
+    if ($cellularRecoveryText -notmatch 'static\s+bool\s+recovery_admitted\s*\(' -or
+        $cellularRecoveryText -notmatch 'while\s*\(\s*recovery_admitted\s*\(' -or
+        $cellularRecoveryText -notmatch 'device_connectivity_establish_cellular_transport[\s\S]*?if\s*\(\s*!recovery_admitted\s*\(\s*\)\s*\)\s*continue\s*;[\s\S]*?publish_network_ready\s*\(\s*true\s*\)' -or
+        $cellularRecoveryText -notmatch 'restart_gateway_after_wifi_ready[\s\S]*?s_admission_open' -or
+        $cellularRecoveryText -notmatch 'static\s+bool\s+begin_gateway_rearm\s*\([\s\S]*?s_gateway_rearm_inflight' -or
+        $cellularRecoveryText -notmatch 'cellular_recovery_service_prepare_system_sleep[\s\S]*?s_gateway_rearm_inflight') {
+        $violations += 'main/services/cellular_recovery_service.c: recovery completion and Wi-Fi rearm must re-check logical admission after a concurrent lifecycle fence'
+    }
+}
+$connectivityServiceSourceText = Get-Content -LiteralPath $connectivityServiceSource -Raw
+if ($connectivityServiceSourceText -notmatch 'static\s+bool\s+begin_cellular_transport_quiesce\s*\(' -or
+    $connectivityServiceSourceText -notmatch 'const\s+bool\s+physically_ready\s*=\s*platform_connectivity_is_cellular_transport_ready\s*\(' -or
+    $connectivityServiceSourceText -notmatch 'session_exists\s*=\s*s_active_uplink\s*==\s*DEVICE_UPLINK_CELLULAR\s*\|\|[\s\S]*?s_cellular_ready[\s\S]*?physically_ready' -or
+    $connectivityServiceSourceText -notmatch 'connectivity_service_quiesce_cellular_transport[\s\S]*?begin_cellular_transport_quiesce\s*\(') {
+    $violations += 'main/connectivity_service.c: terminal cellular quiesce must drain a still-live prior session after selection changes without admitting a fresh Wi-Fi-only generation'
+}
+if ($connectivityServiceSourceText -notmatch 'bool\s+connectivity_service_has_cellular_transport_session\s*\(' -or
+    $mainConnectivityText -notmatch 'device_connectivity_has_cellular_transport_session\s*\(\s*\)[\s\S]*?device_connectivity_quiesce_cellular_transport\s*\(') {
+    $violations += 'main/main.c: terminal root rollback must use cellular-session evidence rather than the mutable selected-uplink hint before quiescing ML307'
+}
+$wifiStartupHeader = Join-Path $projectRoot 'main/services/wifi_startup_service.h'
+$wifiStartupSource = Join-Path $projectRoot 'main/services/wifi_startup_service.c'
+if (-not (Test-Path -LiteralPath $wifiStartupHeader) -or
+    -not (Test-Path -LiteralPath $wifiStartupSource)) {
+    $violations += 'main/services/wifi_startup_service.[ch]: Wi-Fi startup policy service is missing'
+} else {
+    $wifiStartupHeaderText = Get-Content -LiteralPath $wifiStartupHeader -Raw
+    $wifiStartupSourceText = Get-Content -LiteralPath $wifiStartupSource -Raw
+    foreach ($wifiStartupRequirement in @(
+            'wifi_startup_service_host_t',
+            'wifi_startup_service_request_t',
+            'scan_visible',
+            'begin_attempt',
+            'wait_attempt',
+            'configure_enterprise',
+            'wifi_startup_service_connect\s*\(')) {
+        if ($wifiStartupHeaderText -notmatch $wifiStartupRequirement -or
+            $wifiStartupSourceText -notmatch $wifiStartupRequirement) {
+            $violations += "main/services/wifi_startup_service.[ch]: Wi-Fi startup policy is incomplete (${wifiStartupRequirement})"
+        }
+    }
+    if ($wifiStartupHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/wifi_startup_service.h: public Wi-Fi startup policy must remain value-only and hardware/RTOS/JSON-neutral'
+    }
+    if ($wifiStartupSourceText -match '\b(?:esp_http_client|esp_wifi|esp_netif|psa_hash|heap_caps|xTask|SemaphoreHandle_t|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/wifi_startup_service.c: policy service must not absorb HTTP, Wi-Fi SDK, netif, crypto, allocator, RTOS, transport, or board ownership'
+    }
+    $wifiStartupRootText = Get-Content -LiteralPath $mainConnectivitySource -Raw
+    if ($wifiStartupRootText -match '\b(?:start_wifi_saved_list|collect_saved_wifi_scan_candidate|saved_wifi_scan_candidates_t)\b' -or
+        $wifiStartupRootText -notmatch 'wifi_startup_service_connect\s*\(') {
+        $violations += 'main/main.c: saved Wi-Fi selection/attempt/enterprise startup policy must use wifi_startup_service'
     }
 }
 $platformSensorReferences = @($allCFiles | Where-Object {
@@ -1888,6 +2393,8 @@ $wakeCapabilityHostCheck = Join-Path $projectRoot 'tools/check-wake-capability.p
 $wakeCapabilityHostTest = Join-Path $projectRoot 'tools/host_tests/test_wake_capability.c'
 $wakeProfileMatrixHostCheck = Join-Path $projectRoot 'tools/check-wake-profile-matrix.ps1'
 $wakeProfileMatrixHostTest = Join-Path $projectRoot 'tools/host_tests/test_wake_profile_matrix.c'
+$alarmWakePlanHostCheck = Join-Path $projectRoot 'tools/check-alarm-wake-plan.ps1'
+$alarmWakePlanHostTest = Join-Path $projectRoot 'tools/host_tests/test_alarm_wake_plan.c'
 $powerFailClosedHostCheck = Join-Path $projectRoot 'tools/check-platform-power-fail-closed.ps1'
 $powerFailClosedHostTest = Join-Path $projectRoot 'tools/host_tests/test_platform_power_fail_closed.c'
 $powerWakeAuthorizationHostCheck = Join-Path $projectRoot 'tools/check-platform-power-wake-authorization.ps1'
@@ -2490,50 +2997,72 @@ if (-not (Test-Path -LiteralPath $wakeDeadlineHeaderForSleep) -or
     }
 }
 
-# The composition root retains one legacy internal-stack persistence worker
-# for volume, brightness and pairing-token mutations. It must participate in
-# the same reversible transaction before shared Persistence closes new NVS
-# admission, while Power's public contract remains value-only and learns no
-# queue/task/NVS schema details.
+# The internal-stack persistence worker owns its queue/task/Registry lifecycle
+# outside the composition root. It still participates in the same reversible
+# Power transaction before shared Persistence closes new NVS admission, while
+# the public worker and Power contracts remain value-only.
 $powerServiceHeaderForStorage = Join-Path $projectRoot 'main/power_service.h'
 $mainCompositionForStorage = Join-Path $projectRoot 'main/main.c'
+$configurationPersistenceWorkerHeader = Join-Path $projectRoot 'main/services/configuration_persistence_worker_service.h'
+$configurationPersistenceWorkerSource = Join-Path $projectRoot 'main/services/configuration_persistence_worker_service.c'
 if (-not (Test-Path -LiteralPath $powerServiceHeaderForStorage) -or
-    -not (Test-Path -LiteralPath $mainCompositionForStorage)) {
-    $violations += 'main/power_service.h / main/main.c: composition-root Storage System Sleep bridge is missing'
+    -not (Test-Path -LiteralPath $mainCompositionForStorage) -or
+    -not (Test-Path -LiteralPath $configurationPersistenceWorkerHeader) -or
+    -not (Test-Path -LiteralPath $configurationPersistenceWorkerSource)) {
+    $violations += 'main/power_service.h / main/main.c / main/services/configuration_persistence_worker_service.[ch]: Storage System Sleep bridge is missing'
 } else {
     $powerStorageHeaderText = Get-Content -LiteralPath $powerServiceHeaderForStorage -Raw
     $mainStorageText = Get-Content -LiteralPath $mainCompositionForStorage -Raw
+    $configurationPersistenceWorkerHeaderText = Get-Content -LiteralPath $configurationPersistenceWorkerHeader -Raw
+    $configurationPersistenceWorkerSourceText = Get-Content -LiteralPath $configurationPersistenceWorkerSource -Raw
     foreach ($storageBridgeRequirement in @(
             'power_service_system_sleep_storage_prepare_t',
             'power_service_system_sleep_storage_abort_t',
             'power_service_set_system_sleep_storage_bridge',
-            'prepare_output_volume_persist_system_sleep',
-            'abort_output_volume_persist_system_sleep_prepare',
-            's_output_volume_persist_system_sleep_preparing',
-            's_output_volume_persist_system_sleep_quiesced',
-            's_output_volume_persist_exit_status',
-            's_output_volume_persist_registry_retirement_failed',
+            'configuration_persistence_prepare_system_sleep',
+            'configuration_persistence_abort_system_sleep_prepare',
+            'configuration_persistence_worker_service_prepare_system_sleep',
+            'configuration_persistence_worker_service_abort_system_sleep_prepare',
+            's_system_sleep_preparing',
+            's_system_sleep_quiesced',
+            's_exit_status',
+            's_registry_retirement_failed',
             'system_sleep_prepare\s*=\s*true',
             'power_service_set_system_sleep_storage_bridge\s*\(')) {
         if ($powerStorageHeaderText -notmatch $storageBridgeRequirement -and
-            $mainStorageText -notmatch $storageBridgeRequirement) {
-            $violations += "main/power_service.h / main/main.c: composition-root Storage System Sleep bridge is incomplete (${storageBridgeRequirement})"
+            $mainStorageText -notmatch $storageBridgeRequirement -and
+            $configurationPersistenceWorkerHeaderText -notmatch $storageBridgeRequirement -and
+            $configurationPersistenceWorkerSourceText -notmatch $storageBridgeRequirement) {
+            $violations += "main/power_service.h / main/main.c / main/services/configuration_persistence_worker_service.[ch]: Storage System Sleep bridge is incomplete (${storageBridgeRequirement})"
         }
     }
     if ($powerStorageHeaderText -match '\b(?:QueueHandle_t|TaskHandle_t|SemaphoreHandle_t|esp_err_t|nvs_|gpio_|esp_sleep)\b|#include\s*[<"](?:freertos/|driver/)') {
         $violations += 'main/power_service.h: composition-root Storage bridge contract must remain value-only'
     }
-    foreach ($rootStorageRetirementRequirement in @(
-            's_output_volume_persist_exit_status',
-            's_output_volume_persist_retiring',
-            's_output_volume_persist_registry_retirement_failed',
+    if ($configurationPersistenceWorkerHeaderText -match '\b(?:esp_|freertos/|TaskHandle_t|SemaphoreHandle_t|QueueHandle_t|nvs_|heap_caps|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/configuration_persistence_worker_service.h: persistence worker public contract must remain value-only and SDK/RTOS/board-neutral'
+    }
+    foreach ($workerStorageRetirementRequirement in @(
+            's_exit_status',
+            's_retiring',
+            's_registry_retirement_failed',
             'const esp_err_t registry_err = task_registry_unregister_with_timeout\s*\(',
-            's_output_volume_persist_exit_status\s*=\s*registry_err',
-            '!s_output_volume_persist_registry_retirement_failed')) {
-        if ($mainStorageText -notmatch $rootStorageRetirementRequirement) {
-            $violations += "main/main.c: root Storage worker must retain failed Registry retirement closed (${rootStorageRetirementRequirement})"
+            's_exit_status\s*=\s*registry_err',
+            '!s_registry_retirement_failed',
+            's_start_gate')) {
+        if ($configurationPersistenceWorkerSourceText -notmatch $workerStorageRetirementRequirement) {
+            $violations += "main/services/configuration_persistence_worker_service.c: Storage worker must retain failed Registry retirement closed (${workerStorageRetirementRequirement})"
         }
     }
+    if ($mainStorageText -match '\bs_output_volume_persist(?:_|\b)|\boutput_volume_persist_task\b') {
+        $violations += 'main/main.c: legacy output-volume persistence worker state/task must be owned by configuration_persistence_worker_service'
+    }
+}
+if (-not (Test-Path -LiteralPath $alarmWakePlanHostCheck) -or
+    -not (Test-Path -LiteralPath $alarmWakePlanHostTest) -or
+    -not (Test-Path -LiteralPath (Join-Path $projectRoot 'main/alarm_wake_plan.c')) -or
+    -not (Test-Path -LiteralPath (Join-Path $projectRoot 'main/alarm_wake_plan.h'))) {
+    $violations += 'alarm wake plan value contract/gate is missing'
 }
 
 # Configuration owns durable product credentials and its own serialized
@@ -3086,11 +3615,46 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
     $connectivityHeaderText = Get-Content -LiteralPath $connectivityServiceHeader -Raw
     $connectivitySourceText = Get-Content -LiteralPath $connectivityServiceSource -Raw
     $mainCompositionText = Get-Content -LiteralPath $mainCompositionSource -Raw
+    if ($mainCompositionText -match '\bs_pet_asset_apply_mutex\b|\bs_loaded_pet_asset_(?:revision|frame_count)\b') {
+        $violations += 'main/main.c: pet display application mutex/revision state must remain inside pet_asset_apply_service'
+    }
+    foreach ($petRootRequirement in @(
+            'pet_asset_apply_service_init\s*\(',
+            'pet_asset_apply_service_revision_installed\s*\(',
+            'pet_asset_apply_service_install_preview\s*\(',
+            'pet_asset_apply_service_install_full\s*\(')) {
+        if ($mainCompositionText -notmatch $petRootRequirement) {
+            $violations += "main/main.c: pet application coordinator routing is incomplete (${petRootRequirement})"
+        }
+    }
+    if ($mainCompositionText -match '\bPET_ASSET_STARTUP_(?:TRANSACTION_ATTEMPTS|RETRY_DELAY_MS)\b' -or
+        $mainCompositionText -notmatch 'pet_asset_download_service_fetch_startup_pack\s*\(') {
+        $violations += 'main/main.c: startup complete-pack retry must be owned by pet_asset_download_service, not root retry state'
+    }
+    if ($mainCompositionText -notmatch 'pet_asset_startup_service_apply\s*\(') {
+        $violations += 'main/main.c: cold-start pet download/install/cache transaction must be owned by pet_asset_startup_service'
+    }
+    if ($mainCompositionText -notmatch 'startup_pet_asset_admission_service_admit_pending\s*\(' -or
+        $mainCompositionText -notmatch 'startup_pet_asset_admission_service_rearm_preempted\s*\(') {
+        $violations += 'main/main.c: cold-start pet admission, retry and audio re-arm policy must be owned by startup_pet_asset_admission_service'
+    }
+    if ($mainCompositionText -notmatch 'pet_asset_profile_service_apply\s*\(') {
+        $violations += 'main/main.c: runtime pet-profile latest-wins/retry policy must be owned by pet_asset_profile_service'
+    }
+    if ($mainCompositionText -notmatch 'startup_pet_asset_sleep_service_prepare\s*\(' -or
+        $mainCompositionText -notmatch 'startup_pet_asset_sleep_service_abort\s*\(') {
+        $violations += 'main/main.c: startup pet System Sleep participant order must be owned by startup_pet_asset_sleep_service'
+    }
+    if ($mainCompositionText -match '\bload_cached_pet_asset\b' -or
+        $mainCompositionText -notmatch 'pet_asset_restore_service_restore\s*\(') {
+        $violations += 'main/main.c: cached pet validation/install transaction must be owned by pet_asset_restore_service, not root orchestration'
+    }
     foreach ($connectivityParticipantRequirement in @(
         'device_status_t\s+connectivity_service_prepare_system_sleep\s*\(\s*uint32_t\s+timeout_ms\s*\)',
         'void\s+connectivity_service_abort_system_sleep_prepare\s*\(\s*void\s*\)',
         'connectivity_service_set_system_sleep_request_canceller',
         's_network_request_users',
+        's_cellular_transport_operation_users',
         's_transport_selection_users',
         's_wifi_attempt_users',
         'acquire_transport_selection_admission',
@@ -3113,9 +3677,14 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
         $violations += 'main/connectivity_service.c: System Sleep fence must close Wi-Fi attempt admission and reject late IP/disconnect callbacks before they publish readiness'
     }
     if ($connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?!s_system_sleep_preparing' -or
+        $connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?s_network_request_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?s_cellular_network_request_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?s_cellular_transport_operation_users\s*==\s*0' -or
         $connectivitySourceText -notmatch 'connectivity_service_prepare_system_sleep[\s\S]*?s_transport_selection_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'connectivity_service_prepare_system_sleep[\s\S]*?s_cellular_transport_operation_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'connectivity_service_deinit_legacy[\s\S]*?s_cellular_transport_operation_users\s*==\s*0' -or
         $connectivitySourceText -notmatch 'connectivity_service_set_active_uplink[\s\S]*?acquire_transport_selection_admission') {
-        $violations += 'main/connectivity_service.c: System Sleep fence must close and drain profile-side uplink selection before transport park'
+        $violations += 'main/connectivity_service.c: uplink selection must wait for network borrowers/physical cellular operations and System Sleep/deinit must drain them before transport park or release'
     }
     if ($connectivitySourceText -notmatch 'wake_wifi_attempt_waiters_for_system_sleep' -or
         $connectivitySourceText -notmatch 'connectivity_service_prepare_system_sleep[\s\S]*?wake_wifi_attempt_waiters_for_system_sleep' -or
@@ -3129,8 +3698,61 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
             'connectivity_service_establish_cellular_transport',
             'connectivity_service_quiesce_cellular_transport',
             'connectivity_service_is_cellular_transport_ready')) {
-        if ($connectivitySourceText -notmatch "$cellularSleepEntry[\s\S]*?s_system_sleep_preparing") {
+        $cellularSleepProtected =
+            $connectivitySourceText -match "$cellularSleepEntry[\s\S]*?s_system_sleep_preparing"
+        if (-not $cellularSleepProtected -and
+            $cellularSleepEntry -ne 'connectivity_service_is_cellular_transport_ready') {
+            $cellularSleepProtected =
+                $connectivitySourceText -match "$cellularSleepEntry[\s\S]*?begin_cellular_transport_(?:operation|quiesce)"
+        }
+        if (-not $cellularSleepProtected) {
             $violations += "main/connectivity_service.c: System Sleep fence must reject $cellularSleepEntry before it can touch or publish profile cellular state"
+        }
+    }
+    if ($connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?s_connectivity_initialized' -or
+        $connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?!s_system_sleep_preparing' -or
+        $connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?s_active_uplink\s*==\s*DEVICE_UPLINK_CELLULAR' -or
+        $connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?s_cellular_transport_operation_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?s_network_request_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?s_cellular_network_request_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'begin_cellular_network_request[\s\S]*?s_cellular_transport_operation_users\s*==\s*0' -or
+        $connectivitySourceText -notmatch 'begin_cellular_transport_operation[\s\S]*?s_cellular_transport_operation_users') {
+        $violations += 'main/connectivity_service.c: cellular physical lifecycle and request admissions must be mutually exclusive within the selected awake generation'
+    }
+    foreach ($cellularAdmissionEntry in @(
+            'connectivity_service_prepare_cellular_transport',
+            'connectivity_service_start_cellular_transport',
+            'connectivity_service_establish_cellular_transport')) {
+        if ($connectivitySourceText -notmatch "$cellularAdmissionEntry[\s\S]*?begin_cellular_transport_operation" -or
+            $connectivitySourceText -notmatch "$cellularAdmissionEntry[\s\S]*?end_cellular_transport_operation") {
+            $violations += "main/connectivity_service.c: cellular split lifecycle must retain/release physical-operation admission around $cellularAdmissionEntry before its profile adapter call"
+        }
+    }
+    if ($connectivitySourceText -notmatch 'connectivity_service_quiesce_cellular_transport[\s\S]*?begin_cellular_transport_quiesce' -or
+        $connectivitySourceText -notmatch 'connectivity_service_quiesce_cellular_transport[\s\S]*?end_cellular_transport_operation') {
+        $violations += 'main/connectivity_service.c: terminal cellular quiesce must retain/release its physical-operation admission before the profile adapter call'
+    }
+    if ($connectivitySourceText -notmatch 'begin_cellular_network_request[\s\S]*?s_connectivity_initialized' -or
+        $connectivitySourceText -notmatch 'begin_cellular_network_request[\s\S]*?s_active_uplink\s*==\s*DEVICE_UPLINK_CELLULAR' -or
+        $connectivitySourceText -notmatch 's_cellular_network_request_users' -or
+        $connectivitySourceText -notmatch 'connectivity_service_cellular_http_request[\s\S]*?begin_cellular_network_request' -or
+        $connectivitySourceText -notmatch 'connectivity_service_cellular_http_stream_request[\s\S]*?begin_cellular_network_request' -or
+        $connectivitySourceText -notmatch 'connectivity_service_cancel_cellular_foreground_request[\s\S]*?s_cellular_network_request_users' -or
+        $connectivitySourceText -notmatch 'connectivity_service_cancel_cellular_requests_for_owner[\s\S]*?s_cellular_network_request_users') {
+        $violations += 'main/connectivity_service.c: cellular HTTP/stream and cancellation must be bounded by selected-cellular request admission before reaching the profile adapter'
+    }
+    foreach ($cellularCancelCaller in @(
+            (Join-Path $projectRoot 'main/services/gateway_lifecycle_service.c'),
+            (Join-Path $projectRoot 'main/services/gateway_transport.c'),
+            (Join-Path $projectRoot 'main/services/command_service.c'),
+            (Join-Path $projectRoot 'main/services/interaction_service.c'))) {
+        if (-not (Test-Path -LiteralPath $cellularCancelCaller)) {
+            $violations += "missing cellular request cancellation caller $cellularCancelCaller"
+            continue
+        }
+        $cellularCancelCallerText = Get-Content -LiteralPath $cellularCancelCaller -Raw
+        if ($cellularCancelCallerText -match 'device_connectivity_is_active_cellular\s*\(\s*\)[\s\S]{0,160}?device_connectivity_cancel_cellular') {
+            $violations += "${cellularCancelCaller}: in-flight cellular request cancellation must not be gated by current active uplink"
         }
     }
     # A generic request drain cannot see retained profile transport workers.
@@ -3281,15 +3903,14 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
             'cellular_recovery_service_abort_system_sleep_prepare\s*\(\s*\)',
             'device_status_t\s+prepare_wake_restart_system_sleep\s*\(\s*uint32_t\s+timeout_ms\s*\)',
             'void\s+abort_wake_restart_system_sleep_prepare\s*\(\s*void\s*\)',
-            's_wake_restart_system_sleep_preparing',
-            's_wake_restart_system_sleep_was_running',
-            's_wake_restart_system_sleep_restart_pending',
+            'wake_restart_worker_service_prepare_system_sleep\s*\(\s*timeout_ms\s*\)',
+            'wake_restart_worker_service_abort_system_sleep_prepare\s*\(\s*\)',
             'prepare_wake_restart_system_sleep\s*\(\s*remaining_ms\s*\)',
             'abort_wake_restart_system_sleep_prepare\s*\(\s*\)',
             'device_status_t\s+prepare_deferred_setup_system_sleep\s*\(\s*uint32_t\s+timeout_ms\s*\)',
             'void\s+abort_deferred_setup_system_sleep_prepare\s*\(\s*void\s*\)',
-            's_deferred_setup_system_sleep_preparing',
-            's_deferred_setup_system_sleep_was_running',
+            'deferred_setup_worker_service_prepare_system_sleep\s*\(\s*timeout_ms\s*\)',
+            'deferred_setup_worker_service_abort_system_sleep_prepare\s*\(\s*\)',
             'prepare_deferred_setup_system_sleep\s*\(\s*remaining_ms\s*\)',
             'abort_deferred_setup_system_sleep_prepare\s*\(\s*\)'
         )) {
@@ -3311,16 +3932,15 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
             $violations += 'main/services/cellular_recovery_service.c: ML307 recovery System Sleep ABORT must defer a timed-out generation restart until its old Registry identity exits'
         }
     }
-    if ($mainCompositionText -notmatch 's_wake_restart_admission_open\s*&&\s*!s_wake_restart_registry_retirement_failed\s*&&\s*!s_wake_restart_system_sleep_preparing') {
-        $violations += 'main/main.c: offline wake restart must not admit a new coordinator during System Sleep PREPARE'
+    if ($mainCompositionText -notmatch 'wake_restart_worker_service_start\s*\(\s*\)') {
+        $violations += 'main/main.c: offline wake restart must delegate coordinator admission to its System Sleep fenced worker service'
     }
-    if ($mainCompositionText -notmatch 's_wake_restart_system_sleep_restart_pending\s*=\s*true' -or
-        $mainCompositionText -notmatch 's_wake_restart_retiring' -or
-        $mainCompositionText -notmatch 'registry_err\s*==\s*ESP_OK') {
-        $violations += 'main/main.c: offline wake restart System Sleep ABORT must defer a timed-out generation restart until its old Registry identity exits'
+    if ($mainCompositionText -notmatch 'wake_restart_worker_service_prepare_system_sleep\s*\(\s*timeout_ms\s*\)' -or
+        $mainCompositionText -notmatch 'wake_restart_worker_service_abort_system_sleep_prepare\s*\(\s*\)') {
+        $violations += 'main/main.c: offline wake restart System Sleep fence must remain delegated to its lifecycle owner'
     }
-    if ($mainCompositionText -notmatch 's_deferred_setup_admission_open\s*&&\s*!s_deferred_setup_registry_retirement_failed\s*&&\s*!s_deferred_setup_system_sleep_preparing') {
-        $violations += 'main/main.c: deferred setup must not admit a new portal coordinator during System Sleep PREPARE'
+    if ($mainCompositionText -notmatch 'deferred_setup_worker_service_start\s*\(\s*\)\s*==\s*DEVICE_STATUS_OK') {
+        $violations += 'main/main.c: deferred setup must delegate portal-coordinator admission to its System Sleep fenced worker service'
     }
     # Startup-pet task/Registry retirement is now private to the lifecycle
     # service. Root retains only the reversible domain state and invokes the
@@ -3383,9 +4003,13 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
         if ($startupPetRetryHeaderText -match '\b(?:esp_|freertos/|driver/|board_port|CONFIG_MACLAW_BOARD_|TaskHandle_t|SemaphoreHandle_t|esp_timer_handle_t|cJSON)\b') {
             $violations += 'main/services/startup_pet_retry_service.h: retry contract must remain value-only and hardware/RTOS/JSON-neutral'
         }
-        if ($mainCompositionText -match '\bs_startup_pet_retry_(?:timer|callback|due)' -or
+        if ($mainCompositionText -match '\bs_startup_pet_retry_(?:timer|callback|due|count)' -or
             $mainCompositionText -notmatch 'startup_pet_retry_service_(?:init|schedule|take_due|stop|prepare_system_sleep|abort_system_sleep_prepare)') {
             $violations += 'main/main.c: startup pet retry timer/callback state must be owned by its service and wired only through its public API'
+        }
+        if ($mainCompositionText -match '\bs_startup_pet_system_sleep_(?:preparing|was_pending|was_preempted_by_audio)\b' -or
+            $mainCompositionText -notmatch 'startup_pet_asset_state_service_(?:prepare_system_sleep|abort_system_sleep_prepare|system_sleep_preparing)') {
+            $violations += 'main/main.c: startup pet System Sleep descriptor facts must remain inside startup_pet_asset_state_service'
         }
     }
     $petCacheServiceSource = Join-Path $projectRoot 'main/services/pet_cache_service.c'
@@ -3468,10 +4092,22 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
         }
     }
     $gatewayTransportSource = Join-Path $projectRoot 'main/services/gateway_transport.c'
+    $gatewayTransportHeader = Join-Path $projectRoot 'main/services/gateway_transport.h'
+    $gatewayDispatcherSource = Join-Path $projectRoot 'main/services/gateway_dispatcher.c'
+    $gatewayDispatcherHeader = Join-Path $projectRoot 'main/services/gateway_dispatcher.h'
     if (-not (Test-Path -LiteralPath $gatewayTransportSource)) {
         $violations += 'main/services/gateway_transport.c: Gateway Transport source is missing for System Sleep request-admission audit'
     } else {
         $gatewayTransportText = Get-Content -LiteralPath $gatewayTransportSource -Raw
+        $gatewayTransportHeaderText = if (Test-Path -LiteralPath $gatewayTransportHeader) {
+            Get-Content -LiteralPath $gatewayTransportHeader -Raw
+        } else { '' }
+        $gatewayDispatcherText = if (Test-Path -LiteralPath $gatewayDispatcherSource) {
+            Get-Content -LiteralPath $gatewayDispatcherSource -Raw
+        } else { '' }
+        $gatewayDispatcherHeaderText = if (Test-Path -LiteralPath $gatewayDispatcherHeader) {
+            Get-Content -LiteralPath $gatewayDispatcherHeader -Raw
+        } else { '' }
         $voicePairStart = $gatewayTransportText.IndexOf('gateway_transport_pair_by_voice')
         $voicePairEnd = $gatewayTransportText.IndexOf('static esp_err_t pair_by_code', $voicePairStart)
         $voicePairText = if ($voicePairStart -ge 0 -and $voicePairEnd -gt $voicePairStart) {
@@ -3499,8 +4135,77 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
             $violations += 'Gateway Transport: meeting stream must own the active client/cancel lane while Meeting Service uses only value contracts'
         }
     }
-    if ($mainText -match 's_meeting_task_active_client|s_meeting_upload_reusable_client|s_meeting_task_client_mutex') {
+    if ($mainCompositionText -match 's_meeting_task_active_client|s_meeting_upload_reusable_client|s_meeting_task_client_mutex') {
         $violations += 'main/main.c: meeting streaming HTTP client ownership must remain in Gateway Transport, not composition root'
+    }
+
+    # Text/control events use the same Gateway Transport envelope and request
+    # lane as every other incoming message.  Keep cJSON/HTTP construction out
+    # of the composition root so command cancellation cannot bypass transport
+    # admission, bearer handling, or active-client cancellation.
+    if ($gatewayTransportHeaderText -notmatch 'gateway_transport_send_text_event\s*\(' -or
+        $gatewayTransportText -notmatch 'int32_t\s+gateway_transport_send_text_event\s*\(' -or
+        $gatewayTransportText -notmatch '"/api/im-gateway/v1/incoming"' -or
+        $gatewayTransportText -notmatch '"replyToMessageId"' -or
+        $gatewayTransportText -notmatch '"accepted"') {
+        $violations += 'Gateway Transport: text-event envelope/ACK contract is missing'
+    }
+    if ($gatewayTransportHeaderText -notmatch 'gateway_transport_upload_voice\s*\(' -or
+        $gatewayTransportHeaderText -notmatch 'gateway_transport_send_voice_event\s*\(' -or
+        $gatewayTransportText -notmatch 'int32_t\s+gateway_transport_upload_voice\s*\(' -or
+        $gatewayTransportText -notmatch 'int32_t\s+gateway_transport_send_voice_event\s*\(' -or
+        $mainCompositionText -match 'static\s+esp_err_t\s+(?:upload_voice|send_voice_event)\s*\(') {
+        $violations += 'Gateway Transport: voice upload/submit ownership must not remain in main.c'
+    }
+    if ($gatewayDispatcherHeaderText -notmatch 'release_audio' -or
+        $gatewayDispatcherText -notmatch 'release_audio\s*\(' -or
+        $mainCompositionText -match '\bfree\s*\(\s*audio\s*\)') {
+        $violations += 'Gateway Dispatcher: downloaded audio buffers require an explicit transport-owned release seam'
+    }
+    if ($gatewayTransportHeaderText -notmatch 'gateway_transport_post_json\s*\(' -or
+        $gatewayTransportText -notmatch 'int32_t\s+gateway_transport_post_json\s*\(' -or
+        $mainCompositionText -match 'request\s*\(\s*"POST"\s*,\s*"/api/im-gateway/v1/tool-result"') {
+        $violations += 'Gateway Transport: tool-result POST must use the shared transport JSON lane'
+    }
+    if ($gatewayTransportHeaderText -notmatch 'gateway_transport_ack_messages\s*\(' -or
+        $gatewayTransportText -notmatch 'int32_t\s+gateway_transport_ack_messages\s*\(' -or
+        $gatewayDispatcherText -match 'gateway_transport_request\s*\(\s*"POST"\s*,\s*"/api/im-gateway/v1/ack"') {
+        $violations += 'Gateway Dispatcher: ACK POST must use the dedicated Gateway Transport ACK lane'
+    }
+    foreach ($meetingTransportContract in @(
+            'gateway_transport_create_meeting\s*\(',
+            'gateway_transport_get_meeting_status\s*\(',
+            'gateway_transport_post_meeting_action\s*\(')) {
+        if ($gatewayTransportHeaderText -notmatch $meetingTransportContract -or
+            $gatewayTransportText -notmatch $meetingTransportContract) {
+            $violations += "Gateway Transport: meeting endpoint contract is missing ($meetingTransportContract)"
+        }
+    }
+    if ($mainCompositionText -match 'static\s+esp_err_t\s+(?:create_meeting_recording|get_meeting_status|post_meeting_action)\s*\(') {
+        $violations += 'main/main.c: meeting endpoint HTTP/JSON implementation must remain in Gateway Transport'
+    }
+    if ($gatewayTransportHeaderText -notmatch 'gateway_transport_download_frame\s*\(' -or
+        $gatewayTransportText -notmatch 'int32_t\s+gateway_transport_download_frame\s*\(' -or
+        $mainCompositionText -match 'request_with_capacity\s*\(') {
+        $violations += 'Gateway Transport: bounded frame download must own response sizing and HTTP request'
+    }
+    # Runtime and startup asset traversals share one transport lane, but their
+    # cancellation identity must also be single-owner.  Require the public
+    # frame bridge to serialize registration and to preserve the epoch decision
+    # across both Wi-Fi and cellular completion races.
+    foreach ($assetCancellationRequirement in @(
+            's_asset_download_guard\s*=\s*xSemaphoreCreateMutex',
+            'xSemaphoreTake\(s_asset_download_guard,\s*pdMS_TO_TICKS\(100\)\)',
+            'const\s+uint32_t\s+requested_epoch\s*=\s*asset_cancel_epoch_snapshot',
+            'asset_cancel_epoch_current\(asset_epoch\)',
+            'cellular_err\s*=\s*ESP_ERR_INVALID_STATE')) {
+        if ($gatewayTransportText -notmatch $assetCancellationRequirement) {
+            $violations += "Gateway Transport: asset cancellation single-owner/epoch fence is incomplete (${assetCancellationRequirement})"
+        }
+    }
+    if ($mainCompositionText -match 'static\s+esp_err_t\s+send_text_event\s*\(' -or
+        $mainCompositionText -notmatch 'gateway_transport_send_text_event\s*\([\s\S]{0,120}?"/cancel"') {
+        $violations += 'main/main.c: command cancellation must delegate text-event transport ownership'
     }
 }
 
@@ -4120,6 +4825,8 @@ if (-not (Test-Path -LiteralPath $wifiDriverOwnerHeader) -or
 # only callback-admission/SNTP stop bridges.
 $networkRootOwnerHeader = Join-Path $projectRoot 'main/services/connectivity_network_root_owner.h'
 $networkRootOwnerSource = Join-Path $projectRoot 'main/services/connectivity_network_root_owner.c'
+$networkLifecycleHeader = Join-Path $projectRoot 'main/services/connectivity_network_lifecycle_service.h'
+$networkLifecycleSource = Join-Path $projectRoot 'main/services/connectivity_network_lifecycle_service.c'
 $connectivityRestartCoordinatorHeader = Join-Path $projectRoot 'main/services/connectivity_restart_coordinator.h'
 $connectivityRestartCoordinatorSource = Join-Path $projectRoot 'main/services/connectivity_restart_coordinator.c'
 if (-not (Test-Path -LiteralPath $networkRootOwnerHeader) -or
@@ -4148,11 +4855,19 @@ if (-not (Test-Path -LiteralPath $networkRootOwnerHeader) -or
     }
     foreach ($networkRootOrder in @(
             'stop_callback_admission[\s\S]*?stop_clock_sync[\s\S]*?connectivity_wifi_driver_owner_stop[\s\S]*?connectivity_wifi_driver_owner_unregister_application_handlers[\s\S]*?provisioning_network_owner_release_setup_ap[\s\S]*?provisioning_network_owner_release_station[\s\S]*?connectivity_wifi_driver_owner_deinitialize[\s\S]*?connectivity_network_core_owner_release',
-            'stop_provisioning_under_deadline[\s\S]*?stop_provisioning',
+            'stop_provisioning_under_deadline[\s\S]*?stop_provisioning[\s\S]*?status\s*!=\s*DEVICE_STATUS_OK[\s\S]*?provisioning_has_live_resources[\s\S]*?DEVICE_STATUS_BUSY',
+            'stop_provisioning_under_deadline[\s\S]*?status\s*!=\s*DEVICE_STATUS_OK[\s\S]*?remaining_timeout_ms\s*\(\s*deadline_us\s*\)\s*==\s*0[\s\S]*?provisioning_has_live_resources',
+            'stop_callback_admission[\s\S]*?provisioning_has_live_resources[\s\S]*?stop_clock_sync[\s\S]*?provisioning_has_live_resources',
             'provisioning_has_live_resources[\s\S]*?return\s+DEVICE_STATUS_BUSY',
+            'connectivity_network_root_owner_ensure_core\s*\([^)]*\)\s*\{[\s\S]*?!s_lifecycle_host_configured[\s\S]*?DEVICE_STATUS_UNAVAILABLE',
+            'connectivity_network_root_owner_initialize_wifi\s*\([^)]*\)\s*\{[\s\S]*?!s_lifecycle_host_configured[\s\S]*?DEVICE_STATUS_UNAVAILABLE',
             'lifecycle_host_matches[\s\S]*?connectivity_network_core_owner_has_resources[\s\S]*?return\s+DEVICE_STATUS_BUSY',
             'if\s*\(status\s*!=\s*DEVICE_STATUS_OK\)\s*return\s+status',
-            'remaining_timeout_ms\s*\(')) {
+            'remaining_timeout_ms\s*\(',
+            'connectivity_wifi_driver_owner_stop\s*\([\s\S]*?connectivity_wifi_driver_owner_started\s*\(\)',
+            'provisioning_network_owner_release_setup_ap\s*\([\s\S]*?provisioning_network_owner_setup_ap_ready\s*\(\)',
+            'provisioning_network_owner_release_station\s*\([\s\S]*?provisioning_network_owner_has_resources\s*\(\)',
+            'connectivity_wifi_driver_owner_deinitialize\s*\([\s\S]*?connectivity_network_core_owner_release\s*\(\)')) {
         if ($networkRootOwnerText -notmatch $networkRootOrder) {
             $violations += "main/services/connectivity_network_root_owner.c: physical-root stop ordering/fail-closed fence is incomplete (${networkRootOrder})"
         }
@@ -4201,9 +4916,135 @@ if (-not (Test-Path -LiteralPath $connectivityRestartCoordinatorHeader) -or
     if ($restartSourceText -match '\b(?:esp_|freertos/|TaskHandle_t|SemaphoreHandle_t|httpd_|esp_http_client|gateway_lifecycle_service_abort_system_sleep_prepare)\b') {
         $violations += 'main/services/connectivity_restart_coordinator.c: runtime restart policy must not own SDK/RTOS/HTTP objects or System Sleep ABORT'
     }
-    if ($restartSourceText -notmatch 'quiesce_network_dependents[\s\S]*?stop_provisioning[\s\S]*?stop_physical_root[\s\S]*?initialize_logical_connectivity[\s\S]*?initialize_physical_root[\s\S]*?start_selected_uplink[\s\S]*?start_clock_sync[\s\S]*?rearm_gateway' -or
+    if ($restartSourceText -notmatch 'quiesce_network_dependents[\s\S]*?stop_provisioning[\s\S]*?call_physical_root_stop[\s\S]*?initialize_logical_connectivity[\s\S]*?initialize_physical_root[\s\S]*?start_selected_uplink[\s\S]*?start_clock_sync[\s\S]*?rearm_gateway' -or
         $restartSourceText -notmatch 'CONNECTIVITY_RESTART_STAGE_FAILED[\s\S]*?return\s+status') {
         $violations += 'main/services/connectivity_restart_coordinator.c: runtime restart must preserve ordering and terminal fail-closed failure'
+    }
+    if ($restartSourceText -notmatch '(?s)call_physical_root_stop\s*\([^)]*\)\s*\{.*?if\s*\(timeout_ms\s*==\s*0\)\s*return\s+DEVICE_STATUS_TIMEOUT;.*?physical_root_stop_committed\s*=\s*true;.*?stop_physical_root') {
+        $violations += 'main/services/connectivity_restart_coordinator.c: physical-root committed fact must mean the stop bridge was actually entered'
+    }
+}
+
+# A12/B3 root cleanup: physical and logical Connectivity lifecycle ordering
+# must be centralized in a value-only service. The composition root may bind
+# concrete bridges, but must not regain direct init/rollback orchestration.
+if (-not (Test-Path -LiteralPath $networkLifecycleHeader) -or
+    -not (Test-Path -LiteralPath $networkLifecycleSource)) {
+    $violations += 'main/services/connectivity_network_lifecycle_service.[ch]: connectivity lifecycle coordinator is missing'
+} else {
+    $networkLifecycleHeaderText = Get-Content -LiteralPath $networkLifecycleHeader -Raw
+    $networkLifecycleSourceText = Get-Content -LiteralPath $networkLifecycleSource -Raw
+    foreach ($lifecycleRequirement in @(
+            'connectivity_network_lifecycle_service_init\s*\(',
+            'connectivity_network_lifecycle_service_ensure_core\s*\(',
+            'connectivity_network_lifecycle_service_ensure_wifi\s*\(',
+            'connectivity_network_lifecycle_service_stop\s*\(',
+            'configure_physical_lifecycle', 'stop_physical',
+            'deinitialize_logical')) {
+        if ($networkLifecycleHeaderText -notmatch $lifecycleRequirement) {
+            $violations += "main/services/connectivity_network_lifecycle_service.h: lifecycle contract is incomplete (${lifecycleRequirement})"
+        }
+    }
+    if ($networkLifecycleHeaderText -match '\b(?:esp_|freertos/|TaskHandle_t|SemaphoreHandle_t|esp_netif_t|esp_err_t|httpd_|esp_http_client)\b') {
+        $violations += 'main/services/connectivity_network_lifecycle_service.h: lifecycle contract must remain SDK/RTOS/HTTP neutral'
+    }
+    if ($networkLifecycleSourceText -match '\b(?:esp_wifi|esp_netif|esp_http_client|TaskHandle_t|SemaphoreHandle_t|gateway_transport|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/connectivity_network_lifecycle_service.c: lifecycle policy must not absorb SDK/RTOS/HTTP/transport/board ownership'
+    }
+    if ($networkLifecycleSourceText -notmatch 'stop_physical[\s\S]*?deinitialize_logical' -or
+        $networkLifecycleSourceText -notmatch 'rollback_failed_start' -or
+        $networkLifecycleSourceText -notmatch 'physical_has_resources[\s\S]*?DEVICE_STATUS_BUSY') {
+        $violations += 'main/services/connectivity_network_lifecycle_service.c: physical-before-logical stop and partial-root closure are incomplete'
+    }
+    if ($mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_ensure_core\s*\(' -or
+        $mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_ensure_wifi\s*\(' -or
+        $mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_stop\s*\(' -or
+        $mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_init\s*\(') {
+        $violations += 'main/main.c: Connectivity lifecycle composition must use the shared lifecycle coordinator'
+    }
+}
+
+# A12 QR presentation is a narrow private SDK adapter.  The composition root
+# publishes only semantic scene values; QR handles, encoder configuration and
+# the short-lived module matrix must not drift back into main.c or its public
+# contract.
+$provisioningQrHeader = Join-Path $projectRoot 'main/services/provisioning_qr_service.h'
+$provisioningQrSource = Join-Path $projectRoot 'main/services/provisioning_qr_service.c'
+if (-not (Test-Path -LiteralPath $provisioningQrHeader) -or
+    -not (Test-Path -LiteralPath $provisioningQrSource)) {
+    $violations += 'main/services/provisioning_qr_service.[ch]: private QR presentation service is missing'
+} else {
+    $provisioningQrHeaderText = Get-Content -LiteralPath $provisioningQrHeader -Raw
+    $provisioningQrSourceText = Get-Content -LiteralPath $provisioningQrSource -Raw
+    foreach ($qrRequirement in @(
+            'provisioning_qr_service_host_t',
+            'publish_modules',
+            'publish_fallback_message',
+            'provisioning_qr_service_init\s*\(',
+            'provisioning_qr_service_show\s*\(')) {
+        if ($provisioningQrHeaderText -notmatch $qrRequirement) {
+            $violations += "main/services/provisioning_qr_service.h: QR presentation contract is incomplete (${qrRequirement})"
+        }
+    }
+    if ($provisioningQrHeaderText -match '\b(?:esp_|freertos/|TaskHandle_t|SemaphoreHandle_t|qrcode|malloc|free)\b') {
+        $violations += 'main/services/provisioning_qr_service.h: QR presentation contract must remain SDK/RTOS/allocator neutral'
+    }
+    if ($provisioningQrSourceText -notmatch '#include\s*[<\"]qrcode\.h[>\"]' -or
+        $provisioningQrSourceText -notmatch 'esp_qrcode_generate\s*\(' -or
+        $provisioningQrSourceText -notmatch 'free\s*\(\s*modules\s*\)' -or
+        $provisioningQrSourceText -notmatch 'length\s*>=\s*\(int\)sizeof\(payload\)' -or
+        $provisioningQrSourceText -notmatch 'esp_log_level_set\s*\(\s*"QRCODE"\s*,\s*ESP_LOG_NONE\s*\)') {
+        $violations += 'main/services/provisioning_qr_service.c: QR SDK, bounded payload, temporary matrix release, and payload-log suppression must remain private'
+    }
+    if ($provisioningQrSourceText -match '\b(?:scene_presenter|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/provisioning_qr_service.c: QR adapter must not absorb presentation implementation or board policy'
+    }
+    if ($mainNetworkRootText -match '\b(?:esp_qrcode_|esp_qrcode_handle_t|ESP_QRCODE_|show_setup_qrcode)\b' -or
+        $mainNetworkRootText -notmatch 'provisioning_qr_service_init\s*\(' -or
+        $mainNetworkRootText -notmatch 'provisioning_qr_service_show\s*\(') {
+        $violations += 'main/main.c: QR SDK transaction must delegate to provisioning_qr_service'
+    }
+}
+
+# A12/A8 downlink audio has a small independent presentation boundary. MIME
+# dispatch must not pull MP3/WAV renderer policy or ESP error values back into
+# the Gateway dispatcher/composition root; the root may only inject physical
+# renderer callbacks into this value-only service.
+$serverAudioPresentationHeader = Join-Path $projectRoot 'main/services/server_audio_presentation_service.h'
+$serverAudioPresentationSource = Join-Path $projectRoot 'main/services/server_audio_presentation_service.c'
+if (-not (Test-Path -LiteralPath $serverAudioPresentationHeader) -or
+    -not (Test-Path -LiteralPath $serverAudioPresentationSource)) {
+    $violations += 'main/services/server_audio_presentation_service.[ch]: server-audio presentation service is missing'
+} else {
+    $serverAudioPresentationHeaderText = Get-Content -LiteralPath $serverAudioPresentationHeader -Raw
+    $serverAudioPresentationSourceText = Get-Content -LiteralPath $serverAudioPresentationSource -Raw
+    foreach ($audioPresentationRequirement in @(
+            'server_audio_presentation_service_host_t',
+            'play_mp3', 'play_wav',
+            'server_audio_presentation_service_init\s*\(',
+            'server_audio_presentation_service_mime_supported\s*\(',
+            'server_audio_presentation_service_url_allowed\s*\(',
+            'server_audio_presentation_service_play\s*\(',
+            'server_audio_presentation_service_error_is_permanent\s*\(')) {
+        if ($serverAudioPresentationHeaderText -notmatch $audioPresentationRequirement) {
+            $violations += "main/services/server_audio_presentation_service.h: server-audio contract is incomplete (${audioPresentationRequirement})"
+        }
+    }
+    if ($serverAudioPresentationHeaderText -match '\b(?:esp_|freertos/|TaskHandle_t|SemaphoreHandle_t|QueueHandle_t|cJSON|http|mp3_player|audio_arbitration|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/server_audio_presentation_service.h: server-audio public contract must remain SDK/RTOS/JSON/HTTP/renderer/board neutral'
+    }
+    if ($serverAudioPresentationSourceText -match '\b(?:esp_|freertos/|TaskHandle_t|SemaphoreHandle_t|cJSON|http|mp3_player|audio_arbitration|scene_presenter|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/server_audio_presentation_service.c: server-audio policy must not absorb SDK/RTOS/JSON/HTTP/renderer/board ownership'
+    }
+    if ($serverAudioPresentationSourceText -notmatch 'payload_is_mp3' -or
+        $serverAudioPresentationSourceText -notmatch 'DEVICE_STATUS_BUSY' -or
+        $serverAudioPresentationSourceText -notmatch 'DEVICE_STATUS_TIMEOUT') {
+        $violations += 'main/services/server_audio_presentation_service.c: MIME dispatch and retryable status classification are incomplete'
+    }
+    if ($mainNetworkRootText -match '\b(?:audio_payload_is_mp3)\b' -or
+        $mainNetworkRootText -notmatch 'server_audio_presentation_service_init\s*\(' -or
+        $mainNetworkRootText -notmatch 'server_audio_presentation_service_play\s*\(') {
+        $violations += 'main/main.c: server-audio format/presentation policy must delegate to server_audio_presentation_service'
     }
 }
 
@@ -4269,7 +5110,7 @@ if (-not (Test-Path -LiteralPath $safeModeCoordinatorHeader) -or
                 'safe_mode_publish_diagnostic_surface\s*\(',
                 'SAFE_MODE_ENTRY_TIMEOUT_MS',
                 'provisioning_failure_injection_safe_mode_at_local_ready\s*\(',
-                'gateway_lifecycle_service_prepare_system_sleep\s*\(',
+                'gateway_lifecycle_service_prepare_network_restart\s*\(',
                 'gateway_lifecycle_service_commit_prepared_network_restart\s*\(')) {
             if ($safeModeMainText -notmatch $safeModeBridgeRequirement) {
                 $violations += "main/main.c: SAFE_MODE composition bridge is incomplete ($safeModeBridgeRequirement)"
@@ -4309,9 +5150,11 @@ if (-not (Test-Path -LiteralPath $safeModeCoordinatorHeader) -or
 $gatewayLifecycleHeader = Join-Path $projectRoot 'main/services/gateway_lifecycle_service.h'
 $gatewayLifecycleSource = Join-Path $projectRoot 'main/services/gateway_lifecycle_service.c'
 $gatewayRestartCommitGate = Join-Path $projectRoot 'tools/check-gateway-lifecycle-restart-commit.ps1'
+$gatewayAssetCancellationGate = Join-Path $projectRoot 'tools/check-gateway-transport-asset-cancellation.ps1'
 if (-not (Test-Path -LiteralPath $gatewayLifecycleHeader) -or
     -not (Test-Path -LiteralPath $gatewayLifecycleSource) -or
-    -not (Test-Path -LiteralPath $gatewayRestartCommitGate)) {
+    -not (Test-Path -LiteralPath $gatewayRestartCommitGate) -or
+    -not (Test-Path -LiteralPath $gatewayAssetCancellationGate)) {
     $violations += 'gateway lifecycle runtime-restart commit contract or host regression is missing'
 } else {
     $gatewayLifecycleHeaderText = Get-Content -LiteralPath $gatewayLifecycleHeader -Raw
@@ -4328,6 +5171,48 @@ if (-not (Test-Path -LiteralPath $gatewayLifecycleHeader) -or
         $gatewayCommitMatch.Value -match 'restore_prepared_workers\s*\(') {
         $violations += 'main/services/gateway_lifecycle_service.c: runtime restart commit must not use System Sleep rollback'
     }
+    if ($gatewayLifecycleSourceText -notmatch 'PREPARE_KIND_SYSTEM_SLEEP' -or
+        $gatewayLifecycleSourceText -notmatch 'PREPARE_KIND_NETWORK_RESTART' -or
+        $gatewayLifecycleSourceText -notmatch 's_prepare_kind\s*!=\s*PREPARE_KIND_SYSTEM_SLEEP' -or
+        $gatewayLifecycleSourceText -notmatch 's_prepare_kind\s*!=\s*PREPARE_KIND_NETWORK_RESTART') {
+        $violations += 'main/services/gateway_lifecycle_service.c: System Sleep ABORT must not reopen a terminal network-restart fence'
+    }
+}
+
+# Root-owned Wake/portal/cellular participants now share the terminal restart
+# domain with Gateway. Keep their contracts value-only and require the root
+# bridge to prepare every old generation before committing it without an ABORT.
+$restartParticipantFiles = @(
+    @{ Name = 'wake restart'; Header = 'main/services/wake_restart_worker_service.h'; Source = 'main/services/wake_restart_worker_service.c'; Prepare = 'wake_restart_worker_service_prepare_network_restart'; Commit = 'wake_restart_worker_service_commit_prepared_network_restart' },
+    @{ Name = 'deferred setup'; Header = 'main/services/deferred_setup_worker_service.h'; Source = 'main/services/deferred_setup_worker_service.c'; Prepare = 'deferred_setup_worker_service_prepare_network_restart'; Commit = 'deferred_setup_worker_service_commit_prepared_network_restart' },
+    @{ Name = 'cellular recovery'; Header = 'main/services/cellular_recovery_service.h'; Source = 'main/services/cellular_recovery_service.c'; Prepare = 'cellular_recovery_service_prepare_network_restart'; Commit = 'cellular_recovery_service_commit_prepared_network_restart' }
+)
+foreach ($participant in $restartParticipantFiles) {
+    $headerPath = Join-Path $projectRoot $participant.Header
+    $sourcePath = Join-Path $projectRoot $participant.Source
+    if (-not (Test-Path -LiteralPath $headerPath) -or -not (Test-Path -LiteralPath $sourcePath)) {
+        $violations += "$($participant.Name) terminal network-restart participant source/header is missing"
+        continue
+    }
+    $headerText = Get-Content -LiteralPath $headerPath -Raw
+    $sourceText = Get-Content -LiteralPath $sourcePath -Raw
+    if ($headerText -notmatch ($participant.Prepare + '\s*\(') -or
+        $headerText -notmatch ($participant.Commit + '\s*\(') -or
+        $sourceText -notmatch ($participant.Prepare + '\s*\(') -or
+        $sourceText -notmatch ($participant.Commit + '\s*\(') -or
+        $sourceText -notmatch 's_network_restart_preparing') {
+        $violations += "$($participant.Source): terminal network-restart prepare/commit fence is incomplete"
+    }
+    $commitMatch = [regex]::Match(
+        $sourceText, '(?s)device_status_t\s+' + $participant.Commit + '\s*\([^)]*\)\s*\{.*?\n\}')
+    if (-not $commitMatch.Success -or
+        $commitMatch.Value -match 'abort_system_sleep_prepare\s*\(' -or
+        $commitMatch.Value -match 's_admission_open\s*=\s*true') {
+        $violations += "$($participant.Source): terminal restart commit must not reopen System Sleep admission"
+    }
+}
+if ($mainCompositionText -notmatch '(?s)static\s+device_status_t\s+quiesce_network_dependents_for_restart\s*\([^)]*\)\s*\{[\s\S]*?stop_startup_pet_asset_for_network_restart\s*\([\s\S]*?prepare_wake_restart_network_restart\s*\([\s\S]*?prepare_deferred_setup_network_restart\s*\([\s\S]*?cellular_recovery_service_prepare_network_restart\s*\([\s\S]*?gateway_lifecycle_service_prepare_network_restart\s*\([\s\S]*?gateway_lifecycle_service_commit_prepared_network_restart\s*\([\s\S]*?cellular_recovery_service_commit_prepared_network_restart\s*\([\s\S]*?commit_deferred_setup_network_restart\s*\([\s\S]*?commit_wake_restart_network_restart\s*\(') {
+    $violations += 'main/main.c: terminal network-dependent restart bridge must prepare and commit every root-owned participant in dependency order'
 }
 
 # Alarm Manager is the common durable schedule participant. It may freeze
@@ -4558,6 +5443,31 @@ if (-not (Test-Path -LiteralPath $displayServiceSource)) {
     } elseif ($audioLevelFunction.Value -match '\bdisplay_service_submit\s*\(' -or
               $audioLevelFunction.Value -match '\bxSemaphoreTake(?:Recursive)?\s*\(') {
         $violations += 'main/display_service.c: audio-level producer must not synchronously wait for Display Task/panel work'
+    }
+}
+
+if (-not (Test-Path -LiteralPath $petAssetIntegrityHeader) -or
+    -not (Test-Path -LiteralPath $petAssetIntegritySource)) {
+    $violations += 'main/services/pet_asset_integrity_service.[ch]: digest transaction service is missing'
+} else {
+    $integrityHeaderText = Get-Content -LiteralPath $petAssetIntegrityHeader -Raw
+    $integritySourceText = Get-Content -LiteralPath $petAssetIntegritySource -Raw
+    foreach ($requiredIntegrity in @(
+        'pet_asset_integrity_service_host_t',
+        'pet_asset_integrity_service_verify_frame',
+        'compute_sha256')) {
+        if ($integrityHeaderText -notmatch [regex]::Escape($requiredIntegrity)) {
+            $violations += "main/services/pet_asset_integrity_service.h: digest contract missing ${requiredIntegrity}"
+        }
+    }
+    if ($integrityHeaderText -match '\b(?:esp_|freertos/|driver/|cJSON|TaskHandle_t|SemaphoreHandle_t|heap_caps|psa_|gateway_|board_port|CONFIG_MACLAW_BOARD_)\b') {
+        $violations += 'main/services/pet_asset_integrity_service.h: public digest contract must remain value-only'
+    }
+    if ($integritySourceText -match '\b(?:psa_hash|esp_http_client|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport)\b') {
+        $violations += 'main/services/pet_asset_integrity_service.c: digest provider ownership must remain behind host callback'
+    }
+    if ($integritySourceText -notmatch 'pet_asset_service_sha256_matches_hex') {
+        $violations += 'main/services/pet_asset_integrity_service.c: canonical digest comparison is missing'
     }
 }
 

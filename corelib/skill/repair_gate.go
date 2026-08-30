@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // RepairGateConfig configures the sandbox verification gate.
@@ -54,6 +56,25 @@ type SandboxExecutor interface {
 	RunInSandbox(ctx context.Context, skill *corelib.NLSkillEntry, steps []corelib.NLSkillStep, args map[string]string, timeout time.Duration) (success bool, output string, err error)
 }
 
+// NonBashReplayResult is the explicit evidence contract for actions that the
+// shell sandbox cannot execute (craft_tool, MCP, browser, poll/loop, etc.).
+// An adapter must declare whether the returned evidence is real, mock, or
+// unavailable; omitted/unknown modes are fail-closed as unverified.
+type NonBashReplayResult struct {
+	Success      bool   `json:"success"`
+	Output       string `json:"output,omitempty"`
+	Error        string `json:"error,omitempty"`
+	EvidenceMode string `json:"evidence_mode"` // real | mock | none
+}
+
+// NonBashReplayAdapter is an opt-in isolated executor for non-shell actions.
+// Implementations must enforce their own side-effect allowlist and must not
+// mutate production files, Skill state, upload queues, or publish state.
+// Without an adapter, RepairGate always returns unverified for such actions.
+type NonBashReplayAdapter interface {
+	ReplayNonBash(ctx context.Context, skill *corelib.NLSkillEntry, steps []corelib.NLSkillStep, args map[string]string, timeout time.Duration) (NonBashReplayResult, error)
+}
+
 // SandboxRunResult records the outcome of a single sandbox replay.
 type SandboxRunResult struct {
 	Args    map[string]string `json:"args"`
@@ -64,18 +85,30 @@ type SandboxRunResult struct {
 
 // GateResult is the outcome of a RepairGate verification.
 type GateResult struct {
-	Passed     bool               `json:"passed"`
-	RunResults []SandboxRunResult `json:"run_results"`
-	PassRate   float64            `json:"pass_rate"`
-	Reason     string             `json:"reason"`
+	Status string `json:"status"`
+	Passed bool   `json:"passed"`
+	// EvidenceMode distinguishes a real sandbox replay from missing evidence.
+	// The default executor never reports a skipped non-bash action as real.
+	EvidenceMode string             `json:"evidence_mode"` // real | mock | none
+	RunResults   []SandboxRunResult `json:"run_results"`
+	PassRate     float64            `json:"pass_rate"`
+	Reason       string             `json:"reason"`
+}
+
+// IsRealPass is the single admission predicate for automatic mutations. A
+// status-only pass from a mock, skipped, or legacy executor is not sufficient
+// evidence to change a live Skill definition.
+func (r *GateResult) IsRealPass() bool {
+	return r != nil && r.Status == "passed" && r.Passed && r.EvidenceMode == "real"
 }
 
 // RepairGate verifies repaired/optimized skill steps by replaying historical
 // arguments in a sandbox. Only accepts the new version when it passes the
 // minimum success threshold.
 type RepairGate struct {
-	Config   RepairGateConfig
-	Executor SandboxExecutor
+	Config         RepairGateConfig
+	Executor       SandboxExecutor
+	NonBashAdapter NonBashReplayAdapter
 }
 
 // NewRepairGate creates a RepairGate with the given config and executor.
@@ -87,15 +120,14 @@ func NewRepairGate(cfg RepairGateConfig, executor SandboxExecutor) *RepairGate {
 // Verify replays the new steps against historical argument sets in a sandbox.
 // Returns a GateResult indicating whether the new steps pass the threshold.
 //
-// If historicalArgs is empty, the gate passes by default (no evidence to
-// contradict the repair). If the executor is nil, the gate also passes
-// (graceful degradation — caller should still apply the repair).
+// Missing runtime evidence is reported as unverified and is never an
+// automatic approval.
 func (g *RepairGate) Verify(ctx context.Context, skill *corelib.NLSkillEntry, newSteps []corelib.NLSkillStep, historicalArgs []map[string]string) (*GateResult, error) {
 	if g == nil || g.Executor == nil {
-		return &GateResult{Passed: true, Reason: "no sandbox executor configured; gate passed by default"}, nil
+		return &GateResult{Status: "unverified", Passed: false, EvidenceMode: "none", Reason: "no sandbox executor configured; runtime verification unavailable"}, nil
 	}
 	if len(historicalArgs) == 0 {
-		return &GateResult{Passed: true, Reason: "no historical args to replay; gate passed by default"}, nil
+		return &GateResult{Status: "unverified", Passed: false, EvidenceMode: "none", Reason: "no historical args to replay; no runtime evidence"}, nil
 	}
 
 	// Limit to MaxReplayRuns.
@@ -106,6 +138,44 @@ func (g *RepairGate) Verify(ctx context.Context, skill *corelib.NLSkillEntry, ne
 
 	results := make([]SandboxRunResult, 0, len(args))
 	var successes int
+	adapterEvidence := "real"
+	if stepsRequireNonBashReplay(newSteps) {
+		if g.NonBashAdapter == nil {
+			return &GateResult{Status: "unverified", Passed: false, EvidenceMode: "none", Reason: "non-bash actions require an explicit isolated replay adapter"}, nil
+		}
+		for i, argSet := range args {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			timeout := g.Config.SandboxTimeout
+			replay, err := g.NonBashAdapter.ReplayNonBash(ctx, skill, newSteps, argSet, timeout)
+			if err != nil {
+				replay.Error = err.Error()
+			}
+			mode := strings.ToLower(strings.TrimSpace(replay.EvidenceMode))
+			if mode != "real" && mode != "mock" {
+				mode = "none"
+			}
+			if mode != "real" {
+				adapterEvidence = mode
+			}
+			results = append(results, SandboxRunResult{Args: argSet, Success: replay.Success, Output: truncateGateOutput(replay.Output, 500), Error: replay.Error})
+			if replay.Success {
+				successes++
+			}
+			_ = i
+		}
+		if adapterEvidence != "real" {
+			return &GateResult{Status: "unverified", Passed: false, EvidenceMode: adapterEvidence, RunResults: results, PassRate: float64(successes) / float64(len(results)), Reason: "non-bash replay returned non-real evidence"}, nil
+		}
+		passRate := float64(successes) / float64(len(results))
+		passed := passRate+0.005 >= g.Config.MinPassRate
+		status := "failed"
+		if passed {
+			status = "passed"
+		}
+		return &GateResult{Status: status, Passed: passed, EvidenceMode: "real", RunResults: results, PassRate: passRate, Reason: fmt.Sprintf("non-bash adapter: %d/%d runs passed", successes, len(results))}, nil
+	}
 
 	for i, argSet := range args {
 		if ctx.Err() != nil {
@@ -135,9 +205,24 @@ func (g *RepairGate) Verify(ctx context.Context, skill *corelib.NLSkillEntry, ne
 			successes++
 		}
 	}
+	// A custom executor may return success without identifying the evidence
+	// source. Require an explicit opt-in marker for mock executors; otherwise a
+	// non-empty replay result is considered real sandbox evidence.
+	// A replay that only reports skipped non-bash actions is not runtime
+	// evidence. Preserve the run details but downgrade the aggregate result.
+	for _, r := range results {
+		if strings.HasPrefix(r.Output, "sandbox_skipped_non_bash:") {
+			return &GateResult{Status: "unverified", Passed: false, EvidenceMode: "none", RunResults: results,
+				Reason: "replay skipped non-bash actions; runtime verification unavailable"}, nil
+		}
+	}
 
 	passRate := float64(successes) / float64(len(results))
 	passed := passRate+0.005 >= g.Config.MinPassRate
+	status := "failed"
+	if passed {
+		status = "passed"
+	}
 
 	reason := fmt.Sprintf("%d/%d runs passed (%.0f%%), threshold %.0f%%",
 		successes, len(results), passRate*100, g.Config.MinPassRate*100)
@@ -150,11 +235,23 @@ func (g *RepairGate) Verify(ctx context.Context, skill *corelib.NLSkillEntry, ne
 	log.Printf("[repair-gate] skill=%s %s", skill.Name, reason)
 
 	return &GateResult{
-		Passed:     passed,
-		RunResults: results,
-		PassRate:   passRate,
-		Reason:     reason,
+		Status:       status,
+		Passed:       passed,
+		EvidenceMode: "real",
+		RunResults:   results,
+		PassRate:     passRate,
+		Reason:       reason,
 	}, nil
+}
+
+func stepsRequireNonBashReplay(steps []corelib.NLSkillStep) bool {
+	for _, step := range steps {
+		action := NormalizeStepActionName(step.Action)
+		if action != "bash" && action != "ssh_bash" {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateGateOutput limits output length for storage.
@@ -169,16 +266,16 @@ func truncateGateOutput(s string, maxRunes int) string {
 // --- Default Sandbox Executor (temp-dir based) ---
 
 // NewDefaultSandboxExecutor returns a TempDirSandboxExecutor that runs bash-only
-// skill steps via the shared ExecuteStepsSync engine. Non-bash steps (craft_tool,
-// call_mcp_tool, etc.) are skipped with a soft pass so they do not false-reject
-// repairs that cannot be verified in-process.
+// skill steps via the shared ExecuteStepsSync engine. Non-bash steps are retained
+// as explicit "skipped" evidence and the aggregate gate marks them unverified;
+// they are never treated as a runtime pass.
 func NewDefaultSandboxExecutor() *TempDirSandboxExecutor {
 	return &TempDirSandboxExecutor{StepRunner: defaultBashSandboxStepRunner}
 }
 
 // defaultBashSandboxStepRunner executes only bash steps inside the sandbox.
-// Skills with no bash steps soft-pass only when every step is still a supported
-// non-bash GUI action after normalization (craft_tool / poll / call_mcp_tool).
+// Skills with no bash steps are reported as unverified when every step is still
+// a supported non-bash GUI action after normalization (craft_tool / poll / call_mcp_tool).
 // Unsupported aliases (historically shell_tool) must fail the gate instead of
 // silently passing with "no bash steps to verify".
 func defaultBashSandboxStepRunner(ctx context.Context, sk *corelib.NLSkillEntry, steps []corelib.NLSkillStep, args map[string]string, workDir string) (bool, string, error) {
@@ -231,12 +328,14 @@ type sandboxBashDeps struct{}
 func (d *sandboxBashDeps) ExecuteBash(ctx context.Context, command, workDir string, env map[string]string) (string, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+		// cmd /c via Go argument escaping eats inner quotes and mangles CJK
+		// paths; NewWindowsShellCommand passes the line verbatim.
+		cmd = coretool.NewWindowsShellCommand(ctx, command, workDir)
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
-	}
-	if workDir != "" {
-		cmd.Dir = workDir
+		if workDir != "" {
+			cmd.Dir = workDir
+		}
 	}
 	environ := append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1", "MACLAW_SKILL_SANDBOX=1")
 	for k, v := range env {

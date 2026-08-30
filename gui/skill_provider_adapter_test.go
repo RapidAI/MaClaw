@@ -12,6 +12,8 @@ func TestSkillExecutorProviderListActiveSkillsExcludesNonExecutableEntries(t *te
 		{Name: "paper-translator", Status: "active", Type: "instruction", Description: "MaClaw App container"},
 		{Name: "knowledge-guide", Status: "active", Type: "knowledge", Description: "Reference material"},
 		{Name: "translate-document", Status: "active", Description: "Translate a document", Triggers: []string{"translate"}},
+		{Name: "empty-skill", Status: "active"},
+		{Name: "auto-discovered-staged", Status: "staged", Source: "auto_discovered", Description: "Pending approval"},
 	})
 
 	provider := &skillExecutorProvider{executor: &SkillExecutor{app: app}}
@@ -23,7 +25,7 @@ func TestSkillExecutorProviderListActiveSkillsExcludesNonExecutableEntries(t *te
 	if !names["translate-document"] {
 		t.Fatalf("runnable skill missing from ListActiveSkills(): %#v", active)
 	}
-	for _, name := range []string{"paper-translator", "knowledge-guide"} {
+	for _, name := range []string{"paper-translator", "knowledge-guide", "auto-discovered-staged", "empty-skill"} {
 		if names[name] {
 			t.Fatalf("non-executable entry %q leaked into ListActiveSkills(): %#v", name, active)
 		}

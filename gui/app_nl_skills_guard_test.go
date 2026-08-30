@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,6 +47,77 @@ func TestSetNLSkillStatusApprovesReviewedSkillAndExposesReason(t *testing.T) {
 	}
 	if reviewed.LastError == "" {
 		t.Fatalf("expected last_error evidence to remain available after approval")
+	}
+}
+
+func TestSetNLSkillStatusBlocksActivationWithPendingCompensation(t *testing.T) {
+	tempHome := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "compensated-skill", Status: "needs_review", Source: "manual",
+		Steps: []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := skill.PersistEvolutionCompensation(skill.NewEvolutionCompensationRecord(
+		"req-status-admission", "compensated-skill", "repair", "", nil, false, nil, "rollback_incomplete",
+	)); err != nil {
+		t.Fatalf("PersistEvolutionCompensation() error = %v", err)
+	}
+	if err := app.SetNLSkillStatus("compensated-skill", "active"); err == nil || !strings.Contains(err.Error(), "pending evolution compensation") {
+		t.Fatalf("SetNLSkillStatus() error = %v, want pending compensation block", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "compensated-skill")
+	if got == nil || got.Status != "needs_review" {
+		t.Fatalf("skill status after blocked activation = %#v, want needs_review", got)
+	}
+}
+
+func TestSetNLSkillStatusRollsBackWhenIndexRefreshFails(t *testing.T) {
+	tempHome := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.toolRouter = NewToolRouter(nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name: "index-guard-skill", Status: "needs_review", Source: "manual",
+		Steps: []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}}},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	refreshCalls := 0
+	app.toolRouter.refreshSkillIndexOverride = func() error {
+		refreshCalls++
+		if refreshCalls == 1 {
+			return errors.New("injected index refresh failure")
+		}
+		return nil
+	}
+	if err := app.SetNLSkillStatus("index-guard-skill", "active"); err == nil || !strings.Contains(err.Error(), "status index refresh failed") {
+		t.Fatalf("SetNLSkillStatus() error = %v, want index rollback error", err)
+	}
+	got := findNLSkillDefinitionForTest(app.ListNLSkills(), "index-guard-skill")
+	if got == nil || got.Status != "needs_review" {
+		t.Fatalf("skill status after index failure = %#v, want needs_review", got)
+	}
+	if refreshCalls < 2 {
+		t.Fatalf("refresh calls = %d, want initial failure plus rollback refresh", refreshCalls)
 	}
 }
 

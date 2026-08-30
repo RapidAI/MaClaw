@@ -31,15 +31,19 @@ func TestIMSemanticFileWriteUsesClosedHostAdapter(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	selection := surface.plan.Selections[0]
-	if selection.AdapterName != semanticTrustedFileWriteAdapter || selection.FitProof.MatchedCapability != tool.CapabilityFSWriteLocal {
-		t.Fatalf("selection=%+v", selection)
+	selection, ok := semanticSelectionForCapability(surface.plan, tool.CapabilityFSWriteLocal)
+	if !ok || selection.AdapterName != semanticTrustedFileWriteAdapter {
+		t.Fatalf("selection=%+v found=%v", selection, ok)
 	}
 	if !semanticSelectionRequiresReceipt(selection) || !semanticBuiltinLocalMutationSelection(selection) {
 		t.Fatalf("file write must use the local mutation receipt: %+v", selection.Effects)
 	}
-	definition := defs[0]["function"].(map[string]interface{})
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter)
+	def := semanticDefForGrantName(defs, name)
+	if def == nil {
+		t.Fatalf("file write def missing for grant %q: defs=%#v", name, defs)
+	}
+	definition := def["function"].(map[string]interface{})
 	assertManagedModelName(t, name, definition, selection, "write_file", "edit_file", "edit_lines")
 	properties := definition["parameters"].(map[string]interface{})["properties"].(map[string]interface{})
 	if _, ok := properties["path"]; !ok || len(properties) != 5 {
@@ -88,7 +92,7 @@ func TestIMSemanticFileWriteExecutesWithoutWriteFileSoup(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter)
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	got := cb.ExecuteTool(name, `{"path":"notes.txt","content":"hello","mode":"append"}`)
 	if !strings.Contains(got, "Written to notes.txt") || strings.Contains(got, "write_file") || strings.Contains(got, "phase_id") {
@@ -126,7 +130,7 @@ func TestIMSemanticFileWriteTurnDispatchesEditByFieldPresence(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter)
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	got := cb.ExecuteTool(name, `{"path":"main.go","old_string":"return 1","new_string":"return 42"}`)
 	if !strings.Contains(got, "Edited main.go") || strings.Contains(got, "edit_file") || strings.Contains(got, "edit_lines") {
@@ -148,7 +152,7 @@ func TestIMSemanticFileWriteRejectsFieldPresenceAndDeliveryTokens(t *testing.T) 
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter)
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"path":"notes.txt","content":"hi","mode":"patch"}`); !strings.Contains(got, "trusted_file_write_mode_rejected") {
 		t.Fatalf("bad mode=%q", got)
@@ -160,7 +164,7 @@ func TestIMSemanticFileWriteRejectsFieldPresenceAndDeliveryTokens(t *testing.T) 
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("second defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name = extractToolName(defs[0])
+	name = semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter)
 	cb = &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"path":"notes.txt","content":"hi"}`); !strings.Contains(got, "trusted_file_write_delivery_token") {
 		t.Fatalf("delivery token=%q", got)

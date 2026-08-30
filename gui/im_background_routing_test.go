@@ -57,15 +57,28 @@ func TestBackgroundManagedSemanticTurnClassifiesBeforeLegacyDispatch(t *testing.
 	if len(requestTools) == 0 {
 		t.Fatal("managed background turn sent no tool surface")
 	}
-	if len(requestTools) != 1 {
+	// The governed surface renders the turn's grant plus the grant-less
+	// discovery meta-tool; nothing broader may leak into a background turn.
+	if len(requestTools) != 2 {
 		t.Fatalf("managed background turn published broad tool surface: %#v", requestTools)
 	}
-	function, _ := requestTools[0]["function"].(map[string]interface{})
-	if name, _ := function["name"].(string); name != "screenshot" {
-		t.Fatalf("managed background turn published unexpected tool %q in %#v", name, requestTools)
+	var function map[string]interface{}
+	for _, tool := range requestTools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if name == "screenshot" {
+			function = fn
+			continue
+		}
+		if name != semanticToolsSearchName {
+			t.Fatalf("managed background turn published unexpected tool %q in %#v", name, requestTools)
+		}
+	}
+	if function == nil {
+		t.Fatalf("managed background turn did not publish screenshot: %#v", requestTools)
 	}
 	description, _ := function["description"].(string)
-	if !strings.Contains(strings.ToLower(description), "one-time grant") {
+	if !strings.Contains(strings.ToLower(description), "may briefly leave the list") {
 		t.Fatalf("background tool is not described as a turn-scoped grant: %q", description)
 	}
 	parameters, _ := function["parameters"].(map[string]interface{})

@@ -6,6 +6,7 @@ import type { AgentView } from "./agentViewTypes";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
+import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
@@ -226,7 +227,16 @@ export function sanitizeAIAssistantStreamText(value: string): string {
     // tokens have no glyph in the panel fonts and render as tofu squares.
     const reasoning = value.startsWith('\x01');
     const visible = (reasoning ? value.slice(1) : value)
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uE000-\uF8FF\uFFF0-\uFFFF]/g, '');
+        // Transport markers/control bytes and Unicode replacement/object
+        // characters have no meaningful text representation in the panel.
+        // Some ACP providers put the reasoning marker before every token, so
+        // filter controls throughout the delta (not just at its beginning).
+        // Keep normal full-width punctuation/letters (FF01–FFEF); only
+        // strip the non-rendering specials at the end of the block. Some
+        // providers use U+25A1 ("□") as a replacement glyph when a token
+        // cannot be decoded; letting it through makes the entire reasoning
+        // trail appear to be filled with squares in the GUI.
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\uE000-\uF8FF\uFFF9-\uFFFD]/g, '');
     return reasoning ? `\x01${visible}` : visible;
 }
 
@@ -646,8 +656,9 @@ function isThinkingStatusProgress(progressText: string): boolean {
 }
 
 function appendProgressToReasoning(message: ChatMessage, progressText: string): ChatMessage {
-    if (message.role !== 'assistant' || !isThinkingStatusProgress(progressText)) return message;
-    const statusText = progressText.trim().replace(/^\[Status\]\s*/, '').trim();
+    const cleanProgress = sanitizeAIAssistantFinalText(progressText);
+    if (message.role !== 'assistant' || !isThinkingStatusProgress(cleanProgress)) return message;
+    const statusText = cleanProgress.trim().replace(/^\[Status\]\s*/, '').trim();
     if (!statusText) return message;
     const nextLine = `• ${statusText}`;
     const existing = message.reasoning || '';
@@ -837,8 +848,15 @@ function stripRolePrefixReasoning(text: string): string {
 
 function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
     if (message.role !== 'assistant') return message;
-    const nextContent = stripRolePrefixFrontend(stripAssistantProtocolArtifactsFrontend(message.content || ''));
-    const nextReasoning = message.reasoning ? stripRolePrefixReasoning(message.reasoning) : message.reasoning;
+    // Persisted/project history can predate stream sanitization. Normalize it
+    // here as well so reopening a task cannot reintroduce tofu squares (□) or
+    // private-use/replacement characters that the active stream would remove.
+    const nextContent = stripRolePrefixFrontend(stripAssistantProtocolArtifactsFrontend(
+        sanitizeAIAssistantFinalText(message.content || ''),
+    ));
+    const nextReasoning = message.reasoning
+        ? stripRolePrefixReasoning(sanitizeAIAssistantFinalText(message.reasoning))
+        : message.reasoning;
     if (nextContent === message.content && nextReasoning === message.reasoning) return message;
     return {
         ...message,
@@ -1635,6 +1653,16 @@ function isTurnMetaFieldLabel(label: string): boolean {
     return label.trim().toLowerCase() === 'turn';
 }
 
+// Backend attaches raw cost fields for observability (Internal: true); the
+// chat UI must never render money amounts.
+function isInternalCostFieldLabel(label: string): boolean {
+    const normalized = label.trim().toLowerCase();
+    return normalized === 'session_est_cost_rmb'
+        || normalized === 'est_cost_rmb'
+        || normalized === 'est_cost_usd'
+        || normalized === 'session_est_cost_usd';
+}
+
 function formatCompactTokenCount(n: number): string {
     if (!Number.isFinite(n) || n < 0) return '0';
     if (n < 1000) return String(Math.round(n));
@@ -1642,7 +1670,7 @@ function formatCompactTokenCount(n: number): string {
     return `${Math.round(n / 1000)}k`;
 }
 
-/** Always-on compact turn chip: route + model + tokens + est. cost. */
+/** Always-on compact turn chip: route + model + tokens (no cost display). */
 function turnMetaCounterFields(
     raw: AIAssistantSendResult,
     existingFields?: Array<{ label: string; value: string }>,
@@ -1664,10 +1692,6 @@ function turnMetaCounterFields(
     }
     const cache = numericTokenFieldValue(raw.cache_read_tokens, raw.CacheReadTokens);
     if (cache) parts.push(`cache=${formatCompactTokenCount(cache)}`);
-    const cost = typeof raw.est_cost_rmb === 'number' && raw.est_cost_rmb > 0
-        ? raw.est_cost_rmb
-        : (typeof raw.EstCostRMB === 'number' && raw.EstCostRMB > 0 ? raw.EstCostRMB : 0);
-    if (cost > 0) parts.push(`~¥${cost.toFixed(4)}`);
     const promptUpgraded = Boolean(raw.prompt_upgraded ?? raw.PromptUpgraded);
     const promptABSample = Boolean(raw.prompt_ab_sample ?? raw.PromptABSample);
     const promptSoftFull = Boolean(raw.prompt_soft_full ?? raw.PromptSoftFull);
@@ -1738,10 +1762,12 @@ function normalizeResponseFields(fields: any, showDetailEntry = false): Array<{ 
             value: typeof field.value === 'string' ? field.value : (typeof field.Value === 'string' ? field.Value : ''),
         }))
         .filter(field => field.label && field.value)
-        // Default chat: keep compact Turn chip; hide verbose token/route breakdown.
+        // Default chat: keep compact Turn chip; hide verbose token/route breakdown
+        // and internal cost fields.
         .filter(field => showDetailEntry
-            || isTurnMetaFieldLabel(field.label)
-            || (!isTokenFieldLabel(field.label) && !isVerboseRouteFieldLabel(field.label)));
+            ? !isInternalCostFieldLabel(field.label)
+            : (isTurnMetaFieldLabel(field.label)
+                || (!isTokenFieldLabel(field.label) && !isVerboseRouteFieldLabel(field.label) && !isInternalCostFieldLabel(field.label))));
     return normalized.length > 0 ? normalized : undefined;
 }
 
@@ -2360,7 +2386,14 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     // Original improvement #19: if streamed content ends with the response
     // text, the response text is the final iteration's tail - keep the full
     // streamed content.
-    if (streamedContent && finalText && streamedContent.length > finalText.length) {
+    // Exception: when the turn carries a reasoning trail (the collapsible
+    // "思考过程" panel), the multi-round working narrative belongs to that
+    // panel. Piling intermediate round texts into the completed body showed
+    // up as widely-spaced stale paragraphs, so collapse to the clean final
+    // answer instead. Layer 2's 2x fragment guard above still applies.
+    const hasReasoningTrail = Boolean(stripRolePrefixReasoning(message.reasoning || '').trim())
+        || Boolean(typeof response?.reasoning === 'string' && response.reasoning.trim());
+    if (!hasReasoningTrail && streamedContent && finalText && streamedContent.length > finalText.length) {
         if (streamedContent.endsWith(finalText)) {
             return stripRolePrefixFrontend(streamedContent);
         }
@@ -4054,12 +4087,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         if (!text) return;
         buffer.text = '';
         appendTokenToAssistantMessage(buffer.assistantMessageId, text);
+        noteAIScrollStreamFlush(text.length);
     }, [appendTokenToAssistantMessage, clearStreamTokenFlushTimer]);
 
     const resetStreamTokenBuffer = useCallback((requestId?: string) => {
         const normalizedRequestId = typeof requestId === 'string' ? requestId.trim() : '';
         const key = normalizedRequestId || activeRoundRef.current.requestId;
         if (!key) return;
+        noteAIScrollStreamRoundEnd("reset-buffer");
         const buffer = streamTokenBuffersByRequestRef.current.get(key);
         clearStreamTokenFlushTimer(buffer);
         const round = activeRoundRef.current.requestId === key
@@ -4135,6 +4170,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string, eventSequence?: number) => {
         if (!round.assistantMessageId || !text) return;
+        noteAIScrollStreamToken(text.length);
         const normalizedText = normalizeStreamDeltaWithState(streamAppendStateForMessage(round.assistantMessageId), text);
         if (!normalizedText) return;
 

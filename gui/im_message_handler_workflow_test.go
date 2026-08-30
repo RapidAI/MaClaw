@@ -1435,6 +1435,11 @@ func TestConsumePendingTemplateCodingSubAgentExecutionClearsState(t *testing.T) 
 	projectPath := t.TempDir()
 	handler.pendingV2SubAgentExecution.Store(userID, true)
 	handler.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+	// The live working directory deliberately wins over the stored pending path
+	// (liveLocalCodingExecDir: caches must not override a directory change), so
+	// the fixture must align the live workspace with the pending project.
+	corelib.SetWorkspaceDir(projectPath)
+	t.Cleanup(func() { corelib.SetWorkspaceDir("") })
 
 	original := runTaskWithSubAgent
 	t.Cleanup(func() { runTaskWithSubAgent = original })
@@ -1811,7 +1816,10 @@ func TestConsumePendingTemplateRemoteCodingExecutionShowsFailureReason(t *testin
 		nil,
 		nil,
 	)
-	if !handled || resp == nil || !strings.Contains(resp.Text, "远程编程未完成") || !strings.Contains(resp.Text, "失败原因：max iterations reached") {
+	// The failure summary now surfaces the runner's own wording plus the raw
+	// error instead of the older templated "远程编程未完成…失败原因：…" banner;
+	// the invariant is that the failure reason is never swallowed.
+	if !handled || resp == nil || !strings.Contains(resp.Text, "max iterations reached") {
 		t.Fatalf("failed remote template response should retain the failure reason, handled=%v resp=%#v", handled, resp)
 	}
 }
@@ -1836,8 +1844,11 @@ func TestRemoteCodingTemplateFinalSummaryIsNotStreamedTwice(t *testing.T) {
 	if resp == nil || !strings.Contains(resp.Text, "remote verification passed") {
 		t.Fatalf("final response should include the remote summary, got %#v", resp)
 	}
-	if len(streamed) != 0 {
-		t.Fatalf("final response summary must not be emitted through onToken again, got %#v", streamed)
+	// The visible finish text is deliberately streamed once (mid-turn tokens go
+	// to the collapsed thinking pane; see codingAgentFinishNeedsToken). The
+	// invariant is exactly-once, never duplicated across chunks.
+	if got := strings.Count(strings.Join(streamed, ""), "remote verification passed"); got != 1 {
+		t.Fatalf("final summary must be streamed exactly once, got %d in %#v", got, streamed)
 	}
 }
 

@@ -112,6 +112,9 @@ func TestCodingDynamicCapabilityNeedsCloneHostPolicyQualifiers(t *testing.T) {
 	if len(needs) != 2 || needs[0].Qualifiers["freshness"] != "current" || needs[1].Qualifiers["freshness"] != "current" {
 		t.Fatalf("unexpected projected needs: %#v", needs)
 	}
+	if !needs[0].Required || needs[1].Required {
+		t.Fatalf("repeat budget must require only the first sibling: %#v", needs)
+	}
 	templates[0].Qualifiers["freshness"] = "reference"
 	needs[0].Qualifiers["freshness"] = "changed"
 	if needs[1].Qualifiers["freshness"] != "current" {

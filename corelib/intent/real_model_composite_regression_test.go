@@ -43,6 +43,10 @@ func TestRealModelLiveDataDocumentCompositeRegression(t *testing.T) {
 	for _, text := range []string{
 		"北京天气，输出格式化pdf报告",
 		"天津天气，输出格式化pdf报告",
+		"东莞天气，输出 格式化pdf报告",
+		"输出东莞天气PDF报告",
+		"比特币当前价格，输出格式化pdf报告",
+		"今天的新闻热点整理成PDF报告",
 		"查询任意城市的实时天气并导出为格式化PDF报告",
 		"把某地当前天气信息整理成PDF文件",
 	} {

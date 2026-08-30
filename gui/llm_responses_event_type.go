@@ -165,6 +165,9 @@ const (
 	// Responses-capable reasoning models emit their display-safe reasoning
 	// summary through this event instead of chat-completions' reasoning_content.
 	responsesEventReasoningSummaryTextDelta responsesEventType = "response.reasoning_summary_text.delta"
+	// response.reasoning_summary_part.added carries the whole summary for one
+	// part in part.text instead of streaming it through text deltas.
+	responsesEventReasoningSummaryPartAdded responsesEventType = "response.reasoning_summary_part.added"
 	// Keep the common compatible-provider spellings as aliases. Several
 	// OpenAI-compatible Responses gateways use one of these names.
 	responsesEventReasoningTextDelta         responsesEventType = "response.reasoning_text.delta"
@@ -187,6 +190,8 @@ func normalizeResponsesEventType(eventType string) responsesEventType {
 		return responsesEventOutputTextDelta
 	case responsesEventReasoningSummaryTextDelta:
 		return responsesEventReasoningSummaryTextDelta
+	case responsesEventReasoningSummaryPartAdded:
+		return responsesEventReasoningSummaryPartAdded
 	case responsesEventReasoningTextDelta:
 		return responsesEventReasoningTextDelta
 	case responsesEventReasoningContentDelta:

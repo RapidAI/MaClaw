@@ -240,3 +240,104 @@ func TestDoResponsesAPIRequestStreamReturnsPartialResponseOnReadFailure(t *testi
 }
 
 var _ io.ReadCloser = (*responsesStreamReadErrorBody)(nil)
+
+func TestDoResponsesAPIRequestStreamReturnsPartialResponseOnFailedEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.reasoning_summary_text.delta\n" +
+			"data: {\"delta\":\"Thinking about inputs.\"}\n\n" +
+			"event: response.output_text.delta\n" +
+			"data: {\"delta\":\"partial answer\"}\n\n" +
+			"event: response.failed\n" +
+			"data: {\"response\":{\"id\":\"resp-failed\",\"error\":{\"message\":\"provider overloaded\",\"code\":\"overloaded\"}}}\n\n"))
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "provider overloaded") {
+		t.Fatalf("error = %v, want provider failure", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	message := response.Choices[0].Message
+	if message.ReasoningContent != "Thinking about inputs." {
+		t.Fatalf("reasoning = %q, want accumulated reasoning preserved", message.ReasoningContent)
+	}
+	if message.Content != "partial answer" {
+		t.Fatalf("content = %q, want accumulated text preserved", message.Content)
+	}
+	if response.ResponseID != "resp-failed" {
+		t.Fatalf("response ID = %q, want provider-issued ID preserved", response.ResponseID)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamReturnsPartialResponseOnOversizedToolArguments(t *testing.T) {
+	oversized := strings.Repeat("x", MaxToolArgumentsBytes+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.reasoning_summary_text.delta\n" +
+			"data: {\"delta\":\"Preparing write.\"}\n\n" +
+			"event: response.output_item.added\n" +
+			"data: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_big\",\"name\":\"write_file\"}}\n\n" +
+			"event: response.function_call_arguments.delta\n" +
+			"data: {\"output_index\":0,\"delta\":\"" + oversized + "\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "tool arguments too large") {
+		t.Fatalf("error = %v, want oversized tool arguments failure", err)
+	}
+	if response == nil || len(response.Choices) != 1 {
+		t.Fatalf("partial response = %#v", response)
+	}
+	if got := response.Choices[0].Message.ReasoningContent; got != "Preparing write." {
+		t.Fatalf("reasoning = %q, want accumulated reasoning preserved", got)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamHandlesReasoningSummaryPartAdded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.reasoning_summary_part.added\n" +
+			"data: {\"part\":{\"type\":\"summary_text\",\"text\":\"Whole summary at once.\"}}\n\n" +
+			"event: response.reasoning_summary_text.done\n" +
+			"data: {\"text\":\"Whole summary at once.\"}\n\n" +
+			"event: response.completed\n" +
+			"data: {\"response\":{}}\n\n"))
+	}))
+	defer srv.Close()
+
+	var reasoning []string
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil,
+		func(delta string) { reasoning = append(reasoning, delta) })
+	if err != nil {
+		t.Fatalf("DoResponsesAPIRequestStream: %v", err)
+	}
+	// The done event repeats the same summary; the dedup in the append helper
+	// must prevent it from being emitted twice.
+	if got, want := strings.Join(reasoning, "|"), "Whole summary at once."; got != want {
+		t.Fatalf("reasoning events = %q, want %q", got, want)
+	}
+	if got := response.Choices[0].Message.ReasoningContent; got != "Whole summary at once." {
+		t.Fatalf("reasoning = %q", got)
+	}
+}
+
+func TestDoResponsesAPIRequestStreamAcceptsThinkingSummaryPart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n" +
+			"data: {\"response\":{\"output\":[{\"type\":\"reasoning\",\"summary\":[{\"type\":\"thinking\",\"text\":\"Thought it through.\"}]}]}}\n\n"))
+	}))
+	defer srv.Close()
+
+	response, err := DoResponsesAPIRequestStream(context.Background(), corelib.MaclawLLMConfig{URL: srv.URL, Model: "test", WireAPI: "responses"}, nil, nil, srv.Client(), nil, nil)
+	if err != nil {
+		t.Fatalf("DoResponsesAPIRequestStream: %v", err)
+	}
+	if got := response.Choices[0].Message.ReasoningContent; got != "Thought it through." {
+		t.Fatalf("reasoning = %q, want thinking part captured", got)
+	}
+}

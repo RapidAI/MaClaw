@@ -18,8 +18,10 @@
 #include "display_service.h"
 #include "fall_detection_service.h"
 #include "alarm_manager.h"
+#include "services/alarm_service.h"
 #include "sleep_schedule_service.h"
 #include "wake_deadline_service.h"
+#include "alarm_wake_plan.h"
 #include "connectivity_service.h"
 #include "services/ambient_service.h"
 #include "esp_err.h"
@@ -137,6 +139,18 @@ static uint32_t system_sleep_prepare_remaining_ms(int64_t deadline_us) {
     if (remaining_us <= 0) return 0;
     const uint64_t rounded_ms = ((uint64_t)remaining_us + 999u) / 1000u;
     return rounded_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)rounded_ms;
+}
+
+/* A participant may complete exactly at the parent boundary and still return
+ * OK.  Power owns the transaction deadline, so every PREPARE callback must be
+ * checked again before its success can admit the next participant. */
+static device_status_t system_sleep_prepare_postcondition(
+    device_status_t status, int64_t deadline_us) {
+    if (status == DEVICE_STATUS_OK &&
+        system_sleep_prepare_remaining_ms(deadline_us) == 0u) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return status;
 }
 
 device_status_t power_service_set_system_sleep_storage_bridge(
@@ -1349,7 +1363,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
                                         (int64_t)POWER_SYSTEM_SLEEP_PREPARE_TIMEOUT_MS * 1000;
     uint32_t remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
     status = remaining_ms
-                 ? prepare_display_off_scheduler_system_sleep(remaining_ms)
+                 ? system_sleep_prepare_postcondition(
+                       prepare_display_off_scheduler_system_sleep(remaining_ms),
+                       prepare_deadline_us)
                  : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         abort_display_off_scheduler_system_sleep_prepare();
@@ -1370,7 +1386,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * profile-owned recognizer safe point; foreground audio is already
      * rejected by the common lease fence. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? audio_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                audio_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         audio_service_abort_system_sleep_prepare();
@@ -1395,7 +1413,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * terminal work that ABORT cannot recreate safely after Display or
      * Connectivity has begun to quiesce. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? command_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                command_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         command_service_abort_system_sleep_prepare();
@@ -1419,7 +1439,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * key event to command/meeting/configuration policy. Fence and drain it
      * before any later participant can assume the business plane is quiet. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? app_intent_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                app_intent_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         app_intent_service_abort_system_sleep_prepare();
@@ -1443,7 +1465,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * observer before background policy/Persistence participants so no late
      * host query can format a status snapshot across future physical COMMIT. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? firmware_identity_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                firmware_identity_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         firmware_identity_abort_system_sleep_prepare();
@@ -1469,7 +1493,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * already admitted before this marker to complete their durable update
      * state. This is metadata-only: no firmware download/install joins Power. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? update_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                update_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         update_service_abort_system_sleep_prepare();
@@ -1496,7 +1522,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * admission, so a tool that crossed Fall admission can complete its
      * durable mutation before the storage checkpoint is sealed. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? fall_detection_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                fall_detection_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         fall_detection_service_abort_system_sleep_prepare();
@@ -1526,7 +1554,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * live generation exists.  This must precede Configuration/Persistence,
      * because portal handlers are direct configuration writers. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? provisioning_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                provisioning_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         provisioning_service_abort_system_sleep_prepare();
@@ -1555,7 +1585,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * and Persistence; a late checkpoint must not become a post-COMMIT NVS
      * mutation merely because its worker lives elsewhere. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? meeting_recovery_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                meeting_recovery_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         meeting_recovery_service_abort_system_sleep_prepare();
@@ -1585,7 +1617,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * before later Persistence closure; Ambient PREPARE may then safely find
      * cache writes rejected rather than crossing the transaction. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? weather_cache_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                weather_cache_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         weather_cache_service_abort_system_sleep_prepare();
@@ -1616,7 +1650,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * pairing-code and uplink selection otherwise bypass both storage
      * participants through direct Configuration Service calls. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? configuration_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                configuration_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         configuration_service_abort_system_sleep_prepare();
@@ -1656,7 +1692,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
     taskEXIT_CRITICAL(&s_power_lock);
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
     status = (storage_prepare && remaining_ms)
-                 ? storage_prepare(remaining_ms, storage_context)
+                 ? system_sleep_prepare_postcondition(
+                       storage_prepare(remaining_ms, storage_context),
+                       prepare_deadline_us)
                  : DEVICE_STATUS_UNAVAILABLE;
     if (status != DEVICE_STATUS_OK) {
         abort_system_sleep_storage_bridge();
@@ -1689,7 +1727,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * have stopped accepting mutations. Its PREPARE leaves the NVS worker
      * alive but closes new writes and waits for in-flight transactions. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? persistence_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                persistence_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         persistence_service_abort_system_sleep_prepare();
@@ -1722,7 +1762,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * its already-running worker first, so Display's subsequent drain observes
      * a closed set rather than racing the next once-per-second publish. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? ambient_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                ambient_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         ambient_service_abort_system_sleep_prepare();
@@ -1757,7 +1799,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * claiming a profile-private DMA/scan-out fence or changing panel power.
      * Those physical resume details remain required before any real commit. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? display_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                display_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         display_service_abort_system_sleep_prepare();
@@ -1793,10 +1837,83 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * a future Light Sleep commit from racing an alarm mutation or silently
      * parking an alarm that has no verified RTC/electrical wake path yet. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? alarm_manager_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                alarm_manager_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         alarm_manager_abort_system_sleep_prepare();
+        display_service_abort_system_sleep_prepare();
+        ambient_service_abort_system_sleep_prepare();
+        persistence_service_abort_system_sleep_prepare();
+        abort_system_sleep_storage_bridge();
+        configuration_service_abort_system_sleep_prepare();
+        weather_cache_service_abort_system_sleep_prepare();
+        meeting_recovery_service_abort_system_sleep_prepare();
+        provisioning_service_abort_system_sleep_prepare();
+        fall_detection_service_abort_system_sleep_prepare();
+        update_service_abort_system_sleep_prepare();
+        firmware_identity_abort_system_sleep_prepare();
+        app_intent_service_abort_system_sleep_prepare();
+        command_service_abort_system_sleep_prepare();
+        audio_service_abort_system_sleep_prepare();
+        abort_display_off_scheduler_system_sleep_prepare();
+        taskENTER_CRITICAL(&s_power_lock);
+        system_sleep_transition_publish_locked(
+            request_generation, target_state, DEVICE_POWER_TRANSITION_ROLLING_BACK,
+            status);
+        taskEXIT_CRITICAL(&s_power_lock);
+        power_lease_service_end_system_sleep_prepare(generation);
+        taskENTER_CRITICAL(&s_power_lock);
+        system_sleep_transition_publish_locked(
+            request_generation, target_state, DEVICE_POWER_TRANSITION_IDLE, status);
+        taskEXIT_CRITICAL(&s_power_lock);
+        return status;
+    }
+
+    /* Alarm admission is now closed, so this queue snapshot cannot be changed
+     * by a tool while the outer PREPARE transaction continues. Keep the
+     * future electrical COMMIT behind one value-level earliest-alarm fence. */
+    bool has_queued_alarm = false;
+    int64_t earliest_alarm_ms = 0;
+    remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
+    status = remaining_ms
+                 ? system_sleep_prepare_postcondition(
+                       alarm_service_earliest_queued_alarm(
+                           remaining_ms, &has_queued_alarm, &earliest_alarm_ms),
+                       prepare_deadline_us)
+                 : DEVICE_STATUS_TIMEOUT;
+    int64_t wall_clock_ms = 0;
+    bool wall_clock_trusted = false;
+    if (status == DEVICE_STATUS_OK) {
+        remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
+        status = remaining_ms
+                     ? system_sleep_prepare_postcondition(
+                           wake_deadline_service_get_clock_status(&wall_clock_ms,
+                                                                    &wall_clock_trusted),
+                           prepare_deadline_us)
+                     : DEVICE_STATUS_TIMEOUT;
+    }
+    alarm_wake_plan_input_t wake_plan_input = {
+        .struct_size = sizeof(wake_plan_input),
+        .abi_version = ALARM_WAKE_PLAN_ABI_VERSION,
+        .target_state = target_state,
+        .verified_sources = wake.verified_sources,
+        .wall_clock_trusted = wall_clock_trusted,
+        .wall_clock_epoch_ms = wall_clock_ms,
+        .earliest_alarm_epoch_ms = has_queued_alarm ? earliest_alarm_ms : 0,
+    };
+    alarm_wake_plan_output_t wake_plan_output = {0};
+    if (status == DEVICE_STATUS_OK &&
+        alarm_wake_plan_compute(&wake_plan_input, &wake_plan_output) !=
+            ALARM_WAKE_PLAN_ALLOW) {
+        status = DEVICE_STATUS_UNAVAILABLE;
+    }
+    if (status != DEVICE_STATUS_OK || !wake_plan_output.allow_sleep) {
+        alarm_manager_abort_system_sleep_prepare();
+        /* The value-level alarm fence runs after the earlier participants
+         * have already closed admission.  A rejected plan must unwind that
+         * prepared prefix, not just the Alarm participant. */
         display_service_abort_system_sleep_prepare();
         ambient_service_abort_system_sleep_prepare();
         persistence_service_abort_system_sleep_prepare();
@@ -1830,7 +1947,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * and Alarm have reached their semantic safe points, before Connectivity
      * cancellation can produce a late clock event. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? sleep_schedule_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                sleep_schedule_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         sleep_schedule_service_abort_system_sleep_prepare();
@@ -1870,7 +1989,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * before Schedule/Alarm are notified, preserving their normal re-evaluate
      * rather than replaying a stale deadline callback. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? wake_deadline_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                wake_deadline_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         wake_deadline_service_abort_system_sleep_prepare();
@@ -1911,7 +2032,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * the radio nor proves modem/RTC resume, so a later failure always rolls
      * it back before the request returns. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? connectivity_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                connectivity_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         connectivity_service_abort_system_sleep_prepare();
@@ -1952,7 +2075,9 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * observer at the final common safe point; it remains board-neutral and
      * ABORT simply reopens the same query generation. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? battery_policy_service_prepare_system_sleep(remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                battery_policy_service_prepare_system_sleep(remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         battery_policy_service_abort_system_sleep_prepare();
@@ -1994,8 +2119,10 @@ device_status_t power_service_request_verified_sleep(device_power_state_t target
      * have not passed rail/strapping/touch/modem HIL. Keep this real boundary
      * here so promoting a matrix later cannot skip the Power HAL contract. */
     remaining_ms = system_sleep_prepare_remaining_ms(prepare_deadline_us);
-    status = remaining_ms ? platform_power_prepare_verified_sleep(
-                                target_state, wake.verified_sources, remaining_ms)
+    status = remaining_ms ? system_sleep_prepare_postcondition(
+                                platform_power_prepare_verified_sleep(
+                                    target_state, wake.verified_sources, remaining_ms),
+                                prepare_deadline_us)
                           : DEVICE_STATUS_TIMEOUT;
     if (status != DEVICE_STATUS_OK) {
         (void)platform_power_abort_verified_sleep(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIDFromTaskTags, isACPAssistantSessionKey, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "../aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -50,6 +50,40 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(expertIDFromTaskTags(["task_management", "source:expert:paper-review"])).toBe("paper-review");
         expect(expertIDFromTaskTags(["source:expert:", "task_management"])).toBe("");
         expect(expertIDFromTaskTags(["task_management"])).toBe("");
+    });
+
+    it("maps the visible assistant tab to a task-list identity, and clears it for the local tab", () => {
+        expect(activeAssistantTaskIdentity({ type: "local" })).toBeNull();
+        expect(activeAssistantTaskIdentity({ type: "local", projectPath: "D:/work/math" })).toBeNull();
+        expect(activeAssistantTaskIdentity({ type: "ve" })).toBeNull();
+        expect(activeAssistantTaskIdentity({ type: "group" })).toBeNull();
+        expect(activeAssistantTaskIdentity({ type: "project", projectPath: "d:\\work\\math" })).toEqual({
+            projectPath: "D:/work/math",
+        });
+        expect(activeAssistantTaskIdentity({
+            type: "project",
+            projectPath: "C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math",
+        })).toEqual({
+            projectPath: "C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math",
+            cloudWorkspaceId: "cws_math",
+        });
+        expect(activeAssistantTaskIdentity(
+            { type: "project", projectPath: "D:/work/tasks/math-book" },
+            "C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math",
+        )).toEqual({
+            projectPath: "D:/work/tasks/math-book",
+            cloudWorkspaceId: "cws_math",
+        });
+        expect(activeAssistantTaskIdentity({ type: "expert", expertId: "paper-review" })).toEqual({
+            expertId: "paper-review",
+        });
+        expect(activeAssistantTaskIdentity({ type: "expert" })).toBeNull();
+        expect(coerceActiveAssistantTask({})).toBeNull();
+        expect(coerceActiveAssistantTask({ projectPath: "  " })).toBeNull();
+        expect(sameActiveAssistantTask(null, null)).toBe(true);
+        expect(sameActiveAssistantTask(null, {})).toBe(true);
+        expect(sameActiveAssistantTask({ projectPath: "D:/a" }, { projectPath: "d:\\a" })).toBe(true);
+        expect(sameActiveAssistantTask({ projectPath: "D:/a" }, null)).toBe(false);
     });
 
     it("purges expert tab metadata and history that project-path purge cannot see", () => {

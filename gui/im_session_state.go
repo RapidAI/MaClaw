@@ -40,10 +40,13 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 		h.pendingUserReply.Delete(userID)
 	}
 	h.pendingCapabilityGap.Delete(userID)
+	h.forgetAgentGuidedSkill(userID)
 	h.pendingSlotUserText.Delete(userID)
 	h.pendingInjection.Delete(userID)
 	h.pendingPreLoopGuide.Delete(userID)
 	h.clearGuideLaunchAcceptancesForUser(userID)
+	h.cancelAndClearInFlightTurn(userID)
+	h.setPendingForegroundText(userID, "")
 	h.cancelledTaskBoundary.Delete(userID)
 
 	// Compaction tracking state.

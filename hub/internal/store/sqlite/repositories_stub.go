@@ -655,14 +655,16 @@ func (r *userRepo) fillEmailVerified(ctx context.Context, user *store.User) {
 	}
 
 	var (
-		emailVerified   int
-		emailVerifiedAt string
+		emailVerified            int
+		emailVerifiedAt          string
+		billingTimezone          string
+		billingTimezoneUpdatedAt string
 	)
 	err := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT email_verified, email_verified_at FROM users WHERE id = ?`,
+		`SELECT email_verified, email_verified_at, billing_timezone, billing_timezone_updated_at FROM users WHERE id = ?`,
 		user.ID,
-	).Scan(&emailVerified, &emailVerifiedAt)
+	).Scan(&emailVerified, &emailVerifiedAt, &billingTimezone, &billingTimezoneUpdatedAt)
 	if err != nil {
 		return
 	}
@@ -672,6 +674,7 @@ func (r *userRepo) fillEmailVerified(ctx context.Context, user *store.User) {
 		t := mustParseTime(emailVerifiedAt)
 		user.EmailVerifiedAt = &t
 	}
+	setUserBillingTimezone(user, billingTimezone, billingTimezoneUpdatedAt)
 }
 
 func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, error) {
@@ -689,7 +692,7 @@ func (r *userRepo) GetByTenantIdentity(ctx context.Context, tenantID, identityTy
 	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT u.id, u.tenant_id, u.email, u.sn, u.status, u.enrollment_status, u.smart_route, u.email_verified, u.email_verified_at, u.created_at, u.updated_at
+		`SELECT u.id, u.tenant_id, u.email, u.sn, u.status, u.enrollment_status, u.smart_route, u.email_verified, u.email_verified_at, u.billing_timezone, u.billing_timezone_updated_at, u.created_at, u.updated_at
 		 FROM user_identities ui
 		 JOIN users u ON u.id = ui.user_id AND u.tenant_id = ui.tenant_id
 		 WHERE ui.tenant_id = ? AND ui.type = ? AND lower(ui.value) = lower(?)`,
@@ -964,6 +967,8 @@ func scanUser(row rowScanner) (*store.User, error) {
 		user                      store.User
 		smartRoute, emailVerified int
 		emailVerifiedAt           string
+		billingTimezone           string
+		billingTimezoneUpdatedAt  string
 		createdAt, updatedAt      string
 	)
 	if err := row.Scan(
@@ -976,6 +981,8 @@ func scanUser(row rowScanner) (*store.User, error) {
 		&smartRoute,
 		&emailVerified,
 		&emailVerifiedAt,
+		&billingTimezone,
+		&billingTimezoneUpdatedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -987,9 +994,21 @@ func scanUser(row rowScanner) (*store.User, error) {
 		t := mustParseTime(emailVerifiedAt)
 		user.EmailVerifiedAt = &t
 	}
+	setUserBillingTimezone(&user, billingTimezone, billingTimezoneUpdatedAt)
 	user.CreatedAt = mustParseTime(createdAt)
 	user.UpdatedAt = mustParseTime(updatedAt)
 	return &user, nil
+}
+
+func setUserBillingTimezone(user *store.User, timezone, updatedAt string) {
+	if user == nil {
+		return
+	}
+	user.BillingTimezone = strings.TrimSpace(timezone)
+	if strings.TrimSpace(updatedAt) != "" {
+		t := mustParseTime(updatedAt)
+		user.BillingTimezoneUpdatedAt = &t
+	}
 }
 
 func scanUserIdentity(row rowScanner) (*store.UserIdentity, error) {
@@ -1070,7 +1089,7 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, created_at, updated_at
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, billing_timezone, billing_timezone_updated_at, created_at, updated_at
 		 FROM users WHERE `+where,
 		args...,
 	)
@@ -1079,6 +1098,8 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 		user                      store.User
 		smartRoute, emailVerified int
 		emailVerifiedAt           string
+		billingTimezone           string
+		billingTimezoneUpdatedAt  string
 		createdAt, updatedAt      string
 	)
 	if err := row.Scan(
@@ -1091,6 +1112,8 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 		&smartRoute,
 		&emailVerified,
 		&emailVerifiedAt,
+		&billingTimezone,
+		&billingTimezoneUpdatedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
@@ -1106,6 +1129,7 @@ func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*sto
 		t := mustParseTime(emailVerifiedAt)
 		user.EmailVerifiedAt = &t
 	}
+	setUserBillingTimezone(&user, billingTimezone, billingTimezoneUpdatedAt)
 	user.CreatedAt = mustParseTime(createdAt)
 	user.UpdatedAt = mustParseTime(updatedAt)
 	return &user, nil
@@ -1132,7 +1156,7 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 	// own committed deletes. This is safe since admin list queries are infrequent.
 	rows, err := r.db.QueryContext(
 		ctx,
-		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, created_at, updated_at
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, email_verified, email_verified_at, billing_timezone, billing_timezone_updated_at, created_at, updated_at
 		 FROM users `+where+`
 		 ORDER BY updated_at DESC, email ASC`,
 		args...,
@@ -1148,6 +1172,8 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 			user                      store.User
 			smartRoute, emailVerified int
 			emailVerifiedAt           string
+			billingTimezone           string
+			billingTimezoneUpdatedAt  string
 			createdAt, updatedAt      string
 		)
 		if err := rows.Scan(
@@ -1160,6 +1186,8 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 			&smartRoute,
 			&emailVerified,
 			&emailVerifiedAt,
+			&billingTimezone,
+			&billingTimezoneUpdatedAt,
 			&createdAt,
 			&updatedAt,
 		); err != nil {
@@ -1171,6 +1199,7 @@ func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, er
 			t := mustParseTime(emailVerifiedAt)
 			user.EmailVerifiedAt = &t
 		}
+		setUserBillingTimezone(&user, billingTimezone, billingTimezoneUpdatedAt)
 		user.CreatedAt = mustParseTime(createdAt)
 		user.UpdatedAt = mustParseTime(updatedAt)
 		items = append(items, &user)
@@ -1208,6 +1237,42 @@ func (r *userRepo) MarkEmailVerified(ctx context.Context, tenantID, email string
 		`UPDATE users SET email_verified = 1, email_verified_at = ? WHERE tenant_id = ? AND lower(email) = lower(?)`,
 		now, normalizeTenantID(tenantID), normalizeEmailLikeAccount(email))
 	return err
+}
+
+// SetBillingTimezoneIfUnset records the first authenticated client timezone.
+// The existing value is returned unchanged so an ordinary login can never move
+// a quota boundary by submitting a different timezone.
+func (r *userRepo) SetBillingTimezoneIfUnset(ctx context.Context, tenantID, userID, timezone string) (string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var existing string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT billing_timezone FROM users WHERE tenant_id = ? AND id = ?`,
+		normalizeTenantID(tenantID), strings.TrimSpace(userID)).Scan(&existing); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(existing) == "" {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET billing_timezone = ?, billing_timezone_updated_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
+			timezone, now, now, normalizeTenantID(tenantID), strings.TrimSpace(userID)); err != nil {
+			return "", err
+		}
+		existing = timezone
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	committed = true
+	return strings.TrimSpace(existing), nil
 }
 
 func (r *enrollmentRepo) Create(ctx context.Context, item *store.UserEnrollment) error {

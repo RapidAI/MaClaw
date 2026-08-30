@@ -47,7 +47,9 @@ if (-not $cc) {
         }
         $exe = Join-Path $outDir ("test_official_device_profile_" + $profile.Name + '.exe')
         $defines = @($profile.Defines | ForEach-Object { "-D$_" })
-        $idDefinition = ('-DEXPECTED_PROFILE_ID_TEXT=\"{0}\"' -f $profile.Id)
+        # Keep literal quotes in the compiler argument; backslash-escaped quotes
+        # are interpreted as stray characters by MinGW's preprocessor on Windows.
+        $idDefinition = ('-DEXPECTED_PROFILE_ID_TEXT="{0}"' -f $profile.Id)
         & $cc.Source -std=c11 -Wall -Wextra -Werror "-I$(Join-Path $projectRoot 'main')" `
             $idDefinition $defines $testSource $validationSource $source -o $exe
         if ($LASTEXITCODE -ne 0) {

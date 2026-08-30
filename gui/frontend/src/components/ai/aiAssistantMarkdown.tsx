@@ -8,6 +8,7 @@ import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { localAssistantTabTitle, localizeText } from "./aiAssistantI18n";
+import { cloudSafePathLabel, cloudWorkspaceRootFromPath, isCloudWorkspaceFilePath, isCloudWorkspacePath, REVEAL_CLOUD_WORKSPACE_FILES_EVENT } from "./codingTaskMode";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
@@ -62,7 +63,7 @@ const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
 const pathTrailingPunctuationPattern = /[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
 const pathTrailingWrappingPattern = /[`'"\u2018\u2019\u201c\u201d]+$/;
 const pathTrailingWrapperPunctuationPattern = /([`'"\u2018\u2019\u201c\u201d])[\s.,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
-const inlineWrapStyle: React.CSSProperties = { overflowWrap: "anywhere", wordBreak: "break-word" };
+const inlineWrapStyle: React.CSSProperties = { overflowWrap: "break-word" };
 const blockWrapStyle: React.CSSProperties = { minWidth: 0, ...inlineWrapStyle };
 /** Inline SVG status/star marks sit on the text baseline without looking like chat emoji. */
 const inlineGlyphWrapStyle: React.CSSProperties = {
@@ -162,6 +163,7 @@ function extractPathFromContent(s: string): string | null {
 
 function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNode {
     const display = stripPathWrapping(filePath);
+    const label = cloudSafePathLabel(display);
     const style: React.CSSProperties = {
         color: t.pathColor,
         textDecoration: "underline",
@@ -175,8 +177,8 @@ function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNod
            href="#"
            onClick={(event) => openFileInFolder(event, display)}
            style={style}
-           title={display}
-        >{display}</a>
+           title={label}
+        >{label}</a>
     );
 }
 // CJK exclusion ranges used in path-detection regexes below:
@@ -194,7 +196,8 @@ function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNod
 const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-\\]+)/g;
 function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
     const display = stripPathWrapping(filePath);
-    return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={display}>{display}</a>;
+    const label = cloudSafePathLabel(display);
+    return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={label}>{label}</a>;
 }
 function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
     const parts: React.ReactNode[] = [];
@@ -311,7 +314,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                     parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer", ...inlineWrapStyle }}>{label}</a>);
                 } else if (looksLikeFilePath(href)) {
                     const filePath = stripPathWrapping(href);
-                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={filePath}>{label}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={cloudSafePathLabel(filePath)}>{label}</a>);
                 } else {
                     parts.push(<span key={idx++} style={{ color: t.linkColor, ...inlineWrapStyle }}>{label}</span>);
                 }
@@ -696,7 +699,7 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     const lastCol = headerCells.length - 1;
     // Inner grid lines only — the rounded shell draws the outer edge, so cells
     // skip their outer-side borders to avoid doubled 2px seams.
-    const cellStyle: React.CSSProperties = { boxSizing: "border-box", overflowWrap: "anywhere", padding: "6px 10px", textAlign: "left", verticalAlign: "top", wordBreak: "break-word", fontSize: "0.9em", lineHeight: 1.5 };
+    const cellStyle: React.CSSProperties = { boxSizing: "border-box", overflowWrap: "break-word", padding: "6px 10px", textAlign: "left", verticalAlign: "top", fontSize: "0.9em", lineHeight: 1.5 };
     const rowHoverBg = `color-mix(in srgb, ${t.btnColor} 7%, transparent)`;
     return (
         <div key={key} style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", margin: "6px 0", whiteSpace: "normal" }}>
@@ -735,6 +738,11 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     let displayMathDelimiter: "$$" | "\\[" | "" = "";
     let displayMathLines: string[] = [];
     let lineIdx = 0;
+    // Blank lines render as 1.4em spacer divs; a run of N blanks otherwise
+    // stacks N spacers into a tall void (multi-round agent streams often carry
+    // trailing newlines per round). Collapse runs to a single spacer outside
+    // code fences and display math.
+    let lastWasBlankLine = false;
 
     const flushDisplayMath = () => {
         elements.push(renderMath(displayMathLines.join("\n"), true, `math-${elements.length}`));
@@ -828,6 +836,11 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
         if (!inCodeBlock && /^\|+$/.test(line.trim())) {
             continue;
         }
+        // Any non-blank line outside a code fence ends a blank run (code and
+        // display-math bodies keep their blank lines verbatim).
+        if (!inCodeBlock && line.trim() !== "") {
+            lastWasBlankLine = false;
+        }
         const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
         if (fenceMatch) {
             flushTable();
@@ -875,6 +888,13 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
             tableLines.push(normalizeMarkdownTableLine(line));
         } else {
             flushTable();
+            if (line.trim() === "") {
+                if (lastWasBlankLine) {
+                    lineIdx++;
+                    continue;
+                }
+                lastWasBlankLine = true;
+            }
             elements.push(renderMarkdownLine(line, `md-${lineIdx}`, t));
         }
         lineIdx++;
@@ -1232,9 +1252,9 @@ function renderUnfinishedSlotCard(
                         href="#"
                         onClick={(event) => openFileInFolder(event, slot.projectPath!)}
                         style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }}
-                        title={slot.projectPath}
+                        title={cloudSafePathLabel(slot.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
                     >
-                        {slot.projectPath}
+                        {cloudSafePathLabel(slot.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
                     </a>
                 </div>
             )}
@@ -1310,9 +1330,9 @@ function renderRecoverableSessionCard(
                         href="#"
                         onClick={(event) => openFileInFolder(event, session.projectPath!)}
                         style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }}
-                        title={session.projectPath}
+                        title={cloudSafePathLabel(session.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
                     >
-                        {session.projectPath}
+                        {cloudSafePathLabel(session.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
                     </a>
                 </div>
             )}
@@ -1321,8 +1341,22 @@ function renderRecoverableSessionCard(
     );
 }
 
+function revealCloudWorkspaceTree(filePath: string) {
+    const root = cloudWorkspaceRootFromPath(filePath) || filePath;
+    window.dispatchEvent(new CustomEvent(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, { detail: { projectPath: root } }));
+}
+
 function openFileInFolder(event: React.MouseEvent, filePath: string) {
     event.preventDefault();
+    event.stopPropagation();
+    if (isCloudWorkspaceFilePath(filePath)) {
+        void OpenFileOrShowInFolder(filePath).catch(() => revealCloudWorkspaceTree(filePath));
+        return;
+    }
+    if (isCloudWorkspacePath(filePath)) {
+        revealCloudWorkspaceTree(filePath);
+        return;
+    }
     void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
 }
 
@@ -1469,30 +1503,66 @@ function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullab
 function AssistantReasoningPanel({
     defaultOpen,
     label,
+    step,
+    lang,
+    preview,
     theme: t,
     contentKey,
     children,
 }: {
     defaultOpen: boolean;
     label: string;
+    /** Optional timeline step number for coding-agent thoughts. */
+    step?: number;
+    lang?: string;
+    /** Short single-line summary shown while the panel is collapsed. */
+    preview?: string;
     theme: Theme;
     contentKey: string;
     children: React.ReactNode;
 }) {
     const [isOpen, setIsOpen] = React.useState(defaultOpen);
     const { bodyRef, contentRef, handleScroll, handleUserScrollIntent } = useNestedPinnedScroll(isOpen, contentKey);
-    const detailsRef = React.useRef<HTMLDetailsElement | null>(null);
     React.useLayoutEffect(() => {
         setIsOpen(defaultOpen);
     }, [defaultOpen]);
     return (
         <details
-            ref={detailsRef}
             open={isOpen}
             onToggle={(event) => setIsOpen(event.currentTarget.open)}
-            style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}
+            data-testid="assistant-reasoning-panel"
+            aria-label={label}
+            style={{
+                margin: "5px 0 7px 0",
+                fontSize: "12px",
+                color: t.textMuted,
+                borderLeft: `2px solid ${t.isDark ? "rgba(96,165,250,.65)" : "rgba(37,99,235,.48)"}`,
+                background: t.isDark ? "rgba(30, 41, 59, .28)" : "rgba(239, 246, 255, .72)",
+                borderRadius: "0 7px 7px 0",
+            }}
         >
-            <summary style={{ cursor: "pointer", opacity: 0.8 }}>{label}</summary>
+            <summary className="assistant-reasoning-summary" style={{
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                minHeight: 26,
+                padding: "2px 9px 2px 8px",
+                color: t.isDark ? "#bfdbfe" : "#1d4ed8",
+                fontWeight: 650,
+                opacity: 0.94,
+                listStyleType: "none",
+            }}>
+                <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: t.isDark ? "#60a5fa" : "#2563eb", flex: "0 0 auto", boxShadow: isOpen ? `0 0 0 3px ${t.isDark ? "rgba(96,165,250,.18)" : "rgba(37,99,235,.14)"}` : undefined }} />
+                <span>{label}</span>
+                {typeof step === "number" && <span style={{ fontSize: 10, fontWeight: 600, opacity: .72 }}>#{step}</span>}
+                {preview && !isOpen && <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 450, opacity: .72 }}>{preview}</span>}
+                <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 500, opacity: .65 }}>
+                    {isOpen
+                        ? (lang === "en" ? "Collapse" : lang === "zh-Hant" ? "收起" : "收起")
+                        : (lang === "en" ? "Expand" : lang === "zh-Hant" ? "展開" : "展开")}
+                </span>
+            </summary>
             <div
                 ref={bodyRef}
                 data-testid="assistant-reasoning-body"
@@ -1507,12 +1577,35 @@ function AssistantReasoningPanel({
                 }}
                 onPointerDown={handleUserScrollIntent}
                 onScroll={handleScroll}
-                style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}
+                // Keep CJK punctuation and its adjacent text together in the
+                // thinking trail. `line-break: strict` handles East-Asian
+                // opening/closing punctuation without disabling normal CJK
+                // wrapping. Keep `word-break: normal` so long Chinese thought
+                // streams remain readable instead of overflowing the panel.
+                // `overflow-wrap` is an emergency fallback for unbroken tokens.
+                style={{ padding: "5px 10px 8px 25px", color: t.text, opacity: 0.88, maxHeight: "400px", overflow: "auto", lineBreak: "strict", wordBreak: "normal", overflowWrap: "break-word", lineHeight: 1.6 }}
             >
                 <div ref={contentRef}>{children}</div>
             </div>
         </details>
     );
+}
+
+/** Repair provider streams that insert a hard newline immediately inside a
+ * parenthesized annotation (for example `（` + `1996）`). Such a newline is
+ * not a semantic paragraph break and produces the broken display seen in the
+ * thinking panel. Restrict this to bracket edges so normal reasoning lines
+ * remain untouched. */
+function repairReasoningBracketLineBreaks(text: string): string {
+    return text
+        .replace(/([（(])[ \t]*\r?\n[ \t]*/gu, "$1")
+        .replace(/\r?\n[ \t]*([）)])/gu, "$1");
+}
+
+function reasoningPreviewText(text: string, maxLength = 96): string | undefined {
+    const compact = text.replace(/\s+/gu, " ").trim();
+    if (compact.length <= 48) return undefined;
+    return compact.length > maxLength ? `${compact.slice(0, maxLength - 1).trimEnd()}…` : compact;
 }
 
 /** One collapsed reasoning node at its actual position in a coding turn. */
@@ -1521,15 +1614,21 @@ export function renderCodingAgentThinkingTimelineItem(
     t: Theme,
     lang: string,
 ): React.ReactNode {
-    const displayReasoning = stripCodingAgentAuditSections(
+    const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(
         stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(item.content || "")),
-    );
+    ));
     if (!displayReasoning.trim()) return null;
+    // Keep short thoughts uncluttered (and avoid repeating the body text in
+    // the summary); longer thoughts get a useful one-line context preview.
+    const preview = reasoningPreviewText(displayReasoning);
     return (
         <AssistantReasoningPanel
             key={item.id}
             defaultOpen={false}
-            label={lang === "en" ? "Thought" : "思考"}
+            label={lang === "en" ? "Thought" : "思考过程"}
+            step={item.sequence}
+            lang={lang}
+            preview={preview}
             theme={t}
             contentKey={displayReasoning}
         >
@@ -1577,6 +1676,10 @@ export function renderMessage(
     incrementalContentRenderer?: (formattedContent: string) => React.ReactNode[],
     onRecordingComplete?: (result: RecordingCompleteResult, messageId: string) => void,
     collapseReasoningByDefault = false,
+    // Same incremental treatment as incrementalContentRenderer, but for the
+    // thinking panel: reasoning streams token-by-token too and a full re-parse
+    // every 33ms flush stalls the main thread once the trail grows long.
+    incrementalReasoningRenderer?: (formattedReasoning: string) => React.ReactNode[],
 ): React.ReactNode {
     switch (msg.role) {
         case "user":
@@ -1613,7 +1716,7 @@ export function renderMessage(
                             color: t.text,
                             fontWeight: 400,
                             lineHeight: 1.55,
-                            overflowWrap: "anywhere",
+                            overflowWrap: "break-word",
                             whiteSpace: "pre-wrap",
                             // Tail-side corner stays tight (14/14/4/14 — small corner at bottom-right).
                             borderRadius: "14px 14px 4px 14px",
@@ -1673,7 +1776,7 @@ export function renderMessage(
                             padding: showCopy ? "9px 30px 9px 12px" : "9px 12px",
                             color: t.text,
                             lineHeight: 1.55,
-                            overflowWrap: "anywhere",
+                            overflowWrap: "break-word",
                             // Tail-side corner stays tight (14/14/14/4 — small corner at bottom-left).
                             borderRadius: "14px 14px 14px 4px",
                         }}
@@ -1685,24 +1788,28 @@ export function renderMessage(
                             </span>
                         )}
                         {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, t, lang)}
-                        {/* Keep ordinary-chat thinking open for the whole active turn (including
-                            tool execution), then fold it once the final answer arrives. The
-                            coding workbench stays folded. */}
+                        {/* Ordinary chat only: the thinking panel follows the token
+                            stream — open while a round is actively streaming, folded
+                            when the stream ends (stream-done fires per LLM round).
+                            The coding workbench stays folded. */}
                         {!msg.codingTimeline?.length && msg.reasoning && (() => {
                             const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
                             const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
                             // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
-                            const displayReasoning = stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(msg.reasoning || "")));
+                            const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(msg.reasoning || ""))));
                             if (!displayReasoning.trim()) return null;
                             return (
                                 <AssistantReasoningPanel
                                     key="reasoning"
                                     defaultOpen={shouldOpen}
                                     label={reasoningLabel}
+                                    lang={lang}
                                     theme={t}
                                     contentKey={displayReasoning}
                                 >
-                                    {renderContentWithCodeBlocks(displayReasoning, t)}
+                                    {incrementalReasoningRenderer
+                                        ? incrementalReasoningRenderer(displayReasoning)
+                                        : renderContentWithCodeBlocks(displayReasoning, t)}
                                 </AssistantReasoningPanel>
                             );
                         })()}
@@ -1767,9 +1874,12 @@ export function renderMessage(
                                 }}
                             />
                         )}
-                        {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => (
-                            <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{savedFileLabel}: {fp}</a></div>
-                        ))}</div>}
+                        {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => {
+                            const label = cloudSafePathLabel(fp, lang === "en" ? "Cloud file" : "云端文件");
+                            return (
+                            <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={label}>{savedFileLabel}: {label}</a></div>
+                            );
+                        })}</div>}
                         {(() => {
                             const visibleFields = (msg.fields || []).filter((f) => {
                                 const label = String(f?.label || "").toLowerCase();
@@ -1813,7 +1923,7 @@ export function renderMessage(
             if (msg.kind === "taskContext") {
                 return (
                     <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
-                        <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "anywhere" }}>
+                        <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                             <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "CURRENT TASK" : lang === "zh-Hant" ? "目前任務資訊" : "当前任务信息"}</div>
                             {renderContentWithCodeBlocks(msg.content, t)}
                         </div>
@@ -1822,7 +1932,7 @@ export function renderMessage(
             }
             return (
                 <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
-                    <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "anywhere" }}>
+                    <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                         {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                         {renderContentWithCodeBlocks(msg.content, t)}
                     </div>
@@ -1841,7 +1951,7 @@ export function renderMessage(
                         borderRadius: "8px",
                         fontSize: "12px",
                         lineHeight: 1.55,
-                        overflowWrap: "anywhere",
+                        overflowWrap: "break-word",
                     }}>
                         {prepareChatBodyForDisplay(msg.content)}
                     </div>

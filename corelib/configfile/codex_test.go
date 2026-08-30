@@ -943,6 +943,162 @@ func TestWriteTigerProxyCodexConfigWithContextRejectsInvalidThreshold(t *testing
 	}
 }
 
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredUpdatesOnlyTigerProxy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = 'tigerproxy' # active local provider\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteJSON(filepath.Join(codexDir, "auth.json"), map[string]interface{}{
+		"OPENAI_API_KEY": "old-proxy-key",
+		"tokens":         map[string]interface{}{"access_token": "preserve-me"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
+	if err != nil || !result.Configured || !result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
+	}
+	auth, err := ReadCodexAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "new-proxy-key" {
+		t.Fatalf("OPENAI_API_KEY = %q, want updated key", got)
+	}
+	if _, ok := auth["tokens"]; !ok {
+		t.Fatal("unrelated auth.json fields were not preserved")
+	}
+
+	result, err = SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
+	if err != nil || !result.Configured || result.Updated {
+		t.Fatalf("second sync = %+v, %v; want configured but unchanged, nil", result, err)
+	}
+}
+
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredLeavesOtherProvidersUntouched(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = \"openai\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteJSON(filepath.Join(codexDir, "auth.json"), map[string]string{"OPENAI_API_KEY": "official-key"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
+	if err != nil || result.Configured || result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want not configured, nil", result, err)
+	}
+	auth, err := ReadCodexAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "official-key" {
+		t.Fatalf("OPENAI_API_KEY = %q, want official key unchanged", got)
+	}
+}
+
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesMalformedAuth(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = \"tigerproxy\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	malformed := []byte(`{"OPENAI_API_KEY":`)
+	authPath := filepath.Join(codexDir, "auth.json")
+	if err := AtomicWrite(authPath, malformed); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
+	if err == nil || !result.Configured || result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and parse error", result, err)
+	}
+	after, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(malformed) {
+		t.Fatalf("malformed auth was overwritten: got %q, want %q", after, malformed)
+	}
+}
+
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesNullAuth(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = \"tigerproxy\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	authPath := filepath.Join(codexDir, "auth.json")
+	if err := AtomicWrite(authPath, []byte("null\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
+	if err == nil || !result.Configured || result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and parse error", result, err)
+	}
+	after, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != "null\n" {
+		t.Fatalf("null auth was overwritten: got %q", after)
+	}
+}
+
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredCreatesMissingAuth(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = \"tigerproxy\"\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
+	if err != nil || !result.Configured || !result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
+	}
+	auth, err := ReadCodexAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "new-proxy-key" {
+		t.Fatalf("OPENAI_API_KEY = %q, want new-proxy-key", got)
+	}
+}
+
 func TestWriteTigerProxyCodexConfigUpdatesExistingContextSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

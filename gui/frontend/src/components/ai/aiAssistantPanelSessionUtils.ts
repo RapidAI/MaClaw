@@ -1,5 +1,6 @@
 import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
+import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
 
 const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
@@ -58,6 +59,57 @@ export function expertIDFromTaskTags(tags?: string[] | null): string {
         if (expertID) return expertID;
     }
     return "";
+}
+
+/**
+ * The durable task-list row that corresponds to the currently visible AI tab.
+ * Local / VE / group tabs have no task-list row, so this is null and the
+ * sidebar highlight must clear.
+ */
+export type ActiveAssistantTaskIdentity = {
+    projectPath?: string;
+    expertId?: string;
+    cloudWorkspaceId?: string;
+};
+
+/** Collapse empty / mixed identities to null so the sidebar highlight can clear. */
+export function coerceActiveAssistantTask(
+    identity?: ActiveAssistantTaskIdentity | null,
+): ActiveAssistantTaskIdentity | null {
+    if (!identity) return null;
+    const expertId = String(identity.expertId || "").trim();
+    if (expertId) return { expertId };
+    const projectPath = normalizeProjectSessionPath(identity.projectPath);
+    if (!projectPath) return null;
+    const cloudWorkspaceId = String(identity.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(projectPath);
+    return cloudWorkspaceId ? { projectPath, cloudWorkspaceId } : { projectPath };
+}
+
+export function sameActiveAssistantTask(
+    a?: ActiveAssistantTaskIdentity | null,
+    b?: ActiveAssistantTaskIdentity | null,
+): boolean {
+    const left = coerceActiveAssistantTask(a);
+    const right = coerceActiveAssistantTask(b);
+    return (left?.expertId || "") === (right?.expertId || "")
+        && (left?.projectPath || "") === (right?.projectPath || "")
+        && (left?.cloudWorkspaceId || "") === (right?.cloudWorkspaceId || "");
+}
+
+export function activeAssistantTaskIdentity(tab: {
+    type?: string;
+    projectPath?: string;
+    expertId?: string;
+} | null | undefined, workingDir?: string | null): ActiveAssistantTaskIdentity | null {
+    if (!tab) return null;
+    if (tab.type === "expert") return coerceActiveAssistantTask({ expertId: tab.expertId });
+    if (tab.type === "project") {
+        return coerceActiveAssistantTask({
+            projectPath: tab.projectPath || workingDir || undefined,
+            cloudWorkspaceId: cloudWorkspaceIdFromPath(tab.projectPath) || cloudWorkspaceIdFromPath(workingDir),
+        });
+    }
+    return null;
 }
 
 /** Session key for an expert tab conversation. Aligns with the backend userID (ExpertID branch). */

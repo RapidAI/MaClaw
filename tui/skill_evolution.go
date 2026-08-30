@@ -110,6 +110,18 @@ func (app *TUIApp) notifySkillEvolution(entry *corelib.NLSkillEntry, success boo
 	app.evolutionPipeline.NotifySkillExecution(entry.Name, entry, &skill.SkillExecutionResultCompat{
 		Success:       success,
 		OutputQuality: "basic",
+		Error: func() string {
+			if !success {
+				return entry.LastError
+			}
+			return ""
+		}(),
+		ErrorClass: func() string {
+			if !success {
+				return skill.ExtractErrorClass(entry.LastError)
+			}
+			return ""
+		}(),
 	}, runArgs)
 }
 

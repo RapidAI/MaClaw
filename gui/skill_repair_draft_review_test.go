@@ -250,6 +250,68 @@ func TestRejectSkillRepairDraftUnreadableCountsOnly(t *testing.T) {
 	}
 }
 
+// TestRejectSkillRepairDraftPersistsCompensationWhenConfigRollbackFails
+// verifies that reject uses the injectable saver on both forward and rollback
+// paths. If both writes fail, the draft/config snapshot must be durable rather
+// than represented only by the synchronous error response.
+func TestRejectSkillRepairDraftPersistsCompensationWhenConfigRollbackFails(t *testing.T) {
+	entry, draftName := writeDisableDraftSkill(t, t.TempDir(), "reject-compensation", "keep for recovery")
+	app := setupEvolutionTestApp(t, []corelib.NLSkillEntry{entry}, nil)
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	orig := saveRepairDraftSkills
+	var calls int
+	saveRepairDraftSkills = func(*SkillExecutor, []corelib.NLSkillEntry) error {
+		calls++
+		return errors.New("injected reject config failure")
+	}
+	t.Cleanup(func() { saveRepairDraftSkills = orig })
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(app.RejectSkillRepairDraft("reject-compensation", draftName)), &parsed); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if ok, _ := parsed["ok"].(bool); ok {
+		t.Fatalf("reject unexpectedly succeeded: %v", parsed)
+	}
+	if state, _ := parsed["state"].(string); state != "audit_pending" {
+		t.Fatalf("state = %q, want audit_pending: %v", state, parsed)
+	}
+	if calls != 2 {
+		t.Fatalf("save calls = %d, want forward + rollback", calls)
+	}
+
+	queuePath := cskill.DefaultEvolutionCompensationPath()
+	queueBytes, err := os.ReadFile(queuePath)
+	if err != nil {
+		t.Fatalf("read compensation queue: %v", err)
+	}
+	var records []cskill.EvolutionCompensationRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(queueBytes)), "\n") {
+		var record cskill.EvolutionCompensationRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode compensation record: %v", err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 1 {
+		t.Fatalf("compensation records = %d, want 1", len(records))
+	}
+	record := records[0]
+	if record.Skill != entry.Name || record.Action != "reject" || record.RequestID == "" {
+		t.Fatalf("record correlation = %+v", record)
+	}
+	if !record.DraftExists || record.DraftPath == "" || record.DraftBackup == "" {
+		t.Fatalf("record missing draft recovery snapshot: %+v", record)
+	}
+	if !cskill.HasPendingRepairDraft(filepath.Join(entry.SkillDir, cskill.RepairDraftsDirName)) {
+		t.Fatal("draft must remain available while compensation is pending")
+	}
+}
+
 // TestApplySkillRepairDraftTOCTOUConflictThroughStaleCache covers the round-3
 // TOCTOU fix: the concurrency check must re-parse skill.yaml from disk, not
 // trust loadSkills (two-layer 10-minute cache). Here the config entry (what
@@ -341,6 +403,90 @@ func TestApplySkillRepairDraftRollsBackYAMLOnConfigSaveFailure(t *testing.T) {
 	}
 	if !strings.Contains(string(yamlData), "echo new") {
 		t.Fatalf("skill.yaml not written back on retry:\n%s", yamlData)
+	}
+}
+
+// TestApplySkillRepairDraftRollsBackOnIndexRefreshFailure verifies that the
+// derived routing index is part of the reviewed-draft commit boundary. A
+// provider failure must not reach the final audit/success path, and the YAML,
+// config overlay and draft must remain retryable.
+func TestApplySkillRepairDraftRollsBackOnIndexRefreshFailure(t *testing.T) {
+	entry, draftName := writeFileBackedSkillWithDraft(t, t.TempDir())
+	app := setupEvolutionTestApp(t, []corelib.NLSkillEntry{entry}, nil)
+	app.toolRouter = NewToolRouter(nil)
+	var refreshCalls int
+	app.toolRouter.refreshSkillIndexOverride = func() error {
+		refreshCalls++
+		if refreshCalls == 1 {
+			return errors.New("injected index refresh failure")
+		}
+		return nil
+	}
+
+	parsed := applyDraftResult(t, app, "draft-skill", draftName)
+	if ok, _ := parsed["ok"].(bool); ok {
+		t.Fatalf("apply unexpectedly succeeded: %v", parsed)
+	}
+	if state, _ := parsed["state"].(string); state != "rolled_back" {
+		t.Fatalf("state = %q, want rolled_back: %v", state, parsed)
+	}
+	yamlData, err := os.ReadFile(filepath.Join(entry.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(yamlData), "echo old") || strings.Contains(string(yamlData), "echo new") {
+		t.Fatalf("skill.yaml not rolled back after index failure:\n%s", yamlData)
+	}
+	if !cskill.HasPendingRepairDraft(filepath.Join(entry.SkillDir, cskill.RepairDraftsDirName)) {
+		t.Fatal("draft must remain available after index failure")
+	}
+	if refreshCalls < 2 {
+		t.Fatalf("refresh calls = %d, want initial failure plus rollback refresh", refreshCalls)
+	}
+}
+
+// TestApplySkillRepairDraftDisableRollsBackOnIndexRefreshFailure covers the
+// config-only disable variant, which must use the same checked index boundary
+// as the YAML-writing apply path.
+func TestApplySkillRepairDraftDisableRollsBackOnIndexRefreshFailure(t *testing.T) {
+	root := t.TempDir()
+	entry, draftName := writeDisableDraftSkill(t, root, "disable-index-failure", "index unavailable")
+	app := setupEvolutionTestApp(t, []corelib.NLSkillEntry{entry}, func(cfg *corelib.AppConfig) {
+		cfg.ExternalSkillDirs = []string{root}
+	})
+	app.toolRouter = NewToolRouter(nil)
+	var refreshCalls int
+	app.toolRouter.refreshSkillIndexOverride = func() error {
+		refreshCalls++
+		if refreshCalls == 1 {
+			return errors.New("injected index refresh failure")
+		}
+		return nil
+	}
+
+	parsed := applyDraftResult(t, app, "disable-index-failure", draftName)
+	if ok, _ := parsed["ok"].(bool); ok {
+		t.Fatalf("disable apply unexpectedly succeeded: %v", parsed)
+	}
+	if state, _ := parsed["state"].(string); state != "rolled_back" {
+		t.Fatalf("state = %q, want rolled_back: %v", state, parsed)
+	}
+	loaded := app.skillExecutor.loadSkills()
+	var status string
+	for _, s := range loaded {
+		if s.Name == "disable-index-failure" {
+			status = s.Status
+			break
+		}
+	}
+	if status != "active" {
+		t.Fatalf("overlay status after rollback = %q, want active; loaded=%+v", status, loaded)
+	}
+	if !cskill.HasPendingRepairDraft(filepath.Join(entry.SkillDir, cskill.RepairDraftsDirName)) {
+		t.Fatal("disable draft must remain available after index failure")
+	}
+	if refreshCalls < 2 {
+		t.Fatalf("refresh calls = %d, want initial failure plus rollback refresh", refreshCalls)
 	}
 }
 

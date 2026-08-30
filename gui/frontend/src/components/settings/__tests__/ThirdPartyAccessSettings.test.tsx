@@ -1254,7 +1254,10 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
         const slider = await screen.findByRole('slider', { name: 'Volume Volume Pet' });
         fireEvent.input(slider, { target: { value: '87' } });
         fireEvent.click(screen.getByRole('button', { name: 'Remove Volume Pet' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+        // getByRole (sync) keeps the input→confirm sequence within the 100ms
+        // slider debounce even under full-suite load; awaiting findByRole here
+        // raced the debounce and made the test flaky.
+        fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
 
         await waitFor(() => expect(appMocks.deleteHardware).toHaveBeenCalledWith('esp32s3-volume-remove'));
         await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1272,7 +1275,9 @@ describe('ThirdPartyAccessSettings hardware enablement', () => {
 		const slider = await screen.findByRole('slider', { name: 'Brightness Brightness Pet' });
 		fireEvent.input(slider, { target: { value: '87' } });
 		fireEvent.click(screen.getByRole('button', { name: 'Remove Brightness Pet' }));
-		fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+		// See the volume sibling above: sync getByRole avoids racing the 100ms
+		// debounce under full-suite load.
+		fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
 
 		await waitFor(() => expect(appMocks.deleteHardware).toHaveBeenCalledWith('esp32s3-brightness-remove'));
 		await new Promise((resolve) => setTimeout(resolve, 150));

@@ -2309,6 +2309,13 @@ func TestSkillMarketAutoLoginThrottlesFailedMachineLogin(t *testing.T) {
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}, RemoteHubID: "hub-test"}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	// RemoteHubID is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so the enrollment fixture must go through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteHubID = "hub-test"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
 
 	app.acquireSkillMarketTokenAfterEnroll("user-123", "user@example.com", "m_123", "viewer-token")
 	app.acquireSkillMarketTokenAfterEnroll("user-123", "user@example.com", "m_123", "viewer-token")

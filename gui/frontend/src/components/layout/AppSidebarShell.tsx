@@ -7,9 +7,10 @@ import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
+import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
-import type { AssistantLightSchemeId } from '../ai/assistantLightSchemes';
+import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
@@ -65,6 +66,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
     openProjectTabPaths?: string[];
     openExpertTabIDs?: string[];
+    /** Currently visible assistant tab. Null/empty clears the task-list highlight. */
+    activeAssistantTask?: ActiveAssistantTaskIdentity | null;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -123,7 +126,7 @@ export const AppSidebarShell = ({
     taskManagementPaneWidth,
     aiThemeMode,
     aiDarkSchemeId,
-    aiLightSchemeId,
+    aiLightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID,
     brandInfo,
     currentIcon,
     brandSidebarName,
@@ -165,6 +168,7 @@ export const AppSidebarShell = ({
     hideTask,
     openProjectTabPaths,
     openExpertTabIDs,
+    activeAssistantTask,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -229,7 +233,7 @@ export const AppSidebarShell = ({
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
                           <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}
@@ -289,6 +293,7 @@ export const AppSidebarShell = ({
                         hideTask={hideTask}
                         openProjectTabPaths={openProjectTabPaths}
                         openExpertTabIDs={openExpertTabIDs}
+                        activeAssistantTask={activeAssistantTask}
                         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                         sidebarHubCredits={sidebarHubCredits}
                         formatSidebarTokens={formatSidebarTokens}

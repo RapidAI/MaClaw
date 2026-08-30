@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +12,35 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestDecodeGitHubReleaseSummariesAcceptsLargeCatalogue(t *testing.T) {
+	asset := strings.Repeat("x", 512)
+	var b bytes.Buffer
+	b.WriteString("[{\"tag_name\":\"V1\",\"published_at\":\"2026-08-28T00:00:00Z\",\"assets\":[")
+	for i := 0; i < 12000; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "{\"name\":\"asset-%d\",\"browser_download_url\":\"https://example.invalid/%s\"}", i, asset)
+	}
+	b.WriteString("]}]")
+	got, err := decodeGitHubReleaseSummaries(&b)
+	if err != nil {
+		t.Fatalf("decodeGitHubReleaseSummaries() error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Assets) != 12000 {
+		t.Fatalf("decoded catalogue size = %d/%d", len(got), len(got[0].Assets))
+	}
+}
+
+func TestDecodeGitHubReleaseSummariesRejectsOversizedResponse(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), githubReleaseListMaxBytes+1)
+	if _, err := decodeGitHubReleaseSummaries(bytes.NewReader(data)); err == nil {
+		t.Fatal("expected oversized response to be rejected")
+	}
+}
 
 func TestCompareVersions_NumericOnly(t *testing.T) {
 	cases := []struct {
@@ -299,6 +329,127 @@ func TestPickPreferredUpdateResult(t *testing.T) {
 	})
 }
 
+func TestRollbackReleasesFromManifestUsesOnlyStableMirrorURLs(t *testing.T) {
+	manifest := stableHistoryManifest{Releases: []stableHistoryRelease{
+		{Build: "11970", PublishedAt: "2026-08-28T10:00:00Z", Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {URLs: []string{
+				"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/11970/MaClaw-Setup.exe",
+				"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/releases/11970/MaClaw-Setup.exe",
+			}, SHA256: strings.Repeat("a", 64)},
+		}},
+		{Build: "11969", PublishedAt: "2026-08-27T10:00:00Z", Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {URL: "https://untrusted.example/installer.exe"},
+		}},
+	}}
+
+	releases := rollbackReleasesFromManifest(manifest, "MaClaw-Setup.exe")
+	if len(releases) != 1 {
+		t.Fatalf("got %d releases, want 1", len(releases))
+	}
+	if releases[0].Build != "11970" || releases[0].PublishedAt != "2026-08-28T10:00:00Z" || releases[0].SHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("unexpected rollback release: %+v", releases[0])
+	}
+	urls := splitDownloadURLs(releases[0].DownloadUrl)
+	if len(urls) != 3 || urls[0] != "https://github.com/RapidAI/MaClaw/releases/download/11970/MaClaw-Setup.exe" || !strings.Contains(urls[1], "/releases/11970/MaClaw-Setup.exe") {
+		t.Fatalf("rollback URLs = %#v, want GitHub then immutable R2/COS paths", urls)
+	}
+}
+
+func TestImmutableReleaseAssetURLUsesPathEscapedOpaqueBuild(t *testing.T) {
+	got := immutableReleaseAssetURL(r2PublicBaseURL, "V7+candidate:1@host/unsafe", "MaClaw Setup.exe")
+	want := r2PublicBaseURL + "/releases/V7+candidate:1@host%2Funsafe/MaClaw%20Setup.exe"
+	if got != want {
+		t.Fatalf("immutableReleaseAssetURL() = %q, want %q", got, want)
+	}
+}
+
+func TestGitHubReleaseAssetURLUsesPathEscapedOpaqueBuild(t *testing.T) {
+	got := githubReleaseAssetURL("V7+candidate:1@host/unsafe", "MaClaw Setup.exe")
+	want := "https://github.com/RapidAI/MaClaw/releases/download/V7+candidate:1@host%2Funsafe/MaClaw%20Setup.exe"
+	if got != want {
+		t.Fatalf("githubReleaseAssetURL() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildUpdateResultPathEscapesGitHubTag(t *testing.T) {
+	app := &App{}
+	result, err := app.buildUpdateResult("V7.0.0.1", latestReleaseInfo{TagName: "V7.1.0/unsafe"}, false)
+	if err != nil {
+		t.Fatalf("buildUpdateResult() error = %v", err)
+	}
+	if got := splitDownloadURLs(result.DownloadUrl)[1]; got != "https://github.com/RapidAI/MaClaw/releases/download/V7.1.0%2Funsafe/MaClaw-Setup.exe" {
+		t.Fatalf("GitHub update URL = %q, want escaped tag segment", got)
+	}
+}
+func TestIsReleaseMirrorURLRejectsLookalikeHost(t *testing.T) {
+	lookalike := "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev.evil.example/latest/MaClaw-Setup.exe"
+	if isReleaseMirrorURL(lookalike, "MaClaw-Setup.exe", false) {
+		t.Fatalf("isReleaseMirrorURL accepted lookalike host %q", lookalike)
+	}
+}
+
+func TestRollbackReleasesFromManifestRequiresSHA256(t *testing.T) {
+	manifest := stableHistoryManifest{Releases: []stableHistoryRelease{
+		{Build: "11970", PublishedAt: "2026-08-28T10:00:00Z", Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {URLs: []string{"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/11970/MaClaw-Setup.exe"}, SHA256: ""},
+		}},
+	}}
+	if releases := rollbackReleasesFromManifest(manifest, "MaClaw-Setup.exe"); len(releases) != 0 {
+		t.Fatalf("got %+v, want no release without a checksum", releases)
+	}
+}
+
+func TestRollbackReleasesFromManifestRequiresRFC3339PublicationDate(t *testing.T) {
+	manifest := stableHistoryManifest{Releases: []stableHistoryRelease{
+		{Build: "11970", PublishedAt: "not-a-date", Assets: map[string]updateManifestAsset{
+			"MaClaw-Setup.exe": {URLs: []string{"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/11970/MaClaw-Setup.exe"}, SHA256: strings.Repeat("a", 64)},
+		}},
+	}}
+	if releases := rollbackReleasesFromManifest(manifest, "MaClaw-Setup.exe"); len(releases) != 0 {
+		t.Fatalf("got %+v, want no release with a malformed publication date", releases)
+	}
+}
+
+func TestFetchStableHistoryFallsBackWhenFirstMirrorHasNoValidRelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(stableHistoryManifest{Releases: []stableHistoryRelease{{
+			Build:       "11970",
+			PublishedAt: "2026-08-28T10:00:00Z",
+			Assets: map[string]updateManifestAsset{
+				"MaClaw-Setup.exe": {URLs: []string{"https://untrusted.example/installer.exe"}, SHA256: strings.Repeat("a", 64)},
+			},
+		}}})
+	}))
+	defer server.Close()
+
+	if _, err := fetchStableHistory("test", server.URL, time.Second); err == nil || !strings.Contains(err.Error(), "no valid rollback releases") {
+		t.Fatalf("fetchStableHistory() error = %v, want invalid-history failure", err)
+	}
+}
+
+func TestRollbackReleasesFromManifestLimitsAndDeduplicates(t *testing.T) {
+	assets := func(build string) map[string]updateManifestAsset {
+		return map[string]updateManifestAsset{"MaClaw-Setup.exe": {URLs: []string{
+			"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/releases/" + build + "/MaClaw-Setup.exe",
+		}, SHA256: strings.Repeat("b", 64)}}
+	}
+	manifest := stableHistoryManifest{Releases: []stableHistoryRelease{
+		{Build: "6", PublishedAt: "2026-08-06T00:00:00Z", Assets: assets("6")},
+		{Build: "6", PublishedAt: "2026-08-05T00:00:00Z", Assets: assets("6")},
+		{Build: "5", PublishedAt: "2026-08-05T00:00:00Z", Assets: assets("5")},
+		{Build: "4", PublishedAt: "2026-08-04T00:00:00Z", Assets: assets("4")},
+		{Build: "3", PublishedAt: "2026-08-03T00:00:00Z", Assets: assets("3")},
+		{Build: "2", PublishedAt: "2026-08-02T00:00:00Z", Assets: assets("2")},
+		{Build: "1", PublishedAt: "2026-08-01T00:00:00Z", Assets: assets("1")},
+	}}
+	releases := rollbackReleasesFromManifest(manifest, "MaClaw-Setup.exe")
+	if len(releases) != 5 {
+		t.Fatalf("got %d releases, want 5", len(releases))
+	}
+	if releases[0].Build != "6" || releases[4].Build != "2" {
+		t.Fatalf("unexpected retained builds: %+v", releases)
+	}
+}
 func TestUpdateResultVersionKey(t *testing.T) {
 	if got := updateResultVersionKey(UpdateResult{TagName: "1.2.3", LatestVersion: "V9.9.9"}); got != "1.2.3" {
 		t.Fatalf("prefer TagName, got %q", got)
@@ -368,6 +519,23 @@ func TestManifestAssetDownloadURLsRejectsUntrustedOrWrongPathURLs(t *testing.T) 
 	}
 }
 
+func TestValidGitHubReleaseAssetURL(t *testing.T) {
+	build, asset := "V7.1.0.11876", "MaClaw-Setup.exe"
+	want := githubReleaseAssetURL(build, asset)
+	if !validGitHubReleaseAssetURL(want, build, asset) {
+		t.Fatalf("expected canonical GitHub URL to validate: %s", want)
+	}
+	for _, bad := range []string{
+		"https://evil.example/RapidAI/MaClaw/releases/download/V7.1.0.11876/MaClaw-Setup.exe",
+		want + "?download=1",
+		"https://github.com/RapidAI/MaClaw/releases/tag/" + build,
+	} {
+		if validGitHubReleaseAssetURL(bad, build, asset) {
+			t.Fatalf("unexpectedly accepted untrusted GitHub URL: %s", bad)
+		}
+	}
+}
+
 func TestManifestDownloadOrderUsesR2ThenGitHubThenCOS(t *testing.T) {
 	manifest := updateManifest{
 		Tag: "V7.1.0.11864",
@@ -397,6 +565,17 @@ func TestBuildUpdateResultUsesR2AndGitHubWhenNoManifestURLsExist(t *testing.T) {
 	urls := splitDownloadURLs(result.DownloadUrl)
 	if len(urls) != 3 || urls[0] != r2ReleaseAssetURL("MaClaw-Setup.exe", false) || !strings.Contains(urls[1], "github.com/") || !strings.Contains(urls[2], "myqcloud.com") {
 		t.Fatalf("fallback download candidate order = %#v, want R2, GitHub, COS", urls)
+	}
+}
+
+func TestBuildUpdateResultDoesNotOfferOlderRelease(t *testing.T) {
+	app := &App{}
+	result, err := app.buildUpdateResult("7.5.0.11973", latestReleaseInfo{TagName: "V7.1.0.11876"}, false)
+	if err != nil {
+		t.Fatalf("buildUpdateResult() error = %v", err)
+	}
+	if result.HasUpdate {
+		t.Fatalf("older release was offered as update: current=7.5.0.11973 latest=%s", result.LatestVersion)
 	}
 }
 

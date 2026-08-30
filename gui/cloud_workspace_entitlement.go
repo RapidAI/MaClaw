@@ -14,6 +14,8 @@ type CloudWorkspaceEntitlementWorkspace struct {
 	Name        string `json:"name"`
 	UsedBytes   int64  `json:"used_bytes"`
 	UpdatedAt   string `json:"updated_at"`
+	TaskName    string `json:"task_name,omitempty"`
+	TaskMode    string `json:"task_mode,omitempty"`
 	LeaseInUse  bool   `json:"lease_in_use,omitempty"`
 	LeaseHolder string `json:"lease_holder,omitempty"`
 }
@@ -78,6 +80,7 @@ type CloudWorkspaceEntitlement struct {
 	MaxWorkspaceBytes int64                                `json:"max_workspace_bytes"`
 	Workspaces        []CloudWorkspaceEntitlementWorkspace `json:"workspaces"`
 	Deleted           []CloudWorkspaceDeletedWorkspace     `json:"deleted"`
+	Reason            string                               `json:"reason,omitempty"`
 	HubUnavailable    bool                                 `json:"hub_unavailable"`
 	Banner            string                               `json:"banner"`
 }
@@ -148,7 +151,8 @@ func hubUnavailableEntitlement(cached CloudWorkspaceEntitlement, hasCache bool) 
 
 // CloudWorkspaceEntitlement fetches the caller's cloud-workspace grant from Hub.
 // Network and 5xx errors keep the last successful process-session result and
-// set HubUnavailable; they never write Enabled=false.
+// set HubUnavailable; they never write Enabled=false. 4xx means Hub answered
+// (not granted / unauthorized) and must not look like an outage.
 func (a *App) CloudWorkspaceEntitlement() CloudWorkspaceEntitlement {
 	ent, err := a.fetchCloudWorkspaceEntitlement()
 	if err != nil {
@@ -168,8 +172,12 @@ func (a *App) fetchCloudWorkspaceEntitlement() (CloudWorkspaceEntitlement, error
 	if err != nil {
 		return CloudWorkspaceEntitlement{}, err
 	}
-	if status >= 300 {
+	if status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
 		return CloudWorkspaceEntitlement{}, fmt.Errorf("hub returned %d", status)
+	}
+	if status >= 300 {
+		// Hub answered (401/403/404): grant is off, not an outage.
+		return emptyCloudWorkspaceEntitlement(), nil
 	}
 	out := emptyCloudWorkspaceEntitlement()
 	if err := json.Unmarshal(data, &out); err != nil {

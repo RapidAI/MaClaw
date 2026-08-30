@@ -2085,6 +2085,27 @@ func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
 	}
 }
 
+func TestLLMRetryBackoff(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: -1, want: 0},
+		{attempt: 0, want: 0},
+		{attempt: 1, want: 2 * time.Second},
+		{attempt: 2, want: 4 * time.Second},
+		{attempt: 3, want: 8 * time.Second},
+		{attempt: 4, want: 16 * time.Second},
+		{attempt: 5, want: 32 * time.Second},
+		{attempt: 6, want: 32 * time.Second},
+	}
+	for _, tt := range tests {
+		if got := llmRetryBackoff(tt.attempt); got != tt.want {
+			t.Errorf("llmRetryBackoff(%d) = %s, want %s", tt.attempt, got, tt.want)
+		}
+	}
+}
+
 func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2857,7 +2878,8 @@ func (m *stopAfterFirstToolCallbacks) ExecuteToolStructured(name, args string) T
 type budgetStopCallbacks struct {
 	*mockCallbacks
 	usageRounds int
-	earlyAfter  int // stop after this many OnLLMUsage calls
+	earlyAfter  int  // stop after this many OnLLMUsage calls
+	cleanStop   bool // return an empty errCode: clean completion, not an error
 }
 
 func (m *budgetStopCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
@@ -2869,6 +2891,9 @@ func (m *budgetStopCallbacks) OnLLMUsage(model string, inputTokens, outputTokens
 
 func (m *budgetStopCallbacks) EarlyStop() (bool, string, string) {
 	if m.usageRounds >= m.earlyAfter && m.earlyAfter > 0 {
+		if m.cleanStop {
+			return true, "", ""
+		}
 		return true, "daily_llm_budget_exceeded", "budget test stop"
 	}
 	return false, "", ""
@@ -2968,8 +2993,10 @@ func TestRunLoop_ReplanReplacesCancelledRequestWithoutSpendingIteration(t *testi
 	if cb.contexts.Load() != 2 || cb.finished.Load() != 2 {
 		t.Fatalf("context lifecycle started=%d finished=%d, want 2/2", cb.contexts.Load(), cb.finished.Load())
 	}
-	if cb.newRounds.Load() != 1 {
-		t.Fatalf("new-round notifications = %d, want 1", cb.newRounds.Load())
+	// Every LLM request notifies, including the first: the cancelled attempt
+	// and its steer replacement each count as one round notification.
+	if cb.newRounds.Load() != 2 {
+		t.Fatalf("new-round notifications = %d, want 2", cb.newRounds.Load())
 	}
 	if !sawSteer.Load() {
 		t.Fatal("replacement request did not include live steering")
@@ -4238,6 +4265,90 @@ func TestRunLoop_EarlyStopBudgetAfterFirstRound(t *testing.T) {
 	}
 }
 
+// TestRunLoop_EarlyStopCleanCompletionSkipsClosingCall covers the code-less
+// EarlyStop shape: the host declares the turn's goal reached after a tool
+// round (artifact delivered, plan exhausted), so the loop ends without Error
+// and without one more LLM request, falling back to the last assistant text.
+func TestRunLoop_EarlyStopCleanCompletionSkipsClosingCall(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = map[string]interface{}{
+				"usage": map[string]interface{}{
+					"prompt_tokens":     100,
+					"completion_tokens": 20,
+					"total_tokens":      120,
+				},
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "deck written, delivering now",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   "call_1",
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "send_file",
+										"arguments": `{}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			// Must not be reached: the clean stop replaces the closing call.
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "should not run",
+						},
+						"finish_reason": "stop",
+					},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &budgetStopCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config: corelib.MaclawLLMConfig{
+				URL:   server.URL,
+				Model: "test",
+				Key:   "test-key",
+			},
+			maxIter:    10,
+			sysPrompt:  "sys",
+			toolResult: "ok",
+		},
+		earlyAfter: 1,
+	}
+	cb.cleanStop = true
+	result := RunLoop(cb, "deliver the deck", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("clean stop must not set Error, got %q", result.Error)
+	}
+	if result.HardExit {
+		t.Fatal("clean stop must not be a HardExit")
+	}
+	if result.Text != "deck written, delivering now" {
+		t.Fatalf("text=%q, want last assistant content fallback", result.Text)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", callCount)
+	}
+}
+
 func TestRunLoop_UsesResponsesWireAPI(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]interface{}
@@ -5224,6 +5335,9 @@ func TestRunLoop_NoDrift_WhenResultsChange(t *testing.T) {
 		},
 		maxIter:   20,
 		sysPrompt: "test",
+		// The polled tool must be on the rendered surface: fence-denied calls
+		// count as no forward progress and trip the dithering circuit breaker.
+		tools: []map[string]interface{}{tooldef.BuildToolDef("bash", "test", map[string]interface{}{"type": "object"})},
 	}
 	// Override ExecuteTool to return changing results.
 	origExecute := cb.ExecuteTool
@@ -5535,5 +5649,61 @@ func TestExecuteLoopToolFallsBackWhenStructuredOutcomeUnset(t *testing.T) {
 	result := executeLoopTool(cb, "demo", "{}")
 	if result.Outcome != ToolExecutionOutcomeError {
 		t.Fatalf("Outcome = %q, want %q", result.Outcome, ToolExecutionOutcomeError)
+	}
+}
+
+// TestRunLoop_NoProgressCircuitBreakerStopsDithering covers the alternating-
+// failure escape of the same-tool detector: each iteration's calls fail (or
+// are fence-denied) under different names, so the same-tool counter never
+// moves, yet the turn makes no forward progress. Five such iterations must
+// force-stop the loop instead of dithering until maxIter (production
+// 2026-08-26: 12+ iterations, ~20 minutes, zero successful calls).
+func TestRunLoop_NoProgressCircuitBreakerStopsDithering(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		names := []string{"web_fetch", "web_search", "download_file"}
+		name := names[(callCount-1)%len(names)]
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "still trying to find the images",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   fmt.Sprintf("call_%d", callCount),
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      name,
+									"arguments": `{}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	// Render no tools: every call is fence-denied, alternating names defeat the
+	// same-tool failure counter.
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 20, sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "find images and build a deck", nil, nil)
+	if callCount != 5 {
+		t.Fatalf("loop must stop after 5 no-progress iterations, got %d LLM calls", callCount)
+	}
+	if !result.HardExit {
+		t.Fatal("no-progress stop must be a HardExit")
+	}
+	if !strings.Contains(result.Text, "still trying to find the images") {
+		t.Fatalf("breaker must surface the last assistant text: %q", result.Text)
 	}
 }

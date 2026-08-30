@@ -19,30 +19,59 @@ func (h *IMMessageHandler) toolSkillEvolutionStatus(_ map[string]interface{}) st
 	}
 	st := h.app.GetSkillEvolutionStatus()
 	payload := map[string]interface{}{
-		"ok":                      true,
-		"non_executing":           true,
-		"boundary":                "read-only skill evolution pipeline status",
-		"pipeline_started":        st.PipelineStarted,
-		"pending_skills":          st.PendingSkills,
-		"coalesced_notifications": st.CoalescedNotifications,
-		"dropped_notifications":   st.DroppedNotifications,
-		"processed_requests":      st.ProcessedRequests,
-		"enable_repair":           st.EnableRepair,
-		"enable_optimizer":        st.EnableOptimizer,
-		"enable_promoter":         st.EnablePromoter,
-		"repair_cooldown":         st.RepairCooldown,
-		"repair_cooldown_hours":   st.RepairCooldownHours,
-		"has_repair_hook":         st.HasRepairHook,
-		"has_optimizer":           st.HasOptimizer,
-		"has_promoter":            st.HasPromoter,
-		"env_disabled":            st.EnvDisabled,
-		"config_enabled":          st.ConfigEnabled,
-		"config_disabled":         st.ConfigDisabled,
-		"disabled":                st.Disabled,
+		"ok":                         true,
+		"non_executing":              true,
+		"boundary":                   "read-only skill evolution pipeline status",
+		"pipeline_started":           st.PipelineStarted,
+		"pending_skills":             st.PendingSkills,
+		"coalesced_notifications":    st.CoalescedNotifications,
+		"dropped_notifications":      st.DroppedNotifications,
+		"processed_requests":         st.ProcessedRequests,
+		"enable_repair":              st.EnableRepair,
+		"enable_optimizer":           st.EnableOptimizer,
+		"enable_promoter":            st.EnablePromoter,
+		"repair_cooldown":            st.RepairCooldown,
+		"repair_cooldown_hours":      st.RepairCooldownHours,
+		"has_repair_hook":            st.HasRepairHook,
+		"has_optimizer":              st.HasOptimizer,
+		"has_promoter":               st.HasPromoter,
+		"env_disabled":               st.EnvDisabled,
+		"config_enabled":             st.ConfigEnabled,
+		"config_disabled":            st.ConfigDisabled,
+		"disabled":                   st.Disabled,
+		"audit_available":            st.AuditAvailable,
+		"last_audit_error":           st.LastAuditError,
+		"audit_failure_count":        st.AuditFailureCount,
+		"oldest_pending_at":          st.OldestPendingAt,
+		"queue_wait_seconds":         st.QueueWaitSeconds,
+		"active_skills":              st.ActiveSkills,
+		"cancelled_requests":         st.CancelledRequests,
+		"timed_out_requests":         st.TimedOutRequests,
+		"pending_compensations":      st.PendingCompensations,
+		"compensation_queue_healthy": st.CompensationQueueHealthy,
+		"compensation_queue_error":   st.CompensationQueueError,
+		"requests":                   st.Requests,
+		"worker_timeout_seconds":     st.WorkerTimeoutSeconds,
+		"failure_summaries":          st.FailureSummaries,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("Skill evolution status marshal failed: %v", err)
+	}
+	return string(data)
+}
+
+// toolSkillEvolutionCompensations exposes only safe queue metadata; recovery
+// itself remains a startup-controlled operation and cannot be forced by a
+// model/tool call.
+func (h *IMMessageHandler) toolSkillEvolutionCompensations(_ map[string]interface{}) string {
+	if h == nil || h.app == nil {
+		return `{"ok":false,"error":"app not initialized","fail_closed":true}`
+	}
+	payload := h.app.ListSkillEvolutionCompensations()
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("Skill evolution compensation marshal failed: %v", err)
 	}
 	return string(data)
 }

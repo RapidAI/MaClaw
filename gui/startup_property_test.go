@@ -54,9 +54,11 @@ func (s *startupSimulator) startup(hasCredentials bool) {
 func TestProperty1_NonBlockingStartup(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate small delays; this property checks non-blocking behavior, not
-		// real network duration.
-		authDelayMs := rapid.IntRange(1, 5).Draw(t, "authDelayMs")
-		helloDelayMs := rapid.IntRange(1, 5).Draw(t, "helloDelayMs")
+		// real network duration. Delays are sized well above the 50ms startup
+		// budget so the background goroutine cannot win the race on a loaded
+		// machine (full-suite parallelism used to make 1-5ms draws flaky).
+		authDelayMs := rapid.IntRange(80, 150).Draw(t, "authDelayMs")
+		helloDelayMs := rapid.IntRange(80, 150).Draw(t, "helloDelayMs")
 
 		hubConn := &mockHubConnector{
 			authDelay:  time.Duration(authDelayMs) * time.Millisecond,

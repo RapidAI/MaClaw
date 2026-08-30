@@ -1,13 +1,17 @@
 package main
 
-// Task identity anchors protect source-bound, multi-turn work from semantic
-// drift. Conversation compaction intentionally removes large attachment bodies
-// from historical turns; a compact follow-up must nevertheless retain which
-// person/document it is about. This is an execution-context invariant, not an
-// LLM instruction that can be lost during compaction.
+// Task identity anchors are a host-owned charter for the current tab/session.
+// They protect multi-turn work from semantic drift: compaction, cancelled
+// turns, leftover workspace files, and vague follow-ups ("继续改进 ppt") must
+// not silently switch the task to another topic that happens to share the
+// working directory. Person/document binding is one specialization; original
+// request + primary deliverable is the general case. This is an
+// execution-context invariant, not an LLM instruction that can be lost during
+// compaction.
 
 import (
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -20,6 +24,8 @@ type taskIdentityAnchor struct {
 	Subject         string
 	SourcePaths     []string
 	OriginalRequest string
+	WorkKind        string
+	PrimaryFiles    []string
 	UpdatedAt       time.Time
 }
 
@@ -45,9 +51,6 @@ func (h *IMMessageHandler) updateTaskIdentityAnchorFromUserText(userID, userText
 	prior, _ := h.taskAnchors.Load(userID)
 	anchor, _ := prior.(taskIdentityAnchor)
 	subjectChanged := subject != "" && anchor.Subject != "" && subject != anchor.Subject
-	if subject == "" && len(paths) == 0 {
-		return
-	}
 	// A new explicit person/source pair starts a new task. Do not carry the
 	// prior source list into it: that would turn a useful anchor into a blended
 	// dossier and merely invert the identity-mixing bug.
@@ -68,8 +71,22 @@ func (h *IMMessageHandler) updateTaskIdentityAnchorFromUserText(userID, userText
 			anchor.SourcePaths = mergeTaskAnchorPaths(anchor.SourcePaths, paths)
 		}
 	}
-	if anchor.OriginalRequest == "" {
-		anchor.OriginalRequest = truncateRunes(stripTaskAnchorDocumentBodies(userText), 500)
+	// OriginalRequest is write-once for the session. Generic follow-ups
+	// ("继续改进ppt") and cancelled-turn residue must not replace the tab's
+	// first substantive request, or a later math-style instruction can hijack
+	// a PPT tab.
+	if strings.TrimSpace(anchor.OriginalRequest) == "" {
+		if recovered := firstSubstantiveTaskRequest(h.taskAnchorHistory(userID)); recovered != "" {
+			anchor.OriginalRequest = recovered
+		} else if request := firstSubstantiveTaskRequest([]agent.ConversationEntry{{Role: "user", Content: userText}}); request != "" {
+			anchor.OriginalRequest = request
+		}
+	}
+	if strings.TrimSpace(anchor.WorkKind) == "" {
+		anchor.WorkKind = extractTaskWorkKind(anchor.OriginalRequest)
+	}
+	if !taskIdentityAnchorActive(anchor) {
+		return
 	}
 	anchor.UpdatedAt = time.Now()
 	h.taskAnchors.Store(userID, anchor)
@@ -84,10 +101,16 @@ func (h *IMMessageHandler) taskIdentityAnchorForUser(userID string) (taskIdentit
 		return taskIdentityAnchor{}, false
 	}
 	anchor, ok := value.(taskIdentityAnchor)
-	if !ok || (anchor.Subject == "" && len(anchor.SourcePaths) == 0) {
+	if !ok || !taskIdentityAnchorActive(anchor) {
 		return taskIdentityAnchor{}, false
 	}
 	return anchor, true
+}
+
+func taskIdentityAnchorActive(anchor taskIdentityAnchor) bool {
+	return strings.TrimSpace(anchor.Subject) != "" ||
+		len(anchor.SourcePaths) > 0 ||
+		strings.TrimSpace(anchor.OriginalRequest) != ""
 }
 
 func (h *IMMessageHandler) clearTaskIdentityAnchor(userID string) {
@@ -97,11 +120,17 @@ func (h *IMMessageHandler) clearTaskIdentityAnchor(userID string) {
 }
 
 func taskIdentityAnchorPrompt(anchor taskIdentityAnchor) string {
-	if anchor.Subject == "" && len(anchor.SourcePaths) == 0 {
+	if !taskIdentityAnchorActive(anchor) {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("[任务身份与来源锚点 — 强制约束]\n")
+	if req := strings.TrimSpace(anchor.OriginalRequest); req != "" {
+		fmt.Fprintf(&b, "- 当前任务目标：%s\n", req)
+	}
+	if kind := strings.TrimSpace(anchor.WorkKind); kind != "" {
+		fmt.Fprintf(&b, "- 任务类型：%s。含糊的续写（例如「继续改进 ppt」「需要专业风格」）一律指该任务，而不是工作区里其他主题的文件。\n", kind)
+	}
 	if anchor.Subject != "" {
 		fmt.Fprintf(&b, "- 当前任务对象：%s。续写、浓缩、改写、翻译或生成资料时，必须保持该对象；不得替换为其他人。\n", anchor.Subject)
 	}
@@ -111,7 +140,14 @@ func taskIdentityAnchorPrompt(anchor taskIdentityAnchor) string {
 		b.WriteString("。\n")
 		b.WriteString("- 若历史正文已被压缩，先重读上述来源；不得用长期记忆、历史会话、工作区中另一任务的材料补替。来源无法读取时，应说明缺少证据。\n")
 	}
-	b.WriteString("- 只有用户明确要求检索历史会话或切换对象时，才可跨任务检索或更换该锚点。\n")
+	if len(anchor.PrimaryFiles) > 0 {
+		b.WriteString("- 当前任务主产物：")
+		b.WriteString(strings.Join(anchor.PrimaryFiles, "；"))
+		b.WriteString("。覆盖、美化、加页或加图表时请改这些文件（或其文件名前缀变体），不要新建或改写其他主题的讲义/PPT。\n")
+	} else {
+		b.WriteString("- 工作区可能含有其他任务留下的文件。不要把那些文件当成当前任务产物。\n")
+	}
+	b.WriteString("- 只有用户明确要求检索历史会话或切换对象/任务时，才可跨任务检索或更换该锚点。\n")
 	return strings.TrimSpace(b.String())
 }
 
@@ -251,7 +287,10 @@ func taskAnchorAllowsLongTermMemoryRecall(userText string) bool {
 // out of history. Writes are handled independently, so ordinary task notes can
 // still be saved under the identity-aware write gate.
 func taskAnchorBlocksMemoryRead(anchor taskIdentityAnchor, action memoryToolAction, userText string) bool {
-	if len(anchor.SourcePaths) == 0 || taskAnchorAllowsLongTermMemoryRecall(userText) {
+	if taskAnchorAllowsLongTermMemoryRecall(userText) {
+		return false
+	}
+	if len(anchor.SourcePaths) == 0 && strings.TrimSpace(anchor.OriginalRequest) == "" {
 		return false
 	}
 	switch action {
@@ -314,4 +353,269 @@ func containsTaskAnchorProfileTerm(content string) bool {
 // also carries a plausible person's name while omitting the anchored subject.
 func containsLikelyPersonName(content string) bool {
 	return taskAnchorLikelyPersonNamePattern.MatchString(content)
+}
+
+func (h *IMMessageHandler) taskAnchorHistory(userID string) []agent.ConversationEntry {
+	if h == nil || h.memory == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	return h.memory.LoadAll(userID)
+}
+
+func firstSubstantiveTaskRequest(entries []agent.ConversationEntry) string {
+	var best string
+	var bestTS int64
+	found := false
+	for _, entry := range entries {
+		if entry.Role != "user" {
+			continue
+		}
+		text, _ := entry.Content.(string)
+		text = strings.TrimSpace(stripTaskAnchorDocumentBodies(text))
+		if !isSubstantiveTaskRequest(text) {
+			continue
+		}
+		ts := entry.Timestamp
+		if !found || (ts > 0 && (bestTS == 0 || ts < bestTS)) {
+			best = truncateRunes(text, 500)
+			bestTS = ts
+			found = true
+		}
+	}
+	return best
+}
+
+func isSubstantiveTaskRequest(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.HasPrefix(text, "[系统]") {
+		return false
+	}
+	if utf8RuneCount(text) < 8 {
+		return false
+	}
+	return !isTaskAnchorContinuationText(text)
+}
+
+func isTaskAnchorContinuationText(text string) bool {
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
+	if compact == "" {
+		return true
+	}
+	cues := []string{
+		"继续改进", "继续改", "继续做", "忘掉前面", "不用管前面", "忽略前面",
+		"太朴素", "更新云端", "需要专业风格", "ppt需要",
+	}
+	for _, cue := range cues {
+		if strings.Contains(compact, strings.ReplaceAll(cue, " ", "")) && utf8RuneCount(text) <= 80 {
+			return true
+		}
+	}
+	switch compact {
+	case "继续", "continue", "goon":
+		return true
+	}
+	return false
+}
+
+func extractTaskWorkKind(text string) string {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "ppt") || strings.Contains(text, "幻灯") || strings.Contains(text, "演讲") || strings.Contains(text, "演示文稿"):
+		return "ppt"
+	case strings.Contains(text, "讲义") || strings.Contains(text, "书籍") || strings.Contains(lower, "handbook") || strings.Contains(lower, "book-pdf") || strings.Contains(lower, "book_pdf"):
+		return "document"
+	default:
+		return ""
+	}
+}
+
+func taskAnchorDeliverableWriteBlockReason(anchor *taskIdentityAnchor, toolName string, args map[string]interface{}) string {
+	if anchor == nil || !taskIdentityAnchorActive(*anchor) {
+		return ""
+	}
+	path := taskAnchorDeliverablePath(toolName, args)
+	if path == "" || !taskAnchorShouldGateDeliverable(*anchor, path) {
+		return ""
+	}
+	if !taskAnchorDeliverableContradicts(*anchor, path) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("当前任务")
+	if req := strings.TrimSpace(anchor.OriginalRequest); req != "" {
+		fmt.Fprintf(&b, "是「%s」", truncateRunes(req, 80))
+	}
+	if len(anchor.PrimaryFiles) > 0 {
+		fmt.Fprintf(&b, "（主产物 %s）", strings.Join(anchor.PrimaryFiles, "；"))
+	}
+	fmt.Fprintf(&b, "。不要改写工作区里其他主题的文件（%s）。请覆盖或修订当前任务主产物。", filepath.Base(path))
+	return b.String()
+}
+
+func taskAnchorDeliverablePath(toolName string, args map[string]interface{}) string {
+	if args == nil {
+		return ""
+	}
+	switch strings.TrimSpace(toolName) {
+	case "office":
+		action := strings.ToLower(strings.TrimSpace(stringVal(args, "action")))
+		switch action {
+		case "write_pptx", "generate_pptx", "generate_pdf":
+		default:
+			return ""
+		}
+	case "write_file":
+	default:
+		return ""
+	}
+	for _, key := range []string{"file_path", "path"} {
+		if p := strings.TrimSpace(stringVal(args, key)); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func taskAnchorShouldGateDeliverable(anchor taskIdentityAnchor, path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".pptx", ".ppt":
+		return true
+	case ".pdf":
+		return anchor.WorkKind == "document"
+	default:
+		return false
+	}
+}
+
+func taskAnchorDeliverableContradicts(anchor taskIdentityAnchor, path string) bool {
+	base := filepath.Base(path)
+	if len(anchor.PrimaryFiles) > 0 {
+		return !taskAnchorPrimaryVariant(base, anchor.PrimaryFiles) && !taskAnchorSharesDistinctiveTokens(base, taskAnchorCharterText(anchor))
+	}
+	charter := taskAnchorCharterText(anchor)
+	charterASCII := taskAnchorDistinctiveASCIITokens(charter)
+	fileASCII := taskAnchorDistinctiveASCIITokens(base)
+	if len(charterASCII) == 0 || len(fileASCII) == 0 {
+		return false
+	}
+	return !tokenSetsIntersect(charterASCII, fileASCII)
+}
+
+func taskAnchorCharterText(anchor taskIdentityAnchor) string {
+	return strings.TrimSpace(strings.Join([]string{anchor.OriginalRequest, anchor.Subject, strings.Join(anchor.SourcePaths, " ")}, " "))
+}
+
+func taskAnchorPrimaryVariant(filename string, primary []string) bool {
+	stem := taskAnchorFileStem(filename)
+	if stem == "" {
+		return false
+	}
+	lower := strings.ToLower(stem)
+	for _, item := range primary {
+		ps := strings.ToLower(taskAnchorFileStem(filepath.Base(item)))
+		if ps == "" {
+			continue
+		}
+		if lower == ps || strings.HasPrefix(lower, ps+"-") || strings.HasPrefix(lower, ps+"_") {
+			return true
+		}
+		if taskAnchorSharesDistinctiveTokens(stem, ps) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskAnchorFileStem(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return ""
+	}
+	return strings.TrimSuffix(filename, filepath.Ext(filename))
+}
+
+func taskAnchorSharesDistinctiveTokens(filename, charter string) bool {
+	return tokenSetsIntersect(taskAnchorDistinctiveASCIITokens(filename), taskAnchorDistinctiveASCIITokens(charter))
+}
+
+var taskAnchorASCIIStopwords = map[string]struct{}{
+	"the": {}, "and": {}, "for": {}, "with": {}, "from": {}, "this": {}, "that": {},
+	"ppt": {}, "pptx": {}, "pdf": {}, "doc": {}, "docx": {}, "md": {}, "txt": {},
+	"com": {}, "www": {}, "org": {}, "http": {}, "https": {}, "github": {},
+	"user": {}, "users": {}, "file": {}, "files": {}, "path": {}, "data": {},
+	"title": {}, "slides": {}, "slide": {}, "page": {}, "pages": {},
+	"ai": {}, "llm": {}, "app": {}, "new": {}, "old": {},
+	"into": {}, "over": {}, "about": {}, "after": {}, "before": {}, "please": {},
+}
+
+var taskAnchorTokenRE = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]{2,}`)
+
+func taskAnchorDistinctiveASCIITokens(text string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, match := range taskAnchorTokenRE.FindAllString(strings.ToLower(text), -1) {
+		if _, stop := taskAnchorASCIIStopwords[match]; stop {
+			continue
+		}
+		if _, ok := seen[match]; ok {
+			continue
+		}
+		seen[match] = struct{}{}
+		out = append(out, match)
+	}
+	return out
+}
+
+func tokenSetsIntersect(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	index := make(map[string]struct{}, len(a))
+	for _, item := range a {
+		index[item] = struct{}{}
+	}
+	for _, item := range b {
+		if _, ok := index[item]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *IMMessageHandler) rememberTaskAnchorDeliverable(userID string, snapshot *taskIdentityAnchor, toolName string, args map[string]interface{}) {
+	if h == nil {
+		return
+	}
+	path := taskAnchorDeliverablePath(toolName, args)
+	ext := strings.ToLower(filepath.Ext(path))
+	if path == "" || (ext != ".pptx" && ext != ".ppt") {
+		return
+	}
+	clean := filepath.Clean(path)
+	update := func(anchor taskIdentityAnchor) taskIdentityAnchor {
+		if taskAnchorDeliverableContradicts(anchor, clean) {
+			return anchor
+		}
+		anchor.PrimaryFiles = mergeTaskAnchorPaths(anchor.PrimaryFiles, []string{clean})
+		anchor.UpdatedAt = time.Now()
+		return anchor
+	}
+	if snapshot != nil {
+		*snapshot = update(*snapshot)
+	}
+	if strings.TrimSpace(userID) == "" {
+		return
+	}
+	current, ok := h.taskIdentityAnchorForUser(userID)
+	if !ok {
+		if snapshot != nil {
+			current = *snapshot
+		} else {
+			return
+		}
+	}
+	current = update(current)
+	h.taskAnchors.Store(userID, current)
+	log.Printf("[task-anchor] recorded primary deliverable user=%s file=%s", userID, clean)
 }

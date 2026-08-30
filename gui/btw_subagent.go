@@ -254,7 +254,7 @@ const btwSuffix = `
 
 规则：
 1. 如果用户询问当前日期/时间/星期，必须使用 current_datetime 工具，禁止猜测或编造
-2. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态
+2. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态；仅查看主 Agent 时传入 category="main_agent"
 3. 使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
 4. 如果问题涉及本地项目文件，使用 read_file 查看
 5. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
@@ -308,6 +308,11 @@ func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 	case "memory":
 		return h.toolMemory(args)
 	case "agent_status":
+		// /btw is a detached side loop, so it does not have the main loop's
+		// runtime context. Carry its trusted owner explicitly; otherwise a
+		// status query can fail closed (or miss the concurrently running main
+		// agent) instead of reporting this user's isolated runtime state.
+		args[registeredToolPolicyOwnerIDField] = c.subagent.OwnerID()
 		return h.toolAgentStatus(args)
 	case "current_datetime":
 		return formatBtwCurrentDateTime()
@@ -398,9 +403,9 @@ func buildBtwToolDefinitions() []map[string]interface{} {
 				"action": map[string]string{"type": "string", "description": "Action: recall"},
 				"query":  map[string]string{"type": "string", "description": "Recall query"},
 			}, []string{"action", "query"}),
-		btwToolDef("agent_status", "Inspect local agent task, coding session, and SSH session status.",
+		btwToolDef("agent_status", "Inspect the current user's main agent, local task, coding session, and SSH session status.",
 			map[string]interface{}{
-				"category": map[string]string{"type": "string", "description": "Category: all, local_tasks, ssh_tasks, sessions, or ssh_sessions"},
+				"category": map[string]string{"type": "string", "description": "Category: all, main_agent, local_tasks, ssh_tasks, sessions, or ssh_sessions"},
 				"task_id":  map[string]string{"type": "string", "description": "Optional task ID"},
 			}, nil),
 		btwToolDef("current_datetime", "Get current local date and time (year, month, day, weekday, hour, minute, second, timezone). Prefer this over guessing the clock.",

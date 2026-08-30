@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	agent "github.com/RapidAI/CodeClaw/corelib/agent"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -423,5 +425,24 @@ func TestPersistLastCompressionSummaryWritesSourceRef(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "COMPRESS_SENTINEL_AT_END") {
 		t.Fatalf("source ref did not preserve full summary")
+	}
+}
+
+// --- Tests for guardedCompactionSummarizer ---
+
+func TestGuardedCompactionSummarizer_Guards(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://example.test/v1", Model: "m"}
+
+	if got := guardedCompactionSummarizer(cfg, nil); got != nil {
+		t.Fatalf("nil http client should yield nil summarizer")
+	}
+	if got := guardedCompactionSummarizer(corelib.MaclawLLMConfig{Model: "m"}, &http.Client{}); got != nil {
+		t.Fatalf("empty LLM URL should yield nil summarizer")
+	}
+	if got := guardedCompactionSummarizer(corelib.MaclawLLMConfig{URL: "https://example.test/v1"}, &http.Client{}); got != nil {
+		t.Fatalf("empty LLM model should yield nil summarizer")
+	}
+	if got := guardedCompactionSummarizer(cfg, &http.Client{}); got == nil {
+		t.Fatalf("configured LLM + client should yield a summarizer")
 	}
 }

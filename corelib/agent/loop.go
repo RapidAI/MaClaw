@@ -467,6 +467,22 @@ type ToolExecutionSurfaceRefresher interface {
 	RefreshAfterToolExecution(name string) bool
 }
 
+// ToolCallPetitioner lets a governed host rescue a model tool call that names
+// a real cataloged tool absent from the current rendered surface. Without it
+// such a call is a hard denial with no same-turn recovery, so a planner that
+// under-rendered the surface (for example a degraded intent classification)
+// strands the whole turn.
+type ToolCallPetitioner interface {
+	// PetitionToolCall is consulted exactly once per name when the model calls
+	// a function that was not rendered in the current request surface and has
+	// not already succeeded in this loop. Granted means the host expanded the
+	// governed surface through its trusted planner; message then replaces the
+	// denial and tells the model to re-issue the call. The execution outcome
+	// remains an error either way, preserving retry/drift semantics; the
+	// widened surface is observed by the next iteration's request rebuild.
+	PetitionToolCall(name string) (granted bool, message string)
+}
+
 // LLMRequestContextProvider lets hosts wrap each LLM round with their own
 // scheduling, tracing, and cancellation boundary without making corelib/agent
 // depend on GUI/runtime packages.
@@ -482,7 +498,10 @@ type LLMReplanAware interface {
 }
 
 // LLMRoundNotifier is an optional host callback invoked immediately before
-// every LLM request after the first, including a live-steer replacement.
+// every LLM request, including a live-steer replacement. The first request
+// also notifies: hosts use it to mark the assistant round as actively
+// streaming (e.g. auto-expanding the thinking panel), and the first round
+// streams tokens exactly like later ones.
 type LLMRoundNotifier interface {
 	OnLLMNewRound()
 }
@@ -494,7 +513,29 @@ type LLMFinalizationGuard interface {
 	TryFinalizeLLMResponse() bool
 }
 
-const maxFreeReplansPerLoop = 64
+const (
+	maxFreeReplansPerLoop  = 64
+	maxLLMRetries          = 5
+	initialLLMRetryBackoff = 2 * time.Second
+	maxLLMRetryBackoff     = 32 * time.Second
+)
+
+// llmRetryBackoff returns the delay before a retry after a transient LLM
+// failure. retryAttempt is one-based, so the five delays are 2, 4, 8, 16,
+// and 32 seconds.
+func llmRetryBackoff(retryAttempt int) time.Duration {
+	if retryAttempt <= 0 {
+		return 0
+	}
+	delay := initialLLMRetryBackoff
+	for attempt := 1; attempt < retryAttempt && delay < maxLLMRetryBackoff; attempt++ {
+		delay *= 2
+		if delay > maxLLMRetryBackoff {
+			return maxLLMRetryBackoff
+		}
+	}
+	return delay
+}
 
 // ToolAuthorizer is an optional host callback implemented when tool execution
 // must be constrained by an outer policy, such as a workflow phase.
@@ -556,7 +597,11 @@ type ManagedSemanticTurn interface {
 // EarlyStopper is an optional host callback for non-cancel stops (e.g. daily
 // LLM budget). Distinct from ShouldStop(), which maps to "cancelled".
 type EarlyStopper interface {
-	// EarlyStop returns stop=true to end the loop with Error=errCode and Text=userText.
+	// EarlyStop returns stop=true to end the loop. A non-empty errCode is an
+	// error stop (Error=errCode, Text=userText, HardExit). An empty errCode is
+	// a clean completion: the turn's goal is already reached (e.g. artifact
+	// delivered), the loop ends without Error, and an empty userText falls
+	// back to the last non-empty assistant content.
 	EarlyStop() (stop bool, errCode, userText string)
 }
 
@@ -775,6 +820,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 
 	totalToolCalls := 0
+	var lastNonEmptyContent string
 	checkEarlyStop := func(iteration int) *LoopResult {
 		es, ok := cb.(EarlyStopper)
 		if !ok {
@@ -785,7 +831,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			return nil
 		}
 		if strings.TrimSpace(code) == "" {
-			code = "early_stop"
+			// A code-less stop is a clean completion, not an error: the host
+			// declared the turn's goal reached (for example the artifact was
+			// delivered and the semantic plan is exhausted), so the closing
+			// LLM round trip is skipped. That call only produces summary text
+			// yet pays full latency and, on an upstream outage, strands an
+			// already-delivered turn on retries (production 2026-08-26: PPT
+			// delivered, then the closing call retried a 502 for ~65s).
+			if strings.TrimSpace(text) == "" {
+				text = lastNonEmptyContent
+			}
+			return &LoopResult{
+				Text:       StripThinkingTags(text),
+				Iterations: iteration,
+				ToolCalls:  totalToolCalls,
+			}
 		}
 		return &LoopResult{
 			Text:       text,
@@ -797,7 +857,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 	consecutiveEmpty := 0
 	const maxConsecutiveEmpty = 5
-	var lastNonEmptyContent string
 	var lastToolName string         // track last tool name for empty-response recovery
 	var lastToolOutcome toolOutcome // structured outcome of last tool execution
 
@@ -808,6 +867,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		result string
 	}
 	var recentCalls []toolCallRecord
+	// succeededToolNames records tools that completed successfully at least
+	// once in this loop. When a later request surface no longer renders such a
+	// name (for example a consumed one-shot grant), the denial must say the
+	// earlier success still stands; otherwise models conclude the action
+	// failed and tell the user "delivery impossible" right after a successful
+	// delivery (production 2026-08-25: send_file succeeded, the next request
+	// dropped it, the retry was denied, and the assistant announced the PDF
+	// could not be sent).
+	succeededToolNames := map[string]struct{}{}
 	const driftWindow = 4 // check last N calls for repetition
 	consecutiveSame := 0
 
@@ -825,6 +893,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	sameToolFailureGuidanceInjected := false
 	const maxConsecutiveSameToolFailures = 8
 	const hardStopSameToolFailures = 12
+
+	// No-forward-progress detection: consecutive iterations in which NO tool
+	// call succeeded. The same-tool detector above only counts repeats of one
+	// tool, so a model that alternates failing/denied calls (or fence-denied
+	// retries of an unrendered name) escapes it and dithers until maxIter —
+	// production 2026-08-26: 12+ iterations, ~20 minutes of thinking, zero
+	// successful calls after the first search. Petition/discovery rescues
+	// need at most 1-2 no-success iterations, so 5 is far clear of legitimate
+	// recovery.
+	consecutiveNoProgressIterations := 0
+	const hardStopNoProgressIterations = 5
 
 	// MoA fan-out budget for this loop (K11).
 	moaFanoutsRan := 0
@@ -878,6 +957,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 	llmRequestAttempts := 0
 	freeReplans := 0
+	malformedReprompts := 0
 	var toolBatchSequence uint64
 
 	for iteration := 0; iteration < maxIter; iteration++ {
@@ -913,10 +993,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		workingState, conversation = spliceWorkingStateAtHead(cb, conversation, workingState, userText, executedTools)
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
-		if llmRequestAttempts > 0 {
-			if notifier, ok := cb.(LLMRoundNotifier); ok {
-				notifier.OnLLMNewRound()
-			}
+		// Notify before every request, including the first: hosts flip the
+		// assistant round into its streaming state here, and round one streams
+		// tokens like any later round.
+		if notifier, ok := cb.(LLMRoundNotifier); ok {
+			notifier.OnLLMNewRound()
 		}
 		llmRequestAttempts++
 		ctx, finishLLMRequest, ctxErr := llmRequestContextForLoop(cb, iteration)
@@ -1543,12 +1624,11 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			disposeSurface(ToolSurfaceTransportFailure)
 			// Retry with exponential backoff for transient errors (503, timeout, network).
 			// SubAgent tasks should be resilient to brief API outages.
-			const maxLLMRetries = 3
 			// A partial streamed response has already been rendered. Retrying it
 			// would duplicate that visible output in the same assistant message.
 			canRetry := requestChannel == nil && !containAmbiguousDelivery && resp == nil && requestBaseCtx.Err() == nil && requestCtx.Err() == nil
 			for retryAttempt := 1; retryAttempt <= maxLLMRetries && canRetry && shouldRetrySimpleLLMError(err); retryAttempt++ {
-				backoff := time.Duration(retryAttempt*2) * time.Second
+				backoff := llmRetryBackoff(retryAttempt)
 				log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
 				// A live steer can arrive while the loop is backing off from a
 				// transient provider error. Poll the replan revision so the user does
@@ -1755,7 +1835,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 
 		choice := resp.Choices[0]
-		reasoningContent := StripRolePrefixHallucination(choice.Message.ReasoningContent)
+		reasoningContent := StripRolePrefixHallucinationLeading(choice.Message.ReasoningContent)
 		appendLoopDisplayReasoning(&displayReasoning, reasoningContent)
 		content := choice.Message.Content
 		if content == "" && reasoningContent != "" {
@@ -2003,6 +2083,27 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		// No tool calls → final answer.
 		if !hasToolCalls {
+			// A malformed content tool-markup interception is a transport-level
+			// artifact, not a user-meaningful answer: the model tried to emit a
+			// tool call as raw markup and the llm layer replaced the content
+			// with the interception notice. Re-ask once for a plain-text reply
+			// instead of shipping that notice as the final text — otherwise it
+			// overwrites an already-completed turn's good answer (e.g. after a
+			// finish-nudge iteration).
+			if strings.TrimSpace(content) == llm.MalformedContentToolCallErrorMsg && malformedReprompts == 0 && iteration+1 < maxIter {
+				malformedReprompts++
+				// Same lifecycle rule as the finish-nudge continue below: this
+				// request's surface reservation must receive its one terminal
+				// disposition before the next iteration re-requests.
+				disposeSurface(ToolSurfaceResponseSettled)
+				reprompt := "[系统] 上一条回复包含无法解析的工具调用标记，已被拦截。请直接用纯文本给出最终答复，不要输出任何工具调用标记。"
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": reprompt,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: reprompt})
+				continue
+			}
 			attached := ShouldAttachWorkingState(loopPromptProfile(cb), WorkingStateDisabled(), workingState)
 			// Do not spend the last iteration on a nudge — that turns a
 			// deliverable answer into "max iterations reached".
@@ -2063,6 +2164,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// boundary. Keeping every name preserves the refresher contract for hosts
 		// that distinguish different completed tools in one model response.
 		executedToolNames := make([]string, 0, len(choice.Message.ToolCalls))
+		batchHadSuccess := false
 		for _, tc := range choice.Message.ToolCalls {
 			if cb.ShouldStop() {
 				_ = wsBatch.apply(workingState)
@@ -2086,8 +2188,22 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// share the same exact rendered-name admission rule before any executor
 			// (including the epoch-less compatibility fallback) can run.
 			if !toolCallNameWasRendered(tools, tc.Function.Name) {
+				denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
+				if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
+					// An already-consumed grant keeps its dedicated denial text; the
+					// earlier success still stands and must not be reinterpreted.
+					denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
+				} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
+					// A governed host may rescue a call that names a real cataloged
+					// tool the planner failed to render. The outcome stays an error;
+					// the granted message replaces the denial so the model re-issues
+					// the call against the widened surface of the next iteration.
+					if granted, message := petitioner.PetitionToolCall(tc.Function.Name); granted && strings.TrimSpace(message) != "" {
+						denial = message
+					}
+				}
 				execResult := ToolExecutionResult{
-					Result:  unrenderedToolCallDeniedMessage(tc.Function.Name),
+					Result:  denial,
 					Outcome: ToolExecutionOutcomeError,
 				}
 				result := execResult.Result
@@ -2136,6 +2252,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			execResult, syntheticFailure := validateLoopToolArguments(tc.Function.Name, argsJSON)
 			toolExecuted := false
 			replanSkip := false
+			policyRejected := false
 			// Once live steering has invalidated this assistant tool batch, preserve
 			// protocol pairing for every remaining tool_call but do not execute its
 			// stale side effect. The next outer iteration injects the new user turn.
@@ -2148,7 +2265,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				replanSkip = true
 			}
 			if !syntheticFailure {
-				var policyRejected bool
 				execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
 				// Light misroute recovery only changes this request's prompt profile;
 				// it must not make an unrendered provider function executable. The
@@ -2166,6 +2282,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					cb.OnToolResult(tc.Function.Name)
 					toolExecuted = true
 				}
+			}
+			if toolExecuted && execResult.Outcome == ToolExecutionOutcomeOK {
+				succeededToolNames[strings.TrimSpace(tc.Function.Name)] = struct{}{}
 			}
 			result := execResult.Result
 
@@ -2213,9 +2332,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 			// Determine success for outcome tracking.
 			toolSuccess := lastToolOutcome.kind == toolOutcomeOK
+			batchHadSuccess = batchHadSuccess || toolSuccess
 			// Record policy denies and invalid args once a workspace exists.
 			// Replan-skipped stale calls must not look like a new fail.
-			if !WorkingStateDisabled() && !replanSkip && workingState != nil {
+			// Host policy denials are fail-closed routing guardrails, not
+			// diagnosable tool failures: recording them as WorkingState opens
+			// leaves a stale "unresolved" item that later triggers a spurious
+			// finish-nudge even after the goal was completed through the tools
+			// this turn allows. The denial text itself already tells the model
+			// to reroute, and the unrendered-name fence above likewise skips
+			// the ledger.
+			if !WorkingStateDisabled() && !replanSkip && !policyRejected && workingState != nil {
 				wsBatch.note(workingState, tc.Function.Name, argsJSON, execResult.Outcome)
 			}
 			// OnToolExecuted is an execution lifecycle callback, not a generic
@@ -2304,6 +2431,33 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Record this batch before commit/steer can skip it. File successes
 		// already settled in note(); apply() still records the last failure.
 		inject := wsBatch.apply(workingState)
+
+		// No-forward-progress circuit breaker. A batch with zero successful
+		// calls (all failed, denied, or fence-rejected) moves the turn no
+		// closer to its goal; enough of those in a row means the model is
+		// dithering, not recovering.
+		if batchHadSuccess {
+			consecutiveNoProgressIterations = 0
+		} else {
+			consecutiveNoProgressIterations++
+			if consecutiveNoProgressIterations >= hardStopNoProgressIterations {
+				log.Printf("[agent-loop] hard stop: no successful tool call in %d consecutive iterations, force-exiting loop", consecutiveNoProgressIterations)
+				if abandoner, ok := h.(ToolBatchAbandoner); ok {
+					abandoner.OnToolBatchAbandoned(batchMeta)
+				}
+				disposeSurface(ToolSurfaceResponseAbandoned)
+				text := strings.TrimSpace(StripThinkingTags(lastNonEmptyContent))
+				if text == "" {
+					text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
+				}
+				return finish(LoopResult{
+					Text:       text,
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
+			}
+		}
 
 		// Commit only after the entire parallel tool batch is fully paired in
 		// HistoryDelta. OnToolExecuted is intentionally earlier and remains for
@@ -2471,7 +2625,20 @@ func unrenderedToolCallDeniedMessage(name string) string {
 	if name == "" {
 		name = "(unknown)"
 	}
-	return fmt.Sprintf("Error: tool %q was not available in this request's rendered tool surface.", name)
+	return fmt.Sprintf("Error: tool %q was not available in this request's rendered tool surface. Do not retry %q and do not ask the user to re-authorize tools; continue with the tools rendered in this request or answer from what you already have.", name, name)
+}
+
+// consumedGrantToolCallDeniedMessage is the denial for a name that already
+// completed successfully earlier in this loop but is absent from the current
+// request surface (for example a one-shot grant whose sibling budget was
+// consumed by that success). The model must not reinterpret the missing grant
+// as the action having failed.
+func consumedGrantToolCallDeniedMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	return fmt.Sprintf("Error: tool %q is not in this request's rendered tool surface because it already ran successfully earlier in this turn and has reached this turn's usage limit. That earlier result still stands (e.g. an artifact was already generated or delivered); do not retry %q, do not ask the user to re-authorize tools, and do not report that action as failed, consumed, or undelivered.", name, name)
 }
 
 // moaReferenceToolSurfaceDisposition converts only the locally observable

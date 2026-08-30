@@ -7,6 +7,9 @@ const RefreshHubLLMServiceStatusMock = vi.fn();
 const RedeemHubLLMServiceMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
+const EventsOnMock = vi.fn();
+const EventsOffMock = vi.fn();
+const eventHandlers = new Map<string, (...args: unknown[]) => void>();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetHubLLMServiceStatus: (...args: unknown[]) => GetHubLLMServiceStatusMock(...args),
@@ -17,8 +20,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
 
 vi.mock('../../../../wailsjs/runtime', () => ({
     BrowserOpenURL: (...args: unknown[]) => BrowserOpenURLMock(...args),
-    EventsOn: vi.fn(),
-    EventsOff: vi.fn(),
+    EventsOn: (...args: unknown[]) => EventsOnMock(...args),
+    EventsOff: (...args: unknown[]) => EventsOffMock(...args),
 }));
 
 vi.mock('../../CustomDialog', () => ({
@@ -34,6 +37,16 @@ import { HubServiceRedeemPanel } from '../HubServiceRedeemPanel';
 describe('HubServiceRedeemPanel', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        eventHandlers.clear();
+        EventsOnMock.mockImplementation((eventName: string, callback: (...args: unknown[]) => void) => {
+            eventHandlers.set(eventName, callback);
+            return () => {
+                if (eventHandlers.get(eventName) === callback) eventHandlers.delete(eventName);
+            };
+        });
+        EventsOffMock.mockImplementation((...eventNames: string[]) => {
+            eventNames.forEach((eventName) => eventHandlers.delete(eventName));
+        });
         const defaultStatus = {
             active: true,
             skip_llm_config: true,
@@ -427,11 +440,128 @@ describe('HubServiceRedeemPanel', () => {
         expect((await screen.findAllByText('新用户周期福利')).length).toBeGreaterThan(0);
         expect(screen.getByText('这是可循环使用的限额，不是账户总点数。')).toBeTruthy();
         expect(screen.getByText('5小时滚动限额')).toBeTruthy();
-        expect(screen.getByText('日限额')).toBeTruthy();
+        expect(screen.getByText('今日累计限额')).toBeTruthy();
         expect(screen.getAllByText('长期有效').length).toBeGreaterThan(0);
         expect(screen.queryByText('总额度')).toBeNull();
         expect(screen.getByText('账户点数').closest('table')?.querySelector('.hub-service-redeem__cell--muted')?.textContent).toBe('不适用');
-        expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('500可用/500');
+        expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('500剩余/上限500');
+        expect(screen.getByRole('group', { name: '5小时滚动限额：剩余 500，上限 500，已用 0。' }).getAttribute('data-kind')).toBe('normal');
+    });
+
+    it('reloads and renders the latest tenant-defined benefit limits when Hub notifies a status change', async () => {
+        GetHubLLMServiceStatusMock
+            .mockResolvedValueOnce({
+                active: true,
+                skip_llm_config: true,
+                service_group_names: ['系统免费服务组'],
+                available_models: ['auto'],
+                credit_grants: [{
+                    service_group_id: 'system-free', source: 'new_user_limit_card', active: true, status: 'active', permanent: true,
+                    period_limits: { five_hour: 500 },
+                    period_usage: { five_hour: { credits_used: 100, rolling: true } },
+                }],
+            })
+            .mockResolvedValueOnce({
+                active: true,
+                skip_llm_config: true,
+                service_group_names: ['系统免费服务组'],
+                available_models: ['auto'],
+                credit_grants: [{
+                    service_group_id: 'system-free', source: 'new_user_limit_card', active: true, status: 'active', permanent: true,
+                    period_limits: { five_hour: 800, daily: 1200 },
+                    period_usage: {
+                        five_hour: { credits_used: 125, rolling: true },
+                        daily: { credits_used: 200 },
+                    },
+                }],
+            });
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        await screen.findByText('5小时滚动限额');
+        expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('400剩余/上限500');
+        const handler = eventHandlers.get('hub-llm-service-changed');
+        expect(handler).toBeTypeOf('function');
+
+        handler?.();
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+
+        await waitFor(() => {
+            expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(2);
+            expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('675剩余/上限800');
+            expect(screen.getByText('今日累计限额').parentElement?.textContent).toContain('1000剩余/上限1200');
+        });
+        expect(RefreshHubLLMServiceStatusMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not let a delayed initial status overwrite a newer event reload', async () => {
+        let resolveInitial: ((value: unknown) => void) | undefined;
+        const initialStatus = new Promise<unknown>((resolve) => {
+            resolveInitial = resolve;
+        });
+        GetHubLLMServiceStatusMock
+            .mockReturnValueOnce(initialStatus)
+            .mockResolvedValueOnce({
+                active: true,
+                skip_llm_config: true,
+                service_group_names: ['系统免费服务组'],
+                available_models: ['auto'],
+                credit_grants: [{
+                    service_group_id: 'system-free', source: 'new_user_limit_card', active: true, status: 'active', permanent: true,
+                    period_limits: { five_hour: 800 },
+                    period_usage: { five_hour: { credits_used: 125, rolling: true } },
+                }],
+            });
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+        const handler = eventHandlers.get('hub-llm-service-changed');
+        expect(handler).toBeTypeOf('function');
+
+        handler?.();
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+        await screen.findByText('5小时滚动限额');
+        expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('675剩余/上限800');
+
+        resolveInitial?.({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['系统免费服务组'],
+            available_models: ['auto'],
+            credit_grants: [{
+                service_group_id: 'system-free', source: 'new_user_limit_card', active: true, status: 'active', permanent: true,
+                period_limits: { five_hour: 500 },
+                period_usage: { five_hour: { credits_used: 100, rolling: true } },
+            }],
+        });
+
+        await waitFor(() => {
+            expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('675剩余/上限800');
+            expect(screen.queryByText('400剩余')).toBeNull();
+        });
+    });
+
+    it('coalesces bursts of usage events into one trailing status reload', async () => {
+        vi.useFakeTimers();
+        try {
+            render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(1);
+
+            const handler = eventHandlers.get('llm-token-usage-changed');
+            expect(handler).toBeTypeOf('function');
+            handler?.();
+            handler?.();
+            handler?.();
+
+            await vi.advanceTimersByTimeAsync(149);
+            expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(2);
+            await vi.advanceTimersByTimeAsync(2500);
+            expect(GetHubLLMServiceStatusMock).toHaveBeenCalledTimes(3);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('uses the benefit grant validity instead of an unrelated card expiry', async () => {
@@ -459,7 +589,7 @@ describe('HubServiceRedeemPanel', () => {
         const benefit = (await screen.findAllByText('新用户周期福利'))[0].closest('.hub-service-redeem__period-section');
         expect(benefit?.textContent).toContain('2026/09/01');
         expect(benefit?.textContent).not.toContain('2027/01/01');
-        expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('375可用/500');
+        expect(screen.getByText('5小时滚动限额').parentElement?.textContent).toContain('375剩余/上限500');
     });
 
     it('keeps new-user period benefits separate for each service group', async () => {
@@ -493,12 +623,12 @@ describe('HubServiceRedeemPanel', () => {
         await screen.findByText('每个服务组的限额彼此独立，以下数值不会相加。');
         const basic = document.querySelector('[data-service-group="basic"]');
         const advanced = document.querySelector('[data-service-group="advanced"]');
-        expect(basic?.textContent).toContain('375可用/500');
-        expect(basic?.textContent).toContain('800可用/1000');
-        expect(advanced?.textContent).toContain('250可用/300');
-        expect(advanced?.textContent).toContain('500可用/600');
-        expect(basic?.textContent).not.toContain('625可用/800');
-        expect(advanced?.textContent).not.toContain('625可用/800');
+        expect(basic?.textContent).toContain('375剩余/上限500');
+        expect(basic?.textContent).toContain('800剩余/上限1000');
+        expect(advanced?.textContent).toContain('250剩余/上限300');
+        expect(advanced?.textContent).toContain('500剩余/上限600');
+        expect(basic?.textContent).not.toContain('625剩余/上限800');
+        expect(advanced?.textContent).not.toContain('625剩余/上限800');
     });
 
     it('does not render NaN when a benefit response contains malformed numeric fields', async () => {
@@ -511,14 +641,15 @@ describe('HubServiceRedeemPanel', () => {
             credit_grants: [{
                 service_group_id: 'system-free', source: 'new_user_limit_card', active: true, status: 'active', permanent: true,
                 period_limits: { five_hour: '500', daily: 'bad' },
-                period_usage: { five_hour: { credits_used: 'bad', rolling: true } },
+                period_usage: { five_hour: { credits_used: '-200', rolling: true } },
             }],
         });
 
         render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
 
         const benefit = (await screen.findAllByText('新用户周期福利'))[0].closest('.hub-service-redeem__period-section');
-        expect(benefit?.textContent).toContain('500可用/500');
+        expect(benefit?.textContent).toContain('500剩余/上限500');
+        expect(benefit?.textContent).toContain('已用 0 · 0%');
         expect(benefit?.textContent).not.toContain('NaN');
         expect(benefit?.textContent).not.toContain('日限额');
     });
@@ -563,7 +694,7 @@ describe('HubServiceRedeemPanel', () => {
 
         const grantRow = (await screen.findByText('paid')).closest('tr');
         expect(grantRow?.textContent).toContain('1000 · 已用 125');
-        expect(grantRow?.textContent).toContain('今日 可用 225 / 300');
+        expect(grantRow?.textContent).toContain('今日 剩余 225 / 上限 300');
         expect(grantRow?.textContent).not.toContain('剩余 875');
     });
 

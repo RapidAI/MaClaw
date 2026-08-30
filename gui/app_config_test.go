@@ -556,12 +556,14 @@ func TestLoadConfigConcurrentLegacyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read migrated config error = %v", err)
 	}
-	if string(data) != string(legacyConfig) {
-		t.Fatalf("migrated config = %q, want %q", string(data), string(legacyConfig))
-	}
+	// Migration normalizes the legacy file into the full config schema; the
+	// legacy values must survive, but the bytes are not preserved verbatim.
 	var migrated map[string]any
 	if err := json.Unmarshal(data, &migrated); err != nil {
 		t.Fatalf("Unmarshal migrated config error = %v", err)
+	}
+	if migrated["active_tool"] != "claude" || migrated["current_project"] != "legacy-project" {
+		t.Fatalf("migrated config lost legacy values: active_tool=%v current_project=%v", migrated["active_tool"], migrated["current_project"])
 	}
 
 	matches, err := filepath.Glob(configPath + ".tmp*")
@@ -2092,6 +2094,61 @@ func TestPatchConfigFieldsSkillEvolutionEnabled(t *testing.T) {
 	}
 }
 
+func TestPatchConfigFieldsSkillEvolutionObservationAndWorkers(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("MACLAW_DISABLE_SKILL_EVOLUTION", "")
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	initial := app.GetSkillEvolutionStatus()
+	if !initial.ObservationEnabled || initial.MaxConcurrentWorkersConfigured != 2 {
+		t.Fatalf("defaults = %+v, want observation=true workers=2", initial)
+	}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"skill_maintenance_observation_enabled":  false,
+		"skill_evolution_max_concurrent_workers": 9,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.IsSkillMaintenanceObservationEnabled() {
+		t.Fatal("observation switch should be disabled")
+	}
+	if patched.EffectiveSkillEvolutionMaxConcurrentWorkers() != 9 {
+		t.Fatalf("workers = %d, want 9", patched.EffectiveSkillEvolutionMaxConcurrentWorkers())
+	}
+	status := app.GetSkillEvolutionStatus()
+	if status.ObservationEnabled || status.MaxConcurrentWorkersConfigured != 9 || status.MaxConcurrentWorkers != 9 {
+		t.Fatalf("live status = %+v, want observation=false workers=9", status)
+	}
+
+	// The fields must survive a fresh config load, not only the in-memory patch.
+	app2 := &App{testHomeDir: tmpHome}
+	loaded, err := app2.LoadConfig()
+	if err != nil {
+		t.Fatalf("fresh LoadConfig() error = %v", err)
+	}
+	if loaded.IsSkillMaintenanceObservationEnabled() || loaded.EffectiveSkillEvolutionMaxConcurrentWorkers() != 9 {
+		t.Fatalf("persisted config = %+v", loaded)
+	}
+
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"skill_maintenance_observation_enabled":  true,
+		"skill_evolution_max_concurrent_workers": 99,
+	})
+	if err != nil {
+		t.Fatalf("bounded PatchConfigFields() error = %v", err)
+	}
+	if !patched.IsSkillMaintenanceObservationEnabled() || patched.EffectiveSkillEvolutionMaxConcurrentWorkers() != 16 {
+		t.Fatalf("bounded values = observation=%v workers=%d", patched.IsSkillMaintenanceObservationEnabled(), patched.EffectiveSkillEvolutionMaxConcurrentWorkers())
+	}
+}
+
 func TestGetSkillEvolutionStatus(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -2136,6 +2193,20 @@ func TestListSkillEvolutionAudit_Empty(t *testing.T) {
 	if len(rows) != 0 {
 		// May pick up real home audit if MaclawBaseDir ignores testHomeDir — accept empty only when path is isolated.
 		t.Logf("ListSkillEvolutionAudit returned %d rows (environment may use global data dir)", len(rows))
+	}
+}
+
+func TestListSkillEvolutionCompensationsReturnsSafeSummaries(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	result := app.ListSkillEvolutionCompensations()
+	if result["ok"] != true {
+		t.Fatalf("expected ok result, got %#v", result)
+	}
+	if _, ok := result["items"]; !ok {
+		t.Fatalf("expected items in result: %#v", result)
 	}
 }
 
@@ -2228,7 +2299,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"subagent_concurrency":         float64(99),
 		"trial_reflect_enabled":        true,
 		"pet_enabled":                  true,
-		"pet_skin":                     " mini-claw ",
+		"pet_skin":                     " clawmate ",
 		"pet_size":                     float64(92),
 		"pet_motion_enabled":           true,
 		"pet_motion_sound_enabled":     false,
@@ -2308,7 +2379,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if patched.UIZoomFactor != 2.0 || patched.ChatFontSize != 24 || patched.EnvCheckInterval != 14 || patched.LastEnvCheckTime != "2026-06-05T12:00:00Z" || patched.VectorSearchEnabled || patched.ScreenParsingEnabled == nil || *patched.ScreenParsingEnabled || patched.ASREnabled || patched.TTSEnabled || patched.TTSVoiceID != "zm_yunxi" || patched.MaclawAgentMaxIterations != 30 || patched.SubAgentConcurrency != corelib.MaxSubAgentConcurrency || !patched.TrialReflectEnabled {
 		t.Fatalf("ui/vector/agent fields not applied with normalization: %#v", patched)
 	}
-	if !patched.PetEnabled || patched.PetSkin != "mini-claw" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
+	if !patched.PetEnabled || patched.PetSkin != "clawmate" || patched.PetSize != 92 || patched.PetMotionEnabled == nil || !*patched.PetMotionEnabled || patched.PetMotionSound == nil || *patched.PetMotionSound || patched.PetMotionSoundPreset != "soft" || patched.PetTextInteraction == nil || !*patched.PetTextInteraction || !patched.PetVoiceInput || !patched.PetVoiceReadback || patched.PetFileDropEnabled == nil || *patched.PetFileDropEnabled || patched.PetInteractionMode != "active" || patched.PetConversationMode != "continuous" || patched.PetReadbackMode != "summary" || !patched.PetAutoRetryOnNoHear || patched.PetContinuousTimeout != 45 || !patched.PetQuietMode {
 		t.Fatalf("pet fields not applied: %#v", patched)
 	}
 	if patched.ScreenDimTimeoutMin != 9 || patched.RemoteHeartbeatSec != 5 || patched.AgentResponseTimeoutSec != 300 || patched.SkillRunnerTimeoutSec != 3600 || patched.MaclawLLMTimeoutSec != 480 {
@@ -3145,6 +3216,12 @@ func TestProjectSearchSwitchPatchesWithoutStaleOverwrite(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
+	// LoadConfig/SaveConfig → applyDataDirFromConfigLocked pushes tmpHome into
+	// the process-global corelib base dir; restore it for later tests.
+	prevBaseDir := corelib.MaclawBaseDir()
+	t.Cleanup(func() {
+		corelib.SetMaclawBaseDir(prevBaseDir)
+	})
 
 	app := &App{testHomeDir: tmpHome}
 	one := filepath.Join(tmpHome, "one")

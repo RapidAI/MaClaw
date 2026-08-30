@@ -199,6 +199,10 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	itemAccums := make(map[int]*responsesItemAccum)
 	var finishReason string
 	var usage *llm.Usage
+	// streamErr is set by terminal in-stream error events so the post-loop
+	// path can still return the partially accumulated content/reasoning
+	// alongside the error instead of dropping it.
+	var streamErr error
 
 	// -----------------------------------------------------------------------
 	// SSE idle timeout watchdog (same pattern as OpenAI/Anthropic paths)
@@ -299,6 +303,22 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 				reasoningRoleFilterResp.Write(rd.Delta)
 			}
 
+		case responsesEventReasoningSummaryPartAdded:
+			// Some compatible providers send the whole summary for a part in
+			// one shot instead of streaming reasoning_summary_text.delta
+			// events. appendResponsesReasoningSummary deduplicates against any
+			// already-streamed deltas for the same summary.
+			var sp struct {
+				Part struct {
+					Text string `json:"text"`
+				} `json:"part"`
+			}
+			if json.Unmarshal([]byte(payload), &sp) == nil {
+				if emitted := appendResponsesReasoningSummary(&reasoningBuf, sp.Part.Text); emitted != "" {
+					reasoningRoleFilterResp.Write(emitted)
+				}
+			}
+
 		case responsesEventFunctionCallArgumentsDelta:
 			var ad struct {
 				Delta       string `json:"delta"`
@@ -318,7 +338,10 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 					if toolName == "" {
 						toolName = fmt.Sprintf("function_call_%d", ad.OutputIndex)
 					}
-					return nil, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
+					// Keep the partial response so already-accumulated
+					// content/reasoning is not lost with the error.
+					streamErr = fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
+					goto postLoop
 				}
 			}
 
@@ -378,7 +401,10 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			return nil, fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+			// Keep the partial response so already-accumulated
+			// content/reasoning is not lost with the error.
+			streamErr = fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+			goto postLoop
 
 		case responsesEventIncomplete:
 			// Return whatever partial content we have with finish reason "length".
@@ -483,5 +509,5 @@ postLoop:
 	return &llm.Response{
 		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:   usage,
-	}, nil
+	}, streamErr
 }

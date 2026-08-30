@@ -346,7 +346,9 @@ func TestLocalVirtualRepositoryMigrationRejectsSymlinkDirectoryInExistingTarget(
 
 func TestRemoteVirtualRepositoryMigrationCopyCommandStagesOnlyNewDestinations(t *testing.T) {
 	newCommand, newCleanup := remoteVirtualRepositoryMigrationCopyCommand("/srv/source", "/srv/destination", "vrepo_test", false)
-	if !strings.Contains(newCommand, ".vrepo-migration-vrepo_test-") || !strings.Contains(newCommand, "mv --") || !strings.Contains(newCleanup, "rm -rf --") {
+	// Publication is race-guarded with mv -T (see
+	// TestRemoteVirtualRepositoryMigrationCopyCommandGuardsDestinationRace).
+	if !strings.Contains(newCommand, ".vrepo-migration-vrepo_test-") || !strings.Contains(newCommand, "mv -T --") || !strings.Contains(newCleanup, "rm -rf --") {
 		t.Fatalf("new-destination copy command = %q; cleanup = %q", newCommand, newCleanup)
 	}
 	existingCommand, existingCleanup := remoteVirtualRepositoryMigrationCopyCommand("/srv/source", "/srv/destination", "vrepo_test", true)
@@ -938,18 +940,21 @@ func TestValidateRemoteVirtualRepository(t *testing.T) {
 	if repo.Remote.Port != 22 {
 		t.Fatalf("default remote port=%d", repo.Remote.Port)
 	}
+	// Mapping paths are derived from the node tree (name + parent chain); a
+	// persisted relative_path is an implementation detail that validation
+	// recomputes, so a hostile persisted value cannot smuggle an absolute or
+	// escaping path into the checkout layout (deriveVirtualRepositoryMappingPaths).
 	repo.Nodes[0].Repository.RelativePath = "/maclaw2"
-	if err := validateVirtualRepository(repo); err == nil || !strings.Contains(err.Error(), `use "maclaw2" instead of "/maclaw2"`) {
-		t.Fatalf("absolute mapping path error = %v", err)
+	if err := validateVirtualRepository(repo); err != nil {
+		t.Fatalf("persisted relative_path must be re-derived, not rejected: %v", err)
+	}
+	if repo.Nodes[0].Repository.RelativePath != "Git" {
+		t.Fatalf("relative path = %q, want derived from node name", repo.Nodes[0].Repository.RelativePath)
 	}
 	repo.Nodes[0].Repository.RelativePath = "services/api"
 	for _, invalid := range []string{"../escape", "folder/../escape", "folder//child", "./child", "/absolute", "//server/share", `.vrepo/secret`, `windows\path`} {
 		if err := validateRemoteVirtualRepositoryRelativePath(invalid); err == nil {
 			t.Fatalf("remote relative path %q should fail", invalid)
-		}
-		repo.Nodes[0].Repository.RelativePath = invalid
-		if err := validateVirtualRepository(repo); err == nil {
-			t.Fatalf("remote repository should reject relative path %q", invalid)
 		}
 	}
 	repo.Nodes[0].Repository.RelativePath = "services/api"

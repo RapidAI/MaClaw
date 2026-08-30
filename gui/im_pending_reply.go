@@ -324,6 +324,19 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	isPendingAnswer, classifiedPendingAnswer := false, true
 	if pendingFresh {
 		isPendingAnswer, classifiedPendingAnswer = h.classifyPendingUserReplyAnswer(msg.UserID, pending.Question, trimmed)
+		if !classifiedPendingAnswer && strings.TrimSpace(trimmed) != "" {
+			// The auxiliary answer classifier is unavailable (hub timeout,
+			// scheduler pause). Degrade to continuity, not amnesia: a fresh
+			// pending question bound to the current history makes the next
+			// user message overwhelmingly likely its answer. A genuine task
+			// switch is still arbitrated downstream — the turn's own bare
+			// classification wins whenever it is managed and confident.
+			// (2026-08-27: the old fail-open-to-new-task path let a 16-rune
+			// answer classify standalone as coding@0.80; the PPT task died
+			// on the coding surface.)
+			log.Printf("[PendingUserReply] answer intent unclassified; binding by fresh pending question for user=%s answer_len=%d", msg.UserID, len([]rune(trimmed)))
+			isPendingAnswer = true
+		}
 	}
 	if pendingFresh && isPendingAnswer {
 		if len(pending.History) > 0 {
@@ -340,7 +353,9 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 		context := fmt.Sprintf("[Context hint] The user is answering the assistant question from the current task, not starting or resuming another task.\nAssistant question: %s\nUser answer: %s%s", pending.Question, trimmed, extension)
 		return context, true
 	}
-	if pendingFresh && (!classifiedPendingAnswer || trimmed == "") {
+	if pendingFresh && strings.TrimSpace(trimmed) == "" {
+		// Only an empty message keeps the pending question parked for the next
+		// one. An unclassified non-empty reply has already been bound above.
 		h.pendingUserReply.Store(msg.UserID, pending)
 		h.suppressPendingUserReplyUpdate.Store(msg.UserID, true)
 	}

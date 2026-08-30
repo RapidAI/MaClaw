@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // CodingWorkbenchDirectoryEntry is one lazily-loaded entry in a coding task's
@@ -91,12 +94,14 @@ func cleanCodingWorkbenchBrowserPath(value string) (string, error) {
 
 func codingWorkbenchBrowserLocalRoot(a *App, projectPath string) (string, error) {
 	root := ""
-	if a != nil && a.projectPathIsLocalCodingWorkbench(projectPath) {
-		// Local coding preview lists the live current working directory, never
-		// the managed task identity folder or its workspace/ sandbox.
-		root = strings.TrimSpace(a.codingWorkbenchLocalExecDirOrDesktop(projectPath))
-	} else if a != nil {
-		root = strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath))
+	if a != nil {
+		if cloudDir := strings.TrimSpace(a.cloudWorkspaceExecutionDir(projectPath)); cloudDir != "" {
+			root = cloudDir
+		} else if a.projectPathIsLocalCodingWorkbench(projectPath) {
+			root = strings.TrimSpace(a.codingWorkbenchLocalExecDirOrDesktop(projectPath))
+		} else {
+			root = strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath))
+		}
 	}
 	if root == "" {
 		return "", fmt.Errorf("working directory is unavailable")
@@ -301,7 +306,7 @@ func (a *App) GetCodingWorkbenchDirectory(projectPath, relativePath string) (Cod
 	if err != nil {
 		return CodingWorkbenchDirectoryResponse{}, err
 	}
-	return CodingWorkbenchDirectoryResponse{Root: root, Path: relativePath, Entries: entries, Truncated: truncated}, nil
+	return CodingWorkbenchDirectoryResponse{Root: omitCloudWorkspaceAbsPath(root), Path: relativePath, Entries: entries, Truncated: truncated}, nil
 }
 
 func (a *App) getRemoteCodingWorkbenchDirectory(projectPath, relativePath string) (CodingWorkbenchDirectoryResponse, error) {
@@ -394,7 +399,7 @@ func (a *App) GetCodingWorkbenchFilePreview(projectPath, relativePath string) (C
 	if err != nil {
 		return CodingWorkbenchFilePreview{}, err
 	}
-	return CodingWorkbenchFilePreview{Path: relativePath, AbsPath: absPath, Content: content, Language: detectLanguageFromExt(absPath), Truncated: truncated}, nil
+	return CodingWorkbenchFilePreview{Path: relativePath, AbsPath: omitCloudWorkspaceAbsPath(absPath), Content: content, Language: detectLanguageFromExt(absPath), Truncated: truncated}, nil
 }
 
 // GetCodingWorkbenchEntryProperties returns safe, bounded metadata for a
@@ -492,6 +497,180 @@ func (a *App) OpenCodingWorkbenchFileInVSCode(projectPath, relativePath string) 
 		return false, fmt.Errorf("path is a directory")
 	}
 	return false, launchVSCodeWithArgs(codeCLI, []string{"-n", absPath})
+}
+
+// OpenCodingWorkbenchFileLocally opens a workbench file with the OS default
+// application using the local cache. It never returns that absolute path to
+// the frontend. Remote SSH workspaces are rejected.
+func (a *App) OpenCodingWorkbenchFileLocally(projectPath, relativePath string) error {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	if a.codingWorkbenchRejectsLocalOpen(projectPath) {
+		return fmt.Errorf("open locally is not available for remote workspaces")
+	}
+	absPath, err := a.codingWorkbenchLocalFileToOpen(projectPath, relativePath)
+	if err != nil {
+		return err
+	}
+	return a.OpenFileOrShowInFolder(absPath)
+}
+
+// DeleteCodingWorkbenchEntry removes a cloud-workspace file or folder from the
+// local cache and immediately pushes that deletion to the remote workspace.
+func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	workspaceID := strings.TrimSpace(a.lookupCloudWorkspaceIDForProject(projectPath))
+	if workspaceID == "" {
+		if root, rootErr := codingWorkbenchBrowserLocalRoot(a, projectPath); rootErr == nil {
+			workspaceID = lookupCloudWorkspaceIDByLocalPath(root)
+		}
+	}
+	if workspaceID == "" {
+		return fmt.Errorf("delete is only available for cloud workspaces")
+	}
+	cacheRoot, ok := heldWritableCloudWorkspacePath(workspaceID)
+	if !ok {
+		return fmt.Errorf("cloud workspace is read-only")
+	}
+	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
+	if err != nil {
+		return err
+	}
+	if relativePath == "" {
+		return fmt.Errorf("file path is required")
+	}
+	if codingWorkbenchEntryProtected(relativePath) {
+		return fmt.Errorf("entry cannot be deleted")
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
+	if err != nil {
+		return err
+	}
+	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() && !info.IsDir() {
+		return fmt.Errorf("entry cannot be deleted")
+	}
+	if err := trackCloudWorkspacePathsForDelete(cacheRoot, relativePath, info.IsDir()); err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.RemoveAll(absPath); err != nil {
+			return err
+		}
+	} else if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	ctx, cancel := a.cloudWorkspaceRequestContext()
+	defer cancel()
+	if _, err := a.pushCloudWorkspace(ctx, workspaceID, cacheRoot); err != nil {
+		return fmt.Errorf("local file deleted, but remote delete failed: %w", err)
+	}
+	return nil
+}
+
+func codingWorkbenchEntryProtected(relativePath string) bool {
+	for _, seg := range strings.Split(relativePath, "/") {
+		if skipCodingWorkbenchDownloadName(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// trackCloudWorkspacePathsForDelete records the soon-to-be-removed files in
+// LastEntries so PushOperations emits matching remote delete operations even
+// when the cache was populated by a full Pull instead of per-file ops.
+func trackCloudWorkspacePathsForDelete(root, relativePath string, isDir bool) error {
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return err
+	}
+	have := make(map[string]struct{}, len(state.LastEntries))
+	for _, entry := range state.LastEntries {
+		have[entry.Path] = struct{}{}
+	}
+	prefix := relativePath + "/"
+	changed := false
+	track := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if _, ok := have[path]; ok {
+			return
+		}
+		state.LastEntries = append(state.LastEntries, cloudWorkspaceManifestEntry{Path: path})
+		have[path] = struct{}{}
+		changed = true
+	}
+	if !isDir {
+		track(relativePath)
+	}
+	local, scanErr := scanCloudWorkspaceLocal(root)
+	if scanErr != nil {
+		return scanErr
+	}
+	for _, entry := range local {
+		if entry.Path == relativePath || (isDir && strings.HasPrefix(entry.Path, prefix)) {
+			track(entry.Path)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return writeCloudWorkspaceState(root, state)
+}
+
+func (a *App) codingWorkbenchRejectsLocalOpen(projectPath string) bool {
+	if a.projectRecordCodingMode(projectPath) == taskRemoteCodingDevTag {
+		return true
+	}
+	return a.interactionInfraReady() && a.GetCodingWorkbenchStatus(projectPath).Kind == "remote"
+}
+
+func (a *App) codingWorkbenchLocalFileToOpen(projectPath, relativePath string) (string, error) {
+	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
+	if err != nil {
+		return "", err
+	}
+	return codingWorkbenchLocalFileAbsPath(root, relativePath)
+}
+
+func codingWorkbenchLocalFileAbsPath(root, relativePath string) (string, error) {
+	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
+	if err != nil || relativePath == "" {
+		if err == nil {
+			err = fmt.Errorf("file path is required")
+		}
+		return "", err
+	}
+	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("path is a directory")
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("entry cannot be opened locally")
+	}
+	return absPath, nil
 }
 
 // downloadRemoteCodingWorkbenchFileForVSCode writes a remote source file to a
@@ -595,6 +774,14 @@ func cleanupCodingWorkbenchVSCodeRemoteSnapshots(cacheRoot string, now time.Time
 	}
 }
 
+func omitCloudWorkspaceAbsPath(absPath string) string {
+	normalized := strings.ToLower(strings.ReplaceAll(absPath, "\\", "/"))
+	if strings.Contains(normalized, "/cloud-workspaces/") {
+		return ""
+	}
+	return absPath
+}
+
 func codingWorkbenchEntryProperties(relativePath, absPath, name string, isDir bool, size, modifiedAt int64, mode string) CodingWorkbenchEntryProperties {
 	if name == "" {
 		name = filepath.Base(absPath)
@@ -604,7 +791,7 @@ func codingWorkbenchEntryProperties(relativePath, absPath, name string, isDir bo
 		extension = strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
 	}
 	return CodingWorkbenchEntryProperties{
-		Name: name, Path: relativePath, AbsPath: absPath, IsDir: isDir,
+		Name: name, Path: relativePath, AbsPath: omitCloudWorkspaceAbsPath(absPath), IsDir: isDir,
 		Size: size, SizeKnown: !isDir, ModifiedAt: modifiedAt, Mode: mode, Extension: extension,
 	}
 }
@@ -690,5 +877,207 @@ if not os.path.isfile(target): raise SystemExit("path is not a file")`
 		content = string([]rune(content)[:codingWorkbenchBrowserMaxRunes])
 		truncated = true
 	}
-	return CodingWorkbenchFilePreview{Path: relativePath, AbsPath: absPath, Content: content, Language: detectLanguageFromExt(absPath), Truncated: truncated}, nil
+	return CodingWorkbenchFilePreview{Path: relativePath, AbsPath: omitCloudWorkspaceAbsPath(absPath), Content: content, Language: detectLanguageFromExt(absPath), Truncated: truncated}, nil
+}
+
+const (
+	codingWorkbenchDownloadMaxFileBytes    int64 = 512 << 20
+	codingWorkbenchDownloadMaxArchiveBytes int64 = 1 << 30
+	codingWorkbenchDownloadMaxFiles              = 20000
+)
+
+var codingWorkbenchSaveDialog = func(a *App, title, defaultName string, filters []runtime.FileFilter) (string, error) {
+	if a == nil || a.ctx == nil {
+		return "", nil
+	}
+	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           title,
+		DefaultFilename: defaultName,
+		Filters:         filters,
+	})
+}
+
+func sanitizeCodingWorkbenchDownloadName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." {
+		return "download"
+	}
+	replacer := strings.NewReplacer(`\`, "_", `/`, "_", `:`, "_", `*`, "_", `?`, "_", `"`, "_", `<`, "_", `>`, "_", `|`, "_")
+	name = strings.TrimSpace(replacer.Replace(name))
+	if name == "" {
+		return "download"
+	}
+	return name
+}
+
+func skipCodingWorkbenchDownloadName(name string) bool {
+	n := strings.TrimSpace(name)
+	return n == cloudWorkspaceCacheStateDir || n == ".maclaw-cloud"
+}
+
+// DownloadCodingWorkbenchEntry copies a workbench file, or tars a directory, to a
+// path chosen in the save dialog. Empty dest means the user cancelled.
+func (a *App) DownloadCodingWorkbenchEntry(projectPath, relativePath string) (string, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return "", fmt.Errorf("project path is required")
+	}
+	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
+		return "", fmt.Errorf("download is not available for remote workspaces")
+	}
+	relativePath, err := cleanCodingWorkbenchBrowserPath(relativePath)
+	if err != nil {
+		return "", err
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
+	if err != nil {
+		return "", err
+	}
+	src, err := codingWorkbenchBrowserLocalPath(root, relativePath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() && !info.IsDir() {
+		return "", fmt.Errorf("entry cannot be downloaded")
+	}
+	name := sanitizeCodingWorkbenchDownloadName(info.Name())
+	var dest string
+	if info.IsDir() {
+		dest, err = codingWorkbenchSaveDialog(a, "下载目录", name+".tar", []runtime.FileFilter{
+			{DisplayName: "Tar (*.tar)", Pattern: "*.tar"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		})
+	} else {
+		dest, err = codingWorkbenchSaveDialog(a, "下载文件", name, []runtime.FileFilter{
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		})
+	}
+	if err != nil {
+		return "", err
+	}
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return "", nil
+	}
+	if info.IsDir() && isPathInsideRoot(src, dest) {
+		return "", fmt.Errorf("cannot save the archive inside the folder being downloaded")
+	}
+	if info.IsDir() {
+		if err := tarCodingWorkbenchDownload(src, dest, name); err != nil {
+			_ = os.Remove(dest)
+			return "", err
+		}
+		return dest, nil
+	}
+	if err := copyCodingWorkbenchDownload(src, dest, codingWorkbenchDownloadMaxFileBytes); err != nil {
+		_ = os.Remove(dest)
+		return "", err
+	}
+	return dest, nil
+}
+
+func copyCodingWorkbenchDownload(src, dest string, maxBytes int64) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	n, err := io.Copy(out, io.LimitReader(in, maxBytes+1))
+	if err != nil {
+		return err
+	}
+	if n > maxBytes {
+		return fmt.Errorf("file exceeds download size limit")
+	}
+	return out.Close()
+}
+
+func tarCodingWorkbenchDownload(srcDir, dest, archiveRoot string) error {
+	archiveRoot = strings.Trim(strings.ReplaceAll(archiveRoot, "\\", "/"), "/")
+	if archiveRoot == "" || archiveRoot == "." || strings.Contains(archiveRoot, "..") {
+		archiveRoot = "download"
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	tw := tar.NewWriter(out)
+	var written int64
+	var files int
+	err = filepath.Walk(srcDir, func(p string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if skipCodingWorkbenchDownloadName(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, p)
+		if err != nil {
+			return err
+		}
+		name := archiveRoot
+		if rel != "." {
+			name = path.Join(archiveRoot, filepath.ToSlash(rel))
+		}
+		if info.IsDir() {
+			hdr := &tar.Header{
+				Name:     strings.TrimSuffix(name, "/") + "/",
+				Mode:     int64(info.Mode().Perm()),
+				ModTime:  info.ModTime(),
+				Typeflag: tar.TypeDir,
+			}
+			return tw.WriteHeader(hdr)
+		}
+		files++
+		if files > codingWorkbenchDownloadMaxFiles {
+			return fmt.Errorf("archive exceeds file count limit")
+		}
+		if written+info.Size() > codingWorkbenchDownloadMaxArchiveBytes {
+			return fmt.Errorf("archive exceeds download size limit")
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = name
+		hdr.ModTime = info.ModTime()
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		n, copyErr := io.Copy(tw, f)
+		_ = f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		written += n
+		return nil
+	})
+	closeErr := tw.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return nil
 }

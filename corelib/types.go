@@ -393,8 +393,15 @@ type NLSkillEntry struct {
 	RepairHistory      []SkillRepairRecord `json:"repair_history,omitempty"`
 	OptimizationCount  int                 `json:"optimization_count,omitempty"`
 	LastOptimizedAt    string              `json:"last_optimized_at,omitempty"`
-	DiscoveredFrom     string              `json:"discovered_from,omitempty"`   // nudge candidate ContextKey (auto_discovered skills)
-	TotalTokensCost    int                 `json:"total_tokens_cost,omitempty"` // cumulative LLM tokens across all invocations
+	DiscoveredFrom     string              `json:"discovered_from,omitempty"` // nudge candidate ContextKey (auto_discovered skills)
+	// Verification metadata is populated only after a constrained runtime
+	// replay. It is deliberately separate from Status so an audit can prove
+	// when/how a staged skill was admitted.
+	VerifiedAt             string `json:"verified_at,omitempty"`
+	VerificationRunID      string `json:"verification_run_id,omitempty"`
+	VerificationDigest     string `json:"verification_digest,omitempty"`
+	VerificationGateStatus string `json:"verification_gate_status,omitempty"`
+	TotalTokensCost        int    `json:"total_tokens_cost,omitempty"` // cumulative LLM tokens across all invocations
 
 	// Params is the parameter schema for this skill. When explicitly declared
 	// in skill.yaml, it provides aliases, CLI flags, defaults, and descriptions.
@@ -959,7 +966,7 @@ type MaclawLLMProvider struct {
 	AuthType                 string  `json:"auth_type,omitempty"`
 	RefreshToken             string  `json:"refresh_token,omitempty"`
 	TokenExpiresAt           int64   `json:"token_expires_at,omitempty"`
-	OAuthAccessToken         string  `json:"oauth_access_token,omitempty"` // 原始 access_token，仅用于 Costs/Usage API 查询
+	OAuthAccessToken         string  `json:"oauth_access_token,omitempty"` // 原始 access_token（Responses API）；组织账单查询需要 Admin API Key，不能用该字段
 	WireAPI                  string  `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
 	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
 	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`

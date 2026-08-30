@@ -75,6 +75,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	}
 	cancelClassification()
 	loopCtx.Runtime.Execution = executionProfile
+	loopCtx.Runtime.ClassificationMessage = classificationMessage(msg.UserID, msg.Text, history)
 	bindLoopSemanticIntent(loopCtx, semanticIntent)
 	applyStagedImageUnderstandRuntime(loopCtx, msg.Text, msg.Attachments)
 	intentText := semanticUserIntentText(msg.Text)

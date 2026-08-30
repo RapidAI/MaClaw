@@ -20,6 +20,9 @@ type MaintenanceScheduler struct {
 	// UsageIngester optionally records high-value failure/review signals into
 	// UsageTracker so routing/skill memory can avoid broken skills next turn.
 	UsageIngester func(skills []corelib.NLSkillEntry, opts SkillMaintenancePlanOptions) int
+	// ObservationEnabled optionally gates read-only maintenance planning and
+	// experience ingestion. A nil callback means enabled for compatibility.
+	ObservationEnabled func() bool
 
 	stopCh chan struct{}
 	once   sync.Once
@@ -82,6 +85,10 @@ func (s *MaintenanceScheduler) loop() {
 }
 
 func (s *MaintenanceScheduler) runOnce() {
+	if s.ObservationEnabled != nil && !s.ObservationEnabled() {
+		log.Printf("[maintenance-scheduler] observation disabled; skipping plan")
+		return
+	}
 	skills := s.SkillLoader()
 	if len(skills) == 0 {
 		return

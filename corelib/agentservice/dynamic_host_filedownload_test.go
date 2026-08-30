@@ -73,6 +73,10 @@ func TestReviewedHostFileDownloadExecutesWithoutCoordinatorAndRejectsSoup(t *tes
 	if ftp.Succeeded || ftp.Unknown {
 		t.Fatalf("ftp must fail closed, result=%#v", ftp)
 	}
+	placeholder := catalog.ExecuteSelection(context.Background(), principal, nil, nil, plan.Selections[0], `{"url":"https://example.invalid/skip"}`)
+	if placeholder.Succeeded || placeholder.Unknown {
+		t.Fatalf("reserved host must fail closed, result=%#v", placeholder)
+	}
 
 	fetchPlan, err := coretool.NewToolPlanner(registry).Plan(coretool.RouteRequest{
 		RootTaskID: "task-fetch", TurnID: "turn-fetch", Snapshot: snapshot,

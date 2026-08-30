@@ -41,9 +41,14 @@ const (
 // why the crossing is tolerated and what has to change to delete the entry.
 var managedSchemaGateBaseline = map[string]map[string]string{
 	// The office writer takes a workspace-relative spreadsheet location that
-	// trustedFileWriteResolvePath confines to the principal's workspace.
+	// trustedFileWriteResolvePath confines to the principal's workspace. Slide
+	// image locations (2026-08-27: photos embedded into presentations) are
+	// confined by the same rule — resolveOfficeSlideImages rewrites each one
+	// through trustedFileWriteResolvePath and fails closed on escape or a
+	// missing file before the deck renders.
 	"semantic_write_trusted_office": {
-		"path": reasonWorkspaceConfinedLocation,
+		"path":                   reasonWorkspaceConfinedLocation,
+		"slides[].images[].path": reasonWorkspaceConfinedLocation,
 	},
 	// The remote acquirer takes only the URL to acquire; the save path, request
 	// headers and browser escalation the legacy downloader exposed are gone.

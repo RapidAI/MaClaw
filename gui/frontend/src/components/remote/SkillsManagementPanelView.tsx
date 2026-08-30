@@ -2,7 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { useDialog } from '../CustomDialog';
 import { useToast } from '../Toast';
 import { EventsOn } from '../../../wailsjs/runtime';
-import { EVENT_CONFIG_CHANGED, EVENT_CONFIG_UPDATED, EVENT_MACLAW_CONFIG_CHANGED, EVENT_SKILL_AUTO_DISCOVERED, EVENT_SKILL_EXECUTION_FAILED, EVENT_SKILL_INDEX_REFRESHED, EVENT_SKILL_OPTIMIZED, EVENT_SKILL_REPAIRED, EVENT_SKILL_USAGE_UPDATED } from '../../constants/events';
+import { EVENT_CONFIG_CHANGED, EVENT_CONFIG_UPDATED, EVENT_MACLAW_CONFIG_CHANGED, EVENT_SKILL_AUTO_DISCOVERED, EVENT_SKILL_EVOLUTION_CANCELLED, EVENT_SKILL_EVOLUTION_ROLLED_BACK, EVENT_SKILL_EVOLUTION_TIMED_OUT, EVENT_SKILL_EXECUTION_FAILED, EVENT_SKILL_INDEX_REFRESHED, EVENT_SKILL_OPTIMIZED, EVENT_SKILL_REPAIRED, EVENT_SKILL_USAGE_UPDATED } from '../../constants/events';
 import { SkillInstallProgressPanel } from './SkillInstallProgressPanel';
 import { SkillRepairDraftsPanel } from './SkillRepairDraftsPanel';
 import { MaclawAppMarketPreview } from './MaclawAppMarketPreview';
@@ -12,7 +12,7 @@ import { formatInstalledOpenPanelMessage, localizeMiniAppPack, miniAppLabels } f
 import { StatusGlyph } from '../ai/WorkbenchIcons';
 import { displayHubVersion, executionClassBadgeStyle, formatDate, formatDownloads, renderStars, shouldShowTrustBadge, statusDotStyle, trustBadgeStyle, trustLevelLabel, uploadBtnStyle } from './skillsManagementUtils';
 import { colors, remoteCardStyle, remoteCodeBlockStyle, remoteEmptyStateStyle, remoteErrorStateStyle, remoteInfoPanelStyle, remoteLoadingStateStyle, remoteStatusBadgeStyle, remoteTableCellStyle, remoteTableContainerStyle, remoteTableHeaderCellStyle, remoteTagStyle } from './styles';
-import { AddExternalSkillDir, ApplySkillMaintenanceAction, BatchSetNLSkillStatus, CheckHubSkillUpdates, CreateNLSkill, DeleteNLSkill, DiagnoseSkillFiles, ExportLearnedSkillsZip, ExportTextFile, GetExperienceAuditHealth, GetHubRecommendations, GetSkillEvolutionStatus, ImportLearnedSkillsZip, ImportNLSkillZip, InstallMixedSkill, ListExperienceAudit, ListExternalSkillDirsDetailed, ListNLSkills, ListSkillEvolutionAudit, ListSkillMaintenanceDrafts, ListSkillYAMLBackups, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, RemoveExternalSkillDir, RenameNLSkill, ResolveCriticalConfirm, RestoreSkillYAMLBackup, SearchMixedSkills, SelectProjectDir, SetNLSkillStatus, TriggerSkillOptimize, TriggerSkillSelfRepair, UpdateHubSkill, UpdateNLSkill, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { AddExternalSkillDir, ApplySkillMaintenanceAction, BatchSetNLSkillStatus, CancelSkillEvolution, CheckHubSkillUpdates, CreateNLSkill, DeleteNLSkill, DiagnoseSkillFiles, ExportLearnedSkillsZip, ExportTextFile, GetExperienceAuditHealth, GetHubRecommendations, GetSkillEvolutionStatus, ImportLearnedSkillsZip, ImportNLSkillZip, InstallMixedSkill, ListExperienceAudit, ListExternalSkillDirsDetailed, ListNLSkills, ListSkillEvolutionAudit, ListSkillEvolutionCompensations, ListSkillMaintenanceDrafts, ListSkillYAMLBackups, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, PatchConfigFields, RemoveExternalSkillDir, RenameNLSkill, ResolveCriticalConfirm, RestoreSkillYAMLBackup, SearchMixedSkills, SelectProjectDir, SetNLSkillStatus, TriggerSkillOptimize, TriggerSkillSelfRepair, UpdateHubSkill, UpdateNLSkill, UploadNLSkillToMarket, VerifyAndActivateNLSkillWithArgs } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 
@@ -69,6 +69,10 @@ interface NLSkillDefinition {
     repair_history?: SkillRepairRecord[];
     optimization_count?: number;
     last_optimized_at?: string;
+    verified_at?: string;
+    verification_run_id?: string;
+    verification_digest?: string;
+    verification_gate_status?: string;
     is_maclaw_app?: boolean;
     maclaw_app_count?: number;
     maclaw_app_entry?: string;
@@ -113,6 +117,36 @@ interface SkillEvolutionStatus {
     config_enabled?: boolean;
     config_disabled?: boolean;
     disabled?: boolean;
+    audit_available?: boolean;
+    last_audit_error?: string;
+    audit_failure_count?: number;
+    last_audit_success_at?: string;
+    oldest_pending_at?: string;
+    queue_wait_seconds?: number;
+    max_concurrent_workers?: number;
+    max_concurrent_workers_configured?: number;
+    observation_enabled?: boolean;
+    worker_timeout_seconds?: number;
+    active_skills?: number;
+    cancelled_requests?: number;
+    timed_out_requests?: number;
+    pending_compensations?: number;
+    compensation_queue_healthy?: boolean;
+    compensation_queue_error?: string;
+    requests?: Array<{ request_id?: string; skill?: string; state?: string; enqueued_at?: string; started_at?: string }>;
+    failure_summaries?: Array<{ skill?: string; failure_count?: number; last_error?: string; last_error_class?: string; last_args_digest?: string; last_failure_at?: string }>;
+}
+
+interface SkillEvolutionCompensationSummary {
+    request_id?: string;
+    skill?: string;
+    action?: string;
+    attempts?: number;
+    status?: string;
+    failure_reason?: string;
+    last_error?: string;
+    created_at?: string;
+    next_retry_at?: string;
 }
 
 type EvolutionActivityKind = "repaired" | "optimized" | "discovered" | "failed";
@@ -135,6 +169,22 @@ interface EvolutionAuditRow {
      *  draft was rejected rather than left pending review. */
     status?: string;
     via?: string;
+    action?: string;
+    decision?: string;
+    reason?: string;
+    risk?: string;
+    gate_status?: string;
+    evidence_digest?: string;
+    backup_version?: string;
+    operator?: string;
+    trigger?: string;
+    schema_version?: string;
+    request_id?: string;
+    attempt?: string;
+    config_revision?: string;
+    evidence_mode?: string;
+    failure_reason?: string;
+    termination?: string;
 }
 
 interface MaintenancePatchDraft {
@@ -170,7 +220,7 @@ function csvEscapeCell(value: unknown): string {
 }
 
 function evolutionAuditToCSV(rows: EvolutionAuditRow[]): string {
-    const header = ["timestamp", "kind", "skill", "source", "status", "via", "explanation"];
+    const header = ["timestamp", "kind", "skill", "source", "request_id", "attempt", "status", "via", "action", "decision", "reason", "risk", "gate_status", "evidence_mode", "failure_reason", "termination", "config_revision", "evidence_digest", "backup_version", "operator", "trigger", "schema_version", "explanation"];
     const lines = [header.join(",")];
     for (const row of rows) {
         lines.push([
@@ -178,8 +228,24 @@ function evolutionAuditToCSV(rows: EvolutionAuditRow[]): string {
             csvEscapeCell(row.kind),
             csvEscapeCell(row.skill),
             csvEscapeCell(row.source),
+            csvEscapeCell(row.request_id),
+            csvEscapeCell(row.attempt),
             csvEscapeCell(row.status),
             csvEscapeCell(row.via),
+            csvEscapeCell(row.action),
+            csvEscapeCell(row.decision),
+            csvEscapeCell(row.reason),
+            csvEscapeCell(row.risk),
+            csvEscapeCell(row.gate_status),
+            csvEscapeCell(row.evidence_mode),
+            csvEscapeCell(row.failure_reason),
+            csvEscapeCell(row.termination),
+            csvEscapeCell(row.config_revision),
+            csvEscapeCell(row.evidence_digest),
+            csvEscapeCell(row.backup_version),
+            csvEscapeCell(row.operator),
+            csvEscapeCell(row.trigger),
+            csvEscapeCell(row.schema_version),
             csvEscapeCell(row.explanation),
         ].join(","));
     }
@@ -600,6 +666,8 @@ function getStatusBadgeVariant(status: string): CSSProperties {
             return { background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` };
         case "needs_review":
             return { background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` };
+        case "staged":
+            return { background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}` };
         default:
             return { background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}` };
     }
@@ -669,6 +737,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             case "disabled": return localizeText("Disabled", "已禁用", "已停用");
             case "needs_setup": return localizeText("Needs Setup", "待配置", "待配置");
             case "needs_review": return localizeText("Needs Review", "待审核", "待審核");
+            case "staged": return localizeText("Staged · verify", "待验证", "待驗證");
             default: return status || "—";
         }
     };
@@ -809,12 +878,18 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [extDirError, setExtDirError] = useState("");
     const [extDirRemoving, setExtDirRemoving] = useState(false);
 
-    // Skill evolution settings (self-repair cooldown + master enable)
+    // Skill evolution settings (self-repair cooldown + independent switches)
     const [repairCooldownHours, setRepairCooldownHours] = useState<number>(1);
     const [repairCooldownSaving, setRepairCooldownSaving] = useState(false);
     const [repairCooldownMsg, setRepairCooldownMsg] = useState("");
     const [evolutionEnabled, setEvolutionEnabled] = useState(true);
     const [evolutionEnabledSaving, setEvolutionEnabledSaving] = useState(false);
+    const [observationEnabled, setObservationEnabled] = useState(true);
+    const [observationSaving, setObservationSaving] = useState(false);
+    const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState(2);
+    const [workersSaving, setWorkersSaving] = useState(false);
+    const [workerTimeoutSeconds, setWorkerTimeoutSeconds] = useState(180);
+    const [workerTimeoutSaving, setWorkerTimeoutSaving] = useState(false);
     const [evolutionStatus, setEvolutionStatus] = useState<SkillEvolutionStatus | null>(null);
     const [evolutionStatusLoading, setEvolutionStatusLoading] = useState(false);
     const [evolutionActivity, setEvolutionActivity] = useState<EvolutionActivityItem[]>([]);
@@ -844,6 +919,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const batchCancelRef = useRef(false);
     const [maintenanceDrafts, setMaintenanceDrafts] = useState<MaintenanceDraftsSnapshot | null>(null);
     const [maintenanceDraftsLoading, setMaintenanceDraftsLoading] = useState(false);
+    const [evolutionCompensations, setEvolutionCompensations] = useState<SkillEvolutionCompensationSummary[]>([]);
+    const [evolutionCompensationsLoading, setEvolutionCompensationsLoading] = useState(false);
+    const [evolutionCompensationsError, setEvolutionCompensationsError] = useState("");
     const [expandedDraftKey, setExpandedDraftKey] = useState<string | null>(null);
     /** skillName -> { versions desc, latest, selected } for YAML rollback UI */
     const [yamlBackupInfo, setYamlBackupInfo] = useState<Record<string, { versions: number[]; latest: number; selected: number }>>({});
@@ -862,6 +940,25 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             setEvolutionAudit([]);
         } finally {
             setEvolutionAuditLoading(false);
+        }
+    }, []);
+
+    const loadEvolutionCompensations = useCallback(async () => {
+        setEvolutionCompensationsLoading(true);
+        setEvolutionCompensationsError("");
+        try {
+            const result = await ListSkillEvolutionCompensations();
+            if (!result || result.ok === false || !Array.isArray(result.items)) {
+                setEvolutionCompensations([]);
+                setEvolutionCompensationsError(String(result?.error || "recovery queue unavailable"));
+                return;
+            }
+            setEvolutionCompensations(result.items as SkillEvolutionCompensationSummary[]);
+        } catch {
+            setEvolutionCompensations([]);
+            setEvolutionCompensationsError("recovery queue unavailable");
+        } finally {
+            setEvolutionCompensationsLoading(false);
         }
     }, []);
 
@@ -1492,6 +1589,46 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             const { skillName, explanation } = parseSkillPayload(payload);
             pushEvolutionActivity("failed", skillName || "—", explanation);
         };
+        const onCancelled = (payload?: unknown) => {
+            refresh();
+            void loadEvolutionAudit();
+            const { skillName, explanation } = parseSkillPayload(payload);
+            const reason = explanation || localizeText("operator requested cancellation", "操作员请求取消", "操作員要求取消");
+            pushEvolutionActivity("failed", skillName || "—", `cancelled: ${reason}`);
+            showToast(
+                localizeText(`Evolution cancelled${skillName ? ` for “${skillName}”` : ""}: ${reason}`, `已取消${skillName ? `「${skillName}」` : ""}的进化任务：${reason}`, `已取消${skillName ? `「${skillName}」` : ""}的進化任務：${reason}`),
+                "info",
+                4500,
+            );
+        };
+        const onTimedOut = (payload?: unknown) => {
+            refresh();
+            void loadEvolutionAudit();
+            const { skillName, explanation } = parseSkillPayload(payload);
+            const reason = explanation || localizeText("worker deadline exceeded", "超过工作任务超时限制", "超過工作任務逾時限制");
+            pushEvolutionActivity("failed", skillName || "—", `timed_out: ${reason}`);
+            showToast(
+                localizeText(`Evolution timed out${skillName ? ` for “${skillName}”` : ""}: ${reason}`, `进化任务${skillName ? `「${skillName}」` : ""}超时：${reason}`, `進化任務${skillName ? `「${skillName}」` : ""}逾時：${reason}`),
+                "warning",
+                6000,
+            );
+        };
+        const onRolledBack = (payload?: unknown) => {
+            refresh();
+            void loadEvolutionAudit();
+            const { skillName, explanation } = parseSkillPayload(payload);
+            const reason = explanation || localizeText("definition commit was rolled back", "技能变更提交已回滚", "技能變更提交已回滾");
+            pushEvolutionActivity("failed", skillName || "—", `rolled_back: ${reason}`);
+            showToast(
+                localizeText(
+                    `Evolution rolled back${skillName ? ` for “${skillName}”` : ""}: ${reason}`,
+                    `进化任务${skillName ? `「${skillName}」` : ""}已回滚：${reason}`,
+                    `進化任務${skillName ? `「${skillName}」` : ""}已回滾：${reason}`,
+                ),
+                "warning",
+                6000,
+            );
+        };
         const unsubs = [
             EventsOn(EVENT_SKILL_USAGE_UPDATED, refresh),
             EventsOn(EVENT_SKILL_INDEX_REFRESHED, refresh),
@@ -1499,6 +1636,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             EventsOn(EVENT_SKILL_REPAIRED, onRepaired),
             EventsOn(EVENT_SKILL_OPTIMIZED, onOptimized),
             EventsOn(EVENT_SKILL_AUTO_DISCOVERED, onDiscovered),
+            EventsOn(EVENT_SKILL_EVOLUTION_CANCELLED, onCancelled),
+            EventsOn(EVENT_SKILL_EVOLUTION_TIMED_OUT, onTimedOut),
+            EventsOn(EVENT_SKILL_EVOLUTION_ROLLED_BACK, onRolledBack),
         ];
         return () => {
             // Prefer EventsOn unsubscribe callbacks only — EventsOff(name) would
@@ -1640,6 +1780,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             // nil/undefined means default enabled
             const en = (cfg as any)?.skill_evolution_enabled;
             setEvolutionEnabled(en === undefined || en === null ? true : Boolean(en));
+            const obs = (cfg as any)?.skill_maintenance_observation_enabled;
+            setObservationEnabled(obs === undefined || obs === null ? true : Boolean(obs));
+            const workers = Number((cfg as any)?.skill_evolution_max_concurrent_workers ?? 2);
+            setMaxConcurrentWorkers(Number.isFinite(workers) && workers > 0 ? Math.min(16, Math.floor(workers)) : 2);
+            const timeout = Number((cfg as any)?.skill_evolution_worker_timeout_seconds ?? 180);
+            setWorkerTimeoutSeconds(Number.isFinite(timeout) && timeout >= 30 && timeout <= 1800 ? Math.floor(timeout) : 180);
             try {
                 const st = await GetSkillEvolutionStatus();
                 setEvolutionStatus(st && typeof st === "object" ? st : null);
@@ -1696,6 +1842,47 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         }
     }, [localizeText, localizeHubError]);
 
+    const saveObservationEnabled = useCallback(async (enabled: boolean) => {
+        setObservationSaving(true);
+        try {
+            await PatchConfigFields({ skill_maintenance_observation_enabled: enabled });
+            setObservationEnabled(enabled);
+        } catch (err) {
+            setRepairCooldownMsg(localizeHubError(String(err)));
+        } finally {
+            setObservationSaving(false);
+        }
+    }, [localizeHubError]);
+
+    const saveMaxConcurrentWorkers = useCallback(async () => {
+        const value = Math.max(1, Math.min(16, Math.floor(Number(maxConcurrentWorkers) || 2)));
+        setWorkersSaving(true);
+        try {
+            await PatchConfigFields({ skill_evolution_max_concurrent_workers: value });
+            setMaxConcurrentWorkers(value);
+        } catch (err) {
+            setRepairCooldownMsg(localizeHubError(String(err)));
+        } finally {
+            setWorkersSaving(false);
+        }
+    }, [maxConcurrentWorkers, localizeHubError]);
+
+    const saveWorkerTimeout = useCallback(async () => {
+        const value = Math.max(30, Math.min(1800, Math.floor(Number(workerTimeoutSeconds) || 180)));
+        setWorkerTimeoutSaving(true);
+        try {
+            await PatchConfigFields({ skill_evolution_worker_timeout_seconds: value });
+            setWorkerTimeoutSeconds(value);
+            setRepairCooldownMsg(localizeText("Worker timeout saved.", "Worker 超时已保存。", "Worker 逾時已儲存。"));
+            const st = await GetSkillEvolutionStatus();
+            setEvolutionStatus(st && typeof st === "object" ? st : null);
+        } catch (err) {
+            setRepairCooldownMsg(localizeHubError(String(err)));
+        } finally {
+            setWorkerTimeoutSaving(false);
+        }
+    }, [workerTimeoutSeconds, localizeText, localizeHubError]);
+
     useEffect(() => {
         if (activeTab === "extdirs") {
             loadExtDirs();
@@ -1706,10 +1893,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             loadEvolutionSettings();
             void loadEvolutionAudit();
             void loadMaintenanceDrafts();
+            void loadEvolutionCompensations();
         } else if (activeTab === "extdirs") {
             loadEvolutionSettings();
         }
-    }, [activeTab, loadExtDirs, loadEvolutionSettings, loadData, loadEvolutionAudit, loadMaintenanceDrafts]);
+    }, [activeTab, loadExtDirs, loadEvolutionSettings, loadData, loadEvolutionAudit, loadMaintenanceDrafts, loadEvolutionCompensations]);
 
     // Auto-refresh evolution pipeline status while the Evolution settings tab is open.
     useEffect(() => {
@@ -1724,11 +1912,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 .catch(() => {
                     /* keep last snapshot */
                 });
+            void loadEvolutionCompensations();
         };
         tick();
         const id = window.setInterval(tick, 5000);
         return () => window.clearInterval(id);
-    }, [activeTab]);
+    }, [activeTab, loadEvolutionCompensations]);
 
     // Keep Evolution UI in sync when General Settings / manage_skill / PatchConfigFields
     // changes skill_evolution_enabled or repair cooldown (any tab; cheap).
@@ -1739,6 +1928,20 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             if ("skill_evolution_enabled" in rec) {
                 const en = rec.skill_evolution_enabled;
                 setEvolutionEnabled(en === undefined || en === null ? true : Boolean(en));
+            }
+            if ("skill_maintenance_observation_enabled" in rec) {
+                const obs = rec.skill_maintenance_observation_enabled;
+                setObservationEnabled(obs === undefined || obs === null ? true : Boolean(obs));
+            }
+            if ("skill_evolution_max_concurrent_workers" in rec) {
+                const workers = Number(rec.skill_evolution_max_concurrent_workers ?? 2);
+                if (Number.isFinite(workers) && workers > 0) setMaxConcurrentWorkers(Math.min(16, Math.floor(workers)));
+            }
+            if ("skill_evolution_worker_timeout_seconds" in rec) {
+                const timeout = Number(rec.skill_evolution_worker_timeout_seconds ?? 180);
+                if (Number.isFinite(timeout) && timeout >= 30 && timeout <= 1800) {
+                    setWorkerTimeoutSeconds(Math.floor(timeout));
+                }
             }
             if ("skill_evolution_repair_cooldown_hours" in rec) {
                 const hours = Number(rec.skill_evolution_repair_cooldown_hours ?? 0);
@@ -2122,6 +2325,47 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             showToast(localizeText("Skill enabled after review.", "Skill \u5df2\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528\u3002", "Skill \u5df2\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528\u3002"), "success");
         } catch (err) {
             setError(localizeHubError(String(err)));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    // Staged auto-discovered skills require an explicit constrained replay.
+    // Collect arguments as JSON so required_args can be satisfied without
+    // ever offering the ordinary status API as an activation shortcut.
+    const handleVerifyAndActivate = async (skill: NLSkillDefinition) => {
+        const required = Array.from(new Set([
+            ...(skill.required_args || []),
+            ...((skill.params || []).filter((p) => p.required).map((p) => p.name)),
+        ].map((v) => String(v || '').trim()).filter(Boolean)));
+        const prompt = localizeText(
+            `Enter replay arguments as a JSON object for "${skill.name}"${required.length ? ` (required: ${required.join(', ')})` : ''}. Values are used once for verification and are not saved in plaintext.`,
+            `请为「${skill.name}」输入一次重放参数 JSON 对象${required.length ? `（必填：${required.join('、')}）` : ''}。参数仅用于验证，不会以明文保存。`,
+            `請為「${skill.name}」輸入一次重放參數 JSON 物件${required.length ? `（必填：${required.join('、')}）` : ''}。參數僅用於驗證，不會以明文保存。`,
+        );
+        const raw = await showPrompt(prompt, localizeText('Verify staged skill', '验证待审核技能', '驗證待審核技能'), {
+            placeholder: '{"key":"value"}',
+            confirmText: localizeText('Verify & activate', '验证并激活', '驗證並啟用'),
+            cancelText: localizeText('Cancel', '取消', '取消'),
+        });
+        if (raw === null) return;
+        let args: Record<string, unknown>;
+        try {
+            const parsed: unknown = JSON.parse(raw.trim());
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON must be an object');
+            args = parsed as Record<string, unknown>;
+        } catch (err) {
+            showToast(localizeText(`Invalid JSON: ${String(err)}`, `JSON 格式无效：${String(err)}`, `JSON 格式無效：${String(err)}`), 'error');
+            return;
+        }
+        setBusy(true);
+        try {
+            await VerifyAndActivateNLSkillWithArgs(skill.name, args);
+            await loadData();
+            if (detailSkill?.name === skill.name) setDetailSkill((prev) => prev ? { ...prev, status: 'active', verification_gate_status: 'passed' } : prev);
+            showToast(localizeText('Skill verified and activated.', '技能已验证并激活。', '技能已驗證並啟用。'), 'success');
+        } catch (err) {
+            showToast(localizeHubError(String(err)), 'error');
         } finally {
             setBusy(false);
         }
@@ -2914,6 +3158,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 </div>
                                             </div>
                                             <div style={{ display: "flex", gap: "4px", flexShrink: 0, alignItems: "center" }}>
+                                                {s.status === "staged" && (
+                                                    <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => { void handleVerifyAndActivate(s); }} disabled={busy} title={localizeText("Replay with arguments, verify, and activate", "使用参数重放、验证并激活", "使用參數重放、驗證並啟用")} aria-label={localizeText("Verify and activate", "验证并激活", "驗證並啟用")}>
+                                                        {localizeText("Verify", "验证", "驗證")}
+                                                    </button>
+                                                )}
                                                 {s.status === "needs_setup" && (
                                                     <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
                                                         {localizeText("Configure", "配置", "設定")}
@@ -3009,6 +3258,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4, minWidth: 0 }}>
                                                     <div style={localSkillsRowActionsStyle}>
+                                                        {s.status === "staged" && (
+                                                            <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => { void handleVerifyAndActivate(s); }} disabled={busy} title={localizeText("Replay with arguments, verify, and activate", "使用参数重放、验证并激活", "使用參數重放、驗證並啟用")} aria-label={localizeText("Verify and activate", "验证并激活", "驗證並啟用")}>
+                                                                {localizeText("Verify", "验证", "驗證")}
+                                                            </button>
+                                                        )}
                                                         {s.status === "needs_setup" && (
                                                             <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
                                                                 {localizeText("Configure", "配置", "設定")}
@@ -3619,6 +3873,68 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 <span style={{ fontSize: "0.72rem", color: colors.textSecondary }}>...</span>
                             )}
                         </div>
+                        <div style={{ display: "flex", gap: "14px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
+                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px", cursor: observationSaving ? "default" : "pointer" }}>
+                                <input
+                                    type="checkbox"
+                                    checked={observationEnabled}
+                                    disabled={observationSaving}
+                                    onChange={(e) => { void saveObservationEnabled(e.target.checked); }}
+                                    aria-label={localizeText("Record maintenance observations", "记录维护观察", "記錄維護觀察")}
+                                />
+                                {localizeText("Record maintenance observations", "记录维护观察", "記錄維護觀察")}
+                            </label>
+                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px" }}>
+                                {localizeText("Concurrent workers", "并发工作数", "並發工作數")}
+                                <input
+                                    className="form-input"
+                                    type="number"
+                                    min={1}
+                                    max={16}
+                                    value={maxConcurrentWorkers}
+                                    onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value))}
+                                    style={{ width: "64px", fontSize: "0.78rem" }}
+                                    disabled={workersSaving}
+                                />
+                                <button
+                                    className="btn-secondary"
+                                    style={{ fontSize: "0.72rem", padding: "3px 9px" }}
+                                    disabled={workersSaving}
+                                    onClick={() => { void saveMaxConcurrentWorkers(); }}
+                                >
+                                    {workersSaving ? "..." : localizeText("Save", "保存", "儲存")}
+                                </button>
+                            </label>
+                            <label style={{ fontSize: "0.78rem", display: "flex", alignItems: "center", gap: "6px" }}>
+                                {localizeText("Worker timeout (sec)", "Worker 超时（秒）", "Worker 逾時（秒）")}
+                                <input
+                                    className="form-input"
+                                    type="number"
+                                    min={30}
+                                    max={1800}
+                                    value={workerTimeoutSeconds}
+                                    onChange={(e) => setWorkerTimeoutSeconds(Number(e.target.value))}
+                                    style={{ width: "78px", fontSize: "0.78rem" }}
+                                    disabled={workerTimeoutSaving}
+                                    title={localizeText("Background evolution worker timeout. Range: 30–1800 seconds.", "后台自进化 Worker 超时。范围：30–1800 秒。", "背景自進化 Worker 逾時。範圍：30–1800 秒。")}
+                                />
+                                <button
+                                    className="btn-secondary"
+                                    style={{ fontSize: "0.72rem", padding: "3px 9px" }}
+                                    disabled={workerTimeoutSaving}
+                                    onClick={() => { void saveWorkerTimeout(); }}
+                                >
+                                    {workerTimeoutSaving ? "..." : localizeText("Save", "保存", "儲存")}
+                                </button>
+                            </label>
+                        </div>
+                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary, marginBottom: "8px" }}>
+                            {localizeText(
+                                "Observation is read-only evidence collection and can remain enabled while automatic evolution is paused. Worker count is limited to 1–16, timeout to 30–1800 seconds; the same skill is always serialized.",
+                                "观察只采集只读证据；即使暂停自动自进化也可以保留。并发工作数限制为 1–16，Worker 超时限制为 30–1800 秒；同一技能始终串行。",
+                                "觀察只收集唯讀證據；即使暫停自動自進化也可以保留。並發工作數限制為 1–16，Worker 逾時限制為 30–1800 秒；同一技能始終串行。",
+                            )}
+                        </div>
                         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                             <label style={{ fontSize: "0.78rem" }}>
                                 {localizeText("Repair cooldown (hours)", "自修复冷却（小时）", "自修復冷卻（小時）")}
@@ -3687,6 +4003,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </button>
                         </div>
                         {evolutionStatus ? (
+                            <>
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", fontSize: "0.76rem" }}>
                                 <div>
                                     <strong>{localizeText("Started", "已启动", "已啟動")}</strong>
@@ -3695,6 +4012,10 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 <div>
                                     <strong>{localizeText("Pending", "排队", "排隊")}</strong>
                                     <div>{evolutionStatus.pending_skills ?? 0}</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Queue wait", "等待时间", "等待時間")}</strong>
+                                    <div>{Number(evolutionStatus.queue_wait_seconds ?? 0)}s</div>
                                 </div>
                                 <div>
                                     <strong>{localizeText("Processed", "已处理", "已處理")}</strong>
@@ -3720,7 +4041,138 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     <strong>{localizeText("Cooldown", "冷却", "冷卻")}</strong>
                                     <div>{evolutionStatus.repair_cooldown || "—"}</div>
                                 </div>
+                                <div>
+                                    <strong>{localizeText("Workers", "并发工作数", "並發工作數")}</strong>
+                                    <div>{evolutionStatus.max_concurrent_workers ?? maxConcurrentWorkers}</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Active jobs", "运行中任务", "執行中任務")}</strong>
+                                    <div>{evolutionStatus.active_skills ?? 0}</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Cancelled", "已取消", "已取消")}</strong>
+                                    <div>{evolutionStatus.cancelled_requests ?? 0}</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Timed out", "已超时", "已逾時")}</strong>
+                                    <div>{evolutionStatus.timed_out_requests ?? 0}</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Recovery queue", "待恢复补偿", "待恢復補償")}</strong>
+                                    <div style={{ color: (evolutionStatus.pending_compensations ?? 0) > 0 ? colors.danger : colors.success }}>
+                                        {evolutionStatus.pending_compensations ?? 0}
+                                    </div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Observation", "观察", "觀察")}</strong>
+                                    <div>{evolutionStatus.observation_enabled === false ? "off" : "on"}</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Timeout", "超时", "逾時")}</strong>
+                                    <div>{Number(evolutionStatus.worker_timeout_seconds ?? 180)}s</div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Audit sink", "审计写入", "審計寫入")}</strong>
+                                    <div style={{ color: evolutionStatus.audit_available === false ? colors.danger : colors.success }}>
+                                        {evolutionStatus.audit_available === false
+                                            ? localizeText("unavailable", "不可用", "不可用")
+                                            : localizeText("healthy", "正常", "正常")}
+                                    </div>
+                                </div>
+                                <div>
+                                    <strong>{localizeText("Audit failures", "审计失败", "審計失敗")}</strong>
+                                    <div>{Number(evolutionStatus.audit_failure_count ?? 0)}</div>
+                                </div>
                             </div>
+                            {evolutionStatus.last_audit_error && (
+                                <div style={{ color: colors.danger, fontSize: "0.72rem", marginTop: "8px", overflowWrap: "anywhere" }}>
+                                    {localizeText("Last audit error", "最近审计错误", "最近審計錯誤")}: {evolutionStatus.last_audit_error}
+                                </div>
+                            )}
+                            {evolutionStatus.compensation_queue_healthy === false && (
+                                <div style={{ color: colors.danger, fontSize: "0.72rem", marginTop: "8px", overflowWrap: "anywhere" }}>
+                                    {localizeText("Recovery queue unreadable", "补偿队列不可读，已按安全策略阻断", "補償佇列不可讀，已按安全策略阻斷")}
+                                    {evolutionStatus.compensation_queue_error ? `: ${evolutionStatus.compensation_queue_error}` : ""}
+                                </div>
+                            )}
+                            {evolutionCompensationsError && evolutionStatus.compensation_queue_healthy !== false && (
+                                <div style={{ color: colors.danger, fontSize: "0.72rem", marginTop: "8px", overflowWrap: "anywhere" }}>
+                                    {localizeText("Recovery queue unavailable", "补偿队列不可用，已按安全策略阻断", "補償佇列不可用，已按安全策略阻斷")}: {evolutionCompensationsError}
+                                </div>
+                            )}
+                            {(evolutionCompensationsLoading || evolutionCompensations.length > 0) && (
+                                <div style={{ marginTop: "10px", fontSize: "0.72rem" }}>
+                                    <strong>{localizeText("Pending compensation details", "待恢复补偿详情", "待恢復補償詳情")}</strong>
+                                    {evolutionCompensationsLoading ? (
+                                        <div style={{ color: colors.textSecondary, marginTop: "4px" }}>...</div>
+                                    ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: "4px", marginTop: "4px" }}>
+                                            {evolutionCompensations.slice(0, 10).map((item, i) => {
+                                                const needsReview = String(item.status || "").toLowerCase() === "needs_review";
+                                                return (
+                                                    <div key={`${item.request_id || item.skill || "compensation"}-${i}`} style={{ color: needsReview ? colors.danger : colors.textSecondary, overflowWrap: "anywhere" }}>
+                                                        {item.skill || "—"} · {item.action || "rollback"} · {item.status || "pending"} · {Number(item.attempts || 0)}x
+                                                        {item.request_id ? ` · ${item.request_id}` : ""}
+                                                        {item.failure_reason ? ` · ${item.failure_reason}` : ""}
+                                                        {item.last_error ? ` · ${item.last_error}` : ""}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            {(evolutionStatus.failure_summaries || []).length > 0 && (
+                                <div style={{ marginTop: "8px", fontSize: "0.72rem" }}>
+                                    <strong>{localizeText("Recent failures", "近期失败", "近期失敗")}</strong>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "4px" }}>
+                                        {(evolutionStatus.failure_summaries || []).slice(0, 5).map((f, i) => (
+                                            <div key={`${f.skill || "failure"}-${i}`} style={{ color: colors.textSecondary, overflowWrap: "anywhere" }}>
+                                                {f.skill || "—"} · {f.last_error_class || "unknown"} · {f.failure_count || 0}x{f.last_error ? ` · ${f.last_error}` : ""}
+                                                {f.skill ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn-secondary"
+                                                        style={{ fontSize: "0.65rem", padding: "1px 6px", marginLeft: "6px" }}
+                                                        onClick={() => { void CancelSkillEvolution(f.skill!).then(() => { void GetSkillEvolutionStatus().then((st) => setEvolutionStatus(st)); }); }}
+                                                    >
+                                                        {localizeText("Cancel", "取消", "取消")}
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {(evolutionStatus.requests || []).length > 0 && (
+                                <div style={{ marginTop: "8px", fontSize: "0.72rem" }}>
+                                    <strong>{localizeText("Evolution tasks", "进化任务", "進化任務")}</strong>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "4px" }}>
+                                        {(evolutionStatus.requests || []).map((request, i) => (
+                                            <div key={`${request.request_id || request.skill || "request"}-${i}`} style={{ display: "flex", alignItems: "center", gap: "6px", color: colors.textSecondary, overflowWrap: "anywhere" }}>
+                                                <span>{request.skill || "—"} · {request.state || "unknown"}</span>
+                                                <span style={{ fontSize: "0.64rem" }}>{request.request_id || "—"}</span>
+                                                {(request.skill && (request.state === "pending" || request.state === "running")) ? (
+                                                    <button
+                                                        type="button"
+                                                        className="btn-secondary"
+                                                        style={{ fontSize: "0.65rem", padding: "1px 6px", marginLeft: "auto" }}
+                                                        onClick={() => {
+                                                            void CancelSkillEvolution(request.skill!).then((cancelled) => {
+                                                                if (cancelled) showToast(localizeText("Evolution task cancelled", "已取消进化任务", "已取消進化任務"), "success");
+                                                                return GetSkillEvolutionStatus();
+                                                            }).then((st) => setEvolutionStatus(st));
+                                                        }}
+                                                    >
+                                                        {localizeText("Cancel", "取消", "取消")}
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            </>
                         ) : (
                             <div style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                                 {evolutionStatusLoading
@@ -5189,6 +5641,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                 <div><strong>{localizeText("Last repair", "最近修复", "最近修復")}</strong><div>{detailSkill.last_repair_at ? new Date(detailSkill.last_repair_at).toLocaleString() : "—"}</div></div>
                                 <div><strong>{localizeText("Optimizations", "优化次数", "優化次數")}</strong><div>{detailSkill.optimization_count ?? 0}</div></div>
                                 <div><strong>{localizeText("Last optimized", "最近优化", "最近優化")}</strong><div>{detailSkill.last_optimized_at ? new Date(detailSkill.last_optimized_at).toLocaleString() : "—"}</div></div>
+                                {detailSkill.status === "staged" && (
+                                    <>
+                                        <div><strong>{localizeText("Verification", "验证状态", "驗證狀態")}</strong><div>{detailSkill.verification_gate_status || localizeText("Pending", "待验证", "待驗證")}</div></div>
+                                        <div><strong>{localizeText("Verification run", "验证运行 ID", "驗證執行 ID")}</strong><div style={{ overflowWrap: "anywhere" }}>{detailSkill.verification_run_id || "—"}</div></div>
+                                    </>
+                                )}
                             </div>
                             {(detailSkill.repair_history && detailSkill.repair_history.length > 0) && (
                                 <div>
@@ -5233,6 +5691,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </div>
                         )}
                         <div className="modal-footer">
+                            {detailSkill.status === "staged" && (
+                                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { void handleVerifyAndActivate(detailSkill); }} disabled={busy}>
+                                    {localizeText("Verify and activate", "验证并激活", "驗證並啟用")}
+                                </button>
+                            )}
                             {detailSkill.status === "needs_setup" && (
                                 <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { openEditForm(detailSkill, true); setDetailSkill(null); }}>
                                     {localizeText("Configure and enable", "配置并启用", "設定並啟用")}

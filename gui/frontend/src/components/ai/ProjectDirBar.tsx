@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
+import { isCloudWorkspacePath } from "./codingTaskMode";
 import { IconEdit, IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 
 export interface ProjectDirBarProps {
@@ -12,6 +13,10 @@ export interface ProjectDirBarProps {
     lang?: string;
     /** Fired after the user successfully switches this tab's working directory. */
     onWorkingDirChange?: (path: string) => void;
+    /** Fired whenever the resolved working directory is known, including first load. */
+    onWorkingDirResolved?: (path: string, tabId: string) => void;
+    /** Cloud workspace: click the label to reopen the in-app file browser instead of Explorer. */
+    onOpenCloudFiles?: () => void;
 }
 
 interface DirState {
@@ -27,11 +32,11 @@ async function readTabWorkingDir(tabId: string): Promise<DirState | null> {
 
 /**
  * Displays the current working directory for the active tab.
- * - Click path → opens directory in system file explorer
- * - Click the "Change" button → opens the directory picker
+ * - Click path → opens directory in system file explorer (cloud: in-app file browser)
+ * - Click the "Change" button → opens the directory picker (hidden for cloud)
  * - Shows "(默认)" badge when using system default directory
  */
-export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange }: ProjectDirBarProps) {
+export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles }: ProjectDirBarProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const [selectingDirectory, setSelectingDirectory] = useState(false);
     const mountedRef = useRef(true);
@@ -53,6 +58,7 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang,
             return readTabWorkingDir(tabId).then((result) => {
                 if (cancelled || !mountedRef.current || generation !== refreshGenerationRef.current || !result) return;
                 setDirState(result);
+                onWorkingDirResolved?.(result.path, tabId);
             }).catch(() => {});
         };
         setDirState(null); // Clear stale value during tab switch.
@@ -60,13 +66,17 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang,
         return () => {
             cancelled = true;
         };
-    }, [tabId, sessionReadyRevision]);
+    }, [tabId, sessionReadyRevision, onWorkingDirResolved]);
 
     const handleOpenDir = useCallback(() => {
+        if (isCloudWorkspacePath(dirState?.path)) {
+            onOpenCloudFiles?.();
+            return;
+        }
         if (dirState?.path) {
             OpenProjectDirectory(dirState.path).catch(() => {});
         }
-    }, [dirState?.path]);
+    }, [dirState?.path, onOpenCloudFiles]);
 
     const handleSwitchDir = useCallback(async () => {
         if (directorySelectionInFlightRef.current) return;
@@ -106,10 +116,15 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang,
     }
 
     const isDefault = dirState.isDefault;
-    const displayPath = truncateMiddle(dirState.path, 55);
-    const badgeText = isDefault
-        ? (lang === "en" ? "(default)" : "(默认)")
-        : "";
+    const isCloud = isCloudWorkspacePath(dirState.path);
+    const displayPath = isCloud
+        ? (lang === "en" ? "Cloud workspace" : "云端工作区")
+        : truncateMiddle(dirState.path, 55);
+    const badgeText = isCloud
+        ? (lang === "en" ? "remote" : "云端")
+        : isDefault
+            ? (lang === "en" ? "(default)" : "(默认)")
+            : "";
 
     return (
         <div
@@ -133,17 +148,17 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang,
             </span>
             <button
                 type="button"
-                title={dirState.path}
-                aria-label={lang === "en" ? "Open current working directory" : "打开当前工作目录"}
+                title={isCloud ? (lang === "en" ? "Cloud workspace files" : "云端工作区文件") : dirState.path}
+                aria-label={isCloud ? (lang === "en" ? "Open cloud workspace files" : "打开云端工作区文件") : (lang === "en" ? "Open current working directory" : "打开当前工作目录")}
                 onClick={handleOpenDir}
                 style={{
                     border: "none",
                     background: "transparent",
                     padding: 0,
                     cursor: "pointer",
-                    color: isDefault ? t.textMuted : t.linkColor,
-                    textDecoration: isDefault ? "none" : "underline",
-                    textDecorationColor: isDefault ? undefined : `${t.linkColor}44`,
+                    color: isCloud ? t.linkColor : (isDefault ? t.textMuted : t.linkColor),
+                    textDecoration: isDefault || isCloud ? "none" : "underline",
+                    textDecorationColor: isDefault || isCloud ? undefined : `${t.linkColor}44`,
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -162,12 +177,13 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang,
                     color: t.textMuted,
                     opacity: 0.7,
                     flexShrink: 0,
-                    fontStyle: "italic",
+                    fontStyle: isCloud ? "normal" : "italic",
+                    fontWeight: isCloud ? 700 : undefined,
                 }}>
                     {badgeText}
                 </span>
             )}
-            <button
+            {!isCloud && <button
                 type="button"
                 onClick={handleSwitchDir}
                 title={lang === "en" ? "Choose a different working directory" : "选择其他工作目录"}
@@ -204,7 +220,7 @@ export function ProjectDirBar({ tabId, sessionReadyRevision = 0, theme: t, lang,
             >
                 <IconEdit size={13} />
                 <span>{selectingDirectory ? (lang === "en" ? "Choosing…" : "选择中…") : (lang === "en" ? "Change" : "切换目录")}</span>
-            </button>
+            </button>}
         </div>
     );
 }

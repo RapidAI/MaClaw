@@ -131,3 +131,14 @@ func TestNormalizeManageSkillActionEvolutionAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeManageSkillActionCompensationAliases(t *testing.T) {
+	for _, action := range []string{"evolution_compensations", "compensations", "recovery_queue", "audit_pending"} {
+		if got := NormalizeManageSkillAction(action); got != "evolution_compensations" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want evolution_compensations", action, got)
+		}
+	}
+	if !ManageSkillActionIsValid("evolution_compensations") {
+		t.Fatal("evolution_compensations missing from canonical action list")
+	}
+}

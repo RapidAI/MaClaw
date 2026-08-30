@@ -47,6 +47,8 @@ device_status_t persistence_service_erase_key(const char *name_space, const char
  * versioned blob through the transactional write API above. */
 device_status_t persistence_service_read_i64(const char *name_space, const char *key,
                                        int64_t *out_value);
+device_status_t persistence_service_write_i64(const char *name_space, const char *key,
+                                        int64_t value);
 device_status_t persistence_service_read_i32(const char *name_space, const char *key,
                                        int32_t *out_value);
 device_status_t persistence_service_read_u8(const char *name_space, const char *key,

@@ -46,6 +46,7 @@ typedef struct {
      * keeps the page cursor for an ordered retry; permanently_invalid ACKs
      * the message as failed so it cannot pin the cursor. */
     int32_t (*handle_tool_call)(const void *message_item);
+    bool (*tool_result_outbox_already_delivered)(const void *message_item);
     void (*handle_pet_profile)(const void *message_item, const char *id,
                                bool *out_handled, bool *out_permanently_invalid);
     /* Dispatcher owns this value-only gateway authorization. The composition
@@ -59,15 +60,23 @@ typedef struct {
     /* Server-audio policy and playback (audio domain seam). */
     bool (*audio_url_allowed)(const char *url);
     bool (*audio_mime_supported)(const char *mime);
-    bool (*audio_error_is_permanent)(int32_t err);
+    /* Download uses the Gateway transport's platform status domain; playback
+     * uses the server-audio service's Device API status domain. Keep the two
+     * classifiers distinct so identical integers cannot change retry policy. */
+    bool (*audio_download_error_is_permanent)(int32_t err);
+    bool (*audio_presentation_error_is_permanent)(int32_t status);
     bool (*begin_server_audio_wake_lease)(const char *source);
     bool (*finish_server_audio_wake_lease)(void);
     int32_t (*download_audio)(const char *url, uint8_t **out_audio, uint32_t *out_len);
+    void (*release_audio)(uint8_t *audio);
     int32_t (*play_audio_payload)(const char *mime, const uint8_t *data, uint32_t len);
     void (*schedule_wake_restart)(void);
     /* Startup pet retry housekeeping drained by the poll worker loop. */
     bool (*take_startup_pet_retry_due)(void);
     void (*apply_deferred_startup_pet_asset)(void);
+    /* Flushes one durable Tool-result envelope before another downlink page
+     * is read. The root owns persistence and transport composition. */
+    int32_t (*flush_tool_result_outbox)(void);
 } gateway_dispatcher_host_t;
 
 device_status_t gateway_dispatcher_init(const gateway_dispatcher_host_t *host);

@@ -68,12 +68,13 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), ctx)
+	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, h.filterPolicyRejectedSurfaceTools(h.getTools()))
 
 	tools = stripExecutionContractMetadataForLLM(tools)
 	// Recovery is a fresh model request, not permission to restore the raw
 	// BaseTools snapshot. Re-render it as a closed replacement surface so an
 	// old candidate or a policy filter cannot bypass the reviewed catalog.
-	rendered, _, planBacked, err := h.renderClosedLegacyReplacementSurface(strings.Join(agentLoopToolNamesForLog(tools), ","), ctx, tools)
+	rendered, _, planBacked, err := h.renderClosedLegacyReplacementSurface(strings.Join(agentLoopToolNamesForLog(tools), ","), ctx, tools, nil)
 	if err != nil || !planBacked {
 		if err != nil {
 			log.Printf("[legacy-adapter] recovery replacement rejected user=%q reason=%v", userID, err)

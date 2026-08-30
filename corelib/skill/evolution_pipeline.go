@@ -2,9 +2,15 @@ package skill
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,14 +30,26 @@ import (
 // skill execution completes.
 type EvolutionPipeline struct {
 	// Components
-	Promoter      *NudgePromoter
-	Optimizer     *SkillOptimizer
-	Gate          *RepairGate
-	Scheduler     *MaintenanceScheduler
-	Versioner     *Versioner
-	UsageTracker  *tool.UsageTracker
-	SkillLoader   func() []corelib.NLSkillEntry
-	SkillSaver    func([]corelib.NLSkillEntry) error
+	Promoter     *NudgePromoter
+	Optimizer    *SkillOptimizer
+	Gate         *RepairGate
+	Scheduler    *MaintenanceScheduler
+	Versioner    *Versioner
+	UsageTracker *tool.UsageTracker
+	SkillLoader  func() []corelib.NLSkillEntry
+	SkillSaver   func([]corelib.NLSkillEntry) error
+	// DefinitionWriter writes the authoritative YAML definition. Nil selects
+	// the built-in atomic writer; injection keeps compensation tests isolated.
+	DefinitionWriter func(*corelib.NLSkillEntry) error
+	// IndexRefresher rebuilds derived routing/index state after a durable
+	// definition change. Returning an error makes index publication part of
+	// the same compensation boundary as config and YAML.
+	IndexRefresher func() error
+	// FinalAuditor is invoked inside the definition commit transaction, after
+	// config/YAML/index publication but before the caller emits success. A
+	// non-nil error triggers compensation; this keeps audit evidence atomic
+	// with the mutation rather than best-effort after the fact.
+	FinalAuditor  func(event string, data map[string]string) error
 	UploadTrigger func(skillName string, result *SkillExecutionResultCompat) // enqueues upload via SkillLifecycleManager (subject to skill_auto_upload_enabled)
 	LLM           LLMRepairer
 	EventEmitter  func(event string, data map[string]string) // notifies frontend of evolution actions
@@ -43,23 +61,42 @@ type EvolutionPipeline struct {
 	EnableRepair         bool          // schedule self-repair for failed skills (default true)
 	RepairCooldown       time.Duration // min interval between LLM repair attempts per skill (default 1h)
 	PromoteCheckInterval int           // check nudge promotion every N notifications (default 10)
+	MaxConcurrentWorkers int           // reserved worker limit; 1 preserves per-skill ordering
+	WorkerTimeout        time.Duration // max duration for one evolution request
+	// ConfigRevision identifies the configuration snapshot used by workers.
+	ConfigRevision string
 
 	// RepairHook is the platform-specific repair applier (LLM + gate + security +
 	// persist). When set, processRequest delegates failed-skill repair here so
 	// GUI can enforce security scans. When nil, a core-only repair path runs
 	// (ApplyRepair + SkillSaver) suitable for headless/tests.
 	RepairHook func(entry *corelib.NLSkillEntry, runArgs map[string]string)
+	// RepairHookWithContext is the cancellation-aware variant. When set it is
+	// preferred over RepairHook; the legacy field remains for compatibility.
+	RepairHookWithContext func(context.Context, *corelib.NLSkillEntry, map[string]string)
 
 	// Internal
 	// pendingBySkill coalesces notifications by skill name: rapid re-runs of the
 	// same skill keep only the latest request instead of dropping when busy.
-	pendingBySkill map[string]evolutionRequest
-	pendingMu      sync.Mutex
-	pendingWake    chan struct{} // buffer 1 — wake the loop without blocking Notify
-	stopCh         chan struct{}
-	once           sync.Once    // protects stopCh close
-	startOnce      sync.Once    // protects Start from being called twice
-	requestCount   atomic.Int64 // counts processed requests for throttling
+	pendingBySkill         map[string]evolutionRequest
+	pendingMu              sync.Mutex
+	pendingWake            chan struct{}   // buffer 1 — wake the loop without blocking Notify
+	activeSkills           map[string]bool // protects same-skill ordering across workers
+	requestStatuses        map[string]EvolutionRequestStatus
+	stopCh                 chan struct{}
+	once                   sync.Once    // protects stopCh close
+	startOnce              sync.Once    // protects Start from being called twice
+	requestCount           atomic.Int64 // counts processed requests for throttling
+	lastFailureMu          sync.RWMutex
+	lastFailures           map[string]EvolutionFailureSummary
+	cancelMu               sync.Mutex
+	cancelBySkill          map[string]context.CancelFunc
+	requestIDBySkill       map[string]string
+	shutdownCtx            context.Context
+	shutdownCancel         context.CancelFunc
+	compensationRecoveryMu sync.Mutex // serializes startup/manual durable recovery
+	cancelledCount         atomic.Uint64
+	timedOutCount          atomic.Uint64
 
 	// CoalescedNotifications counts NotifySkillExecution calls that replaced a
 	// still-pending request for the same skill (not lost — superseded).
@@ -75,18 +112,92 @@ type EvolutionPipeline struct {
 	throttleMu       sync.Mutex
 }
 
+// DefaultEvolutionWorkerTimeout bounds one background evolution request.
+// Keeping this as a named policy constant makes timeout behavior testable and
+// prevents individual callers from silently choosing different deadlines.
+const DefaultEvolutionWorkerTimeout = 3 * time.Minute
+
 // SkillExecutionResultCompat is a bridge type to avoid importing gui package.
 type SkillExecutionResultCompat struct {
 	Success       bool
 	OutputQuality string
 	TokensUsed    int
+	ErrorClass    string
+	Error         string
 }
 
 type evolutionRequest struct {
+	RequestID  string
 	SkillName  string
 	Entry      *corelib.NLSkillEntry
 	ExecResult *SkillExecutionResultCompat
 	RunArgs    map[string]string
+	EnqueuedAt time.Time
+}
+
+// evolutionContextKey carries request-scoped correlation metadata into
+// platform hooks. Keeping this in the core package lets GUI/TUI adapters use
+// the same request_id without changing the legacy hook signature.
+type evolutionContextKey string
+
+const (
+	evolutionRequestIDContextKey evolutionContextKey = "maclaw.evolution.request_id"
+	evolutionAttemptContextKey   evolutionContextKey = "maclaw.evolution.attempt"
+)
+
+// WithEvolutionRequestMetadata annotates a worker context with the stable
+// request correlation fields used by downstream commit/audit adapters.
+func WithEvolutionRequestMetadata(ctx context.Context, requestID string, attempt int) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, evolutionRequestIDContextKey, strings.TrimSpace(requestID))
+	return context.WithValue(ctx, evolutionAttemptContextKey, attempt)
+}
+
+// EvolutionRequestMetadata extracts request correlation fields from a worker
+// context. Empty values mean the caller is outside an evolution worker.
+func EvolutionRequestMetadata(ctx context.Context) (requestID string, attempt int) {
+	if ctx == nil {
+		return "", 0
+	}
+	if v, ok := ctx.Value(evolutionRequestIDContextKey).(string); ok {
+		requestID = strings.TrimSpace(v)
+	}
+	if v, ok := ctx.Value(evolutionAttemptContextKey).(int); ok {
+		attempt = v
+	}
+	return requestID, attempt
+}
+
+// EvolutionRequestStatus is a bounded request-level view for operators. It
+// deliberately excludes arguments, prompts and model output.
+type EvolutionRequestStatus struct {
+	RequestID  string `json:"request_id"`
+	Skill      string `json:"skill"`
+	State      string `json:"state"` // pending | running
+	EnqueuedAt string `json:"enqueued_at,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+}
+
+var evolutionRequestSequence atomic.Uint64
+
+// newEvolutionRequestID creates a process-unique correlation id for audit
+// records. The sequence prevents collisions when notifications share a tick.
+func newEvolutionRequestID() string {
+	seq := evolutionRequestSequence.Add(1)
+	return fmt.Sprintf("evo_%s_%d", time.Now().UTC().Format("20060102T150405.000000000Z"), seq)
+}
+
+// EvolutionFailureSummary is a bounded, redacted failure snapshot exposed to
+// operators. Argument values are never stored; only a digest is retained.
+type EvolutionFailureSummary struct {
+	Skill          string `json:"skill"`
+	FailureCount   uint64 `json:"failure_count"`
+	LastError      string `json:"last_error,omitempty"`
+	LastErrorClass string `json:"last_error_class,omitempty"`
+	LastArgsDigest string `json:"last_args_digest,omitempty"`
+	LastFailureAt  string `json:"last_failure_at,omitempty"`
 }
 
 // RepairDraftResult describes a reviewed repair-draft attempt.  A successful
@@ -117,6 +228,7 @@ func RepairCooldownFromHours(hours int) time.Duration {
 
 // NewEvolutionPipeline creates a pipeline with sensible defaults.
 func NewEvolutionPipeline() *EvolutionPipeline {
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	return &EvolutionPipeline{
 		PostExecDelay:        5 * time.Second,
 		EnablePromoter:       true,
@@ -124,12 +236,21 @@ func NewEvolutionPipeline() *EvolutionPipeline {
 		EnableRepair:         true,
 		RepairCooldown:       DefaultRepairCooldown,
 		PromoteCheckInterval: 10,
+		MaxConcurrentWorkers: 2,
+		WorkerTimeout:        DefaultEvolutionWorkerTimeout,
 		pendingBySkill:       make(map[string]evolutionRequest),
 		pendingWake:          make(chan struct{}, 1),
+		activeSkills:         make(map[string]bool),
+		requestStatuses:      make(map[string]EvolutionRequestStatus),
 		stopCh:               make(chan struct{}),
 		optimizeAttempts:     make(map[string]time.Time),
 		repairAttempts:       make(map[string]time.Time),
 		promoteBlacklist:     make(map[string]time.Time),
+		lastFailures:         make(map[string]EvolutionFailureSummary),
+		cancelBySkill:        make(map[string]context.CancelFunc),
+		requestIDBySkill:     make(map[string]string),
+		shutdownCtx:          shutdownCtx,
+		shutdownCancel:       shutdownCancel,
 	}
 }
 
@@ -139,6 +260,11 @@ func (p *EvolutionPipeline) Start() {
 		return
 	}
 	p.startOnce.Do(func() {
+		if recovered, pending, err := p.RecoverPendingCompensations(); err != nil {
+			log.Printf("[evolution-pipeline] pending compensation recovery failed: %v", err)
+		} else if recovered > 0 || pending > 0 {
+			log.Printf("[evolution-pipeline] pending compensation recovery recovered=%d pending=%d", recovered, pending)
+		}
 		go p.loop()
 		// Start the maintenance scheduler if configured.
 		if p.Scheduler != nil {
@@ -154,9 +280,42 @@ func (p *EvolutionPipeline) Stop() {
 	}
 	p.once.Do(func() {
 		close(p.stopCh)
+		if p.shutdownCancel != nil {
+			p.shutdownCancel()
+		}
+		p.markPendingShutdown()
 	})
 	if p.Scheduler != nil {
 		p.Scheduler.Stop()
+	}
+}
+
+// markPendingShutdown gives queued requests an explicit durable terminal
+// state. Previously Stop could discard the coalescing map without emitting any
+// evidence, making a graceful shutdown indistinguishable from data loss.
+func (p *EvolutionPipeline) markPendingShutdown() {
+	if p == nil {
+		return
+	}
+	p.pendingMu.Lock()
+	if p.requestStatuses == nil {
+		p.requestStatuses = make(map[string]EvolutionRequestStatus)
+	}
+	pending := make([]evolutionRequest, 0, len(p.pendingBySkill))
+	for name, req := range p.pendingBySkill {
+		if req.SkillName == "" {
+			req.SkillName = name
+		}
+		pending = append(pending, req)
+		delete(p.pendingBySkill, name)
+		delete(p.requestStatuses, req.RequestID)
+	}
+	p.pendingMu.Unlock()
+	for _, req := range pending {
+		p.emitRequestEvent(EventSkillEvolutionCancelled, req, map[string]string{
+			"reason": "shutdown", "termination": "shutdown", "failure_reason": "context_canceled",
+			"decision": "cancelled",
+		})
 	}
 }
 
@@ -179,6 +338,9 @@ func (p *EvolutionPipeline) NotifySkillExecution(skillName string, entry *coreli
 	}
 	// Deep-copy entry (including Params maps) to prevent race with main loop mutations.
 	entryCopy := CloneNLSkillEntry(entry)
+	if entryCopy == nil {
+		return
+	}
 	var argsCopy map[string]string
 	if len(runArgs) > 0 {
 		argsCopy = make(map[string]string, len(runArgs))
@@ -193,14 +355,19 @@ func (p *EvolutionPipeline) NotifySkillExecution(skillName string, entry *coreli
 		resultCopy = &rc
 	}
 	req := evolutionRequest{
+		RequestID:  newEvolutionRequestID(),
 		SkillName:  skillName,
 		Entry:      entryCopy,
 		ExecResult: resultCopy,
 		RunArgs:    argsCopy,
+		EnqueuedAt: time.Now().UTC(),
 	}
 
 	p.pendingMu.Lock()
 	if _, exists := p.pendingBySkill[skillName]; exists {
+		if previous, ok := p.pendingBySkill[skillName]; ok {
+			delete(p.requestStatuses, previous.RequestID)
+		}
 		n := p.CoalescedNotifications.Add(1)
 		log.Printf("[evolution-pipeline] coalesced pending notification skill=%s coalesced_total=%d", skillName, n)
 	}
@@ -208,6 +375,10 @@ func (p *EvolutionPipeline) NotifySkillExecution(skillName string, entry *coreli
 		p.pendingBySkill = make(map[string]evolutionRequest)
 	}
 	p.pendingBySkill[skillName] = req
+	if p.requestStatuses == nil {
+		p.requestStatuses = make(map[string]EvolutionRequestStatus)
+	}
+	p.requestStatuses[req.RequestID] = EvolutionRequestStatus{RequestID: req.RequestID, Skill: skillName, State: "pending", EnqueuedAt: req.EnqueuedAt.Format(time.RFC3339)}
 	p.pendingMu.Unlock()
 
 	// Non-blocking wake (buffer 1): if the loop is already scheduled, skip.
@@ -215,6 +386,62 @@ func (p *EvolutionPipeline) NotifySkillExecution(skillName string, entry *coreli
 	case p.pendingWake <- struct{}{}:
 	default:
 	}
+}
+
+// emitRequestEvent enriches lifecycle events with stable correlation and
+// configuration metadata. Callers may add a reason/decision in extra; the
+// helper never overwrites an explicitly supplied value.
+func (p *EvolutionPipeline) emitRequestEvent(event string, req evolutionRequest, extra map[string]string) {
+	if p == nil || p.EventEmitter == nil {
+		return
+	}
+	data := make(map[string]string, len(extra)+5)
+	for k, v := range extra {
+		data[k] = v
+	}
+	if strings.TrimSpace(data["request_id"]) == "" && req.RequestID != "" {
+		data["request_id"] = req.RequestID
+	}
+	if strings.TrimSpace(data["skill"]) == "" {
+		data["skill"] = req.SkillName
+	}
+	if strings.TrimSpace(data["attempt"]) == "" {
+		data["attempt"] = "1"
+	}
+	if strings.TrimSpace(data["config_revision"]) == "" {
+		data["config_revision"] = p.configRevision()
+	}
+	if strings.TrimSpace(data["schema_version"]) == "" {
+		data["schema_version"] = "2"
+	}
+	p.EventEmitter(event, data)
+}
+
+// configRevision returns a deterministic, non-sensitive snapshot of the
+// worker policy. It changes when an operator changes timeout, concurrency or
+// evolution switches, allowing audit consumers to reconstruct which policy
+// governed a request without persisting the full configuration.
+func (p *EvolutionPipeline) configRevision() string {
+	if p == nil {
+		return ""
+	}
+	if configured := strings.TrimSpace(p.ConfigRevision); configured != "" {
+		return configured
+	}
+	material := fmt.Sprintf("repair=%t|optimizer=%t|promoter=%t|workers=%d|timeout=%s|cooldown=%s",
+		p.EnableRepair, p.EnableOptimizer, p.EnablePromoter, p.MaxConcurrentWorkers,
+		p.WorkerTimeout, p.RepairCooldown)
+	sum := sha256.Sum256([]byte(material))
+	return "sha256:" + hex.EncodeToString(sum[:8])
+}
+
+func (p *EvolutionPipeline) requestIDForSkill(skillName string) string {
+	if p == nil {
+		return ""
+	}
+	p.cancelMu.Lock()
+	defer p.cancelMu.Unlock()
+	return p.requestIDBySkill[strings.TrimSpace(skillName)]
 }
 
 func (p *EvolutionPipeline) loop() {
@@ -230,7 +457,13 @@ func (p *EvolutionPipeline) loop() {
 				return
 			case <-time.After(p.PostExecDelay):
 			}
-			batch := p.takeAllPending()
+			batch := p.takeDispatchablePending()
+			if len(batch) == 0 {
+				// A pending request may be waiting behind an active request for
+				// the same skill. The active worker will wake us on completion.
+				continue
+			}
+			var wg sync.WaitGroup
 			for _, req := range batch {
 				// Re-check stop between skills so shutdown stays responsive.
 				select {
@@ -238,10 +471,125 @@ func (p *EvolutionPipeline) loop() {
 					return
 				default:
 				}
-				p.processRequest(req)
+				req := req
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer p.finishActiveSkill(req.SkillName)
+					p.processRequest(req)
+				}()
 			}
+			wg.Wait()
 		}
 	}
+}
+
+// takeDispatchablePending reserves up to the configured worker count. A skill
+// already being processed is left in the pending map, which guarantees same-
+// skill serialization while allowing unrelated skills to run concurrently.
+func (p *EvolutionPipeline) takeDispatchablePending() []evolutionRequest {
+	if p == nil {
+		return nil
+	}
+	workers := p.MaxConcurrentWorkers
+	if workers <= 0 {
+		workers = 1
+	}
+	p.pendingMu.Lock()
+	defer p.pendingMu.Unlock()
+	if p.activeSkills == nil {
+		p.activeSkills = make(map[string]bool)
+	}
+	if len(p.pendingBySkill) == 0 {
+		return nil
+	}
+	out := make([]evolutionRequest, 0, workers)
+	for name, req := range p.pendingBySkill {
+		if len(out) >= workers || p.activeSkills[name] {
+			continue
+		}
+		delete(p.pendingBySkill, name)
+		p.activeSkills[name] = true
+		if p.requestStatuses == nil {
+			p.requestStatuses = make(map[string]EvolutionRequestStatus)
+		}
+		status := p.requestStatuses[req.RequestID]
+		status.RequestID = req.RequestID
+		status.Skill = req.SkillName
+		status.State = "running"
+		status.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		p.requestStatuses[req.RequestID] = status
+		out = append(out, req)
+	}
+	return out
+}
+
+func (p *EvolutionPipeline) finishActiveSkill(name string) {
+	if p == nil {
+		return
+	}
+	p.pendingMu.Lock()
+	delete(p.activeSkills, name)
+	for requestID, status := range p.requestStatuses {
+		if status.Skill == name && status.State == "running" {
+			delete(p.requestStatuses, requestID)
+		}
+	}
+	p.pendingMu.Unlock()
+	select {
+	case p.pendingWake <- struct{}{}:
+	default:
+	}
+}
+
+// CancelSkill requests cancellation of the pending or active evolution job
+// for one skill. It never cancels the user's skill execution itself. The
+// operation is idempotent and returns true when something was removed or
+// signalled.
+func (p *EvolutionPipeline) CancelSkill(name string) bool {
+	if p == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	found := false
+	var cancelledReq evolutionRequest
+	p.pendingMu.Lock()
+	if req, ok := p.pendingBySkill[name]; ok {
+		cancelledReq = req
+		delete(p.pendingBySkill, name)
+		delete(p.requestStatuses, req.RequestID)
+		found = true
+	}
+	p.pendingMu.Unlock()
+	p.cancelMu.Lock()
+	if cancel, ok := p.cancelBySkill[name]; ok {
+		// Remove the cancel handle before invoking it. This makes repeated
+		// CancelSkill calls idempotent even while the worker is still unwinding.
+		delete(p.cancelBySkill, name)
+		cancel()
+		found = true
+	}
+	if cancelledReq.RequestID == "" {
+		cancelledReq = evolutionRequest{RequestID: p.requestIDBySkill[name], SkillName: name}
+	}
+	p.cancelMu.Unlock()
+	if found {
+		p.cancelledCount.Add(1)
+		if cancelledReq.RequestID == "" {
+			cancelledReq = evolutionRequest{RequestID: p.requestIDForSkill(name), SkillName: name}
+		}
+		p.emitRequestEvent(EventSkillEvolutionCancelled, cancelledReq, map[string]string{
+			"reason": "operator_requested", "termination": "operator_cancelled", "failure_reason": "context_canceled",
+		})
+		select {
+		case p.pendingWake <- struct{}{}:
+		default:
+		}
+	}
+	return found
 }
 
 // takeAllPending drains the coalesce map into a stable slice (name-sorted for
@@ -273,17 +621,28 @@ func (p *EvolutionPipeline) PendingSkillCount() int {
 
 // EvolutionStatus is a diagnostic snapshot of the pipeline.
 type EvolutionStatus struct {
-	PendingSkills          int           `json:"pending_skills"`
-	CoalescedNotifications uint64        `json:"coalesced_notifications"`
-	DroppedNotifications   uint64        `json:"dropped_notifications"`
-	ProcessedRequests      int           `json:"processed_requests"`
-	EnableRepair           bool          `json:"enable_repair"`
-	EnableOptimizer        bool          `json:"enable_optimizer"`
-	EnablePromoter         bool          `json:"enable_promoter"`
-	RepairCooldown         time.Duration `json:"repair_cooldown"`
-	HasRepairHook          bool          `json:"has_repair_hook"`
-	HasOptimizer           bool          `json:"has_optimizer"`
-	HasPromoter            bool          `json:"has_promoter"`
+	PendingSkills            int                       `json:"pending_skills"`
+	CoalescedNotifications   uint64                    `json:"coalesced_notifications"`
+	DroppedNotifications     uint64                    `json:"dropped_notifications"`
+	ProcessedRequests        int                       `json:"processed_requests"`
+	EnableRepair             bool                      `json:"enable_repair"`
+	EnableOptimizer          bool                      `json:"enable_optimizer"`
+	EnablePromoter           bool                      `json:"enable_promoter"`
+	RepairCooldown           time.Duration             `json:"repair_cooldown"`
+	HasRepairHook            bool                      `json:"has_repair_hook"`
+	HasOptimizer             bool                      `json:"has_optimizer"`
+	HasPromoter              bool                      `json:"has_promoter"`
+	MaxConcurrentWorkers     int                       `json:"max_concurrent_workers"`
+	OldestPendingAt          string                    `json:"oldest_pending_at,omitempty"`
+	QueueWaitSeconds         int                       `json:"queue_wait_seconds"`
+	FailureSummaries         []EvolutionFailureSummary `json:"failure_summaries,omitempty"`
+	ActiveSkills             int                       `json:"active_skills"`
+	CancelledRequests        uint64                    `json:"cancelled_requests"`
+	TimedOutRequests         uint64                    `json:"timed_out_requests"`
+	PendingCompensations     int                       `json:"pending_compensations"`
+	CompensationQueueHealthy bool                      `json:"compensation_queue_healthy"`
+	CompensationQueueError   string                    `json:"compensation_queue_error,omitempty"`
+	Requests                 []EvolutionRequestStatus  `json:"requests,omitempty"`
 }
 
 // Status returns a diagnostic snapshot (safe for concurrent readers).
@@ -291,7 +650,7 @@ func (p *EvolutionPipeline) Status() EvolutionStatus {
 	if p == nil {
 		return EvolutionStatus{}
 	}
-	return EvolutionStatus{
+	status := EvolutionStatus{
 		PendingSkills:          p.PendingSkillCount(),
 		CoalescedNotifications: p.CoalescedNotifications.Load(),
 		DroppedNotifications:   p.DroppedNotifications.Load(),
@@ -300,10 +659,120 @@ func (p *EvolutionPipeline) Status() EvolutionStatus {
 		EnableOptimizer:        p.EnableOptimizer,
 		EnablePromoter:         p.EnablePromoter,
 		RepairCooldown:         p.RepairCooldown,
-		HasRepairHook:          p.RepairHook != nil,
+		HasRepairHook:          p.RepairHook != nil || p.RepairHookWithContext != nil,
 		HasOptimizer:           p.Optimizer != nil,
 		HasPromoter:            p.Promoter != nil,
+		MaxConcurrentWorkers: func() int {
+			if p.MaxConcurrentWorkers > 0 {
+				return p.MaxConcurrentWorkers
+			}
+			return 1
+		}(),
+		CancelledRequests: p.cancelledCount.Load(),
+		TimedOutRequests:  p.timedOutCount.Load(),
 	}
+	if pending, _, err := p.pendingCompensationSnapshot(); err == nil {
+		status.PendingCompensations = pending
+		status.CompensationQueueHealthy = true
+	} else {
+		// The admission check is fail-closed when the queue cannot be read;
+		// surface that same uncertainty to operators instead of displaying a
+		// misleading zero pending count.
+		status.CompensationQueueHealthy = false
+		status.CompensationQueueError = err.Error()
+	}
+	p.pendingMu.Lock()
+	status.ActiveSkills = len(p.activeSkills)
+	var oldest time.Time
+	for _, req := range p.pendingBySkill {
+		if !req.EnqueuedAt.IsZero() && (oldest.IsZero() || req.EnqueuedAt.Before(oldest)) {
+			oldest = req.EnqueuedAt
+		}
+	}
+	p.pendingMu.Unlock()
+	if !oldest.IsZero() {
+		status.OldestPendingAt = oldest.Format(time.RFC3339)
+		status.QueueWaitSeconds = maxInt(0, int(time.Since(oldest).Seconds()))
+	}
+	p.lastFailureMu.RLock()
+	status.FailureSummaries = make([]EvolutionFailureSummary, 0, len(p.lastFailures))
+	for _, summary := range p.lastFailures {
+		status.FailureSummaries = append(status.FailureSummaries, summary)
+	}
+	p.lastFailureMu.RUnlock()
+	p.pendingMu.Lock()
+	status.Requests = make([]EvolutionRequestStatus, 0, len(p.requestStatuses))
+	for _, request := range p.requestStatuses {
+		status.Requests = append(status.Requests, request)
+	}
+	p.pendingMu.Unlock()
+	sort.Slice(status.Requests, func(i, j int) bool {
+		if status.Requests[i].State != status.Requests[j].State {
+			return status.Requests[i].State < status.Requests[j].State
+		}
+		return status.Requests[i].EnqueuedAt < status.Requests[j].EnqueuedAt
+	})
+	if len(status.Requests) > 64 {
+		status.Requests = status.Requests[:64]
+	}
+	return status
+}
+
+func (p *EvolutionPipeline) pendingCompensationSnapshot() (int, int, error) {
+	records, err := readEvolutionCompensations()
+	if err != nil {
+		return 0, 0, err
+	}
+	needsReview := 0
+	for _, record := range records {
+		if strings.TrimSpace(record.Status) == "needs_review" {
+			needsReview++
+		}
+	}
+	return len(records), needsReview, nil
+}
+
+func runArgsDigest(args map[string]string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(args)
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func (p *EvolutionPipeline) recordFailure(req evolutionRequest) {
+	if p == nil {
+		return
+	}
+	message := "execution failed"
+	class := ""
+	if req.ExecResult != nil {
+		message = strings.TrimSpace(req.ExecResult.Error)
+		class = strings.TrimSpace(req.ExecResult.ErrorClass)
+	}
+	if message == "" {
+		message = "execution failed"
+	}
+	if class == "" {
+		class = ExtractErrorClass(message)
+	}
+	if len(message) > 512 {
+		message = message[:512] + "…"
+	}
+	p.lastFailureMu.Lock()
+	if p.lastFailures == nil {
+		p.lastFailures = make(map[string]EvolutionFailureSummary)
+	}
+	summary := p.lastFailures[req.SkillName]
+	summary.Skill = req.SkillName
+	summary.FailureCount++
+	summary.LastError = message
+	summary.LastErrorClass = class
+	summary.LastArgsDigest = runArgsDigest(req.RunArgs)
+	summary.LastFailureAt = time.Now().UTC().Format(time.RFC3339)
+	p.lastFailures[req.SkillName] = summary
+	p.lastFailureMu.Unlock()
 }
 
 func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
@@ -315,16 +784,56 @@ func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	parentCtx := p.shutdownCtx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	workerTimeout := p.WorkerTimeout
+	if workerTimeout <= 0 {
+		workerTimeout = DefaultEvolutionWorkerTimeout
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, workerTimeout)
 	defer cancel()
+	ctx = WithEvolutionRequestMetadata(ctx, req.RequestID, 1)
+	p.cancelMu.Lock()
+	if p.cancelBySkill == nil {
+		p.cancelBySkill = make(map[string]context.CancelFunc)
+	}
+	p.cancelBySkill[req.SkillName] = cancel
+	if p.requestIDBySkill == nil {
+		p.requestIDBySkill = make(map[string]string)
+	}
+	p.requestIDBySkill[req.SkillName] = req.RequestID
+	p.cancelMu.Unlock()
+	defer func() {
+		p.cancelMu.Lock()
+		delete(p.cancelBySkill, req.SkillName)
+		delete(p.requestIDBySkill, req.SkillName)
+		p.cancelMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			if err == context.DeadlineExceeded {
+				p.timedOutCount.Add(1)
+				p.emitRequestEvent(EventSkillEvolutionTimedOut, req, map[string]string{
+					"reason": "worker_deadline", "termination": "worker_timeout", "failure_reason": "deadline_exceeded",
+				})
+			} else if err == context.Canceled && p.shutdownCtx != nil && p.shutdownCtx.Err() != nil {
+				p.emitRequestEvent(EventSkillEvolutionCancelled, req, map[string]string{
+					"reason": "shutdown", "termination": "shutdown", "failure_reason": "context_canceled",
+				})
+			}
+		}
+	}()
 
 	p.requestCount.Add(1)
 
 	// 0. Surface failed executions for frontend/audit.
 	failed := req.ExecResult != nil && !req.ExecResult.Success
-	if failed && p.EventEmitter != nil {
-		p.EventEmitter(EventSkillExecutionFailed, map[string]string{
-			"skill": req.SkillName,
+	if failed {
+		p.recordFailure(req)
+	}
+	if failed {
+		p.emitRequestEvent(EventSkillExecutionFailed, req, map[string]string{
+			"reason": "execution_failed", "failure_reason": strings.TrimSpace(req.ExecResult.ErrorClass),
 		})
 	}
 
@@ -333,11 +842,17 @@ func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
 	if failed && p.EnableRepair && req.Entry != nil {
 		p.tryRepair(ctx, req)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 
 	// 2. Check if skill should be optimized (working but suboptimal).
 	// tryOptimize consults ShouldOptimize + 24h throttle; safe on failures too.
 	if p.EnableOptimizer && p.Optimizer != nil && req.Entry != nil {
 		p.tryOptimize(ctx, req)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// 3. Check nudge candidates for promotion (throttled — every N requests).
@@ -419,9 +934,16 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 	log.Printf("[evolution-pipeline] scheduling self-repair skill=%s usage=%d success=%d",
 		req.SkillName, entry.UsageCount, entry.SuccessCount)
 
-	if p.RepairHook != nil {
+	if p.RepairHookWithContext != nil || p.RepairHook != nil {
+		if entry.RepairAttemptCount >= SelfRepairMaxAttempts {
+			return
+		}
 		p.markRepairAttempt(req.SkillName)
-		p.RepairHook(entry, req.RunArgs)
+		if p.RepairHookWithContext != nil {
+			p.RepairHookWithContext(ctx, entry, req.RunArgs)
+		} else {
+			p.RepairHook(entry, req.RunArgs)
+		}
 		return
 	}
 
@@ -431,10 +953,11 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		return
 	}
 	repairCtx := NewRepairContext(entry, req.RunArgs)
-	result, err := AttemptRepairWithContext(p.LLM, entry, repairCtx)
+	result, err := AttemptRepairWithGoContext(ctx, p.LLM, entry, repairCtx)
 	if err != nil {
 		// LLM 调用已真实发生（失败也算成本），消耗冷却防止每次失败都重调。
 		p.markRepairAttempt(req.SkillName)
+		p.recordRepairFailure(req, entry, ExtractErrorClass(entry.LastError), err.Error())
 		log.Printf("[evolution-pipeline] repair LLM failed skill=%s: %v", req.SkillName, err)
 		return
 	}
@@ -447,20 +970,25 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		if p.UsageTracker != nil {
 			historicalArgs = p.UsageTracker.RecentRunArgs("skill:"+req.SkillName, 3)
 		}
-		if len(historicalArgs) > 0 {
+		{
 			gateResult, gateErr := p.Gate.Verify(ctx, entry, nlSteps, historicalArgs)
 			if gateErr != nil {
 				// gate 运行在 LLM 调用之后，错误也意味着本次 LLM 调用已白花。
 				p.markRepairAttempt(req.SkillName)
+				p.recordRepairFailure(req, entry, "gate_error", gateErr.Error())
 				log.Printf("[evolution-pipeline] repair gate error skill=%s: %v", req.SkillName, gateErr)
 				return
 			}
-			if gateResult == nil || !gateResult.Passed {
+			if !gateResult.IsRealPass() {
 				p.markRepairAttempt(req.SkillName)
 				reason := "nil"
 				if gateResult != nil {
 					reason = gateResult.Reason
+					if gateResult.Status == "passed" && gateResult.EvidenceMode != "real" {
+						reason = "passed gate lacks real evidence"
+					}
 				}
+				p.recordRepairFailure(req, entry, "gate_rejected", reason)
 				log.Printf("[evolution-pipeline] repair gate rejected skill=%s: %s", req.SkillName, reason)
 				return
 			}
@@ -468,7 +996,11 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 	}
 	// LLM 修复成功且 gate 通过、真正落 ApplyRepair 之前才写冷却时间戳。
 	p.markRepairAttempt(req.SkillName)
+	originalEntry := CloneNLSkillEntry(entry)
 	if !ApplyRepair(entry, result) {
+		if result != nil && !result.ShouldDisable {
+			p.recordRepairFailure(req, entry, ExtractErrorClass(entry.LastError), result.Explanation)
+		}
 		if result != nil && result.ShouldDisable && p.SkillSaver != nil && p.SkillLoader != nil {
 			skills := p.SkillLoader()
 			for i := range skills {
@@ -481,35 +1013,63 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 		}
 		return
 	}
-	if p.SkillSaver != nil && p.SkillLoader != nil {
-		skills := p.SkillLoader()
-		for i := range skills {
-			if skills[i].Name == req.SkillName {
-				mergeEvolvedEntry(&skills[i], entry)
-				if err := p.SkillSaver(skills); err != nil {
-					log.Printf("[evolution-pipeline] save repaired skill=%s failed: %v", req.SkillName, err)
-					return
-				}
-				break
-			}
+	if p.SkillSaver == nil || p.SkillLoader == nil {
+		if originalEntry != nil {
+			*entry = *originalEntry
 		}
+		log.Printf("[evolution-pipeline] repair not persisted skill=%s: persistence not configured", req.SkillName)
+		return
 	}
-	if entry.SkillDir != "" {
-		if err := WriteBackOptimizedSteps(entry); err != nil {
-			log.Printf("[evolution-pipeline] writeback repaired skill.yaml for %s failed: %v", req.SkillName, err)
-		}
+	commitAudit := map[string]string{
+		"skill": req.SkillName, "action": "repair", "decision": "committed",
+		"request_id": req.RequestID, "attempt": "1", "config_revision": p.configRevision(),
+		"schema_version": "2", "evidence_mode": "real",
 	}
-	if p.EventEmitter != nil {
-		explanation := ""
-		if result != nil {
-			explanation = result.Explanation
+	commit := p.persistDefinitionChangeWithAudit(ctx, req.SkillName, entry, "skill:repair_commit", commitAudit)
+	if commit.State != "committed" || commit.CleanupStatus != "clear" {
+		if originalEntry != nil {
+			*entry = *originalEntry
 		}
-		p.EventEmitter(EventSkillRepaired, map[string]string{
-			"skill":       req.SkillName,
-			"explanation": explanation,
+		log.Printf("[evolution-pipeline] repair commit %s skill=%s reason=%s", commit.State, req.SkillName, commit.FailureReason)
+		p.emitRequestEvent(EventSkillEvolutionRolledBack, req, map[string]string{
+			"decision": commit.State, "reason": "repair_persistence_failed", "failure_reason": commit.FailureReason,
 		})
+		return
 	}
+	explanation := ""
+	if result != nil {
+		explanation = result.Explanation
+	}
+	p.emitRequestEvent(EventSkillRepaired, req, map[string]string{
+		"explanation": explanation, "decision": "applied", "reason": "repair_gate_passed",
+	})
 	log.Printf("[evolution-pipeline] repair applied skill=%s", req.SkillName)
+}
+
+// recordRepairFailure applies the shared attempt-limit policy to the core
+// fallback path and persists the governance metadata without clobbering live
+// execution counters. Platform hooks may persist their own failures because
+// they have additional security/GUI context; this helper is for the headless
+// pipeline path only.
+func (p *EvolutionPipeline) recordRepairFailure(req evolutionRequest, entry *corelib.NLSkillEntry, errorClass, explanation string) {
+	if p == nil || entry == nil {
+		return
+	}
+	RecordRepairAttemptFailure(entry, errorClass, explanation)
+	if p.SkillLoader == nil || p.SkillSaver == nil {
+		return
+	}
+	skills := p.SkillLoader()
+	for i := range skills {
+		if skills[i].Name != req.SkillName {
+			continue
+		}
+		mergeEvolvedEntry(&skills[i], entry)
+		if err := p.SkillSaver(skills); err != nil {
+			log.Printf("[evolution-pipeline] save failed-attempt metadata skill=%s failed: %v", req.SkillName, err)
+		}
+		return
+	}
 }
 
 // tryFileBackedRepairDraft 为 file-backed 技能生成人审 patch draft（P0-4
@@ -554,10 +1114,13 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 	}
 
 	repairCtx := NewRepairContext(entry, req.RunArgs)
-	result, err := AttemptRepairWithContext(p.LLM, entry, repairCtx)
+	result, err := AttemptRepairWithGoContext(ctx, p.LLM, entry, repairCtx)
 	if err != nil {
 		// LLM 调用已真实发生（失败也算成本），消耗冷却防止每次失败都重调。
 		p.markRepairAttempt(req.SkillName)
+		if ctx.Err() == nil {
+			p.recordRepairFailure(req, entry, ExtractErrorClass(entry.LastError), err.Error())
+		}
 		log.Printf("[evolution-pipeline] repair draft LLM failed skill=%s: %v", req.SkillName, err)
 		return RepairDraftResult{SkipReason: "llm_error", Explanation: err.Error()}
 	}
@@ -574,6 +1137,9 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 		}
 		name, err := p.writeRepairDraftAndNotify(req.SkillName, entry.SkillDir, draft)
 		if err != nil {
+			if ctx.Err() == nil {
+				p.recordRepairFailure(req, entry, "draft_write_failed", err.Error())
+			}
 			return RepairDraftResult{SkipReason: "draft_write_failed", Explanation: err.Error()}
 		}
 		return RepairDraftResult{Created: true, Draft: name, Explanation: result.Explanation, RequiresReview: true}
@@ -582,10 +1148,13 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 		// LLM 已调用但认为不可修复/被 sanitize 拒绝：同样消耗冷却。
 		// （AttemptRepairWithContext 内部不经 LLM 的 not-repairable 早退
 		// 不可达——上方 gate 已用同一 IsRepairableError 过滤过。）
-		p.markRepairAttempt(req.SkillName)
 		explanation := ""
 		if result != nil {
 			explanation = result.Explanation
+		}
+		p.markRepairAttempt(req.SkillName)
+		if ctx.Err() == nil {
+			p.recordRepairFailure(req, entry, ExtractErrorClass(entry.LastError), explanation)
 		}
 		log.Printf("[evolution-pipeline] repair draft not applicable skill=%s: %s", req.SkillName, explanation)
 		return RepairDraftResult{SkipReason: "not_repairable", Explanation: explanation}
@@ -597,18 +1166,27 @@ func (p *EvolutionPipeline) tryFileBackedRepairDraft(ctx context.Context, req ev
 		if p.UsageTracker != nil {
 			historicalArgs = p.UsageTracker.RecentRunArgs("skill:"+req.SkillName, 3)
 		}
-		if len(historicalArgs) > 0 {
+		{
 			gateResult, gateErr := p.Gate.Verify(ctx, entry, nlSteps, historicalArgs)
 			if gateErr != nil {
 				p.markRepairAttempt(req.SkillName)
+				if ctx.Err() == nil {
+					p.recordRepairFailure(req, entry, "gate_error", gateErr.Error())
+				}
 				log.Printf("[evolution-pipeline] repair draft gate error skill=%s: %v", req.SkillName, gateErr)
 				return RepairDraftResult{SkipReason: "gate_error", Explanation: gateErr.Error()}
 			}
-			if gateResult == nil || !gateResult.Passed {
+			if !gateResult.IsRealPass() {
 				p.markRepairAttempt(req.SkillName)
 				reason := "nil"
 				if gateResult != nil {
 					reason = gateResult.Reason
+					if gateResult.Status == "passed" && gateResult.EvidenceMode != "real" {
+						reason = "passed gate lacks real evidence"
+					}
+				}
+				if ctx.Err() == nil {
+					p.recordRepairFailure(req, entry, "gate_rejected", reason)
 				}
 				log.Printf("[evolution-pipeline] repair draft gate rejected skill=%s: %s", req.SkillName, reason)
 				return RepairDraftResult{SkipReason: "gate_rejected", Explanation: reason}
@@ -652,6 +1230,7 @@ func (p *EvolutionPipeline) TriggerFileBackedRepairDraft(ctx context.Context, en
 		return RepairDraftResult{SkipReason: "repair_throttled"}
 	}
 	return p.tryFileBackedRepairDraft(ctx, evolutionRequest{
+		RequestID: newEvolutionRequestID(),
 		SkillName: entry.Name,
 		Entry:     entry,
 		RunArgs:   runArgs,
@@ -671,12 +1250,9 @@ func (p *EvolutionPipeline) writeRepairDraftAndNotify(skillName, skillDir string
 	}
 	// 与自动修复共用 repairAttempts 冷却节流：draft 落盘成功才写时间戳。
 	p.markRepairAttempt(skillName)
-	if p.EventEmitter != nil {
-		p.EventEmitter(EventSkillRepairDraftReady, map[string]string{
-			"skill": skillName,
-			"draft": name,
-		})
-	}
+	p.emitRequestEvent(EventSkillRepairDraftReady, evolutionRequest{RequestID: newEvolutionRequestID(), SkillName: skillName}, map[string]string{
+		"draft": name, "decision": "draft", "reason": "review_required",
+	})
 	log.Printf("[evolution-pipeline] repair draft ready skill=%s draft=%s", skillName, name)
 	return name, nil
 }
@@ -731,6 +1307,238 @@ func mergeEvolvedEntry(dst *corelib.NLSkillEntry, src *corelib.NLSkillEntry) {
 	}
 }
 
+// persistDefinitionChange commits an evolved entry as one compensating
+// transaction across the config overlay and the authoritative skill.yaml.
+// SkillSaver is the config commit boundary; YAML is written only after the
+// old bytes have been captured. If either side fails, both are restored before
+// the caller is allowed to emit a success event or trigger an upload.
+//
+// The helper intentionally lives in the pipeline package so headless callers
+// get the same safety semantics as the GUI wiring. Index refresh remains the
+// responsibility of SkillSaver/its owner; a saver that reports success must
+// have refreshed its index before returning.
+type EvolutionCommitResult struct {
+	State            string // committed | rolled_back | audit_pending
+	FailureReason    string
+	RollbackComplete bool
+	CleanupStatus    string // clear | pending | needs_review
+	RequestID        string
+	BackupVersion    string
+	ConfigRevision   string
+}
+
+func (p *EvolutionPipeline) persistDefinitionChange(ctx context.Context, skillName string, after *corelib.NLSkillEntry) EvolutionCommitResult {
+	return p.persistDefinitionChangeWithAudit(ctx, skillName, after, "", nil)
+}
+
+// persistDefinitionChangeWithAudit is the pipeline adapter for the shared
+// SkillCommitter. Keeping the adapter here preserves the existing pipeline
+// call sites while making GUI/headless callers use the same transaction
+// protocol and result fields.
+func (p *EvolutionPipeline) persistDefinitionChangeWithAudit(ctx context.Context, skillName string, after *corelib.NLSkillEntry, event string, auditData map[string]string) EvolutionCommitResult {
+	if p == nil {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: "persistence_not_configured", CleanupStatus: "clear"}
+	}
+	return (&SkillCommitter{
+		SkillLoader:      p.SkillLoader,
+		SkillSaver:       p.SkillSaver,
+		DefinitionWriter: p.DefinitionWriter,
+		IndexRefresher:   p.IndexRefresher,
+		FinalAuditor:     p.FinalAuditor,
+		ConfigRevision:   p.configRevision(),
+	}).Commit(ctx, skillName, after, event, auditData)
+}
+
+// persistDefinitionChangeLegacy is retained temporarily for source-level
+// bisectability while all production call sites use SkillCommitter above.
+// It can be removed once downstream adapters no longer reference it.
+func (p *EvolutionPipeline) persistDefinitionChangeLegacy(ctx context.Context, skillName string, after *corelib.NLSkillEntry, event string, auditData map[string]string) EvolutionCommitResult {
+	if p == nil || p.SkillLoader == nil || p.SkillSaver == nil || after == nil {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: "persistence_not_configured"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: evolutionFailureReason(err)}
+	}
+
+	// Read the latest list immediately before the commit so live usage counters
+	// are preserved, and retain a deep copy for config rollback.
+	originalSkills := p.SkillLoader()
+	rollbackSkills := make([]corelib.NLSkillEntry, len(originalSkills))
+	for i := range originalSkills {
+		if cp := CloneNLSkillEntry(&originalSkills[i]); cp != nil {
+			rollbackSkills[i] = *cp
+		}
+	}
+	updatedSkills := make([]corelib.NLSkillEntry, len(originalSkills))
+	copy(updatedSkills, originalSkills)
+	found := false
+	for i := range updatedSkills {
+		if updatedSkills[i].Name == skillName {
+			mergeEvolvedEntry(&updatedSkills[i], after)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: "skill_not_found"}
+	}
+
+	yamlPath, yamlBackup, yamlExists, err := evolutionYAMLBackup(after)
+	if err != nil {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: "yaml_backup_failed"}
+	}
+	configCommitAttempted := false
+	rollback := func(cause error) EvolutionCommitResult {
+		var rollbackErr error
+		if yamlExists {
+			if err := restoreEvolutionYAML(yamlPath, yamlBackup); err != nil {
+				rollbackErr = fmt.Errorf("restore YAML: %w", err)
+			}
+		}
+		if configCommitAttempted {
+			if err := p.SkillSaver(rollbackSkills); err != nil {
+				if rollbackErr != nil {
+					rollbackErr = fmt.Errorf("%v; restore config: %w", rollbackErr, err)
+				} else {
+					rollbackErr = fmt.Errorf("restore config: %w", err)
+				}
+			}
+		}
+		if p.IndexRefresher != nil {
+			if err := p.IndexRefresher(); err != nil {
+				if rollbackErr != nil {
+					rollbackErr = fmt.Errorf("%v; refresh index after rollback: %w", rollbackErr, err)
+				} else {
+					rollbackErr = fmt.Errorf("refresh index after rollback: %w", err)
+				}
+			}
+		}
+		if rollbackErr != nil {
+			requestID, _ := EvolutionRequestMetadata(ctx)
+			action := "evolution"
+			if auditData != nil && strings.TrimSpace(auditData["action"]) != "" {
+				action = auditData["action"]
+			}
+			record := newEvolutionCompensationRecord(requestID, skillName, action, yamlPath, yamlBackup, yamlExists, rollbackSkills, evolutionFailureReason(cause)+":rollback_incomplete")
+			if err := appendEvolutionCompensation(record); err != nil {
+				log.Printf("[evolution-pipeline] cannot persist compensation record skill=%s: %v", skillName, err)
+			}
+			return EvolutionCommitResult{State: "audit_pending", FailureReason: evolutionFailureReason(cause) + ":rollback_incomplete", RollbackComplete: false}
+		}
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: evolutionFailureReason(cause), RollbackComplete: true}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: evolutionFailureReason(err), RollbackComplete: true}
+	}
+	configCommitAttempted = true
+	if err := p.SkillSaver(updatedSkills); err != nil {
+		// A saver may have partially written before reporting an error. Treat
+		// the call as an attempted commit and run the same compensation path.
+		return rollback(fmt.Errorf("save evolved skill: %w", err))
+	}
+	if err := ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	if yamlExists {
+		writer := p.DefinitionWriter
+		if writer == nil {
+			writer = WriteBackOptimizedSteps
+		}
+		if err := writer(after); err != nil {
+			return rollback(fmt.Errorf("write evolved skill.yaml: %w", err))
+		}
+	}
+	if p.IndexRefresher != nil {
+		if err := p.IndexRefresher(); err != nil {
+			return rollback(fmt.Errorf("refresh skill index: %w", err))
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return rollback(err)
+	}
+	if p.FinalAuditor != nil && strings.TrimSpace(event) != "" {
+		if err := p.FinalAuditor(event, auditData); err != nil {
+			return rollback(fmt.Errorf("final audit: %w", err))
+		}
+	}
+	return EvolutionCommitResult{State: "committed", RollbackComplete: true}
+}
+
+func evolutionFailureReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	// Preserve the commit phase in the structured result.  Callers use this
+	// value for deterministic UI/admission handling; collapsing every phase to
+	// persistence_failed made a final-audit failure indistinguishable from an
+	// index publication failure and prevented operators from choosing the right
+	// recovery action.
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "final audit"):
+		return "final_audit_failed"
+	case strings.Contains(message, "refresh skill index") || strings.Contains(message, "refresh index"):
+		return "index_refresh_failed"
+	case strings.Contains(message, "write evolved skill.yaml"):
+		return "yaml_write_failed"
+	case strings.Contains(message, "save evolved skill"):
+		return "config_write_failed"
+	case strings.Contains(message, "external commit"):
+		return "external_commit_failed"
+	}
+	return "persistence_failed"
+}
+
+func evolutionYAMLBackup(entry *corelib.NLSkillEntry) (string, []byte, bool, error) {
+	if entry == nil || strings.TrimSpace(entry.SkillDir) == "" {
+		return "", nil, false, nil
+	}
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		path := filepath.Join(entry.SkillDir, name)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return path, data, true, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", nil, false, fmt.Errorf("read %s before evolution commit: %w", path, err)
+		}
+	}
+	return "", nil, false, nil
+}
+
+func restoreEvolutionYAML(path string, data []byte) error {
+	if strings.TrimSpace(path) == "" || len(data) == 0 {
+		return fmt.Errorf("empty YAML rollback target")
+	}
+	tmp := path + ".evolution.rollback.tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := renameCompensationPath(tmp, path); err != nil {
+		// Windows cannot rename a file over an existing destination. The
+		// rollback pre-image remains in tmp until this replacement succeeds, and
+		// the caller retains the same bytes in durable compensation if process
+		// interruption occurs between remove and rename.
+		if removeErr := removeCompensationPath(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("replace rollback target: %w (initial rename: %v)", removeErr, err)
+		}
+		if retryErr := renameCompensationPath(tmp, path); retryErr != nil {
+			return fmt.Errorf("replace rollback target after remove: %w (initial rename: %v)", retryErr, err)
+		}
+	}
+	return nil
+}
+
 // OptimizeResult describes the outcome of a one-shot TriggerOptimize call.
 type OptimizeResult struct {
 	Attempted   bool
@@ -759,7 +1567,7 @@ func (p *EvolutionPipeline) TriggerOptimize(ctx context.Context, entry *corelib.
 	if p.UsageTracker == nil {
 		return OptimizeResult{SkipReason: "usage tracker not configured"}
 	}
-	req := evolutionRequest{SkillName: entry.Name, Entry: entry}
+	req := evolutionRequest{RequestID: newEvolutionRequestID(), SkillName: entry.Name, Entry: entry}
 	return p.runOptimize(ctx, req, force)
 }
 
@@ -833,6 +1641,10 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 		return OptimizeResult{Attempted: true, Optimized: false, Explanation: result.Explanation}
 	}
 
+	// Keep an in-memory snapshot as well: ApplyOptimization mutates req.Entry
+	// before durable persistence, so a failed commit must not leave the worker
+	// carrying an unapplied candidate after YAML/config rollback.
+	originalEntry := CloneNLSkillEntry(req.Entry)
 	// Apply optimization.
 	if ApplyOptimization(req.Entry, result, p.Versioner) {
 		// Persist atomically: SkillSaver's closure holds the write lock, so
@@ -844,9 +1656,12 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 		// skill is missing from storage) nothing durable changed — log and
 		// return WITHOUT emitting EventSkillOptimized or triggering upload,
 		// so the frontend/audit never claim an optimization that didn't stick.
-		if p.SkillSaver == nil {
-			log.Printf("[evolution-pipeline] optimization not persisted skill=%s: SkillSaver not configured", req.SkillName)
-			return OptimizeResult{Attempted: true, Explanation: "optimization not persisted: SkillSaver not configured"}
+		if p.SkillSaver == nil || p.SkillLoader == nil {
+			if originalEntry != nil {
+				*req.Entry = *originalEntry
+			}
+			log.Printf("[evolution-pipeline] optimization not persisted skill=%s: persistence not configured", req.SkillName)
+			return OptimizeResult{Attempted: true, Explanation: "optimization not persisted: persistence not configured"}
 		}
 		var skills []corelib.NLSkillEntry
 		if p.SkillLoader != nil {
@@ -861,33 +1676,35 @@ func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionReques
 			}
 		}
 		if !found {
+			if originalEntry != nil {
+				*req.Entry = *originalEntry
+			}
 			log.Printf("[evolution-pipeline] optimization not persisted skill=%s: not found in storage", req.SkillName)
 			return OptimizeResult{Attempted: true, Explanation: "skill not found in storage, optimization not persisted"}
 		}
-		if err := p.SkillSaver(skills); err != nil {
-			log.Printf("[evolution-pipeline] save optimized skill=%s failed: %v", req.SkillName, err)
-			return OptimizeResult{Attempted: true, Explanation: "save failed: " + err.Error()}
+		commitAudit := map[string]string{
+			"skill": req.SkillName, "action": "optimize", "decision": "committed",
+			"request_id": req.RequestID, "attempt": "1", "config_revision": p.configRevision(),
+			"schema_version": "2", "evidence_mode": "real",
 		}
-
-		// Write updated steps back to skill.yaml on disk so that loadSkills
-		// (which treats skill.yaml as source of truth for Steps) doesn't
-		// overwrite our optimization on next restart.
-		if req.Entry.SkillDir != "" {
-			if err := WriteBackOptimizedSteps(req.Entry); err != nil {
-				log.Printf("[evolution-pipeline] writeback skill.yaml for %s failed: %v", req.SkillName, err)
-				// Non-fatal: config.json has the optimization, yaml writeback is best-effort.
+		commit := p.persistDefinitionChangeWithAudit(ctx, req.SkillName, req.Entry, "skill:optimization_commit", commitAudit)
+		if commit.State != "committed" || commit.CleanupStatus != "clear" {
+			if originalEntry != nil {
+				*req.Entry = *originalEntry
 			}
+			log.Printf("[evolution-pipeline] optimization commit %s skill=%s reason=%s", commit.State, req.SkillName, commit.FailureReason)
+			p.emitRequestEvent(EventSkillEvolutionRolledBack, req, map[string]string{
+				"decision": commit.State, "reason": "optimization_persistence_failed", "failure_reason": commit.FailureReason,
+			})
+			return OptimizeResult{Attempted: true, Explanation: "optimization not committed: " + commit.FailureReason}
 		}
 
 		log.Printf("[evolution-pipeline] optimization applied for skill=%s, triggering upload check", req.SkillName)
 
 		// Notify frontend that a skill was optimized.
-		if p.EventEmitter != nil {
-			p.EventEmitter(EventSkillOptimized, map[string]string{
-				"skill":       req.SkillName,
-				"explanation": result.Explanation,
-			})
-		}
+		p.emitRequestEvent(EventSkillOptimized, req, map[string]string{
+			"explanation": result.Explanation, "decision": "applied", "reason": "optimization_gate_passed",
+		})
 
 		// Trigger auto-upload.
 		if p.UploadTrigger != nil {
@@ -955,15 +1772,12 @@ func (p *EvolutionPipeline) tryPromoteNudges(ctx context.Context) {
 				p.EventEmitter(EventSkillAutoDiscovered, map[string]string{
 					"skill":       result.SkillName,
 					"explanation": result.Explanation,
+					"status":      "staged",
+					"via":         "auto_discovery",
 				})
 			}
-			// Trigger auto-upload for newly promoted skill.
-			if p.UploadTrigger != nil {
-				p.UploadTrigger(result.SkillName, &SkillExecutionResultCompat{
-					Success:       true,
-					OutputQuality: "basic",
-				})
-			}
+			// Newly discovered skills are staged; upload is intentionally deferred
+			// until explicit approval and runtime proof are available.
 		}
 	}
 }

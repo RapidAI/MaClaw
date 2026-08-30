@@ -115,3 +115,8 @@ void alarm_service_request_dismiss(void);
  * alarm ownership. */
 device_status_t alarm_service_active_alarm_present(uint32_t timeout_ms,
                                                    bool *out_present);
+/* Reads the earliest queued (not currently active) alarm under the durable
+ * store lock.  A false `out_present` means the queue is empty. */
+device_status_t alarm_service_earliest_queued_alarm(uint32_t timeout_ms,
+                                                    bool *out_present,
+                                                    int64_t *out_epoch_ms);

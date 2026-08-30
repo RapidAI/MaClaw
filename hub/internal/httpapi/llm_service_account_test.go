@@ -31,7 +31,10 @@ func TestGetLLMServiceAccountHandlerReturnsStatusAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
-	rep.addUsage(now, "account@example.com", nil, corelib.TokenUsageStat{InputTokens: 10, OutputTokens: 20, TotalTokens: 30, TotalCostRMB: 0.42, Requests: 1}, 0.003)
+	// The service-account summary is sourced from the same audited usage report
+	// as the admin page. Mark this fixture as a frozen pricing snapshot so the
+	// RMB reference amount is intentionally available to the account holder.
+	rep.addUsageWithCreditBreakdown(now, "account@example.com", nil, corelib.TokenUsageStat{InputTokens: 10, OutputTokens: 20, TotalTokens: 30, TotalCostRMB: 0.42, Requests: 1}, 0.003, &llmUsageCreditBreakdown{RMBPricingRecorded: true})
 	if err := saveLLMUsageReports(ctx, system, rep); err != nil {
 		t.Fatal(err)
 	}

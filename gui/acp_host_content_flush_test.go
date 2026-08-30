@@ -62,4 +62,7 @@ func TestVisibleACPStreamDeltaRemovesControlCharacters(t *testing.T) {
 	if got := visibleACPStreamDelta("visible\x00 text\nnext\u0085"); got != "visible text\nnext" {
 		t.Fatalf("visible delta = %q", got)
 	}
+	if got := visibleACPStreamDelta("reason\uFFFCing\uFFFD"); got != "reasoning" {
+		t.Fatalf("replacement chars should be removed, got %q", got)
+	}
 }

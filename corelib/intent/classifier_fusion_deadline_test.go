@@ -3,6 +3,7 @@ package intent
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -291,8 +292,8 @@ func TestClassifyByEmbeddingVerifiedDocumentGenerateWithLookupCompanion(t *testi
 		// clearly, a generic intent is the runner-up, and the lookup companion is
 		// still semantically material but not top-2.
 		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.947, 0.321234}}},
-		{Label: LabelNonCoding, Vecs: [][]float32{{0.805, 0.593275}}},
-		{Label: LabelLiveData, Vecs: [][]float32{{0.75, 0.661438}}},
+		{Label: LabelNonCoding, Vecs: [][]float32{{0.87, 0.493052}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.85, 0.526783}}},
 	}, "render the requested result as a file")
 	if !confident || result.Primary != LabelDocumentGenerate || len(result.Secondary) != 1 || result.Secondary[0] != LabelLiveData {
 		t.Fatalf("result=%+v confident=%v, want verified document-generate + live-data evidence", result, confident)
@@ -313,6 +314,28 @@ func TestClassifyByEmbeddingSearchAndDocumentGenerateDoesNotSkipLayer3(t *testin
 	}
 }
 
+// A confident search hit with a material document_generate companion must not
+// collapse to a plain lookup: the search pair is not locally verified, but
+// treating the turn as search-only silently drops the artifact capability and
+// the loop later reports the generate tool as unavailable.  Escalation keeps
+// the generate half as evidence so the tree verdict can synthesize the
+// composite.  This shape reproduces "搜索最新的AI新闻并生成PDF报告" on the
+// production model (search 0.837, document_generate 0.769).
+func TestClassifyByEmbeddingSearchPdfCompositeDoesNotCollapseToPlainLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSearch, Vecs: [][]float32{{0.85, 0.526783}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.77, 0.638045}}},
+		{Label: LabelNonCoding, Vecs: [][]float32{{0.60, 0.80}}},
+	}, "搜索最新的AI新闻并生成PDF报告")
+	if confident || result.Primary != LabelSearch || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want search+PDF escalation keeping generate evidence", result, confident)
+	}
+	if !strings.Contains(result.Reason, "ambiguous composite") {
+		t.Fatalf("reason=%q, want ambiguous composite escalation", result.Reason)
+	}
+}
+
 func TestClassifyVerifiedEmbeddingCompositeDoesNotDependOnTree(t *testing.T) {
 	emb := &staticEmbedder{vec: []float32{1, 0}}
 	llmCalls := 0
@@ -330,8 +353,8 @@ func TestClassifyVerifiedEmbeddingCompositeDoesNotDependOnTree(t *testing.T) {
 	uic.ready = true
 	uic.anchors = []intentAnchor{
 		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.947, 0.321234}}},
-		{Label: LabelNonCoding, Vecs: [][]float32{{0.805, 0.593275}}},
-		{Label: LabelLiveData, Vecs: [][]float32{{0.75, 0.661438}}},
+		{Label: LabelNonCoding, Vecs: [][]float32{{0.87, 0.493052}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.85, 0.526783}}},
 	}
 	uic.mu.Unlock()
 
@@ -469,16 +492,19 @@ func TestClassifyL3TimeoutDoesNotCacheLookupHint(t *testing.T) {
 	uic.mu.Unlock()
 
 	first := uic.Classify(MessageContext{Text: query})
-	if !isDegradedLookupHint(first) || first.Primary != LabelLiveData {
-		t.Fatalf("first = %+v, want live_data hint", first)
+	// The lookup guess carries document_generate evidence, so a tree timeout
+	// keeps the turn explicitly unconfirmed rather than degrading to a bare
+	// lookup hint that would silently drop the requested artifact.
+	if first.Primary != LabelUnknown || !first.Degraded {
+		t.Fatalf("first = %+v, want unconfirmed unknown for an unverifiable composite", first)
 	}
 	embeds := emb.queries
 	second := uic.Classify(MessageContext{Text: query})
 	if emb.queries <= embeds {
-		t.Fatalf("L3 timeout hint must not be cached; embeds stayed at %d", emb.queries)
+		t.Fatalf("L3 timeout result must not be cached; embeds stayed at %d", emb.queries)
 	}
-	if !isDegradedLookupHint(second) || second.Primary != first.Primary {
-		t.Fatalf("second = %+v, want the same uncached hint family as %+v", second, first)
+	if second.Primary != first.Primary || !second.Degraded {
+		t.Fatalf("second = %+v, want the same uncached unconfirmed family as %+v", second, first)
 	}
 }
 
@@ -499,8 +525,8 @@ func TestClassifyL3TimeoutDropsUnconfirmedGenerate(t *testing.T) {
 	uic.mu.Unlock()
 
 	result := uic.Classify(MessageContext{Text: "查询南京天气，并生成pdf报告"})
-	if !isDegradedLookupHint(result) || result.Primary != LabelLiveData {
-		t.Fatalf("result = %+v, want live_data hint without generate", result)
+	if result.Primary != LabelUnknown || !result.Degraded {
+		t.Fatalf("result = %+v, want unconfirmed unknown when the tree cannot rule on the composite", result)
 	}
 	for _, label := range result.Labels() {
 		if label == LabelDocumentGenerate {
@@ -523,7 +549,7 @@ func TestClassifyWeatherPDFKeepsVerifiedLocalCompositeWhenTreeWouldMisclassify(t
 	uic.ready = true
 	uic.anchors = []intentAnchor{
 		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.80, 0.60}}},
-		{Label: LabelLiveData, Vecs: [][]float32{{0.75, 0.661438}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.85, 0.526783}}},
 	}
 	uic.mu.Unlock()
 
@@ -562,8 +588,20 @@ func TestClassifyTreeProtocolViolationIsNotAnUnknownUserIntent(t *testing.T) {
 }
 
 func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
-	lookup := lookupHintOrUnknownFromL2(ClassificationResult{
+	// A lookup guess with a declared artifact half stays explicitly
+	// unconfirmed: degrading to a bare hint would silently reduce a
+	// composite request to lookup-only.
+	composite := lookupHintOrUnknownFromL2(ClassificationResult{
 		Primary: LabelLiveData, Confidence: 0.61, Secondary: []IntentLabel{LabelDocumentGenerate},
+	}, true)
+	if composite.Primary != LabelUnknown || !composite.Degraded {
+		t.Fatalf("composite-evidence lookup = %+v, want unconfirmed unknown", composite)
+	}
+
+	// A plain lookup guess keeps the degraded hint so routing can chat
+	// without HostReject.
+	lookup := lookupHintOrUnknownFromL2(ClassificationResult{
+		Primary: LabelLiveData, Confidence: 0.61,
 	}, true)
 	if !isDegradedLookupHint(lookup) || lookup.Primary != LabelLiveData {
 		t.Fatalf("lookup = %+v, want live_data hint", lookup)
@@ -575,6 +613,30 @@ func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
 	other := lookupHintOrUnknownFromL2(ClassificationResult{Primary: LabelFileRead, Confidence: 0.66}, false)
 	if !other.Degraded || other.Primary != LabelUnknown {
 		t.Fatalf("non-lookup = %+v, want unknown", other)
+	}
+
+	// An office guess at the lookup floor keeps a governed hint: it plans
+	// through the office capability surface instead of stripping document
+	// tools off the turn when the tree times out.
+	office := lookupHintOrUnknownFromL2(ClassificationResult{Primary: LabelOffice, Confidence: 0.75}, false)
+	if !office.Degraded || office.Primary != LabelOffice || office.Confidence != 0.75 {
+		t.Fatalf("office hint = %+v, want degraded office hint", office)
+	}
+	if len(office.Secondary) != 0 || len(office.ToolNames) != 0 || office.WorkflowType != "" {
+		t.Fatalf("office hint leaked adjuncts: %+v", office)
+	}
+
+	// Sub-floor office guesses and office composites with a declared artifact
+	// half still collapse to unknown.
+	weakOffice := lookupHintOrUnknownFromL2(ClassificationResult{Primary: LabelOffice, Confidence: 0.65}, false)
+	if !weakOffice.Degraded || weakOffice.Primary != LabelUnknown {
+		t.Fatalf("sub-floor office = %+v, want unknown", weakOffice)
+	}
+	officeComposite := lookupHintOrUnknownFromL2(ClassificationResult{
+		Primary: LabelOffice, Confidence: 0.75, Secondary: []IntentLabel{LabelDocumentGenerate},
+	}, false)
+	if !officeComposite.Degraded || officeComposite.Primary != LabelUnknown {
+		t.Fatalf("office composite = %+v, want unknown", officeComposite)
 	}
 }
 
@@ -599,4 +661,177 @@ func (q *queryCountingEmbedder) Embed(text string) ([]float32, error) {
 		q.queries++
 	}
 	return q.staticEmbedder.Embed(text)
+}
+
+func TestLateTreeVerdictCachesForRepeatedRequest(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				// The synchronous attempt loses to the fusion deadline.
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			// The background retry answers promptly.
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 30 * time.Millisecond,
+		LLMTimeout:         2 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelSearch, Vecs: [][]float32{{1, 0, 0}}},
+	}
+	uic.mu.Unlock()
+
+	first := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if !first.Degraded {
+		t.Fatalf("first = %+v, want degraded hint after fusion timeout", first)
+	}
+	// The late verdict lands asynchronously and is cached under the same key.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var second ClassificationResult
+		if cached, ok := uic.cache.Load(classificationCacheKey(uic.cacheEpoch.Load(), MessageContext{Text: "生成庆祝生日会的PPT"})); ok && cached != nil {
+			if verdict, ok := cached.(*ClassificationResult); ok && verdict != nil && !verdict.Degraded {
+				second = *verdict
+			}
+		}
+		if second.Primary == LabelOffice {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("late tree verdict never cached; calls=%d", calls.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A repeated request is served by the warm cache without a new LLM call.
+	before := calls.Load()
+	again := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if again.Primary != LabelOffice || again.Degraded || again.Layer != 3 {
+		t.Fatalf("repeat = %+v, want cached tree office verdict", again)
+	}
+	if calls.Load() != before {
+		t.Fatalf("repeat paid another LLM call: %d -> %d", before, calls.Load())
+	}
+}
+
+// A background tree verdict that grossly contradicts the local channel must
+// not be cached: the resend it was meant to rescue would otherwise be routed
+// by one bad LLM sample (2026-08-25 production: "生成…ppt…网上找…照片"
+// cached coding 0.95 over a local office leader).
+func TestLateTreeVerdictContradictedByLocalIsNotCached(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				// The synchronous attempt loses to the fusion deadline.
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			if n == 2 {
+				// The background retry answers promptly, but with a gross misroll.
+				return `{"top":[{"skill":"coding","score":0.95,"workflow_type":"coding"}]}`, nil
+			}
+			// The repeat request re-classifies; the fresh tree rules correctly.
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 30 * time.Millisecond,
+		LLMTimeout:         2 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		// A second non-pair label tied with office keeps L2 ambiguous so the
+		// turn escalates to the tree; either leader discards a coding verdict.
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	text := "生成庆祝生日会的PPT"
+	first := uic.ClassifyContext(context.Background(), MessageContext{Text: text})
+	if !first.Degraded {
+		t.Fatalf("first = %+v, want degraded hint after fusion timeout", first)
+	}
+	// Give the background verdict time to land; it must be discarded.
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("background late verdict never ran; calls=%d", calls.Load())
+	}
+	time.Sleep(100 * time.Millisecond)
+	if cached, ok := uic.cache.Load(classificationCacheKey(uic.cacheEpoch.Load(), MessageContext{Text: text})); ok && cached != nil {
+		if verdict, ok := cached.(*ClassificationResult); ok && verdict != nil && !verdict.Degraded && verdict.Primary == LabelCoding {
+			t.Fatalf("contradicted late verdict was cached: %+v", verdict)
+		}
+	}
+	// The repeat is re-classified instead of served the poisoned verdict, and
+	// the fresh tree ruling recovers the office route.
+	before := calls.Load()
+	again := uic.ClassifyContext(context.Background(), MessageContext{Text: text})
+	if again.Primary != LabelOffice || again.Degraded {
+		t.Fatalf("repeat = %+v, want fresh office route, not a poisoned coding one", again)
+	}
+	if calls.Load() <= before {
+		t.Fatalf("repeat was served from cache despite the discarded verdict: calls=%d", calls.Load())
+	}
+}
+
+// A confidently wrong synchronous tree verdict must not route the turn: the
+// 2026-08-26 production turn classified "生成…ppt…网上找…照片" as browser
+// 0.90 and died at plan rejection (no feasible browser provider), refusing
+// the whole request. The cross-check falls back to the L2 hint exactly like
+// a tree timeout.
+func TestSyncTreeVerdictContradictedByLocalFallsBackToL2Hint(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				// The live tree ruling is confident and grossly wrong.
+				return `{"top":[{"skill":"browser","score":0.90}]}`, nil
+			}
+			// The scheduled late verdict gets a second sample; a good one is
+			// cacheable, but this test never resends, so any answer is fine.
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 2 * time.Second,
+		LLMTimeout:         2 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelBrowser, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	text := "生成庆祝生日会的PPT"
+	result := uic.ClassifyContext(context.Background(), MessageContext{Text: text})
+	if result.Primary != LabelOffice || !result.Degraded {
+		t.Fatalf("result = %+v, want degraded office hint, not the contradicted browser verdict", result)
+	}
+	if !strings.Contains(result.Reason, "contradicted by local leader") {
+		t.Fatalf("reason = %q, want contradicted-by-local explanation", result.Reason)
+	}
+	if cached, ok := uic.cache.Load(classificationCacheKey(uic.cacheEpoch.Load(), MessageContext{Text: text})); ok && cached != nil {
+		if verdict, ok := cached.(*ClassificationResult); ok && verdict != nil && !verdict.Degraded && verdict.Primary == LabelBrowser {
+			t.Fatalf("contradicted verdict was cached: %+v", verdict)
+		}
+	}
 }

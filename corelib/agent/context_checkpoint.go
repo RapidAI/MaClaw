@@ -460,7 +460,7 @@ func checkpointUTF8Suffix(s string, limit int) string {
 }
 
 func checkpointHandleSummary(content string) string {
-	marker := "[tool_result_handle]"
+	marker := toolresult.HandleFooterMarker
 	idx := strings.LastIndex(content, marker)
 	if idx < 0 {
 		return ""

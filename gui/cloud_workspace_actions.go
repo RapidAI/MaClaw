@@ -24,6 +24,7 @@ func resetCloudWorkspaceDialogMocks() {
 	cloudWorkspaceConfirmStealFn = nil
 	cloudWorkspaceConfirmDiscardDirtyFn = nil
 	resetCloudWorkspaceMounts()
+	cloudWorkspaceRestoreGen.Store(0)
 	cloudWorkspaceDialogMu.Lock()
 	defer cloudWorkspaceDialogMu.Unlock()
 	cloudWorkspaceTaskByID = map[string]ProjectSearchResult{}
@@ -201,17 +202,7 @@ func (a *App) RenameCloudWorkspace(id, name string) (CloudWorkspaceEntitlementWo
 	return row.toActive(), nil
 }
 
-// DeleteCloudWorkspace DELETE /api/v1/cloud-workspaces/{id} (7-day restore window).
-func (a *App) DeleteCloudWorkspace(id string) (CloudWorkspaceDeletedWorkspace, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return CloudWorkspaceDeletedWorkspace{}, fmt.Errorf("workspace id is required")
-	}
-	row, err := a.cloudWorkspaceMutate(http.MethodDelete, cloudWorkspaceItemPath(id), nil)
-	if err != nil {
-		return CloudWorkspaceDeletedWorkspace{}, err
-	}
-	out := row.toDeleted()
+func (a *App) stampCloudWorkspaceDeleted(out CloudWorkspaceDeletedWorkspace) CloudWorkspaceDeletedWorkspace {
 	if out.DeletedAt == "" {
 		out.DeletedAt = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -220,7 +211,80 @@ func (a *App) DeleteCloudWorkspace(id string) (CloudWorkspaceDeletedWorkspace, e
 			out.PurgeAfter = t.Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)
 		}
 	}
+	return out
+}
+
+// deleteCloudWorkspaceOnHub DELETE /api/v1/cloud-workspaces/{id} without touching the local task row.
+// Callers that also delete/hide the local record must not go through DeleteCloudWorkspace, which emits close before delete.
+// Does not bump the restore generation: that would abort in-flight RestoreCloudWorkspaceTasks
+// for other workspaces. The local dismiss tombstone already skips the deleted id.
+func (a *App) deleteCloudWorkspaceOnHub(id string) (CloudWorkspaceDeletedWorkspace, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return CloudWorkspaceDeletedWorkspace{}, fmt.Errorf("workspace id is required")
+	}
+	ctx, cancel := a.cloudWorkspaceRequestContext()
+	defer cancel()
+	data, status, err := a.cloudWorkspaceHubRequest(ctx, http.MethodDelete, cloudWorkspaceItemPath(id), nil)
+	if err != nil {
+		return CloudWorkspaceDeletedWorkspace{}, err
+	}
+	if status == http.StatusNotFound {
+		resetCloudWorkspaceEntitlementCache()
+		return a.stampCloudWorkspaceDeleted(CloudWorkspaceDeletedWorkspace{ID: id}), nil
+	}
+	if status >= 300 {
+		return CloudWorkspaceDeletedWorkspace{}, cloudWorkspaceAPIError(status, data)
+	}
+	row, decodeErr := decodeCloudWorkspaceHubRow(data)
+	if decodeErr != nil {
+		return CloudWorkspaceDeletedWorkspace{}, decodeErr
+	}
+	resetCloudWorkspaceEntitlementCache()
+	return a.stampCloudWorkspaceDeleted(row.toDeleted()), nil
+}
+
+// DeleteCloudWorkspace DELETE /api/v1/cloud-workspaces/{id} (7-day restore window).
+func (a *App) DeleteCloudWorkspace(id string) (CloudWorkspaceDeletedWorkspace, error) {
+	out, err := a.deleteCloudWorkspaceOnHub(id)
+	if err != nil {
+		return CloudWorkspaceDeletedWorkspace{}, err
+	}
+	// Hide the local row without a tombstone so a 7-day workspace restore can unhide it.
+	a.hideLocalCloudWorkspaceTask(id, false)
 	return out, nil
+}
+
+// ForceDeleteCloudWorkspace permanently removes a previously deleted workspace and its remote files.
+func (a *App) ForceDeleteCloudWorkspace(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("workspace id is required")
+	}
+	ctx, cancel := a.cloudWorkspaceRequestContext()
+	defer cancel()
+	// Stop any local mount and flush its pending changes before the remote
+	// object store is purged. This also prevents a background sync from racing
+	// the permanent delete request.
+	if task, ok := lookupCloudWorkspaceTask(id); ok {
+		a.releaseCloudWorkspaceForProjectPath(task.ProjectPath)
+	}
+	data, status, err := a.cloudWorkspaceHubRequest(ctx, http.MethodDelete, cloudWorkspaceItemPath(id)+"/purge", nil)
+	if err != nil {
+		return err
+	}
+	if status >= 300 {
+		return cloudWorkspaceAPIError(status, data)
+	}
+	resetCloudWorkspaceEntitlementCache()
+	a.hideLocalCloudWorkspaceTask(id, true)
+	localPath := a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), id)
+	if a.isAppCloudWorkspaceCachePath(localPath) {
+		if err := os.RemoveAll(localPath); err != nil {
+			return fmt.Errorf("remove local cloud workspace cache: %w", err)
+		}
+	}
+	return nil
 }
 
 // RestoreCloudWorkspace POST /api/v1/cloud-workspaces/{id}/restore.
@@ -233,6 +297,9 @@ func (a *App) RestoreCloudWorkspace(id string) (CloudWorkspaceEntitlementWorkspa
 	if err != nil {
 		return CloudWorkspaceEntitlementWorkspace{}, err
 	}
+	bumpCloudWorkspaceRestoreGen()
+	a.clearDismissedCloudWorkspaceTask(id)
+	resetCloudWorkspaceEntitlementCache()
 	return row.toActive(), nil
 }
 
@@ -255,13 +322,28 @@ func (a *App) cloudWorkspaceTaskIsResumable(result ProjectSearchResult) bool {
 	return !pi.IsHidden(path) && !pi.IsArchived(path)
 }
 
-func (a *App) findVisibleCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
+func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool) ProjectSearchResult {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		return ProjectSearchResult{}
 	}
-	if result, ok := lookupCloudWorkspaceTask(workspaceID); ok && a.cloudWorkspaceTaskIsResumable(result) {
-		return result
+	if result, ok := lookupCloudWorkspaceTask(workspaceID); ok {
+		path := normalizeProjectSessionPath(result.ProjectPath)
+		if path != "" {
+			_, statErr := os.Stat(filepath.Clean(path))
+			inIndex := false
+			a.ensureMemoryStore()
+			if a.memoryStore != nil {
+				if pi := a.memoryStore.ProjectIndex(); pi != nil {
+					inIndex = pi.Get(path) != nil
+				}
+			}
+			if statErr == nil || inIndex {
+				if includeHidden || a.cloudWorkspaceTaskIsResumable(result) {
+					return result
+				}
+			}
+		}
 	}
 	a.ensureMemoryStore()
 	if a.memoryStore == nil {
@@ -272,19 +354,32 @@ func (a *App) findVisibleCloudWorkspaceTask(workspaceID string) ProjectSearchRes
 		return ProjectSearchResult{}
 	}
 	want := cloudWorkspaceTag(workspaceID)
+	hidden := ProjectSearchResult{}
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
 		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, want)
 	}) {
-		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+		result := projectRecordToSearchResult(pi, rec)
+		if pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		return projectRecordToSearchResult(pi, rec)
+		if pi.IsHidden(rec.ProjectPath) {
+			if includeHidden && strings.TrimSpace(hidden.ProjectPath) == "" {
+				hidden = result
+			}
+			continue
+		}
+		return result
 	}
-	return ProjectSearchResult{}
+	return hidden
+}
+
+func (a *App) findVisibleCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
+	return a.findLocalCloudWorkspaceTask(workspaceID, false)
 }
 
 func (a *App) bindPreparedCloudWorkspaceTask(workspaceID string, result ProjectSearchResult, localPath string) ProjectSearchResult {
-	if strings.TrimSpace(result.WorkingDir) == "" {
+	localPath = normalizeProjectSessionPath(localPath)
+	if localPath != "" {
 		result.WorkingDir = localPath
 	}
 	rememberCloudWorkspaceTask(workspaceID, result)
@@ -323,8 +418,10 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	}
 	result := a.createTaskRecordWithWorkingDir(taskName, "", tags, prepared.LocalPath, false)
 	if strings.TrimSpace(result.ProjectPath) != "" {
+		a.clearDismissedCloudWorkspaceTask(workspaceID)
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, result, prepared.LocalPath)
 		a.applyCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
+		a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
 		return bound, nil
 	}
 	return result, fmt.Errorf("创建云端工作区任务失败")

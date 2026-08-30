@@ -24,10 +24,10 @@
         : '#0f141b';
     } else {
       var l = localStorage.getItem('maclaw.ai.lightScheme');
-      c = l === 'notion' || l === 'stripe' || l === 'vercel' ? '#ffffff'
+      c = l === 'default' ? '#f4f7fb'
+        : l === 'notion' || l === 'stripe' || l === 'vercel' ? '#ffffff'
         : l === 'linear' ? '#fbfbfd'
-        : l === 'github' ? '#f6f8fa'
-        : '#f4f7fb';
+        : '#f6f8fa';
     }
     document.documentElement.style.backgroundColor = c;
     document.body.style.backgroundColor = c;

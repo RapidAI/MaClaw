@@ -266,6 +266,10 @@ export function CancelNLSkillRun(arg1) {
   return window['go']['main']['App']['CancelNLSkillRun'](arg1);
 }
 
+export function CancelSkillEvolution(arg1) {
+  return window['go']['main']['App']['CancelSkillEvolution'](arg1);
+}
+
 export function CancelOpenAIOAuth() {
   return window['go']['main']['App']['CancelOpenAIOAuth']();
 }
@@ -364,6 +368,10 @@ export function CheckUpdate(arg1) {
 
 export function CheckUpdateBeta(arg1) {
   return window['go']['main']['App']['CheckUpdateBeta'](arg1);
+}
+
+export function ListRollbackReleases() {
+  return window['go']['main']['App']['ListRollbackReleases']();
 }
 
 export function CheckVEApprovalCapability(arg1) {
@@ -686,6 +694,14 @@ export function DeleteCloudWorkspace(arg1) {
   return window['go']['main']['App']['DeleteCloudWorkspace'](arg1);
 }
 
+export function DeleteCodingWorkbenchEntry(arg1, arg2) {
+  return window['go']['main']['App']['DeleteCodingWorkbenchEntry'](arg1, arg2);
+}
+
+export function ForceDeleteCloudWorkspace(arg1) {
+  return window['go']['main']['App']['ForceDeleteCloudWorkspace'](arg1);
+}
+
 export function DeleteComputerUseLogArtifact(arg1) {
   return window['go']['main']['App']['DeleteComputerUseLogArtifact'](arg1);
 }
@@ -816,6 +832,10 @@ export function DismissRemoteSession(arg1) {
 
 export function DownloadASRModel() {
   return window['go']['main']['App']['DownloadASRModel']();
+}
+
+export function DownloadCodingWorkbenchEntry(arg1, arg2) {
+  return window['go']['main']['App']['DownloadCodingWorkbenchEntry'](arg1, arg2);
 }
 
 export function DownloadDiarizationModel() {
@@ -3022,6 +3042,10 @@ export function ListSkillEvolutionAudit(arg1) {
   return window['go']['main']['App']['ListSkillEvolutionAudit'](arg1);
 }
 
+export function ListSkillEvolutionCompensations() {
+  return window['go']['main']['App']['ListSkillEvolutionCompensations']();
+}
+
 export function ListSkillMaintenanceDrafts() {
   return window['go']['main']['App']['ListSkillMaintenanceDrafts']();
 }
@@ -3160,6 +3184,10 @@ export function OpenCodingWorkbenchConflictFile(arg1, arg2, arg3, arg4) {
 
 export function OpenCodingWorkbenchFileInVSCode(arg1, arg2) {
   return window['go']['main']['App']['OpenCodingWorkbenchFileInVSCode'](arg1, arg2);
+}
+
+export function OpenCodingWorkbenchFileLocally(arg1, arg2) {
+  return window['go']['main']['App']['OpenCodingWorkbenchFileLocally'](arg1, arg2);
 }
 
 export function OpenComputerUseLastDiagnostics() {
@@ -3578,6 +3606,10 @@ export function RefreshHubLLMServiceStatus() {
   return window['go']['main']['App']['RefreshHubLLMServiceStatus']();
 }
 
+export function ReportHubLLMBillingTimezone(arg1) {
+  return window['go']['main']['App']['ReportHubLLMBillingTimezone'](arg1);
+}
+
 export function RefreshMaclawAppPackageSubmissionFromHub(arg1) {
   return window['go']['main']['App']['RefreshMaclawAppPackageSubmissionFromHub'](arg1);
 }
@@ -3736,6 +3768,10 @@ export function RestartWeixin() {
 
 export function RestoreCloudWorkspace(arg1) {
   return window['go']['main']['App']['RestoreCloudWorkspace'](arg1);
+}
+
+export function RestoreCloudWorkspaceTasks() {
+  return window['go']['main']['App']['RestoreCloudWorkspaceTasks']();
 }
 
 export function RestoreArchiveMemory(arg1) {
@@ -4280,6 +4316,14 @@ export function SetMoAStickyPreset(arg1) {
 
 export function SetNLSkillStatus(arg1, arg2) {
   return window['go']['main']['App']['SetNLSkillStatus'](arg1, arg2);
+}
+
+export function VerifyAndActivateNLSkill(arg1) {
+  return window['go']['main']['App']['VerifyAndActivateNLSkill'](arg1);
+}
+
+export function VerifyAndActivateNLSkillWithArgs(arg1, arg2) {
+  return window['go']['main']['App']['VerifyAndActivateNLSkillWithArgs'](arg1, arg2);
 }
 
 export function SetOCREnabled(arg1) {

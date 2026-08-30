@@ -15,6 +15,7 @@
 #include "provisioning_failure_injection.h"
 #include "task_registry.h"
 #include "fault_domain.h"
+#include "battery_policy_service.h"
 
 /* The current board renderers are synchronous, but all calls into Platform
  * Display now originate from this one task. Result-bearing/scene-transition
@@ -993,11 +994,17 @@ static void display_service_dispatch(display_service_request_t *request) {
         case DISPLAY_REQUEST_SET_COMMAND_LOCK:
             platform_display_set_command_lock(request->bool_a); break;
         case DISPLAY_REQUEST_SET_BRIGHTNESS:
-            request->status_result = platform_display_set_brightness(request->u8_a);
+            /* Battery protection is a temporary physical-output limit. Keep
+             * the requested value in the semantic acknowledgement so a
+             * durable configuration does not oscillate while the policy is
+             * active; only the renderer-facing value is capped. */
+            const uint8_t applied_brightness =
+                battery_policy_service_limit_backlight_percent(request->u8_a);
+            request->status_result = platform_display_set_brightness(applied_brightness);
             taskENTER_CRITICAL(&s_display_service_state_lock);
             s_brightness_last_status = request->status_result;
             if (request->status_result == DEVICE_STATUS_OK) {
-                s_brightness_percent = request->u8_a;
+                s_brightness_percent = applied_brightness;
                 s_brightness_known = true;
             }
             taskEXIT_CRITICAL(&s_display_service_state_lock);

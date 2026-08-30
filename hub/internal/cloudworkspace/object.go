@@ -110,8 +110,15 @@ func (s *Store) PrepareObjectPut(ctx context.Context, tenantID, userID, workspac
 		if _, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID); err != nil {
 			return err
 		}
-		if err := assertLeaseHeld(ctx, q, workspaceID, machineID, now); err != nil {
-			return err
+		// An empty machine id is used by the v2 multi-writer object path. Object
+		// admission is safe without an exclusive lease because objects are
+		// immutable, content addressed, and the operation commit is serialized
+		// separately in ApplyOperation. Legacy callers still pass machineID and
+		// retain the lease check.
+		if machineID != "" {
+			if err := assertLeaseHeld(ctx, q, workspaceID, machineID, now); err != nil {
+				return err
+			}
 		}
 		ok, err := objectRowExists(ctx, q, workspaceID, sha256hex)
 		if err != nil {

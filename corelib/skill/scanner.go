@@ -195,13 +195,17 @@ func ScanAllSkillDirs() []corelib.NLSkillEntry {
 
 // SkillYAMLFile is the on-disk YAML format for a skill definition.
 type SkillYAMLFile struct {
-	ID          string          `yaml:"id,omitempty"` // Global unique skill ID (publisher.skill-name)
-	Name        string          `yaml:"name"`
-	Version     string          `yaml:"version,omitempty"`
-	Description string          `yaml:"description"`
-	Triggers    []string        `yaml:"triggers"`
-	Steps       []SkillYAMLStep `yaml:"steps"`
-	Status      string          `yaml:"status"`
+	ID                     string          `yaml:"id,omitempty"` // Global unique skill ID (publisher.skill-name)
+	Name                   string          `yaml:"name"`
+	Version                string          `yaml:"version,omitempty"`
+	Description            string          `yaml:"description"`
+	Triggers               []string        `yaml:"triggers"`
+	Steps                  []SkillYAMLStep `yaml:"steps"`
+	Status                 string          `yaml:"status"`
+	VerifiedAt             string          `yaml:"verified_at,omitempty"`
+	VerificationRunID      string          `yaml:"verification_run_id,omitempty"`
+	VerificationDigest     string          `yaml:"verification_digest,omitempty"`
+	VerificationGateStatus string          `yaml:"verification_gate_status,omitempty"`
 	// Source classifies origin for UI filters (e.g. "learned", "crafted", "file").
 	// Empty means resolve via path/name heuristics, defaulting to "file".
 	Source string `yaml:"source,omitempty"`
@@ -340,8 +344,8 @@ type SkillYAMLStep struct {
 	OnError        string                 `yaml:"on_error" json:"on_error,omitempty"`
 	Name           string                 `yaml:"name,omitempty" json:"name,omitempty"`
 	Condition      string                 `yaml:"condition,omitempty" json:"condition,omitempty"`
-	When           string                 `yaml:"when,omitempty" json:"when,omitempty"` // conditional expression for dynamic routing
-	Label          string                 `yaml:"label,omitempty" json:"label,omitempty"` // step selector label for api_workflow mode
+	When           string                 `yaml:"when,omitempty" json:"when,omitempty"`       // conditional expression for dynamic routing
+	Label          string                 `yaml:"label,omitempty" json:"label,omitempty"`     // step selector label for api_workflow mode
 	Capture        map[string]string      `yaml:"capture,omitempty" json:"capture,omitempty"` // output capture: varName to regex pattern
 	TimeoutSeconds int                    `yaml:"timeout,omitempty"`                          // per-step timeout in seconds (0 = use default)
 	ContinueOnErr  bool                   `yaml:"continue_on_error"`
@@ -1541,6 +1545,10 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			RequiresToolsets:        sf.RequiresToolsets,
 			FallbackForToolsets:     sf.FallbackForToolsets,
 			RequiredCredentialFiles: sf.RequiredCredentialFiles,
+			VerifiedAt:              strings.TrimSpace(sf.VerifiedAt),
+			VerificationRunID:       strings.TrimSpace(sf.VerificationRunID),
+			VerificationDigest:      strings.TrimSpace(sf.VerificationDigest),
+			VerificationGateStatus:  strings.TrimSpace(sf.VerificationGateStatus),
 			RequiresPython:          requiresPythonFromYAML(sf.Requires),
 			RequiresNode:            requiresNodeFromYAML(sf.Requires),
 			RequiresBins:            requiresBinsFromYAML(sf.Requires),

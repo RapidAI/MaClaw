@@ -71,14 +71,16 @@ type ResolvedTokenPricing struct {
 }
 
 // TokenPricingSnapshot is the authenticated HubCenter-to-Hub fact used to
-// bill an official provider. It deliberately contains base pricing only: Hub
-// adds its own service-group multiplier exactly once.
+// bill an official provider. Pricing is the provider's base price and
+// ProviderMultiplier is the resolved HubCenter provider/time-of-use multiplier
+// for this request. Hub adds its own service-group multiplier exactly once.
 type TokenPricingSnapshot struct {
-	ProviderID    string               `json:"provider_id"`
-	UpstreamModel string               `json:"upstream_model"`
-	Pricing       ResolvedTokenPricing `json:"pricing"`
-	InputTokens   int64                `json:"input_tokens"`
-	OutputTokens  int64                `json:"output_tokens"`
+	ProviderID         string               `json:"provider_id"`
+	UpstreamModel      string               `json:"upstream_model"`
+	Pricing            ResolvedTokenPricing `json:"pricing"`
+	ProviderMultiplier float64              `json:"provider_multiplier,omitempty"`
+	InputTokens        int64                `json:"input_tokens"`
+	OutputTokens       int64                `json:"output_tokens"`
 }
 
 // PricingQuoteSnapshot is the immutable, non-secret financial envelope for a
@@ -89,8 +91,9 @@ type TokenPricingSnapshot struct {
 // embedded in this value or persisted in a ledger.
 //
 // Hub owns the group multiplier. Providers (including HubCenter official
-// providers) own Pricing.  Keeping both snapshots together makes a later
-// final settlement independent of price-schedule/config changes.
+// providers) own Pricing and their resolved time-of-use multiplier. Keeping
+// all three facts together makes a later final settlement independent of
+// price-schedule/config changes.
 type PricingQuoteSnapshot struct {
 	RequestID              string               `json:"request_id"`
 	AttemptID              string               `json:"attempt_id"`
@@ -99,6 +102,7 @@ type PricingQuoteSnapshot struct {
 	ProviderID             string               `json:"provider_id"`
 	UpstreamModel          string               `json:"upstream_model,omitempty"`
 	Pricing                ResolvedTokenPricing `json:"pricing"`
+	ProviderMultiplier     float64              `json:"provider_multiplier,omitempty"`
 	ServiceGroupIDs        []string             `json:"service_group_ids,omitempty"`
 	BillingGroupMultiplier float64              `json:"billing_group_multiplier"`
 	InputTokenEstimate     int64                `json:"input_token_estimate"`
@@ -111,14 +115,16 @@ type PricingQuoteSnapshot struct {
 // fixed-point calculation as final billing.  It accepts an input estimate and
 // output ceiling rather than actual usage, so callers can reject requests
 // whose maximum possible debit cannot be covered before contacting upstream.
-func NewPricingQuoteSnapshot(requestID, attemptID, providerID string, pricing ResolvedTokenPricing, billingGroupMultiplier float64, inputTokenEstimate, outputTokenLimit int64, expiresAt time.Time) (PricingQuoteSnapshot, bool) {
+func NewPricingQuoteSnapshot(requestID, attemptID, providerID string, pricing ResolvedTokenPricing, providerMultiplier, billingGroupMultiplier float64, inputTokenEstimate, outputTokenLimit int64, expiresAt time.Time) (PricingQuoteSnapshot, bool) {
 	requestID = strings.TrimSpace(requestID)
 	attemptID = strings.TrimSpace(attemptID)
 	providerID = strings.TrimSpace(providerID)
 	if requestID == "" || attemptID == "" || providerID == "" || expiresAt.IsZero() {
 		return PricingQuoteSnapshot{}, false
 	}
-	reserved, ok := EstimateTokenPricingMicrocredits(inputTokenEstimate, outputTokenLimit, pricing, billingGroupMultiplier)
+	providerMultiplier = NormalizeCreditMultiplier(providerMultiplier)
+	billingGroupMultiplier = NormalizeCreditMultiplier(billingGroupMultiplier)
+	reserved, ok := EstimateTokenPricingMicrocredits(inputTokenEstimate, outputTokenLimit, pricing, CombineCreditMultipliers(providerMultiplier, billingGroupMultiplier))
 	if !ok {
 		return PricingQuoteSnapshot{}, false
 	}
@@ -127,6 +133,7 @@ func NewPricingQuoteSnapshot(requestID, attemptID, providerID string, pricing Re
 		AttemptID:              attemptID,
 		ProviderID:             providerID,
 		Pricing:                pricing,
+		ProviderMultiplier:     providerMultiplier,
 		BillingGroupMultiplier: billingGroupMultiplier,
 		InputTokenEstimate:     maxTokenCount(inputTokenEstimate),
 		OutputTokenLimit:       maxTokenCount(outputTokenLimit),
@@ -179,14 +186,17 @@ func (p TokenPricing) HasCreditPricing() bool {
 }
 
 // EffectiveRouteTokenPricing resolves the billable base price for one provider
-// route. Route-level pricing wins; a route without its own Credits price
-// inherits the provider-wide default. The result may still carry no pricing —
-// callers must gate billing on HasCreditPricing.
+// route. A configured HubCenter provider price is authoritative: it is the
+// price owned by the selected upstream provider and must be the same one
+// included in the Hub-facing settlement snapshot. Route pricing is retained as
+// a legacy per-model fallback only when the provider has no usable Credits
+// price. This prevents a stale route value from silently replacing the
+// provider's configured input/output Credits and RMB prices.
 func EffectiveRouteTokenPricing(route ModelProviderConfig, provider ProviderConfig) TokenPricing {
-	if route.TokenPricing.HasCreditPricing() {
-		return route.TokenPricing
+	if provider.TokenPricing.HasCreditPricing() {
+		return provider.TokenPricing
 	}
-	return provider.TokenPricing
+	return route.TokenPricing
 }
 
 // ResolveTokenPricing freezes the route's price at startedAt. Invalid or
@@ -256,42 +266,88 @@ func validNonNegative(v float64) bool { return v >= 0 && !math.IsNaN(v) && !math
 // configuration input; they are first converted through their decimal form.
 // The result is rounded half-up to BillingRoundMicrocredits exactly once.
 func EstimateTokenPricingMicrocredits(inputTokens, outputTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (int64, bool) {
-	if !validNonNegative(billingGroupMultiplier) || billingGroupMultiplier <= 0 {
+	amount, _, _, _, ok := tokenPricingCreditComponentRats(inputTokens, outputTokens, pricing, billingGroupMultiplier)
+	if !ok {
 		return 0, false
+	}
+	return roundRatHalfUpToQuantum(amount, BillingRoundMicrocredits)
+}
+
+// TokenPricingCreditComponents returns the unrounded directional components
+// used by a directional Credits debit.  It exists for settlement auditing: the
+// Usage Stats tooltip can then show the same decimal facts as the ledger while
+// retaining the one final request-level rounding adjustment separately.
+func TokenPricingCreditComponents(inputTokens, outputTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (input, output, minimumAdjustment float64, ok bool) {
+	_, inputAmount, outputAmount, minimumAmount, ok := tokenPricingCreditComponentRats(inputTokens, outputTokens, pricing, billingGroupMultiplier)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	input, ok = ratToCredits(inputAmount)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	output, ok = ratToCredits(outputAmount)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	minimumAdjustment, ok = ratToCredits(minimumAmount)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return input, output, minimumAdjustment, true
+}
+
+// tokenPricingCreditComponentRats contains the common fixed-point basis for
+// debit calculation and its explainable directional components. The first
+// return value is the amount after the request minimum, before final rounding.
+func tokenPricingCreditComponentRats(inputTokens, outputTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (amount, inputAmount, outputAmount, minimumAdjustment *big.Rat, ok bool) {
+	if !validNonNegative(billingGroupMultiplier) || billingGroupMultiplier <= 0 {
+		return nil, nil, nil, nil, false
 	}
 	inputPrice, ok := decimalCreditsToMicrocredits(pricing.InputCreditsPer10K)
 	if !ok {
-		return 0, false
+		return nil, nil, nil, nil, false
 	}
 	outputPrice, ok := decimalCreditsToMicrocredits(pricing.OutputCreditsPer10K)
 	if !ok {
-		return 0, false
+		return nil, nil, nil, nil, false
 	}
 	minimum, ok := decimalCreditsToMicrocredits(pricing.MinimumRequestCredits)
 	if !ok {
-		return 0, false
+		return nil, nil, nil, nil, false
 	}
 	multiplier, ok := decimalToRat(billingGroupMultiplier)
 	if !ok || multiplier.Sign() <= 0 {
-		return 0, false
+		return nil, nil, nil, nil, false
 	}
 	inputTokens = maxTokenCount(inputTokens)
 	outputTokens = maxTokenCount(outputTokens)
 
-	// ((inputTokens * inputPrice) + (outputTokens * outputPrice)) / 10,000
-	// yields microcredits before the service-group multiplier.
-	raw := new(big.Int).Mul(big.NewInt(inputTokens), big.NewInt(inputPrice))
-	raw.Add(raw, new(big.Int).Mul(big.NewInt(outputTokens), big.NewInt(outputPrice)))
-	amount := new(big.Rat).SetInt(raw)
-	amount.Quo(amount, big.NewRat(10_000, 1))
-	amount.Mul(amount, multiplier)
+	inputAmount = new(big.Rat).SetInt64(inputPrice)
+	inputAmount.Mul(inputAmount, big.NewRat(inputTokens, 10_000))
+	inputAmount.Mul(inputAmount, multiplier)
+	outputAmount = new(big.Rat).SetInt64(outputPrice)
+	outputAmount.Mul(outputAmount, big.NewRat(outputTokens, 10_000))
+	outputAmount.Mul(outputAmount, multiplier)
+	amount = new(big.Rat).Add(inputAmount, outputAmount)
 
 	minimumAmount := new(big.Rat).SetInt64(minimum)
 	minimumAmount.Mul(minimumAmount, multiplier)
+	minimumAdjustment = new(big.Rat)
 	if amount.Cmp(minimumAmount) < 0 {
+		minimumAdjustment.Sub(minimumAmount, amount)
 		amount = minimumAmount
 	}
-	return roundRatHalfUpToQuantum(amount, BillingRoundMicrocredits)
+	return amount, inputAmount, outputAmount, minimumAdjustment, true
+}
+
+func ratToCredits(value *big.Rat) (float64, bool) {
+	if value == nil || value.Sign() < 0 {
+		return 0, false
+	}
+	credits := new(big.Rat).Quo(value, big.NewRat(MicrocreditsPerCredit, 1))
+	result, _ := credits.Float64()
+	return result, !math.IsNaN(result) && !math.IsInf(result, 0)
 }
 
 // MicrocreditsToCredits is intended only for JSON/UI compatibility. Ledger

@@ -221,8 +221,11 @@ static void command_cancel_worker(void *arg) {
         if (s_host_installed && s_host.cancel_foreground_http) {
             s_host.cancel_foreground_http();
         }
-        if (device_connectivity_is_active_cellular() &&
-            device_connectivity_cancel_cellular_foreground_request()) {
+        /* A request admitted on cellular can outlive a selected-uplink
+         * transition until this cancellation reaches its bounded return.
+         * Device API checks the request-level cellular fact and is a no-op
+         * for Wi-Fi-only or idle generations. */
+        if (device_connectivity_cancel_cellular_foreground_request()) {
             ESP_LOGI(TAG, "foreground ML307 HTTP request cancelled");
         }
 

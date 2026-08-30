@@ -95,10 +95,12 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	if waited > 500*time.Millisecond {
 		log.Printf("[IM serialization] waited user=%q duration=%v background=%v active_at_wait_start=%v active_loop=%q active_request_id=%q", msg.UserID, waited, msg.IsBackground, activeBeforeLock, activeLoopID, activeRequestID)
 	}
+	h.setPendingForegroundText(msg.UserID, msg.Text)
 	unlockOnce := sync.Once{}
 	result.Unlock = func() {
 		unlockOnce.Do(func() {
 			log.Printf("[IM serialization] release user=%q held=%v background=%v", msg.UserID, time.Since(waitStartedAt).Round(time.Millisecond), msg.IsBackground)
+			h.setPendingForegroundText(msg.UserID, "")
 			state.mu.Unlock()
 		})
 	}

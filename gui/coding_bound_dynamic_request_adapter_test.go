@@ -87,8 +87,8 @@ func TestCodingBoundDynamicRequestAdapterPublishesBindsAndRejectsMismatchedCalls
 	// Invalid arguments reach the durable bridge but never observe the live
 	// catalog/provider. Replaying the same call must return the journal result.
 	first := adapter.ExecuteToolCallWithContext(alias, `{}`, "call-invalid", codingBoundAdapterExecution("response-a"))
-	if !strings.Contains(first.Result, "parameter_schema_invalid") {
-		t.Fatalf("invalid arguments did not reach durable rejection: %#v", first)
+	if !strings.Contains(first.Result, "parameter_required_field_missing: query") {
+		t.Fatalf("invalid arguments did not reach durable rejection with the missing field localized: %#v", first)
 	}
 	replay := adapter.ExecuteToolCallWithContext(alias, `{}`, "call-invalid", codingBoundAdapterExecution("response-a"))
 	if replay.Result != first.Result {

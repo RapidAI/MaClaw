@@ -25,7 +25,35 @@ static device_status_t call_stage(connectivity_restart_coordinator_t *coordinato
     coordinator->stage = stage;
     const uint32_t timeout_ms = remaining_ms(coordinator, deadline_ms);
     if (timeout_ms == 0) return DEVICE_STATUS_TIMEOUT;
-    return operation(coordinator->host.context, timeout_ms);
+    const device_status_t status =
+        operation(coordinator->host.context, timeout_ms);
+    /* A bridge may return OK after consuming its entire allowance.  Treat
+     * that as a bounded transaction miss, not evidence that the next stage
+     * (or final COMPLETE) is still admissible.  Physical state remains
+     * owned by the bridge; the coordinator only records the terminal result. */
+    if (status == DEVICE_STATUS_OK && remaining_ms(coordinator, deadline_ms) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return status;
+}
+
+/* `physical_root_stop_committed` is an evidence fact, not an intention.  A
+ * parent deadline may expire after provisioning has stopped but before the
+ * physical-root bridge is ever entered; in that case a recovery policy must
+ * not infer that Wi-Fi/netif resources were retired.  Set the fact only at
+ * the final point immediately before the bounded bridge is called. */
+static device_status_t call_physical_root_stop(
+    connectivity_restart_coordinator_t *coordinator, uint64_t deadline_ms) {
+    coordinator->stage = CONNECTIVITY_RESTART_STAGE_STOP_PHYSICAL_ROOT;
+    const uint32_t timeout_ms = remaining_ms(coordinator, deadline_ms);
+    if (timeout_ms == 0) return DEVICE_STATUS_TIMEOUT;
+    coordinator->physical_root_stop_committed = true;
+    const device_status_t status =
+        coordinator->host.stop_physical_root(coordinator->host.context, timeout_ms);
+    if (status == DEVICE_STATUS_OK && remaining_ms(coordinator, deadline_ms) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return status;
 }
 
 device_status_t connectivity_restart_coordinator_init(
@@ -63,9 +91,7 @@ device_status_t connectivity_restart_coordinator_restart(
                         coordinator->host.stop_provisioning, deadline_ms);
     if (status != DEVICE_STATUS_OK) goto failed;
 
-    coordinator->physical_root_stop_committed = true;
-    status = call_stage(coordinator, CONNECTIVITY_RESTART_STAGE_STOP_PHYSICAL_ROOT,
-                        coordinator->host.stop_physical_root, deadline_ms);
+    status = call_physical_root_stop(coordinator, deadline_ms);
     if (status != DEVICE_STATUS_OK) goto failed;
     status = call_stage(coordinator,
                         CONNECTIVITY_RESTART_STAGE_INITIALIZE_LOGICAL_CONNECTIVITY,

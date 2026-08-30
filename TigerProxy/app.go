@@ -44,6 +44,7 @@ type App struct {
 	listen          string
 	lastError       string
 	mu              sync.Mutex
+	settingsMu      sync.Mutex
 	shown           bool
 	codexInstalling bool
 	promptCache     *llmpool.Cache
@@ -79,28 +80,43 @@ type ModelOption struct {
 }
 
 type Status struct {
-	Settings           Settings `json:"settings"`
-	Running            bool     `json:"running"`
-	LastError          string   `json:"last_error,omitempty"`
-	OpenAIURL          string   `json:"openai_url"`
-	AnthropicURL       string   `json:"anthropic_url"`
-	HealthURL          string   `json:"health_url"`
-	BindAddress        string   `json:"bind_address"`
-	LANURLs            []string `json:"lan_urls"`
-	LoggedIn           bool     `json:"logged_in"`
-	AutoStartSupported bool     `json:"auto_start_supported"`
-	AutoStartEnabled   bool     `json:"auto_start_enabled"`
-	PromptTokens       int64    `json:"prompt_tokens"`
-	CompletionTokens   int64    `json:"completion_tokens"`
-	TotalTokens        int64    `json:"total_tokens"`
-	CacheHits          int64    `json:"cache_hits"`
-	CacheMisses        int64    `json:"cache_misses"`
-	CacheEntries       int      `json:"cache_entries"`
-	CacheBytes         int64    `json:"cache_bytes"`
-	LastCacheProtocol  string   `json:"last_cache_protocol,omitempty"`
-	LastCacheOutcome   string   `json:"last_cache_outcome,omitempty"`
-	LastCacheReason    string   `json:"last_cache_reason,omitempty"`
-	LastCacheStreaming bool     `json:"last_cache_streaming,omitempty"`
+	Settings            Settings                   `json:"settings"`
+	Running             bool                       `json:"running"`
+	LastError           string                     `json:"last_error,omitempty"`
+	OpenAIURL           string                     `json:"openai_url"`
+	AnthropicURL        string                     `json:"anthropic_url"`
+	HealthURL           string                     `json:"health_url"`
+	BindAddress         string                     `json:"bind_address"`
+	LANURLs             []string                   `json:"lan_urls"`
+	LoggedIn            bool                       `json:"logged_in"`
+	AutoStartSupported  bool                       `json:"auto_start_supported"`
+	AutoStartEnabled    bool                       `json:"auto_start_enabled"`
+	PromptTokens        int64                      `json:"prompt_tokens"`
+	CompletionTokens    int64                      `json:"completion_tokens"`
+	TotalTokens         int64                      `json:"total_tokens"`
+	CacheHits           int64                      `json:"cache_hits"`
+	CacheMisses         int64                      `json:"cache_misses"`
+	CacheEntries        int                        `json:"cache_entries"`
+	CacheBytes          int64                      `json:"cache_bytes"`
+	LastCacheProtocol   string                     `json:"last_cache_protocol,omitempty"`
+	LastCacheOutcome    string                     `json:"last_cache_outcome,omitempty"`
+	LastCacheReason     string                     `json:"last_cache_reason,omitempty"`
+	LastCacheStreaming  bool                       `json:"last_cache_streaming,omitempty"`
+	CodexCredentialSync *CodexCredentialSyncStatus `json:"codex_credential_sync,omitempty"`
+}
+
+// CodexCredentialSyncStatus reports the best-effort synchronization performed
+// after a TigerProxy API-key change. A failure does not undo the key change:
+// the running proxy and its settings have already accepted the new key.
+type CodexCredentialSyncStatus struct {
+	Configured bool   `json:"configured"`
+	Updated    bool   `json:"updated"`
+	Error      string `json:"error,omitempty"`
+}
+
+type APIKeyGenerationResult struct {
+	APIKey              string                    `json:"api_key"`
+	CodexCredentialSync CodexCredentialSyncStatus `json:"codex_credential_sync"`
 }
 
 type LoginStartResult struct {
@@ -143,18 +159,30 @@ func (a *App) refreshModelsIfLoggedIn() {
 		return
 	}
 	newModels := modelOptionsFromOAuth(models)
-	// Skip write if the list hasn't actually changed (avoid unnecessary disk I/O and UI flicker)
-	if modelsEqual(s.Models, newModels) {
-		return
-	}
-	s.Models = newModels
-	if err := writeSettings(s); err != nil {
+	// Reload immediately before writing. The network request above may have taken
+	// long enough for the user to save a new API key, upstream, or model choice;
+	// only update models and never write the stale settings snapshot back.
+	if !a.updateModelsForCurrentToken(s.AccessToken, newModels) {
 		return
 	}
 	// Notify frontend to refresh the model dropdown
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "models-refreshed", nil)
 	}
+}
+
+// updateModelsForCurrentToken replaces only the cached model list, and only
+// when the token used for the refresh is still current. settingsMu serializes
+// the final read/write with interactive setting changes.
+func (a *App) updateModelsForCurrentToken(accessToken string, models []ModelOption) bool {
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	current, err := loadSettings()
+	if err != nil || current.AccessToken != accessToken || modelsEqual(current.Models, models) {
+		return false
+	}
+	current.Models = models
+	return writeSettings(current) == nil
 }
 
 func modelsEqual(a, b []ModelOption) bool {
@@ -183,7 +211,12 @@ func (a *App) LoadSettings() (Settings, error) {
 }
 
 func (a *App) SaveSettings(s Settings) (Status, error) {
-	cur, _ := loadSettings()
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	cur, err := loadSettings()
+	if err != nil {
+		return Status{}, fmt.Errorf("load settings: %w", err)
+	}
 	if strings.TrimSpace(s.ListenAddress) == "" {
 		s.ListenAddress = cur.ListenAddress
 	}
@@ -220,11 +253,16 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 		s.BaseURL != cur.BaseURL
 
 	if needsRestart {
-		if err := a.restartProxy(s); err != nil {
+		if err := a.applySettingsWithRestart(s); err != nil {
 			return Status{}, err
 		}
 	} else if s.APIKey != cur.APIKey {
-		// API key can be hot-updated without restart (same as GenerateAPIKey)
+		// Persist first so a failed settings write cannot leave the running proxy
+		// accepting a key that would be lost on the next restart.
+		if err := writeSettings(s); err != nil {
+			return Status{}, err
+		}
+		// API key can then be hot-updated without restart (same as GenerateAPIKey).
 		a.mu.Lock()
 		server := a.server
 		a.mu.Unlock()
@@ -233,10 +271,51 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 		}
 	}
 
-	if err := writeSettings(s); err != nil {
-		return Status{}, err
+	if !needsRestart && s.APIKey == cur.APIKey {
+		if err := writeSettings(s); err != nil {
+			return Status{}, err
+		}
+	}
+
+	if s.APIKey != cur.APIKey {
+		syncStatus := a.syncConfiguredCodexAPIKey(s.APIKey)
+		status, err := a.Status()
+		if err != nil {
+			return Status{}, err
+		}
+		status.CodexCredentialSync = &syncStatus
+		return status, nil
 	}
 	return a.Status()
+}
+
+// applySettingsWithRestart persists settings after the new listener has bound.
+// If persistence then fails, it restores the previous proxy and returns an
+// error rather than leaving the process running with unpersisted credentials.
+func (a *App) applySettingsWithRestart(s Settings) error {
+	previous, err := loadSettings()
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	wasRunning := a.isRunning()
+	if err := a.restartProxy(s); err != nil {
+		if wasRunning && !a.isRunning() {
+			if restoreErr := a.restartProxy(previous); restoreErr != nil {
+				return fmt.Errorf("restart proxy: %v; restore previous proxy: %w", err, restoreErr)
+			}
+			return fmt.Errorf("restart proxy: %v; restored previous proxy", err)
+		}
+		return err
+	}
+	if err := writeSettings(s); err == nil {
+		return nil
+	} else {
+		writeErr := err
+		if restoreErr := a.restartProxy(previous); restoreErr != nil {
+			return fmt.Errorf("proxy restarted but could not persist settings: %v; restore previous proxy: %w", writeErr, restoreErr)
+		}
+		return fmt.Errorf("proxy restarted but could not persist settings; restored previous proxy: %w", writeErr)
+	}
 }
 
 func (a *App) LoginSSO() (Status, error) {
@@ -247,8 +326,13 @@ func (a *App) LoginSSO() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 
-	s, _ := loadSettings()
+	s, err := loadSettings()
+	if err != nil {
+		return Status{}, fmt.Errorf("load settings: %w", err)
+	}
 	s.AccessToken = result.AccessToken
 	s.BaseURL = result.BaseURL
 	s.Email = result.Email
@@ -261,10 +345,7 @@ func (a *App) LoginSSO() (Status, error) {
 		s.APIKey = defaultProxyAPIKey
 	}
 	s = normalizeSettings(s)
-	if err := a.restartProxy(s); err != nil {
-		return Status{}, err
-	}
-	if err := writeSettings(s); err != nil {
+	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
 	return a.Status()
@@ -301,7 +382,12 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	s, _ := loadSettings()
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	s, err := loadSettings()
+	if err != nil {
+		return Status{}, fmt.Errorf("load settings: %w", err)
+	}
 	s.AccessToken = result.AccessToken
 	s.BaseURL = result.BaseURL
 	s.Email = result.Email
@@ -311,10 +397,7 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 		s.ModelID = normalizeModelID(result.ModelID)
 	}
 	s = normalizeSettings(s)
-	if err := a.restartProxy(s); err != nil {
-		return Status{}, err
-	}
-	if err := writeSettings(s); err != nil {
+	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
 	return a.Status()
@@ -332,16 +415,18 @@ func (a *App) cancelSSOLogin() {
 }
 
 func (a *App) Logout() (Status, error) {
-	s, _ := loadSettings()
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	s, err := loadSettings()
+	if err != nil {
+		return Status{}, fmt.Errorf("load settings: %w", err)
+	}
 	s.AccessToken = ""
 	s.Email = ""
 	s.ModelID = ""
 	s.Models = nil
 	s = normalizeSettings(s)
-	if err := a.restartProxy(s); err != nil {
-		return Status{}, err
-	}
-	if err := writeSettings(s); err != nil {
+	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
 	return a.Status()
@@ -441,19 +526,24 @@ func (a *App) TokenStats(period string) TokenStatsSummary {
 	return a.usageStore.Query(period)
 }
 
-func (a *App) GenerateAPIKey() (string, error) {
+func (a *App) GenerateAPIKey() (APIKeyGenerationResult, error) {
 	b := make([]byte, 18)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return APIKeyGenerationResult{}, err
 	}
 	newKey := "tp-" + hex.EncodeToString(b)
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 
 	// Persist to disk first — if this fails, the running proxy is unaffected
 	// and the user can retry without ending up in a broken state.
-	s, _ := loadSettings()
+	s, err := loadSettings()
+	if err != nil {
+		return APIKeyGenerationResult{}, fmt.Errorf("load settings: %w", err)
+	}
 	s.APIKey = newKey
 	if err := writeSettings(s); err != nil {
-		return "", err
+		return APIKeyGenerationResult{}, err
 	}
 
 	// Disk write succeeded — now hot-update the running proxy so the new key
@@ -465,7 +555,28 @@ func (a *App) GenerateAPIKey() (string, error) {
 		server.SetClientAPIKey(newKey)
 	}
 
-	return newKey, nil
+	// If this TigerProxy instance has already configured Codex, keep Codex's
+	// credential in lockstep. Previously, rotating the key only changed the
+	// proxy and settings.json; Codex continued sending the old auth.json key and
+	// every /v1/responses request failed with "invalid proxy api key".
+	syncStatus := a.syncConfiguredCodexAPIKey(newKey)
+
+	return APIKeyGenerationResult{APIKey: newKey, CodexCredentialSync: syncStatus}, nil
+}
+
+func (a *App) syncConfiguredCodexAPIKey(apiKey string) CodexCredentialSyncStatus {
+	result, err := configfile.SyncTigerProxyCodexAPIKeyIfConfigured(apiKey)
+	status := CodexCredentialSyncStatus{Configured: result.Configured, Updated: result.Updated}
+	if err != nil {
+		// The new key remains valid for TigerProxy even if the optional Codex
+		// sync cannot be written. Preserve a diagnostic rather than masking the
+		// successful key rotation from the caller.
+		fmt.Fprintf(os.Stderr, "[tigerproxy] API key changed but could not sync Codex credential: %v\n", err)
+		status.Error = err.Error()
+	} else if result.Updated {
+		fmt.Fprintln(os.Stderr, "[tigerproxy] API key synchronized to configured Codex")
+	}
+	return status
 }
 
 func (a *App) OpenURL(url string) error {
@@ -914,14 +1025,19 @@ func (a *App) startProxyFromDisk() {
 
 func (a *App) restartProxy(s Settings) error {
 	s = normalizeSettings(s)
-	if _, err := normalizeListenAddress(s.ListenAddress); err != nil {
+	listenAddress, err := normalizeListenAddress(s.ListenAddress)
+	if err != nil {
 		return err
 	}
-
+	s.ListenAddress = listenAddress
 	a.mu.Lock()
 	sameListenAddress := a.server != nil && a.listen == s.ListenAddress
 	a.mu.Unlock()
 	if sameListenAddress {
+		// TCP cannot bind a replacement on the same address while the current
+		// listener owns it. Stop only for this unavoidable hand-off; callers that
+		// need transactional behavior use applySettingsWithRestart to restore the
+		// prior proxy if the subsequent bind fails.
 		a.stopProxy()
 	}
 
@@ -995,6 +1111,8 @@ func (a *App) restartProxy(s Settings) error {
 		return fmt.Errorf("listen %s: %w", s.ListenAddress, err)
 	}
 
+	// For a changed address the replacement listener is ready, so now it is
+	// safe to stop the old proxy. A failed bind above leaves it uninterrupted.
 	if !sameListenAddress {
 		a.stopProxy()
 	}

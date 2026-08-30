@@ -1728,7 +1728,7 @@ func sanitizeConversationEntryForPersistence(entry ConversationEntry) Conversati
 	if content, ok := entry.Content.(string); ok {
 		entry.Content = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucination(content))
 	}
-	entry.ReasoningContent = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucination(security.RedactSensitiveString(entry.ReasoningContent)))
+	entry.ReasoningContent = stripPlainToolCallPersistenceLeak(StripRolePrefixHallucinationLeading(security.RedactSensitiveString(entry.ReasoningContent)))
 	if entry.ToolCalls != nil {
 		entry.ToolCalls = sanitizeConversationPersistenceValue("tool_calls", entry.ToolCalls)
 	}
@@ -1738,13 +1738,62 @@ func sanitizeConversationEntryForPersistence(entry ConversationEntry) Conversati
 	return entry
 }
 
+// stripPlainToolCallPersistenceLeak truncates content at the first leaked
+// tool-call markup (<tool_call>, "tool_call": {...}, <|tool_call_begin|>…).
+// A bare English mention of the word "tool_call" — common in reasoning text
+// such as "I'll issue a tool_call to bash" — is not markup and must not
+// truncate the entry.
 func stripPlainToolCallPersistenceLeak(content string) string {
 	lower := strings.ToLower(content)
 	idx := strings.Index(lower, "tool_call")
-	if idx < 0 {
-		return content
+	for idx >= 0 {
+		if cut, ok := toolCallMarkupCutIndex(lower, idx); ok {
+			return strings.TrimSpace(content[:cut])
+		}
+		next := strings.Index(lower[idx+len("tool_call"):], "tool_call")
+		if next < 0 {
+			return content
+		}
+		idx += len("tool_call") + next
 	}
-	return strings.TrimSpace(content[:idx])
+	return content
+}
+
+// toolCallMarkupCutIndex reports whether the "tool_call" occurrence at idx is
+// part of tool-call markup — wrapped in tag/quote/sentinel characters, used
+// as a JSON key ("tool_call":), or immediately followed by a JSON payload
+// (TOOL_CALL\n{...}) — and returns the index where truncation should start
+// (including an immediately preceding markup opener such as '<' or '"').
+// Plain-English uses ("the tool_call failed") are not markup.
+func toolCallMarkupCutIndex(lower string, idx int) (int, bool) {
+	if idx > 0 {
+		switch lower[idx-1] {
+		case '<', '"', '\'', '|', '`':
+			// Walk back over consecutive opener characters so sentinels like
+			// <|tool_call_begin|> are cut at the '<', not the '|'.
+			cut := idx - 1
+			for cut > 0 {
+				switch lower[cut-1] {
+				case '<', '"', '\'', '|', '`':
+					cut--
+				default:
+					return cut, true
+				}
+			}
+			return cut, true
+		}
+	}
+	end := idx + len("tool_call")
+	for end < len(lower) && (lower[end] == ' ' || lower[end] == '\t' || lower[end] == '\n' || lower[end] == '\r') {
+		end++
+	}
+	if end < len(lower) {
+		switch lower[end] {
+		case '>', '"', '\'', ':', '|', '`', '{', '[':
+			return idx, true
+		}
+	}
+	return 0, false
 }
 
 func sanitizeConversationPersistenceValue(key string, value interface{}) interface{} {

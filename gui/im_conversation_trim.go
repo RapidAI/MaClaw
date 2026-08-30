@@ -384,7 +384,10 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 			}
 			raw := sb.String()
 			if len(raw) > 32000 {
-				raw = raw[:32000] + "\n...(truncated)"
+				// Rune-safe cut: a byte-level slice can split a multi-byte
+				// UTF-8 rune and produce an invalid payload for the
+				// summarization LLM request.
+				raw = truncateUTF8Bytes(raw, 32000) + "\n...(truncated)"
 			}
 			// Summarizer is an LLM call — protect against hangs with a timeout.
 			// If the summarizer doesn't return within 15s, fall back to the
@@ -488,7 +491,7 @@ func truncateLastGroup(msgs []interface{}, start, end int, systemMsg, placeholde
 					headRunes := 400
 					tailRunes := 200
 					if len(runes) > headRunes+tailRunes {
-						truncated := string(runes[:headRunes]) + "\n…(截断)…\n" + string(runes[len(runes)-tailRunes:])
+						truncated := agent.TruncateToolContentPreservingHandle(content, headRunes, tailRunes)
 						cp := make(map[string]interface{}, len(mm))
 						for k, v := range mm {
 							cp[k] = v
@@ -662,11 +665,23 @@ func makeSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(s
 		}
 		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "conversation-trim-summary"})
 		result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), msgs, httpClient, 30*time.Second)
-		if err != nil || result.Content == "" {
+		if err != nil || result == nil || result.Content == "" {
 			return ""
 		}
 		return result.Content
 	}
+}
+
+// guardedCompactionSummarizer wraps makeSummarizer with the nil/unconfigured
+// guards every compaction caller needs: no HTTP client or no LLM endpoint
+// configured (tests, standalone handlers) → nil, so trimConversation keeps its
+// static-placeholder fallback. trimConversation also guards summarizer calls
+// with a 15s watchdog.
+func guardedCompactionSummarizer(cfg corelib.MaclawLLMConfig, httpClient *http.Client) func(string) string {
+	if httpClient == nil || strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return nil
+	}
+	return makeSummarizer(cfg, httpClient)
 }
 
 func trimHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {

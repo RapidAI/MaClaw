@@ -131,6 +131,14 @@ type RemoteCodingSubAgent struct {
 	verifiedTaskRelationService *codingTaskRelationService
 	verifiedTaskSubject         verifiedCodingSubject
 	verifiedTaskHandle          *verifiedCodingTaskHandle
+
+	// correlatedRemoteExecution records that this callback runs inside the
+	// host-verified remote coding runtime boundary.  Unlike the transport
+	// session ID, the runtime-bound semantic identity is trusted task
+	// lineage.  It allows the normal remote coding tool surface to be rendered;
+	// effectful calls still require the per-request surface epoch and provider
+	// response ID at dispatch time.
+	correlatedRemoteExecution bool
 }
 
 // ExecuteReadOnlyChild implements the shared corelib child executor contract
@@ -420,6 +428,13 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 			_ = registerTrustedCodingInvocationIdentity(store, request, execution.verifiedInvocationIdentity)
 			execution.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(store, request)
 		}
+		// The remote runtime runner itself is the host-verified ingress: it has
+		// already pinned the SSH target/session and created a fresh durable
+		// Attempt.  Unlike legacy HTTP/SSE compatibility calls, this boundary
+		// supplies the request/call correlation required by RunLoop.  A semantic
+		// identity is still needed for dynamic Skill/MCP capabilities, but must
+		// not gate the core SSH coding tools.
+		execution.correlatedRemoteExecution = execution.runtimeAttempt != nil
 		if r.loopCtx != nil {
 			unregisterRuntimeCancellation = r.loopCtx.RegisterCancelHookForContext(ctx, func() {
 				execution.dynamicLifecycleOwner.close(codingBoundDynamicRequestRuntimeClosed)
@@ -440,6 +455,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 		unregisterRuntimeCancellation()
 	}
 	execution.runtimeStore, execution.runtimeAttempt, execution.dynamicInvocationIdentity, execution.verifiedInvocationIdentity = nil, nil, nil, nil
+	execution.correlatedRemoteExecution = false
 	execution.verifiedTaskRelationService, execution.verifiedTaskHandle = nil, nil
 	execution.verifiedTaskSubject = verifiedCodingSubject{}
 	if ledgerErr != nil {
@@ -1603,6 +1619,7 @@ func (c *remoteCodingCallbacks) trackRemoteFileChanged(path string, created bool
 		c.firstEditSeq = seq
 	}
 	c.lastEditSeq = seq
+	c.rememberRemotePathExistence(path, true)
 }
 
 func (c *remoteCodingCallbacks) trackRemoteFileRead(path string) {
@@ -1884,10 +1901,13 @@ type remoteCodingCallbacks struct {
 	filesRead      []string
 	fileEdits      []remoteCodingFileAuditEvent
 	fileReads      []remoteCodingFileAuditEvent
-	knownExisting  map[string]bool
-	commandsRun    []CodingSubAgentCommandResult
-	searchesRun    []CodingSubAgentSearchResult
-	localization   codingSubAgentLocalizationState
+	// knownExisting records probed paths: true if a read/write proved the file
+	// exists, false if a lookup proved it is absent. A missing key means
+	// unprobed and must not be treated as a new-file exemption.
+	knownExisting map[string]bool
+	commandsRun   []CodingSubAgentCommandResult
+	searchesRun   []CodingSubAgentSearchResult
+	localization  codingSubAgentLocalizationState
 
 	// Local workbench extensions (skills / MCP) for full remote coding env.
 	localExtSelected bool
@@ -2089,9 +2109,12 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 }
 
 func (c *remoteCodingCallbacks) usesUncorrelatedStaticCompatibilityModelSurface() bool {
-	// Remote Coding has no Horizon exception. This is a transport property, not
-	// a classification of the task or remote target.
-	return c != nil
+	// A runtime-bound remote attempt has the same request/call correlation
+	// contract as the normal Coding agent.  Keep the conservative compatibility
+	// surface only for unverified/legacy callers (tests and stale transports).
+	// This is deliberately a host-owned fact, never inferred from task wording
+	// or the SSH session ID.
+	return c != nil && (c.agent == nil || !c.agent.correlatedRemoteExecution)
 }
 
 // trajectoryToolSurfaceSnapshot is audit-only. It must not call
@@ -2231,15 +2254,13 @@ func (c *remoteCodingCallbacks) setStaticCompatibilitySurface(definitions []map[
 	if c == nil {
 		return 0
 	}
-	c.staticCompatibilitySurfaceMu.Lock()
-	c.staticCompatibilitySurface = codingStaticCompatibilitySurfaceNames(definitions)
 	// See the local Coding callback: RunLoop has already issued the current
 	// request epoch before asking us to render. Preserve it while replacing only
 	// this request's definitions; the successor's BeginToolSurfaceEpoch call
-	// advances the fence before its own render.
-	c.staticCompatibilityRevision++
-	revision := c.staticCompatibilityRevision
-	c.staticCompatibilitySurfaceMu.Unlock()
+	// advances the fence before its own render. Identical name sets keep the
+	// current control-plane revision so a report accepted this turn can
+	// authorize the following turn's ssh_edit_file.
+	revision := replaceCodingStaticCompatibilitySurface(&c.staticCompatibilitySurfaceMu, &c.staticCompatibilitySurface, &c.staticCompatibilityRevision, definitions)
 	// See the local callback: this is an in-process control-plane CAS fence,
 	// not an SSH/provider identity or durable task revision.
 	c.todos.bindControlPlaneRevision(revision)
@@ -2359,11 +2380,8 @@ func (c *remoteCodingCallbacks) quarantineStaticCompatibilitySurface() {
 	if c == nil {
 		return
 	}
-	c.staticCompatibilitySurfaceMu.Lock()
-	c.staticCompatibilityQuarantined = true
-	c.staticCompatibilitySurface = map[string]struct{}{}
-	c.staticCompatibilityEpoch = ""
-	c.staticCompatibilitySurfaceMu.Unlock()
+	revision := quarantineCodingStaticCompatibilitySurface(&c.staticCompatibilitySurfaceMu, &c.staticCompatibilityQuarantined, &c.staticCompatibilityEpoch, &c.staticCompatibilityRevision, &c.staticCompatibilitySurface)
+	c.todos.bindControlPlaneRevision(revision)
 }
 
 func (c *remoteCodingCallbacks) ExecuteTool(name, argsJSON string) string {
@@ -2377,10 +2395,12 @@ func (c *remoteCodingCallbacks) BuildToolsForModelRequest(userText string, itera
 		return nil
 	}
 	tools := c.BuildTools("")
-	// Remote workspace writes/commands are external effects. Keep them out of
-	// the uncorrelated S0.5 static belt until an S1-C adapter binds calls to a
-	// real provider response and journal; S3 control-plane names stay separate.
-	tools = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostRemote, tools)
+	// Uncorrelated legacy transports stay read-only. Runtime-bound remote
+	// coding uses the complete normal remote surface, with effectful dispatch
+	// guarded below by request epoch + provider response correlation.
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		tools = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostRemote, tools)
+	}
 	revision := c.setStaticCompatibilitySurface(tools)
 	tools = annotateCodingTodoDefinitionForControlPlane(tools, revision, c.todos.controlPlaneSnapshot().Version)
 	c.recordStaticCompatibilitySurface(tools, revision)
@@ -2425,6 +2445,16 @@ func (c *remoteCodingCallbacks) ExecuteToolCallWithContext(name, argsJSON, callI
 	}
 	if !c.staticCompatibilityExecutionEpochAllowed(execution.SurfaceEpoch) {
 		return rejectedCodingStaticCompatibilityTool(name)
+	}
+	// Workspace mutations, shell execution, artifact acquisition, and child
+	// delegation are admitted only when RunLoop supplies both correlation
+	// values.  The semantic runtime identity opens the surface; it is not a
+	// substitute for binding this concrete model call to its response.
+	if item, ok := codingStaticCompatibilityInventoryLookup(codingStaticCompatibilityHostRemote, name); ok &&
+		!codingStaticCompatibilityItemAllowedWithoutTransportCorrelation(item) {
+		if strings.TrimSpace(execution.SurfaceEpoch) == "" || strings.TrimSpace(execution.ResponseID) == "" {
+			return rejectedCodingStaticCorrelationTool(name)
+		}
 	}
 	_ = callID
 	// Do not re-enter the epoch-less compatibility API after this request-bound
@@ -3070,6 +3100,16 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
+	// Control-plane refusals are execution failures. Classifying them as
+	// success made the model treat a blocked ssh_edit_file / stale todo_write
+	// as a landed change and then retry report_localization until drift-stop.
+	if strings.HasPrefix(lower, "invalid localization") ||
+		strings.HasPrefix(lower, "bug-fix edit blocked:") ||
+		strings.HasPrefix(lower, "bug-fix write blocked:") ||
+		strings.HasPrefix(lower, "control_plane_stale:") ||
+		strings.HasPrefix(lower, "localization state unavailable") {
+		return true
+	}
 
 	// Framework / transport failures (structural Chinese phrases — not bare "失败",
 	// which appears constantly inside application logs being grepped).
@@ -3724,17 +3764,26 @@ func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string 
 	result := c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
 	if remoteCodingToolOutcome(result) == "success" && remoteReadFileResultHasUsefulEvidence(result) {
 		c.trackRemoteFileRead(path)
-		if c.knownExisting == nil {
-			c.knownExisting = make(map[string]bool)
-		}
-		c.knownExisting[remoteCleanPath(path)] = true
+		c.rememberRemotePathExistence(path, true)
 		// A range beginning after line one is useful to the agent but is not a
 		// faithful source preview of the file; keep the user's current preview.
 		if remoteReadCanUpdatePreview(offset) && !remotePreviewOutputIsTransportTruncated(result) {
 			c.emitRemoteCodePreview(path, extractRemoteReadPreviewContent(result), "", "read", remotePreviewOutputIsTruncated(result), false)
 		}
+	} else if remoteCodingPathLookupLooksUnsuccessful(result) {
+		c.rememberRemotePathExistence(path, false)
 	}
 	return result
+}
+
+func (c *remoteCodingCallbacks) rememberRemotePathExistence(path string, exists bool) {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	if c.knownExisting == nil {
+		c.knownExisting = make(map[string]bool)
+	}
+	c.knownExisting[remoteCleanPath(path)] = exists
 }
 
 func remoteReadCanUpdatePreview(offset int) bool { return offset <= 1 }
@@ -4535,7 +4584,7 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 以下第 4、5、6 步是完成任务的质量门禁；只要修改或创建了文件，就必须执行并在最终回复中报告。唯一例外是第 5 步：当前多步骤计划明确把编译/build/test 交给后续独立步骤时，不要提前构建，但第 4、6 步仍为必做项。
 
 1. 修改文件前先 ssh_read_file 确认当前内容
-1a. 修复 bug 时先提取错误文本/堆栈/入口与期望-实际差异；优先调用 code_navigation（远端 .codegraph + codegraph，自动回退 rg/grep）定位定义、引用、调用者/被调用者。形成候选与反证，复现或说明无法复现的原因。对陌生/版本敏感/第三方事实必须调用本地 web_search（精确错误 + 组件/版本）并优先阅读官方来源；若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内逻辑则记录无需搜索的理由。随后调用 report_localization；根因文件与证据不匹配时禁止修改。
+1a. 修复 bug 时先提取错误文本/堆栈/入口与期望-实际差异；优先调用 code_navigation（远端 .codegraph + codegraph，自动回退 rg/grep）定位定义、引用、调用者/被调用者。形成候选与反证，复现或说明无法复现的原因。对陌生/版本敏感/第三方事实必须调用本地 web_search（精确错误 + 组件/版本）并优先阅读官方来源；若搜索只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内逻辑则记录无需搜索的理由。随后调用 report_localization；被接受后即可在后续轮次修改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。
 2. 优先做最小、聚焦的修改；不要顺手重构无关代码
 3. 使用 ssh_edit_file 做精确修改（小改动）或 ssh_write_file 重写文件（大改动）
 4. 修改后再次 ssh_read_file 读取关键片段，确认远程文件确实变成预期内容

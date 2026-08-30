@@ -47,13 +47,20 @@ func applyExecutionAffordances(text string, result *ClassificationResult) {
 }
 
 // declaredCompositeIntentPair is the only 0.20-gap exception: lookup labels
-// may keep document_generate/live_data_visual (and vice versa) even when the
-// score gap is wide.
+// may keep document_generate/live_data_visual/office (and vice versa) even
+// when the score gap is wide. The office pair is escalation evidence only —
+// measurements on the installed 768-dim model (2026-08-25) show office-only
+// negatives ("把数据整理成Excel表格" search 0.737) outscoring genuine
+// find-images-online requests ("网上找几张布偶猫照片，做成生日PPT" search
+// 0.652), so no local floor separates them and the pair must stay a tree
+// decision, never a local grant.
 func declaredCompositeIntentPair(left, right IntentLabel) bool {
 	return (isLookupIntentLabel(left) && right == LabelDocumentGenerate) ||
 		(isLookupIntentLabel(right) && left == LabelDocumentGenerate) ||
 		(isLookupIntentLabel(left) && right == LabelLiveDataVisual) ||
-		(isLookupIntentLabel(right) && left == LabelLiveDataVisual)
+		(isLookupIntentLabel(right) && left == LabelLiveDataVisual) ||
+		(isLookupIntentLabel(left) && right == LabelOffice) ||
+		(isLookupIntentLabel(right) && left == LabelOffice)
 }
 
 // locallyVerifiedEmbeddingCompositePair limits the L2 fast path to capability

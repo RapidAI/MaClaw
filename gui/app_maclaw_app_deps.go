@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func maclawAppResolvedDependenciesForSelectedEntries(raw any, entries []parsedMaclawAppEntry) []any {
@@ -2613,6 +2614,9 @@ func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDepend
 	if a == nil || dep == nil {
 		return false, nil
 	}
+	if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+		return true, fmt.Errorf("dependency skill update blocked: evolution compensation queue unavailable: %w", err)
+	}
 	name := strings.TrimSpace(dep.InstalledName)
 	if name == "" {
 		return false, nil
@@ -2678,9 +2682,33 @@ func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDepend
 	if err := writeSkillScanCacheForInstalledEntry(updated, report); err != nil {
 		return true, fmt.Errorf("write skill scan cache: %w", err)
 	}
+	requestID := fmt.Sprintf("evo_maclaw_app_dep_%d", time.Now().UnixNano())
+	compensation := cskill.NewEvolutionCompensationRecord(requestID, name, "install", "", nil, false, a.skillExecutor.loadSkills(), "maclaw_app_dependency_update_rollback_incomplete")
+	compensation.SetCreatedDirectories([]string{targetDir})
+	if _, statErr := os.Stat(targetDir); statErr == nil {
+		compensation.SetDirectoryBackupIntent(targetDir, targetDir+".prev")
+	} else if !os.IsNotExist(statErr) {
+		return true, fmt.Errorf("check existing dependency skill dir: %w", statErr)
+	} else {
+		compensation.SetDirectoryBackup(targetDir, "", false)
+	}
+	if err := cskill.PersistEvolutionCompensation(compensation); err != nil {
+		return true, fmt.Errorf("persist dependency update compensation: %w", err)
+	}
 	backupDir := ""
+	transactionActive := true
+	finalAudited := false
+	defer func() {
+		if !transactionActive || finalAudited {
+			return
+		}
+		if rollbackErr := cskill.RestoreEvolutionCompensation(compensation, func(skills []corelib.NLSkillEntry) error { return a.skillExecutor.restoreSkillsSnapshot(skills) }, func() error { return a.refreshSkillIndexesAfterMutationChecked(name) }); rollbackErr != nil {
+			compensation.LastError = rollbackErr.Error()
+			_ = cskill.PersistEvolutionCompensation(compensation)
+		}
+	}()
 	if _, err := os.Stat(targetDir); err == nil {
-		backupDir = targetDir + ".bak-" + shortRandomHex()
+		backupDir = targetDir + ".prev"
 		if err := os.Rename(targetDir, backupDir); err != nil {
 			return true, fmt.Errorf("backup existing dependency skill dir: %w", err)
 		}
@@ -2695,15 +2723,36 @@ func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDepend
 	}
 	cleanupStaging = false
 	updated.SkillDir = targetDir
+	compensation.SetDirectoryBackup(targetDir, backupDir, backupDir != "")
+	compensation.SetDirectoryPublished(true)
+	if err := cskill.PersistEvolutionCompensation(compensation); err != nil {
+		return true, fmt.Errorf("persist published dependency compensation: %w", err)
+	}
 	if err := a.updateRegisteredMaclawAppDependencySkill(*updated); err != nil {
-		_ = os.RemoveAll(targetDir)
-		if backupDir != "" {
-			_ = os.Rename(backupDir, targetDir)
-		}
+		// Dependency updates are part of the install lifecycle. Keep the
+		// replacement and backup intact until the caller's durable transaction
+		// can restore the exact pre-update directory; never ad-hoc delete it.
 		return true, err
 	}
+	if err := a.refreshSkillIndexesAfterMutationChecked(name, *updated); err != nil {
+		return true, fmt.Errorf("refresh skill index: %w", err)
+	}
+	if err := cskill.RecordEvolutionEventStrict("skill:definition_installed", map[string]string{
+		"skill": name, "action": "install", "decision": "applied", "via": "maclaw_app_dependency",
+		"request_id": requestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(a),
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return true, fmt.Errorf("dependency update final audit: %w", err)
+	}
+	finalAudited = true
 	if backupDir != "" {
-		_ = os.RemoveAll(backupDir)
+		if err := os.RemoveAll(backupDir); err != nil {
+			return true, fmt.Errorf("dependency update backup cleanup pending: %w", err)
+		}
+	}
+	transactionActive = false
+	if err := cskill.ClearEvolutionCompensation(requestID, name, "install"); err != nil {
+		return true, fmt.Errorf("dependency update cleanup pending: %w", err)
 	}
 	if a.hubUpdCache != nil {
 		a.hubUpdCache.invalidate()

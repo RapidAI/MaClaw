@@ -18,14 +18,16 @@ func TestLiveDataVisualPlansClosedArtifactPipeline(t *testing.T) {
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
 		"user-1", "生成一张北京天气实况图", "desktop", "root-live-visual", "turn-live-visual", liveDataVisualClassification(), nil,
 	)
-	if err != nil || !handled || surface == nil || len(defs) != 1 {
+	// The face is the declared search plus the retrieval bundle's web_fetch
+	// offer.
+	if err != nil || !handled || surface == nil || len(defs) != 2 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
 	if !planHasCapabilities(surface.plan, "information.search.web", "visual.render.live_data", "artifact.deliver.current_channel") {
 		t.Fatalf("plan=%#v", surface.plan.Selections)
 	}
-	searchName := extractToolName(defs[0])
-	if surface.grants[searchName].AdapterName != semanticTrustedWebSearchAdapter {
+	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	if searchName != "web_search" {
 		t.Fatalf("initial grants=%#v", surface.grants)
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop", userText: "生成一张北京天气实况图", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "desktop", DestinationID: "user:user-1"}}}
@@ -43,7 +45,7 @@ func TestLiveDataVisualPlansClosedArtifactPipeline(t *testing.T) {
 	if deliverName == "" || !currentChannelImageDeliveryReady(surface, deliverGrant) {
 		t.Fatalf("delivery not unlocked: grants=%#v", surface.grants)
 	}
-	if got := cb.ExecuteTool(deliverName, `{}`); !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteTool(deliverName, `{}`); !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("deliver=%q", got)
 	}
 	if cb.semanticDeliveryImageKey == "" {
@@ -57,11 +59,15 @@ func TestLiveDataVisualHostClosesModelStopGap(t *testing.T) {
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
 		"user-1", "生成一张北京天气实况图", "desktop", "root-live-visual-auto", "turn-live-visual-auto", liveDataVisualClassification(), nil,
 	)
-	if err != nil || !handled || surface == nil || len(defs) != 1 {
+	if err != nil || !handled || surface == nil || len(defs) != 2 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
+	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	if searchName == "" {
+		t.Fatalf("search grant missing: defs=%#v", defs)
+	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "desktop", userText: "生成一张北京天气实况图", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "desktop", DestinationID: "user:user-1"}}}
-	if got := cb.ExecuteTool(extractToolName(defs[0]), `{"query":"北京天气"}`); strings.Contains(got, "[system rejected]") {
+	if got := cb.ExecuteTool(searchName, `{"query":"北京天气"}`); strings.Contains(got, "[system rejected]") {
 		t.Fatalf("search=%q", got)
 	}
 	resp := &IMAgentResponse{Text: "已查询到北京天气数据"}

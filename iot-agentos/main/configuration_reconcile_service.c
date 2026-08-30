@@ -14,6 +14,7 @@
 #include "display_service.h"
 #include "presentation/scene_presenter.h"
 #include "services/audio_arbitration_service.h"
+#include "battery_policy_service.h"
 
 static StaticSemaphore_t s_mutex_storage;
 static SemaphoreHandle_t s_mutex;
@@ -21,6 +22,11 @@ static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static configuration_apply_state_t s_apply_state;
 static bool s_initialized;
 static bool s_stopping;
+/* Reversible admission fence shared by System Sleep and destructive
+ * configuration transactions.  It is distinct from `s_stopping`: the
+ * retained expiry worker and timers remain allocated, but no reconcile may
+ * start or rearm while a caller is fencing Configuration/Persistence. */
+static bool s_system_sleep_preparing;
 static bool s_reconciling;
 static device_status_t s_last_status = DEVICE_STATUS_UNAVAILABLE;
 static configuration_reconcile_authorization_current_t s_authorization_current;
@@ -190,6 +196,7 @@ static void rearm_expiry_timer_under_mutex(void) {
     if (!s_expiry_timer) return;
     taskENTER_CRITICAL(&s_state_lock);
     const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing &&
                           !s_expiry_stop_requested;
     taskEXIT_CRITICAL(&s_state_lock);
     if (!admitted) return;
@@ -198,6 +205,7 @@ static void rearm_expiry_timer_under_mutex(void) {
         configuration_service_next_runtime_override_expiry_ms(&expiry_ms);
     taskENTER_CRITICAL(&s_state_lock);
     const bool still_admitted = s_initialized && !s_stopping &&
+                                !s_system_sleep_preparing &&
                                 !s_expiry_stop_requested;
     taskEXIT_CRITICAL(&s_state_lock);
     if (!still_admitted) return;
@@ -250,7 +258,8 @@ static bool schedule_or_cancel_retry(device_status_t status,
     }
 
     taskENTER_CRITICAL(&s_state_lock);
-    const bool admitted = s_initialized && !s_stopping;
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing;
     uint32_t next_attempt = s_retry_attempt;
     if (reason != CONFIGURATION_RECONCILE_REASON_RETRY || next_attempt == 0u) {
         next_attempt = 1u;
@@ -338,7 +347,7 @@ static configuration_apply_observation_t observation_from_brightness_ack(
         state.struct_size != sizeof(state) ||
         state.abi_version != DISPLAY_SERVICE_BRIGHTNESS_STATE_ABI_VERSION ||
         state.last_status != DEVICE_STATUS_OK || !state.known ||
-        state.percent != expected_percent) {
+        state.percent != battery_policy_service_limit_backlight_percent(expected_percent)) {
         return CONFIGURATION_APPLY_OBSERVATION_UNKNOWN;
     }
     return CONFIGURATION_APPLY_OBSERVATION_APPLIED;
@@ -543,6 +552,7 @@ device_status_t configuration_reconcile_service_init(void) {
         s_retry_authorization = (configuration_reconcile_authorization_t){0};
     }
     s_stopping = false;
+    s_system_sleep_preparing = false;
     s_initialized = true;
     s_expiry_stop_requested = false;
     const bool need_expiry_task = !s_expiry_task;
@@ -602,12 +612,76 @@ device_status_t configuration_reconcile_service_deinit(uint32_t timeout_ms) {
     }
     taskENTER_CRITICAL(&s_state_lock);
     s_initialized = false;
+    s_system_sleep_preparing = false;
     s_reconciling = false;
     s_retry_authorization_valid = false;
     s_retry_authorization = (configuration_reconcile_authorization_t){0};
     taskEXIT_CRITICAL(&s_state_lock);
     xSemaphoreGive(s_mutex);
     return DEVICE_STATUS_OK;
+}
+
+device_status_t configuration_reconcile_service_prepare_system_sleep(
+    uint32_t timeout_ms) {
+    if (timeout_ms == 0u || !s_mutex) return DEVICE_STATUS_INVALID_ARGUMENT;
+    taskENTER_CRITICAL(&s_state_lock);
+    if (!s_initialized || s_stopping || s_system_sleep_preparing) {
+        taskEXIT_CRITICAL(&s_state_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    /* Publish the fence before waiting for the serialized owner.  A reconcile
+     * which already crossed the admission point is allowed to finish under
+     * `s_mutex`; all later ingress observes the fence and fails closed. */
+    s_system_sleep_preparing = true;
+    /* A retry callback may already have been selected by the ESP timer task;
+     * stopping the timer cannot retract that callback.  Invalidate the
+     * pending retry generation while publishing the fence, so a late notify
+     * cannot consume an old failure after the destructive transaction has
+     * begun.  The durable Configuration revision remains authoritative and a
+     * later explicit reconcile may establish a fresh retry curve. */
+    if (s_retry_armed || s_retry_due_us != 0u) {
+        if (++s_retry_generation == 0u) ++s_retry_generation;
+        s_retry_armed = false;
+        s_retry_due_us = 0u;
+        s_retry_delivered_generation = 0u;
+        s_retry_authorization_valid = false;
+        s_retry_authorization = (configuration_reconcile_authorization_t){0};
+    }
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (s_expiry_timer) (void)esp_timer_stop(s_expiry_timer);
+    if (s_retry_timer) (void)esp_timer_stop(s_retry_timer);
+    /* Taking the same mutex proves that an in-flight reconcile has published
+     * its complete apply state before the caller proceeds to Configuration
+     * and Persistence fencing.  On timeout the fence intentionally remains
+     * closed until the explicit ABORT path is able to reopen it. */
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool valid = s_initialized && !s_stopping &&
+                       s_system_sleep_preparing;
+    taskEXIT_CRITICAL(&s_state_lock);
+    xSemaphoreGive(s_mutex);
+    return valid ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
+}
+
+void configuration_reconcile_service_abort_system_sleep_prepare(void) {
+    if (!s_mutex) return;
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool preparing = s_system_sleep_preparing;
+    const bool stopping = s_stopping;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!preparing || stopping ||
+        xSemaphoreTake(s_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return;
+    }
+    taskENTER_CRITICAL(&s_state_lock);
+    if (!s_stopping) s_system_sleep_preparing = false;
+    taskEXIT_CRITICAL(&s_state_lock);
+    xSemaphoreGive(s_mutex);
+    /* Rearm only after the fence is observably open and never while holding
+     * the service mutex; timer callbacks cannot enter consumer code here. */
+    rearm_expiry_timer();
 }
 
 static device_status_t reconcile_internal(
@@ -617,7 +691,8 @@ static device_status_t reconcile_internal(
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
     taskENTER_CRITICAL(&s_state_lock);
-    const bool admitted = s_initialized && !s_stopping && !s_reconciling;
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing && !s_reconciling;
     if (admitted) s_reconciling = true;
     taskEXIT_CRITICAL(&s_state_lock);
     if (!admitted) return DEVICE_STATUS_BUSY;
@@ -626,6 +701,20 @@ static device_status_t reconcile_internal(
         s_reconciling = false;
         taskEXIT_CRITICAL(&s_state_lock);
         return DEVICE_STATUS_TIMEOUT;
+    }
+
+    /* Admission is sampled before waiting on the serialized mutex. A
+     * destructive reset/System Sleep may publish its fence while this caller
+     * is queued, so sample it again while owning the mutex and before loading
+     * Configuration or invoking any Audio/Display side effect. */
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool still_admitted = s_initialized && !s_stopping &&
+                                !s_system_sleep_preparing && s_reconciling;
+    if (!still_admitted) s_reconciling = false;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!still_admitted) {
+        xSemaphoreGive(s_mutex);
+        return DEVICE_STATUS_BUSY;
     }
 
     /* Validate only after taking the serialized owner: a rejected/revoked

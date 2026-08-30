@@ -90,6 +90,7 @@ static app_ui_alarm_presentation_t s_alarm_presentation;
 static StaticSemaphore_t s_replay_mutex_storage;
 static SemaphoreHandle_t s_replay_mutex;
 static uint32_t s_next_ui_revision;
+static bool s_initialized;
 
 /* Must run under s_model_lock.  The counter is intentionally process-local:
  * persisted UI state, panel DMA completion and renderer animation frames are
@@ -402,8 +403,16 @@ void app_ui_init(void) {
     strlcpy(s_model.pet_skin, "clawmate", sizeof(s_model.pet_skin));
     strlcpy(s_model.command_stage, "正在处理", sizeof(s_model.command_stage));
     model_touch_locked();
+    s_initialized = true;
     taskEXIT_CRITICAL(&s_model_lock);
     replay_unlock();
+}
+
+bool app_ui_is_initialized(void) {
+    taskENTER_CRITICAL(&s_model_lock);
+    const bool initialized = s_initialized;
+    taskEXIT_CRITICAL(&s_model_lock);
+    return initialized;
 }
 
 app_ui_model_t app_ui_snapshot(void) {

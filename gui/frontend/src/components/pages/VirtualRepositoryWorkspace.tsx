@@ -2,6 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { useDialog } from '../CustomDialog';
 import type { CodingTaskLaunch as SharedCodingTaskLaunch } from '../ai/codingTaskLaunch';
+import { utilitiesBackHint, utilitiesBackLabel } from '../../i18n/utilitiesLabels';
 import './VirtualRepositoryWorkspace.css';
 
 type RepoKind = 'git' | 'svn' | 'local';
@@ -444,7 +445,7 @@ function VRepoDialog({ title, titleId, onClose, closeLabel, closeDisabled = fals
 export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: { isZh: boolean; onBack: () => void; onOpenCodingTask?: (launch: CodingTaskLaunch) => void }) {
 	const { showConfirm } = useDialog();
 	    const text = isZh ? {
-        title: '虚拟仓库', back: '返回实用工具', newRepo: '新建虚拟仓库', openRepo: '打开已有目录',
+        title: '虚拟仓库', back: utilitiesBackLabel('zh-Hans'), newRepo: '新建虚拟仓库', openRepo: '打开已有目录',
         recent: '最近使用', repositoryList: '仓库', searchRepositories: '搜索仓库', repositoryCount: '个仓库', noSearchResults: '没有匹配的虚拟仓库', selectRepository: '选择一个虚拟仓库', selectRepositoryHint: '从左侧打开仓库，查看目录映射、健康状态和操作记录。', localRepository: '本机', remoteRepository: '远程 SSH', mappings: '个映射', health: '健康概览', healthy: '正常', needsAttention: '需处理', pendingStatus: '尚未检查', lastOpened: '最近打开', repositoryActions: '仓库操作',
         empty: '尚未创建虚拟仓库', emptyHint: '选择一个根目录，MaClaw 会在其中创建 .vrepo/manifest.json。',
         name: '名称', root: '根目录', choose: '选择目录', save: '保存', cancel: '取消', refresh: '刷新状态',
@@ -464,7 +465,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			location: '位置', localLocation: '本机', remoteLocation: '远程 SSH', editConnection: '编辑连接', repairConnectionHint: '此处仅用于验证并修复 SSH 连接；连接恢复后请关闭窗口并点击「立即同步」。', moveRoot: '迁移根目录', moveRootTitle: '迁移仓库根目录', moveRootHint: '复制文件、验证仓库清单后才会切换到新位置；旧根目录会保留，方便你确认后自行清理。', currentRoot: '当前根目录', destinationRoot: '新根目录', rootManagedByMigration: '已有仓库的根目录由“迁移根目录”操作管理。', inspectMigration: '检查迁移', migrationReady: '预检通过，可以迁移。', migrationConflict: '目标目录不能包含另一个虚拟仓库，且不能与源目录重叠。已有的同名文件也会阻止迁移。', sourceFiles: '源文件', destinationFiles: '目标文件', migrateNow: '开始迁移', migrating: '正在迁移…', migrationComplete: '迁移完成。旧根目录仍被保留。', chooseDestination: '选择目标目录', previewAgain: '重新检查', chooseNewRoot: '请选择新的仓库根目录。', locationUnavailable: '根目录不可用', locationUnavailableHint: '此仓库来自其它设备，尚未在本机设置根目录。请选择一个空目录，或包含同一虚拟仓库的目录。', setLocalRoot: '设置本机根目录', bindLocalRootTitle: '设置本机仓库根目录', bindLocalRootHint: '此设置仅保存在本机，不会覆盖其它设备的目录位置。', bindLocalRoot: '绑定根目录', bindingRoot: '正在绑定…', reconnectLocalRoot: '重新连接本机根目录', reconnectRoot: '重新连接根目录', reconnectRootTitle: '重新连接本机根目录', reconnectRootHint: '请选择包含同一虚拟仓库清单的目录；不会初始化或覆盖目录内容。', reconnectRootUnavailableHint: '原本机根目录不可用。只能重新连接到匹配的仓库。', rootRepairListHint: '原本机根目录不可用。请选择包含同一虚拟仓库的目录以重新连接。', startCodingTask: '启动编程任务', startingCodingTask: '正在启动…', server: '服务器', port: '端口', sshUser: 'SSH 用户名', sshPassword: 'SSH 密码', remoteRoot: '远程根目录', testConnection: '测试连接', trustHostKey: '首次创建时设置信任主机密钥', hostKeyPrompt: '首次连接，请核对并信任服务器指纹', hostKeyChangedPrompt: '服务器主机密钥与已保存指纹不一致。请先独立核对下方指纹；确认后移除旧记录，再重新测试并明确保存新密钥。', removeSavedHostKey: '移除已保存密钥', removeSavedHostKeyConfirm: '这将移除该远程仓库的已保存 SSH 主机密钥，不会信任下方的新密钥。请先通过独立渠道核对指纹；移除后必须重新测试并明确保存新密钥。', connected: '连接成功', rootMissingPrompt: 'SSH 已连接，但远程根目录不存在。是否创建该目录？', createRemoteRoot: '创建远程根目录', createRemoteRootConfirm: '确认在远程服务器上创建此根目录？',
 		cleanStatus: '仓库干净', changedStatus: '仓库有变更', errorStatus: '仓库状态异常', changes: '变更', changesTitle: 'Git 变更', changesHint: '查看工作区文件变更与最近提交关系；此页面只读，不会修改仓库。', refreshChanges: '刷新变更', loadingChanges: '正在读取变更…', noChanges: '工作区没有未提交的变更', changesTruncated: '仅显示前 2,000 个变更文件；请使用 Git 客户端查看完整列表。', changedFiles: '文件变更', recentCommits: '最近提交', selectChange: '选择一个文件查看差异', noDiff: '该文件没有可显示的文本差异', conflict: '冲突', staged: '已暂存', modified: '已修改', untracked: '未跟踪', renamed: '重命名', deleted: '已删除', graph: '提交图', changesUnavailable: '仅已检出的 Git 映射可查看变更', closeChanges: '关闭变更',
     } : {
-        title: 'Virtual Repository', back: 'Back to utilities', newRepo: 'New virtual repository', openRepo: 'Open existing root',
+        title: 'Virtual Repository', back: utilitiesBackLabel('en'), newRepo: 'New virtual repository', openRepo: 'Open existing root',
         recent: 'Recent', repositoryList: 'Repositories', searchRepositories: 'Search repositories', repositoryCount: 'repositories', noSearchResults: 'No virtual repositories match your search', selectRepository: 'Select a virtual repository', selectRepositoryHint: 'Open a repository from the list to review mappings, health, and operations.', localRepository: 'Local', remoteRepository: 'Remote SSH', mappings: 'mappings', health: 'Health overview', healthy: 'Healthy', needsAttention: 'Needs attention', pendingStatus: 'Not checked', lastOpened: 'Last opened', repositoryActions: 'Repository actions',
         empty: 'No virtual repositories yet', emptyHint: 'Choose a root directory; MaClaw creates .vrepo/manifest.json inside it.',
         name: 'Name', root: 'Root directory', choose: 'Choose', save: 'Save', cancel: 'Cancel', refresh: 'Refresh status',
@@ -488,7 +489,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	// Hover/title strings for toolbar and dialog actions. Kept separate from
 	// button labels so short labels can still carry a fuller functional hint.
 	const tips = isZh ? {
-		back: '返回实用工具页面',
+		back: utilitiesBackHint('zh-Hans'),
 		searchGit: '在系统中重新搜索 Git 可执行文件',
 		specifyGit: '手动选择 Git 可执行文件',
 		resetClient: '清除手动路径并恢复自动搜索',
@@ -537,7 +538,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		editCredential: '编辑此凭据',
 		removeCredential: '删除此凭据',
 	} : {
-		back: 'Return to the utilities page',
+		back: utilitiesBackHint('en'),
 		searchGit: 'Search the system for the Git executable',
 		specifyGit: 'Manually choose the Git executable',
 		resetClient: 'Clear the manual path and use automatic search',

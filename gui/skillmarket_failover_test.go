@@ -1419,6 +1419,16 @@ func TestSubmitSkill_RefreshesSessionOnMixedAuthAndServerErrors(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	// Enrollment/machine fields and the session token are backend-owned: plain
+	// SaveConfig preserves the on-disk values, so seed them through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteHubID = "hub-test"
+		cfg.RemoteMachineID = "m_test"
+		cfg.RemoteViewerToken = "viewer-token"
+		cfg.SkillMarketSessionToken = "expired-session"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
 	zipPath := filepath.Join(tmpHome, "skill.zip")
 	if err := os.WriteFile(zipPath, []byte("zip bytes"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

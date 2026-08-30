@@ -23,6 +23,9 @@ static unsigned s_input_prepare_calls;
 static unsigned s_peripheral_prepare_calls;
 static unsigned s_input_abort_calls;
 static unsigned s_peripheral_abort_calls;
+static unsigned s_power_level;
+static bool s_power_charging;
+static bool s_power_status_available;
 
 esp_err_t compact_input_service_prepare_system_sleep(uint32_t timeout_ms) {
     CHECK(timeout_ms != 0);
@@ -41,9 +44,9 @@ void compact_peripheral_service_abort_system_sleep_prepare(void) {
     ++s_peripheral_abort_calls;
 }
 bool compact_peripheral_service_get_power_status(unsigned *level_percent, bool *charging) {
-    (void)level_percent;
-    (void)charging;
-    return false;
+    if (level_percent) *level_percent = s_power_level;
+    if (charging) *charging = s_power_charging;
+    return s_power_status_available;
 }
 
 esp_err_t round_input_service_prepare_system_sleep(uint32_t timeout_ms) {
@@ -55,9 +58,9 @@ void round_input_service_abort_system_sleep_prepare(void) {
     ++s_input_abort_calls;
 }
 bool round_peripheral_service_get_power_status(unsigned *level_percent, bool *charging) {
-    (void)level_percent;
-    (void)charging;
-    return false;
+    if (level_percent) *level_percent = s_power_level;
+    if (charging) *charging = s_power_charging;
+    return s_power_status_available;
 }
 
 static void reset_observation(void) {
@@ -67,6 +70,9 @@ static void reset_observation(void) {
     s_peripheral_prepare_calls = 0;
     s_input_abort_calls = 0;
     s_peripheral_abort_calls = 0;
+    s_power_level = 50u;
+    s_power_charging = false;
+    s_power_status_available = false;
 }
 
 static device_status_t prepare(void) {
@@ -78,6 +84,18 @@ int main(void) {
     CHECK(platform_power_profile_prepare_verified_sleep(
               DEVICE_POWER_STATE_DISPLAY_OFF, DEVICE_WAKE_SOURCE_TIMER, 10) ==
           DEVICE_STATUS_INVALID_ARGUMENT);
+
+    /* Profile telemetry is normalized at the Platform Power boundary. An
+     * impossible percentage must fail closed instead of being clamped. */
+    s_power_status_available = true;
+    s_power_level = 101u;
+    uint8_t level_percent = 0u;
+    bool charging = false;
+    CHECK(!platform_power_profile_get_telemetry(&level_percent, &charging));
+    s_power_level = 50u;
+    CHECK(platform_power_profile_get_telemetry(&level_percent, &charging));
+    CHECK(level_percent == 50u && !charging);
+    s_power_status_available = false;
     CHECK(platform_power_profile_prepare_verified_sleep(
               DEVICE_POWER_STATE_LIGHT_SLEEP, 0, 10) == DEVICE_STATUS_INVALID_ARGUMENT);
     CHECK(platform_power_profile_prepare_verified_sleep(

@@ -875,7 +875,7 @@ func TestSemanticFullRefreshReappliesGrantPromptFence(t *testing.T) {
 	if !cb.RefreshAfterToolExecution("invoke_search") {
 		t.Fatal("full semantic refresh should complete")
 	}
-	if !strings.Contains(cb.systemPrompt, "one-time grants") || !strings.Contains(cb.systemPrompt, "web_search") {
+	if !strings.Contains(cb.systemPrompt, "the live tool list is the ground truth") || !strings.Contains(cb.systemPrompt, "web_search") {
 		t.Fatalf("full prompt rebuild dropped grant fence: %q", cb.systemPrompt)
 	}
 }
@@ -1915,5 +1915,26 @@ func TestSameConversationElementsDetectsSameLengthReplacement(t *testing.T) {
 	}
 	if sameConversationElements(replacement, conversation) {
 		t.Fatal("same-length replacement must be detected")
+	}
+}
+
+func TestSemanticArtifactFileNamePrefersRefNameWithMIMEFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		ref  tool.ArtifactRef
+		want string
+	}{
+		{"named PDF keeps title", tool.ArtifactRef{Name: "南京天气报告.pdf", MIMEType: "application/pdf"}, "南京天气报告.pdf"},
+		{"path separators stripped", tool.ArtifactRef{Name: `..\evil\南京天气报告.pdf`, MIMEType: "application/pdf"}, "南京天气报告.pdf"},
+		{"posix path stripped", tool.ArtifactRef{Name: "/tmp/out/report.xlsx", MIMEType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}, "report.xlsx"},
+		{"empty name falls back to MIME", tool.ArtifactRef{MIMEType: "application/pdf"}, "attachment.pdf"},
+		{"blank name falls back to MIME", tool.ArtifactRef{Name: "  ", MIMEType: "audio/wav"}, "attachment.wav"},
+		{"separator-only name falls back", tool.ArtifactRef{Name: "/", MIMEType: "text/plain"}, "attachment.txt"},
+		{"unknown MIME still uses bin fallback", tool.ArtifactRef{MIMEType: "application/zip"}, "attachment.bin"},
+	}
+	for _, tc := range cases {
+		if got := semanticArtifactFileName(tc.ref); got != tc.want {
+			t.Errorf("%s: semanticArtifactFileName() = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

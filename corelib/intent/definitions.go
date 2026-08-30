@@ -275,6 +275,9 @@ func DefaultDefinitions() []IntentDefinition {
 				"\u67e5\u8be2\u67d0\u4e2a\u57ce\u5e02\u5f53\u524d\u5929\u6c14",
 				"\u67e5\u8be2\u4efb\u610f\u57ce\u5e02\u4eca\u65e5\u5929\u6c14",
 				"\u83b7\u53d6\u67d0\u5730\u5b9e\u65f6\u5929\u6c14\u4fe1\u606f",
+				"\u67e5\u8be2\u67d0\u57ce\u5e02\u5929\u6c14\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u6bd4\u7279\u5e01\u4ef7\u683c\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u4eca\u65e5\u65b0\u95fb\u70ed\u70b9",
 				"\u7f8e\u5143\u5bf9\u4eba\u6c11\u5e01\u6c47\u7387",
 				"\u67e5\u6700\u65b0\u80a1\u4ef7",
 				"\u67e5\u822a\u73ed\u72b6\u6001",
@@ -457,6 +460,16 @@ func DefaultDefinitions() []IntentDefinition {
 				"organize the data into an Excel file",
 				"build a slide deck for the meeting",
 				"create a spreadsheet with the analysis results",
+				// Celebration/souvenir phrasings observed in production: the
+				// deck request is wrapped in an occasion and often bundles an
+				// image-search half (「网上找图片」), which diluted the office
+				// score below the confident bar.
+				"生成庆祝生日的PPT",
+				"为我家宠物做一个生日纪念PPT",
+				"制作孩子生日派对的演示文稿",
+				"网上找些照片做成PPT相册",
+				"找几张图片生成一个演示文稿",
+				"make a birthday party slide deck with photos",
 			},
 			ToolNames: []string{"office"},
 		},
@@ -473,9 +486,11 @@ func DefaultDefinitions() []IntentDefinition {
 				"compliance_audit", "patent_analysis", "patent_application",
 				"us_patent_application",
 			},
-			TreeText: "用户要启动一个需要多阶段设计决策的复杂项目。" +
+			TreeText: "用户要启动一个需要多阶段设计决策的复杂项目，并且是从工作流面板或 /workflow 发起的那种项目。" +
 				"核心判据：产出物是否需要多阶段设计决策？同一输入能否产出截然不同的结果？" +
 				"是 → workflow_task。否 → non_coding。" +
+				"在当前对话里点名使用某个 skill（使用 book-pdf skill、use X skill）不是本标签：那是当前 agent 执行该 skill。" +
+				"不是待办清单（task_track），也不是单阶段导出 PDF（document_generate）。" +
 				"workflow_type 选择指引：" +
 				"product_design=产品设计/PRD, innovation=创新方案, business_plan=商业计划书/BP, " +
 				"testing=测试方案, literature_review=文献综述, research_report=研究报告/研报, " +
@@ -916,6 +931,7 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要创建、更新、完成、列出或删除当前工作的本地任务清单条目（待办事项）。" +
 				"语义判据：用户目标是维护一个任务/待办列表的状态本身，而不是执行某个任务。" +
 				"边界：「定时自动执行的任务」→ schedule_manage；「长期自主推进的目标」→ goal_manage；" +
+				"「从工作流面板启动的多阶段项目」→ workflow_task；「在当前对话里使用某个 skill」不是待办；「单阶段导出 PDF」→ document_generate；" +
 				"「直接动手做编码任务」→ coding。",
 			EmbedTexts: []string{
 				"帮我建一个待办清单",

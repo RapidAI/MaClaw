@@ -328,3 +328,131 @@ func TestResponsesAPIStreamUsesCompletedResponseReasoningSummaryFallback(t *test
 		t.Fatalf("completed response summary was not streamed: %q", got)
 	}
 }
+
+func TestResponsesAPIStreamFailedEventReturnsPartialResponseWithReasoning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.reasoning_summary_text.delta\ndata: {\"delta\":\"thinking step\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"partial answer\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.failed\ndata: {\"response\":{\"error\":{\"message\":\"boom\",\"code\":\"server_error\"}}}\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API error: boom") {
+		t.Fatalf("err = %v, want Responses API error", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("partial response was dropped with the error: %#v", resp)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "thinking step" {
+		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+	if got := resp.Choices[0].Message.Content; got != "partial answer" {
+		t.Fatalf("content = %q, want accumulated partial content", got)
+	}
+}
+
+func TestResponsesAPIStreamToolArgumentsTooLargeReturnsPartialResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.reasoning_summary_text.delta\ndata: {\"delta\":\"thinking before huge args\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"bash\"}}\n\n")
+		_, _ = fmt.Fprintf(w, "event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"delta\":%q}\n\n", strings.Repeat("x", guiMaxToolArgumentsBytes+1))
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "tool arguments too large for bash") {
+		t.Fatalf("err = %v, want tool arguments too large", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("partial response was dropped with the error: %#v", resp)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "thinking before huge args" {
+		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+	// The oversized args are not valid JSON, so the post-loop truncation
+	// filter moves the partial call to TruncatedToolNames; either way it must
+	// not be silently dropped with the error.
+	choice := resp.Choices[0]
+	if len(choice.Message.ToolCalls) == 0 && len(choice.TruncatedToolNames) == 0 {
+		t.Fatalf("partial tool call was dropped: choice=%+v", choice)
+	}
+}
+
+func TestResponsesAPIStreamReasoningSummaryPartAdded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.reasoning_summary_part.added\ndata: {\"part\":{\"type\":\"summary_text\",\"text\":\"Whole summary in one part.\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"delta\":\"Done.\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesAPILLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Whole summary in one part."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+	if got := streamed.String(); !strings.Contains(got, "\x01Whole summary in one part.") {
+		t.Fatalf("summary part was not sent to thinking channel: %q", got)
+	}
+}
+
+func TestResponsesAPIStreamReasoningSummaryPartAddedDoesNotDuplicateDeltas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.reasoning_summary_text.delta\ndata: {\"delta\":\"Streamed summary.\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.reasoning_summary_part.added\ndata: {\"part\":{\"type\":\"summary_text\",\"text\":\"Streamed summary.\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesAPILLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesAPILLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "Streamed summary."; got != want {
+		t.Fatalf("reasoning_content = %q, want one copy of %q", got, want)
+	}
+}

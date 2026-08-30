@@ -276,6 +276,34 @@ type SkillProvider interface {
 	ListActiveSkills() []SkillSummary
 }
 
+// SkillIndexProvider is the checked boundary for the derived skill-routing
+// index. Production may use the in-memory BM25 implementation, while durable
+// or remote providers can return rebuild failures that must participate in a
+// Skill commit rollback.
+type SkillIndexProvider interface {
+	Rebuild([]bm25.Doc) error
+	Score(string) map[string]float64
+}
+
+type bm25SkillIndexProvider struct {
+	index *bm25.Index
+}
+
+func (p *bm25SkillIndexProvider) Rebuild(docs []bm25.Doc) error {
+	if p == nil || p.index == nil {
+		return fmt.Errorf("skill index provider is not initialized")
+	}
+	p.index.Rebuild(docs)
+	return nil
+}
+
+func (p *bm25SkillIndexProvider) Score(query string) map[string]float64 {
+	if p == nil || p.index == nil {
+		return nil
+	}
+	return p.index.Score(query)
+}
+
 // Router selects the most relevant tools for a given user message.
 type Router struct {
 	// mu serializes configuration updates and route construction. Route rebuilds
@@ -287,7 +315,8 @@ type Router struct {
 	recommender        SkillRecommender
 	skillProvider      SkillProvider
 	bm25Index          *bm25.Index
-	skillBM25          *bm25.Index // separate index for skill trigger matching
+	skillBM25          *bm25.Index // retained for source compatibility; provider owns rebuild/score
+	skillIndexProvider SkillIndexProvider
 	hybrid             *HybridRetriever
 	enrichStore        *EnrichmentStore
 	tracker            *UsageTracker
@@ -299,9 +328,10 @@ type Router struct {
 
 func NewRouter(generator *DefinitionGenerator) *Router {
 	return &Router{
-		generator: generator,
-		bm25Index: bm25.New(),
-		skillBM25: bm25.New(),
+		generator:          generator,
+		bm25Index:          bm25.New(),
+		skillBM25:          bm25.New(),
+		skillIndexProvider: &bm25SkillIndexProvider{index: bm25.New()},
 	}
 }
 
@@ -310,15 +340,31 @@ func (r *Router) SetSkillProvider(provider SkillProvider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.skillProvider = provider
-	r.refreshSkillIndex()
+	_ = r.refreshSkillIndexChecked()
+}
+
+// SetSkillIndexProvider replaces the derived skill index implementation. A
+// nil provider restores the default in-memory BM25 provider. Callers that
+// require an admission guarantee should call RefreshSkillIndexChecked after
+// setting the skill provider and treat its error as a rollback condition.
+func (r *Router) SetSkillIndexProvider(provider SkillIndexProvider) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if provider == nil {
+		provider = &bm25SkillIndexProvider{index: r.skillBM25}
+	}
+	r.skillIndexProvider = provider
 }
 
 // refreshSkillIndex rebuilds the skill BM25 index from the current SkillProvider.
 // Called once on SetSkillProvider; subsequent refreshes are triggered explicitly
 // via RefreshSkillIndex() to avoid rebuilding on every Route() call.
-func (r *Router) refreshSkillIndex() {
+func (r *Router) refreshSkillIndexChecked() error {
 	if r.skillProvider == nil {
-		return
+		return nil
 	}
 	skills := r.skillProvider.ListActiveSkills()
 	docs := make([]bm25.Doc, len(skills))
@@ -326,15 +372,33 @@ func (r *Router) refreshSkillIndex() {
 		text := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
 		docs[i] = bm25.Doc{ID: s.Name, Text: text}
 	}
-	r.skillBM25.Rebuild(docs)
+	if r.skillIndexProvider == nil {
+		r.skillIndexProvider = &bm25SkillIndexProvider{index: r.skillBM25}
+	}
+	return r.skillIndexProvider.Rebuild(docs)
+}
+
+func (r *Router) refreshSkillIndex() {
+	_ = r.refreshSkillIndexChecked()
 }
 
 // RefreshSkillIndex forces a rebuild of the skill BM25 index.
 // Call this after new skills are learned or existing skills are updated.
 func (r *Router) RefreshSkillIndex() {
+	_ = r.RefreshSkillIndexChecked()
+}
+
+// RefreshSkillIndexChecked rebuilds the derived skill index and exposes an
+// error-returning boundary for transactional callers. The current in-memory
+// BM25 implementation cannot fail, so it returns nil after rebuilding; future
+// index providers must propagate their rebuild error here rather than hiding it.
+func (r *Router) RefreshSkillIndexChecked() error {
+	if r == nil {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.refreshSkillIndex()
+	return r.refreshSkillIndexChecked()
 }
 
 // skillMatchScore computes the best skill match score for the given user message.
@@ -349,7 +413,11 @@ func (r *Router) skillMatchScoreWithCapabilityConstraint(userMessage string, req
 	}
 	// Index is built on SetSkillProvider / RefreshSkillIndex; no rebuild here.
 
-	scores := r.skillBM25.Score(userMessage)
+	provider := r.skillIndexProvider
+	if provider == nil {
+		provider = &bm25SkillIndexProvider{index: r.skillBM25}
+	}
+	scores := provider.Score(userMessage)
 	if len(scores) == 0 {
 		return 0, nil
 	}
@@ -1071,7 +1139,75 @@ func uicResultUsableForToolActivation(result intent.ClassificationResult) bool {
 	// This is deliberately a provenance check, rather than another confidence
 	// threshold: a high score from a partial classifier is still partial
 	// evidence, not an authorization decision.
-	return !result.Degraded && result.Primary != intent.LabelUnknown && result.Primary != intent.LabelAmbiguous
+	return !result.Degraded && result.Primary != "" && result.Primary != intent.LabelUnknown && result.Primary != intent.LabelAmbiguous
+}
+
+const uicActivationThreshold = 0.50
+
+func classificationCacheMessage(userMessage string, opts RouteOptions) intent.MessageContext {
+	msg := opts.CacheMessage
+	if strings.TrimSpace(msg.Text) == "" {
+		msg.Text = userMessage
+	}
+	return msg
+}
+
+func cachedRouteClassification(uic *intent.UnifiedIntentClassifier, userMessage string, opts RouteOptions) (intent.ClassificationResult, bool) {
+	if uic == nil {
+		return intent.ClassificationResult{}, false
+	}
+	return uic.ClassifyCached(classificationCacheMessage(userMessage, opts))
+}
+
+func routeCacheActivationMin(opts RouteOptions) float64 {
+	if opts.SkipUnifiedClassifier {
+		// Leftover skip must not treat an uncertain tree (0.50–0.70) as a
+		// lookup grant. That band is why L2 escalates; gate-7 refuses
+		// sub-floor lookup tools for the same reason.
+		return intent.EmbeddingLookupMinScore
+	}
+	return uicActivationThreshold
+}
+
+func classificationActivatesTools(result intent.ClassificationResult, minConf float64) bool {
+	return uicResultUsableForToolActivation(result) && result.Confidence >= minConf
+}
+
+// lookupRouteClassification is the leftover-safe classification lookup.
+// SkipUnifiedClassifier forbids live embedding/tree/LLM, not ClassifyCached.
+// A degraded PreResolved (fusion timeout) must not shadow a later tree
+// verdict already in the cache for this message.
+func (r *Router) lookupRouteClassification(userMessage string, opts RouteOptions) intent.ClassificationResult {
+	if r == nil {
+		return intent.ClassificationResult{}
+	}
+	cached, hasCache := cachedRouteClassification(r.unifiedClassifier, userMessage, opts)
+	if opts.PreResolved != nil && classificationActivatesTools(*opts.PreResolved, routeCacheActivationMin(opts)) {
+		return *opts.PreResolved
+	}
+	if hasCache && classificationActivatesTools(cached, routeCacheActivationMin(opts)) {
+		return cached
+	}
+	if opts.SkipUnifiedClassifier {
+		return intent.ClassificationResult{}
+	}
+	if opts.PreResolved != nil {
+		return *opts.PreResolved
+	}
+	if r.unifiedClassifier == nil {
+		return intent.ClassificationResult{}
+	}
+	if opts.PreferEmbeddingOnly {
+		result := r.unifiedClassifier.ClassifyEmbeddingOnly(classificationCacheMessage(userMessage, opts))
+		if classificationActivatesTools(result, uicActivationThreshold) {
+			return result
+		}
+		if hasCache {
+			return cached
+		}
+		return result
+	}
+	return r.unifiedClassifier.Classify(classificationCacheMessage(userMessage, opts))
 }
 
 func uicToolNameActivatable(name string) bool {
@@ -1209,67 +1345,33 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		searchQuery = routeIntent.SearchQuery(userMessage)
 	}
 
-	// UIC activation: UIC returns a concrete, non-ambiguous top
-	// intent, including degraded embedding-only fusion results. Activate that
-	// intent's ToolNames so the LLM can see and
-	// call them. This uses a LOW threshold because the cost of a false
-	// positive is small (an extra tool definition in context) while the
-	// cost of a false negative is high (LLM cannot perform the task and
-	// falls back to dangerous workarounds like raw ssh via bash).
-	//
-	// The old design used a single 0.90 threshold for activation. Fusion-
-	// ambiguous results (e.g. ssh 0.695 vs search 0.676)
-	// never reach 0.90, causing the correct top-intent's tools to be
-	// completely hidden from the LLM.
-	const uicActivationThreshold = 0.50
-
-	if (r.unifiedClassifier != nil || opts.PreResolved != nil) && !opts.SkipUnifiedClassifier {
-		// UIC path: the UnifiedIntentClassifier determines which conditional
-		// tools to keep. Local wording never promotes one. A pre-resolved
-		// classification is data from the turn's governed upstream pass and is
-		// honored even when no live classifier is attached to this router.
-		condKeep = make(map[string]bool)
-		condFilterOut = make(map[string]bool)
-
-		var uicResult intent.ClassificationResult
-		switch {
-		case opts.PreResolved != nil:
-			// The turn's governed classification was already computed upstream
-			// (e.g. RuntimeContext.SemanticIntent): use it verbatim instead of
-			// classifying again on possibly different context.
-			uicResult = *opts.PreResolved
-		case opts.PreferEmbeddingOnly:
-			uicResult = r.unifiedClassifier.ClassifyEmbeddingOnly(intent.MessageContext{Text: userMessage})
-			if !uicResultUsableForToolActivation(uicResult) || uicResult.Confidence < uicActivationThreshold {
-				// The fast channel cannot activate anything for this message.
-				// Reuse the main loop's full-fusion classification when it is
-				// already cached for this same message: a pure cache read that
-				// never triggers a new embedding or LLM call, so the
-				// "routing never calls tree/LLM" contract still holds while a
-				// degraded/unknown fast result no longer hides every
-				// conditional tool.
-				if cached, ok := r.unifiedClassifier.ClassifyCached(intent.MessageContext{Text: userMessage}); ok {
-					uicResult = cached
-				}
-			}
-		default:
-			uicResult = r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
-		}
+	// UIC activation: a concrete, non-degraded top intent's ToolNames are
+	// kept so the LLM can see them. Leftover skip uses the lookup floor
+	// (routeCacheActivationMin); the live UIC path still uses 0.50 so
+	// fusion-ambiguous results (ssh 0.695 vs search 0.676) are not hidden.
+	condKeep = make(map[string]bool)
+	condFilterOut = make(map[string]bool)
+	uicResult := r.lookupRouteClassification(userMessage, opts)
+	uicUsable := classificationActivatesTools(uicResult, routeCacheActivationMin(opts))
+	if uicUsable {
 		skillInstallEligible = uicSkillInstallEligible(uicResult)
-		skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
+		// Leftover skip may consume a cached tree only to force-keep
+		// score-eligible tools. It must not inherit coding skill constraints
+		// or knowledge-write suppression from that cache.
+		if !opts.SkipUnifiedClassifier {
+			skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
+		}
 
-		// A degraded UIC result can still be actionable: in practice the tree
-		// channel may time out while the embedding channel returns a confident
-		// concrete intent. Do not hide first-class conditional tools in that
-		// case; tool availability must follow the current intent, not stale
-		// experience or an auxiliary classifier outage.
-		uicUsable := uicResultUsableForToolActivation(uicResult)
-
-		uicKnowledgeWrite := uicUsable && uicResult.Primary == intent.LabelKnowledgeWrite && uicResult.Confidence >= uicActivationThreshold
-
-		if uicUsable && uicResult.Confidence >= uicActivationThreshold && len(uicResult.ToolNames) > 0 {
+		uicKnowledgeWrite := !opts.SkipUnifiedClassifier && uicResult.Primary == intent.LabelKnowledgeWrite
+		if len(uicResult.ToolNames) > 0 {
 			for _, toolName := range uicResult.ToolNames {
 				if !uicToolNameActivatable(toolName) {
+					continue
+				}
+				// Leftover skip forbids live fusion so ssh/browser stay
+				// fail-closed. A cached tree may still name those tools;
+				// only score-eligible names may be forced into the surface.
+				if opts.SkipUnifiedClassifier && !scoreEligibleConditionalToolNames[toolName] {
 					continue
 				}
 				condKeep[toolName] = true
@@ -1307,7 +1409,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 			}
 		}
 
-		if r.intentClassifier != nil {
+		if !opts.SkipUnifiedClassifier && r.intentClassifier != nil {
 			result := r.intentClassifier.Classify(userMessage)
 			cachedICResult = &result
 			skillInstallEligible = intentClassifierSkillInstallEligible(result)

@@ -15,7 +15,10 @@ if ([string]::IsNullOrWhiteSpace($productVersion) -or [string]::IsNullOrWhiteSpa
   throw 'wails.json productVersion and build_number must both be set.'
 }
 $versionParts = $productVersion.Split('.')
-if ($versionParts.Count -lt 3 -or $versionParts[0..2] | Where-Object { $_ -notmatch '^\d+$' }) {
+# Keep the pipeline out of the -or operand: PowerShell binds the filter to the
+# whole expression, which made every valid x.y.z version read as invalid.
+$badVersionParts = @($versionParts[0..2] | Where-Object { $_ -notmatch '^\d+$' })
+if ($versionParts.Count -lt 3 -or $badVersionParts.Count -gt 0) {
   throw "wails.json productVersion must start with major.minor.patch, got: $productVersion"
 }
 if ($buildNumber -notmatch '^\d+$') {

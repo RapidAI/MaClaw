@@ -2,6 +2,10 @@ package main
 
 import "github.com/RapidAI/CodeClaw/corelib/intent"
 
+// Named skill invocation is the main-assistant path: inject the skill into
+// this conversation and let the agent run it. workflow_task is a workflow_v2
+// panel start. Those two must not share a routing outcome.
+
 // workflow_task inside a workflow agent loop.
 //
 // The label means "this reads like a multi-phase project". On an ordinary chat

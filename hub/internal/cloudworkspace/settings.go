@@ -234,6 +234,7 @@ func (s *Service) LoadTenantSettings(ctx context.Context, tenantID string) Setti
 	if s == nil || s.System == nil {
 		return base
 	}
+	tenantID = store.NormalizeTenantID(tenantID)
 	raw, err := s.System.Get(ctx, tenantSettingsStorageKey(tenantID))
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return base
@@ -250,6 +251,7 @@ func (s *Service) SaveTenantSettings(ctx context.Context, tenantID string, setti
 	if s == nil || s.System == nil {
 		return Settings{}, ErrSettingsUnavailable
 	}
+	tenantID = store.NormalizeTenantID(tenantID)
 	prepared, err := prepareForWrite(settings)
 	if err != nil {
 		return Settings{}, err

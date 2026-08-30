@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -140,5 +141,88 @@ func TestCanonicalizeAuthorizedInvocationArgumentsRejectsSchemaDrift(t *testing.
 	}
 	if _, err := CanonicalizeAuthorizedInvocationArguments(`{"query":"Beijing weather"}`, drifted, authorization); err == nil || err.Error() != "parameter_authorization_stale" {
 		t.Fatalf("schema drift error=%v", err)
+	}
+}
+
+// Shape failures against the rendered schema must localize the offending
+// field: the path is what lets the model correct the call instead of guessing
+// (2026-08-27 birthday-deck turn: three blind parameter_schema_invalid
+// retries on a slide-level subtitle, then the no-progress breaker killed the
+// turn). Error() still returns the bare code for stable diagnostics.
+func TestCanonicalizeInvocationArgumentsLocalizesShapeErrors(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{"type": "string"},
+			"slides": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"title":   map[string]interface{}{"type": "string"},
+						"bullets": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+					"required":             []string{"title"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"path"},
+		"additionalProperties": false,
+	}
+	for _, test := range []struct {
+		name string
+		json string
+		code string
+		path string
+	}{
+		{"nested unknown field", `{"path":"a.pptx","slides":[{"title":"t","subtitle":"x"}]}`, "parameter_unknown_field", "slides[0].subtitle"},
+		{"nested type mismatch", `{"path":"a.pptx","slides":[{"title":"t","bullets":"x"}]}`, "parameter_type_mismatch", "slides[0].bullets"},
+		{"nested required missing", `{"path":"a.pptx","slides":[{"bullets":["x"]}]}`, "parameter_required_field_missing", "slides[0].title"},
+		{"root required missing", `{"slides":[]}`, "parameter_required_field_missing", "path"},
+		{"reserved field", `{"path":"a.pptx","slides":[],"tool_name":"x"}`, "parameter_reserved_field", "tool_name"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := CanonicalizeInvocationArguments(test.json, schema)
+			if err == nil {
+				t.Fatal("expected a rejection")
+			}
+			if err.Error() != test.code {
+				t.Fatalf("Error()=%q, want bare code %q", err.Error(), test.code)
+			}
+			var paramErr *ParameterError
+			if !errors.As(err, &paramErr) {
+				t.Fatalf("error type %T, want *ParameterError", err)
+			}
+			if paramErr.Path != test.path {
+				t.Fatalf("Path=%q, want %q", paramErr.Path, test.path)
+			}
+			if strings.TrimSpace(paramErr.Hint) == "" {
+				t.Fatal("shape errors must carry a model-facing hint")
+			}
+		})
+	}
+}
+
+// Authorization-closure failures stay detail-free: the allowlists are
+// server-side and must not leak into model-facing refusals.
+func TestCanonicalizeAuthorizedInvocationArgumentsKeepsClosureErrorsGeneric(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"query": map[string]interface{}{"type": "string"},
+		},
+	}
+	authorization, err := NewParameterAuthorization(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = CanonicalizeAuthorizedInvocationArguments(`{"query":"file:///etc/passwd"}`, schema, authorization)
+	var paramErr *ParameterError
+	if !errors.As(err, &paramErr) || paramErr.Code != "parameter_target_not_authorized" {
+		t.Fatalf("err=%v", err)
+	}
+	if paramErr.Path != "" || paramErr.Hint != "" {
+		t.Fatalf("closure errors must stay narrowed: %+v", paramErr)
 	}
 }

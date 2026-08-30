@@ -124,6 +124,20 @@ device_status_t platform_nvs_read_i64(const char *name_space, const char *key,
     return status_from_esp_err(err);
 }
 
+device_status_t platform_nvs_write_i64(const char *name_space, const char *key,
+                                       int64_t value) {
+    if (!lock_transaction()) return DEVICE_STATUS_BUSY;
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(name_space, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        err = nvs_set_i64(nvs, key, value);
+        if (err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    unlock_transaction();
+    return status_from_esp_err(err);
+}
+
 device_status_t platform_nvs_read_i32(const char *name_space, const char *key,
                                       int32_t *out_value) {
     if (!lock_transaction()) return DEVICE_STATUS_BUSY;

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -418,7 +419,7 @@ func truncateToolResultsInConversation(msgs []interface{}) []interface{} {
 			result[i] = m
 			continue
 		}
-		truncated := string(runes[:400]) + "\n…(压缩截断)…\n" + string(runes[len(runes)-200:])
+		truncated := agent.TruncateToolContentPreservingHandle(content, 400, 200)
 		cp := make(map[string]interface{}, len(mm))
 		for k, v := range mm {
 			cp[k] = v

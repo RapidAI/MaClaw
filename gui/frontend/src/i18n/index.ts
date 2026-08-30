@@ -33,6 +33,16 @@ export {
 } from './maclawMiniAppLabels';
 export type { MiniAppLabelPack } from './maclawMiniAppLabels';
 
+export {
+    utilitiesBackHint,
+    utilitiesBackLabel,
+    utilitiesEntryLabel,
+    utilitiesLabels,
+    utilitiesNavLabel,
+    utilitiesPageTitle,
+} from './utilitiesLabels';
+export type { UtilitiesLabelPack } from './utilitiesLabels';
+
 /**
  * Look up a translation key for the given language.
  * Falls back to zh-Hans → en → key itself.

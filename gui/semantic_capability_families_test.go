@@ -92,17 +92,30 @@ func TestSemanticSensitiveFamiliesAreManagedAndMapToGovernedNeeds(t *testing.T) 
 				t.Fatalf("needs=%#v managed=%v err=%v", needs, resolvedManaged, err)
 			}
 			// A family may plan companion needs — business_data plans the
-			// read-only surface alongside the sensitive one — but the
-			// sensitive capability is the one the turn cannot proceed
-			// without, so it stays the family's only required need.
+			// read-only surface alongside the sensitive one, and office plans
+			// the current-channel file delivery for its produced document — but
+			// the sensitive capability is the one the turn cannot proceed
+			// without, so it stays required.
 			var required []tool.CapabilityNeed
 			for _, need := range needs {
 				if need.Required {
 					required = append(required, need)
 				}
 			}
-			if len(required) != 1 || required[0].Capability != tc.capability {
-				t.Fatalf("required=%#v (all needs %#v), want exactly %s required", required, needs, tc.capability)
+			found := false
+			for _, need := range required {
+				if need.Capability == tc.capability {
+					found = true
+					continue
+				}
+				// The only other required need a family may declare is the
+				// delivery half of a write+deliver pair (office).
+				if need.Capability != "artifact.deliver.current_channel" || need.Qualifiers["format"] != "file" {
+					t.Fatalf("unexpected required companion need %#v (all needs %#v)", need, needs)
+				}
+			}
+			if !found {
+				t.Fatalf("required=%#v (all needs %#v), want %s required", required, needs, tc.capability)
 			}
 		})
 	}

@@ -54,19 +54,22 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	delete(body, "enable_thinking")
 
 	if api != ReasoningAPIAnthropic && usesOpenAIStyleReasoning(cfg) {
-		effort := reasoningEffortForMode(mode, cfg.ReasoningEffort)
+		effort, omit := openAIStyleReasoningEffort(cfg, mode)
 		if api == ReasoningAPIResponses {
 			// Responses streams expose the user-displayable reasoning through
 			// response.reasoning_summary_text.delta only when a summary is
 			// requested. The internal chain of thought is never requested. Do
 			// not ask for a summary in disabled mode: minimal is the lowest
 			// supported effort, but it is not equivalent to showing thinking.
+			if omit {
+				effort = "minimal"
+			}
 			reasoning := map[string]interface{}{"effort": effort}
 			if mode == "enabled" {
 				reasoning["summary"] = "auto"
 			}
 			body["reasoning"] = reasoning
-		} else {
+		} else if !omit {
 			body["reasoning_effort"] = effort
 		}
 		return
@@ -145,6 +148,105 @@ func reasoningEffortForMode(mode, configured string) string {
 	}
 }
 
+// openAIStyleReasoningEffort resolves the wire effort for an OpenAI-style
+// reasoning endpoint, adjusting for providers whose accepted vocabulary is
+// narrower than OpenAI's. omit reports that no control should be sent at all:
+// Agnes rejects reasoning_effort=minimal with HTTP 400, and its default
+// (no field) is already the no-reasoning behavior, so “off” maps to omission.
+func openAIStyleReasoningEffort(cfg MaclawLLMConfig, mode string) (effort string, omit bool) {
+	effort = reasoningEffortForMode(mode, cfg.ReasoningEffort)
+	if isAgnesReasoningEndpoint(cfg) {
+		switch effort {
+		case "minimal":
+			// Agnes rejects reasoning_effort=minimal with HTTP 400. “Off” maps
+			// to omission (the fieldless default already skips reasoning); an
+			// explicit minimal effort clamps up to the accepted floor.
+			if mode == "disabled" {
+				return "", true
+			}
+			return "low", false
+		case "xhigh":
+			return "high", false
+		}
+	}
+	return effort, false
+}
+
+// RetargetReasoningControlsForUpstream rewrites caller-supplied reasoning
+// controls into the upstream provider's native spelling. Forwarding proxies
+// (for example the hub LLM proxy) receive any of the client-side spellings;
+// upstreams accept only their own. Agnes only honors reasoning_effort, so a
+// DeepSeek-style thinking object would otherwise be silently ignored. Bodies
+// without any reasoning control keep the provider default (auto) untouched.
+func RetargetReasoningControlsForUpstream(cfg MaclawLLMConfig, body map[string]interface{}, api ReasoningAPIKind) {
+	if body == nil {
+		return
+	}
+	mode, effort := reasoningControlsRequestedInBody(body)
+	if mode == "" {
+		return
+	}
+	next := cfg
+	next.ThinkingMode = mode
+	if effort != "" {
+		next.ReasoningEffort = effort
+	}
+	ApplyReasoningControls(next, body, api)
+}
+
+// reasoningControlsRequestedInBody detects an explicit reasoning request in
+// any of the client-side spellings. It returns the normalized mode and, when
+// the caller stated an effort level, that level.
+func reasoningControlsRequestedInBody(body map[string]interface{}) (mode, effort string) {
+	normalizeMode := func(raw string) string {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "enabled", "on", "1", "true":
+			return "enabled"
+		case "disabled", "off", "0", "false", "none":
+			return "disabled"
+		default:
+			return ""
+		}
+	}
+	if thinking, _ := body["thinking"].(map[string]interface{}); thinking != nil {
+		if typ, _ := thinking["type"].(string); typ != "" {
+			mode = normalizeMode(typ)
+		}
+	}
+	if v, ok := body["enable_thinking"].(bool); ok {
+		if v {
+			mode = "enabled"
+		} else {
+			mode = "disabled"
+		}
+	}
+	if s, _ := body["reasoning_effort"].(string); strings.TrimSpace(s) != "" {
+		if m := normalizeMode(s); m != "" {
+			mode = m
+		} else {
+			mode = "enabled"
+			effort = strings.TrimSpace(s)
+		}
+	}
+	if reasoning, _ := body["reasoning"].(map[string]interface{}); reasoning != nil {
+		if s, _ := reasoning["effort"].(string); strings.TrimSpace(s) != "" {
+			if m := normalizeMode(s); m != "" {
+				if mode == "" {
+					mode = m
+				}
+			} else {
+				if mode == "" {
+					mode = "enabled"
+				}
+				if effort == "" {
+					effort = strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+	return mode, effort
+}
+
 func anthropicThinkingBudget(configured string) int {
 	switch strings.ToLower(strings.TrimSpace(configured)) {
 	case "minimal", "low":
@@ -167,6 +269,23 @@ func usesOpenAIStyleReasoning(cfg MaclawLLMConfig) bool {
 	host := strings.ToLower(strings.TrimSpace(endpoint.Hostname()))
 	switch host {
 	case "api.openai.com", "chatgpt.com", "api.x.ai", "x.ai":
+		return true
+	case "api.agnes-ai.cn", "agnes-ai.cn":
+		// Agnes accepts reasoning_effort (low/medium/high) but silently ignores
+		// the DeepSeek-style thinking object and Qwen-style enable_thinking.
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgnesReasoningEndpoint(cfg MaclawLLMConfig) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(endpoint.Hostname())) {
+	case "api.agnes-ai.cn", "agnes-ai.cn":
 		return true
 	default:
 		return false

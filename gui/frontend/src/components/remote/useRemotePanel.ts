@@ -99,6 +99,7 @@ const atomicPatchFields = new Set([
     'hardware_volume',
     'hardware_brightness',
     'pet_ambient_city',
+    'embed_hw_accel',
 ]);
 
 export const supportsAtomicRemoteConfigPatch = (patch: Record<string, unknown>): boolean => {

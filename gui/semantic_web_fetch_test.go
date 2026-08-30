@@ -8,6 +8,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
 func webFetchClassification() *intent.ClassificationResult {
@@ -91,8 +92,15 @@ func TestIMSemanticWebFetchExecutesURLWithoutKeywordBranch(t *testing.T) {
 	if seenUser != "user-1" || seenURL != "https://example.com/page" {
 		t.Fatalf("dispatch user=%q url=%q", seenUser, seenURL)
 	}
-	if replay := cb.ExecuteTool(name, `{"url":"https://example.com/page"}`); !strings.Contains(replay, "invocation_grant_replayed") {
-		t.Fatalf("replay=%q", replay)
+	// The turn budget is five fetches: repeat siblings re-execute under the
+	// same stable name, and the sixth call finds every grant consumed.
+	for i := 2; i <= 5; i++ {
+		if again := cb.ExecuteTool(name, `{"url":"https://example.com/page"}`); !strings.Contains(again, "Fetched web evidence.") {
+			t.Fatalf("repeat fetch %d must re-execute through a sibling grant: %q", i, again)
+		}
+	}
+	if exhausted := cb.ExecuteTool(name, `{"url":"https://example.com/page"}`); strings.Contains(exhausted, "Fetched web evidence.") {
+		t.Fatalf("sixth fetch must be denied, budget exhausted: %q", exhausted)
 	}
 }
 
@@ -150,5 +158,68 @@ func TestIMSemanticWebFetchReadsURLWithoutSaving(t *testing.T) {
 	}
 	if _, err := h.fetchTrustedWeb("user-1", "http://127.0.0.1/", true); err == nil {
 		t.Fatal("public-network fetch must reject loopback")
+	}
+}
+
+// The fetch layer answers a binary URL with its own advisory containing
+// "save_path" ("[二进制内容 … 如需下载请使用 save_path 参数]"). A literal
+// tool-name scan rejected that host-made guidance as
+// trusted_web_fetch_legacy_name and burned the fetch grant (production
+// 2026-08-26). The projection must pass tool-name mentions through: the
+// router, not a content scan, is the capability boundary.
+func TestSemanticWebFetchProjectionPassesToolNameMentions(t *testing.T) {
+	advisory := "[二进制内容: image/jpeg, 12345 字节。如需下载请使用 save_path 参数]"
+	out, err := semanticTrustedWebFetchResultProjection(advisory)
+	if err != nil || out != advisory {
+		t.Fatalf("binary advisory rejected: out=%q err=%v", out, err)
+	}
+	page := "This tutorial compares web_fetch and download_file for archiving."
+	if out, err = semanticTrustedWebFetchResultProjection(page); err != nil || out != page {
+		t.Fatalf("page mentioning tools rejected: out=%q err=%v", out, err)
+	}
+	if _, err = semanticTrustedWebFetchResultProjection("[file_base64|image/png]AAAA"); err == nil {
+		t.Fatal("delivery token must still be rejected")
+	}
+}
+
+// A binary fetch must be projected into guidance that is actionable on THIS
+// surface: the legacy advisory ("请使用 save_path 参数") is uncallable here
+// (the schema is closed over url) and never names download_file, so the
+// production model concluded images were undownloadable while download_file
+// sat in the petition whitelist (2026-08-26 ragdoll birthday deck).
+func TestSemanticWebFetchProjectionBinaryAdvisoryNamesDownloadFile(t *testing.T) {
+	out := semanticTrustedWebFetchProjection(&websearch.FetchResult{
+		URL:         "https://images.example.com/cat.jpeg",
+		ContentType: "image/jpeg",
+		BytesRead:   94926,
+		Content:     "[二进制内容: image/jpeg, 94926 字节。如需下载请使用 save_path 参数]",
+	})
+	if !strings.Contains(out, "download_file") || !strings.Contains(out, `"url"`) {
+		t.Fatalf("binary advisory must name the closed download_file path: %q", out)
+	}
+	if strings.Contains(out, "请使用 save_path 参数") || strings.Contains(out, `"save_path"`) {
+		t.Fatalf("uncallable save_path advisory must be replaced: %q", out)
+	}
+	if strings.Contains(out, "python-pptx") || strings.Contains(out, "bash") {
+		t.Fatalf("binary advisory must not send the model to bash/python-pptx: %q", out)
+	}
+	if !strings.Contains(out, "slides[].images") || !strings.Contains(out, "slides[].charts") {
+		t.Fatalf("advisory must name office image and chart fields: %q", out)
+	}
+	if !strings.Contains(out, "https://images.example.com/cat.jpeg") {
+		t.Fatalf("advisory must carry the source URL: %q", out)
+	}
+}
+
+func TestSemanticTrustedWebFetchArgsRejectPlaceholderHost(t *testing.T) {
+	if _, err := semanticTrustedWebFetchArgsAllowed(map[string]interface{}{"url": "https://example.invalid/skip"}); err == nil || !strings.Contains(err.Error(), "url_host_rejected") {
+		t.Fatal(err)
+	}
+	if _, err := semanticTrustedWebFetchArgsAllowed(map[string]interface{}{"url": "example.invalid/skip"}); err == nil || !strings.Contains(err.Error(), "url_host_rejected") {
+		t.Fatal(err)
+	}
+	got, err := semanticTrustedWebFetchArgsAllowed(map[string]interface{}{"url": "https://example.com/page"})
+	if err != nil || got != "https://example.com/page" {
+		t.Fatalf("got=%q err=%v", got, err)
 	}
 }

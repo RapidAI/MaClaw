@@ -33,9 +33,11 @@ device_status_t clock_sync_service_init(const clock_sync_service_host_t *host);
  * only the generation recorded by a failed System Sleep PREPARE. */
 device_status_t clock_sync_service_start(bool system_sleep_resume);
 
-/* Authenticated Hub time uses the same notification path as an SNTP callback.
- * The caller has already validated and applied the wall-clock value. */
-void clock_sync_service_note_authenticated_epoch(int64_t epoch_sec);
+/* Admit, apply and publish an authenticated Hub wall-clock sample through the
+ * same trusted-time state machine used by SNTP.  The value is integer
+ * milliseconds in the bounded trusted-time range; malformed, anomalous or
+ * sleep-preparing samples are rejected without notifying consumers. */
+bool clock_sync_service_apply_authenticated_millis(double epoch_ms);
 
 /* Stops monitor first, then releases the ESP-NETIF SNTP singleton. Used only
  * by full Connectivity root teardown after callback admission has closed. */

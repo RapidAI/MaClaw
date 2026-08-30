@@ -70,7 +70,7 @@
   #marketplaceCapabilitiesList .item:hover,#marketplaceSearchResults .item:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(31,34,48,.09);border-color:rgba(37,99,235,.16)}
   .user-referral-fields{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-top:14px}.user-referral-fields>div:last-child{grid-column:span 2}.user-referral-toggle{display:flex;align-items:center;gap:8px;align-self:end;min-height:38px;font-weight:650}.user-referral-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.user-referral-card{padding:14px;border:1px solid #e2e6ed;border-radius:12px;background:#fff;display:grid;gap:8px}.user-referral-card__contact{font-weight:750;color:#262b36;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-referral-card__id{font-size:11px;color:#707684;overflow:hidden;text-overflow:ellipsis}.user-referral-card__count{border:0;background:#fff0f2;color:#bc4051;border-radius:8px;padding:8px;text-align:left;font:inherit;font-weight:700;cursor:pointer}.user-referral-card__count:hover{background:#fce2e6}.user-referral-card dl{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0}.user-referral-card dt{font-size:10px;color:#707684}.user-referral-card dd{margin:2px 0 0;font-weight:700;font-size:13px}.user-referral-card__time{font-size:11px;color:#707684;line-height:1.45}.user-referral-detail-modal{width:min(1040px,calc(100% - 40px))}.user-referral-detail-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.user-referral-invitee{border:1px solid #e2e6ed;border-radius:10px;padding:12px;display:grid;gap:6px;min-height:100px}.user-referral-invitee strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-referral-invitee span,.user-referral-invitee time{font-size:11px;color:#707684;line-height:1.35}.user-referral-invitee__grants{display:grid;gap:4px;margin:2px 0 0}.user-referral-invitee__grants div{display:flex;justify-content:space-between;gap:6px}.user-referral-invitee__grants dt,.user-referral-invitee__grants dd{margin:0;font-size:10px;line-height:1.35}.user-referral-invitee__grants dt{color:#707684}.user-referral-invitee__grants dd{font-weight:700;color:#374151;text-align:right}.user-referral-history{font-size:10px;color:#596170}.user-referral-history summary{cursor:pointer;font-weight:700}.user-referral-history ol{margin:5px 0 0;padding-left:16px;display:grid;gap:4px}.user-referral-history li{display:grid;gap:2px}.user-referral-history time{font-size:10px}.user-referral-history em{font-style:normal;line-height:1.3}.user-referral-review-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.user-referral-review-card{display:grid;gap:7px;padding:12px;border:1px solid #f0d59d;border-radius:10px;background:#fffbf2}.user-referral-review-card strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151}.user-referral-review-card small{font-size:11px;line-height:1.4;color:#6b7280}.user-referral-review-card .badge{justify-self:start}.user-referral-review-card .actions{margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}.user-referral-review-card .actions button{min-height:30px;height:30px;padding:0 9px;font-size:11px;box-shadow:none}@media (max-width:980px){.user-referral-grid,.user-referral-detail-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.user-referral-review-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.user-referral-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:620px){.user-referral-grid,.user-referral-detail-grid,.user-referral-review-grid,.user-referral-fields{grid-template-columns:1fr}.user-referral-fields>div:last-child{grid-column:auto}}
   </style>
-  <link rel="stylesheet" href="/admin/professional.css?v=class-train-ui-20260819-8">
+  <link rel="stylesheet" href="/admin/professional.css?v=feature-icons-20260828-6">
 </head>
 <body>
   <!-- Toast stack -->
@@ -243,7 +243,6 @@
           <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
           <button data-tab="userreferrals" onclick="openTab('userreferrals')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"></path><path d="M2 8h20v4H2z"></path><path d="M12 8v12"></path><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"></path><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"></path></svg></span><div class="nav-copy"><span id="navUserReferrals" data-i18n="navUserReferrals">User referrals</span><small id="navUserReferralsDesc" data-i18n="navUserReferralsDesc">Rewards and activity</small></div></div></button>
           <button data-tab="security" onclick="openTab('security')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 6 6v5c0 4.2 2.6 7.8 6 10 3.4-2.2 6-5.8 6-10V6l-6-3Z"></path><path d="m9.5 12 1.7 1.7 3.3-3.4"></path></svg></span><div class="nav-copy"><span id="navSecurity" data-i18n="navSecurity"></span><small id="navSecurityDesc" data-i18n="navSecurityDesc"></small></div></div></button>
-          <button data-tab="httpthreat" onclick="openTab('httpthreat')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4z"></path><path d="M8 7v10"></path><path d="M4 12h16"></path></svg></span><div class="nav-copy"><span id="navHTTPThreat" data-i18n="httpThreatTabTitle">HTTP Threat Head</span><small id="navHTTPThreatDesc" data-i18n="httpThreatNavDesc">Rules plus generalization head</small></div></div></button>
           <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
           <button data-tab="pwarequests" onclick="openTab('pwarequests')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 7h4"></path><path d="M12 17h.01"></path></svg></span><div class="nav-copy"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></div></div></button>
           <button data-tab="approvalroles" onclick="openTab('approvalroles')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16"></path><path d="M7 6v14"></path><path d="M17 6v14"></path><path d="M4 20h16"></path><path d="M9.5 11.5 11 13l3.5-3.5"></path></svg></span><div class="nav-copy"><span id="navApprovalRoles" data-i18n="approvalRolesTabTitle"></span><small id="navApprovalRolesDesc" data-i18n="approvalRolesTabSubtitle"></small></div></div></button>
@@ -316,7 +315,7 @@
               <div class="overview-assistant-head">
                 <div class="overview-assistant-mark" aria-hidden="true">AI</div>
                 <div>
-                  <div class="item-title" id="configAgentTitle">Config Assistant</div>
+                  <div class="item-title" data-icon="spark" id="configAgentTitle">Config Assistant</div>
                   <div class="item-meta" id="configAgentSubtitle"></div>
                 </div>
               </div>
@@ -372,7 +371,7 @@
           <aside class="overview-context-column">
             <div class="overview-context-grid">
               <div class="hint" id="centerStatusDetail"></div>
-              <div class="item overview-endpoint"><div class="item-title" data-i18n="endpointTitle"></div><div class="item-meta" data-i18n="endpointDesc"></div><div class="mono" id="centerAdvertisedURL"></div></div>
+              <div class="item overview-endpoint"><div class="item-title" data-icon="globe" data-i18n="endpointTitle"></div><div class="item-meta" data-i18n="endpointDesc"></div><div class="mono" id="centerAdvertisedURL"></div></div>
             </div>
             <!-- Tenant Info Panel (visible for tenant admins) -->
             <div id="overviewTenantInfoPanel" class="hidden overview-tenant-summary">
@@ -452,7 +451,7 @@
             </div>
           </div>
           <div class="item" style="padding:14px 16px">
-            <div class="item-title" data-i18n="registrationStatus"></div>
+            <div class="item-title" data-icon="activity" data-i18n="registrationStatus"></div>
             <div class="item-meta" id="centerStatusDetailTab"></div>
             <div class="grid3" style="margin-top:10px;gap:8px">
               <div><label data-i18n="advertisedHost"></label><div class="mono" id="centerAdvertisedHost"></div></div>
@@ -479,7 +478,7 @@
         <div class="head"><div><h3 id="tenantsTitle"></h3><div class="desc" id="tenantsDesc"></div></div><button class="btn-ghost" id="tenantsReloadBtn" type="button" onclick="loadTenants()"></button></div>
         <div class="grid2" style="gap:10px">
           <div class="item" id="tenantCreatePanel" style="padding:14px 16px">
-            <div class="item-title" id="tenantCreateTitle"></div>
+            <div class="item-title" data-icon="building" id="tenantCreateTitle"></div>
             <div class="item-meta" id="tenantCreateDesc" style="margin-top:4px"></div>
             <div class="grid2" style="margin-top:10px">
               <div><label for="tenantName" id="tenantNameLabel"></label><input id="tenantName" placeholder="Acme Corp"></div>
@@ -495,7 +494,7 @@
             <div class="actions" style="margin-top:10px"><button class="btn-primary" id="tenantCreateBtn" type="button" onclick="createTenant()"></button></div>
           </div>
           <div class="item" style="padding:14px 16px">
-            <div class="item-title" id="tenantAdminCreateTitle"></div>
+            <div class="item-title" data-icon="user-plus" id="tenantAdminCreateTitle"></div>
             <div class="item-meta" id="tenantAdminCreateDesc" style="margin-top:4px"></div>
             <div class="grid2" style="margin-top:10px">
               <div><label for="tenantAdminTenantID" id="tenantAdminTenantLabel"></label><select id="tenantAdminTenantID"></select></div>
@@ -509,7 +508,7 @@
           </div>
         </div>
         <div class="item" style="margin-top:10px;padding:12px 14px">
-          <div class="head" style="margin-bottom:8px"><div><div class="item-title"><span id="tenantListTitle"></span> <span id="tenantCountBadge" class="badge info">0</span></div><div class="item-meta" id="tenantListDesc"></div></div></div>
+          <div class="head" style="margin-bottom:8px"><div><div class="item-title" data-icon="list"><span id="tenantListTitle"></span> <span id="tenantCountBadge" class="badge info">0</span></div><div class="item-meta" id="tenantListDesc"></div></div></div>
           <div id="tenantList"><div class="hint" id="tenantListEmpty"></div></div>
         </div>
       </section>
@@ -540,14 +539,14 @@
         </div>
         <div class="item" style="margin-top:8px;padding:12px 14px">
           <div class="head" style="margin-bottom:6px">
-            <div><div class="item-title" data-i18n="blockedEmailsTitle"></div><div class="item-meta" data-i18n="blockedEmailsDesc"></div></div>
+            <div><div class="item-title" data-icon="ban" data-i18n="blockedEmailsTitle"></div><div class="item-meta" data-i18n="blockedEmailsDesc"></div></div>
             <button class="btn-ghost" onclick="loadBlockedEmails()" data-i18n="reload"></button>
           </div>
           <div id="blockedEmails"><div class="hint" data-i18n="emptyBlocked"></div></div>
         </div>
         <div class="item" style="margin-top:8px;padding:12px 14px">
           <div class="head" style="margin-bottom:6px">
-            <div><div class="item-title" data-i18n="boundUsersTitle"></div><div class="item-meta" data-i18n="boundUsersDesc"></div></div>
+            <div><div class="item-title" data-icon="users" data-i18n="boundUsersTitle"></div><div class="item-meta" data-i18n="boundUsersDesc"></div></div>
             <div style="display:flex;align-items:center;gap:8px">
               <label id="smartRouteAllLabel" style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer" title="Smart Route for all users">
                 <input type="checkbox" id="smartRouteAllToggle" onchange="toggleSmartRouteAll(this.checked)"><span id="smartRouteAllLabelText">Smart Route for all</span>
@@ -559,7 +558,7 @@
         </div>
         <div class="item" style="margin-top:8px;padding:12px 14px">
           <div class="head" style="margin-bottom:6px">
-            <div><div class="item-title" data-i18n="invitesTitle"></div><div class="item-meta" data-i18n="invitesDesc"></div></div>
+            <div><div class="item-title" data-icon="ticket" data-i18n="invitesTitle"></div><div class="item-meta" data-i18n="invitesDesc"></div></div>
             <button class="btn-ghost" onclick="loadInvites()" data-i18n="reload"></button>
           </div>
           <div id="invites"><div class="hint" data-i18n="loading"></div></div>
@@ -571,20 +570,20 @@
         <div class="head"><div><h3 data-i18n="marketplaceTabTitle"></h3><div class="desc" data-i18n="marketplaceTabSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div>
         <!-- Sub-tab navigation -->
         <div class="subtab-bar" style="display:flex;gap:0;border-bottom:2px solid var(--border,#e0e0e0);margin-bottom:16px">
-          <button class="subtab active" id="subtab-market" type="button" onclick="switchMarketplaceSubtab('market')" data-i18n="marketplaceSubtabMarket"></button>
-          <button class="subtab" id="subtab-workflows" type="button" onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"></button>
-          <button class="subtab" id="subtab-settings" type="button" onclick="switchMarketplaceSubtab('settings')" data-i18n="marketplaceSubtabSettings"></button>
+          <button class="subtab active" id="subtab-market" data-icon="store" type="button" onclick="switchMarketplaceSubtab('market')" data-i18n="marketplaceSubtabMarket"></button>
+          <button class="subtab" id="subtab-workflows" data-icon="clipboard" type="button" onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"></button>
+          <button class="subtab" id="subtab-settings" data-icon="sliders" type="button" onclick="switchMarketplaceSubtab('settings')" data-i18n="marketplaceSubtabSettings"></button>
         </div>
         <!-- Sub-tab: Enterprise Capability Market -->
         <div id="marketplace-subtab-market">
           <!-- Search External Markets (top, full width) -->
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceSearchTitle"></div><div class="item-meta" data-i18n="marketplaceSearchDesc"></div></div></div><div style="display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceSource"></label><select id="marketplaceSearchSource"><option value="">All</option><option value="hubcenter">hubcenter</option><option value="clawhub">clawhub</option><option value="github">github</option></select></div><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceSearchType"><option value="skill">skill</option><option value="mcp">mcp</option></select></div><div><label data-i18n="marketplaceQuery"></label><input id="marketplaceSearchQuery"></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="searchMarketplaceExternal()" data-i18n="marketplaceSearch"></button><button class="btn-secondary" type="button" onclick="openMCPEditorDialog(true)" data-i18n="marketplaceMCPNew" style="white-space:nowrap">+ MCP</button></div><div id="marketplaceSearchResults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
+          <div class="item"><div class="item-head"><div><div class="item-title" data-icon="search" data-i18n="marketplaceSearchTitle"></div><div class="item-meta" data-i18n="marketplaceSearchDesc"></div></div></div><div style="display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceSource"></label><select id="marketplaceSearchSource"><option value="">All</option><option value="hubcenter">hubcenter</option><option value="clawhub">clawhub</option><option value="github">github</option></select></div><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceSearchType"><option value="skill">skill</option><option value="mcp">mcp</option></select></div><div><label data-i18n="marketplaceQuery"></label><input id="marketplaceSearchQuery"></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="searchMarketplaceExternal()" data-i18n="marketplaceSearch"></button><button class="btn-secondary" type="button" onclick="openMCPEditorDialog(true)" data-i18n="marketplaceMCPNew" style="white-space:nowrap">+ MCP</button></div><div id="marketplaceSearchResults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
           <!-- Enterprise Capabilities (bottom, full width) -->
-          <div class="item" style="margin-top:10px"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div><div class="actions" style="gap:8px"><button class="btn-ghost" type="button" onclick="backfillCapabilityDisplayNames()" data-i18n="marketplaceBackfillNames"></button><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div></div><div class="filter-group mp-category-tabs" style="margin-top:10px;gap:6px;flex-wrap:wrap"><button class="btn-secondary mp-category-tab-active" id="mpTypeAll" aria-pressed="true" type="button" onclick="switchMarketplaceType('')" data-i18n="marketplaceCapabilityAll"></button><button class="btn-ghost" id="mpTypeSkill" aria-pressed="false" type="button" onclick="switchMarketplaceType('skill')">Skill</button><button class="btn-ghost" id="mpTypeMcp" aria-pressed="false" type="button" onclick="switchMarketplaceType('mcp')">MCP</button><button class="btn-ghost" id="mpTypeWorkflow" aria-pressed="false" type="button" onclick="switchMarketplaceType('approval_workflow')">&#23457;&#25209;&#24037;&#20316;&#27969;</button><button class="btn-ghost" id="mpTypeApp" aria-pressed="false" type="button" onclick="switchMarketplaceType('maclaw_app')">MaClaw APP</button></div><select id="marketplaceCapabilityType" style="display:none" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option><option value="approval_workflow">approval_workflow</option><option value="maclaw_app">maclaw_app</option></select><div id="marketplaceCapabilitiesList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px"></div></div>
+          <div class="item" style="margin-top:10px"><div class="item-head"><div><div class="item-title" data-icon="grid" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div><div class="actions" style="gap:8px"><button class="btn-ghost" type="button" onclick="backfillCapabilityDisplayNames()" data-i18n="marketplaceBackfillNames"></button><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div></div><div class="filter-group mp-category-tabs" style="margin-top:10px;gap:6px;flex-wrap:wrap"><button class="btn-secondary mp-category-tab-active" id="mpTypeAll" aria-pressed="true" type="button" onclick="switchMarketplaceType('')" data-i18n="marketplaceCapabilityAll"></button><button class="btn-ghost" id="mpTypeSkill" aria-pressed="false" type="button" onclick="switchMarketplaceType('skill')">Skill</button><button class="btn-ghost" id="mpTypeMcp" aria-pressed="false" type="button" onclick="switchMarketplaceType('mcp')">MCP</button><button class="btn-ghost" id="mpTypeWorkflow" aria-pressed="false" type="button" onclick="switchMarketplaceType('approval_workflow')">&#23457;&#25209;&#24037;&#20316;&#27969;</button><button class="btn-ghost" id="mpTypeApp" aria-pressed="false" type="button" onclick="switchMarketplaceType('maclaw_app')">MaClaw APP</button></div><select id="marketplaceCapabilityType" style="display:none" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option><option value="approval_workflow">approval_workflow</option><option value="maclaw_app">maclaw_app</option></select><div id="marketplaceCapabilitiesList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px"></div></div>
           <!-- MCP Editor Dialog (modal popup) -->
           <div id="mcpEditorOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center" onclick="if(event.target===this)closeMCPEditorDialog()">
             <div style="background:#fff;border-radius:16px;padding:24px 28px;width:min(620px,92vw);max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.18)">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><div><div class="item-title" data-i18n="marketplaceMCPTitle"></div><div class="item-meta" data-i18n="marketplaceMCPDesc"></div></div><button class="btn-ghost" type="button" onclick="closeMCPEditorDialog()" style="font-size:18px;padding:4px 10px">&times;</button></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><div><div class="item-title" data-icon="plug" data-i18n="marketplaceMCPTitle"></div><div class="item-meta" data-i18n="marketplaceMCPDesc"></div></div><button class="btn-ghost" type="button" onclick="closeMCPEditorDialog()" style="font-size:18px;padding:4px 10px">&times;</button></div>
               <!-- Common fields -->
               <div class="grid2" style="margin-top:10px"><div><label data-i18n="marketplaceMCPId"></label><input id="marketplaceMCPId" placeholder="example-mcp"></div><div><label data-i18n="marketplaceMCPName"></label><input id="marketplaceMCPName" placeholder="Example MCP"></div><div><label data-i18n="marketplaceMCPPublisher"></label><input id="marketplaceMCPPublisher" value="enterprise"></div><div><label data-i18n="marketplaceMCPVersion"></label><input id="marketplaceMCPVersion" value="1.0.0"></div></div>
               <!-- Type switcher -->
@@ -607,7 +606,7 @@
         </div>
         <!-- Sub-tab: Approval Workflow Reviews -->
         <div id="marketplace-subtab-workflows" style="display:none">
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="workflowReviewsTitle"></div><div class="item-meta" data-i18n="workflowReviewsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadWorkflowReviews()" data-i18n="marketplaceReload"></button></div><div id="marketplaceWorkflowReviewsList" style="display:grid;gap:8px;margin-top:10px"></div><div id="marketplaceWorkflowReviewDetail" style="display:grid;gap:8px;margin-top:10px"></div></div>
+          <div class="item"><div class="item-head"><div><div class="item-title" data-icon="clipboard" data-i18n="workflowReviewsTitle"></div><div class="item-meta" data-i18n="workflowReviewsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadWorkflowReviews()" data-i18n="marketplaceReload"></button></div><div id="marketplaceWorkflowReviewsList" style="display:grid;gap:8px;margin-top:10px"></div><div id="marketplaceWorkflowReviewDetail" style="display:grid;gap:8px;margin-top:10px"></div></div>
         </div>
         <div id="workflowRejectOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeWorkflowRejectDialog()">
           <div class="session-modal" style="width:min(520px,calc(100% - 40px))" role="dialog" aria-modal="true" aria-labelledby="workflowRejectTitle">
@@ -622,11 +621,11 @@
         <!-- Sub-tab: Marketplace Settings -->
         <div id="marketplace-subtab-settings" style="display:none">
           <div class="grid2">
-            <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplacePolicyTitle"></div><div class="item-meta" data-i18n="marketplacePolicyDesc"></div></div></div><div id="marketplacePolicyBody" style="margin-top:10px"></div></div>
-            <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceBillingTitle"></div><div class="item-meta" data-i18n="marketplaceBillingDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplaceBilling()" data-i18n="marketplaceLoadBilling"></button></div><div id="marketplaceBillingBody" style="display:grid;gap:8px;margin-top:10px"></div></div>
+            <div class="item"><div class="item-head"><div><div class="item-title" data-icon="scale" data-i18n="marketplacePolicyTitle"></div><div class="item-meta" data-i18n="marketplacePolicyDesc"></div></div></div><div id="marketplacePolicyBody" style="margin-top:10px"></div></div>
+            <div class="item"><div class="item-head"><div><div class="item-title" data-icon="card" data-i18n="marketplaceBillingTitle"></div><div class="item-meta" data-i18n="marketplaceBillingDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplaceBilling()" data-i18n="marketplaceLoadBilling"></button></div><div id="marketplaceBillingBody" style="display:grid;gap:8px;margin-top:10px"></div></div>
           </div>
           <div class="grid2" style="margin-top:10px">
-            <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending_review">pending_review</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
+            <div class="item"><div class="item-head"><div><div class="item-title" data-icon="inbox" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending_review">pending_review</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
           </div>
         </div>
       </section>
@@ -635,7 +634,7 @@
         <!-- Enterprise email routing -->
         <div class="item" id="systemRoutingCard">
           <div class="system-routing-head">
-            <div class="system-routing-title"><div class="item-title" id="systemRoutingTitle"></div><div class="item-meta" id="systemRoutingDesc"></div></div>
+            <div class="system-routing-title"><div class="item-title" data-icon="globe" id="systemRoutingTitle"></div><div class="item-meta" id="systemRoutingDesc"></div></div>
             <div class="system-routing-actions"><button class="btn-ghost" onclick="loadSystemRoutingConfig()" id="systemRoutingReloadBtn"></button></div>
           </div>
           <div class="system-routing-grid">
@@ -647,7 +646,7 @@
         </div>
         <div class="item registration-auth-card" id="registrationAuthCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="registrationAuthTitle"></div><div class="item-meta" id="registrationAuthDesc"></div></div>
+            <div><div class="item-title" data-icon="key" id="registrationAuthTitle"></div><div class="item-meta" id="registrationAuthDesc"></div></div>
             <button class="btn-ghost" onclick="loadRegistrationAuthConfig()" id="registrationAuthReloadBtn"></button>
           </div>
           <div class="registration-auth-choice-row">
@@ -660,7 +659,7 @@
             <div class="item-meta" id="registrationAuthEmailVerificationHint"></div>
           </div>
           <section id="registrationAuthAliyunSection" class="registration-sms-section hidden" aria-labelledby="registrationAuthSMSSettingsTitle">
-            <div class="registration-sms-section-head"><div><div class="item-title" id="registrationAuthSMSSettingsTitle"></div><div class="item-meta" id="registrationAuthSMSSettingsDesc"></div></div></div>
+            <div class="registration-sms-section-head"><div><div class="item-title" data-icon="sms" id="registrationAuthSMSSettingsTitle"></div><div class="item-meta" id="registrationAuthSMSSettingsDesc"></div></div></div>
             <div id="registrationAuthAliyunFields" class="grid2">
             <div><label for="registrationAuthAliyunAccessKeyID" id="registrationAuthAliyunAccessKeyIDLabel"></label><input id="registrationAuthAliyunAccessKeyID" autocomplete="off" placeholder="AccessKey ID"></div>
             <div><label for="registrationAuthAliyunAccessKeySecret" id="registrationAuthAliyunAccessKeySecretLabel"></label><input id="registrationAuthAliyunAccessKeySecret" type="password" autocomplete="off" placeholder="AccessKey Secret"></div>
@@ -674,7 +673,7 @@
         </div>
         <div class="item hidden user-referral-system-card" id="userReferralSystemCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="userReferralSystemTitle"></div><div class="item-meta" id="userReferralSystemDesc"></div></div>
+            <div><div class="item-title" data-icon="gift" id="userReferralSystemTitle"></div><div class="item-meta" id="userReferralSystemDesc"></div></div>
             <button class="btn-ghost" type="button" onclick="loadUserReferralSystemConfig()" id="userReferralSystemReloadBtn"></button>
           </div>
           <div class="user-referral-system-status">
@@ -695,7 +694,7 @@
         <!-- Mail config -->
         <div class="item" id="mailConfigCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" data-i18n="mailConfigTitle"></div><div class="item-meta" data-i18n="mailConfigDesc"></div></div>
+            <div><div class="item-title" data-icon="mail" data-i18n="mailConfigTitle"></div><div class="item-meta" data-i18n="mailConfigDesc"></div></div>
             <button class="btn-ghost" onclick="loadMailConfig()" data-i18n="reload"></button>
           </div>
           <div class="grid3" style="gap:10px">
@@ -720,7 +719,7 @@
         </div>
         <div class="item hidden" id="tenantMailSenderCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="tenantMailSenderTitle"></div><div class="item-meta" id="tenantMailSenderDesc"></div></div>
+            <div><div class="item-title" data-icon="send" id="tenantMailSenderTitle"></div><div class="item-meta" id="tenantMailSenderDesc"></div></div>
             <button class="btn-ghost" onclick="loadTenantMailSenderName()" id="tenantMailSenderReloadBtn"></button>
           </div>
           <div class="grid2">
@@ -731,7 +730,7 @@
         </div>
         <div class="item hidden" id="tenantMigrationSettingsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="tenantMigrationSettingsTitle"></div><div class="item-meta" id="tenantMigrationSettingsDesc"></div></div>
+            <div><div class="item-title" data-icon="sync" id="tenantMigrationSettingsTitle"></div><div class="item-meta" id="tenantMigrationSettingsDesc"></div></div>
             <button class="btn-ghost" onclick="loadTenantMigrationSettings()" id="tenantMigrationSettingsReloadBtn"></button>
           </div>
           <div class="grid2">
@@ -742,7 +741,7 @@
         </div>
         <div class="item hidden" id="tenantCloudWorkspaceSettingsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="tenantCloudWorkspaceSettingsTitle"></div><div class="item-meta" id="tenantCloudWorkspaceSettingsDesc"></div></div>
+            <div><div class="item-title" data-icon="cloud" id="tenantCloudWorkspaceSettingsTitle"></div><div class="item-meta" id="tenantCloudWorkspaceSettingsDesc"></div></div>
             <button class="btn-ghost" type="button" onclick="loadTenantCloudWorkspaceSettings()" id="tenantCloudWorkspaceSettingsReloadBtn"></button>
           </div>
           <div style="display:flex;flex-direction:column;gap:12px">
@@ -765,6 +764,7 @@
               <div class="item-meta" style="margin:0 0 6px;font-weight:600" id="tenantCloudWorkspaceDepartmentsLabel"></div>
               <div class="item-meta" style="margin:0 0 8px" id="tenantCloudWorkspaceDepartmentsHint"></div>
               <div id="tenantCloudWorkspaceSelectedDepartments" class="item-meta" aria-live="polite" style="margin:0 0 8px;font-weight:600"></div>
+              <div id="tenantCloudWorkspaceSelectedChips" class="cws-acl-chips" aria-live="polite" style="display:none"></div>
               <div id="tenantCloudWorkspaceDeptTree"></div>
               <div id="tenantCloudWorkspaceEmptyWarn" class="item-meta" style="margin-top:8px;color:var(--warning,#b45309);display:none"></div>
             </div>
@@ -781,7 +781,7 @@
         </div>
         <div class="item hidden" id="tenantDigitalAssetsSettingsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="tenantDigitalAssetsSettingsTitle"></div><div class="item-meta" id="tenantDigitalAssetsSettingsDesc"></div></div>
+            <div><div class="item-title" data-icon="library" id="tenantDigitalAssetsSettingsTitle"></div><div class="item-meta" id="tenantDigitalAssetsSettingsDesc"></div></div>
             <button class="btn-ghost" type="button" onclick="loadTenantDigitalAssetsSettings()" id="tenantDigitalAssetsSettingsReloadBtn"></button>
           </div>
           <div style="display:flex;flex-direction:column;gap:12px">
@@ -804,7 +804,7 @@
         <div class="item hidden" id="tenantSystemLLMDefaultsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
             <div>
-              <div class="item-title" id="tenantSystemLLMDefaultsTitle"></div>
+              <div class="item-title" data-icon="spark" id="tenantSystemLLMDefaultsTitle"></div>
               <div class="item-meta" id="tenantSystemLLMDefaultsDesc"></div>
             </div>
             <button class="btn-ghost" type="button" onclick="loadTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsReloadBtn"></button>
@@ -820,7 +820,7 @@
         </div>
         <!-- Admin profile -->
         <div class="item" style="margin-top:10px">
-          <div class="item-title" id="profileCardTitle"></div>
+          <div class="item-title" data-icon="user" id="profileCardTitle"></div>
           <div class="item-meta" id="profileCardDesc" style="margin-bottom:12px"></div>
           <div class="grid2">
             <div><label for="adminEmailInput" id="adminEmailLabel"></label><input id="adminEmailInput" type="email" placeholder=""></div>
@@ -830,7 +830,7 @@
         </div>
         <!-- Change password -->
         <div class="item" id="tlsConfigCard" style="margin-top:10px">
-          <div class="item-title" id="passwordCardTitle"></div>
+          <div class="item-title" data-icon="lock" id="passwordCardTitle"></div>
           <div class="item-meta" id="passwordCardDesc" style="margin-bottom:12px"></div>
           <div class="grid3">
             <div><label for="currentPasswordInput" id="currentPasswordLabel"></label><input id="currentPasswordInput" type="password"></div>
@@ -842,7 +842,7 @@
         <!-- TLS config -->
         <div class="item" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="tlsTitle"></div><div class="item-meta" id="tlsDesc"></div></div>
+            <div><div class="item-title" data-icon="shield" id="tlsTitle"></div><div class="item-meta" id="tlsDesc"></div></div>
             <button class="btn-ghost" onclick="loadTlsConfig()" id="tlsReloadBtn"></button>
           </div>
           <div class="grid2">
@@ -883,7 +883,7 @@
             <div id="im-pane-feishu" class="im-pane active">
               <div class="item">
                 <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="feishuConfigTitle"></div><div class="item-meta" id="feishuConfigDesc"></div></div>
+                  <div><div class="item-title" data-icon="sms" id="feishuConfigTitle"></div><div class="item-meta" id="feishuConfigDesc"></div></div>
                   <button class="btn-ghost" onclick="loadFeishuConfig()" data-i18n="reload"></button>
                 </div>
                 <div class="grid2">
@@ -898,7 +898,7 @@
                 <!-- Feishu auto-enroll -->
                 <div class="item" style="margin-top:18px;border-top:1px solid var(--line);padding-top:18px">
                   <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" id="feishuAutoEnrollTitle"></div><div class="item-meta" id="feishuAutoEnrollDesc"></div></div>
+                    <div><div class="item-title" data-icon="user-plus" id="feishuAutoEnrollTitle"></div><div class="item-meta" id="feishuAutoEnrollDesc"></div></div>
                   </div>
                   <div class="grid2">
                     <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="feishuAutoEnrollEnabled"> <span id="feishuAutoEnrollEnabledLabel"></span></label></div>
@@ -917,7 +917,7 @@
                 <!-- Feishu bindings -->
                 <div style="margin-top:10px">
                   <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" id="feishuBindingsTitle"></div><div class="item-meta" id="feishuBindingsDesc"></div></div>
+                    <div><div class="item-title" data-icon="link" id="feishuBindingsTitle"></div><div class="item-meta" id="feishuBindingsDesc"></div></div>
                     <button class="btn-ghost" onclick="loadFeishuBindings()" data-i18n="reload"></button>
                   </div>
                   <div class="actions" style="margin-bottom:10px;gap:10px;align-items:center">
@@ -941,7 +941,7 @@
             <div id="im-pane-openclaw" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="openclawImTitle"></div><div class="item-meta" id="openclawImDesc"></div></div>
+                  <div><div class="item-title" data-icon="bot" id="openclawImTitle"></div><div class="item-meta" id="openclawImDesc"></div></div>
                 </div>
                 <div class="grid2">
                   <div><label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)"><input type="checkbox" id="openclawImEnabled"> <span id="openclawImEnabledLabel"></span></label></div>
@@ -961,7 +961,7 @@
                 </div>
                 <div style="margin-top:18px">
                   <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" id="bridgeChannelsTitle"></div><div class="item-meta" id="bridgeChannelsDesc"></div></div>
+                    <div><div class="item-title" data-icon="plug" id="bridgeChannelsTitle"></div><div class="item-meta" id="bridgeChannelsDesc"></div></div>
                     <div class="actions">
                       <span id="bridgeStatusBadge" class="badge warn" style="font-size:12px"></span>
                       <button class="btn-ghost" onclick="loadBridgeChannels()" id="bridgeReloadBtn"></button>
@@ -976,7 +976,7 @@
             <div id="im-pane-qqbot" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="qqbotConfigTitle"></div><div class="item-meta" id="qqbotConfigDesc"></div></div>
+                  <div><div class="item-title" data-icon="sms" id="qqbotConfigTitle"></div><div class="item-meta" id="qqbotConfigDesc"></div></div>
                   <button class="btn-ghost" onclick="loadQQBotConfig()" data-i18n="reload"></button>
                 </div>
                 <div class="grid2">
@@ -994,7 +994,7 @@
                 </div>
                 <div style="margin-top:10px">
                   <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" id="qqbotBindingsTitle"></div><div class="item-meta" id="qqbotBindingsDesc"></div></div>
+                    <div><div class="item-title" data-icon="link" id="qqbotBindingsTitle"></div><div class="item-meta" id="qqbotBindingsDesc"></div></div>
                     <button class="btn-ghost" onclick="loadQQBotBindings()" data-i18n="reload"></button>
                   </div>
                   <div id="qqbotBindingsList"></div>
@@ -1006,7 +1006,7 @@
             <div id="im-pane-wecom" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="wecomConfigTitle"></div><div class="item-meta" id="wecomConfigDesc"></div></div>
+                  <div><div class="item-title" data-icon="briefcase" id="wecomConfigTitle"></div><div class="item-meta" id="wecomConfigDesc"></div></div>
                   <button class="btn-ghost" onclick="loadWeComConfig()" id="wecomReloadBtn"></button>
                 </div>
                 <div class="grid2">
@@ -1024,7 +1024,7 @@
                 </div>
                 <div style="margin-top:10px">
                   <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" id="wecomBindingsTitle"></div><div class="item-meta" id="wecomBindingsDesc"></div></div>
+                    <div><div class="item-title" data-icon="link" id="wecomBindingsTitle"></div><div class="item-meta" id="wecomBindingsDesc"></div></div>
                     <button class="btn-ghost" onclick="loadWeComBindings()" id="wecomBindingsReloadBtn"></button>
                   </div>
                   <div id="wecomBindingsList"><div class="hint" data-i18n="loading"></div></div>
@@ -1036,7 +1036,7 @@
             <div id="im-pane-dingtalk" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="dingtalkConfigTitle"></div><div class="item-meta" id="dingtalkConfigDesc"></div></div>
+                  <div><div class="item-title" data-icon="bell" id="dingtalkConfigTitle"></div><div class="item-meta" id="dingtalkConfigDesc"></div></div>
                   <button class="btn-ghost" onclick="loadDingTalkConfig()" id="dingtalkReloadBtn"></button>
                 </div>
                 <div class="grid2">
@@ -1054,7 +1054,7 @@
                 </div>
                 <div style="margin-top:10px">
                   <div class="head" style="margin-bottom:10px">
-                    <div><div class="item-title" id="dingtalkBindingsTitle"></div><div class="item-meta" id="dingtalkBindingsDesc"></div></div>
+                    <div><div class="item-title" data-icon="link" id="dingtalkBindingsTitle"></div><div class="item-meta" id="dingtalkBindingsDesc"></div></div>
                     <button class="btn-ghost" onclick="loadDingTalkBindings()" id="dingtalkBindingsReloadBtn"></button>
                   </div>
                   <div id="dingtalkBindingsList"><div class="hint" data-i18n="loading"></div></div>
@@ -1066,7 +1066,7 @@
             <div id="im-pane-contentaudit" class="im-pane">
               <div class="item">
                 <div class="head" style="margin-bottom:10px">
-                  <div><div class="item-title" id="contentAuditTitle"></div><div class="item-meta" id="contentAuditDesc"></div></div>
+                  <div><div class="item-title" data-icon="scan" id="contentAuditTitle"></div><div class="item-meta" id="contentAuditDesc"></div></div>
                   <button class="btn-ghost" onclick="loadContentAuditConfig()" id="contentAuditReloadBtn"></button>
                 </div>
                 <div class="grid2" style="margin-top:10px">
@@ -1135,7 +1135,7 @@
         <div class="item" style="margin-bottom:12px">
           <div class="item-head" style="align-items:center;margin-bottom:8px">
             <div>
-              <div class="item-title" id="veAutoApproveTitle"></div>
+              <div class="item-title" data-icon="check" id="veAutoApproveTitle"></div>
               <div class="item-meta" id="veAutoApproveDesc"></div>
             </div>
             <span class="badge warn" id="veAutoApproveBadge"></span>
@@ -1146,7 +1146,7 @@
           </label>
         </div>
         <div class="item" style="margin-bottom:12px">
-          <div class="item-title" id="veGroupConfigTitle"></div>
+          <div class="item-title" data-icon="users" id="veGroupConfigTitle"></div>
           <div class="item-meta" id="veGroupConfigDesc" style="margin-bottom:8px"></div>
           <div class="actions" style="gap:8px;align-items:center">
             <label for="veMaxParticipantsInput" id="veMaxParticipantsLabel" style="margin:0;font-size:12px;white-space:nowrap"></label>
@@ -1155,7 +1155,7 @@
           </div>
         </div>
         <div class="item" style="margin-bottom:12px">
-          <div class="item-title" id="veHistoryTitle"></div>
+          <div class="item-title" data-icon="clock" id="veHistoryTitle"></div>
           <div class="item-meta" id="veHistoryDesc" style="margin-bottom:8px"></div>
           <div class="actions" style="gap:8px;align-items:center;margin-bottom:8px">
             <input type="text" id="veHistorySearchInput" oninput="veSearchHistory()" onkeydown="if(event.key==='Enter')veSearchHistory(true)" style="height:34px;max-width:280px">
@@ -1186,12 +1186,12 @@
       <section id="tab-userreferrals" class="panel card">
         <div class="head"><div><h3 id="userReferralTitle">User referrals</h3><div class="desc" id="userReferralSubtitle">Set future referral rewards and review successful invited registrations.</div></div></div>
         <div class="item user-referral-metrics" aria-labelledby="userReferralMetricsTitle">
-          <div class="item-head"><div><div class="item-title" id="userReferralMetricsTitle">Operational overview</div><div class="item-meta" id="userReferralMetricsDesc">Tenant-scoped invitation funnel and reward recovery signals.</div></div><div class="user-referral-metrics__controls"><label for="userReferralMetricDays" id="userReferralMetricDaysLabel">Period</label><select id="userReferralMetricDays" onchange="changeUserReferralMetricDays(this.value)"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select><button id="userReferralMetricsReload" class="btn-ghost" type="button" onclick="loadUserReferralMetrics()">Reload</button></div></div>
+          <div class="item-head"><div><div class="item-title" data-icon="chart" id="userReferralMetricsTitle">Operational overview</div><div class="item-meta" id="userReferralMetricsDesc">Tenant-scoped invitation funnel and reward recovery signals.</div></div><div class="user-referral-metrics__controls"><label for="userReferralMetricDays" id="userReferralMetricDaysLabel">Period</label><select id="userReferralMetricDays" onchange="changeUserReferralMetricDays(this.value)"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select><button id="userReferralMetricsReload" class="btn-ghost" type="button" onclick="loadUserReferralMetrics()">Reload</button></div></div>
           <div id="userReferralMetricGrid" class="user-referral-metrics-grid" style="margin-top:14px" data-js-owner="user-referrals-tab"></div>
           <div id="userReferralMetricsHint" class="item-meta" style="margin-top:10px" data-js-owner="user-referrals-tab"></div>
         </div>
         <div class="item user-referral-config">
-          <div class="item-head"><div><div class="item-title" id="userReferralConfigTitle">Referral reward rules</div><div class="item-meta" id="userReferralConfigDesc">Changes apply to registrations completed after you save.</div></div></div>
+          <div class="item-head"><div><div class="item-title" data-icon="sliders" id="userReferralConfigTitle">Referral reward rules</div><div class="item-meta" id="userReferralConfigDesc">Changes apply to registrations completed after you save.</div></div></div>
           <div class="user-referral-fields">
             <div><label id="userReferralInviterLabel" for="userReferralInviterCredits">Inviter Credits</label><input id="userReferralInviterCredits" type="number" min="0" step="1"></div>
             <div><label id="userReferralInviteeLabel" for="userReferralInviteeCredits">Invitee Credits</label><input id="userReferralInviteeCredits" type="number" min="0" step="1"></div>
@@ -1202,8 +1202,8 @@
           </div>
           <div class="actions" style="margin-top:14px"><button id="userReferralSave" type="button" class="btn-primary" onclick="saveUserReferralConfig()">Save rules</button></div>
         </div>
-        <div class="item" style="margin-top:14px"><div class="item-head"><div><div class="item-title" id="userReferralReviewTitle">Awaiting review</div><div class="item-meta" id="userReferralReviewDesc">Risk signals hold these successful registrations until a tenant administrator decides.</div></div></div><div id="userReferralReviewQueue" class="user-referral-review-grid" style="margin-top:14px" data-js-owner="user-referrals-tab"></div><div id="userReferralReviewPager" class="pager" style="margin-top:12px"><div id="userReferralReviewPagerMeta" class="pager-meta" data-js-owner="user-referrals-tab"></div><div class="pager-actions"><button id="userReferralReviewPrev" class="btn-ghost" type="button" onclick="changeUserReferralReviewPage(-1)">Previous</button><button id="userReferralReviewNext" class="btn-ghost" type="button" onclick="changeUserReferralReviewPage(1)">Next</button></div></div></div>
-        <div class="item" style="margin-top:14px"><div class="item-head"><div><div class="item-title" id="userReferralListTitle">Invitation activity</div><div class="item-meta" id="userReferralListDesc">Click an invitee count to view registered users.</div></div><div class="actions"><button id="userReferralReload" class="btn-ghost" type="button" onclick="loadUserReferralTab()">Reload</button></div></div><div style="display:flex;gap:8px;margin-top:12px"><input id="userReferralSearch" type="search" style="flex:1"><button id="userReferralSearchBtn" class="btn-secondary" type="button" onclick="searchUserReferrals()">Search</button></div><div id="userReferralInviters" style="margin-top:14px" data-js-owner="user-referrals-tab"></div><div class="pager" style="margin-top:12px"><div id="userReferralPagerMeta" class="pager-meta" data-js-owner="user-referrals-tab"></div><div class="pager-actions"><button id="userReferralPrev" class="btn-ghost" type="button" onclick="changeUserReferralPage(-1)">Previous</button><button id="userReferralNext" class="btn-ghost" type="button" onclick="changeUserReferralPage(1)">Next</button></div></div></div>
+        <div class="item" style="margin-top:14px"><div class="item-head"><div><div class="item-title" data-icon="alert" id="userReferralReviewTitle">Awaiting review</div><div class="item-meta" id="userReferralReviewDesc">Risk signals hold these successful registrations until a tenant administrator decides.</div></div></div><div id="userReferralReviewQueue" class="user-referral-review-grid" style="margin-top:14px" data-js-owner="user-referrals-tab"></div><div id="userReferralReviewPager" class="pager" style="margin-top:12px"><div id="userReferralReviewPagerMeta" class="pager-meta" data-js-owner="user-referrals-tab"></div><div class="pager-actions"><button id="userReferralReviewPrev" class="btn-ghost" type="button" onclick="changeUserReferralReviewPage(-1)">Previous</button><button id="userReferralReviewNext" class="btn-ghost" type="button" onclick="changeUserReferralReviewPage(1)">Next</button></div></div></div>
+        <div class="item" style="margin-top:14px"><div class="item-head"><div><div class="item-title" data-icon="list" id="userReferralListTitle">Invitation activity</div><div class="item-meta" id="userReferralListDesc">Click an invitee count to view registered users.</div></div><div class="actions"><button id="userReferralReload" class="btn-ghost" type="button" onclick="loadUserReferralTab()">Reload</button></div></div><div style="display:flex;gap:8px;margin-top:12px"><input id="userReferralSearch" type="search" style="flex:1"><button id="userReferralSearchBtn" class="btn-secondary" type="button" onclick="searchUserReferrals()">Search</button></div><div id="userReferralInviters" style="margin-top:14px" data-js-owner="user-referrals-tab"></div><div class="pager" style="margin-top:12px"><div id="userReferralPagerMeta" class="pager-meta" data-js-owner="user-referrals-tab"></div><div class="pager-actions"><button id="userReferralPrev" class="btn-ghost" type="button" onclick="changeUserReferralPage(-1)">Previous</button><button id="userReferralNext" class="btn-ghost" type="button" onclick="changeUserReferralPage(1)">Next</button></div></div></div>
         <div id="userReferralDetailOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeUserReferralDetail()" role="presentation"><div class="session-modal user-referral-detail-modal" role="dialog" aria-modal="true" aria-labelledby="userReferralDetailTitle"><button class="close-btn" type="button" onclick="closeUserReferralDetail()" aria-label="Close">&times;</button><h3 id="userReferralDetailTitle">User referrals</h3><div id="userReferralDetailBody" data-js-owner="user-referrals-tab"></div><div class="pager" style="margin-top:12px"><div id="userReferralDetailMeta" class="pager-meta" data-js-owner="user-referrals-tab"></div><div class="pager-actions"><button id="userReferralDetailPrev" class="btn-ghost" type="button" onclick="changeUserReferralDetailPage(-1)">Previous</button><button id="userReferralDetailNext" class="btn-ghost" type="button" onclick="changeUserReferralDetailPage(1)">Next</button></div></div></div></div>
       </section>
 
@@ -1211,7 +1211,7 @@
         <div class="head"><div><h3 id="invCodePageTitle" data-i18n="invitationCodesTabTitle"></h3><div class="desc" id="invCodePageDesc" data-i18n="invitationCodesTabSubtitle"></div></div></div>
         <div class="grid2" style="gap:10px">
           <div class="item" style="padding:12px 14px">
-            <div class="item-title" id="invCodeToggleTitle"></div>
+            <div class="item-title" data-icon="power" id="invCodeToggleTitle"></div>
             <div class="item-meta" id="invCodeToggleDesc" style="margin-bottom:10px"></div>
             <div class="actions" style="align-items:center;gap:8px">
               <span id="invCodeToggleBadge" class="badge warn"></span>
@@ -1219,7 +1219,7 @@
             </div>
           </div>
           <div class="item" style="padding:14px 16px">
-            <div class="item-title" id="invCodeGenTitle"></div>
+            <div class="item-title" data-icon="plus" id="invCodeGenTitle"></div>
             <div class="item-meta" id="invCodeGenDesc" style="margin-bottom:10px"></div>
             <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
               <div><label for="invCodeCount" id="invCodeCountLabel"></label><input id="invCodeCount" type="number" min="1" max="50" value="5" style="max-width:120px;height:36px"></div>
@@ -1247,7 +1247,7 @@
         </div>
         <div class="item" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="invCodeListTitle"></div><div class="item-meta" id="invCodeListDesc"></div></div>
+            <div><div class="item-title" data-icon="ticket" id="invCodeListTitle"></div><div class="item-meta" id="invCodeListDesc"></div></div>
             <button class="btn-ghost" id="invCodeExportBtn" onclick="exportInvitationCodes()"></button>
             <select id="invCodeExportFilter" style="max-width:126px;height:32px;font-size:11px">
               <option value="unexported" id="invExportFilterUnexported"></option>
@@ -1280,21 +1280,21 @@
       <section id="tab-pwarequests" class="panel card">
         <div class="head"><div><h3 id="pwaPageTitle" data-i18n="pwaRequestsTabTitle"></h3><div class="desc" id="pwaPageDesc" data-i18n="pwaRequestsTabSubtitle"></div></div></div>
         <div class="item" style="margin-bottom:10px;padding:12px 14px">
-          <div class="item-title" id="pwaManualTitle" style="font-size:14px"></div>
+          <div class="item-title" data-icon="phone" id="pwaManualTitle" style="font-size:14px"></div>
           <div class="item-meta" id="pwaManualDesc" style="margin-bottom:8px"></div>
           <div><label for="pwaManualEmail" id="pwaManualLabel"></label><input id="pwaManualEmail" placeholder="" style="max-width:320px"></div>
           <div class="actions" style="margin-top:8px"><button class="btn-primary" style="height:34px;padding:0 12px;font-size:12px" id="pwaManualBtn" onclick="manualApprovePwaEmail()"></button></div>
         </div>
         <div class="item" style="margin-bottom:10px;padding:12px 14px">
           <div class="head" style="margin-bottom:6px">
-            <div><div class="item-title" id="pendingLoginsTitle"></div><div class="item-meta" id="pendingLoginsDesc"></div></div>
+            <div><div class="item-title" data-icon="clock" id="pendingLoginsTitle"></div><div class="item-meta" id="pendingLoginsDesc"></div></div>
             <button class="btn-ghost" id="pendingLoginsReloadBtn" onclick="loadPendingLogins()"></button>
           </div>
           <div id="pendingLoginsList"><div class="hint" data-i18n="loading"></div></div>
         </div>
         <div class="item" style="padding:12px 14px">
           <div class="head" style="margin-bottom:6px">
-            <div><div class="item-title" id="pwaListTitle"></div><div class="item-meta" id="pwaListDesc"></div></div>
+            <div><div class="item-title" data-icon="list" id="pwaListTitle"></div><div class="item-meta" id="pwaListDesc"></div></div>
             <button class="btn-ghost" id="pwaReloadBtn" onclick="loadPwaEnrollments()"></button>
           </div>
           <div id="pwaEnrollmentList"><div class="hint" data-i18n="loading"></div></div>
@@ -1314,20 +1314,20 @@
             <div style="display:grid;gap:8px">
               <div class="item" style="min-height:auto;padding:12px">
                 <div style="display:flex;align-items:center;justify-content:space-between">
-                  <div><div class="item-title" style="font-size:14px" id="secCentralizedTitle" data-i18n="securityCentralizedPolicy"></div><div class="item-meta" id="secCentralizedHint"></div></div>
+                  <div><div class="item-title" data-icon="lock" style="font-size:14px" id="secCentralizedTitle" data-i18n="securityCentralizedPolicy"></div><div class="item-meta" id="secCentralizedHint"></div></div>
                   <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secCentralizedToggle" onchange="toggleSecCentralized(this.checked)"></label>
                 </div>
               </div>
               <div class="item" style="min-height:auto;padding:12px">
                 <div style="display:flex;align-items:center;justify-content:space-between">
-                  <div><div class="item-title" style="font-size:14px" id="secOrgTitle" data-i18n="securityOrgStructure"></div><div class="item-meta" id="secOrgHint"></div></div>
+                  <div><div class="item-title" data-icon="tree" style="font-size:14px" id="secOrgTitle" data-i18n="securityOrgStructure"></div><div class="item-meta" id="secOrgHint"></div></div>
                   <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secOrgToggle" onchange="toggleSecOrg(this.checked)"></label>
                 </div>
               </div>
             </div>
             <div class="item" style="min-height:auto;padding:12px">
               <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px" id="secDefaultGroupTitle" data-i18n="securityDefaultGroup"></div><div class="item-meta" id="secDefaultGroupHint" data-i18n="securityDefaultGroupHint"></div></div>
+                <div><div class="item-title" data-icon="users" style="font-size:14px" id="secDefaultGroupTitle" data-i18n="securityDefaultGroup"></div><div class="item-meta" id="secDefaultGroupHint" data-i18n="securityDefaultGroupHint"></div></div>
                 <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()" id="secDefaultGroupSetBtn" data-i18n="securitySet"></button>
               </div>
             </div>
@@ -1335,7 +1335,7 @@
           <!-- Main: left tree + right policy -->
           <div style="display:grid;grid-template-columns:300px 1fr;gap:12px;align-items:start">
             <div class="item" style="min-height:360px;position:relative;padding:12px">
-              <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle" data-i18n="securityGroupTree"></div>
+              <div class="item-title" data-icon="tree" style="margin-bottom:12px" id="secGroupTreeTitle" data-i18n="securityGroupTree"></div>
               <button class="btn-secondary" type="button" id="secGlobalBtn" onclick="selectSecGlobal()" style="width:100%;height:34px;font-size:12px;margin-bottom:10px;text-align:left"></button>
               <div id="secGroupTree" style="font-size:13px;line-height:1.8"></div>
               <div id="secContextMenu" class="hidden" style="position:fixed;z-index:9999;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:6px 0;min-width:160px">
@@ -1347,7 +1347,7 @@
             </div>
             <div class="item" style="min-height:360px;padding:12px">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-                <div><div class="item-title" id="secPolicyTitle"></div><div class="item-meta" id="secPolicySubtitle"></div></div>
+                <div><div class="item-title" data-icon="shield" id="secPolicyTitle"></div><div class="item-meta" id="secPolicySubtitle"></div></div>
                 <div id="secPolicyActions" class="hidden" style="display:flex;gap:8px">
                   <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()" id="secPolicySaveBtn" data-i18n="securitySave"></button>
                 </div>
@@ -1357,7 +1357,7 @@
           </div>
           <div id="secGroupMembers" class="item hidden" style="margin-top:12px;padding:12px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <div class="item-title" style="font-size:14px" id="secMembersTitle" data-i18n="securityMembers"></div>
+              <div class="item-title" data-icon="users" style="font-size:14px" id="secMembersTitle" data-i18n="securityMembers"></div>
               <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()" id="secMembersReloadBtn" data-i18n="reload"></button>
             </div>
             <div id="secMembersList"></div>
@@ -1365,38 +1365,11 @@
         </div>
         <div id="secAuditPanel" class="item hidden" style="padding:12px">
           <div class="item-head">
-            <div><div class="item-title" style="font-size:14px" id="secAuditTitle"></div><div class="item-meta" id="secAuditDesc"></div></div>
+            <div><div class="item-title" data-icon="file" style="font-size:14px" id="secAuditTitle"></div><div class="item-meta" id="secAuditDesc"></div></div>
             <button class="btn-secondary" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="reloadSecAuditLogs()" id="secAuditReloadBtn"></button>
           </div>
           <div id="secAuditControls" class="grid3" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end;margin-top:10px"></div>
           <div id="secAuditList" style="display:grid;gap:6px;margin-top:10px"></div>
-        </div>
-      </section>
-
-      <section id="tab-httpthreat" class="panel card">
-        <div class="head">
-          <div><h3 id="httpThreatTitle" data-i18n="httpThreatTabTitle">HTTP Threat Head</h3><div class="desc" id="httpThreatSubtitle" data-i18n="httpThreatTabSubtitle">Label weak-rule HTTP samples, train a candidate head, then shadow before canary/on.</div></div>
-          <button class="btn-ghost" type="button" onclick="loadHTTPThreatTab()" data-i18n="reload">Reload</button>
-        </div>
-        <div id="httpThreatStatus" class="item" style="padding:12px"></div>
-        <div class="item" style="padding:12px;margin-top:12px">
-          <div class="item-title" id="httpThreatObserveTitle">Bypass observation</div>
-          <div class="item-meta" id="httpThreatObserveNote">Observation only. Agreement is not a promote gate.</div>
-          <div id="httpThreatObserve" style="margin-top:8px"></div>
-        </div>
-        <div class="item" style="padding:12px;margin-top:12px">
-          <div class="item-title" id="httpThreatQueueTitle">Review queue</div>
-          <div id="httpThreatQueue" style="margin-top:8px"></div>
-        </div>
-        <div class="item" style="padding:12px;margin-top:12px">
-          <div class="item-title" id="httpThreatAuditTitle">Disposition audit</div>
-          <div class="item-meta" id="httpThreatAuditNote">Recent detect actions. Mark business false positives here. Does not change serving.</div>
-          <div id="httpThreatAudit" style="margin-top:8px"></div>
-        </div>
-        <div class="item" style="padding:12px;margin-top:12px">
-          <div class="item-title" id="httpThreatRulesTitle">Rule ops</div>
-          <div class="item-meta" id="httpThreatRulesNote">Hits and rule-id to class map. Training stays on the head page above. Remap voids auto gold only.</div>
-          <div id="httpThreatRules" style="margin-top:8px"></div>
         </div>
       </section>
 
@@ -1417,7 +1390,7 @@
         <div class="head"><div><h3 id="llmProvidersTabTitle" data-i18n="llmProvidersTabTitle"></h3><div class="desc" id="llmProvidersTabSubtitle" data-i18n="llmProvidersTabSubtitle"></div></div></div>
         <div class="grid2">
           <div class="item" style="padding:12px 14px">
-            <div class="item-head"><div><div class="item-title" id="llmProvidersExposeTitle"></div><div class="item-meta" id="llmProvidersExposeDesc"></div></div><span class="badge info" id="llmProviderSelectionBadge"></span></div>
+            <div class="item-head"><div><div class="item-title" data-icon="globe" id="llmProvidersExposeTitle"></div><div class="item-meta" id="llmProvidersExposeDesc"></div></div><span class="badge info" id="llmProviderSelectionBadge"></span></div>
             <div class="grid2" style="margin-top:10px">
               <div><label id="llmProvidersAPIBaseURLLabel"></label><div id="llmProvidersAPIBaseURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
               <div><label id="llmProvidersExposeURLLabel"></label><div id="llmProvidersExposeURL" class="mono" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;min-height:42px">-</div></div>
@@ -1452,7 +1425,7 @@
             <div id="llmProvidersUserRateLimitHint" class="hint" style="margin-top:10px"></div><div class="actions" style="margin-top:10px;justify-content:flex-end"><button class="btn-primary" type="button" onclick="saveLLMProviderGlobals()" id="llmProvidersSaveBtn"></button></div>
           </div>
           <div class="item" style="padding:12px 14px">
-            <div class="item-head"><div><div class="item-title" id="llmProvidersAccessLogTitle"></div><div class="item-meta" id="llmProvidersAccessLogDesc"></div></div><span class="badge info" id="llmProvidersAccessLogBadge">-</span></div>
+            <div class="item-head"><div><div class="item-title" data-icon="activity" id="llmProvidersAccessLogTitle"></div><div class="item-meta" id="llmProvidersAccessLogDesc"></div></div><span class="badge info" id="llmProvidersAccessLogBadge">-</span></div>
             <div class="metrics" id="llmProvidersAccessLogMetrics" style="max-width:none;margin-top:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px"></div>
             <div id="llmProvidersAccessLogLatest" class="hint" style="margin-top:10px"></div>
             <div class="actions" style="margin-top:10px"><button class="btn-secondary" type="button" id="llmProvidersViewAccessLogsBtn" onclick="showLLMEndpointAccessLogs()"></button></div>
@@ -1464,7 +1437,7 @@
         <div class="session-modal" style="width:min(760px,calc(100% - 48px))">
           <button class="close-btn" id="llmProviderModalCloseBtn" onclick="closeLLMProviderDialog()">&times;</button>
           <div class="item" id="llmProviderEditorCard" style="border:none;box-shadow:none;padding:0;background:transparent">
-            <div class="item-title" id="llmProviderEditorTitle"></div>
+            <div class="item-title" data-icon="pencil" id="llmProviderEditorTitle"></div>
             <div class="item-meta" id="llmProviderEditorDesc"></div>
             <div class="grid2" style="margin-top:10px">
               <div><label id="llmProviderIdLabel"></label><input id="llmProviderId" placeholder=""></div>
@@ -1493,7 +1466,7 @@
       <section id="tab-modelservices" class="panel card">
         <div class="head"><div><h3 id="modelServicesTabTitle" data-i18n="modelServicesTabTitle"></h3><div class="desc" id="modelServicesTabSubtitle" data-i18n="modelServicesTabSubtitle"></div></div><button class="btn-ghost" onclick="loadLLMServiceAdmin()" id="modelServicesReloadBtn" data-i18n="reload"></button></div>
         <div class="item" id="llmProviderConfigSection" style="margin-top:10px">
-          <div class="item-title" id="llmProviderListTitle"></div>
+          <div class="item-title" data-icon="server" id="llmProviderListTitle"></div>
           <div class="item-meta" id="llmProviderListDesc"></div>
           <div id="llmProviderList" style="margin-top:10px"><div class="hint"></div></div>
         </div>
@@ -1508,14 +1481,14 @@
       <section id="tab-cardstore" class="panel card">
         <div class="head"><div><h3 id="cardStoreTitle"></h3><div class="desc" id="cardStoreSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadCardStoreConfig()" id="cardStoreReloadBtn"></button></div>
         <div class="subtab-bar">
-          <button class="subtab active" id="cardStoreManageSubtab" type="button" onclick="switchCardStoreSubtab('manage')"></button>
-          <button class="subtab" id="cardStorePaymentSubtab" type="button" onclick="switchCardStoreSubtab('payment')"></button>
-          <button class="subtab" id="cardStoreSalesSubtab" type="button" onclick="switchCardStoreSubtab('sales')"></button>
+          <button class="subtab active" id="cardStoreManageSubtab" data-icon="store" type="button" onclick="switchCardStoreSubtab('manage')"></button>
+          <button class="subtab" id="cardStorePaymentSubtab" data-icon="card" type="button" onclick="switchCardStoreSubtab('payment')"></button>
+          <button class="subtab" id="cardStoreSalesSubtab" data-icon="trend" type="button" onclick="switchCardStoreSubtab('sales')"></button>
         </div>
         <div id="cardStoreManagePane" class="card-store-pane">
         <div class="grid2" style="gap:12px">
           <div class="item" style="padding:14px 16px">
-            <div class="item-title" id="cardStoreManageTitle"></div>
+            <div class="item-title" data-icon="store" id="cardStoreManageTitle"></div>
             <div class="item-meta" id="cardStoreManageDesc" style="margin-top:4px"></div>
             <div class="grid2" style="margin-top:10px">
               <label style="display:flex;align-items:center;gap:8px;margin-top:24px"><input id="cardStoreEnabled" type="checkbox"><span id="cardStoreEnabledLabel"></span></label>
@@ -1524,7 +1497,7 @@
             <div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveCardStoreConfig('store')" id="cardStoreSaveBtn"></button><a class="btn-secondary card-store-preview-link" href="/card_store" target="_blank" rel="noopener" id="cardStoreOpenLink"></a></div>
           </div>
           <div class="item" style="padding:14px 16px">
-            <div class="item-title" id="cardStoreProductsTitle"></div>
+            <div class="item-title" data-icon="package" id="cardStoreProductsTitle"></div>
             <div class="item-meta" id="cardStoreProductsDesc" style="margin-top:4px"></div>
             <div id="cardStoreProductsEditor" style="display:grid;gap:8px;margin-top:10px"></div>
           </div>
@@ -1532,7 +1505,7 @@
         </div>
         <div id="cardStorePaymentPane" class="card-store-pane hidden">
           <div class="item" style="padding:14px 16px">
-            <div class="item-title" id="cardStorePaymentTitle"></div>
+            <div class="item-title" data-icon="card" id="cardStorePaymentTitle"></div>
             <div class="item-meta" id="cardStorePaymentDesc" style="margin-top:4px"></div>
             <div class="grid2" style="margin-top:10px">
                 <div style="grid-column:1 / -1"><label for="cardStorePaymentMode" id="cardStorePaymentModeLabel"></label><select id="cardStorePaymentMode"><option value="payment_fm">Payment FM</option><option value="alipay_direct">Alipay direct</option><option value="personal_semimanual">Personal QR manual confirm</option></select></div>
@@ -1559,7 +1532,7 @@
         </div>
         <div id="cardStoreSalesPane" class="card-store-pane hidden">
           <div class="item" style="padding:14px 16px">
-            <div class="item-head"><div><div class="item-title" id="cardStoreSalesTitle"></div><div class="item-meta" id="cardStoreSalesDesc"></div></div><div class="actions"><button class="btn-ghost" type="button" onclick="deleteSelectedCardStoreOrders()" id="cardStoreBulkDeleteBtn" disabled></button><select id="cardStoreSalesPeriod" onchange="loadCardStoreSales()"><option value="day" id="cardStoreSalesPeriodDay"></option><option value="month" id="cardStoreSalesPeriodMonth"></option></select><button class="btn-ghost" type="button" onclick="loadCardStoreSales()" id="cardStoreSalesReloadBtn"></button></div></div>
+            <div class="item-head"><div><div class="item-title" data-icon="trend" id="cardStoreSalesTitle"></div><div class="item-meta" id="cardStoreSalesDesc"></div></div><div class="actions"><button class="btn-ghost" type="button" onclick="deleteSelectedCardStoreOrders()" id="cardStoreBulkDeleteBtn" disabled></button><select id="cardStoreSalesPeriod" onchange="loadCardStoreSales()"><option value="day" id="cardStoreSalesPeriodDay"></option><option value="month" id="cardStoreSalesPeriodMonth"></option></select><button class="btn-ghost" type="button" onclick="loadCardStoreSales()" id="cardStoreSalesReloadBtn"></button></div></div>
             <div class="metrics" style="grid-template-columns:repeat(3,minmax(0,1fr));margin:12px 0 0;max-width:none">
               <div class="metric"><span id="cardStoreSalesOrdersLabel"></span><strong id="cardStoreSalesOrders">0</strong></div>
               <div class="metric"><span id="cardStoreSalesRevenueLabel"></span><strong id="cardStoreSalesRevenue">0.00</strong></div>
@@ -1657,11 +1630,11 @@
 <script defer src="/admin/user-referrals-tab.js"></script>
 <script defer src="/admin/pwa-tab.js"></script>
 <script defer src="/admin/system-tab.js"></script>
-<script defer src="/admin/cloud-workspace-tab.js"></script>
+<script defer src="/admin/cloud-workspace-tab.js?v=cws-preview-20260828-1"></script>
 <script defer src="/admin/compute-tab.js"></script>
 <script defer src="/admin/maclaw-compute-module.js"></script>
 <script defer src="/admin/card-store-tab.js"></script>
-<script defer src="/admin/usage-stats-tab.js"></script>
+<script defer src="/admin/usage-stats-tab.js?v=feature-icons-20260828-4"></script>
 <script defer src="/admin/failure-logs-tab.js"></script>
 <script defer src="/admin/knowledge-management-tab.js"></script>
 <script defer src="/admin/notification-tab.js"></script>

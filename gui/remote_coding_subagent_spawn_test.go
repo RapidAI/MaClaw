@@ -357,11 +357,15 @@ func TestRemoteOperationalTaskUsesFocusedNonMutatingSurface(t *testing.T) {
 		task:  "run the app",
 	}
 	prompt := cb.BuildSystemPrompt(cb.task, true)
-	if !strings.Contains(prompt, "Remote operational task") {
-		t.Fatalf("expected operational prompt, got %q", prompt)
+	// Remote coding has no Horizon exception: it always runs on the
+	// uncorrelated static compatibility surface, so the role-specific
+	// operational prompt is unreachable until the transport-owned correlation
+	// path binds (see usesUncorrelatedStaticCompatibilityModelSurface).
+	if !strings.Contains(prompt, "compatibility mode") {
+		t.Fatalf("expected the compatibility-mode prompt, got %.200q", prompt)
 	}
-	if !strings.Contains(prompt, "Normal build output") {
-		t.Fatalf("operational prompt must allow normal build output, got %q", prompt)
+	if strings.Contains(prompt, "Remote operational task") {
+		t.Fatal("operational prompt header must not appear on the compatibility surface")
 	}
 	for _, name := range codingSubAgentToolDefinitionNamesForTest(cb.BuildTools(cb.task)) {
 		if name == "ssh_write_file" || name == "ssh_edit_file" || name == codingSubAgentSpawnToolName || name == "todo_write" {
@@ -482,8 +486,14 @@ func TestRemoteNestedSystemPromptNoRootSpawnSalesPitch(t *testing.T) {
 		taskContext: "parent ctx",
 	}
 	prompt := cb.BuildSystemPrompt("fix bug", true)
-	if !strings.Contains(prompt, "Nested remote coding subagent") {
-		t.Fatal("expected nested role header")
+	// Compatibility surface only (see TestRemoteOperationalTask...): the
+	// nested role header is unreachable until correlation-bound transport
+	// binding restores the rich prompt path.
+	if !strings.Contains(prompt, "compatibility mode") {
+		t.Fatalf("expected the compatibility-mode prompt, got %.200q", prompt)
+	}
+	if strings.Contains(prompt, "Nested remote coding subagent") {
+		t.Fatal("nested role header must not appear on the compatibility surface")
 	}
 	// Nested worker must not be told to spawn further.
 	if strings.Contains(prompt, "用 spawn_coding_agent 派生子代理") {
@@ -503,8 +513,14 @@ func TestRemoteExplorerSystemPromptIsInspectionOnly(t *testing.T) {
 		taskContext: "focus on jwt",
 	}
 	prompt := cb.BuildSystemPrompt("map auth", true)
-	if !strings.Contains(prompt, "Remote Inspection SubAgent") {
-		t.Fatal("expected inspection prompt")
+	// Compatibility surface only (see TestRemoteOperationalTask...): the
+	// inspection-role prompt is unreachable for now; the compatibility prompt
+	// is read-only by posture and still carries the task context.
+	if !strings.Contains(prompt, "compatibility mode") {
+		t.Fatalf("expected the compatibility-mode prompt, got %.200q", prompt)
+	}
+	if strings.Contains(prompt, "Remote Inspection SubAgent") {
+		t.Fatal("inspection header must not appear on the compatibility surface")
 	}
 	if strings.Contains(prompt, "ssh_write_file") {
 		t.Fatal("explorer prompt must not advertise write tools")
@@ -532,7 +548,9 @@ func TestApplyRemoteInspectionRoleOutcome(t *testing.T) {
 	if got.Status != "success" {
 		t.Fatalf("expected success with read evidence, got %+v", got)
 	}
-	if !strings.Contains(got.Summary, "inspection-only") {
-		t.Fatalf("expected inspection note, summary=%q", got.Summary)
+	// The inspection note moved to the quality channel (94489f8b) so the
+	// user-facing Summary stays clean; assert it there.
+	if !strings.Contains(got.QualitySummary, "inspection-only") {
+		t.Fatalf("expected inspection note in quality summary, got %q", got.QualitySummary)
 	}
 }

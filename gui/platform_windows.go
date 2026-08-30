@@ -1765,6 +1765,41 @@ func (a *App) GetDownloadsFolder() (string, error) {
 	return filepath.Join(home, "Downloads"), nil
 }
 
+// startSystemOpenWindows opens a filesystem path with the associated app.
+// ShellExecuteW is used instead of rundll32 FileProtocolHandler so Unicode
+// names (e.g. 人工智能数学入门教程.pdf) actually launch.
+func startSystemOpenWindows(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+	file, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	verb, err := syscall.UTF16PtrFromString("open")
+	if err != nil {
+		return err
+	}
+	shell32 := syscall.NewLazyDLL("shell32.dll")
+	shellExecute := shell32.NewProc("ShellExecuteW")
+	ret, _, callErr := shellExecute.Call(
+		0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(file)),
+		0,
+		0,
+		uintptr(syscall.SW_SHOW),
+	)
+	if ret <= 32 {
+		if callErr != nil && callErr != syscall.Errno(0) {
+			return fmt.Errorf("ShellExecuteW: %w (code %d)", callErr, ret)
+		}
+		return fmt.Errorf("ShellExecuteW failed: code %d", ret)
+	}
+	return nil
+}
+
 func (a *App) findSh() (string, error) {
 	// 1. 硬编码路径（最高优先级）— Git Bash / MSYS2 / Cygwin / Scoop
 	userProfile := os.Getenv("USERPROFILE")

@@ -35,6 +35,8 @@
       maxMiBLabel: 'Per-workspace capacity (MiB)',
       tenantGiBLabel: 'Tenant total capacity (GiB)',
       preview: 'Currently covering {n} departments, about {m} users',
+      previewOff: 'Cloud workspace is off. Users will not see it when creating a task.',
+      previewAllUsers: 'Open to every user in this tenant.',
       overQuota: '{k} users already exceed the new quota ({sns}); they cannot create new workspaces; existing workspaces are kept.',
       loadFailed: 'Load cloud workspace settings failed: {error}',
       saveFailed: 'Save cloud workspace settings failed: {error}',
@@ -71,6 +73,8 @@
       maxMiBLabel: '\u5355\u5de5\u4f5c\u533a\u5bb9\u91cf\uff08MiB\uff09',
       tenantGiBLabel: '\u79df\u6237\u603b\u5bb9\u91cf\uff08GiB\uff09',
       preview: '\u5f53\u524d\u5c06\u8986\u76d6 {n} \u4e2a\u90e8\u95e8\u3001\u7ea6 {m} \u540d\u7528\u6237',
+      previewOff: '\u4e91\u7aef\u5de5\u4f5c\u533a\u5df2\u5173\u95ed\uff0c\u7528\u6237\u65b0\u5efa\u4efb\u52a1\u65f6\u4e0d\u4f1a\u770b\u5230\u8be5\u9009\u9879\u3002',
+      previewAllUsers: '\u5df2\u5bf9\u5f53\u524d\u79df\u6237\u5168\u5458\u5f00\u653e\u3002',
       overQuota: '{k} \u540d\u7528\u6237\u5df2\u8d85\u8fc7\u65b0\u914d\u989d\uff08{sns}\uff09\uff0c\u5c06\u65e0\u6cd5\u65b0\u5efa\uff0c\u73b0\u6709\u5de5\u4f5c\u533a\u4fdd\u7559',
       loadFailed: '\u52a0\u8f7d\u4e91\u5de5\u4f5c\u533a\u8bbe\u7f6e\u5931\u8d25: {error}',
       saveFailed: '\u4fdd\u5b58\u4e91\u5de5\u4f5c\u533a\u8bbe\u7f6e\u5931\u8d25: {error}',
@@ -573,7 +577,10 @@
     };
     var previewEl = byID('tenantCloudWorkspacePreview');
     if (previewEl) {
-      previewEl.textContent = cwsx('preview', {
+      var mode = currentMode();
+      if (mode === 'off') previewEl.textContent = cwsx('previewOff');
+      else if (mode === 'all_users') previewEl.textContent = cwsx('previewAllUsers');
+      else previewEl.textContent = cwsx('preview', {
         n: String(state.preview.department_count),
         m: String(state.preview.user_count)
       });
@@ -650,6 +657,7 @@
 
   function tenantCloudWorkspaceModeChanged() {
     updateDepartmentsVisibility();
+    applyPreview(state.preview);
     if (currentMode() === 'departments' && !state.securityGroupsLoaded && !state.securityGroupsLoading) {
       loadSecurityGroups({ renderTree: true });
     }

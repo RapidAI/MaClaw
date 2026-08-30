@@ -23,7 +23,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
-	"github.com/RapidAI/CodeClaw/corelib/httpthreat"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
@@ -100,8 +99,6 @@ type HTTPServer struct {
 	// local, read-only workspace probe. Production leaves it nil and uses the
 	// local Git prober below; it must never supply a mutating probe.
 	codingRuntimeRecoveryProber func(codingruntime.Task) codingruntime.WorkspaceProber
-	threatNode                  *httpthreat.Node
-	threatWrap                  bool
 }
 
 type weixinQRTokenRecord struct {
@@ -219,7 +216,6 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())
 	s.routes()
-	s.attachHTTPThreat()
 	s.startSandboxStartupDiagnoseIfEnabled()
 	return s
 }
@@ -642,9 +638,6 @@ const maxJSONBodyBytes int64 = 1 << 20
 func (s *HTTPServer) Handler() http.Handler {
 	if s == nil {
 		return http.NewServeMux()
-	}
-	if s.threatWrap && s.threatNode != nil {
-		return s.threatNode.Wrap(s.mux)
 	}
 	return s.mux
 }

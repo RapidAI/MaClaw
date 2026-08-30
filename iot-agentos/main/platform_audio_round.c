@@ -81,6 +81,7 @@ device_status_t platform_audio_stream_read(int16_t *mono, uint32_t capacity,
                                            uint32_t *samples_read, uint16_t *level) {
     if (!mono || !samples_read || capacity == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     *samples_read = 0;
+    if (round_audio_service_command_capture_stop_requested()) return DEVICE_STATUS_BUSY;
     size_t count = 0;
     const device_status_t status = status_from_esp_err(
         round_audio_service_stream_read(mono, capacity, &count, level));
@@ -335,7 +336,8 @@ device_status_t platform_audio_play_wav(const uint8_t *wav, uint32_t wav_len) {
     return status;
 }
 
-device_status_t platform_audio_play_alarm_burst(void) {
+device_status_t platform_audio_play_alarm_burst(uint8_t peak_percent) {
+    if (peak_percent > 100u) return DEVICE_STATUS_INVALID_ARGUMENT;
     const uint32_t sample_rate = round_sample_rate();
     if (!sample_rate) return DEVICE_STATUS_UNAVAILABLE;
     device_status_t status = platform_audio_playback_begin();
@@ -348,8 +350,9 @@ device_status_t platform_audio_play_alarm_burst(void) {
             uint32_t count = sample_rate / 12u - frame;
             if (count > 256u) count = 256u;
             for (uint32_t i = 0; i < count; ++i) {
-                int32_t amplitude = 8200 - (int32_t)(frame + i) * 5;
-                if (amplitude < 1400) amplitude = 1400;
+                int32_t amplitude = (8200 - (int32_t)(frame + i) * 5) * peak_percent / 100;
+                const int32_t minimum_amplitude = 1400 * peak_percent / 100;
+                if (amplitude < minimum_amplitude) amplitude = minimum_amplitude;
                 mono[i] = ((frame + i) / half_period & 1u) ? amplitude : -amplitude;
             }
             status = platform_audio_playback_write(mono, count, 1);

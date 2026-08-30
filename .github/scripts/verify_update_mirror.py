@@ -29,6 +29,10 @@ MIRROR_BASES = {
     "R2": R2_PUBLIC_BASE_URL,
     "COS": COS_PUBLIC_BASE_URL,
 }
+# Matches Go's net/url.PathEscape for a single path segment. The history
+# publisher uses the same set so validation remains correct for opaque build
+# identifiers that contain characters such as '+' or ':'.
+GO_PATH_SEGMENT_SAFE = "$&+-.0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~"
 
 
 def required_env(name):
@@ -142,6 +146,50 @@ def verify_mirror(label, base, manifest_name, tag, prefix, asset_dir, names):
     print(f"[update-mirror-verify] verified {label} manifest={manifest_name} tag={tag}", flush=True)
 
 
+def verify_stable_history(base, tag, asset_dir, names):
+    history = read_json(f"{base}/stable-history.json")
+    releases = history.get("releases") if isinstance(history, dict) else None
+    if not isinstance(releases, list) or not releases:
+        raise RuntimeError("stable history has no releases")
+    if len(releases) > 5:
+        raise RuntimeError("stable history has more than five releases")
+
+    current = releases[0]
+    if (
+        not isinstance(current, dict)
+        or not isinstance(current.get("build"), str)
+        or current.get("build").strip() != tag
+        or not isinstance(current.get("published_at"), str)
+        or not current["published_at"].strip()
+    ):
+        raise RuntimeError("stable history does not begin with the current formal build")
+    assets = current.get("assets")
+    if not isinstance(assets, dict):
+        raise RuntimeError("stable history current build has no assets")
+
+    for name in names:
+        entry = assets.get(name)
+        path = asset_dir / name
+        if not isinstance(entry, dict) or not path.is_file():
+            raise RuntimeError(f"stable history current build is missing {name}")
+        build_path = urllib.parse.quote(tag, safe=GO_PATH_SEGMENT_SAFE)
+        asset_path = urllib.parse.quote(name, safe=GO_PATH_SEGMENT_SAFE)
+        expected_urls = [f"{root}/releases/{build_path}/{asset_path}" for root in MIRROR_BASES.values()]
+        expected_sha256 = sha256_file(path)
+        if (
+            entry.get("name") != name
+            or entry.get("size") != path.stat().st_size
+            or str(entry.get("sha256", "")).lower() != expected_sha256
+            or entry.get("urls") != expected_urls
+            or entry.get("url") != expected_urls[-1]
+        ):
+            raise RuntimeError(f"stable history metadata differs for {name}")
+        archive_url = f"{base}/releases/{build_path}/{asset_path}"
+        if public_content_length(archive_url) != path.stat().st_size:
+            raise RuntimeError(f"stable history archive differs for {name}")
+    print(f"[update-mirror-verify] verified stable history current build={tag}", flush=True)
+
+
 def main():
     tag = required_env("RELEASE_TAG")
     manifest_name = required_env("MANIFEST_NAME")
@@ -150,8 +198,13 @@ def main():
     prefix = "beta" if os.environ.get("RELEASE_CHANNEL", "stable").strip() == "beta" else "latest"
     asset_dir = pathlib.Path(required_env("RELEASE_ASSETS_DIR"))
     names = release_asset_names()
-    verify_mirror("R2", required_env("R2_PUBLIC_BASE_URL"), manifest_name, tag, prefix, asset_dir, names)
-    verify_mirror("COS", required_env("COS_PUBLIC_BASE_URL"), manifest_name, tag, prefix, asset_dir, names)
+    r2_base = required_env("R2_PUBLIC_BASE_URL")
+    cos_base = required_env("COS_PUBLIC_BASE_URL")
+    verify_mirror("R2", r2_base, manifest_name, tag, prefix, asset_dir, names)
+    verify_mirror("COS", cos_base, manifest_name, tag, prefix, asset_dir, names)
+    if prefix == "latest":
+        verify_stable_history(r2_base, tag, asset_dir, names)
+        verify_stable_history(cos_base, tag, asset_dir, names)
 
 
 if __name__ == "__main__":

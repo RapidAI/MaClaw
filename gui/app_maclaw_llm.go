@@ -950,7 +950,7 @@ func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 				hubStatus = status
 				haveHubStatus = true
 				// Update local status cache so sidebar sees fresh state.
-				storeHubServiceStatusCache(syncCfg.RemoteHubURL, syncCfg.RemoteViewerToken, status)
+				_ = storeHubServiceStatusCache(syncCfg.RemoteHubURL, syncCfg.RemoteViewerToken, status)
 				a.applyHubLLMServiceStatusToConfig(&syncCfg, status)
 				providers = syncCfg.MaclawLLMProviders
 				hubStatusVerified = true
@@ -2582,19 +2582,14 @@ func (a *App) ImportCodexAuth() (string, error) {
 	return "", fmt.Errorf("未找到 OpenAI provider")
 }
 
-// GetOpenAIUsage queries the OpenAI billing API for the current OAuth provider's
-// usage info. It refreshes the token first if needed.
+// GetOpenAIUsage queries OpenAI organization costs for the current provider
+// when it has an Admin API key. ChatGPT/Codex OAuth and other providers are
+// rejected locally so their tokens are never sent to api.openai.com.
 func (a *App) GetOpenAIUsage() (*oauth.UsageInfo, error) {
-	if err := a.ensureOAuthToken(); err != nil {
-		return nil, fmt.Errorf("OAuth token 刷新失败: %w", err)
-	}
 	data := a.GetMaclawLLMProviders()
 	for _, p := range data.Providers {
-		if p.Name == data.Current && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
-			if p.Key == "" {
-				return nil, fmt.Errorf("未登录 OpenAI，请先完成 OAuth 授权")
-			}
-			return oauth.QueryUsage(p.Key)
+		if corelib.MaclawLLMProviderNameEqual(p.Name, data.Current) {
+			return oauth.QueryOrganizationCosts(p)
 		}
 	}
 	return nil, fmt.Errorf("当前 provider 不支持用量查询")
@@ -3155,7 +3150,8 @@ func (a *App) saveVisionProbeResultForProvider(providerName, model string, suppo
 }
 
 // normalizeThinkingModeSetting normalizes a user-supplied thinking mode to
-// "" (auto), "enabled", or "disabled". Unknown values fall back to auto.
+// "" (unset/legacy auto), "enabled", or "disabled". Unknown values fall back
+// to unset.
 func normalizeThinkingModeSetting(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "enabled", "on", "1", "true":
@@ -3167,14 +3163,28 @@ func normalizeThinkingModeSetting(v string) string {
 	}
 }
 
+// effectiveThinkingModeSetting resolves the persisted setting to the mode
+// actually applied to requests. Unset (legacy "auto") defaults to enabled:
+// desktop users expect the reasoning stream by default, while "auto" meant
+// most providers silently omitted reasoning controls (blank thinking panel).
+// Per-provider/model auto behavior still lives in corelib for configs that
+// bypass this global setting.
+func effectiveThinkingModeSetting(setting string) string {
+	if m := normalizeThinkingModeSetting(setting); m != "" {
+		return m
+	}
+	return "enabled"
+}
+
 // withGlobalThinkingMode applies the global maclaw_llm_thinking_mode setting
-// to a materialized LLM config. "" leaves provider/model auto behavior.
+// to a materialized LLM config. Unset resolves to enabled (see
+// effectiveThinkingModeSetting).
 func (a *App) withGlobalThinkingMode(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
 	appCfg, err := a.LoadConfig()
 	if err != nil {
 		return cfg
 	}
-	cfg.ThinkingMode = normalizeThinkingModeSetting(appCfg.MaclawLLMThinkingMode)
+	cfg.ThinkingMode = effectiveThinkingModeSetting(appCfg.MaclawLLMThinkingMode)
 	return corelib.CoerceAlwaysOnThinkingMode(cfg)
 }
 
@@ -3188,18 +3198,19 @@ func (a *App) maclawLLMConfigForMutation() (corelib.AppConfig, error) {
 	return cfg, err
 }
 
-// GetMaclawLLMThinkingMode returns the global thinking mode:
-// "" (auto), "enabled", or "disabled".
+// GetMaclawLLMThinkingMode returns the effective global thinking mode:
+// "enabled" (default when unset) or "disabled".
 func (a *App) GetMaclawLLMThinkingMode() string {
 	cfg, err := a.LoadConfig()
 	if err != nil {
-		return ""
+		return "enabled"
 	}
-	return normalizeThinkingModeSetting(cfg.MaclawLLMThinkingMode)
+	return effectiveThinkingModeSetting(cfg.MaclawLLMThinkingMode)
 }
 
 // SetMaclawLLMThinkingMode persists the global thinking mode
-// ("" / "auto" = provider default, "enabled", "disabled").
+// ("enabled", "disabled"; "" / "auto" stores unset, which resolves to
+// enabled — kept for backward compatibility with older frontends).
 func (a *App) SetMaclawLLMThinkingMode(mode string) error {
 	_, err := a.PatchConfigFields(map[string]interface{}{"maclaw_llm_thinking_mode": mode})
 	return err

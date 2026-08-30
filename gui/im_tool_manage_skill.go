@@ -28,6 +28,7 @@ const (
 	manageSkillActionMaintenanceDrafts      manageSkillAction = "maintenance_drafts"
 	manageSkillActionExecuteMaintenancePlan manageSkillAction = "execute_maintenance_plan"
 	manageSkillActionEvolutionStatus        manageSkillAction = "evolution_status"
+	manageSkillActionEvolutionCompensations manageSkillAction = "evolution_compensations"
 	manageSkillActionEvolutionAudit         manageSkillAction = "evolution_audit"
 	manageSkillActionSetEvolutionEnabled    manageSkillAction = "set_evolution_enabled"
 	manageSkillActionTriggerRepair          manageSkillAction = "trigger_repair"
@@ -154,6 +155,8 @@ func (h *IMMessageHandler) toolManageSkill(ctx context.Context, args map[string]
 		return h.toolExecuteSkillMaintenancePlan(args)
 	case manageSkillActionEvolutionStatus:
 		return h.toolSkillEvolutionStatus(args)
+	case manageSkillActionEvolutionCompensations:
+		return h.toolSkillEvolutionCompensations(args)
 	case manageSkillActionEvolutionAudit:
 		return h.toolSkillEvolutionAudit(args)
 	case manageSkillActionSetEvolutionEnabled:

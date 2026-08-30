@@ -116,7 +116,7 @@ func codingDynamicCapabilityNeedsFromTemplates(templates []agentservice.IntentCa
 				Capability:  capability,
 				Qualifiers:  cloneCodingDynamicNeedQualifiers(qualifiers),
 				Polarity:    polarity,
-				Required:    template.Required,
+				Required:    tool.RepeatSiblingRequired(template.Required, index),
 				Confidence:  1,
 				EvidenceIDs: []string{codingDynamicCapabilityNeedEvidence},
 			})

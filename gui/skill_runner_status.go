@@ -240,6 +240,7 @@ const (
 	skillEntryStatusDisabled    skillEntryStatus = "disabled"
 	skillEntryStatusNeedsSetup  skillEntryStatus = "needs_setup"
 	skillEntryStatusNeedsReview skillEntryStatus = "needs_review"
+	skillEntryStatusStaged      skillEntryStatus = "staged"
 )
 
 func normalizeSkillEntryStatus(status string) skillEntryStatus {
@@ -252,6 +253,8 @@ func normalizeSkillEntryStatus(status string) skillEntryStatus {
 		return skillEntryStatusNeedsSetup
 	case skillEntryStatusNeedsReview:
 		return skillEntryStatusNeedsReview
+	case skillEntryStatusStaged:
+		return skillEntryStatusStaged
 	default:
 		return skillEntryStatusUnknown
 	}

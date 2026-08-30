@@ -332,17 +332,19 @@ type DigitalAssetRepository interface {
 }
 
 type User struct {
-	ID               string
-	TenantID         string
-	Email            string
-	SN               string
-	Status           string
-	EnrollmentStatus string
-	SmartRoute       bool
-	EmailVerified    bool
-	EmailVerifiedAt  *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                       string
+	TenantID                 string
+	Email                    string
+	SN                       string
+	Status                   string
+	EnrollmentStatus         string
+	SmartRoute               bool
+	EmailVerified            bool
+	EmailVerifiedAt          *time.Time
+	BillingTimezone          string
+	BillingTimezoneUpdatedAt *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type UserIdentity struct {
@@ -1019,6 +1021,7 @@ type LLMBillingSettlement struct {
 	OutputTokens           int64
 	RequestedMicrocredits  int64
 	DeductedMicrocredits   int64
+	ProviderMultiplier     float64
 	BillingGroupMultiplier float64
 	PricingJSON            string
 	CreatedAt              time.Time

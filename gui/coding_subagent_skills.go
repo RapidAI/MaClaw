@@ -194,7 +194,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	skippedByTaskFit := 0
 	skippedByRunnerCompatibility := 0
 	for _, s := range allSkills {
-		if s.Status != "active" {
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
 		if skill.IsKnowledgeSkillType(s.Type) || skill.IsInstructionOnlySkillType(s.Type) {
@@ -608,7 +608,7 @@ func (c *codingSubAgentCallbacks) codingSkillBindingIsCurrent(binding codingSubA
 		return false
 	}
 	for _, current := range exec.List() {
-		if current.Status != "active" || codingSubAgentSkillQualifiedID(current) != binding.StableID {
+		if normalizeSkillEntryStatus(current.Status) != skillEntryStatusActive || codingSubAgentSkillQualifiedID(current) != binding.StableID {
 			continue
 		}
 		if strings.TrimSpace(current.HubVersion) != strings.TrimSpace(binding.Version) {

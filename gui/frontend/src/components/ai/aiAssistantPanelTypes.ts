@@ -10,6 +10,9 @@ import type { AssistantDarkSchemeId } from "./assistantDarkSchemes";
 import type { AssistantLightSchemeId } from "./assistantLightSchemes";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import type { AIExecutionProfile } from "./AITabTypes";
+import type { ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
+
+export type { ActiveAssistantTaskIdentity };
 
 /**
  * State fields provided by useAIAssistant hook.
@@ -148,6 +151,12 @@ export interface AIAssistantPanelProps {
     onOpenProjectTabsChange?: (projectPaths: string[]) => void;
     /** Notifies the shell about open expert tabs so their durable task rows cannot be removed mid-session. */
     onOpenExpertTabsChange?: (expertIDs: string[]) => void;
+    /**
+     * The currently visible assistant tab's durable task identity.
+     * Null when the local AI assistant (or any non-task tab) is active so the
+     * sidebar highlight can clear.
+     */
+    onActiveAssistantTaskChange?: (identity: ActiveAssistantTaskIdentity | null) => void;
 }
 
 export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

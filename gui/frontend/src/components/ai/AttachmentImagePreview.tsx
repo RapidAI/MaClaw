@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { AIAssistantAttachmentFullDataURL, ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { isCloudWorkspacePath } from "./codingTaskMode";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import type { Theme } from "./aiAssistantPanelTheme";
 
@@ -221,7 +222,7 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
                     data-testid="attachment-image-preview-controls"
                     style={{ position: "absolute", right: 0, bottom: "100%", marginBottom: 16, display: "flex", alignItems: "center", gap: 8, zIndex: 1 }}
                 >
-                    {filePath && (
+                    {filePath && !isCloudWorkspacePath(filePath) && (
                         <button
                             type="button"
                             onClick={() => { void ShowItemInFolder(filePath).catch(() => undefined); }}

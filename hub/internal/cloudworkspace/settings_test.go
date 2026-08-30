@@ -98,6 +98,13 @@ func TestLoadAndSaveTenantSettings(t *testing.T) {
 	if loaded.Mode != ModeAllUsers || loaded.Quota != 7 {
 		t.Fatalf("loaded=%+v", loaded)
 	}
+	if _, err := svc.SaveTenantSettings(context.Background(), "", Settings{Mode: ModeAllUsers, Quota: 3}); err != nil {
+		t.Fatal(err)
+	}
+	loadedDefault := svc.LoadTenantSettings(context.Background(), store.DefaultTenantID)
+	if loadedDefault.Mode != ModeAllUsers || loadedDefault.Quota != 3 {
+		t.Fatalf("empty tenant id should persist as default: %+v", loadedDefault)
+	}
 	if loaded.MaxWorkspaceBytes != defaultMaxWorkspaceBytes || loaded.TenantMaxTotalBytes != defaultTenantMaxTotalBytes {
 		t.Fatalf("byte defaults loaded=%+v", loaded)
 	}

@@ -229,6 +229,7 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 		status.ActiveGrants = make([]ActiveGrant, 0, len(grants))
 		var nearest *time.Time
 		for _, g := range grants {
+			g = effectiveGrantForRegistry(reg, g)
 			creditsAvailable += availableGrantCredits(g, now)
 			status.ActiveGrants = append(status.ActiveGrants, grantSummary(g, now))
 			// Permanent grants use a far-future storage sentinel. It is not a
@@ -335,6 +336,8 @@ func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.
 		return nil
 	}
 	items := make([]ActiveGrant, 0)
+	limitedCardGroups := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, allServiceGroupIDSet(reg), now)
+	seenLimitCardGroups := map[string]struct{}{}
 	var latestExpired *Grant
 	for _, g := range reg.Grants {
 		if !grantMatchesUser(g, owner) {
@@ -343,17 +346,32 @@ func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.
 		if g.Frozen {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(g.Source), "new_user_limit_card") && !isActiveNewUserLimitCardPolicyGroup(reg, g.ServiceGroupID) {
+			continue
+		}
 		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
 			continue
 		}
-		if !grantIsValidAt(g, now) {
-			if latestExpired == nil || g.ExpiresAt.After(latestExpired.ExpiresAt) {
-				copyGrant := g
+		effective := effectiveGrantForRegistry(reg, g)
+		if strings.EqualFold(strings.TrimSpace(effective.Source), "new_user_limit_card") {
+			groupID := strings.ToLower(strings.TrimSpace(effective.ServiceGroupID))
+			if _, duplicate := seenLimitCardGroups[groupID]; duplicate {
+				continue
+			}
+			seenLimitCardGroups[groupID] = struct{}{}
+		} else if _, constrained := limitedCardGroups[strings.ToLower(strings.TrimSpace(effective.ServiceGroupID))]; constrained {
+			// A limit-card qualification governs the group. Historical gifts for
+			// that same group must not surface as a second status-card allowance.
+			continue
+		}
+		if !grantIsValidAt(effective, now) {
+			if latestExpired == nil || effective.ExpiresAt.After(latestExpired.ExpiresAt) {
+				copyGrant := effective
 				latestExpired = &copyGrant
 			}
 			continue
 		}
-		items = append(items, grantSummary(g, now))
+		items = append(items, grantSummary(effective, now))
 	}
 	if len(items) == 0 && latestExpired != nil {
 		items = append(items, grantSummary(*latestExpired, now))
@@ -371,6 +389,19 @@ func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.
 		return items[i].StartsAt.Before(items[j].StartsAt)
 	})
 	return items
+}
+
+func allServiceGroupIDSet(reg *Registry) map[string]struct{} {
+	if reg == nil || len(reg.ModelServiceGroups) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(reg.ModelServiceGroups))
+	for _, group := range reg.ModelServiceGroups {
+		if id := strings.ToLower(strings.TrimSpace(group.ID)); id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
 }
 
 func grantSummarySortRank(grant ActiveGrant) int {
@@ -475,9 +506,9 @@ func grantSummary(g Grant, now time.Time) ActiveGrant {
 		if g.RollingFiveHour {
 			fhStart, fhEnd, fhUsed = rollingFiveHourUsage(g, now)
 		}
-		dStart := dayWindowStart(now)
-		wStart := weekWindowStart(now)
-		mStart := monthWindowStart(now)
+		dStart := grantDayWindowStart(g, now)
+		wStart := grantWeekWindowStart(g, now)
+		mStart := grantMonthWindowStart(g, now)
 		summary.PeriodUsage = &ActiveGrantPeriodUsage{
 			FiveHour: ActiveGrantUsageWindow{
 				WindowStart: fhStart,
@@ -486,17 +517,17 @@ func grantSummary(g Grant, now time.Time) ActiveGrant {
 				Rolling:     g.RollingFiveHour,
 			},
 			Daily: ActiveGrantUsageWindow{
-				WindowStart: g.PeriodUsage.Daily.WindowStart,
+				WindowStart: dStart,
 				WindowEnd:   dStart.AddDate(0, 0, 1),
 				CreditsUsed: roundCredits(g.PeriodUsage.Daily.CreditsUsed),
 			},
 			Weekly: ActiveGrantUsageWindow{
-				WindowStart: g.PeriodUsage.Weekly.WindowStart,
+				WindowStart: wStart,
 				WindowEnd:   wStart.AddDate(0, 0, 7),
 				CreditsUsed: roundCredits(g.PeriodUsage.Weekly.CreditsUsed),
 			},
 			Monthly: ActiveGrantUsageWindow{
-				WindowStart: g.PeriodUsage.Monthly.WindowStart,
+				WindowStart: mStart,
 				WindowEnd:   mStart.AddDate(0, 1, 0),
 				CreditsUsed: roundCredits(g.PeriodUsage.Monthly.CreditsUsed),
 			},
@@ -527,6 +558,157 @@ func grantStatus(g Grant, now time.Time) (string, string, bool, *time.Time) {
 
 func grantIsValidAt(g Grant, now time.Time) bool {
 	return g.Permanent || g.ExpiresAt.After(now)
+}
+
+// effectiveGrantForRegistry projects a welcome limit-card qualification into
+// the tenant's current policy. The returned value is intentionally a copy:
+// policy fields must never be written back to the user grant.
+func effectiveGrantForRegistry(reg *Registry, grant Grant) Grant {
+	if strings.TrimSpace(grant.BillingTimezone) == "" && reg != nil {
+		grant.BillingTimezone = reg.UserBillingTimezones[normalizeEmail(grant.Email)]
+	}
+	grant.BillingTimezone = normalizeBillingTimezone(grant.BillingTimezone)
+	if !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
+		return grant
+	}
+	// The configured group list is part of the shared qualification policy.
+	// Once a group is removed (or no longer free), a historical qualification
+	// must not fall back to legacy fields embedded in its Grant record.
+	if reg == nil || !isActiveNewUserLimitCardPolicyGroup(reg, grant.ServiceGroupID) {
+		grant.ExpiresAt = time.Time{}
+		grant.Permanent = false
+		grant.PeriodLimits = CreditPeriodLimits{}
+		grant.RollingFiveHour = false
+		return grant
+	}
+	policy := reg.DefaultNewUserLimitCard
+	// Only these two limits are configurable for the welcome qualification.
+	// Keep the projection defensive even for callers that construct Registry
+	// directly instead of going through Normalize.
+	grant.PeriodLimits = CreditPeriodLimits{FiveHour: policy.PeriodLimits.FiveHour, Daily: policy.PeriodLimits.Daily}
+	grant.RollingFiveHour = true
+	grant.Permanent = policy.DurationDays <= 0
+	if grant.Permanent {
+		grant.ExpiresAt = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+	} else {
+		grant.ExpiresAt = grant.StartsAt.UTC().AddDate(0, 0, policy.DurationDays)
+	}
+	return grant
+}
+
+func isActiveNewUserLimitCardPolicyGroup(reg *Registry, serviceGroupID string) bool {
+	if reg == nil || !containsNormalizedString(reg.DefaultNewUserLimitCard.ServiceGroupIDs, serviceGroupID) {
+		return false
+	}
+	// A welcome qualification is an overlay for an immediately effective free
+	// group. A later group-policy edit must never turn it into an entitlement
+	// for a recharge/grant-required group.
+	return reg.FindModelServiceGroup(serviceGroupID) != nil && reg.AccessPolicyForServiceGroup(serviceGroupID) == AccessPolicyFree
+}
+
+// applyGrantPeriodUsageForRegistry persists only usage state from the
+// effective view. It deliberately leaves policy-derived fields absent from the
+// stored qualification.
+func applyGrantPeriodUsageForRegistry(reg *Registry, grant *Grant, credits float64, now time.Time) {
+	if grant == nil {
+		return
+	}
+	effective := effectiveGrantForRegistry(reg, *grant)
+	applyGrantPeriodUsage(&effective, credits, now)
+	grant.PeriodUsage = effective.PeriodUsage
+	grant.UsageEvents = effective.UsageEvents
+	grant.BillingTimezone = effective.BillingTimezone
+}
+
+// SetUserBillingTimezone records an account's initial IANA timezone. This is
+// intentionally write-once: accepting a new client value on every request
+// would let a user move a calendar quota reset forwards.
+func SetUserBillingTimezone(ctx context.Context, system SystemSettingsRepository, email, timezone string) (string, error) {
+	email = normalizeEmail(email)
+	timezone = normalizeBillingTimezone(timezone)
+	if email == "" || timezone == "" {
+		return "", nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return "", err
+	}
+	if reg.UserBillingTimezones == nil {
+		reg.UserBillingTimezones = map[string]string{}
+	}
+	if existing := normalizeBillingTimezone(reg.UserBillingTimezones[email]); existing != "" {
+		return existing, nil
+	}
+	reg.UserBillingTimezones[email] = timezone
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		return "", err
+	}
+	return timezone, nil
+}
+
+// normalizeBillingTimezone accepts only canonical IANA location names. Fixed
+// offsets and the host-dependent "Local" label are deliberately rejected so
+// daylight-saving changes are calculated by the server from its timezone DB.
+func normalizeBillingTimezone(value string) string {
+	value = strings.TrimSpace(value)
+	// Intl.DateTimeFormat reports "UTC" on some platforms. It is the only
+	// slash-less zone we accept: unlike an arbitrary offset it remains a stable
+	// server-side tzdata location.
+	switch value {
+	case "UTC", "Etc/UTC", "Etc/GMT", "Etc/UCT", "Etc/Universal", "Etc/Zulu":
+		return "UTC"
+	}
+	if strings.HasPrefix(value, "Etc/GMT") {
+		return ""
+	}
+	if value == "" || !strings.Contains(value, "/") {
+		return ""
+	}
+	location, err := time.LoadLocation(value)
+	if err != nil || location == nil || location.String() != value {
+		return ""
+	}
+	return value
+}
+
+// NormalizeBillingTimezone validates an IANA timezone supplied by an
+// authenticated client. It is exported for transport handlers only; billing
+// always reads the persisted value.
+func NormalizeBillingTimezone(value string) string {
+	return normalizeBillingTimezone(value)
+}
+
+func grantBillingLocation(grant Grant) *time.Location {
+	if timezone := normalizeBillingTimezone(grant.BillingTimezone); timezone != "" {
+		if location, err := time.LoadLocation(timezone); err == nil {
+			return location
+		}
+	}
+	return time.UTC
+}
+
+func calendarDayWindowStart(t time.Time, location *time.Location) time.Time {
+	if location == nil {
+		location = time.UTC
+	}
+	local := t.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
+}
+
+func grantDayWindowStart(grant Grant, now time.Time) time.Time {
+	return calendarDayWindowStart(now, grantBillingLocation(grant))
+}
+
+func grantWeekWindowStart(grant Grant, now time.Time) time.Time {
+	start := grantDayWindowStart(grant, now)
+	offset := (int(start.Weekday()) + 6) % 7
+	return start.AddDate(0, 0, -offset)
+}
+
+func grantMonthWindowStart(grant Grant, now time.Time) time.Time {
+	location := grantBillingLocation(grant)
+	local := now.In(location)
+	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, location)
 }
 
 func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email, code, hubBaseURL string) (*ServiceStatus, error) {
@@ -712,6 +894,7 @@ func nextGrantStart(reg *Registry, owner userAccountRef, serviceGroupID string, 
 	hasActiveWithCredits := false
 	latestActiveExpiry := now
 	for _, g := range reg.Grants {
+		g = effectiveGrantForRegistry(reg, g)
 		if !grantMatchesUser(g, owner) || !strings.EqualFold(g.ServiceGroupID, serviceGroupID) {
 			continue
 		}
@@ -750,6 +933,7 @@ func effectiveGrantExpiresAt(reg *Registry, owner userAccountRef, now time.Time)
 	}
 	var latest *time.Time
 	for _, g := range reg.Grants {
+		g = effectiveGrantForRegistry(reg, g)
 		if !grantMatchesUser(g, owner) {
 			continue
 		}
@@ -882,17 +1066,18 @@ func effectiveServiceGroupIDsForOwner(ctx context.Context, reg *Registry, securi
 		if g.Frozen {
 			continue
 		}
-		if !grantIsValidAt(g, now) {
+		effective := effectiveGrantForRegistry(reg, g)
+		if !grantIsValidAt(effective, now) {
 			continue
 		}
-		appendID(g.ServiceGroupID)
-		if now.Before(g.StartsAt) {
+		appendID(effective.ServiceGroupID)
+		if now.Before(effective.StartsAt) {
 			continue
 		}
-		if status, _, active, _ := grantStatus(g, now); !active || status != "active" {
+		if status, _, active, _ := grantStatus(effective, now); !active || status != "active" {
 			continue
 		}
-		activeGrants = append(activeGrants, g)
+		activeGrants = append(activeGrants, effective)
 	}
 	return serviceGroupIDs, activeGrants, nil
 }
@@ -1312,23 +1497,14 @@ func grantNewUserLimitCardForRegistry(ctx context.Context, system SystemSettings
 		if findGrantWithSource(reg, owner, serviceGroupID, "new_user_limit_card") != nil {
 			continue
 		}
-		permanent := card.DurationDays <= 0
-		expiresAt := now.AddDate(0, 0, card.DurationDays)
-		if permanent {
-			expiresAt = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
-		}
 		reg.Grants = append(reg.Grants, Grant{
-			ID:              NewID("grant"),
-			UserID:          owner.UserID,
-			Email:           owner.Email,
-			ServiceGroupID:  serviceGroupID,
-			Source:          "new_user_limit_card",
-			StartsAt:        now,
-			ExpiresAt:       expiresAt,
-			Permanent:       permanent,
-			CreatedAt:       now,
-			PeriodLimits:    card.PeriodLimits,
-			RollingFiveHour: true,
+			ID:             NewID("grant"),
+			UserID:         owner.UserID,
+			Email:          owner.Email,
+			ServiceGroupID: serviceGroupID,
+			Source:         "new_user_limit_card",
+			StartsAt:       now,
+			CreatedAt:      now,
 		})
 		changed = true
 	}
@@ -2000,12 +2176,17 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 		earlyStart bool
 	}
 	candidates := make([]candidate, 0)
+	// Qualification issuance is idempotent, but old data may contain duplicate
+	// records. They represent one shared policy entitlement per group, never
+	// multiple independent allowances.
+	limitCardCandidateGroups := map[string]struct{}{}
 	serviceGroupSet := map[string]struct{}{}
 	for _, id := range serviceGroupIDs {
 		serviceGroupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
 	}
 	limitCardGroupSet := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, serviceGroupSet, now)
 	for i, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2038,6 +2219,13 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 		}
 		if consumableGrantCredits(candidateGrant, now) <= 0 {
 			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") && isActiveNewUserLimitCardPolicyGroup(reg, grant.ServiceGroupID) {
+			groupID := strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))
+			if _, duplicate := limitCardCandidateGroups[groupID]; duplicate {
+				continue
+			}
+			limitCardCandidateGroups[groupID] = struct{}{}
 		}
 		candidates = append(candidates, candidate{idx: i, g: candidateGrant, earlyStart: earlyStart})
 	}
@@ -2078,13 +2266,14 @@ func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGrou
 		if cand.earlyStart {
 			shiftGrantToEarlyStart(grant, now)
 		}
-		available := consumableGrantCredits(*grant, now)
+		effective := effectiveGrantForRegistry(reg, *grant)
+		available := consumableGrantCredits(effective, now)
 		if available <= 0 {
 			continue
 		}
 		use := math.Min(available, remaining)
 		grant.CreditsUsed = roundCredits(grant.CreditsUsed + use)
-		applyGrantPeriodUsage(grant, use, now)
+		applyGrantPeriodUsageForRegistry(reg, grant, use, now)
 		consumed += use
 		remaining -= use
 		if remaining <= 0 {
@@ -2196,16 +2385,18 @@ func MarkBillingReservationSent(reg *Registry, requestID string, now time.Time) 
 	return false
 }
 
-// SetBillingReservationBillingDetails freezes the dispatch identity needed by
-// delayed official reconciliation after a response or trailer is lost.
-func SetBillingReservationBillingDetails(reg *Registry, requestID, providerID string, multiplier float64) bool {
-	if reg == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(providerID) == "" || multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
+// SetBillingReservationBillingDetails freezes the dispatch identity and both
+// independently-owned pricing factors needed by delayed official reconciliation
+// after a response or trailer is lost.
+func SetBillingReservationBillingDetails(reg *Registry, requestID, providerID string, providerMultiplier, billingGroupMultiplier float64) bool {
+	if reg == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(providerID) == "" || providerMultiplier < 0 || math.IsNaN(providerMultiplier) || math.IsInf(providerMultiplier, 0) || billingGroupMultiplier <= 0 || math.IsNaN(billingGroupMultiplier) || math.IsInf(billingGroupMultiplier, 0) {
 		return false
 	}
 	for i := range reg.BillingReservations {
 		if strings.EqualFold(strings.TrimSpace(reg.BillingReservations[i].RequestID), strings.TrimSpace(requestID)) {
 			reg.BillingReservations[i].ProviderID = strings.TrimSpace(providerID)
-			reg.BillingReservations[i].BillingGroupMultiplier = multiplier
+			reg.BillingReservations[i].ProviderMultiplier = providerMultiplier
+			reg.BillingReservations[i].BillingGroupMultiplier = billingGroupMultiplier
 			return true
 		}
 	}
@@ -2314,7 +2505,9 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 	}
 	limitCardGroupSet := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, serviceGroupSet, now)
 	total := 0.0
+	seenLimitCardGroups := map[string]struct{}{}
 	for i, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2335,6 +2528,13 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 				continue
 			}
 			grant = grantWithEarlyStartWindow(grant, now)
+		}
+		if strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") && isActiveNewUserLimitCardPolicyGroup(reg, grant.ServiceGroupID) {
+			groupID := strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))
+			if _, duplicate := seenLimitCardGroups[groupID]; duplicate {
+				continue
+			}
+			seenLimitCardGroups[groupID] = struct{}{}
 		}
 		total += availableGrantCredits(grant, now)
 	}
@@ -2370,6 +2570,7 @@ func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, owner userAccount
 	}
 	bestIdx := -1
 	for i, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2395,6 +2596,7 @@ func earlyStartableUnmeteredUnlimitedGrantIndex(reg *Registry, owner userAccount
 func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serviceGroupSet map[string]struct{}, now time.Time) bool {
 	blockedByExhausted := false
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2422,6 +2624,7 @@ func queuedGrantBlockedOnlyByExhausted(reg *Registry, owner userAccountRef, serv
 }
 
 func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, queuedIndex int, serviceGroupSet map[string]struct{}, now time.Time) bool {
+	queued = effectiveGrantForRegistry(reg, queued)
 	if reg == nil || queued.Frozen || !queued.StartsAt.After(now) || !grantIsValidAt(queued, now) {
 		return false
 	}
@@ -2431,6 +2634,7 @@ func canEarlyStartQueuedGrant(reg *Registry, owner userAccountRef, queued Grant,
 	blockedByExhausted := false
 	blockedByPeriodLimit := false
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2465,6 +2669,7 @@ func hasEarlierQueuedGrant(reg *Registry, owner userAccountRef, queued Grant, qu
 		if idx == queuedIndex || (queued.ID != "" && grant.ID == queued.ID) {
 			continue
 		}
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2599,9 +2804,9 @@ func availableGrantPeriodCredits(grant Grant, now time.Time) float64 {
 	} else {
 		check(limits.FiveHour, usage.FiveHour, fiveHourWindowStart(now))
 	}
-	check(limits.Daily, usage.Daily, dayWindowStart(now))
-	check(limits.Weekly, usage.Weekly, weekWindowStart(now))
-	check(limits.Monthly, usage.Monthly, monthWindowStart(now))
+	check(limits.Daily, usage.Daily, grantDayWindowStart(grant, now))
+	check(limits.Weekly, usage.Weekly, grantWeekWindowStart(grant, now))
+	check(limits.Monthly, usage.Monthly, grantMonthWindowStart(grant, now))
 	if math.IsInf(available, 1) {
 		return math.MaxFloat64
 	}
@@ -2629,9 +2834,9 @@ func grantPeriodRetryAt(grant Grant, now time.Time) *time.Time {
 		}
 	}
 	fiveHourStart := fiveHourWindowStart(now)
-	dayStart := dayWindowStart(now)
-	weekStart := weekWindowStart(now)
-	monthStart := monthWindowStart(now)
+	dayStart := grantDayWindowStart(grant, now)
+	weekStart := grantWeekWindowStart(grant, now)
+	monthStart := grantMonthWindowStart(grant, now)
 	if !grant.RollingFiveHour {
 		check(limits.FiveHour, usage.FiveHour, fiveHourStart, fiveHourStart.Add(5*time.Hour))
 	}
@@ -2661,9 +2866,9 @@ func applyGrantPeriodUsage(grant *Grant, credits float64, now time.Time) {
 	} else {
 		apply(grant.PeriodLimits.FiveHour, &grant.PeriodUsage.FiveHour, fiveHourWindowStart(now))
 	}
-	apply(grant.PeriodLimits.Daily, &grant.PeriodUsage.Daily, dayWindowStart(now))
-	apply(grant.PeriodLimits.Weekly, &grant.PeriodUsage.Weekly, weekWindowStart(now))
-	apply(grant.PeriodLimits.Monthly, &grant.PeriodUsage.Monthly, monthWindowStart(now))
+	apply(grant.PeriodLimits.Daily, &grant.PeriodUsage.Daily, grantDayWindowStart(*grant, now))
+	apply(grant.PeriodLimits.Weekly, &grant.PeriodUsage.Weekly, grantWeekWindowStart(*grant, now))
+	apply(grant.PeriodLimits.Monthly, &grant.PeriodUsage.Monthly, grantMonthWindowStart(*grant, now))
 }
 
 func pruneRollingFiveHourEvents(grant *Grant, now time.Time) {
@@ -2744,6 +2949,9 @@ func hasAnyGrantForServiceGroups(reg *Registry, owner userAccountRef, serviceGro
 		if grant.Frozen {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") && !isActiveNewUserLimitCardPolicyGroup(reg, grant.ServiceGroupID) {
+			continue
+		}
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; ok {
 			return true
 		}
@@ -2773,6 +2981,7 @@ func grantStartAtForServiceGroups(reg *Registry, owner userAccountRef, serviceGr
 	}
 	var startsAt *time.Time
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2813,6 +3022,7 @@ func hasActiveGrantForServiceGroups(reg *Registry, owner userAccountRef, service
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2851,6 +3061,7 @@ func periodLimitRetryAtForServiceGroups(reg *Registry, owner userAccountRef, ser
 	}
 	var retryAt *time.Time
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2892,6 +3103,7 @@ func hasUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userAccountRef
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -2929,6 +3141,7 @@ func hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg *Registry, owner userA
 		serviceGroupSet[strings.ToLower(id)] = struct{}{}
 	}
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) {
 			continue
 		}
@@ -3037,6 +3250,7 @@ func hasNewUserLimitCardForServiceGroup(reg *Registry, owner userAccountRef, ser
 		return false
 	}
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) || grant.Frozen || !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
 			continue
 		}
@@ -3054,6 +3268,7 @@ func hasPeriodLimitedNewUserLimitCardForServiceGroup(reg *Registry, owner userAc
 	}
 	found := false
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) || grant.Frozen || !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
 			continue
 		}
@@ -3086,6 +3301,7 @@ func activePeriodLimitedNewUserLimitCardGroupSet(reg *Registry, owner userAccoun
 	}
 	limited := make(map[string]struct{})
 	for _, grant := range reg.Grants {
+		grant = effectiveGrantForRegistry(reg, grant)
 		if !grantMatchesUser(grant, owner) || grant.Frozen || !strings.EqualFold(strings.TrimSpace(grant.Source), "new_user_limit_card") {
 			continue
 		}

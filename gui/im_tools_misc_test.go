@@ -271,3 +271,23 @@ func TestScheduledTaskManagerForToolConcurrentSharedBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestPDFDisplayFileNameKeepsCJKTitleAndSanitizes(t *testing.T) {
+	cases := []struct {
+		title    string
+		fallback string
+		want     string
+	}{
+		{"北京天气报告 2026年8月28日", "document_0828.pdf", "北京天气报告 2026年8月28日.pdf"},
+		{"  张惠妹歌曲清单  ", "document_0828.pdf", "张惠妹歌曲清单.pdf"},
+		{"a/b\\c:d*e?f\"g<h>i|j", "document_0828.pdf", "abcdefghij.pdf"},
+		{"***", "document_0828.pdf", "document_0828.pdf"},
+		{"   ", "document_0828.pdf", "document_0828.pdf"},
+		{"标题.", "document_0828.pdf", "标题.pdf"},
+	}
+	for _, tc := range cases {
+		if got := pdfDisplayFileName(tc.title, tc.fallback); got != tc.want {
+			t.Fatalf("pdfDisplayFileName(%q, %q) = %q, want %q", tc.title, tc.fallback, got, tc.want)
+		}
+	}
+}

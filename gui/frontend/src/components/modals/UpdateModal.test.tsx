@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { downloadSourceName, failedUpdateResult, isRestorableStableResult } from './UpdateModal';
+import { downloadSourceName, failedUpdateResult, isRestorableStableResult, rollbackReleaseLabel } from './UpdateModal';
 
 describe('downloadSourceName', () => {
     it('uses the first backend download candidate and preserves signed URL query values', () => {
@@ -37,6 +37,15 @@ describe('isRestorableStableResult', () => {
     });
 });
 
+describe('rollbackReleaseLabel', () => {
+    it('shows the server-provided formal build and publication date', () => {
+        expect(rollbackReleaseLabel({ build: '11970', published_at: '2026-08-28T10:00:00Z' })).toBe('11970 · 2026-08-28');
+    });
+
+    it('does not derive a version when a release field is missing', () => {
+        expect(rollbackReleaseLabel({ build: '11970' })).toBe('11970');
+    });
+});
 describe('failedUpdateResult', () => {
     it('marks the payload as a check failure', () => {
         const got = failedUpdateResult('network down');

@@ -66,7 +66,7 @@ if (-not $cc) {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $exe = Join-Path $outDir 'test_reference_fake_device_profile.exe'
     $defines = @(
-        '-DEXPECTED_PROFILE_ID_TEXT=\"reference-fake-v1\"',
+        '-DEXPECTED_PROFILE_ID_TEXT="reference-fake-v1"',
         '-DEXPECTED_WIDTH=240',
         '-DEXPECTED_HEIGHT=320',
         '-DEXPECTED_CAPABILITIES=DEVICE_CAPABILITY_REQUIRED_BASELINE',

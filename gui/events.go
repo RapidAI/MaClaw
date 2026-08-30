@@ -51,13 +51,16 @@ const (
 
 	// Skill evolution / self-repair events (EvolutionPipeline + SkillRunner).
 	// Values must match corelib/skill event constants and frontend events.ts.
-	EventSkillUsageUpdated     = "skill:usage_updated"
-	EventSkillRepaired         = "skill:repaired"
-	EventSkillOptimized        = "skill:optimized"
-	EventSkillAutoDiscovered   = "skill:auto_discovered"
-	EventSkillExecutionFailed  = "skill:execution_failed"
-	EventSkillRepairDraftReady = "skill:repair_draft_ready"
-	EventSkillIndexRefreshed   = "skill:index_refreshed"
+	EventSkillUsageUpdated        = "skill:usage_updated"
+	EventSkillRepaired            = "skill:repaired"
+	EventSkillOptimized           = "skill:optimized"
+	EventSkillAutoDiscovered      = "skill:auto_discovered"
+	EventSkillExecutionFailed     = "skill:execution_failed"
+	EventSkillRepairDraftReady    = "skill:repair_draft_ready"
+	EventSkillIndexRefreshed      = "skill:index_refreshed"
+	EventSkillEvolutionCancelled  = "skill:evolution_cancelled"
+	EventSkillEvolutionTimedOut   = "skill:evolution_timed_out"
+	EventSkillEvolutionRolledBack = "skill:evolution_rolled_back"
 
 	// Computer Use operator preview (local OmniParser loop; not multimodal screenshots).
 	EventComputerUseObserve = "computer-use:observe"

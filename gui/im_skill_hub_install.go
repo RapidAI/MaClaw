@@ -240,6 +240,13 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	if h.getSkillExecutor() == nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but SkillExecutor is not initialized", displayName)}
 	}
+	if h.app != nil {
+		if err := ensureSkillEvolutionMutationAdmission(h.app, skill.Name); err != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s blocked: %v", displayName, err), SilentFailure: true}
+		}
+	}
+	h.getSkillExecutor().suspendStatusOverlayPersistence()
+	defer h.getSkillExecutor().resumeStatusOverlayPersistence()
 	ownerID := strings.TrimSpace(policyOwnerID)
 	if ownerID == "" {
 		ownerID = strings.TrimSpace(userID)
@@ -317,8 +324,98 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	}
 
 	sendStatus(fmt.Sprintf("Registering Skill: %s ...", skill.Name))
+	if err := ctx.Err(); err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s cancelled: %v", displayName, err), SilentFailure: true}
+	}
+	// File-backed installs require the desktop App transaction coordinator.
+	// Standalone IM handlers do not have durable config/compensation recovery;
+	// fail closed instead of publishing a directory that cannot be recovered.
+	if stagingDir != "" && h.app == nil {
+		cskill.CleanupStaging(stagingDir)
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s blocked: durable transaction context unavailable", displayName), SilentFailure: true}
+	}
+	// Fresh directory-backed installs use the shared transaction boundary. Keep
+	// replacement of an existing identity on the legacy adapter below until its
+	// source-specific .prev/update semantics are migrated.
+	if stagingDir != "" && h.app != nil {
+		existing := h.app.installedSkillForInstall(skill)
+		if existing != nil && skillInstallAlreadyCurrent(existing, skill) {
+			cskill.CleanupStaging(stagingDir)
+			skill = existing
+			return h.executeInstalledSkill(ctx, skill, displayName, platform, userID, policyOwnerID, sendStatus)
+		}
+		if existing == nil && h.app.skillNameAlreadyRegistered(skill.Name) {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s refused: name is registered under a different identity", displayName), SilentFailure: true}
+		}
+		requestID := fmt.Sprintf("evo_im_install_%d", time.Now().UnixNano())
+		var commitErr error
+		if existing == nil {
+			commitErr = h.app.commitStagedSkillInstall(ctx, skill, stagingDir, source, installScanReport, requestID, skillEvolutionConfigRevision(h.app))
+		} else {
+			commitErr = h.app.commitStagedSkillInstallWithExisting(ctx, skill, stagingDir, source, installScanReport, requestID, skillEvolutionConfigRevision(h.app), existing)
+		}
+		if commitErr != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, commitErr), SilentFailure: true}
+		}
+		return h.executeInstalledSkill(ctx, skill, displayName, platform, userID, policyOwnerID, sendStatus)
+	}
 	preNormalizeScanHash := ""
-	committedDir := ""
+	var installCompensation cskill.EvolutionCompensationRecord
+	installTxnActive := false
+	installRequestID := ""
+	if stagingDir != "" && h.app != nil {
+		finalRoot, rootErr := h.app.primarySkillsDir()
+		if rootErr != nil {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, rootErr)}
+		}
+		installRequestID = fmt.Sprintf("evo_im_install_%d", time.Now().UnixNano())
+		installCompensation = cskill.NewEvolutionCompensationRecord(installRequestID, skill.Name, "install", "", nil, false, h.getSkillExecutor().loadSkills(), "im_install_rollback_incomplete")
+		finalDir := cskill.PlannedSkillDir(finalRoot, skill.Name)
+		installCompensation.SetCreatedDirectories([]string{finalDir})
+		if _, statErr := os.Stat(finalDir); statErr == nil {
+			installCompensation.SetDirectoryBackupIntent(finalDir, finalDir+".prev")
+		} else if !os.IsNotExist(statErr) {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: inspect destination: %v", displayName, statErr)}
+		}
+		if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: persist rollback snapshot: %v", displayName, err)}
+		}
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+			"skill": skill.Name, "action": "install", "decision": "pending", "via": "im",
+			"request_id": installRequestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			_ = cskill.ClearEvolutionCompensation(installRequestID, skill.Name, "install")
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: audit preflight: %v", displayName, err)}
+		}
+		installTxnActive = true
+		defer func() {
+			if !installTxnActive {
+				return
+			}
+			if rollbackErr := cskill.RestoreEvolutionCompensation(installCompensation,
+				func(skills []corelib.NLSkillEntry) error { return h.getSkillExecutor().restoreSkillsSnapshot(skills) },
+				func() error { return h.app.refreshSkillIndexesAfterMutationChecked(installCompensation.Skill) }); rollbackErr != nil {
+				installCompensation.LastError = rollbackErr.Error()
+				installCompensation.TransactionState = "audit_pending"
+				installCompensation.CleanupStatus = "pending"
+				_ = cskill.PersistEvolutionCompensation(installCompensation)
+			} else {
+				installCompensation.TransactionState = "rolled_back"
+				installCompensation.CleanupStatus = "pending"
+				if clearErr := cskill.ClearEvolutionCompensation(installCompensation.RequestID, installCompensation.Skill, "install"); clearErr != nil {
+					installCompensation.LastError = clearErr.Error()
+					_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+				}
+			}
+		}()
+	}
 	if stagingDir != "" {
 		finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
 		if err != nil {
@@ -326,7 +423,18 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, err)}
 		}
 		skill.SkillDir = finalDir
-		committedDir = finalDir
+		// Enrich the durable snapshot after the filesystem move. The initial
+		// intent closes the pre-move crash window; these flags make recovery
+		// authoritative when an update leaves both the replacement and .prev.
+		if h.app != nil {
+			if _, statErr := os.Stat(finalDir + ".prev"); statErr == nil {
+				installCompensation.SetDirectoryBackup(finalDir, finalDir+".prev", true)
+			}
+			installCompensation.SetDirectoryPublished(true)
+			if err := cskill.PersistEvolutionCompensation(installCompensation); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: persist post-move rollback snapshot: %v", displayName, err)}
+			}
+		}
 		if installScanReport != nil {
 			if hash, err := skillContentHash(skill); err == nil {
 				preNormalizeScanHash = hash
@@ -340,22 +448,24 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	}
 	if installScanReport != nil && preNormalizeScanHash != "" {
 		if err := writeSkillScanCacheForReportStatus(skill, skill.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
-			if committedDir != "" {
-				_ = os.RemoveAll(committedDir)
-			}
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: write scan cache: %v", displayName, err)}
 		}
 	}
 	if err := h.getSkillExecutor().Register(*skill); err != nil {
-		if committedDir != "" {
-			_ = os.RemoveAll(committedDir)
-		}
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Registering Skill %s failed: %v", displayName, err)}
 	}
 
 	// Refresh skill BM25 index so the router picks up the new skill.
 	if h.getAppToolRouter() != nil {
-		h.getAppToolRouter().RefreshSkillIndex()
+		if h.app != nil {
+			if err := h.app.refreshSkillIndexesAfterMutationChecked(skill.Name, *skill); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: refresh index: %v", displayName, err)}
+			}
+		} else {
+			if err := h.getAppToolRouter().RefreshSkillIndexChecked(); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: refresh index: %v", displayName, err)}
+			}
+		}
 	}
 
 	// Audit log.
@@ -380,13 +490,49 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 			Result:       fmt.Sprintf("installed skill %s from %s", displayName, source),
 		})
 	}
+	if installTxnActive {
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_installed", map[string]string{
+			"skill": skill.Name, "action": "install", "decision": "applied", "via": "im",
+			"request_id": installRequestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s installed but final audit is pending: %v", displayName, err)}
+		}
+		installCompensation.TransactionState = "committed"
+		installCompensation.CleanupStatus = "pending"
+		installCompensation.FailureReason = "post_commit_cleanup_pending"
+		if err := cskill.ReplaceEvolutionCompensation(installCompensation); err != nil {
+			installTxnActive = false
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s committed but cleanup state could not be persisted: %v", displayName, err)}
+		}
+		installTxnActive = false
+		if err := cskill.ClearEvolutionCompensation(installCompensation.RequestID, installCompensation.Skill, "install"); err != nil {
+			installCompensation.LastError = err.Error()
+			installCompensation.FailureReason = "post_commit_cleanup_failed"
+			_ = cskill.ReplaceEvolutionCompensation(installCompensation)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s installed but rollback cleanup is pending: %v", displayName, err)}
+		}
+	}
 
-	sendStatus(fmt.Sprintf("鈻讹笍 姝ｅ湪鎵ц Skill: %s ...", skill.Name))
+	return h.executeInstalledSkill(ctx, skill, displayName, platform, userID, policyOwnerID, sendStatus)
+}
+
+// executeInstalledSkill runs an already-installed entry. It is deliberately
+// separate from registration so an idempotent install can reuse the existing
+// authoritative entry without re-registering or rewriting it.
+func (h *IMMessageHandler) executeInstalledSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, platform, userID, policyOwnerID string, sendStatus func(string)) skillInstallExecutionResult {
+	if h == nil || h.getSkillExecutor() == nil || skill == nil {
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s is unavailable", displayName), SilentFailure: true}
+	}
+	if err := ctx.Err(); err != nil {
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s execution cancelled: %v", displayName, err), SilentFailure: true}
+	}
+	if sendStatus != nil {
+		sendStatus(fmt.Sprintf("正在执行 Skill: %s ...", skill.Name))
+	}
 	execResult, execErr := h.getSkillExecutor().ExecuteInstalledWithArgs(*skill, nil)
 	if execErr != nil {
 		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
-		// Mark as needs_setup so the skill list shows it's not ready to use.
-		// The user/agent can retry with manage_skill(action="run") after fixing.
 		if updateErr := h.getSkillExecutor().UpdateStatus(skill.Name, "needs_setup"); updateErr != nil {
 			log.Printf("[skill-auto] failed to mark skill %s as needs_setup: %v", skill.Name, updateErr)
 		}

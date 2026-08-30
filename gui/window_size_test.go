@@ -2,6 +2,13 @@ package main
 
 import "testing"
 
+func TestEnvCheckWindowSizeFitsPreparingCard(t *testing.T) {
+	width, height := envCheckWindowSize()
+	if width != 520 || height != 460 {
+		t.Fatalf("envCheckWindowSize() = %dx%d, want 520x460", width, height)
+	}
+}
+
 func TestNormalizeScreenSizeForWindowDPI(t *testing.T) {
 	tests := []struct {
 		name                      string

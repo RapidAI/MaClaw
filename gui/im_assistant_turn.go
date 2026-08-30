@@ -148,7 +148,10 @@ func (h *IMMessageHandler) commitAgentLoopAssistantTurn(opts agentLoopAssistantT
 
 func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice llm.Choice) agentLoopAssistantTurn {
 	msgContent := choice.Message.Content
-	msgReasoning := stripRolePrefixHallucination(choice.Message.ReasoningContent)
+	// Reasoning uses the reasoning-specific stripper: it only removes a role
+	// prefix at the very start and never truncates mid-text, because reasoning
+	// routinely narrates Browser/Tool usage mid-thought.
+	msgReasoning := stripRolePrefixReasoningForDisplay(choice.Message.ReasoningContent)
 	if visible, tagReasoning := splitThinkingTagsForDisplay(msgContent); tagReasoning != "" {
 		msgContent = visible
 		if msgReasoning != "" {

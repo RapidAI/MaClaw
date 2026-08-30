@@ -267,6 +267,20 @@ const (
 	// companion is 0.744 ("天津天气…"); 0.73 sits between them. (At 256 the
 	// same negatives peaked at 0.643 and the floor was 0.67.)
 	EmbeddingCompositeSecondaryMinScore = 0.73
+	// EmbeddingCompositeLiveDataMinScore is the companion floor specific to a
+	// live_data half.  PDF-only negatives ("将附件里的内容排版并导出为PDF报告"
+	// family) embed close to the generic live_data anchors, so once the
+	// composite anchors ("查询某城市天气并输出格式化PDF报告",
+	// "查询比特币价格并输出格式化PDF报告") lifted genuine live-data+PDF
+	// queries, the negatives rose with them and the generic 0.73 floor
+	// stopped separating the two groups.  Measured at 768 dimensions with
+	// those anchors installed (2026-08-24): genuine live-data+PDF queries
+	// score live_data 0.841-0.957 across 19 phrasings (weather-first and
+	// PDF-first, 10 city names, FX/stock/news/flight/crypto); PDF-only
+	// negatives peak at 0.802.  0.82 leaves margin on both sides
+	// (+0.021 / -0.018).  Re-measure whenever DefaultEmbeddingDim, the
+	// model, or the live_data anchor set changes.
+	EmbeddingCompositeLiveDataMinScore = 0.82
 	// EmbeddingCompositePrimaryMinScore is the minimum score for the leading
 	// half of a declared composite to stand on its own.  A compound result is
 	// only locally decisive when both independently embedded meanings clear
@@ -275,7 +289,36 @@ const (
 	EmbeddingLookupMinScore           = 0.70
 	EmbeddingLookupMinGap             = 0.05
 	EmbeddingLookupCompositeFloor     = 0.60
+	// TreeVerdictDistrustMaxScore bounds the tree verdicts allowed to override
+	// a stronger L2 leader.  The tree prompt's own score guide bands 0.40-0.64
+	// as "uncertain"; below 0.50 the model is effectively guessing, and a guess
+	// must not strip capabilities a stronger local reading granted
+	// (production: "pdf在哪？" L2=document_generate 0.87 was replaced by
+	// tree=session_manage 0.41; a book-writing turn L2=workflow_task 0.74
+	// was replaced by tree=task_track 0.38 and locked onto a managed
+	// task-tracking surface).
+	TreeVerdictDistrustMaxScore = 0.50
 )
+
+// retainEmbeddingOverWeakTree reports whether an escalated L2 leader should
+// be kept instead of a guessing tree verdict. L2 only reaches the tree when
+// it is *not* locally confident, so requiring EmbeddingConfidentMinScore here
+// would make the guard vacuous for the 0.70–0.78 band that actually escalates.
+// EmbeddingLookupMinScore is the usable-hint floor already used for lookup /
+// office hints; below that both channels are noise and the tree may stand.
+func retainEmbeddingOverWeakTree(l2 ClassificationResult, treeScore float64) bool {
+	switch l2.Primary {
+	case "", LabelUnknown, LabelAmbiguous:
+		return false
+	}
+	if treeScore >= TreeVerdictDistrustMaxScore {
+		return false
+	}
+	if l2.Confidence < EmbeddingLookupMinScore {
+		return false
+	}
+	return l2.Confidence > treeScore
+}
 
 // classifyByEmbedding performs Layer 2 embedding-based classification using
 // cosine similarity between the user message embedding and pre-computed anchor
@@ -339,14 +382,30 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			composite = s
 		}
 	}
+	// declaredCompanion tracks the strongest taxonomy-declared composite half
+	// (lookup ↔ document_generate/live_data_visual) regardless of local
+	// verifiability.  The locally-verified scan above governs fast-path
+	// grants; this one only vetoes silent capability loss: a strong lookup
+	// reading with a material artifact half must escalate rather than ship
+	// as a plain lookup ("杭州天气，生成pdf报告" scored live_data 0.833 with
+	// document_generate 0.72 and used to collapse to a confident plain
+	// lookup, dropping the PDF capability without ever consulting the tree).
+	var declaredCompanion labelScore
+	for _, s := range scores {
+		if s.label != top1.label && declaredCompositeIntentPair(top1.label, s.label) && s.score > declaredCompanion.score {
+			declaredCompanion = s
+		}
+	}
 
 	gap := top1.score - top2.score
 
 	// 4. Decision thresholds.
 	result := ClassificationResult{
-		Primary:    top1.label,
-		Confidence: top1.score,
-		Layer:      2,
+		Primary:       top1.label,
+		Confidence:    top1.score,
+		Layer:         2,
+		RunnerUp:      top2.label,
+		RunnerUpScore: top2.score,
 	}
 
 	// Live external data and an artifact-generating candidate form a dependency
@@ -354,7 +413,11 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	// local decision: both independently embedded meanings must clear their
 	// thresholds. This avoids making a valid local semantic result depend on an
 	// unrelated model's structured-output behavior.
-	if composite.label != "" && composite.score >= EmbeddingCompositeSecondaryMinScore {
+	companionFloor := EmbeddingCompositeSecondaryMinScore
+	if composite.label == LabelLiveData {
+		companionFloor = EmbeddingCompositeLiveDataMinScore
+	}
+	if composite.label != "" && composite.score >= companionFloor {
 		result.Secondary = []IntentLabel{composite.label}
 		if top1.score >= EmbeddingCompositePrimaryMinScore {
 			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
@@ -374,6 +437,29 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	}
 
 	if top1.score >= EmbeddingConfidentMinScore && gap >= EmbeddingConfidentMinGap {
+		// A confident lookup with a material declared artifact half is a
+		// composite request, not a plain lookup: shipping it as confident
+		// lookup-only silently drops the generate capability without ever
+		// consulting the tree.  Escalate with the half as evidence.
+		if isLookupIntentLabel(top1.label) && declaredCompanion.label != "" && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+			result.Secondary = []IntentLabel{declaredCompanion.label}
+			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
+			return result, false
+		}
+		// Mirror guard for a confident office/deck request whose companion is a
+		// lookup ("网上找几张照片做成生日PPT").  The deck half is settled, but
+		// the search boundary is not locally separable: on the installed
+		// 768-dim model (2026-08-25) office-only negatives score the lookup
+		// labels up to 0.740 while the genuine find-images phrasings score
+		// 0.65, so any local floor would mis-grant search on plain Excel/PPT
+		// requests.  Attach the half and let the tree read the request;
+		// shipping confident office-only dropped web_search in production and
+		// the turn reported the search tool as unavailable.
+		if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+			result.Secondary = []IntentLabel{declaredCompanion.label}
+			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
+			return result, false
+		}
 		result.Reason = fmt.Sprintf("embedding: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 		return result, true
 	}
@@ -390,11 +476,30 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
 			return result, false
 		}
+		// A declared-but-not-locally-verified composite half (search +
+		// document_generate / live_data_visual) must escalate too: the
+		// locallyVerified scan above cannot see it, so without this check
+		// the turn collapses to a confident plain lookup, the artifact
+		// capability is never routed, and the loop later reports the
+		// generate tool as unavailable ("本轮未授权").  Escalation lets the
+		// tree verdict plus the L2 runner-up synthesize the composite.
+		if declaredCompanion.label != "" && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+			result.Secondary = []IntentLabel{declaredCompanion.label}
+			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
+			return result, false
+		}
 		result.Reason = fmt.Sprintf("embedding lookup: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 		return result, true
 	}
 
-	// Ambiguous — escalate to Layer 3.
+	// Ambiguous — escalate to Layer 3. Keep a declared lookup companion of an
+	// office primary as synthesis evidence: the runner-up slot may be held by
+	// an unrelated label (document_read/workflow_task embed close to deck
+	// requests), and without the half the tree merge cannot see the
+	// find-images-online part of the request at all.
+	if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+		result.Secondary = []IntentLabel{declaredCompanion.label}
+	}
 	result.Reason = fmt.Sprintf("embedding ambiguous: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 	return result, false
 }

@@ -30,8 +30,8 @@ type provider struct {
 }
 
 type config struct {
-	MaclawLLMProviders        []provider `json:"maclaw_llm_providers"`
-	MaclawLLMCurrentProvider  string     `json:"maclaw_llm_current_provider"`
+	MaclawLLMProviders       []provider `json:"maclaw_llm_providers"`
+	MaclawLLMCurrentProvider string     `json:"maclaw_llm_current_provider"`
 }
 
 func main() {
@@ -67,8 +67,8 @@ func main() {
 	fmt.Printf("Key length: %d\n", len(p.Key))
 	fmt.Printf("OAuthAccessToken length: %d\n", len(p.OAuthAccessToken))
 
-	// 选择 token：OAuth 用 exchanged API key (sk-...)，与 Codex CLI 行为一致
-	// OAuthAccessToken 仅用于 Costs/Usage API
+	// 选择 token：OAuth 用 exchanged API key (sk-...)，与 Codex CLI 行为一致.
+	// OAuthAccessToken 是 Responses API 的原始 JWT；组织账单需要 Admin API Key.
 	token := p.Key
 	tokenSource := "Key (exchanged API key)"
 	// 允许通过环境变量覆盖：USE_KEY=1 强制用 exchanged key

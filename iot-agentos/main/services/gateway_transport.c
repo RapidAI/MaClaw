@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mbedtls/platform_util.h"
 
 #include "app_ui.h"
 #include "presentation/scene_presenter.h"
@@ -24,6 +25,7 @@
 #include "services/gateway_dispatcher.h"
 #include "services/interaction_service.h"
 #include "services/meeting_service.h"
+#include "services/credential_service.h"
 #include "task_registry.h"
 
 /* Keep the log tag identical to the original main.c owner so existing gateway
@@ -46,6 +48,8 @@ static const char *TAG = "maclaw_client";
 #define RESPONSE_IMAGE_MIME "application/vnd.maclaw.rgb565be"
 #define MEETING_STREAM_RESPONSE_CAPACITY 2048
 #define MEETING_STREAM_INTERNAL_TLS_RESERVE (16U * 1024U)
+#define VOICE_UPLOAD_RETRY_COUNT 3
+#define MEDIA_RESPONSE_CAPACITY (512U * 1024U + 1U)
 
 static portMUX_TYPE s_transport_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -56,6 +60,158 @@ static char s_device_id[40];
  * value. Configuration remains its durable owner; Gateway clears this local
  * copy only after Configuration has atomically committed Hub token evidence. */
 static char s_pair_code[TRANSPORT_PAIR_CODE_CAPACITY];
+static uint32_t s_credential_generation;
+
+static void ensure_credential_generation(void) {
+    if (s_credential_generation != 0u) return;
+    if (credential_service_init() != DEVICE_STATUS_OK) return;
+    uint32_t generation = 0u;
+    if (credential_service_begin_generation(&generation) != DEVICE_STATUS_OK) return;
+    /* Identity is established before Gateway init during normal boot. Bind it
+     * here as well so a token committed after an empty/default boot can use
+     * the same generation without a token-only intermediate state. */
+    if (!s_device_id[0] || credential_service_bind_identity(generation, s_device_id) !=
+                               DEVICE_STATUS_OK) {
+        return;
+    }
+    s_credential_generation = generation;
+}
+
+/* The transport keeps a compatibility mirror for diagnostics, but it is not
+ * an authorization source. Bearer decisions copy from the generation-fenced
+ * Credential Service so a revoked token cannot be resurrected by a stale read. */
+static bool credential_token_present(void) {
+    credential_service_snapshot_t snapshot = {
+        .struct_size = sizeof(snapshot),
+        .abi_version = CREDENTIAL_SERVICE_ABI_VERSION,
+    };
+    uint32_t generation = 0u;
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    generation = s_credential_generation;
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    return generation != 0u && credential_service_snapshot(&snapshot) &&
+           snapshot.present && snapshot.generation == generation;
+}
+
+static uint32_t credential_bearer_authorization(char *out, uint32_t capacity) {
+    if (!out || capacity == 0u) return 0u;
+    out[0] = '\0';
+    uint32_t generation = 0u;
+    char identity[CREDENTIAL_SERVICE_IDENTITY_CAPACITY] = {0};
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    generation = s_credential_generation;
+    strlcpy(identity, s_device_id, sizeof(identity));
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    if (generation == 0u) return 0u;
+    char token[CREDENTIAL_SERVICE_MAX_TOKEN + 1u] = {0};
+    size_t token_length = 0u;
+    const device_status_t status = credential_service_copy_gateway_token(
+        generation, token, sizeof(token), &token_length, identity);
+    mbedtls_platform_zeroize(identity, sizeof(identity));
+    if (status == DEVICE_STATUS_OK && token_length > 0u) {
+        const int n = snprintf(out, capacity, "Bearer %s", token);
+        mbedtls_platform_zeroize(token, sizeof(token));
+        return n > 0 && (uint32_t)n < capacity ? (uint32_t)n : 0u;
+    }
+    mbedtls_platform_zeroize(token, sizeof(token));
+    return 0u;
+}
+
+/* Credentials are boot-lifetime copies owned by this transport source owner.
+ * Overwriting them with strlcpy alone leaves the previous bearer/pairing value
+ * in the tail of the static buffer (and makes memory inspection after a
+ * rotation/reset needlessly expose old secrets).  Keep the zeroization local
+ * to this concrete owner; public Gateway/Device contracts never carry secret
+ * storage or a wipe primitive. */
+static void replace_secret(char *destination, size_t capacity,
+                           const char *source) {
+    if (!destination || capacity == 0) return;
+    mbedtls_platform_zeroize(destination, capacity);
+    if (source) strlcpy(destination, source, capacity);
+}
+
+static bool gateway_authority_valid(const char *authority, size_t length) {
+    if (!authority || length == 0u) return false;
+    /* User-info is never part of a Gateway/CDN trust identity.  Bracketed
+     * IPv6 literals are accepted, but malformed brackets and ports are not. */
+    if (memchr(authority, '@', length) || memchr(authority, '\\', length)) {
+        return false;
+    }
+    size_t host_start = 0u;
+    size_t host_end = length;
+    if (authority[0] == '[') {
+        const char *close = memchr(authority, ']', length);
+        if (!close) return false;
+        host_end = (size_t)(close - authority) + 1u;
+        if (host_end <= 2u || close[1] == ':') {
+            if (close[1] != ':') return false;
+            if (host_end + 1u >= length) return false;
+            for (size_t i = host_end + 1u; i < length; ++i) {
+                if (authority[i] < '0' || authority[i] > '9') return false;
+            }
+        } else if (host_end != length) {
+            return false;
+        }
+    } else {
+        const char *first_colon = memchr(authority, ':', length);
+        if (first_colon) {
+            const size_t colon = (size_t)(first_colon - authority);
+            if (colon == 0u || colon + 1u >= length) return false;
+            host_end = colon;
+            for (size_t i = colon + 1u; i < length; ++i) {
+                if (authority[i] < '0' || authority[i] > '9') return false;
+            }
+            if (memchr(authority + colon + 1u, ':', length - colon - 1u)) return false;
+        }
+    }
+    if (host_end <= host_start) return false;
+    for (size_t i = host_start; i < host_end; ++i) {
+        const unsigned char c = (unsigned char)authority[i];
+        if (c < 0x21u || c == 0x7fu || c == '#' || c == '?' || c == '%') return false;
+    }
+    return true;
+}
+
+/* Gateway Transport is also callable from composition-root seams that do not
+ * pass through the provisioning validator. Keep the final trust boundary here
+ * so an accidental or stale caller can never select cleartext or an ambiguous
+ * authority/path. Gateway configuration is an origin, not an arbitrary URL. */
+static bool gateway_https_origin_valid(const char *url, size_t capacity) {
+    if (!url || capacity == 0u) return false;
+    const size_t length = strnlen(url, capacity);
+    if (length == 0u || length >= capacity || length < 9u ||
+        strncmp(url, "https://", 8u) != 0) return false;
+    const char *authority = url + 8u;
+    if (!authority[0] || authority[0] == '/' || strchr(authority, '/')) return false;
+    return gateway_authority_valid(authority, strlen(authority));
+}
+
+/* Hub-provided upload/download URLs may be absolute (for example, a CDN
+ * endpoint).  They are still transport inputs, so require the same HTTPS
+ * authority hygiene as the configured Gateway origin while allowing a path,
+ * query and fragment after the authority. */
+static bool gateway_https_absolute_url_valid(const char *url, size_t capacity) {
+    if (!url || capacity == 0u) return false;
+    const size_t length = strnlen(url, capacity);
+    if (length == 0u || length >= capacity || length < 9u ||
+        strncmp(url, "https://", 8u) != 0) return false;
+    const char *authority = url + 8u;
+    if (!authority[0] || authority[0] == '/' || authority[0] == '?' ||
+        authority[0] == '#') return false;
+    const char *authority_end = strpbrk(authority, "/?#");
+    const size_t authority_length = authority_end
+                                        ? (size_t)(authority_end - authority)
+                                        : strlen(authority);
+    if (!gateway_authority_valid(authority, authority_length)) return false;
+    /* URL fragments are client-side only and can hide a substituted target;
+     * reject them.  Query strings remain valid for signed CDN URLs.  Apply
+     * the character fence to the complete URL, not just its authority. */
+    for (size_t i = 0u; i < length; ++i) {
+        const unsigned char c = (unsigned char)url[i];
+        if (c < 0x20u || c == 0x7fu || c == '\\' || c == '#') return false;
+    }
+    return true;
+}
 /* Foreground traffic must never wait behind the outgoing long poll. Each lane
  * owns both its mutex and persistent esp_http_client handle; no handle is ever
  * operated by two tasks concurrently. */
@@ -68,6 +224,11 @@ static char s_gateway_poll_http_origin[URL_CAPACITY];
 static SemaphoreHandle_t s_gateway_asset_http_mutex;
 static esp_http_client_handle_t s_gateway_asset_http_client;
 static char s_gateway_asset_http_origin[URL_CAPACITY];
+/* Asset downloads are serialized at the public frame API as well as at the
+ * HTTP lane.  The task/epoch registration is a single-owner bridge; without
+ * this guard a second caller could overwrite the first task identity while
+ * the first request is still waiting for the lane mutex. */
+static SemaphoreHandle_t s_asset_download_guard;
 /* Every active pointer is protected through cancellation and cleanup by its
  * dedicated registry guard. The pointers are private to this source
  * owner: callers receive only a lane bit and a bounded result. */
@@ -77,6 +238,16 @@ static esp_http_client_handle_t s_active_capability_refresh_client;
 static esp_http_client_handle_t s_active_foreground_client;
 static esp_http_client_handle_t s_active_poll_client;
 static esp_http_client_handle_t s_active_asset_client;
+static TaskHandle_t s_asset_download_task;
+/* Cellular requests have no ESP HTTP handle to publish. Keep the opaque
+ * owner token for the asset lane so lifecycle cancellation can still reach
+ * the profile-private ML307 adapter without exposing that handle upstream. */
+static const void *s_active_cellular_asset_owner;
+/* Monotonic cancellation intent for the asset lane.  This closes the race
+ * where a lifecycle stop arrives after request admission but before a
+ * cellular owner or Wi-Fi client is published. */
+static uint32_t s_asset_cancel_epoch;
+static uint32_t s_asset_download_epoch;
 /* The resumable meeting PUT is structurally different from a buffered
  * request, but it is still a Gateway Transport-owned HTTP lane.  Its owner
  * identity makes a late worker stop unable to cancel a successor's stream. */
@@ -434,20 +605,23 @@ static esp_err_t transport_persist_token(const char *token) {
     }
     int32_t err = s_host.persist_gateway_token(token);
     if (err == 0) {
+        ensure_credential_generation();
+        uint32_t generation = 0u;
         taskENTER_CRITICAL(&s_transport_state_lock);
-        strlcpy(s_gateway_token, token, sizeof(s_gateway_token));
-        s_pair_code[0] = '\0';
+        generation = s_credential_generation;
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        if (generation == 0u || credential_service_store_gateway_token(
+                generation, token) != DEVICE_STATUS_OK) return ESP_ERR_INVALID_STATE;
+        taskENTER_CRITICAL(&s_transport_state_lock);
+        replace_secret(s_gateway_token, sizeof(s_gateway_token), token);
+        replace_secret(s_pair_code, sizeof(s_pair_code), NULL);
         taskEXIT_CRITICAL(&s_transport_state_lock);
     }
     return (esp_err_t)err;
 }
 
 bool gateway_transport_is_paired(void) {
-    bool paired;
-    taskENTER_CRITICAL(&s_transport_state_lock);
-    paired = s_gateway_token[0] != '\0';
-    taskEXIT_CRITICAL(&s_transport_state_lock);
-    return paired;
+    return credential_token_present();
 }
 
 bool gateway_transport_pairing_pending(void) {
@@ -463,19 +637,126 @@ const char *gateway_transport_device_id(void) {
 }
 
 void gateway_transport_set_device_id(const char *device_id) {
+    bool changed = false;
+    uint32_t generation = 0u;
     taskENTER_CRITICAL(&s_transport_state_lock);
+    changed = strcmp(s_device_id, device_id ? device_id : "") != 0;
     strlcpy(s_device_id, device_id ? device_id : "", sizeof(s_device_id));
+    generation = s_credential_generation;
+    if (changed) s_credential_generation = 0u;
     taskEXIT_CRITICAL(&s_transport_state_lock);
+    /* An identity rotation retires the prior token immediately. Keep the
+     * operation outside the transport spinlock; Credential Service has its
+     * own lock and zeroizes both token and identity on revoke. */
+    if (changed && generation != 0u) {
+        (void)credential_service_revoke_gateway_token(generation);
+    }
+}
+
+static bool publish_cellular_asset_owner_if_current(const void *owner,
+                                                    uint32_t expected_epoch) {
+    if (!s_active_clients_mutex) return false;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    const bool current = s_asset_cancel_epoch == expected_epoch;
+    if (current) s_active_cellular_asset_owner = owner;
+    xSemaphoreGive(s_active_clients_mutex);
+    return current;
+}
+
+static void clear_cellular_asset_owner(const void *owner) {
+    if (!s_active_clients_mutex) return;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    if (s_active_cellular_asset_owner == owner) s_active_cellular_asset_owner = NULL;
+    xSemaphoreGive(s_active_clients_mutex);
+}
+
+/* A cellular request may finish and clear its opaque owner between the
+ * transport cancellation sweep and the profile-private cancel call.  In that
+ * window the adapter quite correctly reports "no matching request"; that is
+ * success for a lifecycle drain because the request is already gone.  Only an
+ * owner that is still published after the cancel attempt is a cancellation
+ * failure. */
+static bool cellular_asset_owner_still_active(const void *owner) {
+    if (!owner || !s_active_clients_mutex) return false;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    const bool active = s_active_cellular_asset_owner == owner;
+    xSemaphoreGive(s_active_clients_mutex);
+    return active;
+}
+
+static bool asset_download_override_active(void) {
+    bool active;
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    active = s_asset_download_task == xTaskGetCurrentTaskHandle();
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    return active;
+}
+
+static uint32_t asset_download_epoch_snapshot(void) {
+    uint32_t epoch;
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    epoch = s_asset_download_epoch;
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    return epoch;
+}
+
+static uint32_t asset_cancel_epoch_snapshot(void) {
+    uint32_t epoch = 0u;
+    if (!s_active_clients_mutex) return epoch;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    epoch = s_asset_cancel_epoch;
+    xSemaphoreGive(s_active_clients_mutex);
+    return epoch;
+}
+
+static bool asset_cancel_epoch_current(uint32_t epoch) {
+    if (!s_active_clients_mutex) return false;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    const bool current = s_asset_cancel_epoch == epoch;
+    xSemaphoreGive(s_active_clients_mutex);
+    return current;
 }
 
 void gateway_transport_set_gateway_credentials(const char *gateway_url,
                                                const char *gateway_token,
                                                const char *pair_code) {
+    ensure_credential_generation();
+    if (s_credential_generation != 0u) {
+        uint32_t generation = 0u;
+        if (credential_service_begin_generation(&generation) == DEVICE_STATUS_OK) {
+            /* Restore the durable token and boot identity as one atomic
+             * publication. Empty tokens intentionally leave the new
+             * generation unpaired; no reader can observe a token-only state. */
+            if (gateway_token && gateway_token[0] && s_device_id[0] &&
+                credential_service_restore_gateway_token(
+                    generation, gateway_token, s_device_id) == DEVICE_STATUS_OK) {
+                s_credential_generation = generation;
+            } else {
+                s_credential_generation = 0u;
+            }
+        }
+    }
     taskENTER_CRITICAL(&s_transport_state_lock);
-    strlcpy(s_gateway_url, gateway_url ? gateway_url : "", sizeof(s_gateway_url));
-    strlcpy(s_gateway_token, gateway_token ? gateway_token : "", sizeof(s_gateway_token));
-    strlcpy(s_pair_code, pair_code ? pair_code : "", sizeof(s_pair_code));
+    if (gateway_https_origin_valid(gateway_url, sizeof(s_gateway_url))) {
+        strlcpy(s_gateway_url, gateway_url, sizeof(s_gateway_url));
+    } else {
+        s_gateway_url[0] = '\0';
+    }
+    replace_secret(s_gateway_token, sizeof(s_gateway_token), gateway_token);
+    replace_secret(s_pair_code, sizeof(s_pair_code), pair_code);
     taskEXIT_CRITICAL(&s_transport_state_lock);
+}
+
+void gateway_transport_revoke_credentials(void) {
+    uint32_t generation = 0u;
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    generation = s_credential_generation;
+    s_credential_generation = 0u;
+    replace_secret(s_gateway_token, sizeof(s_gateway_token), NULL);
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    if (generation != 0u) {
+        (void)credential_service_revoke_gateway_token(generation);
+    }
 }
 
 bool gateway_transport_get_capability_projection(
@@ -535,10 +816,7 @@ uint32_t gateway_transport_gateway_url(char *out, uint32_t capacity) {
 }
 
 uint32_t gateway_transport_bearer_authorization(char *out, uint32_t capacity) {
-    taskENTER_CRITICAL(&s_transport_state_lock);
-    int n = snprintf(out, capacity, "Bearer %s", s_gateway_token);
-    taskEXIT_CRITICAL(&s_transport_state_lock);
-    return n > 0 ? (uint32_t)n : 0;
+    return credential_bearer_authorization(out, capacity);
 }
 
 static bool meeting_stream_stop_requested(
@@ -615,6 +893,7 @@ int32_t gateway_transport_stream_meeting_chunk(
         };
         esp_err_t err = device_status_to_platform_error(
             device_connectivity_cellular_http_stream_request(&cellular_request));
+        mbedtls_platform_zeroize(authorization, sizeof(authorization));
         response.len = response_len;
         if (meeting_stream_stop_requested(request) && err == ESP_OK) {
             err = ESP_ERR_INVALID_STATE;
@@ -673,6 +952,7 @@ int32_t gateway_transport_stream_meeting_chunk(
         if (err == ESP_OK) err = esp_http_client_set_header(client, "Accept", "application/json");
         if (err == ESP_OK) err = esp_http_client_delete_header(client, "Connection");
         if (err == ESP_OK) err = esp_http_client_set_header(client, "Authorization", authorization);
+        mbedtls_platform_zeroize(authorization, sizeof(authorization));
     }
     if (err == ESP_OK) {
         publish_meeting_stream_client(client, xTaskGetCurrentTaskHandle());
@@ -768,9 +1048,10 @@ device_status_t gateway_transport_cancel_meeting_stream(const void *owner_token,
                                              "meeting-stream");
     }
     xSemaphoreGive(s_active_clients_mutex);
-    if (device_connectivity_is_active_cellular()) {
-        (void)device_connectivity_cancel_cellular_requests_for_owner(owner_token);
-    }
+    /* The request-level Cellular admission knows whether this owner still
+     * has an ML307 borrower. Do not use the current uplink as a proxy: a
+     * worker can be retiring just after an uplink switch. */
+    (void)device_connectivity_cancel_cellular_requests_for_owner(owner_token);
     return status;
 }
 
@@ -833,8 +1114,16 @@ static int32_t request_with_capacity(const char *method, const char *path, const
     if (!out) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof(*out));
     if (!method || !path || response_capacity < 2) return ESP_ERR_INVALID_ARG;
+    const bool path_absolute = !strncmp(path, "http://", 7) ||
+                               !strncmp(path, "https://", 8);
+    if (!path_absolute &&
+        !gateway_https_origin_valid(s_gateway_url, sizeof(s_gateway_url))) {
+        /* Relative API paths are meaningful only with a validated Gateway
+         * origin.  Keep an invalid/cleared configuration fail-closed. */
+        return ESP_ERR_INVALID_STATE;
+    }
     char url[URL_CAPACITY];
-    int n = strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0
+    int n = path_absolute
                 ? snprintf(url, sizeof(url), "%s", path)
                 : snprintf(url, sizeof(url), "%s%s", s_gateway_url, path);
     if (n < 0 || n >= sizeof(url)) return ESP_ERR_INVALID_SIZE;
@@ -873,7 +1162,9 @@ static int32_t request_with_capacity(const char *method, const char *path, const
     taskEXIT_CRITICAL(&s_transport_state_lock);
 
     bool poll_request = gateway_dispatcher_current_task_is_poll_worker();
-    bool asset_request = s_host.current_task_is_startup_pet_asset();
+    bool asset_request = s_host.current_task_is_startup_pet_asset() ||
+                         asset_download_override_active();
+    const uint32_t asset_epoch = asset_request ? asset_download_epoch_snapshot() : 0u;
     SemaphoreHandle_t request_mutex = asset_request
                                             ? s_gateway_asset_http_mutex
                                             : poll_request ? s_gateway_poll_http_mutex : s_http_mutex;
@@ -909,14 +1200,32 @@ static int32_t request_with_capacity(const char *method, const char *path, const
     }
     out->capacity = response_capacity;
     out->data[0] = '\0';
-    bool absolute_url = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
+    bool absolute_url = path_absolute;
+    if (absolute_url && !gateway_https_absolute_url_valid(url, sizeof(url))) {
+        ESP_LOGW(TAG, "rejecting non-HTTPS or malformed absolute media URL");
+        free(out->data);
+        out->data = NULL;
+        xSemaphoreGive(request_mutex);
+        NETWORK_REQUEST_RETURN(ESP_ERR_INVALID_ARG);
+    }
     bool reusable_gateway_request = !absolute_url || url_has_same_origin(s_gateway_url, url);
     bool bearer_request = !absolute_url;
     if (cellular_transport_request) {
         char authorization[128] = {0};
         uint32_t cellular_response_len = 0;
-        if (s_gateway_token[0] && bearer_request) {
-            snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
+        if (bearer_request) (void)credential_bearer_authorization(
+            authorization, sizeof(authorization));
+        const void *cellular_owner = (foreground_request || meeting_request || asset_request)
+                                          ? (const void *)current_task
+                                          : NULL;
+        const uint32_t asset_epoch = asset_request ? asset_download_epoch_snapshot() : 0u;
+        if (asset_request &&
+            !publish_cellular_asset_owner_if_current(cellular_owner, asset_epoch)) {
+            mbedtls_platform_zeroize(authorization, sizeof(authorization));
+            free(out->data);
+            out->data = NULL;
+            xSemaphoreGive(request_mutex);
+            NETWORK_REQUEST_RETURN(ESP_ERR_INVALID_STATE);
         }
         device_connectivity_http_request_t cellular_request = {
             .method = method, .url = url, .content_type = content_type,
@@ -927,13 +1236,29 @@ static int32_t request_with_capacity(const char *method, const char *path, const
             .truncated = &out->truncated,
             .timeout_ms = cancellation_request ? 5000
                          : (foreground_request && body_len > 32768 ? 90000 : 30000),
-            .cancellation_owner = foreground_request ? (const void *)current_task
-                                : meeting_request ? (const void *)current_task : NULL,
+            .cancellation_owner = cellular_owner,
             .foreground = foreground_request,
         };
         esp_err_t cellular_err = device_status_to_platform_error(
             device_connectivity_cellular_http_request(&cellular_request));
-        out->len = cellular_response_len;
+        /* ML307 cancellation is cooperative: a modem response can race the
+         * owner cancel and still report HTTP 200.  Preserve the transport
+         * lane's epoch decision just as the Wi-Fi path does, so a cancelled
+         * asset can never proceed to SHA verification or renderer install. */
+        const bool asset_cancelled = asset_request &&
+                                     !asset_cancel_epoch_current(asset_epoch);
+        if (asset_cancelled) {
+            cellular_err = ESP_ERR_INVALID_STATE;
+            out->status = 0;
+            out->len = 0;
+        }
+        if (asset_request) clear_cellular_asset_owner(cellular_owner);
+        mbedtls_platform_zeroize(authorization, sizeof(authorization));
+        /* Never republish bytes produced by a request whose asset epoch was
+         * cancelled.  The modem may have completed with a valid response just
+         * as PREPARE advanced the epoch; cancellation is the authoritative
+         * terminal result and must reach the caller with an empty body. */
+        if (!asset_cancelled) out->len = cellular_response_len;
         xSemaphoreGive(request_mutex);
         ESP_LOGI(TAG, "ML307 HTTP %s %s status=%d err=%s response=%u%s",
                  method, absolute_url ? "<absolute URL>" : path, out->status,
@@ -1019,6 +1344,22 @@ static int32_t request_with_capacity(const char *method, const char *path, const
         active_client_published = true;
     }
     if (active_client_published) publish_active_client(active_lane, client);
+    if (asset_request && !asset_cancel_epoch_current(asset_epoch)) {
+        if (active_client_published) clear_active_client(active_lane, client);
+        if (owns_client) {
+            esp_http_client_cleanup(client);
+        } else if (pooled_client) {
+            esp_http_client_cleanup(client);
+            if (*pool_client == client) {
+                *pool_client = NULL;
+                pool_origin[0] = '\0';
+            }
+        }
+        xSemaphoreGive(request_mutex);
+        free(out->data);
+        out->data = NULL;
+        NETWORK_REQUEST_RETURN(ESP_ERR_INVALID_STATE);
+    }
     esp_http_client_method_t http_method = HTTP_METHOD_GET;
     if (!strcmp(method, "POST")) http_method = HTTP_METHOD_POST;
     else if (!strcmp(method, "PUT")) http_method = HTTP_METHOD_PUT;
@@ -1026,9 +1367,9 @@ static int32_t request_with_capacity(const char *method, const char *path, const
     if (content_type) esp_http_client_set_header(client, "Content-Type", content_type);
     else esp_http_client_delete_header(client, "Content-Type");
     esp_http_client_set_header(client, "Accept", "application/json");
-    if (s_gateway_token[0] && bearer_request) {
-        char authorization[128];
-        snprintf(authorization, sizeof(authorization), "Bearer %s", s_gateway_token);
+    char authorization[128] = {0};
+    if (bearer_request && credential_bearer_authorization(
+            authorization, sizeof(authorization)) > 0u) {
         esp_http_client_set_header(client, "Authorization", authorization);
     } else {
         // A reused gateway handle may still carry the previous bearer. Never
@@ -1043,18 +1384,28 @@ static int32_t request_with_capacity(const char *method, const char *path, const
     }
     int64_t perform_started_us = esp_timer_get_time();
     esp_err_t err;
-    if (foreground_request && command_service_cancel_requested_for(foreground_generation)) {
+    if ((asset_request && !asset_cancel_epoch_current(asset_epoch)) ||
+        (foreground_request && command_service_cancel_requested_for(foreground_generation))) {
         // Cancellation skips the perform entirely. Do not report the pooled
         // handle's previous status (usually a stale 200) for a request that
-        // never ran.
+        // never ran. Asset cancellation uses the lane epoch because runtime
+        // downloads have no command-service generation.
         err = ESP_ERR_INVALID_STATE;
         out->status = 0;
     } else {
         err = esp_http_client_perform(client);
         out->status = esp_http_client_get_status_code(client);
+        /* A cancel can race the final response and arrive after perform has
+         * returned. Preserve the cancellation decision even when the SDK
+         * reports a successful HTTP exchange; callers must release the body
+         * and retry/abort the whole asset transaction. */
+        if (asset_request && !asset_cancel_epoch_current(asset_epoch)) {
+            err = ESP_ERR_INVALID_STATE;
+        }
     }
     uint32_t perform_ms = (uint32_t)((esp_timer_get_time() - perform_started_us) / 1000);
     if (active_client_published) clear_active_client(active_lane, client);
+    mbedtls_platform_zeroize(authorization, sizeof(authorization));
     // The body and callback point at caller-owned memory. Clear both before a
     // pooled handle can outlive this stack frame.
     esp_http_client_set_post_field(client, NULL, 0);
@@ -1114,12 +1465,374 @@ int32_t gateway_transport_request(const char *method, const char *path,
                                  RESPONSE_CAPACITY, out);
 }
 
+int32_t gateway_transport_post_json(const char *path, const char *payload,
+                                    uint32_t accepted_status_mask) {
+    if (!path || !path[0] || !payload || !payload[0] || accepted_status_mask == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    gateway_transport_response_t response = {0};
+    int32_t err = gateway_transport_request("POST", path, "application/json",
+                                            payload, (int32_t)strlen(payload), &response);
+    if (err == ESP_OK) {
+        uint32_t bit = response.status == 200 ? GATEWAY_TRANSPORT_ACCEPT_200 :
+                       response.status == 202 ? GATEWAY_TRANSPORT_ACCEPT_202 :
+                       response.status == 204 ? GATEWAY_TRANSPORT_ACCEPT_204 : 0;
+        if ((accepted_status_mask & bit) == 0) err = ESP_FAIL;
+    }
+    gateway_transport_response_release(&response);
+    return err;
+}
+
+int32_t gateway_transport_ack_messages(const char *payload) {
+    return gateway_transport_post_json(
+        "/api/im-gateway/v1/ack", payload,
+        GATEWAY_TRANSPORT_ACCEPT_200 | GATEWAY_TRANSPORT_ACCEPT_204);
+}
+
+int32_t gateway_transport_create_meeting(const char *base_path,
+                                         char *out_recording_id,
+                                         uint32_t capacity) {
+    if (!base_path || !base_path[0] || !out_recording_id || capacity == 0) return ESP_ERR_INVALID_ARG;
+    char payload[192];
+    int length = snprintf(payload, sizeof(payload),
+                          "{\"title\":\"硬件会议录音\",\"purpose\":\"\","
+                          "\"conversation_id\":\"%s\",\"content_type\":\"audio/wav\"}",
+                          CONFIG_MACLAW_CONVERSATION_ID);
+    if (length <= 0 || length >= (int)sizeof(payload)) return ESP_ERR_INVALID_SIZE;
+    gateway_transport_response_t response = {0};
+    int32_t err = gateway_transport_request_with_capacity("POST", base_path,
+        "application/json", payload, length, MEETING_STREAM_RESPONSE_CAPACITY, &response);
+    if (err != ESP_OK || response.status != 201) {
+        int32_t result = err == ESP_OK ? ESP_FAIL : err;
+        gateway_transport_response_release(&response);
+        return result;
+    }
+    cJSON *json = cJSON_Parse(response.data);
+    const cJSON *id = json ? cJSON_GetObjectItemCaseSensitive(json, "recording_id") : NULL;
+    bool valid = cJSON_IsString(id) && id->valuestring && id->valuestring[0] &&
+                 strlen(id->valuestring) < capacity;
+    if (valid) strlcpy(out_recording_id, id->valuestring, capacity);
+    cJSON_Delete(json);
+    gateway_transport_response_release(&response);
+    return valid ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+int32_t gateway_transport_get_meeting_status(const char *base_path,
+                                             const char *recording_id,
+                                             char *out_status,
+                                             uint32_t capacity) {
+    if (!base_path || !recording_id || !recording_id[0] || !out_status || capacity == 0) return ESP_ERR_INVALID_ARG;
+    char path[MEETING_STREAM_RESPONSE_CAPACITY];
+    int length = snprintf(path, sizeof(path), "%s/%s", base_path, recording_id);
+    if (length <= 0 || length >= (int)sizeof(path)) return ESP_ERR_INVALID_SIZE;
+    gateway_transport_response_t response = {0};
+    int32_t err = gateway_transport_request_with_capacity("GET", path, NULL, NULL, 0,
+        MEETING_STREAM_RESPONSE_CAPACITY, &response);
+    if (err != ESP_OK || response.status != 200) {
+        int32_t result = response.status == 404 ? ESP_ERR_NOT_FOUND : err == ESP_OK ? ESP_FAIL : err;
+        gateway_transport_response_release(&response);
+        return result;
+    }
+    cJSON *json = cJSON_Parse(response.data);
+    const cJSON *value = json ? cJSON_GetObjectItemCaseSensitive(json, "status") : NULL;
+    bool valid = cJSON_IsString(value) && value->valuestring && strlen(value->valuestring) < capacity;
+    if (valid) strlcpy(out_status, value->valuestring, capacity);
+    cJSON_Delete(json);
+    gateway_transport_response_release(&response);
+    return valid ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+int32_t gateway_transport_post_meeting_action(const char *base_path,
+                                              const char *recording_id,
+                                              const char *action,
+                                              const char *payload,
+                                              int32_t expected_a,
+                                              int32_t expected_b) {
+    if (!base_path || !recording_id || !recording_id[0] || !action || !action[0] || !payload) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char path[MEETING_STREAM_RESPONSE_CAPACITY];
+    int length = snprintf(path, sizeof(path), "%s/%s/%s", base_path, recording_id, action);
+    if (length <= 0 || length >= (int)sizeof(path)) return ESP_ERR_INVALID_SIZE;
+    gateway_transport_response_t response = {0};
+    int32_t err = gateway_transport_request_with_capacity("POST", path, "application/json",
+        payload, (int32_t)strlen(payload), MEETING_STREAM_RESPONSE_CAPACITY, &response);
+    if (err == ESP_OK && response.status != expected_a && response.status != expected_b) err = ESP_FAIL;
+    gateway_transport_response_release(&response);
+    return err;
+}
+
+int32_t gateway_transport_send_text_event(const char *text, const char *reply_to) {
+    if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
+    if (!s_host_installed) return ESP_ERR_INVALID_STATE;
+    cJSON *body = cJSON_CreateObject();
+    if (!body) return ESP_ERR_NO_MEM;
+    char event_id[80];
+    snprintf(event_id, sizeof(event_id), "text-%lld", (long long)esp_timer_get_time());
+    bool fields_ok = cJSON_AddStringToObject(body, "clientId", s_device_id) != NULL &&
+                     cJSON_AddStringToObject(body, "eventId", event_id) != NULL &&
+                     cJSON_AddStringToObject(body, "messageId", event_id) != NULL &&
+                     cJSON_AddStringToObject(body, "conversationId",
+                                              CONFIG_MACLAW_CONVERSATION_ID) != NULL;
+    if (fields_ok && reply_to && reply_to[0]) {
+        fields_ok = cJSON_AddStringToObject(body, "replyTo", reply_to) != NULL &&
+                    cJSON_AddStringToObject(body, "replyToMessageId", reply_to) != NULL;
+    }
+    cJSON *user = cJSON_AddObjectToObject(body, "user");
+    cJSON *message = cJSON_AddObjectToObject(body, "message");
+    if (!fields_ok || !user || !message ||
+        !cJSON_AddStringToObject(user, "id", "local-user") ||
+        !cJSON_AddStringToObject(user, "displayName", "ESP32-S3 user") ||
+        !cJSON_AddStringToObject(message, "id", event_id) ||
+        !cJSON_AddStringToObject(message, "type", "text") ||
+        !cJSON_AddStringToObject(message, "text", text)) {
+        cJSON_Delete(body);
+        return ESP_ERR_NO_MEM;
+    }
+    char *payload = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    if (!payload) return ESP_ERR_NO_MEM;
+    gateway_transport_response_t response = {0};
+    const esp_err_t err = (esp_err_t)gateway_transport_request(
+        "POST", "/api/im-gateway/v1/incoming", "application/json",
+        payload, (int32_t)strlen(payload), &response);
+    free(payload);
+    if (err != ESP_OK || response.status != 200) {
+        const esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
+        gateway_transport_response_release(&response);
+        return result;
+    }
+    cJSON *json = cJSON_Parse(response.data);
+    cJSON *accepted = json ? cJSON_GetObjectItemCaseSensitive(json, "accepted") : NULL;
+    const bool ok = cJSON_IsTrue(accepted);
+    cJSON_Delete(json);
+    gateway_transport_response_release(&response);
+    return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+int32_t gateway_transport_upload_voice(const uint8_t *wav, uint32_t wav_len,
+                                       char *out_media_id,
+                                       uint32_t media_id_capacity) {
+    if (!wav || wav_len == 0 || !out_media_id || media_id_capacity == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    cJSON *body = cJSON_CreateObject();
+    if (!body) return ESP_ERR_NO_MEM;
+    bool fields_ok = cJSON_AddStringToObject(body, "clientId", s_device_id) != NULL &&
+                     cJSON_AddStringToObject(body, "type", "voice") != NULL &&
+                     cJSON_AddStringToObject(body, "fileName", "voice.wav") != NULL &&
+                     cJSON_AddStringToObject(body, "mimeType", "audio/wav") != NULL &&
+                     cJSON_AddNumberToObject(body, "sizeBytes", (double)wav_len) != NULL;
+    char *payload = fields_ok ? cJSON_PrintUnformatted(body) : NULL;
+    cJSON_Delete(body);
+    if (!payload) return ESP_ERR_NO_MEM;
+
+    gateway_transport_response_t response = {0};
+    int32_t err = ESP_FAIL;
+    for (unsigned attempt = 1; attempt <= VOICE_UPLOAD_RETRY_COUNT; ++attempt) {
+        err = gateway_transport_request("POST", "/api/im-gateway/v1/media/upload-url",
+                                        "application/json", payload,
+                                        (int32_t)strlen(payload), &response);
+        if (err == ESP_OK && response.status == 200) break;
+        bool retry = command_service_voice_upload_should_retry(err, response.status) &&
+                     attempt < VOICE_UPLOAD_RETRY_COUNT;
+        gateway_transport_response_release(&response);
+        if (!retry) break;
+        command_service_voice_upload_retry_delay(attempt);
+    }
+    free(payload);
+    if (err != ESP_OK || response.status != 200) {
+        int32_t result = err == ESP_OK ? ESP_FAIL : err;
+        gateway_transport_response_release(&response);
+        return result;
+    }
+    cJSON *json = cJSON_Parse(response.data);
+    cJSON *media = json ? cJSON_GetObjectItemCaseSensitive(json, "media") : NULL;
+    cJSON *upload = json ? cJSON_GetObjectItemCaseSensitive(json, "upload") : NULL;
+    const cJSON *id = media ? cJSON_GetObjectItemCaseSensitive(media, "id") : NULL;
+    const cJSON *url = upload ? cJSON_GetObjectItemCaseSensitive(upload, "url") : NULL;
+    char id_copy[96] = {0};
+    char url_copy[URL_CAPACITY] = {0};
+    bool parsed = cJSON_IsString(id) && id->valuestring && cJSON_IsString(url) &&
+                  url->valuestring && id->valuestring[0] && url->valuestring[0] &&
+                  strlen(id->valuestring) < sizeof(id_copy) &&
+                  strlen(url->valuestring) < sizeof(url_copy);
+    if (parsed) {
+        strlcpy(id_copy, id->valuestring, sizeof(id_copy));
+        strlcpy(url_copy, url->valuestring, sizeof(url_copy));
+    }
+    cJSON_Delete(json);
+    gateway_transport_response_release(&response);
+    if (!parsed || strlen(id_copy) >= media_id_capacity) return ESP_ERR_INVALID_RESPONSE;
+
+    gateway_transport_response_t put_response = {0};
+    for (unsigned attempt = 1; attempt <= VOICE_UPLOAD_RETRY_COUNT; ++attempt) {
+        err = gateway_transport_request("PUT", url_copy, "audio/wav", (const char *)wav,
+                                        (int32_t)wav_len, &put_response);
+        if (err == ESP_OK && (put_response.status == 200 || put_response.status == 201)) break;
+        bool retry = command_service_voice_upload_should_retry(err, put_response.status) &&
+                     attempt < VOICE_UPLOAD_RETRY_COUNT;
+        gateway_transport_response_release(&put_response);
+        if (!retry) break;
+        command_service_voice_upload_retry_delay(attempt);
+    }
+    if (err != ESP_OK || (put_response.status != 200 && put_response.status != 201)) {
+        int32_t result = err == ESP_OK ? ESP_FAIL : err;
+        gateway_transport_response_release(&put_response);
+        return result;
+    }
+    strlcpy(out_media_id, id_copy, media_id_capacity);
+    gateway_transport_response_release(&put_response);
+    return ESP_OK;
+}
+
+int32_t gateway_transport_send_voice_event(const char *media_id,
+                                           const char *event_id,
+                                           char *out_reply_to,
+                                           uint32_t reply_to_capacity) {
+    if (!media_id || !media_id[0] || !event_id || !event_id[0]) return ESP_ERR_INVALID_ARG;
+    cJSON *body = cJSON_CreateObject();
+    if (!body) return ESP_ERR_NO_MEM;
+    cJSON *user = cJSON_AddObjectToObject(body, "user");
+    cJSON *message = cJSON_AddObjectToObject(body, "message");
+    cJSON *attachments = message ? cJSON_AddArrayToObject(message, "attachments") : NULL;
+    cJSON *attachment = attachments ? cJSON_CreateObject() : NULL;
+    bool ok = cJSON_AddStringToObject(body, "clientId", s_device_id) != NULL &&
+              cJSON_AddStringToObject(body, "eventId", event_id) != NULL &&
+              cJSON_AddStringToObject(body, "messageId", event_id) != NULL &&
+              cJSON_AddStringToObject(body, "conversationId", CONFIG_MACLAW_CONVERSATION_ID) != NULL &&
+              user && message && attachments && attachment &&
+              cJSON_AddStringToObject(user, "id", "local-user") != NULL &&
+              cJSON_AddStringToObject(user, "displayName", "ESP32-S3 user") != NULL &&
+              cJSON_AddStringToObject(message, "id", event_id) != NULL &&
+              cJSON_AddStringToObject(message, "type", "voice") != NULL &&
+              cJSON_AddStringToObject(message, "mimeType", "audio/wav") != NULL &&
+              cJSON_AddStringToObject(attachment, "id", media_id) != NULL &&
+              cJSON_AddStringToObject(attachment, "type", "voice") != NULL &&
+              cJSON_AddStringToObject(attachment, "mimeType", "audio/wav") != NULL;
+    if (ok) cJSON_AddItemToArray(attachments, attachment);
+    else if (attachment) cJSON_Delete(attachment);
+    char *payload = ok ? cJSON_PrintUnformatted(body) : NULL;
+    cJSON_Delete(body);
+    if (!payload) return ESP_ERR_NO_MEM;
+    gateway_transport_response_t response = {0};
+    int32_t err = gateway_transport_request("POST", "/api/im-gateway/v1/incoming",
+                                            "application/json", payload,
+                                            (int32_t)strlen(payload), &response);
+    free(payload);
+    if (err != ESP_OK || response.status != 200) {
+        int32_t result = err == ESP_OK ? ESP_FAIL : err;
+        gateway_transport_response_release(&response);
+        return result;
+    }
+    cJSON *json = cJSON_Parse(response.data);
+    cJSON *accepted = json ? cJSON_GetObjectItemCaseSensitive(json, "accepted") : NULL;
+    const cJSON *reply = json ? cJSON_GetObjectItemCaseSensitive(json, "maclawMessageId") : NULL;
+    if ((!cJSON_IsString(reply) || !reply->valuestring || !reply->valuestring[0]) && json) {
+        reply = cJSON_GetObjectItemCaseSensitive(json, "messageId");
+    }
+    bool accepted_ok = cJSON_IsTrue(accepted);
+    if (accepted_ok && out_reply_to && reply_to_capacity > 0) {
+        strlcpy(out_reply_to, cJSON_IsString(reply) && reply->valuestring ? reply->valuestring : event_id,
+                reply_to_capacity);
+    }
+    cJSON_Delete(json);
+    gateway_transport_response_release(&response);
+    return accepted_ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+int32_t gateway_transport_download_media(const char *url,
+                                         uint8_t **out_data,
+                                         uint32_t *out_len) {
+    if (!url || !url[0] || !out_data || !out_len) return ESP_ERR_INVALID_ARG;
+    *out_data = NULL;
+    *out_len = 0;
+    gateway_transport_response_t response = {0};
+    int32_t err = gateway_transport_request_with_capacity(
+        "GET", url, NULL, NULL, 0, MEDIA_RESPONSE_CAPACITY, &response);
+    if (err != ESP_OK || response.status != 200 || response.len < 2) {
+        int32_t result = err;
+        if (err == ESP_OK) {
+            result = (response.status >= 400 && response.status < 500) ||
+                     (response.status == 200 && response.len < 2)
+                         ? ESP_ERR_INVALID_ARG : ESP_FAIL;
+        }
+        gateway_transport_response_release(&response);
+        return result;
+    }
+    *out_data = (uint8_t *)response.data;
+    *out_len = (uint32_t)response.len;
+    response.data = NULL;
+    gateway_transport_response_release(&response);
+    return ESP_OK;
+}
+
+int32_t gateway_transport_download_frame(const char *url, uint32_t expected_bytes,
+                                         uint8_t **out_data, uint32_t *out_len,
+                                         int32_t *out_http_status) {
+    if (!url || !url[0] || expected_bytes == 0 || !out_data || !out_len || !out_http_status) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_data = NULL;
+    *out_len = 0;
+    *out_http_status = 0;
+    /* Capture cancellation intent before waiting for the single-owner guard.
+     * If PREPARE/cancel advances the epoch while another download still owns
+     * the guard, this waiter must be rejected rather than becoming a fresh
+     * request after the old owner exits. */
+    const uint32_t requested_epoch = asset_cancel_epoch_snapshot();
+    if (!s_asset_download_guard) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Do not park a second caller forever behind a stalled first download:
+     * cancellation advances the epoch and must wake waiters at a bounded
+     * polling point even though the guard itself has no notification API. */
+    while (xSemaphoreTake(s_asset_download_guard, pdMS_TO_TICKS(100)) != pdTRUE) {
+        if (!asset_cancel_epoch_current(requested_epoch)) return ESP_ERR_INVALID_STATE;
+    }
+    if (!asset_cancel_epoch_current(requested_epoch)) {
+        xSemaphoreGive(s_asset_download_guard);
+        return ESP_ERR_INVALID_STATE;
+    }
+    gateway_transport_response_t response = {0};
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    s_asset_download_task = xTaskGetCurrentTaskHandle();
+    s_asset_download_epoch = requested_epoch;
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    int32_t err = gateway_transport_request_with_capacity("GET", url, NULL, NULL, 0,
+        expected_bytes + 1u, &response);
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    if (s_asset_download_task == xTaskGetCurrentTaskHandle()) s_asset_download_task = NULL;
+    if (s_asset_download_task == NULL) s_asset_download_epoch = 0u;
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    *out_http_status = response.status;
+    if (err == ESP_OK) {
+        *out_data = (uint8_t *)response.data;
+        *out_len = (uint32_t)response.len;
+        response.data = NULL;
+    }
+    gateway_transport_response_release(&response);
+    xSemaphoreGive(s_asset_download_guard);
+    return err;
+}
+
+void gateway_transport_release_media(uint8_t *data) {
+    heap_caps_free(data);
+}
+
 void gateway_transport_response_release(gateway_transport_response_t *response) {
     if (!response) return;
     // HTTP bodies are allocated with heap_caps_malloc() in PSRAM (with an
     // internal-capable fallback). Release them through the same allocator;
     // the ordinary libc heap path can assert while the LCD transfer briefly
     // suspends flash-cache activity during a large pet install.
+    if (response->data && response->capacity > 0) {
+        /* Pairing/handshake responses can carry a newly issued bearer token.
+         * Scrub the full owned allocation before returning it to the heap so
+         * a later allocator user cannot recover credential bytes from a
+         * previous Gateway transaction. */
+        mbedtls_platform_zeroize(response->data, response->capacity);
+    }
     heap_caps_free(response->data);
     response->data = NULL;
     response->capacity = 0;
@@ -1475,15 +2188,25 @@ static esp_err_t pair_by_code(void) {
     taskENTER_CRITICAL(&s_transport_state_lock);
     strlcpy(pair_code, s_pair_code, sizeof(pair_code));
     taskEXIT_CRITICAL(&s_transport_state_lock);
-    if (strlen(pair_code) != 6) return ESP_ERR_INVALID_STATE;
+    if (strlen(pair_code) != 6) {
+        mbedtls_platform_zeroize(pair_code, sizeof(pair_code));
+        return ESP_ERR_INVALID_STATE;
+    }
     cJSON *body = cJSON_CreateObject();
+    if (!body) {
+        mbedtls_platform_zeroize(pair_code, sizeof(pair_code));
+        return ESP_ERR_NO_MEM;
+    }
     cJSON_AddStringToObject(body, "clientId", s_device_id);
     // pairCode is the canonical device-gateway field across Hub and
     // MaClawSrv. Hub retains a server-side code alias solely for old firmware.
     cJSON_AddStringToObject(body, "pairCode", pair_code);
     char *payload = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
-    if (!payload) return ESP_ERR_NO_MEM;
+    if (!payload) {
+        mbedtls_platform_zeroize(pair_code, sizeof(pair_code));
+        return ESP_ERR_NO_MEM;
+    }
     /* Pair codes are one-time credentials, not diagnostics.  Keep only the
      * non-secret request identity in logs; a user may export serial logs
      * while investigating a failed pairing and that must not make an unused
@@ -1492,7 +2215,9 @@ static esp_err_t pair_by_code(void) {
              s_gateway_url, s_device_id);
     gateway_transport_response_t response;
     esp_err_t err = (esp_err_t)gateway_transport_request("POST", "/api/device-gateway/v1/pair", "application/json", payload, (int32_t)strlen(payload), &response);
+    mbedtls_platform_zeroize(payload, strlen(payload) + 1u);
     free(payload);
+    mbedtls_platform_zeroize(pair_code, sizeof(pair_code));
     if (err != ESP_OK || response.status != 201) {
         ESP_LOGE(TAG, "pair failed: err=%s status=%d body=%s", esp_err_to_name(err), response.status, response.data ? response.data : "");
         // Transport failures, rate limiting and server errors are temporary.
@@ -1543,6 +2268,7 @@ static bool gateway_startup_stop_requested(void) {
 
 static void gateway_startup_task(void *arg) {
     (void)arg;
+    char pair_code[TRANSPORT_PAIR_CODE_CAPACITY] = {0};
     if (!s_gateway_startup_start_gate ||
         xSemaphoreTake(s_gateway_startup_start_gate, portMAX_DELAY) != pdTRUE) {
         ESP_LOGW(TAG, "gateway startup start gate unavailable");
@@ -1551,12 +2277,11 @@ static void gateway_startup_task(void *arg) {
     if (gateway_startup_stop_requested()) goto finish;
     // Startup remains the clean ambient pet face. Connection progress belongs
     // in the serial log; it must never cover the clock, weather or pet.
-    char pair_code[TRANSPORT_PAIR_CODE_CAPACITY];
     taskENTER_CRITICAL(&s_transport_state_lock);
     strlcpy(pair_code, s_pair_code, sizeof(pair_code));
     taskEXIT_CRITICAL(&s_transport_state_lock);
     ESP_LOGI(TAG, "gateway startup: url=%s paired=%s pair_code=%s", s_gateway_url,
-             s_gateway_token[0] ? "yes" : "no",
+             credential_token_present() ? "yes" : "no",
              pair_code[0] ? "present" : "missing");
     // A pending one-time code always takes precedence. It is consumed exactly
     // once to obtain/replace the durable gateway token, then erased by
@@ -1651,7 +2376,7 @@ static void gateway_startup_task(void *arg) {
                 if (retry_ms > GATEWAY_RETRY_MAX_MS) retry_ms = GATEWAY_RETRY_MAX_MS;
             }
         }
-    } else if (!s_gateway_token[0]) {
+    } else if (!credential_token_present()) {
         if (!gateway_startup_stop_requested()) {
             ambient_service_apply_pet_state("quiet");
             scene_presenter_publish_message("设备未配对", "正在开启配对热点");
@@ -1692,6 +2417,7 @@ static void gateway_startup_task(void *arg) {
             }
         }
     }
+    mbedtls_platform_zeroize(pair_code, sizeof(pair_code));
 finish:
     bool restart_after_system_sleep_abort = false;
     taskENTER_CRITICAL(&s_transport_state_lock);
@@ -1874,7 +2600,14 @@ device_status_t gateway_transport_prepare_system_sleep(uint32_t timeout_ms) {
     if (!restart_startup) return DEVICE_STATUS_OK;
     uint32_t remaining_ms = remaining_timeout_ms(deadline_us);
     if (remaining_ms == 0) return DEVICE_STATUS_TIMEOUT;
-    return transport_status_from_esp_err(stop_gateway_startup_task(remaining_ms));
+    const device_status_t status =
+        transport_status_from_esp_err(stop_gateway_startup_task(remaining_ms));
+    /* Treat a child success that consumed the parent deadline as a timeout;
+     * callers must not commit a late PREPARE result. */
+    if (status == DEVICE_STATUS_OK && esp_timer_get_time() >= deadline_us) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return status;
 }
 
 void gateway_transport_abort_system_sleep_prepare(void) {
@@ -1945,10 +2678,20 @@ device_status_t gateway_transport_cancel_active_requests(
         return DEVICE_STATUS_TIMEOUT;
     }
     device_status_t status = DEVICE_STATUS_OK;
+    if (mask & GATEWAY_TRANSPORT_CANCEL_ASSET) {
+        ++s_asset_cancel_epoch;
+    }
 #define CANCEL_ACTIVE_GATEWAY_LANE(bit, slot, label) \
     do { \
-        if (status == DEVICE_STATUS_OK && ((mask) & (bit))) { \
-            status = cancel_active_client_locked((slot), (label)); \
+        if ((mask) & (bit)) { \
+            const device_status_t lane_status = \
+                cancel_active_client_locked((slot), (label)); \
+            /* A failed lane must not suppress cancellation of later lanes. \
+             * Preserve the first failure for the caller while still draining \
+             * every physical/owner cancellation target in this sweep. */ \
+            if (status == DEVICE_STATUS_OK && lane_status != DEVICE_STATUS_OK) { \
+                status = lane_status; \
+            } \
         } \
     } while (0)
     CANCEL_ACTIVE_GATEWAY_LANE(GATEWAY_TRANSPORT_CANCEL_POLL,
@@ -1962,7 +2705,23 @@ device_status_t gateway_transport_cancel_active_requests(
     CANCEL_ACTIVE_GATEWAY_LANE(GATEWAY_TRANSPORT_CANCEL_FOREGROUND,
                                s_active_foreground_client, "foreground");
 #undef CANCEL_ACTIVE_GATEWAY_LANE
+    const void *cellular_asset_owner =
+        (mask & GATEWAY_TRANSPORT_CANCEL_ASSET) ? s_active_cellular_asset_owner : NULL;
     xSemaphoreGive(s_active_clients_mutex);
+    /* Cellular asset requests are represented by an owner token rather than
+     * an ESP HTTP handle.  Snapshot under the same registry guard, then ask
+     * Connectivity to perform the bounded profile-private cancellation. */
+    if ((mask & GATEWAY_TRANSPORT_CANCEL_ASSET) && cellular_asset_owner) {
+        const bool cancelled =
+            device_connectivity_cancel_cellular_requests_for_owner(cellular_asset_owner);
+        if (!cancelled && cellular_asset_owner_still_active(cellular_asset_owner) &&
+            status == DEVICE_STATUS_OK) {
+            /* The owner is still published, so "no match" is a genuine
+             * profile cancellation failure rather than a request that raced
+             * to completion.  Keep the whole lifecycle fail-closed. */
+            status = DEVICE_STATUS_BUSY;
+        }
+    }
     return status;
 }
 
@@ -1999,7 +2758,11 @@ void gateway_transport_discard_asset_client(void) {
 
 void gateway_transport_set_gateway_url(const char *gateway_url) {
     taskENTER_CRITICAL(&s_transport_state_lock);
-    strlcpy(s_gateway_url, gateway_url ? gateway_url : "", sizeof(s_gateway_url));
+    if (gateway_https_origin_valid(gateway_url, sizeof(s_gateway_url))) {
+        strlcpy(s_gateway_url, gateway_url, sizeof(s_gateway_url));
+    } else {
+        s_gateway_url[0] = '\0';
+    }
     taskEXIT_CRITICAL(&s_transport_state_lock);
 }
 
@@ -2018,6 +2781,8 @@ device_status_t gateway_transport_init(const gateway_transport_host_t *host) {
         !host->persist_gateway_token) {
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
+    ensure_credential_generation();
+    if (s_credential_generation == 0u) return DEVICE_STATUS_UNAVAILABLE;
     taskENTER_CRITICAL(&s_transport_state_lock);
     gateway_capability_projection_init(&s_capability_projection);
     const bool capabilities_initialized = gateway_capability_projection_set_effective(
@@ -2034,6 +2799,8 @@ device_status_t gateway_transport_init(const gateway_transport_host_t *host) {
     if (!s_gateway_poll_http_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     s_gateway_asset_http_mutex = xSemaphoreCreateMutex();
     if (!s_gateway_asset_http_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    s_asset_download_guard = xSemaphoreCreateMutex();
+    if (!s_asset_download_guard) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     s_gateway_startup_start_gate = xSemaphoreCreateBinary();
     if (!s_gateway_startup_start_gate) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
     s_gateway_startup_stopped = xSemaphoreCreateBinary();

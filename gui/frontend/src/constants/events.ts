@@ -60,6 +60,15 @@ export const EVENT_SKILL_INDEX_REFRESHED = "skill:index_refreshed";
 /** File-backed skill repair draft generated (or rejected) and pending human review. */
 export const EVENT_SKILL_REPAIR_DRAFT_READY = "skill:repair_draft_ready";
 
+/** Evolution worker cancelled by operator or shutdown. */
+export const EVENT_SKILL_EVOLUTION_CANCELLED = "skill:evolution_cancelled";
+
+/** Evolution worker exceeded its deadline. */
+export const EVENT_SKILL_EVOLUTION_TIMED_OUT = "skill:evolution_timed_out";
+
+/** Evolution definition/config commit rolled back or needs compensation. */
+export const EVENT_SKILL_EVOLUTION_ROLLED_BACK = "skill:evolution_rolled_back";
+
 /** Computer Use local observe (SoM text + element summary for operator UI). */
 export const EVENT_COMPUTER_USE_OBSERVE = "computer-use:observe";
 

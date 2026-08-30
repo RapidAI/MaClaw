@@ -229,3 +229,30 @@ func TestRolePrefixStreamFilter_LogsDoNotIncludeSuppressedContent(t *testing.T) 
 		t.Fatalf("suppressed content leaked to logs: %q", logs.String())
 	}
 }
+
+func TestStripRolePrefixReasoningForDisplay_StripsOnlyLeadingPrefix(t *testing.T) {
+	got := stripRolePrefixReasoningForDisplay("Browser: 先打开页面\nTool: 然后调用 bash\n其余思考")
+	want := "先打开页面\nTool: 然后调用 bash\n其余思考"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestStripRolePrefixReasoningForDisplay_KeepsMidTextPrefix(t *testing.T) {
+	// A role prefix on a later line is legitimate reasoning about tool usage;
+	// it must not truncate the remaining thought.
+	input := "先分析请求。\nBrowser: 需要打开目标页面\nTool: 再执行 bash 命令\n最后总结。"
+	if got := stripRolePrefixReasoningForDisplay(input); got != input {
+		t.Fatalf("mid-text prefix truncated reasoning: got %q, want %q", got, input)
+	}
+}
+
+func TestStripRolePrefixReasoningForDisplay_NoPrefixUnchanged(t *testing.T) {
+	input := "普通思考内容，不包含角色前缀。"
+	if got := stripRolePrefixReasoningForDisplay(input); got != input {
+		t.Fatalf("got %q, want %q", got, input)
+	}
+	if got := stripRolePrefixReasoningForDisplay(""); got != "" {
+		t.Fatalf("empty input: got %q", got)
+	}
+}

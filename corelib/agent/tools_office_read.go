@@ -144,15 +144,17 @@ func ToolReadDocumentWithOfficeReadConfigAndContext(args map[string]interface{},
 
 // DocumentReadMaxRunesForContext chooses a CJK-safe page body size from the
 // projection budget, leaving 4 KiB for headers and continuation metadata.
+// The page must stay inside the same projection budget that bounds the
+// committed tool result. Never raise it to a floor above what the budget
+// carries: on small context windows a floor larger than the budget lets one
+// page exceed the model-visible projection, and the projection's head/tail
+// truncation then silently cuts the middle of the page.
 func DocumentReadMaxRunesForContext(contextTokens int) int {
 	bytes := DocumentReadToolResultLimit(contextTokens) - 4*1024
 	if bytes <= 0 {
 		return defaultOfficeReadMaxRunes
 	}
 	runes := bytes / 3
-	if runes < defaultOfficeReadMaxRunes {
-		return defaultOfficeReadMaxRunes
-	}
 	if runes > maxOfficeReadMaxRunes {
 		return maxOfficeReadMaxRunes
 	}

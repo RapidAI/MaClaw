@@ -63,6 +63,11 @@ func TestRunAgentLoopShared_TrajectoryLoggingRecordsConversationAndTools(t *test
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetTrajectoryRecorderFactory(app.buildTrajectoryRecorderFactory())
@@ -181,6 +186,11 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsPriorHistory(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetTrajectoryRecorderFactory(app.buildTrajectoryRecorderFactory())
@@ -255,6 +265,11 @@ func TestRunAgentLoop_TrajectoryAskUserClosesSiblingTools(t *testing.T) {
 	cfg.MaclawAgentMaxIterations = 3
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
@@ -360,6 +375,11 @@ func TestRunAgentLoop_TrajectoryCancelClosesUnpairedTools(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetTrajectoryRecorderFactory(app.buildTrajectoryRecorderFactory())
@@ -464,6 +484,11 @@ func TestRunAgentLoopShared_TrajectoryCancelClosesUnpairedTools(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
 	h.SetTrajectoryRecorderFactory(app.buildTrajectoryRecorderFactory())
@@ -496,8 +521,12 @@ func TestRunAgentLoopShared_TrajectoryCancelClosesUnpairedTools(t *testing.T) {
 	if resp == nil {
 		t.Fatal("expected response")
 	}
-	// Legacy cancel uses Text "Task cancelled..." rather than Error.
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Text)), "task cancelled") &&
+	// Shared-loop cancel exits via the interrupted-checkpoint response
+	// ("Task interrupted while processing..."); legacy cancel used
+	// "Task cancelled..." text. Accept the current shared wording.
+	lowerText := strings.ToLower(strings.TrimSpace(resp.Text))
+	if !strings.HasPrefix(lowerText, "task cancelled") &&
+		!strings.HasPrefix(lowerText, "task interrupted") &&
 		!strings.Contains(strings.ToLower(resp.Error), "cancel") {
 		t.Fatalf("expected cancel response, got text=%q err=%q", resp.Text, resp.Error)
 	}
@@ -573,6 +602,11 @@ func TestRunAgentLoopShared_TrajectoryAskUserPausedPairsResult(t *testing.T) {
 	cfg.MaclawAgentMaxIterations = 3
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Provider selection is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so tests must go through the dedicated provider writer.
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
 	}
 
 	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})

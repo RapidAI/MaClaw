@@ -227,7 +227,7 @@ func TestSemanticSingleInvocationFamilySaysNothingAboutLimits(t *testing.T) {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, tools: defs, userID: "user-1"}
-	got := cb.ExecuteTool(extractToolName(defs[0]), `{"query":"go"}`)
+	got := cb.ExecuteTool(semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter), `{"query":"go"}`)
 	if !strings.Contains(got, "Public web results") {
 		t.Fatalf("search = %q", got)
 	}

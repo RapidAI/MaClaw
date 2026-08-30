@@ -41,6 +41,48 @@ func TestSemanticExecutionCoordinatorPublishesSurfaceAtomically(t *testing.T) {
 	}
 }
 
+// A budgeted need expands into sibling selections whose rendered function
+// names are token-independent and therefore identical. The initial publish
+// must expose only one sibling per repeat family — the same closure both host
+// refresh paths already apply — or the surface open trips the function-name
+// collision fence and the managed turn dies before its first iteration.
+func TestSemanticExecutionCoordinatorPublishSurfaceExposesOneRepeatSiblingAtATime(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	registry := semanticRegistry(t)
+	provider := semanticProvider("read_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	base := "capture-repeat"
+	needs := make([]CapabilityNeed, 0, 3)
+	for index := 0; index < 3; index++ {
+		needs = append(needs, CapabilityNeed{ID: RepeatSiblingNeedID(base, index), Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true})
+	}
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "publish-repeat-root", SessionID: "session", TurnID: "turn", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}), Needs: needs})
+	if err != nil || len(plan.Selections) != 3 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	issuer, err := NewInvocationIssuerWithStore([]byte(strings.Repeat("r", 32)), coordinator.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, grants, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || len(state.Materializations) != 1 {
+		t.Fatalf("initial closure exposed grants=%d materializations=%d, want exactly one sibling", len(grants), len(state.Materializations))
+	}
+	if got := RepeatFamilyID(grants[0].SelectionID); got != RepeatFamilyID(plan.Selections[0].ID) {
+		t.Fatalf("granted selection %q is outside the repeat family %q", grants[0].SelectionID, plan.Selections[0].ID)
+	}
+	if strings.Contains(grants[0].SelectionID, repeatSiblingSeparator) {
+		t.Fatalf("initial closure must grant the base sibling first, got %q", grants[0].SelectionID)
+	}
+}
+
 func TestSemanticExecutionCoordinatorSurfacePublishRollsBackOnGrantFailure(t *testing.T) {
 	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
 	if err != nil {
@@ -774,8 +816,16 @@ func TestSemanticExecutionCoordinatorDocumentPayloadKindOnlyConsumerDoesNotCorru
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The display name must survive the coordinator's own INSERT inside the
+	// atomic completion transaction, not only the artifact store's Publish:
+	// production PDF turns are committed through exactly this path, and a drop
+	// here materialized deliveries as attachment.pdf (2026-08-28 北京天气轮).
+	payload.Ref.Name = "北京天气报告.pdf"
 	if _, err := coordinator.CompleteWithArtifactPayloads(admission, PlanExecutionSucceeded, "generated", "", []ArtifactPayload{payload}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
+	}
+	if refs, err := coordinator.Artifacts.PublishedArtifacts(scope, admission.Selection.ID); err != nil || len(refs) != 1 || refs[0].Name != payload.Ref.Name {
+		t.Fatalf("published refs=%#v err=%v, want name %q", refs, err, payload.Ref.Name)
 	}
 	if _, err := coordinator.Routes.RetireMaterialization(scope, plan.ID, grants[0].Token, time.Now().UTC()); err != nil {
 		t.Fatalf("kind-only file deliver must still accept a PDF artifact: %v", err)

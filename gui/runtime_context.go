@@ -66,6 +66,10 @@ type RuntimeContext struct {
 	WorkflowOwnerID string
 	Execution       ExecutionProfile
 	SemanticIntent  *intent.ClassificationResult `json:"-"`
+	// ClassificationMessage is the Classify/ClassifyCached key for this turn.
+	// Leftover routing and late-tree adoption must reuse it; reconstructing
+	// from toolRoutingText (attachment markers, image notes) misses the cache.
+	ClassificationMessage intent.MessageContext `json:"-"`
 	// VisionFallthrough is set when a host-staged image suppressed a lookup or
 	// file_read grant. The image bytes stay in user content; the name router
 	// must not reintroduce web_search, and the prompt must not describe a
@@ -78,6 +82,10 @@ type RuntimeContext struct {
 	// HostAdapterLeftover pins generate_pdf on a published channel when the
 	// missed family was a generate primary.
 	HostAdapterLeftover bool `json:"-"`
+	// ClassifierTimeoutLookup keeps public web lookup on a leftover turn
+	// whose semantic intent collapsed to unknown after a tree timeout. It is
+	// not set for gate-7 chat projections of sub-floor search/live_data.
+	ClassifierTimeoutLookup bool `json:"-"`
 	// Adaptive prompt dual-build estimates (set when light profile is chosen).
 	PromptFullTokens  int `json:"-"`
 	PromptLightTokens int `json:"-"`

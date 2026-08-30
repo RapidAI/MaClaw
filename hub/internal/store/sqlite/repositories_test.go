@@ -1429,3 +1429,38 @@ func TestAdminAuditRepositoryListFilters(t *testing.T) {
 		t.Fatalf("tenant filtered audit items = %+v, want tenant_a/audit-1", items)
 	}
 }
+
+func TestUserBillingTimezoneIsWriteOnceAndHydrated(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	user := &store.User{ID: "u_tz", TenantID: "tenant_tz", Email: "timezone@example.com", SN: "SN-TZ", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	repo, ok := st.Users.(interface {
+		SetBillingTimezoneIfUnset(context.Context, string, string, string) (string, error)
+	})
+	if !ok {
+		t.Fatal("user repository does not support billing timezone persistence")
+	}
+	if got, err := repo.SetBillingTimezoneIfUnset(ctx, user.TenantID, user.ID, "Asia/Shanghai"); err != nil || got != "Asia/Shanghai" {
+		t.Fatalf("first timezone = %q, %v", got, err)
+	}
+	if got, err := repo.SetBillingTimezoneIfUnset(ctx, user.TenantID, user.ID, "America/New_York"); err != nil || got != "Asia/Shanghai" {
+		t.Fatalf("second timezone = %q, %v; want original timezone", got, err)
+	}
+	for _, lookup := range []func() (*store.User, error){
+		func() (*store.User, error) { return st.Users.GetByID(ctx, user.ID) },
+		func() (*store.User, error) { return st.Users.GetByTenantEmail(ctx, user.TenantID, user.Email) },
+	} {
+		got, err := lookup()
+		if err != nil || got == nil || got.BillingTimezone != "Asia/Shanghai" || got.BillingTimezoneUpdatedAt == nil {
+			t.Fatalf("hydrated user = %#v, err=%v", got, err)
+		}
+	}
+	items, err := st.Users.ListByTenant(ctx, user.TenantID)
+	if err != nil || len(items) != 1 || items[0].BillingTimezone != "Asia/Shanghai" {
+		t.Fatalf("listed users = %#v, err=%v", items, err)
+	}
+}

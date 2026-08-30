@@ -308,6 +308,49 @@ func TestSkillAutoSummary_DraftSkill_RejectsOrchestrationOnlyTrajectory(t *testi
 	}
 }
 
+func TestSkillAutoSummary_FilterRunnerSteps_DropsHostOnlyToolCalls(t *testing.T) {
+	// 2026-08-25 production spam: every weather+PDF turn re-drafted a learned
+	// skill whose steps were host-loop tool calls (web_search / generate_pdf /
+	// send_file). The GUI runner cannot execute any of them, so the draft failed
+	// RunnerCompatibility validation and logged an error on every turn.
+	steps := []skill.SkillYAMLStep{
+		{Action: "web_search", Params: map[string]interface{}{"query": "weather"}},
+		{Action: "generate_pdf", Params: map[string]interface{}{"title": "report"}},
+		{Action: "send_file", Params: map[string]interface{}{"path": "report.pdf"}},
+	}
+	if got := filterAutoSummaryRunnerSteps(steps); len(got) != 0 {
+		t.Fatalf("host-only steps must all be dropped, got %#v", got)
+	}
+}
+
+func TestSkillAutoSummary_FilterRunnerSteps_KeepsExecutableCore(t *testing.T) {
+	steps := []skill.SkillYAMLStep{
+		{Action: "bash", Params: map[string]interface{}{"command": "echo hi"}},
+		{Action: "generate_pdf", Params: map[string]interface{}{"title": "report"}},
+		{Action: "ssh_read_file", Params: map[string]interface{}{"path": "/tmp/a"}},
+	}
+	got := filterAutoSummaryRunnerSteps(steps)
+	if len(got) != 2 || got[0].Action != "bash" || got[1].Action != "ssh_read_file" {
+		t.Fatalf("steps=%#v, want bash + ssh_read_file", got)
+	}
+}
+
+func TestSkillAutoSummary_FilterRunnerSteps_RewritesRunnerAliases(t *testing.T) {
+	steps := []skill.SkillYAMLStep{
+		{Action: "python", Params: map[string]interface{}{"code": "print(1)"}},
+		{Action: "shell", Params: map[string]interface{}{"command": "ls"}},
+	}
+	got := filterAutoSummaryRunnerSteps(steps)
+	if len(got) != 2 {
+		t.Fatalf("steps=%#v, want both aliases rewritten, not dropped", got)
+	}
+	for i, step := range got {
+		if step.Action != "bash" {
+			t.Fatalf("step[%d].Action=%q, want runner-normalized bash", i, step.Action)
+		}
+	}
+}
+
 func TestSkillAutoSummary_ValidateRunnerCompatibility(t *testing.T) {
 	valid := makeValidDraft()
 	valid.Steps = []skill.SkillYAMLStep{{Action: "ssh_bash"}}

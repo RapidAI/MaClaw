@@ -23,8 +23,11 @@ type RouteIntent struct {
 type RouteOptions struct {
 	// Intent is an optional LLM (or test) rewrite of the user message.
 	Intent *RouteIntent
-	// SkipUnifiedClassifier skips full UIC fusion (tree/LLM channels, multi-second).
-	// Used by ACP Mode B so editor turns stay responsive; BM25/hybrid still run.
+	// SkipUnifiedClassifier skips live UIC fusion (embedding/tree/LLM). It must
+	// not skip ClassifyCached: a fusion timeout stores a degraded unknown in
+	// LoopContext, then the background tree writes the real verdict into the
+	// cache before this turn's leftover router runs. Ignoring that cache is
+	// how leftover BM25 hid web_search after a search tree landed (2026-08-29).
 	SkipUnifiedClassifier bool
 	// PreferEmbeddingOnly uses L2 only for optional tool affinity. It is for the
 	// first-response path: an unavailable or inconclusive embedder falls back to
@@ -34,10 +37,16 @@ type RouteOptions struct {
 	// stronger classification policy.
 	PreferEmbeddingOnly bool
 	// PreResolved carries the current turn's already-computed UIC
-	// classification (e.g. RuntimeContext.SemanticIntent). When present and
-	// the UIC path runs, it is used directly: no new classification — neither
-	// embedding-only nor full fusion — is started for this route call.
+	// classification (e.g. RuntimeContext.SemanticIntent). A usable
+	// (non-degraded) PreResolved is used directly. A degraded/unknown
+	// PreResolved is not an authority: lookupRouteClassification consults
+	// ClassifyCached before falling through, so a late tree verdict can still
+	// activate tools on this turn.
 	PreResolved *intent.ClassificationResult
+	// CacheMessage is the ClassifyCached key. It must match the MessageContext
+	// used by the turn's original Classify (text, user, recent history). Empty
+	// Text falls back to the Route userMessage.
+	CacheMessage intent.MessageContext
 }
 
 // MinRouteIntentConfidence is the floor below which a rewrite is ignored.

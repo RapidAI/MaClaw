@@ -6,6 +6,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 const maxAncestorWalk = 32
@@ -15,33 +16,35 @@ func (s *Service) Granted(ctx context.Context, principal auth.MachinePrincipal) 
 	if s == nil {
 		return false, nil
 	}
-	settings := s.LoadTenantSettings(ctx, principal.TenantID)
+	settings := s.LoadTenantSettings(ctx, store.NormalizeTenantID(principal.TenantID))
 	return s.granted(ctx, principal, settings)
 }
 
 func (s *Service) granted(ctx context.Context, principal auth.MachinePrincipal, settings Settings) (bool, error) {
-	if strings.TrimSpace(principal.UserID) == "" || s == nil || s.Users == nil {
+	if s == nil || strings.TrimSpace(principal.UserID) == "" {
 		return false, nil
 	}
-	user, err := s.Users.GetByID(ctx, principal.UserID)
-	if err != nil {
-		return false, err
-	}
-	if user == nil {
-		return false, nil
-	}
-	email := strings.ToLower(strings.TrimSpace(user.Email))
-	if email == "" {
-		return false, nil
-	}
-
-	ctx = security.WithTenant(ctx, principal.TenantID)
 	switch settings.Mode {
 	case ModeOff:
 		return false, nil
 	case ModeAllUsers:
 		return true, nil
 	case ModeDepartments:
+		if s.Users == nil {
+			return false, nil
+		}
+		user, err := s.Users.GetByID(ctx, principal.UserID)
+		if err != nil {
+			return false, err
+		}
+		if user == nil {
+			return false, nil
+		}
+		email := strings.ToLower(strings.TrimSpace(user.Email))
+		if email == "" {
+			return false, nil
+		}
+		ctx = security.WithTenant(ctx, principal.TenantID)
 		return s.grantedByDepartment(ctx, email, settings.DepartmentIDs)
 	default:
 		return false, nil

@@ -79,6 +79,22 @@ func RepeatSiblingBudget(maxInvocations int) int {
 	return maxInvocations
 }
 
+// RepeatSiblingRequired reports whether the index-th sibling of a required
+// template is itself required. Only the first invocation is an obligation;
+// later siblings are an exposure ceiling the model may spend.
+func RepeatSiblingRequired(templateRequired bool, index int) bool {
+	return templateRequired && index <= 0
+}
+
+// IsRepeatCeilingID reports whether id is a minted sibling other than the
+// family base (need#02, selection:need#03). After-edges bind to the
+// earliest remaining sibling of the family, which is the base when it
+// is still in the plan.
+func IsRepeatCeilingID(id string) bool {
+	id = strings.TrimSpace(id)
+	return id != "" && RepeatFamilyID(id) != id
+}
+
 // RepeatExposure is what a host currently knows about its plan's selections,
 // stated in the terms every host already keeps.
 type RepeatExposure struct {

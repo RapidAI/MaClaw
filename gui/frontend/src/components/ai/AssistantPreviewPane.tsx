@@ -41,6 +41,8 @@ interface AssistantPreviewPaneProps {
     onToggleMaximize?: () => void;
     theme: Theme;
     workflowState: WorkflowUIState;
+    cloudMode?: boolean;
+    cloudWorkspaceName?: string;
 }
 
 type PreviewPaneMode = "workflow" | "code" | "agent" | "conflict";
@@ -51,7 +53,7 @@ function previewTabIcon(mode: PreviewPaneMode): string {
     return mode === "workflow" ? "WF" : "SRC";
 }
 
-function previewTabTooltip(mode: PreviewPaneMode, lang: string): string {
+function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = false): string {
     if (mode === "workflow") {
         return lang === "en" ? "Progress" : "\u6d41\u7a0b/\u8fdb\u5ea6";
     }
@@ -61,7 +63,9 @@ function previewTabTooltip(mode: PreviewPaneMode, lang: string): string {
     if (mode === "conflict") {
         return lang === "en" ? "Conflicts" : "\u51b2\u7a81";
     }
-    return lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b";
+    return cloudMode
+        ? (lang === "en" ? "Cloud files" : "\u4e91\u7aef\u6587\u4ef6")
+        : (lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b");
 }
 
 /**
@@ -76,6 +80,7 @@ function PreviewTabRail({
     onSelectMode,
     theme,
     conflictCount = 0,
+    cloudMode = false,
 }: {
     activeMode: PreviewPaneMode;
     availableModes: PreviewPaneMode[];
@@ -84,6 +89,7 @@ function PreviewTabRail({
     onSelectMode: (mode: PreviewPaneMode) => void;
     theme: Theme;
     conflictCount?: number;
+    cloudMode?: boolean;
 }) {
     const tabRefs = useRef<Partial<Record<PreviewPaneMode, HTMLButtonElement>>>({});
     const selectMode = (mode: PreviewPaneMode, focusTab = false) => {
@@ -161,8 +167,8 @@ function PreviewTabRail({
                 const active = activeMode === mode;
                 const badge = mode === "conflict" && conflictCount > 0 ? (conflictCount > 9 ? "9+" : String(conflictCount)) : "";
                 const label = badge
-                    ? `${previewTabTooltip(mode, lang)} (${conflictCount})`
-                    : previewTabTooltip(mode, lang);
+                    ? `${previewTabTooltip(mode, lang, cloudMode)} (${conflictCount})`
+                    : previewTabTooltip(mode, lang, cloudMode);
                 return (
                     <button
                         key={mode}
@@ -261,6 +267,8 @@ export function AssistantPreviewPane({
     onToggleMaximize,
     theme,
     workflowState,
+    cloudMode = false,
+    cloudWorkspaceName,
 }: AssistantPreviewPaneProps) {
     const [activeMode, setActiveMode] = useState<PreviewPaneMode>("workflow");
     const previousShowCodeRef = useRef(showCodePreview);
@@ -488,6 +496,9 @@ export function AssistantPreviewPane({
                         onClose={closeCodePreview}
                         onResizeStart={startPreviewResize}
                         onToggleMaximize={onToggleMaximize}
+                        cloudMode={cloudMode}
+                        cloudWorkspaceName={cloudWorkspaceName}
+                        hideHeaderClose
                         theme={codeTheme}
                         lang={lang}
                     />
@@ -503,6 +514,7 @@ export function AssistantPreviewPane({
                     onSelectMode={setActiveMode}
                     theme={theme}
                     conflictCount={conflictCount}
+                    cloudMode={cloudMode}
                 />
             )}
             {/* ── Close button when only one mode (no tab rail) ── */}

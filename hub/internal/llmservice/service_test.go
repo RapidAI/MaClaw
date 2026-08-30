@@ -371,11 +371,11 @@ func TestSentBillingReservationKeepsFrozenOfficialDetails(t *testing.T) {
 	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "official-request", 2, now.Add(time.Minute), now); !ok {
 		t.Fatal("reserve")
 	}
-	if !MarkBillingReservationSent(reg, "official-request", now) || !SetBillingReservationBillingDetails(reg, "official-request", MaClawOfficialProviderID, 2) {
+	if !MarkBillingReservationSent(reg, "official-request", now) || !SetBillingReservationBillingDetails(reg, "official-request", MaClawOfficialProviderID, 0.5, 2) {
 		t.Fatal("freeze official reservation details")
 	}
 	items := SentBillingReservationsForUserID(reg, "user", "user@example.com")
-	if len(items) != 1 || items[0].ProviderID != MaClawOfficialProviderID || items[0].BillingGroupMultiplier != 2 {
+	if len(items) != 1 || items[0].ProviderID != MaClawOfficialProviderID || items[0].ProviderMultiplier != 0.5 || items[0].BillingGroupMultiplier != 2 {
 		t.Fatalf("sent reservations=%#v", items)
 	}
 }
@@ -587,8 +587,12 @@ func TestGrantDefaultServiceForNewUserIssuesBindingLimitCard(t *testing.T) {
 			card = &saved.Grants[i]
 		}
 	}
-	if card == nil || card.ServiceGroupID != "welcome" || !card.Permanent || card.PeriodLimits.FiveHour != 10 || card.PeriodLimits.Daily != 25 || !card.RollingFiveHour {
+	if card == nil || card.ServiceGroupID != "welcome" || !card.ExpiresAt.IsZero() || card.Permanent || card.PeriodLimits != (CreditPeriodLimits{}) || card.RollingFiveHour {
 		t.Fatalf("unexpected new-user limit card: %#v", card)
+	}
+	effective := effectiveGrantForRegistry(saved, *card)
+	if !effective.Permanent || effective.PeriodLimits.FiveHour != 10 || effective.PeriodLimits.Daily != 25 || !effective.RollingFiveHour {
+		t.Fatalf("limit-card view did not apply current settings: %#v", effective)
 	}
 	now := time.Now().UTC()
 	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroupsForUserID(saved, "user-1", "user@example.com", []string{"welcome"}, now); !allowed || code != "" {
@@ -684,13 +688,81 @@ func TestNewUserBenefitModeIsPersistedForNewRegistry(t *testing.T) {
 	}
 }
 
+func TestNewUserLimitCardExistingQualificationUsesCurrentPolicy(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups:        []ModelServiceGroup{{ID: "welcome", Name: "Welcome", AccessPolicy: AccessPolicyFree}},
+		DefaultNewUserBenefitMode: NewUserBenefitModeLimitCard,
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"welcome"},
+			DurationDays:    30,
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 10, Daily: 20},
+		},
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := GrantDefaultServiceForNewUserID(ctx, system, "user-1", "user@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	issued, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issued.Grants) != 1 {
+		t.Fatalf("issued grants = %#v", issued.Grants)
+	}
+	startedAt := issued.Grants[0].StartsAt
+	if !issued.Grants[0].ExpiresAt.IsZero() || issued.Grants[0].Permanent || issued.Grants[0].RollingFiveHour || issued.Grants[0].PeriodLimits != (CreditPeriodLimits{}) {
+		t.Fatalf("qualification persisted a policy snapshot: %#v", issued.Grants[0])
+	}
+	if got := ApplyCreditUsageToRegistry(issued, "user@example.com", []string{"welcome"}, 7, startedAt.Add(time.Hour)); got != 7 {
+		t.Fatalf("initial usage = %v, want 7", got)
+	}
+	issued.DefaultNewUserLimitCard.DurationDays = 0
+	issued.DefaultNewUserLimitCard.PeriodLimits = CreditPeriodLimits{FiveHour: 50, Daily: 80}
+	if err := SaveRegistry(ctx, system, issued); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := updated.Grants[0]
+	if !grant.ExpiresAt.IsZero() || grant.Permanent || grant.RollingFiveHour || grant.PeriodLimits != (CreditPeriodLimits{}) || len(grant.UsageEvents) != 1 {
+		t.Fatalf("qualification stored policy data after update: %#v", grant)
+	}
+	effective := effectiveGrantForRegistry(updated, grant)
+	if !effective.Permanent || effective.ExpiresAt.Year() != 9999 || !effective.RollingFiveHour || effective.PeriodLimits.FiveHour != 50 || effective.PeriodLimits.Daily != 80 {
+		t.Fatalf("qualification view did not follow current policy: %#v", effective)
+	}
+
+	updated.DefaultNewUserLimitCard.DurationDays = 5
+	if err := SaveRegistry(ctx, system, updated); err != nil {
+		t.Fatal(err)
+	}
+	expiring, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant := expiring.Grants[0]; !grant.ExpiresAt.IsZero() || grant.Permanent || grant.PeriodLimits != (CreditPeriodLimits{}) {
+		t.Fatalf("qualification should remain policy-free in storage: %#v", grant)
+	}
+	effective = effectiveGrantForRegistry(expiring, expiring.Grants[0])
+	if got := effective.ExpiresAt; !got.Equal(startedAt.UTC().AddDate(0, 0, 5)) || effective.Permanent {
+		t.Fatalf("current duration did not reapply from qualification start: effective=%#v want expiry=%s", effective, startedAt.UTC().AddDate(0, 0, 5))
+	}
+}
+
 func TestNewUserLimitCardUsesRollingFiveHourWindow(t *testing.T) {
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
-	reg := &Registry{Grants: []Grant{{
-		ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-		StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
-		PeriodLimits: CreditPeriodLimits{FiveHour: 10},
-	}}}
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
+		Grants:                  []Grant{{ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)}},
+	}
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 10, now); got != 10 {
 		t.Fatalf("first usage = %v, want 10", got)
 	}
@@ -705,14 +777,11 @@ func TestNewUserLimitCardUsesRollingFiveHourWindow(t *testing.T) {
 func TestPermanentNewUserLimitCardDoesNotExpireWithLegacyStoredDate(t *testing.T) {
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
 	reg := &Registry{
-		ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
 		Grants: []Grant{{
 			ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
 			StartsAt: now.Add(-48 * time.Hour),
-			// Older data can retain a finite date even when the permanent flag is
-			// authoritative. Every entitlement path must honor the flag.
-			ExpiresAt: now.Add(-24 * time.Hour), Permanent: true, RollingFiveHour: true,
-			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
 		}},
 	}
 	if allowed, _, code, _, available, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); !allowed || code != "" || available != 10 {
@@ -725,11 +794,10 @@ func TestPermanentNewUserLimitCardDoesNotExpireWithLegacyStoredDate(t *testing.T
 
 func TestNewUserLimitCardCannotBeBypassedByAnotherGrantOnSameFreeGroup(t *testing.T) {
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
-	reg := &Registry{Grants: []Grant{
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}}, DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25}}, Grants: []Grant{
 		{
 			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
-			PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25},
+			StartsAt: now.Add(-time.Hour),
 		},
 		{
 			ID: "legacy-gift", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_default",
@@ -750,17 +818,16 @@ func TestNewUserLimitCardCannotBeBypassedByAnotherGrantOnSameFreeGroup(t *testin
 	}
 }
 
-func TestNewUserLimitCardIsNotBypassedWhenAnUnconstrainedCardComesFirst(t *testing.T) {
+func TestNewUserLimitCardCannotBeBypassedByAnotherGrantOnSameFreeGroupWhenDuplicated(t *testing.T) {
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
-	reg := &Registry{Grants: []Grant{
+	reg := &Registry{ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}}, DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}}, Grants: []Grant{
 		{
 			ID: "validity-only", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true,
+			StartsAt: now.Add(-time.Hour),
 		},
 		{
 			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
-			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+			StartsAt: now.Add(-time.Hour),
 		},
 		{
 			ID: "legacy-gift", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_default",
@@ -770,8 +837,14 @@ func TestNewUserLimitCardIsNotBypassedWhenAnUnconstrainedCardComesFirst(t *testi
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 11, now); got != 10 {
 		t.Fatalf("usage must stay constrained by the later limit card, got %v want 10", got)
 	}
-	if reg.Grants[1].CreditsUsed != 10 || reg.Grants[2].CreditsUsed != 0 {
-		t.Fatalf("usage must be charged only to the constrained card: %#v", reg.Grants)
+	if reg.Grants[0].CreditsUsed+reg.Grants[1].CreditsUsed != 10 || reg.Grants[2].CreditsUsed != 0 {
+		t.Fatalf("usage must be charged to exactly one qualification, never the legacy grant: %#v", reg.Grants)
+	}
+	if available := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); available != 0 {
+		t.Fatalf("duplicate qualifications must not expose a second allowance, got %v", available)
+	}
+	if summaries := creditGrantSummariesForOwner(reg, newUserAccountRef("", "user@example.com"), now); len(summaries) != 1 {
+		t.Fatalf("duplicate qualifications must have one status-card summary, got %#v", summaries)
 	}
 }
 
@@ -805,10 +878,10 @@ func TestNewUserLimitCardDoesNotBlockOtherFreeProviderRoute(t *testing.T) {
 		},
 		Grants: []Grant{{
 			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
-			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
-			UsageEvents:  []CreditUsageEvent{{OccurredAt: now.Add(-time.Minute), CreditsUsed: 10}},
+			StartsAt:    now.Add(-time.Hour),
+			UsageEvents: []CreditUsageEvent{{OccurredAt: now.Add(-time.Minute), CreditsUsed: 10}},
 		}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
 	}
 	allowed, policy, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome", "fallback"}, now)
 	if !allowed || policy != AccessPolicyFree || code != "" {
@@ -825,9 +898,9 @@ func TestNewUserLimitCardDoesNotConsumeCreditsThroughOtherFreeProviderRoute(t *t
 		},
 		Grants: []Grant{{
 			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
-			PeriodLimits: CreditPeriodLimits{FiveHour: 10},
+			StartsAt: now.Add(-time.Hour),
 		}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
 	}
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome", "fallback"}, 4, now); got != 0 {
 		t.Fatalf("free fallback route must not consume the welcome limit card, got %v", got)
@@ -850,9 +923,12 @@ func TestNewUserLimitCardKeepsItsUsageOutOfLifetimeCreditTotals(t *testing.T) {
 		}},
 		Grants: []Grant{{
 			ID: "limit-card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
-			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
-			PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25},
+			StartsAt: now.Add(-time.Hour),
 		}},
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"welcome"},
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 10, Daily: 25},
+		},
 	}
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 4, now); got != 4 {
 		t.Fatalf("limit-card usage = %v, want 4", got)
@@ -882,6 +958,48 @@ func TestNewUserLimitCardOnlyKeepsSupportedPeriodLimits(t *testing.T) {
 	reg.Normalize()
 	if got := reg.DefaultNewUserLimitCard.PeriodLimits; got.FiveHour != 10 || got.Daily != 25 || got.Weekly != 0 || got.Monthly != 0 {
 		t.Fatalf("new-user limit-card period limits = %#v, want only five-hour and daily", got)
+	}
+}
+
+func TestNewUserLimitCardViewDoesNotApplyToRechargeGroup(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "recharge", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"recharge"},
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 10, Daily: 20},
+		},
+		Grants: []Grant{{
+			ID: "qualification", Email: "user@example.com", ServiceGroupID: "recharge", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour),
+		}},
+	}
+	if effective := effectiveGrantForRegistry(reg, reg.Grants[0]); effective.PeriodLimits != (CreditPeriodLimits{}) || effective.Permanent || !effective.ExpiresAt.IsZero() {
+		t.Fatalf("recharge group must not receive a welcome-card policy projection: %#v", effective)
+	}
+	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"recharge"}, now); allowed || code != "LLM_SERVICE_CREDITS_REQUIRED" {
+		t.Fatalf("recharge group must not be unlocked by a welcome qualification, allowed=%v code=%q", allowed, code)
+	}
+}
+
+func TestNewUserLimitCardRemovedFromPolicyCannotFallBackToLegacySnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		Grants: []Grant{{
+			ID: "legacy", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), Permanent: true, RollingFiveHour: true,
+			PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 20},
+		}},
+	}
+	effective := effectiveGrantForRegistry(reg, reg.Grants[0])
+	if !effective.ExpiresAt.IsZero() || effective.Permanent || effective.RollingFiveHour || effective.PeriodLimits != (CreditPeriodLimits{}) {
+		t.Fatalf("removed qualification must not use its legacy snapshot: %#v", effective)
+	}
+	if allowed, policy, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); !allowed || policy != AccessPolicyFree || code != "" {
+		t.Fatalf("removed qualification must restore the free-group path, allowed=%v policy=%q code=%q", allowed, policy, code)
+	}
+	if summaries := creditGrantSummariesForOwner(reg, newUserAccountRef("", "user@example.com"), now); len(summaries) != 0 {
+		t.Fatalf("removed qualification must not remain in the user's active card view: %#v", summaries)
 	}
 }
 

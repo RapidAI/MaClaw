@@ -428,6 +428,18 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			result.Replanned = true
 			return result
 		}
+		if execResult.FailureKind == toolFailurePolicyRejected &&
+			legacyRoutingMissFloorToolNames[strings.TrimSpace(tc.Function.Name)] &&
+			!loopContextBlocksLegacyToolRouter(opts.Context) {
+			// The model explicitly tried an invariant-11 floor tool and the
+			// request surface rejected it: runtime proof the surface was
+			// under-scoped for this turn (for example an ambient chat
+			// projection on a file-delivery task). Ask the next round prep to
+			// re-union the floor tools.
+			if opts.Phase != nil {
+				opts.Phase.MissFloorToolsUnlock = true
+			}
+		}
 		rawResult := execResult.Text
 
 		stageStartedAt := time.Now()

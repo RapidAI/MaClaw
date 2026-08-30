@@ -31,7 +31,10 @@ device_status_t platform_audio_adjust_output_volume(int delta_percent,
                                                     uint8_t *out_percent);
 
 device_status_t platform_audio_play_wav(const uint8_t *wav, uint32_t wav_len);
-device_status_t platform_audio_play_alarm_burst(void);
+/* Plays the normalized alarm pattern with a bounded peak amplitude.  The
+ * Audio Service supplies the policy-derived value; profile adapters keep the
+ * waveform/codec details private. */
+device_status_t platform_audio_play_alarm_burst(uint8_t peak_percent);
 device_status_t platform_audio_capture_wav(
     uint8_t **out_wav, uint32_t *out_len,
     platform_audio_capture_progress_cb_t on_progress, void *progress_context);

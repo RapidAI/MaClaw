@@ -248,8 +248,8 @@ func TestIsVisibleAIAssistantProgressText(t *testing.T) {
 		{name: "visible emoji status", text: "已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…", want: true},
 		{name: "visible early pre-loop ack", text: "收到，正在处理", want: true},
 		{name: "visible processing prefix", text: "正在处理中…", want: true},
-		{name: "hide internal tool narration", text: "正在执行工具，请稍候...", want: false},
-		{name: "hide internal chatter", text: "来啦伯伯！先搜索一下~", want: false},
+		{name: "internal tool narration is rendered (frontend filters the feed)", text: "正在执行工具，请稍候...", want: true},
+		{name: "internal chatter is rendered (frontend filters the feed)", text: "来啦伯伯！先搜索一下~", want: true},
 		{name: "hide blank", text: "   ", want: false},
 	}
 	for _, tc := range cases {

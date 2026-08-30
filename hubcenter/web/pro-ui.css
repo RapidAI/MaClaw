@@ -134,9 +134,8 @@ button, .btn, .tab, .cap-tab, .auth-tab, .filter, .user-link, .nav-link, .nav-bt
 .nav button { border-radius: 12px !important; color: #344054 !important; }
 .nav button:hover, .nav button.active { background: var(--primary-soft) !important; border-color: #c7d7fe !important; box-shadow: none !important; }
 .nav-icon, .page-tab-icon, .head h3::before, h1::before, h2::before, h3::before, .card-name::before,
-.post-name::before { background: #fff !important; border-color: var(--line) !important; box-shadow: none !important; }
+.post-name::before { background-color: #fff !important; border-color: var(--line) !important; box-shadow: none !important; }
 .nav button.active .nav-icon, .nav button:hover .nav-icon, .page-tab-icon { color: var(--primary) !important; }
-.head h3::after, h1::after, h2::after, h3::after, .card-name::after, .post-name::after { background: var(--primary) !important; opacity: .9; }
 
 .metric, .stat, .summary-card, .auth-metric { background: var(--panel) !important; }
 .console { background: #fbfcfe !important; border-color: var(--line) !important; color: #475569 !important; }
@@ -203,9 +202,9 @@ td, th { border-bottom-color: var(--line) !important; }
 /* Kills the hard-coded legacy pink that survives the token override. */
 .mini { background: #eef5ff !important; border: 1px solid #dbe7ff !important; color: #1d4ed8 !important; box-shadow: none !important; }
 .hero p, .hero li { color: var(--muted) !important; }
-.item-title::before { background: #2563eb !important; box-shadow: none !important; }
-.nav button::before { background: #2563eb !important; }
-.head h3::after, h1::after, h2::after, h3::after, .card-name::after, .post-name::after { background: #64748b !important; }
+.item-title:not([data-icon])::before { background-color: #2563eb !important; box-shadow: none !important; }
+.nav button::before { background-color: #2563eb !important; }
+h1::after, h2::after, .card-name::after, .post-name::after { background-color: #64748b !important; }
 .ha-node-plan-peer { background: #f4f8ff !important; border-color: #dbe7ff !important; }
 .side-note, .mcp-secret-panel { background: #fff !important; border-color: var(--line) !important; border-radius: var(--radius) !important; }
 .user-card, .session-item, .ha-secret-card { background: #fff !important; border-color: var(--line) !important; border-radius: var(--radius) !important; }

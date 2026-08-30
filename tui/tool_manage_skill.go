@@ -73,6 +73,8 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 			return skillExecuteMaintenancePlan(app, args)
 		case "evolution_status":
 			return skillEvolutionStatus(app)
+		case "evolution_compensations":
+			return skillEvolutionCompensations()
 		case "evolution_audit":
 			return skillEvolutionAudit(args)
 		case "set_evolution_enabled":
@@ -85,6 +87,18 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 			return skill.ManageSkillUnknownActionError(action)
 		}
 	}
+}
+
+// skillEvolutionCompensations returns safe metadata only. TUI has no live
+// desktop pipeline owner, so it never attempts recovery from a model call.
+func skillEvolutionCompensations() string {
+	items, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil {
+		data, _ := json.MarshalIndent(map[string]interface{}{"ok": false, "error": err.Error(), "fail_closed": true}, "", "  ")
+		return string(data)
+	}
+	data, _ := json.MarshalIndent(map[string]interface{}{"ok": true, "non_executing": true, "items": items, "count": len(items)}, "", "  ")
+	return string(data)
 }
 
 // skillEvolutionAudit returns durable skill evolution audit JSON (TUI/CLI).

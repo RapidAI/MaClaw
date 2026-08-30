@@ -100,12 +100,12 @@ func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, t
 	}
 	switch commandKind {
 	case imCommandBTW:
-		btwQuery := ""
-		if len(trimmed) > 5 {
-			btwQuery = strings.TrimSpace(trimmed[5:])
-		}
+		btwQuery := strings.TrimSpace(strings.TrimPrefix(trimmed, "/btw"))
 		if btwQuery == "" {
 			return &IMAgentResponse{Text: localizedIMBtwUsageText(responseLang)}, true
+		}
+		if isBtwMainAgentStatusQuery(btwQuery) {
+			return h.btwMainAgentStatusResponse(msg.UserID, responseLang), true
 		}
 		if !h.isMaclawLLMConfigured() {
 			return &IMAgentResponse{Error: localizedIMLLMNotConfiguredMessage(responseLang, "/btw")}, true
@@ -136,6 +136,59 @@ func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, t
 	}
 
 	return nil, false
+}
+
+// isBtwMainAgentStatusQuery identifies the compact status forms that should
+// not spend an LLM round. Broader natural-language requests still use the
+// /btw subagent, which can combine agent_status with other read-only tools.
+func isBtwMainAgentStatusQuery(query string) bool {
+	query = strings.ToLower(strings.Join(strings.Fields(query), ""))
+	switch query {
+	case "status", "agentstatus", "mainagentstatus", "mainagent",
+		"主agent状态", "主agentstatus", "主agent", "查看主agent状态", "查看主agentstatus",
+		"主agent狀態", "查看主agent狀態",
+		"主代理状态", "主代理", "查看主代理状态",
+		"主代理狀態", "查看主代理狀態",
+		"主智能体状态", "主智能体", "查看主智能体状态",
+		"主智能體狀態", "主智能體", "查看主智能體狀態",
+		"主助手状态", "主助手", "查看主助手状态",
+		"主助手狀態", "查看主助手狀態":
+		return true
+	default:
+		return false
+	}
+}
+
+// btwMainAgentStatusResponse serves /btw status without requiring an LLM and
+// uses the caller's owner ID so status remains isolated between IM users.
+func (h *IMMessageHandler) btwMainAgentStatusResponse(ownerID, lang string) *IMAgentResponse {
+	if strings.TrimSpace(ownerID) == "" {
+		return &IMAgentResponse{Error: localizedIMBtwMainAgentStatusOwnerMissing(lang)}
+	}
+	status := formatMainAgentStatus(h.collectRuntimeStatusForOwner(ownerID), lang)
+	return &IMAgentResponse{Text: localizedIMBtwResultPrefix(lang) + status}
+}
+
+func localizedIMBtwMainAgentStatusOwnerMissing(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "Cannot read main-agent status because the current session identity is missing."
+	case appLanguageZhHant:
+		return "無法讀取主 Agent 狀態，因為目前會話身分缺失。"
+	default:
+		return "无法读取主 Agent 状态，因为当前会话身份缺失。"
+	}
+}
+
+func localizedIMBtwResultPrefix(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "**/btw result**\n\n"
+	case appLanguageZhHant:
+		return "**/btw 查詢結果**\n\n"
+	default:
+		return "**/btw 查询结果**\n\n"
+	}
 }
 
 // resetIMSessionForUser cancels the current loop before clearing all state that
@@ -547,11 +600,11 @@ func localizedIMMoANotReadyText(lang, prompt string) string {
 func localizedIMBtwUsageText(lang string) string {
 	switch normalizeAppLanguageKind(lang) {
 	case appLanguageEnglish:
-		return "Usage: /btw <query>\n\nExamples:\n  /btw latest Go changes\n  /btw React 19 main changes\n  /btw what framework does this project use"
+		return "Usage: /btw <query>\n\nExamples:\n  /btw status\n  /btw latest Go changes\n  /btw React 19 main changes\n  /btw what framework does this project use"
 	case appLanguageZhHant:
-		return "用法：/btw <查詢>\n\n示例：\n  /btw 最新 Go 變化\n  /btw React 19 主要變化\n  /btw 這個專案使用什麼框架"
+		return "用法：/btw <查詢>\n\n示例：\n  /btw status（查看主 Agent 狀態）\n  /btw 最新 Go 變化\n  /btw React 19 主要變化\n  /btw 這個專案使用什麼框架"
 	default:
-		return "用法：/btw <查询>\n\n示例：\n  /btw 最新 Go 变化\n  /btw React 19 主要变化\n  /btw 这个项目使用什么框架"
+		return "用法：/btw <查询>\n\n示例：\n  /btw status（查看主 Agent 状态）\n  /btw 最新 Go 变化\n  /btw React 19 主要变化\n  /btw 这个项目使用什么框架"
 	}
 }
 
@@ -647,6 +700,9 @@ func localizedIMCancelMessage(lang, kind, preview string) string {
 // not block on the main loop). Results are NOT appended to the main history
 // to avoid racing with a concurrent main loop's Save.
 func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) *IMAgentResponse {
+	if isBtwMainAgentStatusQuery(query) {
+		return h.btwMainAgentStatusResponse(msg.UserID, h.imCommandResponseLang(msg.Lang))
+	}
 	responseLang := h.imCommandResponseLang(msg.Lang)
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client

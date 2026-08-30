@@ -2371,6 +2371,16 @@ esp_err_t legacy_connectivity_transport_quiesce_cellular(uint32_t timeout_ms) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+esp_err_t legacy_connectivity_transport_deinit_cellular(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t legacy_connectivity_transport_reinitialize_cellular(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 esp_err_t legacy_connectivity_transport_http_request(
     const device_connectivity_http_request_t *request) {
     (void)request;

@@ -206,7 +206,7 @@ func TestWebPagesIncludeSharedProUI(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read page: %v", err)
 			}
-			if !strings.Contains(string(body), `href="/pro-ui.css"`) {
+			if !strings.Contains(string(body), `href="/pro-ui.css"`) && !strings.Contains(string(body), `href="/pro-ui.css?`) {
 				t.Fatalf("page does not include shared pro UI stylesheet")
 			}
 		})
@@ -393,8 +393,8 @@ func TestWebPagesKeepInteractiveAccessibilityContracts(t *testing.T) {
 		`id="gossipFilterAll" aria-pressed="true"`,
 		`id="gossipFilterFlagged" aria-pressed="false"`,
 		`document.getElementById('gossipFilterAll').setAttribute('aria-pressed',f===''?'true':'false')`,
-		`id="catalogSubTabSkill" aria-pressed="false"`,
-		`id="catalogSubTabMCP" aria-pressed="false"`,
+		`id="catalogSubTabSkill" data-icon="file" aria-pressed="false"`,
+		`id="catalogSubTabMCP" data-icon="plug" aria-pressed="false"`,
 		`btn.setAttribute('aria-pressed', t === tab ? 'true' : 'false')`,
 		`id="mcpTypeRemoteBtn" aria-pressed="true"`,
 		`id="mcpTypeLocalBtn" aria-pressed="false"`,

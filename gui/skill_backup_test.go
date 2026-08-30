@@ -153,6 +153,10 @@ func TestRestoreSkillsAllowsRiskySkillInStandardMode(t *testing.T) {
 	if got := strings.Join(report.Details, "\n"); !strings.Contains(got, "restored by current policy") {
 		t.Fatalf("RestoreSkills() details = %q, want risk recorded and restored", got)
 	}
+	// Drain the fire-and-forget overlay persist goroutine before TempDir
+	// cleanup; otherwise its in-flight atomic config write leaves a .tmp file
+	// behind and Windows RemoveAll fails with "directory is not empty".
+	executor.waitForStatusOverlayPersistence()
 }
 
 func TestRestoreSkillsSkipsRiskScanDetailsInNoneMode(t *testing.T) {

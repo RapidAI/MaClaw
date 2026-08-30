@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -1433,6 +1434,17 @@ func (a *App) ensureSkillRunner() {
 			// Runs on the evolution worker goroutine — do not spawn another.
 			runner.maybeRepairSkill(entry)
 		}
+		a.evolutionPipeline.RepairHookWithContext = func(ctx context.Context, entry *corelib.NLSkillEntry, runArgs map[string]string) {
+			if entry == nil || runner == nil {
+				return
+			}
+			if !runner.canStartRepairSkill(entry) {
+				runner.repairingSkills.Delete(entry.Name)
+				return
+			}
+			runner.markSelfRepairPending(entry.Name)
+			runner.maybeRepairSkillWithContext(ctx, entry, false)
+		}
 	}
 }
 
@@ -1445,6 +1457,8 @@ func (a *App) ensureEvolutionPipeline() {
 	pipeline.Versioner = &skill.Versioner{}
 	if cfg, err := a.LoadConfig(); err == nil {
 		pipeline.RepairCooldown = skill.RepairCooldownFromHours(cfg.SkillEvolutionRepairCooldownHours)
+		pipeline.MaxConcurrentWorkers = cfg.EffectiveSkillEvolutionMaxConcurrentWorkers()
+		pipeline.WorkerTimeout = time.Duration(cfg.EffectiveSkillEvolutionWorkerTimeoutSeconds()) * time.Second
 	}
 	// RepairGate: sandbox-replay historical args before accepting repairs/optimizations.
 	// Bash-only steps run via TempDirSandboxExecutor; non-bash steps soft-pass so
@@ -1466,6 +1480,15 @@ func (a *App) ensureEvolutionPipeline() {
 			return a.skillExecutor.saveSkills(skills)
 		})
 	}
+	pipeline.IndexRefresher = func() error {
+		if a.toolRouter != nil {
+			return a.toolRouter.RefreshSkillIndexChecked()
+		}
+		return nil
+	}
+	pipeline.FinalAuditor = func(event string, data map[string]string) error {
+		return skill.RecordEvolutionEventStrict(event, data, "desktop")
+	}
 	// Wire LLM for optimization and promotion (lazy config  - picks up provider changes).
 	pipeline.LLM = NewSkillEvolutionLLMAdapter(a.GetMaclawLLMConfig)
 	pipeline.Optimizer = skill.NewSkillOptimizer(pipeline.LLM, pipeline.Gate, pipeline.Versioner)
@@ -1484,7 +1507,15 @@ func (a *App) ensureEvolutionPipeline() {
 
 	// Wire EventEmitter: durable audit + frontend notify when skills evolve.
 	pipeline.EventEmitter = func(event string, data map[string]string) {
-		skill.RecordEvolutionEvent(event, data, "desktop")
+		if err := skill.RecordEvolutionEventStrict(event, data, "desktop"); err != nil {
+			log.Printf("[skill-evolution] audit write failed event=%s: %v", event, err)
+			// Success notifications are fail-closed: without a durable audit row
+			// the UI must not claim that a repair/optimization/discovery committed.
+			switch event {
+			case skill.EventSkillRepaired, skill.EventSkillOptimized, skill.EventSkillAutoDiscovered:
+				return
+			}
+		}
 		a.emitEvent(event, data)
 	}
 
@@ -1503,11 +1534,19 @@ func (a *App) ensureEvolutionPipeline() {
 		if a.skillLifecycle == nil {
 			return
 		}
+		if a.evolutionPipeline != nil && a.evolutionPipeline.HasPendingCompensation(skillName) {
+			log.Printf("[evolution-pipeline] skip upload for %s: pending evolution compensation", skillName)
+			return
+		}
 		// Find skill dir for the enqueue call.
 		var skillDir string
 		if a.skillExecutor != nil {
 			for _, s := range a.skillExecutor.loadSkills() {
 				if s.Name == skillName {
+					if strings.EqualFold(strings.TrimSpace(s.Status), "staged") {
+						log.Printf("[evolution-pipeline] skip upload for staged skill %s", skillName)
+						return
+					}
 					skillDir = s.SkillDir
 					break
 				}
@@ -1545,6 +1584,14 @@ func (a *App) ensureEvolutionPipeline() {
 			return err
 		},
 	)
+	pipeline.Scheduler.ObservationEnabled = func() bool {
+		if cfg, err := a.LoadConfig(); err == nil {
+			return cfg.IsSkillMaintenanceObservationEnabled()
+		}
+		// Preserve the historical fail-open behavior for read-only observation
+		// when configuration is temporarily unavailable.
+		return true
+	}
 	if a.usageTracker != nil {
 		tracker := a.usageTracker
 		pipeline.Scheduler.UsageIngester = func(skills []corelib.NLSkillEntry, opts skill.SkillMaintenancePlanOptions) int {
@@ -1605,6 +1652,12 @@ func (a *App) ensureExperienceExtractor() {
 	a.experienceExtractor = NewExperienceExtractor(a, a.skillExecutor, cfg)
 }
 
+// skillHubRefreshWG tracks the fire-and-forget RefreshRecommendations
+// goroutine spawned by ensureSkillHubClient so tests can drain it before
+// stopping the app and removing temporary config directories (a successful
+// refresh persists the HubCenter selection to config.json).
+var skillHubRefreshWG sync.WaitGroup
+
 func (a *App) ensureSkillHubClient() {
 	a.ensureRemoteInfra()
 	if a.skillHubClient != nil {
@@ -1613,7 +1666,9 @@ func (a *App) ensureSkillHubClient() {
 	a.ensureInteractionInfra()
 	a.skillHubClient = NewSkillHubClient(a)
 	// Async: don't block initialization on HubCenter reachability.
+	skillHubRefreshWG.Add(1)
 	go func(client *SkillHubClient) {
+		defer skillHubRefreshWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		_ = client.RefreshRecommendations(ctx)
@@ -1983,6 +2038,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		if a.configManager != nil {
 			handler.SetConfigManager(a.configManager)
 		}
+		a.ensureTemplateManager()
 		if a.templateManager != nil {
 			handler.SetTemplateManager(a.templateManager)
 		}
@@ -2244,6 +2300,7 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		if a.configManager != nil {
 			handler.SetConfigManager(a.configManager)
 		}
+		a.ensureTemplateManager()
 		if a.templateManager != nil {
 			handler.SetTemplateManager(a.templateManager)
 		}
@@ -2470,6 +2527,7 @@ func (a *App) startup(ctx context.Context) {
 		a.refreshPowerOptimizationStateFromConfig(config)
 		a.refreshWorkstationMode(config)
 		a.maybeCleanToolCacheOnStartup(config)
+		a.maybePruneToolResultsOnStartup()
 		// Auto-start memory compression service if enabled in config.
 		if config.MemoryAutoCompress && a.memoryStore != nil {
 			_ = a.getOrCreateCompressor()
@@ -6572,15 +6630,50 @@ type SkillEvolutionStatus struct {
 	HasRepairHook          bool   `json:"has_repair_hook"`
 	HasOptimizer           bool   `json:"has_optimizer"`
 	HasPromoter            bool   `json:"has_promoter"`
+	MaxConcurrentWorkers   int    `json:"max_concurrent_workers"`
 	RepairCooldownHours    int    `json:"repair_cooldown_hours"`
 	// EnvDisabled is true when MACLAW_DISABLE_SKILL_EVOLUTION is set.
 	EnvDisabled bool `json:"env_disabled"`
 	// ConfigEnabled is the persisted skill_evolution_enabled setting (default true).
-	ConfigEnabled bool `json:"config_enabled"`
+	ConfigEnabled                  bool `json:"config_enabled"`
+	ObservationEnabled             bool `json:"observation_enabled"`
+	MaxConcurrentWorkersConfigured int  `json:"max_concurrent_workers_configured"`
+	WorkerTimeoutSeconds           int  `json:"worker_timeout_seconds"`
 	// ConfigDisabled is true when the user turned off evolution in settings.
 	ConfigDisabled bool `json:"config_disabled"`
 	// Disabled is true when evolution is fully suppressed (env and/or config).
 	Disabled bool `json:"disabled"`
+	// Audit fields expose local JSONL sink health to the GUI.
+	AuditAvailable           bool                            `json:"audit_available"`
+	LastAuditError           string                          `json:"last_audit_error,omitempty"`
+	AuditFailureCount        uint64                          `json:"audit_failure_count"`
+	LastAuditSuccessAt       string                          `json:"last_audit_success_at,omitempty"`
+	OldestPendingAt          string                          `json:"oldest_pending_at,omitempty"`
+	QueueWaitSeconds         int                             `json:"queue_wait_seconds"`
+	FailureSummaries         []skill.EvolutionFailureSummary `json:"failure_summaries,omitempty"`
+	ActiveSkills             int                             `json:"active_skills"`
+	CancelledRequests        uint64                          `json:"cancelled_requests"`
+	TimedOutRequests         uint64                          `json:"timed_out_requests"`
+	PendingCompensations     int                             `json:"pending_compensations"`
+	CompensationQueueHealthy bool                            `json:"compensation_queue_healthy"`
+	CompensationQueueError   string                          `json:"compensation_queue_error,omitempty"`
+	Requests                 []skill.EvolutionRequestStatus  `json:"requests,omitempty"`
+}
+
+// ListSkillEvolutionCompensations returns operator-safe pending rollback
+// summaries. It never exposes the durable YAML/config/draft snapshots.
+func (a *App) ListSkillEvolutionCompensations() map[string]interface{} {
+	out := map[string]interface{}{"ok": true, "items": []skill.EvolutionCompensationSummary{}}
+	items, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil {
+		out["ok"] = false
+		out["error"] = err.Error()
+		out["fail_closed"] = true
+		return out
+	}
+	out["items"] = items
+	out["count"] = len(items)
+	return out
 }
 
 // ListSkillYAMLBackups returns Versioner backup versions for a named skill's SkillDir.
@@ -6623,6 +6716,12 @@ func (a *App) RestoreSkillYAMLBackup(skillName string, version int, confirm bool
 		out["error"] = "confirm=true is required"
 		return out
 	}
+	if a == nil || a.skillExecutor == nil {
+		out["error"] = "skill executor not initialized"
+		return out
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
 	entry, err := a.findNLSkillEntry(skillName)
 	if err != nil {
 		out["error"] = err.Error()
@@ -6633,27 +6732,84 @@ func (a *App) RestoreSkillYAMLBackup(skillName string, version int, confirm bool
 		out["error"] = "skill has no skill_dir (not file-backed)"
 		return out
 	}
+	// SkillCommitter invokes a definition writer only when a current YAML
+	// definition exists (that is its normal update contract). Reject an
+	// incomplete directory up front so a missing current file cannot turn a
+	// requested restore into a config/index-only commit that never writes the
+	// selected backup.
+	if _, err := readSkillDefinitionBytes(dir); err != nil {
+		out["error"] = "read current skill definition: " + err.Error()
+		return out
+	}
+	requestID := fmt.Sprintf("evo_restore_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	if err := skill.RecordEvolutionEventStrict("skill:yaml_restore_started", map[string]string{
+		"skill": skillName, "action": "yaml_restore", "decision": "apply", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		out["error"] = "audit unavailable: " + err.Error()
+		return out
+	}
+	// YAML restore does not intentionally change the config overlay, but the
+	// compensation record must still carry the exact pre-operation snapshot.
+	// Do not reconstruct it from loadSkills after a failed index refresh: that
+	// view may be stale or may already reflect the partially restored file.
+	loadedSkills := a.skillExecutor.loadSkills()
+	originalSkills := make([]corelib.NLSkillEntry, len(loadedSkills))
+	for i := range loadedSkills {
+		if cp := skill.CloneNLSkillEntry(&loadedSkills[i]); cp != nil {
+			originalSkills[i] = *cp
+		}
+	}
 	v := &skill.Versioner{}
 	var written string
 	var restored, pre int
-	if version <= 0 {
-		written, restored, pre, err = v.RestoreLatest(dir, true)
-	} else {
-		written, pre, err = v.RestoreVersion(dir, version, true)
-		restored = version
+	auditData := map[string]string{
+		"skill": skillName, "action": "yaml_restore", "decision": "applied",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "real",
 	}
-	if err != nil {
-		out["error"] = err.Error()
+	// Versioner.Restore* performs the selected backup copy and creates a
+	// reversible pre-image. It is invoked inside SkillCommitter's definition
+	// writer so config/index/audit failures restore the exact original bytes.
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(entries) })
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(entries) })
+		},
+		DefinitionWriter: func(*corelib.NLSkillEntry) error {
+			if version <= 0 {
+				written, restored, pre, err = v.RestoreLatest(dir, true)
+			} else {
+				written, pre, err = v.RestoreVersion(dir, version, true)
+				restored = version
+			}
+			if err == nil {
+				auditData["backup_version"] = fmt.Sprintf("%d", pre)
+				auditData["restored_version"] = fmt.Sprintf("%d", restored)
+				auditData["written_path"] = written
+			}
+			return err
+		},
+		IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(skillName) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		ConfigRevision: configRevision,
+	}
+	// Restore changes only the authoritative YAML; the config entry is passed
+	// through unchanged while the committer still snapshots it for rollback.
+	commitCtx := skill.WithEvolutionRequestMetadata(context.Background(), requestID, 1)
+	result := committer.Commit(commitCtx, entry.Name, entry, "skill:yaml_restore", auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		out["state"] = result.State
+		out["cleanup_status"] = result.CleanupStatus
+		out["error"] = fmt.Sprintf("YAML restore not committed: %s (%s)", result.State, result.FailureReason)
 		return out
 	}
-	// Best-effort: refresh indexes so loaders pick up YAML.
-	if a.toolRouter != nil {
-		a.toolRouter.RefreshSkillIndex()
-	}
-	skill.RecordEvolutionEvent("skill:yaml_restore", map[string]string{
-		"skill":       skillName,
-		"explanation": fmt.Sprintf("restored v%d path=%s pre_backup=v%d", restored, written, pre),
-	}, "desktop")
 	out["ok"] = true
 	out["version"] = restored
 	out["written_path"] = written
@@ -6696,6 +6852,12 @@ func (a *App) findNLSkillEntry(skillName string) (*corelib.NLSkillEntry, error) 
 // relatedSkill: required for merge_duplicate (the other skill in the pair)
 // confirm: must be true for real apply (dry_run=false)
 // allowDuplicateRetire: required for merge_duplicate real apply
+// saveSkillListForMaintenance is indirected so tests can exercise both the
+// forward config write and the rollback write without touching disk globally.
+var saveSkillListForMaintenance = func(exec *SkillExecutor, skills []corelib.NLSkillEntry) error {
+	return exec.saveSkills(skills)
+}
+
 func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, confirm, allowDuplicateRetire bool) map[string]interface{} {
 	out := map[string]interface{}{
 		"ok":      false,
@@ -6712,61 +6874,223 @@ func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, 
 		out["error"] = "skill executor not initialized"
 		return out
 	}
-	var updated []corelib.NLSkillEntry
-	var res skill.TargetedMaintenanceApplyResult
-	if err := a.skillExecutor.withSkillListMutate(func() error {
-		skills := a.skillExecutor.loadSkills()
-		var saveErr error
-		updated, res = skill.ApplyTargetedMaintenanceAction(
-			skills,
-			kind,
-			skillName,
-			relatedSkill,
-			false, // dry_run always false for this binding (UI already confirmed)
-			confirm,
-			allowDuplicateRetire,
-		)
-		if res.OK && res.Result.ExecutedCount > 0 {
-			if err := a.skillExecutor.saveSkills(updated); err != nil {
-				saveErr = err
-			}
-		}
-		return saveErr
-	}); err != nil {
-		out["error"] = "save failed: " + err.Error()
-		out["result"] = res
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	if strings.TrimSpace(skillName) == "" {
+		out["error"] = "skill is required"
 		return out
 	}
-
-	if res.OK && res.RequiresIndexRefresh && res.Result.ExecutedCount > 0 {
-		if a.toolRouter != nil {
-			a.toolRouter.RefreshSkillIndex()
+	if err := ensureSkillEvolutionMutationAdmission(a, skillName); err != nil {
+		out["error"] = err.Error()
+		out["state"] = "blocked"
+		return out
+	}
+	requestID := fmt.Sprintf("evo_maintenance_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	if !confirm {
+		_, res := skill.ApplyTargetedMaintenanceAction(a.skillExecutor.loadSkills(), kind, skillName, relatedSkill, false, false, allowDuplicateRetire)
+		out["result"], out["error"], out["message"] = res.Result, res.Error, res.Message
+		out["ok"] = res.OK
+		return out
+	}
+	startAudit := map[string]string{"skill": skillName, "action": kind, "decision": "apply", "via": "operator", "request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none"}
+	if err := skill.RecordEvolutionEventStrict("skill:maintenance_apply_started", startAudit, "desktop"); err != nil {
+		out["error"] = "audit unavailable: " + err.Error()
+		return out
+	}
+	original := a.skillExecutor.loadSkills()
+	updated := append([]corelib.NLSkillEntry(nil), original...)
+	var res skill.TargetedMaintenanceApplyResult
+	var patchDraft *skill.SkillMaintenancePatchDraft
+	fileBackedContract := false
+	contractSkillDir := ""
+	if strings.EqualFold(strings.TrimSpace(kind), skill.MaintenanceActionImproveContract) {
+		for _, item := range original {
+			if item.Name == skillName || item.MatchesName(skillName) {
+				contractSkillDir = strings.TrimSpace(item.SkillDir)
+				fileBackedContract = contractSkillDir != ""
+				break
+			}
 		}
 	}
-	// Audit row for apply attempts.
-	skill.RecordEvolutionEvent("skill:maintenance_apply", map[string]string{
-		"skill":       skillName,
-		"explanation": fmt.Sprintf("action=%s related=%s ok=%v msg=%s err=%s", kind, relatedSkill, res.OK, res.Message, res.Error),
-	}, "desktop")
-
-	out["ok"] = res.OK
-	out["error"] = res.Error
-	out["message"] = res.Message
+	if fileBackedContract {
+		updated, res = skill.ApplyTargetedMaintenanceAction(original, kind, skillName, relatedSkill, true, true, allowDuplicateRetire)
+		patchDraft = res.PatchDraft
+		if patchDraft == nil {
+			out["result"], out["error"], out["message"] = res.Result, res.Error, res.Message
+			return out
+		}
+		for i := range updated {
+			if updated[i].Name == skillName || updated[i].MatchesName(skillName) {
+				updated[i].RequiredArgs = append([]string(nil), patchDraft.RequiredArgs...)
+				updated[i].Params = append([]corelib.NLSkillParam(nil), patchDraft.Params...)
+				break
+			}
+		}
+	} else {
+		updated, res = skill.ApplyTargetedMaintenanceAction(original, kind, skillName, relatedSkill, false, true, allowDuplicateRetire)
+	}
+	var rollbackCleanupPaths []string
+	if fileBackedContract {
+		// ApplyFileBackedContractPatch creates the next Versioner backup inside
+		// DefinitionWriter. Record its deterministic path in the pre-image so a
+		// later index/audit failure can remove only this transaction's artifact.
+		versioner := &skill.Versioner{}
+		next := versioner.LatestVersion(contractSkillDir) + 1
+		base := "skill.yaml"
+		if _, err := os.Stat(filepath.Join(contractSkillDir, base)); err != nil {
+			if _, ymlErr := os.Stat(filepath.Join(contractSkillDir, "skill.yml")); ymlErr == nil {
+				base = "skill.yml"
+			}
+		}
+		candidate := filepath.Join(contractSkillDir, fmt.Sprintf("%s.v%d", base, next))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			rollbackCleanupPaths = []string{candidate}
+		}
+	}
+	if !res.OK || res.Result.ExecutedCount == 0 && patchDraft == nil {
+		out["result"], out["error"], out["message"] = res.Result, res.Error, res.Message
+		out["ok"] = res.OK
+		return out
+	}
+	auditData := map[string]string{"skill": skillName, "related_skill": relatedSkill, "action": kind, "decision": "applied", "via": "operator", "request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "real"}
+	auditData["explanation"] = fmt.Sprintf("action=%s related=%s msg=%s", kind, relatedSkill, res.Message)
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return saveSkillListForMaintenance(a.skillExecutor, entries) })
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return saveSkillListForMaintenance(a.skillExecutor, entries) })
+		},
+		EntriesMutator: func(_ []corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+			return updated, nil
+		},
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			if len(rollbackCleanupPaths) > 0 {
+				record.SetRollbackCleanupPaths(rollbackCleanupPaths)
+			}
+		},
+		DefinitionWriterWithCompensation: func(entry *corelib.NLSkillEntry, record *skill.EvolutionCompensationRecord) error {
+			if !fileBackedContract || patchDraft == nil {
+				return nil
+			}
+			_, path, err := skill.ApplyFileBackedContractPatch(entry, patchDraft, &skill.Versioner{})
+			if err == nil && record != nil && strings.TrimSpace(path) != "" {
+				record.SetRollbackCleanupPaths([]string{path})
+			}
+			return err
+		},
+		IndexRefresher: func() error {
+			// Every maintenance mutation changes the effective registry entry,
+			// including file-backed contract patches. Refreshing the checked
+			// index is therefore part of the transaction even when the planner
+			// did not set RequiresIndexRefresh explicitly.
+			return a.refreshSkillIndexesAfterMutationChecked(skillName)
+		},
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		ConfigRevision: configRevision,
+	}
+	commitResult := committer.Commit(context.Background(), skillName, &updated[0], "skill:maintenance_apply", auditData)
 	out["result"] = res.Result
 	out["requires_index_refresh"] = res.RequiresIndexRefresh
-	if res.BackupVersion > 0 {
-		out["backup_version"] = res.BackupVersion
-	}
-	if res.WrittenPath != "" {
-		out["written_path"] = res.WrittenPath
+	if res.MergeDraft != nil {
+		out["merge_draft"] = res.MergeDraft
 	}
 	if res.PatchDraft != nil {
 		out["patch_draft"] = res.PatchDraft
 	}
-	if res.MergeDraft != nil {
-		out["merge_draft"] = res.MergeDraft
+	if commitResult.State != "committed" || commitResult.CleanupStatus != "clear" {
+		out["state"] = commitResult.State
+		out["cleanup_status"] = commitResult.CleanupStatus
+		out["error"] = fmt.Sprintf("maintenance not committed: %s (%s)", commitResult.State, commitResult.FailureReason)
+		return out
 	}
+	out["ok"] = true
+	out["state"] = commitResult.State
+	out["cleanup_status"] = commitResult.CleanupStatus
+	out["message"] = res.Message
+	out["request_id"] = commitResult.RequestID
+	out["backup_version"] = commitResult.BackupVersion
 	return out
+}
+
+func newMaintenanceCompensation(requestID, skillName string, originalSkills []corelib.NLSkillEntry, originalYAML map[string][]byte, reason string) (skill.EvolutionCompensationRecord, error) {
+	var entry *corelib.NLSkillEntry
+	for i := range originalSkills {
+		if originalSkills[i].Name == skillName || originalSkills[i].MatchesName(skillName) {
+			entry = skill.CloneNLSkillEntry(&originalSkills[i])
+			break
+		}
+	}
+	if entry == nil {
+		return skill.EvolutionCompensationRecord{}, fmt.Errorf("skill %q not found in maintenance snapshot", skillName)
+	}
+	var yamlPath string
+	var yamlBackup []byte
+	if entry.SkillDir != "" {
+		if data, ok := originalYAML[entry.SkillDir]; ok {
+			yamlPath, yamlBackup = skillYAMLPath(entry.SkillDir), data
+		}
+		if yamlPath == "" {
+			yamlPath = filepath.Join(entry.SkillDir, "skill.yaml")
+		}
+	}
+	return skill.NewEvolutionCompensationRecord(requestID, entry.Name, "maintenance", yamlPath, yamlBackup, len(yamlBackup) > 0, originalSkills, reason), nil
+}
+
+// restoreMaintenanceSnapshots restores the complete config overlay and every
+// file-backed definition captured for a maintenance transaction. It is safe
+// to call after the mutation lock has been released.
+func restoreMaintenanceSnapshots(a *App, originalSkills []corelib.NLSkillEntry, originalYAML map[string][]byte) error {
+	if a == nil || a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	return a.skillExecutor.withSkillListMutate(func() error {
+		if err := saveSkillListForMaintenance(a.skillExecutor, originalSkills); err != nil {
+			return fmt.Errorf("restore config: %w", err)
+		}
+		for dir, data := range originalYAML {
+			if err := restoreSkillDefinitionBytes(dir, data); err != nil {
+				return fmt.Errorf("restore YAML %s: %w", dir, err)
+			}
+		}
+		return nil
+	})
+}
+
+// persistMaintenanceCompensation stores the pre-maintenance config/YAML
+// snapshot when rollback itself fails. Maintenance actions are single-skill
+// operations; the matching skill's definition is sufficient for restart
+// recovery while ConfigBackup preserves the full overlay.
+func persistMaintenanceCompensation(a *App, requestID, skillName string, originalSkills []corelib.NLSkillEntry, originalYAML map[string][]byte, reason string) error {
+	if a == nil {
+		return fmt.Errorf("app not initialized")
+	}
+	var entry *corelib.NLSkillEntry
+	for i := range originalSkills {
+		if originalSkills[i].Name == skillName || originalSkills[i].MatchesName(skillName) {
+			entry = skill.CloneNLSkillEntry(&originalSkills[i])
+			break
+		}
+	}
+	if entry == nil {
+		return fmt.Errorf("skill %q not found in maintenance snapshot", skillName)
+	}
+	var yamlPath string
+	var yamlBackup []byte
+	if entry.SkillDir != "" {
+		if data, ok := originalYAML[entry.SkillDir]; ok {
+			yamlPath, yamlBackup = skillYAMLPath(entry.SkillDir), data
+		}
+		if yamlPath == "" {
+			yamlPath = filepath.Join(entry.SkillDir, "skill.yaml")
+		}
+	}
+	record := skill.NewEvolutionCompensationRecord(requestID, entry.Name, "maintenance", yamlPath, yamlBackup, len(yamlBackup) > 0, originalSkills, reason)
+	return skill.PersistEvolutionCompensation(record)
 }
 
 // ListSkillMaintenanceDrafts returns read-only patch/merge review drafts from a
@@ -6823,6 +7147,12 @@ func (a *App) ListSkillEvolutionAudit(limit int) []map[string]interface{} {
 			"explanation": ev.Explanation,
 			"source":      ev.Source,
 		}
+		if ev.RequestID != "" {
+			row["request_id"] = ev.RequestID
+		}
+		if ev.Attempt != "" {
+			row["attempt"] = ev.Attempt
+		}
 		// Optional fields (omitempty in the JSONL): only include when present
 		// so older rows keep their original shape.
 		if ev.Status != "" {
@@ -6830,6 +7160,48 @@ func (a *App) ListSkillEvolutionAudit(limit int) []map[string]interface{} {
 		}
 		if ev.Via != "" {
 			row["via"] = ev.Via
+		}
+		if ev.Action != "" {
+			row["action"] = ev.Action
+		}
+		if ev.Decision != "" {
+			row["decision"] = ev.Decision
+		}
+		if ev.Reason != "" {
+			row["reason"] = ev.Reason
+		}
+		if ev.Risk != "" {
+			row["risk"] = ev.Risk
+		}
+		if ev.GateStatus != "" {
+			row["gate_status"] = ev.GateStatus
+		}
+		if ev.EvidenceDigest != "" {
+			row["evidence_digest"] = ev.EvidenceDigest
+		}
+		if ev.BackupVersion != "" {
+			row["backup_version"] = ev.BackupVersion
+		}
+		if ev.Operator != "" {
+			row["operator"] = ev.Operator
+		}
+		if ev.Trigger != "" {
+			row["trigger"] = ev.Trigger
+		}
+		if ev.SchemaVersion != "" {
+			row["schema_version"] = ev.SchemaVersion
+		}
+		if ev.ConfigRevision != "" {
+			row["config_revision"] = ev.ConfigRevision
+		}
+		if ev.EvidenceMode != "" {
+			row["evidence_mode"] = ev.EvidenceMode
+		}
+		if ev.FailureReason != "" {
+			row["failure_reason"] = ev.FailureReason
+		}
+		if ev.Termination != "" {
+			row["termination"] = ev.Termination
 		}
 		out = append(out, row)
 	}
@@ -6844,6 +7216,11 @@ func (a *App) GetSkillEvolutionStatus() SkillEvolutionStatus {
 		return out
 	}
 	out.EnvDisabled = skill.EvolutionEnvDisabled()
+	auditHealth := skill.EvolutionAuditHealth()
+	out.AuditAvailable = auditHealth.Available
+	out.LastAuditError = auditHealth.LastError
+	out.AuditFailureCount = auditHealth.FailureCount
+	out.LastAuditSuccessAt = auditHealth.LastSuccessAt
 	out.ConfigEnabled = true
 	if cfg, err := a.LoadConfig(); err == nil {
 		out.RepairCooldownHours = cfg.SkillEvolutionRepairCooldownHours
@@ -6851,6 +7228,9 @@ func (a *App) GetSkillEvolutionStatus() SkillEvolutionStatus {
 			out.RepairCooldownHours = 1
 		}
 		out.ConfigEnabled = cfg.IsSkillEvolutionEnabled()
+		out.ObservationEnabled = cfg.IsSkillMaintenanceObservationEnabled()
+		out.MaxConcurrentWorkersConfigured = cfg.EffectiveSkillEvolutionMaxConcurrentWorkers()
+		out.WorkerTimeoutSeconds = cfg.EffectiveSkillEvolutionWorkerTimeoutSeconds()
 	}
 	out.ConfigDisabled = !out.ConfigEnabled
 	out.Disabled = out.EnvDisabled || out.ConfigDisabled
@@ -6873,7 +7253,31 @@ func (a *App) GetSkillEvolutionStatus() SkillEvolutionStatus {
 	out.HasRepairHook = st.HasRepairHook
 	out.HasOptimizer = st.HasOptimizer
 	out.HasPromoter = st.HasPromoter
+	out.MaxConcurrentWorkers = st.MaxConcurrentWorkers
+	out.OldestPendingAt = st.OldestPendingAt
+	out.QueueWaitSeconds = st.QueueWaitSeconds
+	out.FailureSummaries = st.FailureSummaries
+	out.ActiveSkills = st.ActiveSkills
+	out.CancelledRequests = st.CancelledRequests
+	out.TimedOutRequests = st.TimedOutRequests
+	out.PendingCompensations = st.PendingCompensations
+	out.CompensationQueueHealthy = st.CompensationQueueHealthy
+	out.CompensationQueueError = st.CompensationQueueError
+	out.Requests = st.Requests
 	return out
+}
+
+// CancelSkillEvolution cancels a pending or active background evolution job
+// for one skill. It does not cancel the user's skill execution.
+func (a *App) CancelSkillEvolution(skillName string) bool {
+	if a == nil {
+		return false
+	}
+	a.ensureEvolutionPipeline()
+	if a.evolutionPipeline == nil {
+		return false
+	}
+	return a.evolutionPipeline.CancelSkill(skillName)
 }
 
 // parseLansengerGroupIDList accepts []string / []any from the settings UI.
@@ -7855,6 +8259,36 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SetSkillEvolutionEnabled(v)
+		case "skill_maintenance_observation_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetSkillMaintenanceObservationEnabled(v)
+		case "skill_evolution_max_concurrent_workers":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < 1 {
+				v = 1
+			}
+			if v > 16 {
+				v = 16
+			}
+			cfg.SkillEvolutionMaxConcurrentWorkers = v
+		case "skill_evolution_worker_timeout_seconds":
+			v, err := intField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			if v < corelib.MinSkillEvolutionWorkerTimeoutSeconds {
+				v = corelib.MinSkillEvolutionWorkerTimeoutSeconds
+			}
+			if v > corelib.MaxSkillEvolutionWorkerTimeoutSeconds {
+				v = corelib.MaxSkillEvolutionWorkerTimeoutSeconds
+			}
+			cfg.SkillEvolutionWorkerTimeoutSeconds = v
 		case "embed_hw_accel":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -8608,6 +9042,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	if _, ok := patch["skill_evolution_repair_cooldown_hours"]; ok && a.evolutionPipeline != nil {
 		a.evolutionPipeline.RepairCooldown = skill.RepairCooldownFromHours(cfg.SkillEvolutionRepairCooldownHours)
 	}
+	if _, ok := patch["skill_evolution_max_concurrent_workers"]; ok && a.evolutionPipeline != nil {
+		a.evolutionPipeline.MaxConcurrentWorkers = cfg.EffectiveSkillEvolutionMaxConcurrentWorkers()
+	}
+	if _, ok := patch["skill_evolution_worker_timeout_seconds"]; ok && a.evolutionPipeline != nil {
+		a.evolutionPipeline.WorkerTimeout = time.Duration(cfg.EffectiveSkillEvolutionWorkerTimeoutSeconds()) * time.Second
+	}
 	log.Printf("[config] PatchConfigFields:done fields=%d keys=%v", len(patch), configPatchKeys(patch))
 	return cfg, nil
 }
@@ -8810,16 +9250,33 @@ type UpdateResult struct {
 	Channel             string `json:"channel,omitempty"`    // "stable" or "beta" — which channel this result came from
 }
 
+// RollbackRelease is one server-published formal build that can be installed
+// from the online update dialog. Builds deliberately remain opaque strings:
+// neither the client nor the UI derives a formal version from a beta build.
+type RollbackRelease struct {
+	Build               string `json:"build"`
+	PublishedAt         string `json:"published_at"`
+	DownloadUrl         string `json:"download_url"`
+	SHA256              string `json:"sha256,omitempty"`
+	DownloadUnavailable bool   `json:"download_unavailable"`
+}
+
 const (
-	githubLatestManifestURL = "https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json"
-	r2LatestManifestURL     = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json"
-	r2PublicBaseURL         = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
-	cosLatestManifestURL    = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
-	cosPublicBaseURL        = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
+	githubReleaseDownloadBase = "https://github.com/RapidAI/MaClaw/releases/download"
+	githubLatestManifestURL   = "https://github.com/RapidAI/MaClaw/releases/latest/download/latest.json"
+	r2LatestManifestURL       = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest.json"
+	r2PublicBaseURL           = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
+	cosLatestManifestURL      = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
+	cosPublicBaseURL          = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
 
 	// Beta channel manifest URLs
 	r2BetaManifestURL  = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta.json"
 	cosBetaManifestURL = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/beta.json"
+
+	// Published only by stable release jobs. The contents are the server-side
+	// authority for rollbackable formal builds, not a locally inferred history.
+	r2StableHistoryURL  = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/stable-history.json"
+	cosStableHistoryURL = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/stable-history.json"
 )
 
 type updateManifest struct {
@@ -8836,6 +9293,16 @@ type updateManifestAsset struct {
 	SHA256 string   `json:"sha256,omitempty"`
 }
 
+type stableHistoryManifest struct {
+	Releases []stableHistoryRelease `json:"releases"`
+}
+
+type stableHistoryRelease struct {
+	Build       string                         `json:"build"`
+	PublishedAt string                         `json:"published_at"`
+	Assets      map[string]updateManifestAsset `json:"assets"`
+}
+
 func isReleaseMirrorURL(rawURL string, targetFileName string, isBeta bool) bool {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Scheme != "https" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
@@ -8849,7 +9316,15 @@ func isReleaseMirrorURL(rawURL string, targetFileName string, isBeta bool) bool 
 	if parsed.EscapedPath() != expectedPath {
 		return false
 	}
-	return parsed.Hostname() == "pub-c837069cbe31469590a5fea6235b436b.r2.dev" || parsed.Hostname() == "maclaw-1252723594.cos.ap-beijing.myqcloud.com"
+	return parsed.Host == mirrorHost(r2PublicBaseURL) || parsed.Host == mirrorHost(cosPublicBaseURL)
+}
+
+func mirrorHost(baseURL string) string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
 }
 
 func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
@@ -8888,6 +9363,17 @@ func r2ReleaseAssetURL(fileName string, isBeta bool) string {
 		prefix = "beta"
 	}
 	return fmt.Sprintf("%s/%s/%s", r2PublicBaseURL, prefix, fileName)
+}
+
+func immutableReleaseAssetURL(baseURL, build, fileName string) string {
+	return fmt.Sprintf("%s/releases/%s/%s", baseURL, url.PathEscape(build), url.PathEscape(fileName))
+}
+
+// githubReleaseAssetURL is deterministic from the server-published build and
+// platform installer name. Rollback history never supplies an arbitrary GitHub
+// URL; it only authorizes the immutable R2/COS archive metadata and checksum.
+func githubReleaseAssetURL(build, fileName string) string {
+	return fmt.Sprintf("%s/%s/%s", githubReleaseDownloadBase, url.PathEscape(build), url.PathEscape(fileName))
 }
 
 func cosReleaseAssetURL(fileName string, isBeta bool) string {
@@ -8958,7 +9444,7 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 	githubDownloadUrl := strings.TrimSpace(release.GitHubDownloadURL)
 	cosDownloadUrl := strings.TrimSpace(release.COSDownloadURL)
 	if githubDownloadUrl == "" {
-		githubDownloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
+		githubDownloadUrl = githubReleaseAssetURL(tagName, targetFileName)
 	}
 	if cosDownloadUrl == "" {
 		betaTag := isBeta || strings.Contains(tagName, "-beta") || strings.Contains(tagName, "-alpha") || strings.Contains(tagName, "-rc")
@@ -9161,7 +9647,7 @@ func (a *App) fetchManifestLatestRelease(source, manifestURL string, timeout tim
 	mirrorURLs := manifestAssetDownloadURLs(manifest, targetFileName, tagName, isBeta)
 	githubURL := ""
 	if tagName != "" {
-		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
+		githubURL = githubReleaseAssetURL(tagName, targetFileName)
 	}
 	sha256 := ""
 	if asset, ok := manifest.Assets[targetFileName]; ok {
@@ -9182,6 +9668,279 @@ func (a *App) fetchR2LatestRelease(timeout time.Duration) (latestReleaseInfo, er
 func (a *App) fetchCOSLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
 	a.log(a.tr("CheckUpdate: Starting COS check against %s", cosLatestManifestURL))
 	return a.fetchManifestLatestRelease("cos", cosLatestManifestURL, timeout)
+}
+
+// ListRollbackReleases returns at most five formal builds from the server-
+// published history. The client never synthesizes this list from local state or
+// from a beta manifest.
+func (a *App) ListRollbackReleases() ([]RollbackRelease, error) {
+	// GitHub Releases is the canonical public catalogue and is also the
+	// preferred download path (its egress is free for this use case). Try it
+	// first; object-storage history remains a fast fallback for installations
+	// that cannot reach the GitHub API.
+	var githubErr error
+	if releases, err := fetchGitHubStableHistory(20 * time.Second); err == nil {
+		a.log(a.tr("ListRollbackReleases: using github releases history"))
+		return releases, nil
+	} else {
+		githubErr = err
+		a.log(a.tr("ListRollbackReleases: github releases history failed, trying mirrors: %v", err))
+	}
+	failures := []string{fmt.Sprintf("github: %v", githubErr)}
+	for _, source := range []struct {
+		name string
+		url  string
+	}{
+		{name: "r2", url: r2StableHistoryURL},
+		{name: "cos", url: cosStableHistoryURL},
+	} {
+		releases, err := fetchStableHistory(source.name, source.url, 6*time.Second)
+		if err == nil {
+			a.log(a.tr("ListRollbackReleases: using %s stable history", source.name))
+			return releases, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", source.name, err))
+	}
+	return nil, fmt.Errorf("all stable history checks failed: %s", strings.Join(failures, "; "))
+}
+
+type githubReleaseSummary struct {
+	TagName     string `json:"tag_name"`
+	PublishedAt string `json:"published_at"`
+	Draft       bool   `json:"draft"`
+	Prerelease  bool   `json:"prerelease"`
+	Assets      []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+const githubReleaseListMaxBytes = 16 * 1024 * 1024
+
+// decodeGitHubReleaseSummaries keeps the response bounded while allowing for
+// the large platform-asset catalogue attached to each release.
+func decodeGitHubReleaseSummaries(r io.Reader) ([]githubReleaseSummary, error) {
+	// Read one byte past the cap so an oversized response cannot be mistaken
+	// for a successfully decoded prefix when the JSON value happens to end at
+	// the limit.
+	data, err := io.ReadAll(io.LimitReader(r, githubReleaseListMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > githubReleaseListMaxBytes {
+		return nil, fmt.Errorf("github releases response exceeds %d bytes", githubReleaseListMaxBytes)
+	}
+	var summaries []githubReleaseSummary
+	if err := json.Unmarshal(data, &summaries); err != nil {
+		return nil, err
+	}
+	return summaries, nil
+}
+
+// fetchGitHubStableHistory derives rollback metadata from public, non-draft,
+// non-prerelease GitHub releases. Checksums still come from each release's
+// server-published latest.json; no checksum is inferred locally.
+func fetchGitHubStableHistory(timeout time.Duration) ([]RollbackRelease, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	// Request enough history to survive drafts, prereleases, or incomplete
+	// platform assets being skipped. The bounded decoder below prevents an
+	// unexpectedly large API response from exhausting memory.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/RapidAI/MaClaw/releases?per_page=30", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", brand.Current().DisplayName)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := updateHTTPClient(timeout).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github releases returned status %d", resp.StatusCode)
+	}
+	if resp.ContentLength > githubReleaseListMaxBytes {
+		return nil, fmt.Errorf("github releases response exceeds %d bytes", githubReleaseListMaxBytes)
+	}
+	summaries, err := decodeGitHubReleaseSummaries(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	target := updateTargetFileName()
+	result := make([]RollbackRelease, 0, 5)
+	seen := make(map[string]bool, 5)
+	for _, summary := range summaries {
+		if len(result) >= 5 || summary.Draft || summary.Prerelease {
+			continue
+		}
+		build := strings.TrimSpace(summary.TagName)
+		publishedAt := strings.TrimSpace(summary.PublishedAt)
+		if build == "" || seen[build] || !validRollbackPublishedAt(publishedAt) {
+			continue
+		}
+		var installerURL, manifestURL string
+		for _, asset := range summary.Assets {
+			switch asset.Name {
+			case target:
+				installerURL = strings.TrimSpace(asset.BrowserDownloadURL)
+			case "latest.json":
+				manifestURL = strings.TrimSpace(asset.BrowserDownloadURL)
+			}
+		}
+		if !validGitHubReleaseAssetURL(installerURL, build, target) || !validGitHubReleaseAssetURL(manifestURL, build, "latest.json") {
+			continue
+		}
+		sha, err := fetchGitHubReleaseSHA256(ctx, manifestURL, target)
+		if err != nil || !validSHA256Digest(sha) {
+			continue
+		}
+		result = append(result, RollbackRelease{Build: build, PublishedAt: publishedAt, DownloadUrl: combineDownloadURLList(githubReleaseAssetURL(build, target), immutableReleaseAssetURL(r2PublicBaseURL, build, target), immutableReleaseAssetURL(cosPublicBaseURL, build, target)), SHA256: sha})
+		seen[build] = true
+	}
+	// GitHub normally returns newest-first, but the API does not promise that
+	// ordering forever. Sort explicitly so the five entries are deterministic.
+	sort.SliceStable(result, func(i, j int) bool {
+		left, _ := time.Parse(time.RFC3339, result[i].PublishedAt)
+		right, _ := time.Parse(time.RFC3339, result[j].PublishedAt)
+		return left.After(right)
+	})
+	if len(result) == 0 {
+		return nil, fmt.Errorf("github releases contain no valid rollback releases")
+	}
+	return result, nil
+}
+
+func validGitHubReleaseAssetURL(rawURL, build, fileName string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return false
+	}
+	expected := "/RapidAI/MaClaw/releases/download/" + url.PathEscape(build) + "/" + url.PathEscape(fileName)
+	return parsed.EscapedPath() == expected
+}
+
+func fetchGitHubReleaseSHA256(ctx context.Context, manifestURL, target string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", brand.Current().DisplayName)
+	resp, err := updateHTTPClient(8 * time.Second).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github latest manifest returned status %d", resp.StatusCode)
+	}
+	var manifest updateManifest
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&manifest); err != nil {
+		return "", err
+	}
+	asset, ok := manifest.Assets[target]
+	if !ok {
+		return "", fmt.Errorf("manifest missing %s", target)
+	}
+	return strings.TrimSpace(asset.SHA256), nil
+}
+
+func fetchStableHistory(source, historyURL string, timeout time.Duration) ([]RollbackRelease, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, historyURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", brand.Current().DisplayName)
+	resp, err := updateHTTPClient(timeout).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s stable history returned status %d", source, resp.StatusCode)
+	}
+	var manifest stableHistoryManifest
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024))
+	if err := decoder.Decode(&manifest); err != nil {
+		return nil, err
+	}
+	releases := rollbackReleasesFromManifest(manifest, updateTargetFileName())
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("%s stable history contains no valid rollback releases", source)
+	}
+	return releases, nil
+}
+
+func rollbackReleasesFromManifest(manifest stableHistoryManifest, targetFileName string) []RollbackRelease {
+	const limit = 5
+	seen := make(map[string]bool, limit)
+	releases := make([]RollbackRelease, 0, limit)
+	for _, release := range manifest.Releases {
+		if len(releases) == limit {
+			break
+		}
+		build := strings.TrimSpace(release.Build)
+		publishedAt := strings.TrimSpace(release.PublishedAt)
+		asset, ok := release.Assets[targetFileName]
+		if build == "" || !validRollbackPublishedAt(publishedAt) || !ok || seen[build] || !validSHA256Digest(asset.SHA256) {
+			continue
+		}
+		// Use only URLs that correspond to this build's fixed, immutable public
+		// mirror location. History payloads provide the build/date/hash only;
+		// they cannot redirect the installer to an arbitrary host.
+		r2URL := immutableReleaseAssetURL(r2PublicBaseURL, build, targetFileName)
+		cosURL := immutableReleaseAssetURL(cosPublicBaseURL, build, targetFileName)
+		if !rollbackAssetURLsMatch(asset, r2URL, cosURL) {
+			continue
+		}
+		// Prefer GitHub's release attachment for rollback downloads so the
+		// project mirrors carry less egress, then retain R2 and COS as verified
+		// fallbacks when GitHub is unavailable.
+		downloadURL := combineDownloadURLList(githubReleaseAssetURL(build, targetFileName), r2URL, cosURL)
+		releases = append(releases, RollbackRelease{
+			Build:       build,
+			PublishedAt: publishedAt,
+			DownloadUrl: downloadURL,
+			SHA256:      strings.TrimSpace(asset.SHA256),
+		})
+		seen[build] = true
+	}
+	return releases
+}
+
+// validRollbackPublishedAt accepts the UTC RFC 3339 timestamp emitted by the
+// release publisher. The UI displays its calendar-date prefix verbatim, so do
+// not admit arbitrary strings that could be mistaken for a formal release
+// date.
+func validRollbackPublishedAt(value string) bool {
+	_, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	return err == nil
+}
+
+func validSHA256Digest(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func rollbackAssetURLsMatch(asset updateManifestAsset, r2URL, cosURL string) bool {
+	allowed := map[string]bool{r2URL: true, cosURL: true}
+	for _, candidate := range append(asset.URLs, asset.URL) {
+		if allowed[strings.TrimSpace(candidate)] {
+			return true
+		}
+	}
+	return false
 }
 
 // Helper function to get map keys
@@ -10931,10 +11690,20 @@ func (a *App) normalizeOpenPathForApp(path string) (string, error) {
 
 // startSystemOpen opens path with the OS default handler (non-blocking).
 func startSystemOpen(path string) error {
+	if goruntime.GOOS == "windows" {
+		winPath := filepath.FromSlash(path)
+		if err := startSystemOpenWindows(winPath); err == nil {
+			return nil
+		} else {
+			log.Printf("[app-open-file] ShellExecuteW failed path=%q err=%v; falling back to rundll32", winPath, err)
+			path = winPath
+		}
+	}
 	var cmd *exec.Cmd
 	switch goruntime.GOOS {
 	case "windows":
-		cmd = exec.Command(windowsSystemExecutable("rundll32.exe"), "url.dll,FileProtocolHandler", filepath.FromSlash(path))
+		cmd = exec.Command(windowsSystemExecutable("rundll32.exe"), "url.dll,FileProtocolHandler", path)
+		hideCommandWindow(cmd)
 	case "darwin":
 		cmd = exec.Command("open", path)
 	case "linux":
@@ -11537,7 +12306,41 @@ func higherSkillInstallScanReport(current, next *skill.ScanReport) *skill.ScanRe
 func getToolConfigDirName(tool string) string {
 	return normalizeRemoteToolNameKind(tool).ConfigDirName()
 }
+
+// legacySkillCommitError preserves whether the legacy metadata transaction
+// crossed its commit boundary. InstallSkill uses this to avoid deleting an
+// already-published directory when only post-commit cleanup failed.
+type legacySkillCommitError struct {
+	err       error
+	committed bool
+}
+
+func (e *legacySkillCommitError) Error() string { return e.err.Error() }
+func (e *legacySkillCommitError) Unwrap() error { return e.err }
+
+// resolveLegacySkillPackagePath makes the legacy metadata API deterministic:
+// a bare package name is always resolved relative to the selected tool's
+// skills directory, while an explicit path is preserved. This prevents a
+// process working-directory change from reading or publishing an unintended
+// ZIP file.
+func resolveLegacySkillPackagePath(value, skillsDir string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.IsAbs(value) || strings.ContainsAny(value, `/\\`) {
+		return value
+	}
+	return filepath.Join(skillsDir, value)
+}
+
 func (a *App) AddSkill(name, description, skillType, value, toolName string) error {
+	a.installMutex.Lock()
+	defer a.installMutex.Unlock()
+	return a.addSkillLocked(name, description, skillType, value, toolName)
+}
+
+// addSkillLocked is the legacy metadata registry transaction. Callers that
+// already hold installMutex (InstallSkill) use this helper to keep directory,
+// package and metadata writes serialized as one local critical section.
+func (a *App) addSkillLocked(name, description, skillType, value, toolName string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "name": name, "type": skillType, "tool": toolName}); err != nil {
 		return err
 	}
@@ -11547,8 +12350,9 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 		return fmt.Errorf("codex only supports zip package skills")
 	}
 	// Validate zip if applicable
-	if skillKind.IsZip() && strings.Contains(value, string(os.PathSeparator)) {
-		if err := a.validateSkillZip(value); err != nil {
+	if skillKind.IsZip() {
+		zipPath := resolveLegacySkillPackagePath(value, a.GetSkillsDir(toolName))
+		if err := a.validateSkillZip(zipPath); err != nil {
 			return err
 		}
 	}
@@ -11560,31 +12364,111 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	// Load existing
 	var skills []corelib.Skill
 	if data, err := os.ReadFile(metadataPath); err == nil {
-		json.Unmarshal(data, &skills)
+		if err := json.Unmarshal(data, &skills); err != nil {
+			return fmt.Errorf("decode skill metadata: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read skill metadata: %w", err)
+	}
+	originalMetadata, metadataExists := []byte(nil), false
+	if data, err := os.ReadFile(metadataPath); err == nil {
+		originalMetadata, metadataExists = data, true
 	}
 	// Check for duplicate name - update if exists
 	found := false
+	var stagedPackage, packageDestination, packageBackup string
+	packagePublished := false
+	defer func() {
+		if stagedPackage != "" {
+			_ = os.Remove(stagedPackage)
+		}
+	}()
+	rollbackPackage := func() error {
+		if !packagePublished {
+			if stagedPackage != "" {
+				_ = os.Remove(stagedPackage)
+			}
+			return nil
+		}
+		if err := os.Remove(packageDestination); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if packageBackup != "" {
+			if err := os.Rename(packageBackup, packageDestination); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	stagePackage := func(src, dest string) error {
+		in, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		tmp, err := os.CreateTemp(filepath.Dir(dest), ".skill-package-*.tmp")
+		if err != nil {
+			return err
+		}
+		tmpPath := tmp.Name()
+		ok := false
+		defer func() {
+			_ = tmp.Close()
+			if !ok {
+				_ = os.Remove(tmpPath)
+			}
+		}()
+		if _, err := io.Copy(tmp, in); err != nil {
+			return err
+		}
+		if err := tmp.Sync(); err != nil {
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		ok = true
+		stagedPackage = tmpPath
+		packageDestination = dest
+		return nil
+	}
+	publishPackage := func() error {
+		if stagedPackage == "" {
+			return nil
+		}
+		packageBackup = packageDestination + ".prev"
+		if _, err := os.Stat(packageBackup); err == nil {
+			return fmt.Errorf("skill package backup conflict: %s already exists", filepath.Base(packageBackup))
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if _, err := os.Stat(packageDestination); err == nil {
+			if err := os.Rename(packageDestination, packageBackup); err != nil {
+				return fmt.Errorf("backup skill package: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(stagedPackage, packageDestination); err != nil {
+			if packageBackup != "" {
+				_ = os.Rename(packageBackup, packageDestination)
+			}
+			return fmt.Errorf("publish skill package: %w", err)
+		}
+		stagedPackage = ""
+		packagePublished = true
+		return nil
+	}
 	for i, s := range skills {
 		if s.Name == name {
 			finalValue := value
 			if skillKind.IsZip() {
 				// If value is a path (contains separator)", assume it's a new file to copy
-				if strings.Contains(value, string(os.PathSeparator)) {
-					srcFile, err := os.Open(value)
-					if err != nil {
-						return err
-					}
-					defer srcFile.Close()
+				if strings.ContainsAny(value, `/\\`) {
 					fileName := filepath.Base(value)
 					destPath := filepath.Join(skillsDir, fileName)
-					destFile, err := os.Create(destPath)
-					if err != nil {
-						return err
-					}
-					defer destFile.Close()
-					_, err = io.Copy(destFile, srcFile)
-					if err != nil {
-						return err
+					if err := stagePackage(resolveLegacySkillPackagePath(value, skillsDir), destPath); err != nil {
+						return fmt.Errorf("stage skill package: %w", err)
 					}
 					finalValue = fileName
 				}
@@ -11594,6 +12478,7 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 				Description: description,
 				Type:        skillType,
 				Value:       finalValue,
+				Installed:   s.Installed,
 			}
 			found = true
 			break
@@ -11602,22 +12487,10 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	if !found {
 		finalValue := value
 		if skillKind.IsZip() {
-			// Copy file
-			srcFile, err := os.Open(value)
-			if err != nil {
-				return err
-			}
-			defer srcFile.Close()
 			fileName := filepath.Base(value)
 			destPath := filepath.Join(skillsDir, fileName)
-			destFile, err := os.Create(destPath)
-			if err != nil {
-				return err
-			}
-			defer destFile.Close()
-			_, err = io.Copy(destFile, srcFile)
-			if err != nil {
-				return err
+			if err := stagePackage(resolveLegacySkillPackagePath(value, skillsDir), destPath); err != nil {
+				return fmt.Errorf("stage skill package: %w", err)
 			}
 			finalValue = fileName
 		}
@@ -11634,8 +12507,29 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+	if err := publishPackage(); err != nil {
 		return err
+	}
+	if err := atomicWriteFile(metadataPath, data); err != nil {
+		rollbackErr := rollbackPackage()
+		if rollbackErr != nil {
+			return fmt.Errorf("write skill metadata: %w; rollback package: %v", err, rollbackErr)
+		}
+		if metadataExists {
+			if restoreErr := atomicWriteFile(metadataPath, originalMetadata); restoreErr != nil {
+				return fmt.Errorf("write skill metadata: %w; restore metadata: %v", err, restoreErr)
+			}
+		} else {
+			_ = os.Remove(metadataPath)
+		}
+		return fmt.Errorf("write skill metadata: %w", err)
+	}
+	if packageBackup != "" {
+		if err := os.Remove(packageBackup); err != nil && !os.IsNotExist(err) {
+			// The new metadata/package pair is already committed. Surface cleanup
+			// failure so callers do not mistake this legacy API for a clear commit.
+			return &legacySkillCommitError{err: fmt.Errorf("skill metadata committed but package cleanup failed: %w", err), committed: true}
+		}
 	}
 	if a.skillExecutor != nil {
 		a.skillExecutor.invalidateSkillCache()
@@ -11645,10 +12539,23 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	return nil
 }
 func (a *App) InstallDefaultMarketplace() error {
+	a.installMutex.Lock()
+	defer a.installMutex.Unlock()
+	return a.installDefaultMarketplaceLocked()
+}
+
+// installDefaultMarketplaceLocked applies the marketplace settings mutation
+// while the caller owns installMutex. Keeping the lock boundary explicit
+// prevents an InstallSkill transaction from interleaving marketplace and
+// plugin settings writes with another install/uninstall request.
+func (a *App) installDefaultMarketplaceLocked() error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": "default_marketplace"}); err != nil {
 		return err
 	}
-	home, _ := os.UserHomeDir()
+	home := a.GetUserHomeDir()
+	if strings.TrimSpace(home) == "" {
+		return fmt.Errorf("user home directory is unavailable")
+	}
 	settingsFile := filepath.Join(home, ".claude", "settings.json")
 
 	// Ensure directory exists
@@ -11660,8 +12567,13 @@ func (a *App) InstallDefaultMarketplace() error {
 	var settings map[string]interface{}
 	if data, err := os.ReadFile(settingsFile); err == nil {
 		if err := json.Unmarshal(data, &settings); err != nil {
-			settings = make(map[string]interface{})
+			return fmt.Errorf("decode marketplace settings: %w", err)
 		}
+		if settings == nil {
+			return fmt.Errorf("decode marketplace settings: top-level JSON must be an object")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read marketplace settings: %w", err)
 	} else {
 		settings = make(map[string]interface{})
 	}
@@ -11669,6 +12581,9 @@ func (a *App) InstallDefaultMarketplace() error {
 	// Ensure extraKnownMarketplaces exists
 	marketplaces, ok := settings["extraKnownMarketplaces"].(map[string]interface{})
 	if !ok {
+		if _, exists := settings["extraKnownMarketplaces"]; exists {
+			return fmt.Errorf("decode marketplace settings: extraKnownMarketplaces must be an object")
+		}
 		marketplaces = make(map[string]interface{})
 	}
 
@@ -11702,7 +12617,7 @@ func (a *App) InstallDefaultMarketplace() error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal settings: %v", err)
 		}
-		if err := os.WriteFile(settingsFile, data, 0644); err != nil {
+		if err := atomicWriteFile(settingsFile, data); err != nil {
 			return fmt.Errorf("failed to write settings: %v", err)
 		}
 		a.log("Default marketplaces added to ~/.claude/settings.json")
@@ -11734,7 +12649,68 @@ func (a *App) unzip(src, dest string) error {
 	return nil
 }
 
+// ensureSkillZipDoesNotOverwriteExisting applies the legacy GUI install
+// fail-closed rule. The archive installer still has a separate metadata
+// registry, so replacing an existing skill directory here could leave the
+// directory and metadata at different versions if a later step fails. Until
+// this entry is migrated to the shared durable directory committer, only new
+// top-level skill directories (or an entirely empty destination for a root
+// package) are allowed.
+func ensureSkillZipDoesNotOverwriteExisting(archivePath, destinationRoot string) error {
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("inspect skill ZIP for overwrite: %w", err)
+	}
+	defer archive.Close()
+	if _, err := os.Stat(destinationRoot); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	rootHasFiles := false
+	topLevels := make(map[string]struct{})
+	for _, entry := range archive.File {
+		name := strings.Trim(strings.ReplaceAll(entry.Name, "\\", "/"), "/")
+		if name == "" || strings.HasPrefix(name, "__MACOSX/") || name == "__MACOSX" {
+			continue
+		}
+		parts := strings.Split(name, "/")
+		if len(parts) == 1 {
+			if entry.FileInfo().IsDir() {
+				continue
+			}
+			rootHasFiles = true
+			continue
+		}
+		topLevels[parts[0]] = struct{}{}
+	}
+	if rootHasFiles {
+		entries, readErr := os.ReadDir(destinationRoot)
+		if readErr != nil {
+			return fmt.Errorf("inspect existing skill destination: %w", readErr)
+		}
+		for _, existing := range entries {
+			if existing.Name() == "." || existing.Name() == ".." {
+				continue
+			}
+			return fmt.Errorf("skill ZIP would overwrite existing destination %q; legacy GUI updates are disabled", filepath.Base(destinationRoot))
+		}
+	}
+	for top := range topLevels {
+		target := filepath.Join(destinationRoot, top)
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("skill ZIP would overwrite existing skill directory %q; legacy GUI updates are disabled", top)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
+	a.installMutex.Lock()
+	defer a.installMutex.Unlock()
 	locationKind := normalizeSkillInstallLocationKind(location)
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if locationKind.IsProject() && projectPath == "" {
@@ -11761,11 +12737,7 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 	var installScanReports *skillZipInstallScanResult
 	var zipSnapshotPath string
 	if skillKind.IsZip() {
-		if strings.Contains(value, string(os.PathSeparator)) {
-			fullPath = value
-		} else {
-			fullPath = filepath.Join(a.GetSkillsDir(toolName), value)
-		}
+		fullPath = resolveLegacySkillPackagePath(value, a.GetSkillsDir(toolName))
 		snapshot, cleanup, err := snapshotSkillZipForInstall(fullPath)
 		if err != nil {
 			return err
@@ -11786,8 +12758,57 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 		}
 	}
 	configDirName := getToolConfigDirName(toolName)
+	if skillKind.IsZip() {
+		// The legacy GUI path cannot yet atomically commit directory contents,
+		// metadata.json and scan cache as one durable transaction. Reject an
+		// overwrite before touching the destination; new-directory installs
+		// remain available for manual confirmation.
+		if locationKind.IsUser() {
+			home := a.GetUserHomeDir()
+			if strings.TrimSpace(home) == "" {
+				return fmt.Errorf("user home directory is unavailable")
+			}
+			if err := ensureSkillZipDoesNotOverwriteExisting(fullPath, filepath.Join(home, configDirName, "skills")); err != nil {
+				return err
+			}
+		} else if locationKind.IsProject() {
+			if err := ensureSkillZipDoesNotOverwriteExisting(fullPath, filepath.Join(projectPath, configDirName, "skills")); err != nil {
+				return err
+			}
+		}
+	}
 	var installedSkillDirs []string
 	// 2. Install to Tool
+	var settingsPath string
+	var settingsBefore []byte
+	settingsExisted := false
+	settingsCommitted := false
+	defer func() {
+		// Marketplace registration and plugin enablement share one legacy
+		// settings snapshot. If a later install step fails, restore the exact
+		// pre-install bytes so a partial settings update cannot outlive the
+		// failed skill transaction. A committed metadata transaction owns the
+		// new settings and must keep them.
+		if settingsPath != "" && !settingsCommitted {
+			if settingsExisted {
+				_ = atomicWriteFile(settingsPath, settingsBefore)
+			} else {
+				_ = os.Remove(settingsPath)
+			}
+		}
+	}()
+	if locationKind.IsUser() && skillKind.IsAddress() {
+		home := a.GetUserHomeDir()
+		if strings.TrimSpace(home) == "" {
+			return fmt.Errorf("user home directory is unavailable")
+		}
+		settingsPath = filepath.Join(home, ".claude", "settings.json")
+		if before, readErr := os.ReadFile(settingsPath); readErr == nil {
+			settingsBefore, settingsExisted = before, true
+		} else if !os.IsNotExist(readErr) {
+			return fmt.Errorf("snapshot plugin settings: %w", readErr)
+		}
+	}
 	if locationKind.IsUser() {
 		if skillKind.IsAddress() {
 			// Skill ID installation
@@ -11795,22 +12816,33 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 				return fmt.Errorf("skill ID installation is currently only supported for Claude")
 			}
 			// Ensure default marketplaces are registered
-			if err := a.InstallDefaultMarketplace(); err != nil {
-				a.log(fmt.Sprintf("Warning: failed to ensure marketplaces: %v", err))
+			if err := a.installDefaultMarketplaceLocked(); err != nil {
+				return fmt.Errorf("ensure default marketplaces: %w", err)
 			}
 			// Enable plugin in ~/.claude/settings.json
-			home, _ := os.UserHomeDir()
+			home := a.GetUserHomeDir()
+			if strings.TrimSpace(home) == "" {
+				return fmt.Errorf("user home directory is unavailable")
+			}
 			settingsFile := filepath.Join(home, ".claude", "settings.json")
 			var settings map[string]interface{}
 			if data, err := os.ReadFile(settingsFile); err == nil {
 				if err := json.Unmarshal(data, &settings); err != nil {
-					settings = make(map[string]interface{})
+					return fmt.Errorf("decode plugin settings: %w", err)
 				}
-			} else {
+				if settings == nil {
+					return fmt.Errorf("decode plugin settings: top-level JSON must be an object")
+				}
+			} else if os.IsNotExist(err) {
 				settings = make(map[string]interface{})
+			} else {
+				return fmt.Errorf("read plugin settings: %w", err)
 			}
 			enabledPlugins, ok := settings["enabledPlugins"].(map[string]interface{})
 			if !ok {
+				if _, exists := settings["enabledPlugins"]; exists {
+					return fmt.Errorf("decode plugin settings: enabledPlugins must be an object")
+				}
 				enabledPlugins = make(map[string]interface{})
 			}
 			enabledPlugins[value] = true
@@ -11819,19 +12851,23 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 			if err != nil {
 				return fmt.Errorf("failed to marshal settings: %v", err)
 			}
-			if err := os.WriteFile(settingsFile, data, 0644); err != nil {
+			if err := atomicWriteFile(settingsFile, data); err != nil {
 				return fmt.Errorf("failed to write settings: %v", err)
 			}
 			a.log(fmt.Sprintf("Plugin %s enabled in settings.json", value))
 		} else {
 			// Unzip to ~/.<tool>/skills
-			home, _ := os.UserHomeDir()
+			home := a.GetUserHomeDir()
+			if strings.TrimSpace(home) == "" {
+				return fmt.Errorf("user home directory is unavailable")
+			}
 			destDir := filepath.Join(home, configDirName, "skills")
+			beforeDirs := installedSkillDirSet(destDir)
 			a.emitSkillInstallProgress(name, "installing", "Installing approved skill package.", installScanReport)
 			if err := a.unzip(fullPath, destDir); err != nil {
 				return fmt.Errorf("unzip failed: %v", err)
 			}
-			installedSkillDirs = append(installedSkillDirs, candidateInstalledSkillDirs(destDir)...)
+			installedSkillDirs = append(installedSkillDirs, newlyInstalledSkillDirs(destDir, beforeDirs)...)
 			if err := writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports); err != nil {
 				cleanupImportedSkillDirs(installedSkillDirs)
 				return fmt.Errorf("write skill scan cache: %w", err)
@@ -11839,11 +12875,12 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 		}
 	} else if locationKind.IsProject() {
 		destDir := filepath.Join(projectPath, configDirName, "skills")
+		beforeDirs := installedSkillDirSet(destDir)
 		a.emitSkillInstallProgress(name, "installing", "Installing approved skill package.", installScanReport)
 		if err := a.unzip(fullPath, destDir); err != nil {
 			return fmt.Errorf("unzip failed: %v", err)
 		}
-		installedSkillDirs = append(installedSkillDirs, candidateInstalledSkillDirs(destDir)...)
+		installedSkillDirs = append(installedSkillDirs, newlyInstalledSkillDirs(destDir, beforeDirs)...)
 		if err := writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports); err != nil {
 			cleanupImportedSkillDirs(installedSkillDirs)
 			return fmt.Errorf("write skill scan cache: %w", err)
@@ -11854,10 +12891,26 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 	if zipSnapshotPath != "" {
 		addSkillValue = zipSnapshotPath
 	}
-	if err := a.AddSkill(name, description, skillType, addSkillValue, toolName); err != nil {
-		cleanupImportedSkillDirs(installedSkillDirs)
+	if err := a.addSkillLocked(name, description, skillType, addSkillValue, toolName); err != nil {
+		var committedErr *legacySkillCommitError
+		if errors.As(err, &committedErr) && committedErr.committed {
+			// The metadata/package business commit crossed its boundary; retain
+			// the settings mutation and surface cleanup-pending semantics to the
+			// caller instead of restoring a now-inconsistent pre-image.
+			settingsCommitted = true
+		} else {
+			cleanupImportedSkillDirs(installedSkillDirs)
+			if settingsPath != "" {
+				if settingsExisted {
+					_ = atomicWriteFile(settingsPath, settingsBefore)
+				} else {
+					_ = os.Remove(settingsPath)
+				}
+			}
+		}
 		return err
 	}
+	settingsCommitted = true
 	a.emitSkillInstallProgress(name, "done", "Skill installed successfully.", installScanReport)
 	return nil
 }
@@ -11888,6 +12941,8 @@ func snapshotSkillZipForInstall(src string) (string, func(), error) {
 }
 
 func (a *App) DeleteSkill(name, toolName string) error {
+	a.installMutex.Lock()
+	defer a.installMutex.Unlock()
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "uninstall", "name": name, "tool": toolName}); err != nil {
 		return err
 	}
@@ -11899,13 +12954,63 @@ func (a *App) DeleteSkill(name, toolName string) error {
 	metadataPath := filepath.Join(skillsDir, "metadata.json")
 	var skills []corelib.Skill
 	if data, err := os.ReadFile(metadataPath); err == nil {
-		json.Unmarshal(data, &skills)
+		if err := json.Unmarshal(data, &skills); err != nil {
+			return fmt.Errorf("decode skill metadata: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read skill metadata: %w", err)
 	}
 	var newSkills []corelib.Skill
+	type deletedPackage struct {
+		original string
+		staged   string
+	}
+	var deleted []deletedPackage
+	rollbackPackages := func() error {
+		var firstErr error
+		for i := len(deleted) - 1; i >= 0; i-- {
+			item := deleted[i]
+			if _, err := os.Stat(item.staged); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if err := os.Rename(item.staged, item.original); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 	for _, s := range skills {
 		if s.Name == name {
 			if normalizeSkillTypeKind(s.Type).IsZip() {
-				os.Remove(filepath.Join(skillsDir, s.Value))
+				packagePath := resolveLegacySkillPackagePath(s.Value, skillsDir)
+				if _, err := os.Stat(packagePath); err == nil {
+					stage, stageErr := os.CreateTemp(filepath.Dir(packagePath), ".skill-delete-*")
+					if stageErr != nil {
+						_ = rollbackPackages()
+						return fmt.Errorf("stage skill package deletion: %w", stageErr)
+					}
+					stagePath := stage.Name()
+					if closeErr := stage.Close(); closeErr != nil {
+						_ = os.Remove(stagePath)
+						_ = rollbackPackages()
+						return fmt.Errorf("stage skill package deletion: %w", closeErr)
+					}
+					_ = os.Remove(stagePath)
+					if renameErr := os.Rename(packagePath, stagePath); renameErr != nil {
+						_ = rollbackPackages()
+						return fmt.Errorf("stage skill package deletion: %w", renameErr)
+					}
+					deleted = append(deleted, deletedPackage{original: packagePath, staged: stagePath})
+				} else if !os.IsNotExist(err) {
+					_ = rollbackPackages()
+					return fmt.Errorf("inspect skill package: %w", err)
+				}
 			}
 		} else {
 			newSkills = append(newSkills, s)
@@ -11915,7 +13020,24 @@ func (a *App) DeleteSkill(name, toolName string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metadataPath, data, 0644)
+	if err := atomicWriteFile(metadataPath, data); err != nil {
+		rollbackErr := rollbackPackages()
+		if rollbackErr != nil {
+			return fmt.Errorf("write skill metadata: %w; restore package: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("write skill metadata: %w", err)
+	}
+	for _, item := range deleted {
+		if err := os.Remove(item.staged); err != nil && !os.IsNotExist(err) {
+			return &legacySkillCommitError{err: fmt.Errorf("skill metadata committed but package cleanup failed: %w", err), committed: true}
+		}
+	}
+	if a.skillExecutor != nil {
+		a.skillExecutor.invalidateSkillCache()
+	} else if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.Invalidate()
+	}
+	return nil
 }
 
 // Translation logic

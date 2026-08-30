@@ -146,6 +146,8 @@ export function CancelGitHubCopilotOAuth():Promise<void>;
 
 export function CancelNLSkillRun(arg1:string):Promise<void>;
 
+export function CancelSkillEvolution(arg1:string):Promise<boolean>;
+
 export function CancelOpenAIOAuth():Promise<void>;
 
 export function CancelQQBotQRLogin(arg1:string):Promise<void>;
@@ -195,6 +197,8 @@ export function CheckToolsStatus():Promise<Array<main.ToolStatus>>;
 export function CheckUpdate(arg1:string):Promise<main.UpdateResult>;
 
 export function CheckUpdateBeta(arg1:string):Promise<main.UpdateResult>;
+
+export function ListRollbackReleases():Promise<Array<main.RollbackRelease>>;
 
 export function CheckVEApprovalCapability(arg1:string):Promise<boolean>;
 
@@ -356,6 +360,10 @@ export function DecideMaclawAppApprovalInstance(arg1:main.MaclawAppApprovalDecis
 
 export function DeleteCloudWorkspace(arg1:string):Promise<main.CloudWorkspaceDeletedWorkspace>;
 
+export function DeleteCodingWorkbenchEntry(arg1:string,arg2:string):Promise<void>;
+
+export function ForceDeleteCloudWorkspace(arg1:string):Promise<void>;
+
 export function DeleteComputerUseLogArtifact(arg1:string):Promise<Record<string, any>>;
 
 export function DeleteExpert(arg1:string):Promise<void>;
@@ -420,6 +428,8 @@ export function DismissAgentView(arg1:main.AgentViewDismissPayload):Promise<main
 export function DismissRemoteSession(arg1:string):Promise<void>;
 
 export function DownloadASRModel():Promise<void>;
+
+export function DownloadCodingWorkbenchEntry(arg1:string,arg2:string):Promise<string>;
 
 export function DownloadDiarizationModel():Promise<void>;
 
@@ -1521,6 +1531,8 @@ export function ListSkillAppManifests():Promise<Array<main.SkillAppManifestEntry
 
 export function ListSkillEvolutionAudit(arg1:number):Promise<Array<Record<string, any>>>;
 
+export function ListSkillEvolutionCompensations():Promise<Record<string, any>>;
+
 export function ListSkillMaintenanceDrafts():Promise<Record<string, any>>;
 
 export function ListSkillRepairDrafts():Promise<string>;
@@ -1590,6 +1602,8 @@ export function OpenAdaptivePromptExportsDir():Promise<Record<string, any>>;
 export function OpenCodingWorkbenchConflictFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function OpenCodingWorkbenchFileInVSCode(arg1:string,arg2:string):Promise<boolean>;
+
+export function OpenCodingWorkbenchFileLocally(arg1:string,arg2:string):Promise<void>;
 
 export function OpenComputerUseLastDiagnostics():Promise<Record<string, any>>;
 
@@ -1798,6 +1812,8 @@ export function RedeemCreditsCard(arg1:string):Promise<Record<string, any>>;
 
 export function RefreshHubLLMServiceStatus():Promise<main.HubLLMServiceStatus>;
 
+export function ReportHubLLMBillingTimezone(arg1:string):Promise<void>;
+
 export function RefreshMaclawAppPackageSubmissionFromHub(arg1:string):Promise<Record<string, any>>;
 
 export function RefreshWorkflowV2StateForTab(arg1:string,arg2:Array<string>):Promise<void>;
@@ -1877,6 +1893,8 @@ export function RestartThirdPartyGateway():Promise<string>;
 export function RestartWeixin():Promise<string>;
 
 export function RestoreCloudWorkspace(arg1:string):Promise<main.CloudWorkspaceEntitlementWorkspace>;
+
+export function RestoreCloudWorkspaceTasks():Promise<Array<main.ProjectSearchResult>>;
 
 export function RestoreArchiveMemory(arg1:string):Promise<void>;
 
@@ -2148,6 +2166,10 @@ export function SetMoASticky(arg1:boolean):Promise<void>;
 export function SetMoAStickyPreset(arg1:string):Promise<void>;
 
 export function SetNLSkillStatus(arg1:string,arg2:string):Promise<void>;
+
+export function VerifyAndActivateNLSkill(arg1:string):Promise<void>;
+
+export function VerifyAndActivateNLSkillWithArgs(arg1:string,arg2:Record<string, any>):Promise<void>;
 
 export function SetOCREnabled(arg1:boolean):Promise<void>;
 

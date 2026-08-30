@@ -163,7 +163,7 @@
     {
       "id": "coding-repeat-budget-is-not-exempt-from-the-selection-budget",
       "title": "Sibling invocations are ordinary plan nodes under the selection budget",
-      "notes": "Spending a repeat budget as nodes means those nodes are counted like any other. A selection budget smaller than the expanded family reports budget_exceeded for the siblings that do not fit rather than quietly granting the family a smaller ceiling.",
+      "notes": "A repeat budget is an exposure ceiling, not an all-or-nothing required wave. A selection budget smaller than the expanded family keeps the required first invocation, fills leftover slots with optional ceiling siblings, and omits the rest. Failing the whole family would strand lookup+generate on unused refinements.",
       "context": {"max_selections": 2},
       "needs": [
         {"id": "code-read", "capability": "fs.read.local", "max_invocations": 3}
@@ -178,11 +178,9 @@
         ]
       },
       "expected": {
-        "no_selections": true,
-        "unmet": [
-          {"need_id": "code-read", "reason": "planning_budget_exceeded"},
-          {"need_id": "code-read#02", "reason": "planning_budget_exceeded"},
-          {"need_id": "code-read#03", "reason": "planning_budget_exceeded"}
+        "selections": [
+          {"need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution"},
+          {"need_id": "code-read#02", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution"}
         ]
       }
     }

@@ -129,6 +129,34 @@ func TestNoteOfficialStreamHeadersAppliesTrailersOnClose(t *testing.T) {
 	}
 }
 
+func TestNoteOfficialStreamHeadersAppliesTrailerRMBPricingSnapshot(t *testing.T) {
+	ctx := withLLMBillingState(context.Background(), time.Now())
+	resp := &http.Response{
+		Header:  make(http.Header),
+		Trailer: make(http.Header),
+		Body:    io.NopCloser(strings.NewReader("ok")),
+	}
+	resp.Trailer.Set(llmpool.ProviderIDHeader, "official-provider-a")
+	resp.Trailer.Set(llmpool.TokenPricingSnapshotHeader, mustEncodeTokenPricingSnapshot(t, llmpool.TokenPricingSnapshot{
+		ProviderID: "official-provider-a", InputTokens: 1_000_000, OutputTokens: 500_000,
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 4,
+			InputRMBPer10K: 0.02, OutputRMBPer10K: 0.06,
+		}},
+	}))
+	resp = noteOfficialStreamHeaders(ctx, resp)
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	usage := authoritativeLLMUsageForAccessLog(ctx, llmservice.MaClawOfficialProviderID, corelib.TokenUsageStat{})
+	if usage.InputCostRMB != 2 || usage.OutputCostRMB != 3 || usage.TotalCostRMB != 5 {
+		t.Fatalf("stream trailer RMB costs = input %v, output %v, total %v; want 2, 3, 5", usage.InputCostRMB, usage.OutputCostRMB, usage.TotalCostRMB)
+	}
+}
+
 func TestSnapshotOfficialBillingRoundTripsToAnotherContext(t *testing.T) {
 	src := withLLMBillingState(context.Background(), time.Date(2026, 8, 17, 2, 0, 0, 0, time.UTC))
 	dst := withLLMBillingState(context.Background(), time.Date(2026, 8, 17, 2, 0, 0, 0, time.UTC))

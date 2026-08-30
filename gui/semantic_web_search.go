@@ -112,9 +112,9 @@ func semanticTrustedWebSearchResultProjection(text string) (string, error) {
 	if strings.Contains(text, "[voice_base64") || strings.Contains(text, "[file_base64") {
 		return "", fmt.Errorf("trusted_web_search_delivery_token")
 	}
-	if strings.Contains(text, "web_search") || strings.Contains(text, "web_fetch") || strings.Contains(text, "download_file") {
-		return "", fmt.Errorf("trusted_web_search_legacy_name")
-	}
+	// No tool-name token scan here either: see
+	// semanticTrustedWebFetchResultProjection. Search results legitimately
+	// discuss tools by name; the router, not a literal scan, is the boundary.
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", fmt.Errorf("trusted_web_search_empty")

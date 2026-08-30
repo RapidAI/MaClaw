@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -29,6 +30,10 @@ var (
 	// launchers request the same expert at the same time.
 	expertTaskMu       sync.Mutex
 	assistantTabTaskMu sync.Mutex
+	// taskAsyncFlushWG tracks fire-and-forget task flush goroutines so tests
+	// can drain them before stopping the memory store and removing temporary
+	// config directories (Windows TempDir cleanup fails on in-flight writes).
+	taskAsyncFlushWG sync.WaitGroup
 )
 
 const (
@@ -262,18 +267,29 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	if limit <= 0 {
 		limit = 50
 	}
-	searchLimit := limit * 4
-	if searchLimit < 50 {
-		searchLimit = 50
-	}
+	searchLimit := taskSearchLimit(limit)
 	var records []memory.ProjectRecord
 	if strings.TrimSpace(query) == "" {
 		// Filter before limiting so recent automatic memory entries cannot crowd
 		// explicit tasks out of the sidebar while keeping the list work bounded.
-		records = pi.ListRecentMatching(limit, isTaskManagementRecord)
+		records = pi.ListRecentMatching(searchLimit, isTaskManagementRecord)
 	} else {
-		records = pi.SearchMatching(query, limit, isTaskManagementRecord)
+		records = pi.SearchMatching(query, searchLimit, isTaskManagementRecord)
 	}
+	// ProjectIndex stores user renames separately from the extracted record
+	// name. Copy that display name into the temporary records before cloud
+	// deduplication; otherwise a renamed workspace task still looks like the
+	// generic placeholder and may lose to the legacy row.
+	for i := range records {
+		if custom := strings.TrimSpace(pi.CustomName(records[i].ProjectPath)); custom != "" {
+			records[i].Name = custom
+		}
+	}
+	// A cloud workspace is a 1:1 durable task identity. Older versions could
+	// leave a generic "新建云端工作区任务" row alongside the later renamed row
+	// for the same workspace. Collapse those rows before applying the visible
+	// limit so the sidebar never shows the same cloud task twice.
+	records = collapseDuplicateCloudWorkspaceRecords(records)
 	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(searchLimit * 2))
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
@@ -294,6 +310,136 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		}
 	}
 	return results
+}
+
+const maxTaskSearchLimit = 2000
+
+// taskSearchLimit broadens the index query enough to survive filtering and
+// cloud-workspace deduplication without allowing a caller-controlled integer
+// overflow (the result is also used for the scene-index lookup below).
+func taskSearchLimit(limit int) int {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit < 13 { // preserve the historical minimum of 50 after multiplying
+		return 50
+	}
+	if limit > maxTaskSearchLimit/4 {
+		return maxTaskSearchLimit
+	}
+	return limit * 4
+}
+
+// collapseDuplicateCloudWorkspaceRecords keeps at most one task record for
+// each cloud workspace ID. Prefer a meaningful user-facing name over the
+// generic creator title; otherwise keep the most recently active record.
+// Non-cloud task records are left untouched.
+func collapseDuplicateCloudWorkspaceRecords(records []memory.ProjectRecord) []memory.ProjectRecord {
+	if len(records) <= 1 {
+		return records
+	}
+	byWorkspace := make(map[string]int)
+	meaningfulWorkspace := make(map[string]bool)
+	for _, rec := range records {
+		if cloudWorkspaceTaskNameScore(rec.Name) == 0 {
+			continue
+		}
+		if id := primaryCloudWorkspaceID(rec); id != "" {
+			meaningfulWorkspace[id] = true
+		}
+	}
+	out := make([]memory.ProjectRecord, 0, len(records))
+	for _, rec := range records {
+		workspaceIDs := cloudWorkspaceIDsFromTags(rec.Tags)
+		if len(workspaceIDs) == 0 {
+			out = append(out, rec)
+			continue
+		}
+		if cloudWorkspaceTaskNameScore(rec.Name) == 0 {
+			hasMeaningful := false
+			// A legacy row can contain tags from several workspaces. Its
+			// working_dir (and therefore primary ID) identifies the row it
+			// actually represents; a named row for an unrelated accumulated tag
+			// must not make this fallback disappear.
+			if id := primaryCloudWorkspaceID(rec); id != "" {
+				hasMeaningful = meaningfulWorkspace[id]
+			}
+			if hasMeaningful {
+				continue
+			}
+		}
+		workspaceID := primaryCloudWorkspaceID(rec)
+		if workspaceID == "" {
+			workspaceID = workspaceIDs[0]
+		}
+		if idx, ok := byWorkspace[workspaceID]; ok {
+			if preferCloudWorkspaceTaskRecord(rec, out[idx]) {
+				out[idx] = rec
+			}
+			continue
+		}
+		byWorkspace[workspaceID] = len(out)
+		out = append(out, rec)
+	}
+	return out
+}
+
+func cloudWorkspaceIDsFromTags(tags []string) []string {
+	seen := map[string]bool{}
+	ids := make([]string, 0, 1)
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, cloudWorkspaceTagPrefix) {
+			continue
+		}
+		id := strings.TrimSpace(strings.TrimPrefix(tag, cloudWorkspaceTagPrefix))
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func cloudWorkspaceTaskNameScore(name string) int {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if name == "" || name == "新建云端工作区任务" || name == "new cloud workspace task" {
+		return 0
+	}
+	return 1
+}
+
+// primaryCloudWorkspaceID handles legacy rows whose tag union accidentally
+// accumulated several workspace IDs. The working_dir tag is authoritative for
+// that row; only fall back to the first cloud tag when no working directory is
+// available.
+func primaryCloudWorkspaceID(rec memory.ProjectRecord) string {
+	workingDir := recentTaskWorkingDirFromTags(rec.Tags)
+	if id := cloudWorkspaceIDFromPathString(workingDir); id != "" {
+		return id
+	}
+	return cloudWorkspaceIDFromTags(rec.Tags)
+}
+
+func cloudWorkspaceIDFromPathString(pathValue string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(pathValue), "\\", "/")
+	marker := "/cloud-workspaces/"
+	idx := strings.Index(strings.ToLower(normalized), marker)
+	if idx < 0 {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(normalized[idx+len(marker):], "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+func preferCloudWorkspaceTaskRecord(candidate, current memory.ProjectRecord) bool {
+	if candidateScore, currentScore := cloudWorkspaceTaskNameScore(candidate.Name), cloudWorkspaceTaskNameScore(current.Name); candidateScore != currentScore {
+		return candidateScore > currentScore
+	}
+	return candidate.LastActivity.After(current.LastActivity)
 }
 
 func collapseRecentTaskForkRecords(records []memory.ProjectRecord) []memory.ProjectRecord {
@@ -3604,7 +3750,9 @@ func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extra
 		}
 	} else {
 		store := a.memoryStore
+		taskAsyncFlushWG.Add(1)
 		go func(projectPath string) {
+			defer taskAsyncFlushWG.Done()
 			started := time.Now()
 			if err := store.Flush(); err != nil {
 				log.Printf("[project_search] async task flush failed project=%q err=%v elapsed=%s", projectPath, err, time.Since(started).Round(time.Millisecond))
@@ -3677,16 +3825,11 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 	}
 	a.ensureInteractionInfra()
 	hubClient := a.ensureHubClient()
-	if hubClient == nil {
-		return []ProjectConversationHistoryItem{}
-	}
-	handler := hubClient.ensureIMHandler()
-	if handler == nil || handler.memory == nil {
-		return []ProjectConversationHistoryItem{}
-	}
-	entries := handler.memory.Load(projectSessionOwnerID(projectPath))
-	if len(entries) == 0 {
-		return []ProjectConversationHistoryItem{}
+	var entries []agent.ConversationEntry
+	if hubClient != nil {
+		if handler := hubClient.ensureIMHandler(); handler != nil && handler.memory != nil {
+			entries = handler.memory.Load(projectSessionOwnerID(projectPath))
+		}
 	}
 	items := make([]ProjectConversationHistoryItem, 0, len(entries))
 	for _, entry := range entries {
@@ -3698,6 +3841,78 @@ func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConver
 		}
 		content := stringifyProjectConversationContent(entry.Content)
 		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		if content == "" && reasoning == "" {
+			continue
+		}
+		items = append(items, ProjectConversationHistoryItem{
+			Role:             role,
+			Content:          content,
+			ReasoningContent: reasoning,
+		})
+	}
+	if projectConversationHistoryHasTurns(items) {
+		return items
+	}
+
+	// The tab session is the durable transcript snapshot. In particular, a task
+	// reopened after a process restart can have an empty in-memory project
+	// session while its last tab's conversation is intact on disk. Prefer the
+	// live project memory when it has actual turns, then fall back to that
+	// snapshot so task-list history opens do not render the welcome page.
+	session, err := a.ensureProjectTabSessionPersist().LoadLatestSessionForProject(projectPath)
+	if err != nil {
+		log.Printf("[project_search] load persisted conversation fallback failed project=%q err=%v", projectPath, err)
+		return items
+	}
+	if session == nil {
+		return items
+	}
+	persisted := projectConversationHistoryFromTabSession(session.Conversation)
+	if projectConversationHistoryHasTurns(persisted) {
+		return persisted
+	}
+	return items
+}
+
+func projectConversationHistoryHasTurns(items []ProjectConversationHistoryItem) bool {
+	for _, item := range items {
+		if item.Role == "user" || item.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+func projectConversationHistoryFromTabSession(conversation []interface{}) []ProjectConversationHistoryItem {
+	items := make([]ProjectConversationHistoryItem, 0, len(conversation))
+	for _, raw := range conversation {
+		// Tab snapshots are JSON and normally decode as map[string]interface{}.
+		// Re-marshal here also accepts any future typed message value without
+		// coupling the backend persistence layer to frontend message structs.
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Role             string      `json:"role"`
+			Content          interface{} `json:"content"`
+			ReasoningContent interface{} `json:"reasoning_content"`
+			Reasoning        interface{} `json:"reasoning"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "error":
+		default:
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := stringifyProjectConversationContent(entry.ReasoningContent)
+		if reasoning == "" {
+			reasoning = stringifyProjectConversationContent(entry.Reasoning)
+		}
 		if content == "" && reasoning == "" {
 			continue
 		}
@@ -4062,6 +4277,15 @@ func (a *App) RenameTask(projectPath, newName string) string {
 	}
 	pi.SetCustomName(projectPath, newName)
 	displayName := pi.GetDisplayName(projectPath)
+	if workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath); workspaceID != "" {
+		if result, ok := lookupCloudWorkspaceTask(workspaceID); ok {
+			result.Name = displayName
+			rememberCloudWorkspaceTask(workspaceID, result)
+		}
+		if lookupHeldCloudWorkspace(workspaceID) != nil {
+			a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
+		}
+	}
 	a.emitEvent(EventProjectTaskRenamed, map[string]string{
 		"project_path": projectPath,
 		"name":         displayName,
@@ -4086,6 +4310,9 @@ func (a *App) PinTask(projectPath string, pinned bool) {
 
 // HideTask removes a task from task management (soft delete).
 // The underlying memory entries are preserved — only the list visibility is affected.
+// Cloud workspaces stay on Hub: this path is the failed-create rollback so a retry
+// can bind a replacement task to the same workspace. User-facing sidebar delete
+// goes through DeleteTask, which also soft-deletes the workspace.
 func (a *App) HideTask(projectPath string) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
@@ -4103,6 +4330,9 @@ func (a *App) HideTask(projectPath string) {
 		log.Printf("[project_search] HideTask skipped path=%q reason=project_index_unavailable", projectPath)
 		return
 	}
+	// Tombstone first so an in-flight restore cannot unhide this row
+	// before the hidden flag is visible.
+	a.dismissCloudWorkspaceTaskByPath(projectPath)
 	pi.SetHidden(projectPath, true)
 	// Push + DELETE lease before dropping the process map so HideTask always
 	// releases a cloud_workspace: task even if the frontend only closes the row.
@@ -4129,7 +4359,16 @@ func (a *App) DeleteTask(projectPath string) error {
 		return fmt.Errorf("project path is required")
 	}
 	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
+	workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath)
+	a.dismissCloudWorkspaceTaskByPath(projectPath)
 	a.releaseCloudWorkspaceForProjectPath(projectPath)
+	forgetCloudWorkspaceTaskByPath(projectPath)
+	if workspaceID != "" {
+		if _, err := a.deleteCloudWorkspaceOnHub(workspaceID); err != nil {
+			log.Printf("[cloud_workspace] delete after task removal workspace=%s path=%q err=%v", workspaceID, projectPath, err)
+		}
+		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, projectPath)
+	}
 	// Directory updates and task deletion both mutate the same tab session files
 	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot
 	// recreate a deleted tab's directory override halfway through this cleanup.
@@ -4480,6 +4719,11 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 				log.Printf("[CreateProjectTabSession] restore sidecar session failed: %v", saveErr)
 			}
 		}
+		if a.seedCloudWorkspaceTabWorkingDir(existing, projectPath) {
+			if saveErr := persist.SaveSession(existing); saveErr != nil {
+				log.Printf("[CreateProjectTabSession] seed cloud working dir failed: %v", saveErr)
+			}
+		}
 		// An existing session owns its tab-local override. Restore it before the
 		// tab can render or dispatch a message.
 		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
@@ -4539,6 +4783,9 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		// Bind only. Live exec follows EffectiveWorkingDirForOwner; do not Flush
 		// the project index while tabWorkingDirMu is held.
 		workingDir = a.currentTaskManagementWorkingDir()
+	}
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" && (workingDir == "" || !cloudWorkspacePathInsideRoot(cloudDir, workingDir)) {
+		workingDir = cloudDir
 	}
 	session := &TabSessionData{
 		TabID:        tabID,
@@ -4999,15 +5246,13 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 		return fmt.Errorf("directory path must be absolute: %s", newDir)
 	}
 
-	// Create if not exists.
-	if err := os.MkdirAll(newDir, 0o755); err != nil {
-		return fmt.Errorf("cannot create directory %s: %w", newDir, err)
-	}
-
 	tabID = strings.TrimSpace(tabID)
 
 	// Local Tab: update global config.
 	if tabID == "" {
+		if err := os.MkdirAll(newDir, 0o755); err != nil {
+			return fmt.Errorf("cannot create directory %s: %w", newDir, err)
+		}
 		corelib.SetWorkspaceDir(newDir)
 		_, _ = a.PatchConfigFields(map[string]interface{}{"working_directory": newDir})
 		a.syncActiveWorkflowWorkingDir(desktopUserID, newDir)
@@ -5028,6 +5273,18 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 			return fmt.Errorf("coding work root cannot be the task identity directory")
 		}
 		newDir = replacement
+	}
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" {
+		cleaned := normalizeProjectSessionPath(newDir)
+		if !cloudWorkspacePathInsideRoot(cloudDir, cleaned) {
+			newDir = cloudDir
+		} else {
+			newDir = cleaned
+		}
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		a.tabWorkingDirMu.Unlock()
+		return fmt.Errorf("cannot create directory %s: %w", newDir, err)
 	}
 	// Commit the durable source of truth before publishing the in-memory value.
 	// If the write fails, returning an error must leave this tab's active tools
@@ -5165,7 +5422,13 @@ func (a *App) bindAssistantTabWorkingDir(tabID, ownerID string) {
 // bindAssistantTabWorkingDirLocked is bindAssistantTabWorkingDir's internal
 // form for callers that already hold tabWorkingDirMu.
 func (a *App) bindAssistantTabWorkingDirLocked(tabID, ownerID string) {
-	if dir := a.assistantTabWorkingDir(tabID); dir != "" {
+	dir := a.assistantTabWorkingDir(tabID)
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPathFromSessionOwnerID(ownerID)); cloudDir != "" {
+		if dir == "" || !cloudWorkspacePathInsideRoot(cloudDir, dir) {
+			dir = cloudDir
+		}
+	}
+	if dir != "" {
 		a.tabWorkingDirOverrides.Store(tabID, dir)
 		a.assistantSessionWorkingDirs.Store(ownerID, dir)
 		return
@@ -5255,10 +5518,26 @@ func (a *App) BoundWorkingDirForOwner(ownerID string) string {
 
 // EffectiveWorkingDirForOwner returns the directory tools, prompts, workflows
 // and the ProjectDirBar share for one runtime conversation owner. A configured
-// tab override wins; every unconfigured non-main tab follows the main tab.
+// tab override wins; a project-session owner without an override stays in the
+// project named by its owner id; every other unconfigured owner follows the
+// main tab.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	projectPath := projectPathFromSessionOwnerID(ownerID)
+	cloudDir := ""
+	if a != nil && projectPath != "" {
+		cloudDir = a.cloudWorkspaceExecutionDir(projectPath)
+	}
 	if dir := a.BoundWorkingDirForOwner(ownerID); dir != "" {
-		return dir
+		if cloudDir == "" || cloudWorkspacePathInsideRoot(cloudDir, dir) {
+			return dir
+		}
+		return cloudDir
+	}
+	if cloudDir != "" {
+		return cloudDir
+	}
+	if projectPath != "" && !looksLikeManagedTaskIdentity(projectPath) {
+		return projectPath
 	}
 	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
 }
@@ -5529,11 +5808,17 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 	a.tabWorkingDirMu.Lock()
 	defer a.tabWorkingDirMu.Unlock()
 	persist := a.ensureProjectTabSessionPersist()
+	// An explicit empty history is a clear request, not a normal save. Do not
+	// create a file for an unknown tab: task-level clearing already removes all
+	// owned snapshots, and an unowned late debounce must not revive history.
+	if len(conversation) == 0 {
+		if err := persist.ClearSessionConversation(tabID); err != nil {
+			log.Printf("[SaveProjectTabConversation] clear tab=%s err=%v", tabID, err)
+		}
+		return
+	}
 	session, err := persist.LoadSession(tabID)
 	if err != nil || session == nil {
-		if len(conversation) == 0 {
-			return // Nothing to clear if session doesn't exist
-		}
 		// Session file doesn't exist yet — create it with conversation.
 		session = &TabSessionData{
 			TabID:        tabID,
@@ -5544,11 +5829,52 @@ func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{
 			session.ProjectPath, _ = cached.(string)
 		}
 	} else {
+		if !tabConversationPassesClearFence(session, conversation) {
+			log.Printf("[SaveProjectTabConversation] ignored stale tab=%s clear_at=%d", tabID, session.ConversationClearedAt)
+			return
+		}
 		session.Conversation = conversation
 	}
 	if err := persist.SaveSession(session); err != nil {
 		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
 	}
+}
+
+// tabConversationPassesClearFence rejects snapshots created before the most
+// recent clear. Browser save calls are asynchronous, so a request dispatched
+// before a clear can otherwise arrive afterwards and revive old history.
+func tabConversationPassesClearFence(session *TabSessionData, conversation []interface{}) bool {
+	if session == nil || session.ConversationClearedAt <= 0 {
+		return true
+	}
+	var newest int64
+	for _, raw := range conversation {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Timestamp interface{} `json:"timestamp"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		var timestamp int64
+		switch value := entry.Timestamp.(type) {
+		case float64:
+			timestamp = int64(value)
+		case string:
+			if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(value), 10, 64); parseErr == nil {
+				timestamp = parsed
+			}
+		}
+		if timestamp > newest {
+			newest = timestamp
+		}
+	}
+	// Legacy/invalid snapshots cannot prove they were created after a clear;
+	// retaining the empty conversation is safer than restoring stale history.
+	return newest >= session.ConversationClearedAt
 }
 
 // LoadProjectTabConversation loads persisted conversation history for a tab

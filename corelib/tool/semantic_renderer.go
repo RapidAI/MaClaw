@@ -122,7 +122,16 @@ func (r *CatalogRenderer) renderDefinition(selection PlannedSelection, functionN
 	if description == "" {
 		description = "Perform the approved " + string(capability.ID) + " capability."
 	}
-	description += " One-time grant this turn. After it succeeds this name may leave the list and later reappear for the next authorized step."
+	description += semanticRenderedReuseCue(capability.ID)
+	if semanticSchemaAdmitsNoArguments(params) {
+		// Closed empty-schema adapters (current-channel delivery and similar)
+		// bind content and destination host-side. Models habitually invent a
+		// path field out of legacy send_file memory; admission rejects any
+		// argument as parameter_schema_invalid and the rejection retires the
+		// one-shot grant, so a guessed field costs the delivery itself
+		// (2026-08-25 weather-PDF turn). Say so up front.
+		description += " It takes no arguments: content and destination are bound by the host. Call it with an empty arguments object; any field (for example path) is rejected."
+	}
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
@@ -131,6 +140,38 @@ func (r *CatalogRenderer) renderDefinition(selection PlannedSelection, functionN
 			"parameters":  cloneJSONValue(params).(map[string]interface{}),
 		},
 	}, nil
+}
+
+const semanticListedCallCue = " Call it whenever it is listed; after a successful call this name may briefly leave the list and later reappear for the next authorized step."
+
+// semanticRenderedReuseCue is the host-authored call policy appended to every
+// governed description. Delivery and generate tools must be called when listed.
+// Optional URL tools must not: production 2026-08-29 burned download_file on
+// https://example.invalid/skip because a force-call cue taught the model to
+// probe a skip token.
+func semanticRenderedReuseCue(id CapabilityID) string {
+	switch id {
+	case CapabilityArtifactAcquireRemote, CapabilityInformationFetchWeb:
+		return " This step is optional when listed with other tools. Call only with a real HTTP(S) URL; never placeholder or reserved hosts such as example.invalid. Skipping it does not block the other listed tools."
+	case CapabilityID("information.search.web"):
+		return " This step is optional when listed with other tools. Call only with a real search query. Skipping it does not block the other listed tools."
+	case CapabilityDocumentWriteOffice:
+		return semanticListedCallCue + " Presentation slides accept native editable charts on slides[].charts (bar/column/bar_h/line/radar/pie/area)."
+	default:
+		return semanticListedCallCue
+	}
+}
+
+// semanticSchemaAdmitsNoArguments reports a closed schema with no declared
+// properties. The delivery adapters use exactly this shape: every value is
+// host-bound, so the only valid invocation is an empty arguments object.
+func semanticSchemaAdmitsNoArguments(params map[string]interface{}) bool {
+	props, _ := params["properties"].(map[string]interface{})
+	if len(props) > 0 {
+		return false
+	}
+	additional, declared := params["additionalProperties"].(bool)
+	return declared && !additional
 }
 
 func validRenderedFunctionName(name string) bool {

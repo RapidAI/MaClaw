@@ -53,6 +53,22 @@ func (h *IMMessageHandler) applyAgentLoopRecoverPrompt(
 			result.Tools, result.ToolsTokenBudget, result.DirectModeToolsFiltered = h.restoreToolsAfterSkillRecover(h.workflowPolicyOwnerID(userID, ctx), ctx, baseTools, *phase)
 		}
 	}
+	if phase.RecoverReason == agentRecoverDeliverablePending {
+		// The recover prompt tells the model to "use a real tool to complete
+		// delivery immediately", but an ambient-projected surface carries no
+		// delivery-capable tool at all. The promise itself is runtime evidence
+		// that this turn was under-scoped, so the follow-up round regains the
+		// invariant-11 floor (bash/write_file) and the delivery can actually
+		// happen instead of being policy_rejected again.
+		if loopContextBlocksLegacyToolRouter(ctx) {
+			log.Printf("[agent-loop] skip deliverable floor unlock on managed semantic recover user=%q", userID)
+		} else {
+			result.Tools = unionMissFloorToolsForSurface(result.Tools, baseTools)
+			// Never resurrect a tool the Hub security policy rejects outright.
+			result.Tools = h.filterPolicyRejectedSurfaceTools(result.Tools)
+			result.ToolsTokenBudget = estimateToolsTokens(result.Tools)
+		}
+	}
 	recoverReason := firstNonEmptyTraceText(phase.RecoverReason.String(), "recover")
 	if h.traceService != nil && ctx != nil && ctx.RunID != "" {
 		h.appendTraceEvent(ctx, "loop.recover_entered", "warn", "Entered Recover stage", truncateTraceText(recoverReason, 220), "", "")
@@ -91,8 +107,15 @@ func truncateRunesForDrift(s string, maxRunes int) string {
 }
 
 func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {
+	return buildDeliverableRecoverPromptForSkillMode(skillName, preferSkill, false, runID)
+}
+
+func buildDeliverableRecoverPromptForSkillMode(skillName string, preferSkill, agentGuided bool, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
+	if agentGuided && skillName != "" {
+		return fmt.Sprintf("[Recover]\nA deliverable was promised but not produced. Follow ## Skill 使用文档 for %q with bash/write_file/edit_file. Do not call discover_tool or generate_pdf.\n[/Recover]", skillName)
+	}
 	if runID != "" {
 		return "[Recover]\nA deliverable was promised but not produced. " + buildSkillProgressGuidance(skillName, runID) + " If completion is still impossible, explain the failure reason and visible result.\n[/Recover]"
 	}
@@ -256,13 +279,16 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 	// any partial tool results that follow it.
 	history = stripTrailingBrokenToolGroup(history)
 	h.saveConversationHistoryTimed(userID, history, nil)
-	cancelMsg := "Task cancelled."
-	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-		cancelMsg = fmt.Sprintf("Task cancelled: %s", taskPreview)
-	}
 	// Keep Error empty: UI/telemetry treat non-empty Error as a hard failure.
 	// Trajectory cancel is stamped via RecordLoopResult / Task-cancelled text detection.
-	return &IMAgentResponse{Text: cancelMsg}
+	return &IMAgentResponse{Text: cancelledTaskReplyText(userText)}
+}
+
+func cancelledTaskReplyText(userText string) string {
+	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
+		return fmt.Sprintf("Task cancelled: %s", taskPreview)
+	}
+	return "Task cancelled."
 }
 
 // interruptedSharedLoopExitResponse is used when a shared-loop pre-tool

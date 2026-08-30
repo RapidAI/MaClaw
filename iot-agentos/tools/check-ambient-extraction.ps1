@@ -129,7 +129,7 @@ Assert-FileLacks $clockSyncHeader `
     'clock-sync public header must remain value-only'
 $clockSyncC = Get-Content -LiteralPath (Join-Path $projectRoot 'main\services\clock_sync_service.c') -Raw
 foreach ($clockRequirement in @(
-        'clock_sync_service_note_authenticated_epoch',
+        'clock_sync_service_apply_authenticated_millis',
         'clock_sync_service_prepare_system_sleep',
         'clock_sync_service_abort_system_sleep_prepare',
         'esp_netif_sntp_sync_wait',
@@ -143,7 +143,7 @@ $mainText = Get-Content -LiteralPath $mainC -Raw
 foreach ($rootClockRequirement in @(
         'clock_sync_service_init',
         'clock_sync_service_start',
-        'clock_sync_service_note_authenticated_epoch',
+        'clock_sync_service_apply_authenticated_millis',
         'clock_sync_service_stop',
         'clock_sync_service_prepare_system_sleep',
         'clock_sync_service_abort_system_sleep_prepare'

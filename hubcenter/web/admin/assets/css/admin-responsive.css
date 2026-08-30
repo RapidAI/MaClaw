@@ -1,5 +1,4 @@
 /* Responsive layout and viewport-specific adjustments. */
-#tab-ha{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 8.5h14'/%3E%3Cpath d='M5 15.5h14'/%3E%3Ccircle cx='5' cy='8.5' r='2'/%3E%3Ccircle cx='19' cy='8.5' r='2'/%3E%3Ccircle cx='12' cy='15.5' r='2'/%3E%3Cpath d='M7 8.5h10'/%3E%3Cpath d='M7 15.5h3'/%3E%3Cpath d='M14 15.5h3'/%3E%3C/svg%3E")}
     .ha-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
     .ha-sync-section{margin-top:18px}
     .ha-sync-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
@@ -38,9 +37,9 @@
     @media (max-width:760px){.ha-summary-grid,.ha-overview-grid,.ha-node-plan-grid,.ha-sync-list{grid-template-columns:1fr}#tab-ha .grid3{grid-template-columns:1fr}.ha-peer-config-top{align-items:flex-start}.ha-node-plan-actions button{flex:1}}
   
     /* Professional density polish */
-    h1,h2,h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong{font-weight:650;letter-spacing:0}.top h2,.head h3,.brand h1,.hero h1{letter-spacing:0}.head h3{line-height:1.25}.metric strong{line-height:1.08}.panel,.metric,.item,.card,.status-card,.sm-section,.sm-config-card{box-shadow:0 6px 18px rgba(35,41,55,.028)}.panel{border-color:#e8ebf1}.head{border-bottom-color:#edf0f4}.page-tab-icon,.head h3::before{background:#fafbfc;border-color:#e8ebf1}.head h3::after,.page-tab-icon{opacity:.92}.btn-primary{box-shadow:0 8px 18px rgba(239,106,124,.14)}button{font-weight:650}.nav button>span:not(.nav-icon){font-weight:650;letter-spacing:0}.nav small{font-weight:500}.metric label,label{font-weight:650;letter-spacing:.03em}.item-title::before{opacity:.72}.row{border-color:#e8ebf1}.hint{border-style:solid;background:#fbfcfd}.console{box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
+    h1,h2,h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong{font-weight:650;letter-spacing:0}.top h2,.head h3,.brand h1,.hero h1{letter-spacing:0}.head h3{line-height:1.25}.metric strong{line-height:1.08}.panel,.metric,.item,.card,.status-card,.sm-section,.sm-config-card{box-shadow:0 6px 18px rgba(35,41,55,.028)}.panel{border-color:#e8ebf1}.head{border-bottom-color:#edf0f4}.page-tab-icon,.head h3::before{background-color:#fafbfc;border-color:#e8ebf1}.head h3::after,.page-tab-icon{opacity:.92}.btn-primary{box-shadow:0 8px 18px rgba(239,106,124,.14)}button{font-weight:650}.nav button>span:not(.nav-icon){font-weight:650;letter-spacing:0}.nav small{font-weight:500}.metric label,label{font-weight:650;letter-spacing:.03em}.item-title:not([data-icon])::before{opacity:.72}.row{border-color:#e8ebf1}.hint{border-style:solid;background:#fbfcfd}.console{box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
     /* Softer text hierarchy */
-    body{color:#4b5563}.brand h1,.top h2,.head h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.route-query-summary .item strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong,.form h2,.stage-card h3,.session-modal h3{color:#374151}.hero h1{color:#3f4854}.brand p,.nav small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.status-card p,.sm-stat label,.hub-route-meta,.data-row-meta,.muted-result,.ha-sync-meta,.ha-peer-meta{color:#667085}.hero p,.hero li{color:rgba(63,72,84,.74)}.metric label,label{color:#667085}.nav button{color:#4b5563}.nav button.active{color:#374151}.btn-secondary,.btn-ghost{color:#4b5563}.console{color:#5f6b7a}.page-kicker,.mini{color:#667085}.head h3::after{background-color:#667085}.page-tab-icon{color:#667085}
+    body{color:#4b5563}.brand h1,.top h2,.head h3,.item-title,.metric strong,.status-card strong,.sm-stat strong,.route-query-summary .item strong,.hub-runtime-summary strong,.ha-overview-card strong,.ha-node-plan-card strong,.form h2,.stage-card h3,.session-modal h3{color:#374151}.hero h1{color:#3f4854}.brand p,.nav small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.status-card p,.sm-stat label,.hub-route-meta,.data-row-meta,.muted-result,.ha-sync-meta,.ha-peer-meta{color:#667085}.hero p,.hero li{color:rgba(63,72,84,.74)}.metric label,label{color:#667085}.nav button{color:#4b5563}.nav button.active{color:#374151}.btn-secondary,.btn-ghost{color:#4b5563}.console{color:#5f6b7a}.page-kicker,.mini{color:#667085}.page-tab-icon{color:#667085}
 
 .nav-group-label{color:#667085}.nav-group.is-follow{border-top-color:#e4e7ee}
 
@@ -51,6 +50,152 @@
 
 @media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;height:auto;overflow:visible;border-right:0}.nav{overflow:visible;max-height:none}}
 
-/* Missing panel-heading icons: without --head-icon the ::after renders as a solid slate block. */
-#tab-computemarket{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5.5' width='18' height='13' rx='2'/%3E%3Cpath d='M3 10h18'/%3E%3Cpath d='M7 14.5h4'/%3E%3C/svg%3E")}
-#tab-llmservice{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='7' y='7' width='10' height='10' rx='2'/%3E%3Cpath d='M9 2.8v2.4M15 2.8v2.4M9 18.8v2.4M15 18.8v2.4M2.8 9h2.4M2.8 15h2.4M18.8 9h2.4M18.8 15h2.4'/%3E%3C/svg%3E")}
+/* Named glyphs for admin function titles. ASCII-only. */
+:root{
+  --icon-cloud:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z'/%3E%3C/svg%3E");
+  --icon-mail:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Cpath d='m3 7 9 7 9-7'/%3E%3C/svg%3E");
+  --icon-phone:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='7' y='2' width='10' height='20' rx='2'/%3E%3Cpath d='M10 6h4'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E");
+  --icon-sms:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7h14v9H9l-4 3V7Z'/%3E%3Cpath d='M9 11h6'/%3E%3C/svg%3E");
+  --icon-gift:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7'/%3E%3Cpath d='M2 8h20v4H2z'/%3E%3Cpath d='M12 8v12'/%3E%3Cpath d='M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8'/%3E%3Cpath d='M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8'/%3E%3C/svg%3E");
+  --icon-send:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 2 11 13'/%3E%3Cpath d='M22 2 15 22l-4-9-9-4 20-7z'/%3E%3C/svg%3E");
+  --icon-sync:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8'/%3E%3Cpath d='M3 3v5h5'/%3E%3Cpath d='M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16'/%3E%3Cpath d='M16 16h5v5'/%3E%3C/svg%3E");
+  --icon-library:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h7v10H4z'/%3E%3Cpath d='M13 7h7v4h-7z'/%3E%3Cpath d='M13 13h7v4h-7z'/%3E%3C/svg%3E");
+  --icon-spark:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 9.5 8.5 4 11l5.5 2.5L12 19l2.5-5.5L20 11l-5.5-2.5z'/%3E%3C/svg%3E");
+  --icon-user:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E");
+  --icon-lock:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2'/%3E%3Cpath d='M8 11V8a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E");
+  --icon-shield:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 6 6v5c0 4.2 2.6 7.8 6 10 3.4-2.2 6-5.8 6-10V6l-6-3Z'/%3E%3Cpath d='m9.5 12 1.7 1.7 3.3-3.4'/%3E%3C/svg%3E");
+  --icon-globe:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8'/%3E%3Cpath d='M4 12h16'/%3E%3Cpath d='M12 4a12 12 0 0 1 0 16'/%3E%3Cpath d='M12 4a12 12 0 0 0 0 16'/%3E%3C/svg%3E");
+  --icon-ban:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M6 18 18 6'/%3E%3C/svg%3E");
+  --icon-users:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M22 21v-2a4 4 0 0 0-3-3.87'/%3E%3Cpath d='M16 3.13a4 4 0 0 1 0 7.75'/%3E%3C/svg%3E");
+  --icon-ticket:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z'/%3E%3Cpath d='M12 10v8'/%3E%3Cpath d='M9 13h6'/%3E%3C/svg%3E");
+  --icon-search:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E");
+  --icon-grid:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='7' height='7' rx='1'/%3E%3Crect x='14' y='3' width='7' height='7' rx='1'/%3E%3Crect x='3' y='14' width='7' height='7' rx='1'/%3E%3Crect x='14' y='14' width='7' height='7' rx='1'/%3E%3C/svg%3E");
+  --icon-plug:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 8V2'/%3E%3Cpath d='M15 8V2'/%3E%3Cpath d='M7 8h10v3a5 5 0 0 1-10 0V8Z'/%3E%3C/svg%3E");
+  --icon-clipboard:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='8' y='3' width='8' height='4' rx='1'/%3E%3Cpath d='M8 6H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2'/%3E%3Cpath d='m9.5 13.5 2 2 4-4'/%3E%3C/svg%3E");
+  --icon-scale:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v18'/%3E%3Cpath d='M5 6h14'/%3E%3Cpath d='M5 6 2 13a4 4 0 0 0 6 0Z'/%3E%3Cpath d='m19 6 3 7a4 4 0 0 1-6 0Z'/%3E%3C/svg%3E");
+  --icon-card:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='20' height='12' rx='2'/%3E%3Cpath d='M2 10h20'/%3E%3C/svg%3E");
+  --icon-inbox:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-6l-2 3H10l-2-3H2'/%3E%3Cpath d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/%3E%3C/svg%3E");
+  --icon-link:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E");
+  --icon-bot:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='6' y='8' width='12' height='10' rx='2'/%3E%3Cpath d='M12 8V5'/%3E%3Cpath d='M9 13h.01'/%3E%3Cpath d='M15 13h.01'/%3E%3Cpath d='M9 17h6'/%3E%3C/svg%3E");
+  --icon-briefcase:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='7' width='18' height='13' rx='2'/%3E%3Cpath d='M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3Cpath d='M3 13h18'/%3E%3C/svg%3E");
+  --icon-bell:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9'/%3E%3Cpath d='M13.73 21a2 2 0 0 1-3.46 0'/%3E%3C/svg%3E");
+  --icon-scan:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7V5a2 2 0 0 1 2-2h2'/%3E%3Cpath d='M17 3h2a2 2 0 0 1 2 2v2'/%3E%3Cpath d='M21 17v2a2 2 0 0 1-2 2h-2'/%3E%3Cpath d='M7 21H5a2 2 0 0 1-2-2v-2'/%3E%3Cpath d='M8 12h8'/%3E%3C/svg%3E");
+  --icon-check:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E");
+  --icon-clock:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E");
+  --icon-trash:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M8 6V4h8v2'/%3E%3Cpath d='M19 6 18 20H6L5 6'/%3E%3C/svg%3E");
+  --icon-pause:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='6' y='5' width='4' height='14' rx='1'/%3E%3Crect x='14' y='5' width='4' height='14' rx='1'/%3E%3C/svg%3E");
+  --icon-power:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2v10'/%3E%3Cpath d='M6.2 6.2a8 8 0 1 0 11.6 0'/%3E%3C/svg%3E");
+  --icon-plus:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 5v14'/%3E%3Cpath d='M5 12h14'/%3E%3C/svg%3E");
+  --icon-chart:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 19V9'/%3E%3Cpath d='M12 19V5'/%3E%3Cpath d='M19 19v-7'/%3E%3Cpath d='M4 19h16'/%3E%3C/svg%3E");
+  --icon-sliders:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 8h16'/%3E%3Cpath d='M4 16h16'/%3E%3Cpath d='M8 6v4'/%3E%3Cpath d='M16 14v4'/%3E%3C/svg%3E");
+  --icon-alert:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 2 21h20L12 3z'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+  --icon-building:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='5' width='16' height='14' rx='2'/%3E%3Cpath d='M8 9h8'/%3E%3Cpath d='M8 13h5'/%3E%3Cpath d='M8 17h3'/%3E%3C/svg%3E");
+  --icon-user-plus:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M19 8v6'/%3E%3Cpath d='M16 11h6'/%3E%3C/svg%3E");
+  --icon-list:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 6h13'/%3E%3Cpath d='M8 12h13'/%3E%3Cpath d='M8 18h13'/%3E%3Cpath d='M3 6h.01'/%3E%3Cpath d='M3 12h.01'/%3E%3Cpath d='M3 18h.01'/%3E%3C/svg%3E");
+  --icon-activity:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-4l-3 7-6-14-3 7H2'/%3E%3C/svg%3E");
+  --icon-hash:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 4v16'/%3E%3Cpath d='M16 4v16'/%3E%3Cpath d='M4 8h16'/%3E%3Cpath d='M4 16h16'/%3E%3C/svg%3E");
+  --icon-cpu:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='6' y='6' width='12' height='12' rx='2'/%3E%3Cpath d='M9 9h6v6H9z'/%3E%3Cpath d='M12 2v2'/%3E%3Cpath d='M12 20v2'/%3E%3Cpath d='M2 12h2'/%3E%3Cpath d='M20 12h2'/%3E%3C/svg%3E");
+  --icon-server:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='6' width='16' height='12' rx='2'/%3E%3Cpath d='M8 10h8'/%3E%3Cpath d='M8 14h5'/%3E%3C/svg%3E");
+  --icon-pencil:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z'/%3E%3C/svg%3E");
+  --icon-store:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 7h12l1 13H5L6 7Z'/%3E%3Cpath d='M9 7a3 3 0 0 1 6 0'/%3E%3Cpath d='M9 12h6'/%3E%3C/svg%3E");
+  --icon-package:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z'/%3E%3Cpath d='M3.27 6.96 12 12.01l8.73-5.05'/%3E%3Cpath d='M12 22.08V12'/%3E%3C/svg%3E");
+  --icon-trend:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 17 9 11l4 4 8-8'/%3E%3Cpath d='M14 7h7v7'/%3E%3C/svg%3E");
+  --icon-home:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 11.5 12 4l9 7.5'/%3E%3Cpath d='M5 10.5V20h14v-9.5'/%3E%3Cpath d='M10 20v-5h4v5'/%3E%3C/svg%3E");
+  --icon-file:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 4h8l4 4v12H7z'/%3E%3Cpath d='M15 4v4h4'/%3E%3Cpath d='M10 12h4'/%3E%3Cpath d='M10 16h4'/%3E%3C/svg%3E");
+  --icon-tree:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v18'/%3E%3Cpath d='M5 6h14'/%3E%3Cpath d='M7 12h10'/%3E%3Cpath d='M9 18h6'/%3E%3C/svg%3E");
+  --icon-key:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='15' r='4'/%3E%3Cpath d='M12 15h10'/%3E%3Cpath d='M18 15v3'/%3E%3Cpath d='M21 15v2'/%3E%3C/svg%3E");
+  --icon-monitor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='5' width='16' height='11' rx='2'/%3E%3Cpath d='M8 19h8'/%3E%3Cpath d='M12 16v3'/%3E%3C/svg%3E");
+  --icon-console:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='5' width='16' height='14' rx='2'/%3E%3Cpath d='m8 9 3 3-3 3'/%3E%3Cpath d='M13 15h3'/%3E%3C/svg%3E");
+  --icon-book:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5h9l5 5v9H5z'/%3E%3Cpath d='M14 5v5h5'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 16h5'/%3E%3C/svg%3E");
+  --feature-icon:var(--icon-spark);
+  --head-icon:var(--icon-home);
+}
+[data-icon="cloud"]{--feature-icon:var(--icon-cloud)}
+[data-icon="mail"]{--feature-icon:var(--icon-mail)}
+[data-icon="phone"]{--feature-icon:var(--icon-phone)}
+[data-icon="sms"]{--feature-icon:var(--icon-sms)}
+[data-icon="gift"]{--feature-icon:var(--icon-gift)}
+[data-icon="send"]{--feature-icon:var(--icon-send)}
+[data-icon="sync"]{--feature-icon:var(--icon-sync)}
+[data-icon="library"]{--feature-icon:var(--icon-library)}
+[data-icon="spark"]{--feature-icon:var(--icon-spark)}
+[data-icon="user"]{--feature-icon:var(--icon-user)}
+[data-icon="lock"]{--feature-icon:var(--icon-lock)}
+[data-icon="shield"]{--feature-icon:var(--icon-shield)}
+[data-icon="globe"]{--feature-icon:var(--icon-globe)}
+[data-icon="ban"]{--feature-icon:var(--icon-ban)}
+[data-icon="users"]{--feature-icon:var(--icon-users)}
+[data-icon="ticket"]{--feature-icon:var(--icon-ticket)}
+[data-icon="search"]{--feature-icon:var(--icon-search)}
+[data-icon="grid"]{--feature-icon:var(--icon-grid)}
+[data-icon="plug"]{--feature-icon:var(--icon-plug)}
+[data-icon="clipboard"]{--feature-icon:var(--icon-clipboard)}
+[data-icon="scale"]{--feature-icon:var(--icon-scale)}
+[data-icon="card"]{--feature-icon:var(--icon-card)}
+[data-icon="inbox"]{--feature-icon:var(--icon-inbox)}
+[data-icon="link"]{--feature-icon:var(--icon-link)}
+[data-icon="bot"]{--feature-icon:var(--icon-bot)}
+[data-icon="briefcase"]{--feature-icon:var(--icon-briefcase)}
+[data-icon="bell"]{--feature-icon:var(--icon-bell)}
+[data-icon="scan"]{--feature-icon:var(--icon-scan)}
+[data-icon="check"]{--feature-icon:var(--icon-check)}
+[data-icon="clock"]{--feature-icon:var(--icon-clock)}
+[data-icon="trash"]{--feature-icon:var(--icon-trash)}
+[data-icon="pause"]{--feature-icon:var(--icon-pause)}
+[data-icon="power"]{--feature-icon:var(--icon-power)}
+[data-icon="plus"]{--feature-icon:var(--icon-plus)}
+[data-icon="chart"]{--feature-icon:var(--icon-chart)}
+[data-icon="sliders"]{--feature-icon:var(--icon-sliders)}
+[data-icon="alert"]{--feature-icon:var(--icon-alert)}
+[data-icon="building"]{--feature-icon:var(--icon-building)}
+[data-icon="user-plus"]{--feature-icon:var(--icon-user-plus)}
+[data-icon="list"]{--feature-icon:var(--icon-list)}
+[data-icon="activity"]{--feature-icon:var(--icon-activity)}
+[data-icon="hash"]{--feature-icon:var(--icon-hash)}
+[data-icon="cpu"]{--feature-icon:var(--icon-cpu)}
+[data-icon="server"]{--feature-icon:var(--icon-server)}
+[data-icon="pencil"]{--feature-icon:var(--icon-pencil)}
+[data-icon="store"]{--feature-icon:var(--icon-store)}
+[data-icon="package"]{--feature-icon:var(--icon-package)}
+[data-icon="trend"]{--feature-icon:var(--icon-trend)}
+[data-icon="home"]{--feature-icon:var(--icon-home)}
+[data-icon="file"]{--feature-icon:var(--icon-file)}
+[data-icon="tree"]{--feature-icon:var(--icon-tree)}
+[data-icon="key"]{--feature-icon:var(--icon-key)}
+[data-icon="monitor"]{--feature-icon:var(--icon-monitor)}
+[data-icon="console"]{--feature-icon:var(--icon-console)}
+[data-icon="book"]{--feature-icon:var(--icon-book)}
+.item-title[data-icon]{position:relative;min-height:28px;padding-left:38px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
+.item-title[data-icon]::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);width:28px;height:28px;margin:0;border-radius:8px;background-color:#f4f6f9!important;background-image:none!important;border:1px solid #e4e8ef;box-shadow:none;opacity:1;display:block;pointer-events:none;z-index:0;-webkit-mask-image:none!important;mask-image:none!important}
+.item-title[data-icon]::after{content:""!important;position:absolute;left:6px;top:50%;transform:translateY(-50%);width:16px;height:16px;margin:0;border:0;border-radius:0;box-shadow:none;opacity:1;display:block;pointer-events:none;z-index:1}
+.item-title[data-icon]+.item-meta{padding-left:38px}
+.head h3{--feature-icon:var(--head-icon)}
+.item-title[data-icon]::after,.head h3::after,.filter-group button[data-icon]::before,.catalog-subtabs button[data-icon]::before,.compute-subtabs button[data-icon]::before,.llm-subtabs button[data-icon]::before{background-color:currentColor!important;background-image:none!important;-webkit-mask:var(--feature-icon) center / contain no-repeat!important;mask:var(--feature-icon) center / contain no-repeat!important;mask-mode:alpha}
+
+.filter-group.catalog-subtabs,.filter-group.compute-subtabs,.filter-group.llm-subtabs{flex-wrap:wrap}
+.filter-group button[data-icon],.catalog-subtabs button[data-icon],.compute-subtabs button[data-icon],.llm-subtabs button[data-icon]{display:inline-flex;align-items:center;gap:6px;height:34px!important;white-space:nowrap}
+.filter-group button[data-icon]::before,.catalog-subtabs button[data-icon]::before,.compute-subtabs button[data-icon]::before,.llm-subtabs button[data-icon]::before{content:"";width:14px;height:14px;flex:0 0 14px;opacity:.85}
+.llm-subtabs [role="tab"][aria-selected="true"][data-icon]::before{opacity:1}
+#tab-overview{--head-icon:var(--icon-home)}
+#tab-routequery{--head-icon:var(--icon-search)}
+#tab-hubs{--head-icon:var(--icon-tree)}
+#tab-policies{--head-icon:var(--icon-shield)}
+#tab-system{--head-icon:var(--icon-sliders)}
+#tab-failurelogs{--head-icon:var(--icon-alert)}
+#tab-console{--head-icon:var(--icon-console)}
+#tab-gossip{--head-icon:var(--icon-sms)}
+#tab-skillhub{--head-icon:var(--icon-package)}
+#tab-skillmarket{--head-icon:var(--icon-store)}
+#tab-news{--head-icon:var(--icon-book)}
+#tab-ha{--head-icon:var(--icon-sync)}
+#tab-redeemcards{--head-icon:var(--icon-card)}
+#tab-industrymanagement{--head-icon:var(--icon-building)}
+#tab-petstore{--head-icon:var(--icon-store)}
+#tab-expertmarket{--head-icon:var(--icon-bot)}
+#tab-computemarket{--head-icon:var(--icon-card)}
+#tab-llmservice{--head-icon:var(--icon-spark)}
+#tab-usermgmt{--head-icon:var(--icon-users)}
+#tab-userrankings{--head-icon:var(--icon-chart)}
+#tab-notifications{--head-icon:var(--icon-bell)}
+#tab-problemreports{--head-icon:var(--icon-alert)}
+

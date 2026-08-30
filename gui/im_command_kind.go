@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 type imCommandKind int
 
@@ -44,7 +48,7 @@ func classifyImmediateIMCommand(trimmed string) imCommandKind {
 	case "/cancel", "/stop", "/取消", "/鍙栨秷":
 		return imCommandCancel
 	default:
-		if strings.HasPrefix(trimmed, "/btw ") || trimmed == "/btw" {
+		if slashCommandMatches(trimmed, "/btw") {
 			return imCommandBTW
 		}
 		if strings.HasPrefix(trimmed, "/loop ") || trimmed == "/loop" {
@@ -75,4 +79,16 @@ func classifyImmediateIMCommand(trimmed string) imCommandKind {
 		}
 		return imCommandUnknown
 	}
+}
+
+func slashCommandMatches(text, command string) bool {
+	if !strings.HasPrefix(text, command) {
+		return false
+	}
+	rest := text[len(command):]
+	if rest == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return unicode.IsSpace(r)
 }

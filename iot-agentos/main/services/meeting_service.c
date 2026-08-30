@@ -871,6 +871,17 @@ static void meeting_task(void *arg) {
         }
         audio_arbitration_stream_stop();
         meeting_service_state_t stopped_state = s_meeting_state;
+        const bool alarm_interrupted =
+            audio_arbitration_consume_alarm_interruption(
+                AUDIO_ARBITRATION_KIND_MEETING_STREAM);
+        if (alarm_interrupted && total_samples > 0 &&
+            stopped_state != MEETING_SERVICE_FINALIZING) {
+            /* Alarm owns the playback focus. Preserve the captured prefix by
+             * forcing the existing finalize/checkpoint path; never resume a
+             * live microphone session behind the alarm worker. */
+            stopped_state = MEETING_SERVICE_FINALIZING;
+            meeting_set_state(MEETING_SERVICE_FINALIZING);
+        }
         esp_err_t finalize_err = total_samples > 0
                                       ? device_status_to_esp_err(
                                             meeting_recording_storage_finalize(recording, total_samples))

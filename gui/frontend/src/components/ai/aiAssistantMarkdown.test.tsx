@@ -53,6 +53,27 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("Third line")).toBeTruthy();
     });
 
+    it("collapses runs of blank lines into a single spacer", () => {
+        // Multi-round agent streams often carry trailing newlines per round;
+        // each blank line renders a 1.4em spacer, so runs stacked into tall voids.
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("第一段\n\n\n\n\n第二段", lightTheme)}</div>,
+        );
+
+        const spacers = Array.from(container.querySelectorAll("div")).filter(d => d.textContent === "\u00A0");
+        expect(spacers.length).toBe(1);
+        expect(screen.getByText("第一段")).toBeTruthy();
+        expect(screen.getByText("第二段")).toBeTruthy();
+    });
+
+    it("keeps blank lines inside fenced code blocks verbatim", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```\nline1\n\n\n\nline2\n```", lightTheme)}</div>,
+        );
+
+        expect(container.querySelector("code")?.textContent).toBe("line1\n\n\n\nline2");
+    });
+
     it("keeps escaped newline sequences inside fenced code blocks", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("```json\\n{\\\"ok\\\": true}\\n```", lightTheme)}</div>
@@ -128,8 +149,7 @@ describe("renderContentWithCodeBlocks", () => {
 
         const line = screen.getByText(longText) as HTMLElement;
         expect(line.style.minWidth).toBe("0px");
-        expect(line.style.overflowWrap).toBe("anywhere");
-        expect(line.style.wordBreak).toBe("break-word");
+        expect(line.style.overflowWrap).toBe("break-word");
     });
 
     it("wraps long heading and numbered markdown content within the message width", () => {
@@ -139,9 +159,9 @@ describe("renderContentWithCodeBlocks", () => {
 
         const heading = screen.getByText(headingText) as HTMLElement;
         const numbered = screen.getByText(numberedText) as HTMLElement;
-        expect(heading.style.overflowWrap).toBe("anywhere");
+        expect(heading.style.overflowWrap).toBe("break-word");
         expect(numbered.style.minWidth).toBe("0px");
-        expect(numbered.style.overflowWrap).toBe("anywhere");
+        expect(numbered.style.overflowWrap).toBe("break-word");
     });
 
     it("keeps multi-digit ordered list markers intact and non-wrapping", () => {
@@ -192,10 +212,8 @@ describe("renderContentWithCodeBlocks", () => {
 
         const code = container.querySelector("code") as HTMLElement;
         const link = screen.getByText(linkText) as HTMLElement;
-        expect(code.style.overflowWrap).toBe("anywhere");
-        expect(code.style.wordBreak).toBe("break-word");
-        expect(link.style.overflowWrap).toBe("anywhere");
-        expect(link.style.wordBreak).toBe("break-word");
+        expect(code.style.overflowWrap).toBe("break-word");
+        expect(link.style.overflowWrap).toBe("break-word");
     });
 
     it("renders inline LaTeX without interpreting formulas inside code spans", () => {
@@ -389,17 +407,16 @@ describe("renderContentWithCodeBlocks", () => {
         const strong = container.querySelector("strong") as HTMLElement;
         const em = container.querySelector("em") as HTMLElement;
         expect(strong.textContent).toBe(boldText);
-        expect(strong.style.overflowWrap).toBe("anywhere");
+        expect(strong.style.overflowWrap).toBe("break-word");
         expect(em.textContent).toBe(italicText);
-        expect(em.style.overflowWrap).toBe("anywhere");
+        expect(em.style.overflowWrap).toBe("break-word");
     });
 
     it("wraps long path links within the message width", () => {
         render(<div>{renderContentWithCodeBlocks("Open C:\\Users\\demo\\verylongfoldernamewithoutbreaks\\verylongfilenamewithoutbreaks.pdf", lightTheme)}</div>);
 
         const link = screen.getByTitle("C:\\Users\\demo\\verylongfoldernamewithoutbreaks\\verylongfilenamewithoutbreaks.pdf") as HTMLElement;
-        expect(link.style.overflowWrap).toBe("anywhere");
-        expect(link.style.wordBreak).toBe("break-word");
+        expect(link.style.overflowWrap).toBe("break-word");
     });
 
     it("keeps KB image thumbnails inside the message width", () => {
@@ -991,6 +1008,81 @@ describe("renderContentWithCodeBlocks", () => {
         expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("~\\.maclaw\\workspace\\notes");
     });
 
+    it("opens a cloud workspace file from the local cache", async () => {
+        const path = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\docs\\a.md";
+        const revealed: string[] = [];
+        const onReveal = (event: Event) => {
+            revealed.push(String((event as CustomEvent<{ projectPath?: string }>).detail?.projectPath || ""));
+        };
+        window.addEventListener("ai-reveal-cloud-workspace-files", onReveal);
+        try {
+            render(<div>{renderContentWithCodeBlocks(`Saved file: '${path}'`, lightTheme)}</div>);
+            const link = screen.getByTitle("docs/a.md");
+            expect(link.textContent).toBe("docs/a.md");
+            fireEvent.click(link);
+            await waitFor(() => {
+                expect(openFileOrShowInFolderMock).toHaveBeenCalledWith(path);
+            });
+            expect(showItemInFolderMock).not.toHaveBeenCalled();
+            expect(revealed).toEqual([]);
+        } finally {
+            window.removeEventListener("ai-reveal-cloud-workspace-files", onReveal);
+        }
+    });
+
+    it("opens a cloud workspace root in the in-app file browser", () => {
+        const path = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\";
+        const revealed: string[] = [];
+        const onReveal = (event: Event) => {
+            revealed.push(String((event as CustomEvent<{ projectPath?: string }>).detail?.projectPath || ""));
+        };
+        window.addEventListener("ai-reveal-cloud-workspace-files", onReveal);
+        try {
+            render(<div>{renderContentWithCodeBlocks(`Workspace: '${path}'`, lightTheme)}</div>);
+            const link = screen.getByTitle("cloud");
+            fireEvent.click(link);
+            expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+            expect(revealed).toEqual(["C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc"]);
+        } finally {
+            window.removeEventListener("ai-reveal-cloud-workspace-files", onReveal);
+        }
+    });
+
+    it("falls back to the in-app file browser when the cache file cannot be opened", async () => {
+        openFileOrShowInFolderMock.mockRejectedValueOnce(new Error("missing"));
+        const path = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\book.pdf";
+        const revealed: string[] = [];
+        const onReveal = (event: Event) => {
+            revealed.push(String((event as CustomEvent<{ projectPath?: string }>).detail?.projectPath || ""));
+        };
+        window.addEventListener("ai-reveal-cloud-workspace-files", onReveal);
+        try {
+            render(<div>{renderContentWithCodeBlocks(`Saved file: '${path}'`, lightTheme)}</div>);
+            fireEvent.click(screen.getByTitle("book.pdf"));
+            await waitFor(() => {
+                expect(revealed).toEqual(["C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc"]);
+            });
+        } finally {
+            window.removeEventListener("ai-reveal-cloud-workspace-files", onReveal);
+        }
+    });
+
+    it("opens the saved-file chrome link from the cloud workspace cache", async () => {
+        const path = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\人工智能数学入门教程.pdf";
+        render(<div>{renderMessage({
+            id: "saved-cloud-pdf",
+            role: "assistant",
+            content: "PDF已成功发送",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        fireEvent.click(screen.getByTitle("人工智能数学入门教程.pdf"));
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith(path);
+        });
+    });
+
     it("renders bare home directories inside code blocks as clickable links", () => {
         render(<div>{renderContentWithCodeBlocks("```text\n~/.maclaw/workspace/self_evolving_papers/\n```", lightTheme)}</div>);
 
@@ -1035,8 +1127,7 @@ describe("renderContentWithCodeBlocks", () => {
         expect(wrapper.style.overscrollBehaviorX).toBe("contain");
         expect(table.style.tableLayout).toBe("fixed");
         expect(table.style.minWidth).toBe("360px");
-        expect(th.style.overflowWrap).toBe("anywhere");
-        expect(td.style.wordBreak).toBe("break-word");
+        expect(th.style.overflowWrap).toBe("break-word");
         expect(td.style.verticalAlign).toBe("top");
     });
 
@@ -1300,9 +1391,9 @@ describe("renderContentWithCodeBlocks", () => {
         const prefix = screen.getByTestId("markdown-table-prefix") as HTMLElement;
         const note = screen.getByTestId("markdown-table-note") as HTMLElement;
         expect(prefix.textContent).toContain("introductory sentence");
-        expect(prefix.style.overflowWrap).toBe("anywhere");
+        expect(prefix.style.overflowWrap).toBe("break-word");
         expect(note.textContent).toContain("trailing note");
-        expect(note.style.overflowWrap).toBe("anywhere");
+        expect(note.style.overflowWrap).toBe("break-word");
         expect(screen.getByText("Column A")).toBeTruthy();
         expect(screen.getByTestId("markdown-table").querySelector("thead")?.textContent).not.toContain("introductory sentence");
     });
@@ -1795,6 +1886,34 @@ describe("renderMessage assistant display guard", () => {
         const completedDetails = screen.getByText("Thinking process...").closest("details");
         expect(completedDetails?.open).toBe(false);
         unmount();
+    });
+
+    it("uses strict CJK line breaking in the thinking panel so bracketed text stays intact", () => {
+        render(<div>{renderMessage({
+            id: "assistant-reasoning-brackets",
+            role: "assistant",
+            content: "已完成。",
+            reasoning: "整理歌曲列表：1. 妹妹（1996） 2. Bad Boy（1997）",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true)}</div>);
+
+        const reasoningBody = screen.getByTestId("assistant-reasoning-body") as HTMLElement;
+        expect(reasoningBody.style.lineBreak).toBe("strict");
+        expect(reasoningBody.style.wordBreak).toBe("normal");
+        expect(reasoningBody.style.overflowWrap).toBe("break-word");
+    });
+
+    it("repairs streamed newlines immediately inside reasoning brackets", () => {
+        render(<div>{renderMessage({
+            id: "assistant-reasoning-bracket-stream",
+            role: "assistant",
+            content: "已完成。",
+            reasoning: "整理歌曲（\n1996\n）列表",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true)}</div>);
+
+        const body = screen.getByTestId("assistant-reasoning-body");
+        expect(body.textContent).toContain("歌曲（1996）列表");
     });
 
     it("keeps ordinary-chat reasoning open while a tool is running", () => {

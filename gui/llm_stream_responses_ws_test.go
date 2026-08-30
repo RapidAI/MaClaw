@@ -919,3 +919,166 @@ func TestBuildResponsesWSFrameStringifiesToolArgumentObjects(t *testing.T) {
 		t.Fatalf("function_call arguments = %#v, want object encoded as JSON string", got)
 	}
 }
+
+func TestResponsesWSStreamFailedFrameReturnsPartialResponseWithReasoning(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.reasoning_summary_text.delta","delta":"ws thinking step"}`,
+			`{"type":"response.output_text.delta","delta":"ws partial answer"}`,
+			`{"type":"response.failed","response":{"error":{"message":"boom","code":"server_error"}}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API error: boom") {
+		t.Fatalf("err = %v, want Responses API error", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("partial response was dropped with the error: %#v", resp)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "ws thinking step" {
+		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+	if got := resp.Choices[0].Message.Content; got != "ws partial answer" {
+		t.Fatalf("content = %q, want accumulated partial content", got)
+	}
+}
+
+func TestResponsesWSStreamErrorFrameReturnsPartialResponse(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.reasoning_summary_text.delta","delta":"ws reasoning before error"}`,
+			`{"type":"error","status":500,"error":{"code":"internal","message":"frame boom"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "Responses API WebSocket error: frame boom") {
+		t.Fatalf("err = %v, want Responses API WebSocket error", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("partial response was dropped with the error: %#v", resp)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "ws reasoning before error" {
+		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+}
+
+func TestResponsesWSStreamResponseIDChangeReturnsPartialResponse(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.created","response":{"id":"resp-a","status":"in_progress"}}`,
+			`{"type":"response.reasoning_summary_text.delta","delta":"reasoning before id change"}`,
+			`{"type":"response.completed","response":{"id":"resp-b","status":"completed"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}}, nil, srv.Client(), nil, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "response ID changed") {
+		t.Fatalf("err = %v, want response ID changed error", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("partial response was dropped with the error: %#v", resp)
+	}
+	if got := resp.Choices[0].Message.ReasoningContent; got != "reasoning before id change" {
+		t.Fatalf("reasoning_content = %q, want accumulated partial reasoning", got)
+	}
+}
+
+func TestResponsesWSStreamReasoningSummaryPartAdded(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Fatalf("read response.create: %v", err)
+		}
+		for _, frame := range []string{
+			`{"type":"response.reasoning_summary_part.added","part":{"type":"summary_text","text":"WS whole summary part."}}`,
+			`{"type":"response.output_text.delta","delta":"Done."}`,
+			`{"type":"response.completed","response":{"status":"completed"}}`,
+		} {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	var streamed strings.Builder
+	resp, err := (&IMMessageHandler{}).doResponsesWSLLMRequestStream(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Key: "test-key", Model: "test-model", Protocol: "openai", WireAPI: "responses_ws"},
+		[]interface{}{map[string]interface{}{"role": "user", "content": "test"}},
+		nil,
+		srv.Client(),
+		func(delta string) { streamed.WriteString(delta) },
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("doResponsesWSLLMRequestStream returned error: %v", err)
+	}
+	if got, want := resp.Choices[0].Message.ReasoningContent, "WS whole summary part."; got != want {
+		t.Fatalf("reasoning_content = %q, want %q", got, want)
+	}
+	if got := streamed.String(); !strings.Contains(got, "\x01WS whole summary part.") {
+		t.Fatalf("summary part was not sent to thinking channel: %q", got)
+	}
+}

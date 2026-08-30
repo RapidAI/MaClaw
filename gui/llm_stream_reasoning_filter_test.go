@@ -62,7 +62,11 @@ func TestOpenAIStreamCodeGenRequestStripsUnsupportedStreamOptions(t *testing.T) 
 	}
 }
 
-func TestOpenAIStreamQwenRetriesWithoutToolsOnBadRequest(t *testing.T) {
+// Qwen rejects tool definitions with HTTP 400 "tools unsupported". The client
+// deliberately does NOT retry without tools (a silent tool-drop would break
+// agent loops invisibly); the error must surface. Mirrors
+// corelib/llm TestDoOpenAIRequestStreamDoesNotRetryQwenWithoutToolsOnBadRequest.
+func TestOpenAIStreamQwenDoesNotRetryWithoutToolsOnBadRequest(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -70,26 +74,17 @@ func TestOpenAIStreamQwenRetriesWithoutToolsOnBadRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request body: %v", err)
 		}
-		if attempts == 1 {
-			if _, ok := body["tools"]; !ok {
-				t.Fatalf("first attempt missing tools: %#v", body)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"tools unsupported"}}`)
-			return
+		if _, ok := body["tools"]; !ok {
+			t.Fatalf("request lost tools: %#v", body)
 		}
-		if _, ok := body["tools"]; ok {
-			t.Fatalf("retry leaked tools: %#v", body)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n")
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"tools unsupported"}}`)
 	}))
 	defer server.Close()
 
 	h := &IMMessageHandler{}
-	resp, err := h.doOpenAILLMRequestStream(
+	_, err := h.doOpenAILLMRequestStream(
 		context.Background(),
 		corelib.MaclawLLMConfig{URL: server.URL, Model: "qwen-27b", Protocol: "openai"},
 		[]interface{}{map[string]string{"role": "user", "content": "test"}},
@@ -101,14 +96,11 @@ func TestOpenAIStreamQwenRetriesWithoutToolsOnBadRequest(t *testing.T) {
 		func(string) {},
 		&llmStreamMetrics{},
 	)
-	if err != nil {
-		t.Fatalf("doOpenAILLMRequestStream error: %v", err)
+	if err == nil {
+		t.Fatal("expected upstream HTTP 400 to surface")
 	}
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
-	}
-	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].Message.Content != "ok" {
-		t.Fatalf("unexpected response: %#v", resp)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (no silent tool-drop retry)", attempts)
 	}
 }
 
@@ -147,11 +139,17 @@ func TestOpenAIStreamReasoningDoesNotEmitRolePrefixContent(t *testing.T) {
 		t.Fatalf("reasoning was not streamed to frontend channel: %q", got)
 	}
 	msg := resp.Choices[0].Message
-	if msg.ReasoningContent != "thinking kept" {
-		t.Fatalf("ReasoningContent = %q, want sanitized reasoning", msg.ReasoningContent)
+	// The streaming role-prefix filter still suppresses the hallucinated
+	// "Browser:" line from the live token channel, but the saved reasoning
+	// must no longer be truncated from a mid-text prefix: reasoning routinely
+	// narrates Browser/Tool usage mid-thought.
+	if want := "thinking kept\nBrowser: " + sensitive; msg.ReasoningContent != want {
+		t.Fatalf("ReasoningContent = %q, want full reasoning %q", msg.ReasoningContent, want)
 	}
-	if strings.Contains(msg.Content, sensitive) || strings.Contains(msg.Content, "Browser:") {
-		t.Fatalf("reasoning fallback leaked into content: %q", msg.Content)
+	// With empty content the message falls back to the full reasoning, which
+	// now keeps mid-text role-prefix lines (only a leading prefix is stripped).
+	if want := "thinking kept\nBrowser: " + sensitive; msg.Content != want {
+		t.Fatalf("content fallback = %q, want %q", msg.Content, want)
 	}
 }
 

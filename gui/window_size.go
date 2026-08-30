@@ -1,11 +1,11 @@
 package main
 
 // envCheckWindowSize returns the compact window dimensions used during
-// environment check/preparation phase. The window is kept small (520×360) to
-// indicate a lightweight setup process, then expanded to adaptiveWindowSize()
-// after the check completes.
+// environment check/preparation phase. The window stays compact (520x460) so
+// the preparing card can show the MaClaw mark, copy, and progress bar, then
+// expands to adaptiveWindowSize() after the check completes.
 func envCheckWindowSize() (width, height int) {
-	return 520, 360
+	return 520, 460
 }
 
 // normalizeScreenSizeForWindowDPI converts physical display pixels to the

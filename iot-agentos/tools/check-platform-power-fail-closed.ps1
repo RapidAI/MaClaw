@@ -18,6 +18,18 @@ $profiles = @(
     @{ Name = 'compact'; Source = 'main\platform_power_compact.c'; Compact = 1 },
     @{ Name = 'round'; Source = 'main\platform_power_round.c'; Compact = 0 }
 )
+# Round profile adapters must reject impossible PMIC capacity values before
+# publishing normalized telemetry; clamping a corrupt register to 100% would
+# bypass the shared Battery Policy protection path.
+$waveshareAdapter = Join-Path $projectRoot 'main\boards\waveshare_amoled_1_75c\waveshare_peripheral_adapter.h'
+if (-not (Test-Path -LiteralPath $waveshareAdapter)) {
+    $failures += "missing $waveshareAdapter"
+} else {
+    $waveshareSource = Get-Content -LiteralPath $waveshareAdapter -Raw
+    if ($waveshareSource -notmatch 'if \(capacity > 100u\) return false') {
+        $failures += 'Waveshare PMIC capacity does not fail closed above 100%'
+    }
+}
 if ($failures.Count -eq 0) {
     $outDir = Join-Path $projectRoot 'build-host-tests'
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null

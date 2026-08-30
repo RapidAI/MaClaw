@@ -30,6 +30,47 @@ func writeLifecycleTestSkill(t *testing.T, dir, name string) {
 	}
 }
 
+func TestSkillLifecycleUploadAdmissionBlocksPendingCompensation(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: t.TempDir()}
+	app.evolutionPipeline = skill.NewEvolutionPipeline()
+	m := NewSkillLifecycleManager(app)
+	// Manager/app initialization may establish the effective Maclaw base dir;
+	// write the fixture after that initialization so the test targets the same
+	// durable queue path the admission check reads.
+	if err := skill.PersistEvolutionCompensation(skill.NewEvolutionCompensationRecord(
+		"req-upload-block", "blocked-upload", "repair", "", nil, false, nil, "rollback_incomplete",
+	)); err != nil {
+		t.Fatalf("PersistEvolutionCompensation() error = %v", err)
+	}
+	if err := m.ensureEvolutionUploadAdmission("blocked-upload"); err == nil || !strings.Contains(err.Error(), "pending evolution compensation") {
+		t.Fatalf("admission error = %v, want pending compensation block", err)
+	}
+}
+
+func TestSkillLifecycleUploadAdmissionFailsClosedOnUnreadableQueue(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: t.TempDir()}
+	app.evolutionPipeline = skill.NewEvolutionPipeline()
+	m := NewSkillLifecycleManager(app)
+	queuePath := skill.DefaultEvolutionCompensationPath()
+	if err := os.MkdirAll(filepath.Dir(queuePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(queuePath, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureEvolutionUploadAdmission("any-upload"); err == nil || !strings.Contains(err.Error(), "pending evolution compensation") {
+		t.Fatalf("admission error = %v, want fail-closed block", err)
+	}
+}
+
 func writeRuntimeDirFixtures(t *testing.T, dir string) {
 	t.Helper()
 	fixtures := map[string]string{
@@ -1302,6 +1343,32 @@ func TestSkillLifecycleRetryBlockedMovesItemsPending(t *testing.T) {
 	}
 }
 
+func TestSkillLifecycleRetryBlockedRespectsEvolutionCompensation(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: t.TempDir(), evolutionPipeline: skill.NewEvolutionPipeline()}
+	m := NewSkillLifecycleManager(app)
+	m.queuePath = filepath.Join(t.TempDir(), "queue.json")
+	m.recordBlocked("blocked-skill", "", "test", "hash", true, "needs verification", 42)
+	if err := skill.PersistEvolutionCompensation(skill.NewEvolutionCompensationRecord(
+		"req-retry-block", "blocked-skill", "repair", "", nil, false, nil, "rollback_incomplete",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RetryBlocked("blocked-skill"); err == nil || !strings.Contains(err.Error(), "pending evolution compensation") {
+		t.Fatalf("RetryBlocked() error = %v, want pending compensation block", err)
+	}
+	items, err := m.ListUploadQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != skillUploadStatusBlocked {
+		t.Fatalf("queue after blocked retry = %+v, want item to remain blocked", items)
+	}
+}
+
 func TestSkillLifecycleEnqueueBlocksWithoutRuntimeProof(t *testing.T) {
 	tempHome := t.TempDir()
 	app := &App{testHomeDir: tempHome}
@@ -2421,6 +2488,13 @@ func TestSkillLifecyclePartialTargetRetrySkipsCompletedHubCenter(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	// RemoteViewerToken is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so the enterprise-hub fixture must go through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteViewerToken = "test-token"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillMarketClient = NewSkillMarketClient(app)
 	m := NewSkillLifecycleManager(app)
@@ -2470,6 +2544,13 @@ func TestSkillLifecycleMarkUploadedClassifiesEnterpriseOnlyBareSubmissionID(t *t
 	cfg.CapabilityMarketPolicy.PreferredUploadTarget = corelib.CapabilitySourceEnterpriseHub
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	// RemoteViewerToken is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so the enterprise-hub fixture must go through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteViewerToken = "viewer-token"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
 	}
 	m := NewSkillLifecycleManager(app)
 	now := time.Now().Format(time.RFC3339)

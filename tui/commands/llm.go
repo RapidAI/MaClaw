@@ -1132,29 +1132,25 @@ func llmUsage(args []string) error {
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
 	fs.Parse(args)
 
-	if err := ensureTUIoAuthToken(); err != nil {
-		return fmt.Errorf("OAuth token 刷新失败: %w", err)
-	}
-
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
+	oauth.ApplyProxyFromAppConfig(cfg)
 
-	// Find the current OAuth provider
-	var accessToken string
-	for _, p := range cfg.MaclawLLMProviders {
-		if corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) && p.AuthType == "oauth" {
-			accessToken = p.Key
+	var current *corelib.MaclawLLMProvider
+	for i, p := range cfg.MaclawLLMProviders {
+		if corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) {
+			current = &cfg.MaclawLLMProviders[i]
 			break
 		}
 	}
-	if accessToken == "" {
-		return fmt.Errorf("当前 provider 不支持用量查询（非 OAuth 类型）")
+	if current == nil {
+		return fmt.Errorf("未找到当前服务商")
 	}
 
-	info, err := oauth.QueryUsage(accessToken)
+	info, err := oauth.QueryOrganizationCosts(*current)
 	if err != nil {
 		return fmt.Errorf("查询用量失败: %w", err)
 	}
@@ -1163,9 +1159,11 @@ func llmUsage(args []string) error {
 		return PrintJSON(info)
 	}
 
-	Println("OpenAI 用量信息:")
-	Printf("  总额度:   $%.2f\n", info.TotalGranted)
-	Printf("  已使用:   $%.2f\n", info.TotalUsed)
-	Printf("  剩余额度: $%.2f\n", info.TotalAvailable)
+	Println("OpenAI 组织账单（本月）:")
+	Printf("  已使用:   $%.4f\n", info.TotalUsed)
+	if info.TotalGranted > 0 {
+		Printf("  总额度:   $%.2f\n", info.TotalGranted)
+		Printf("  剩余额度: $%.2f\n", info.TotalAvailable)
+	}
 	return nil
 }

@@ -155,6 +155,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		}
 	}
 	if !semanticHandled {
+		markClassifierTimeoutLookup(ctx)
 		applySemanticChatProjection(ctx)
 		applySemanticRoutingMissFallback(ctx)
 		toolSet = h.prepareAgentLoopTools(opts.UserID, toolRoutingText, ctx, phase)

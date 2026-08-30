@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "device_api.h"
@@ -59,6 +60,13 @@ device_status_t wake_deadline_service_arm(wake_deadline_handle_t handle,
                                           int64_t epoch_ms);
 void wake_deadline_service_cancel(wake_deadline_handle_t handle);
 
-/* Safe to call from a clock synchronisation callback: it only wakes the
- * service worker, which recalculates and arms the ESP timer in task context. */
-void wake_deadline_service_on_wall_clock_updated(void);
+/* Safe to call from the Clock Sync trusted-time callback after a sample has
+ * been admitted and applied.  It records the boot-local trusted-time fact,
+ * then wakes the service worker to recalculate and arm in task context.
+ * Merely having a plausible RTC wall-clock must not unlock deadlines. */
+void wake_deadline_service_on_trusted_wall_clock_updated(void);
+
+/* Returns the current wall-clock sample used by the deadline dispatcher.
+ * This is a value-only observation; it never arms a timer or changes state. */
+device_status_t wake_deadline_service_get_clock_status(int64_t *out_epoch_ms,
+                                                       bool *out_trusted);

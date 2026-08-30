@@ -491,14 +491,14 @@ func modelRouteResponseFields(d modelRouteDecision) []IMResponseField {
 }
 
 // turnMetaResponseField returns a single always-on "Turn" chip for chat UI:
-// route tier + model + compact tokens + estimated cost + optional prompt profile/savings.
-func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, estCostRMB float64, promptProfile string, promptSavedTokens int, promptUpgraded bool, promptABSample bool, promptSoftFull bool) []IMResponseField {
+// route tier + model + compact tokens + optional prompt profile/savings.
+// Estimated cost is intentionally not shown in the chat UI.
+func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, promptProfile string, promptSavedTokens int, promptUpgraded bool, promptABSample bool, promptSoftFull bool) []IMResponseField {
 	usage := agent.TurnUsage{
 		Model:        d.Model,
 		InputTokens:  input,
 		OutputTokens: output,
 		CachedTokens: cacheRead,
-		EstCostRMB:   estCostRMB,
 	}
 	route := agent.RouteDecision{
 		TaskType:         d.Task,

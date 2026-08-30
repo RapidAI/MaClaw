@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/audioformat"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
@@ -220,7 +221,7 @@ func TestCleanDeviceReplyTextStripsInternalMetadataAnywhere(t *testing.T) {
 	}
 }
 
-func TestAttachDeviceVoicePayloadAttaches16kHzWAV(t *testing.T) {
+func TestAttachDeviceVoicePayloadAttachesMP3Parts(t *testing.T) {
 	longText := "**你好**，这是给硬件宠物的回复。" + strings.Repeat("这是一段很长的回复内容，", 30)
 	synth := &fakeDeviceSynthesizer{wav: buildDeviceTestWAV(24000, 24000)} // 1s of 24kHz silence
 	resp := &IMAgentResponse{Text: longText}
@@ -243,20 +244,16 @@ func TestAttachDeviceVoicePayloadAttaches16kHzWAV(t *testing.T) {
 		if err != nil {
 			t.Fatalf("part %d data is not valid base64: %v", i, err)
 		}
-		if len(decoded) > deviceVoiceMaxWAVBytes {
-			t.Fatalf("part %d WAV = %d bytes, exceeds %d", i, len(decoded), deviceVoiceMaxWAVBytes)
+		if len(decoded) > deviceVoiceMaxPartBytes {
+			t.Fatalf("part %d MP3 = %d bytes, exceeds %d", i, len(decoded), deviceVoiceMaxPartBytes)
 		}
-		if len(decoded) < 44 || string(decoded[0:4]) != "RIFF" || string(decoded[8:12]) != "WAVE" {
-			t.Fatalf("part %d payload is not WAV", i)
+		// Device voice parts ride the wire as MP3 (16kHz mono WAV is only the
+		// in-process intermediate fed to the encoder).
+		if !audioformat.LooksLikeMP3(decoded) {
+			t.Fatalf("part %d payload is not MP3", i)
 		}
-		if rate := binary.LittleEndian.Uint32(decoded[24:28]); rate != 16000 {
-			t.Fatalf("part %d sample rate = %d, want 16000", i, rate)
-		}
-		if channels := binary.LittleEndian.Uint16(decoded[22:24]); channels != 1 {
-			t.Fatalf("part %d channels = %d, want 1", i, channels)
-		}
-		if bits := binary.LittleEndian.Uint16(decoded[34:36]); bits != 16 {
-			t.Fatalf("part %d bits per sample = %d, want 16", i, bits)
+		if part.MimeType != "audio/mpeg" || !strings.HasSuffix(part.FileName, ".mp3") {
+			t.Fatalf("part %d file = %q %q, want .mp3 audio/mpeg", i, part.FileName, part.MimeType)
 		}
 	}
 }
@@ -285,8 +282,10 @@ func TestAttachDeviceVoicePayloadDegradesOnSynthesizeFailure(t *testing.T) {
 }
 
 func TestAttachDeviceVoicePayloadDropsOversizedAudio(t *testing.T) {
-	// 16 seconds of 24kHz mono -> ~512KB after resample, over the firmware cap.
-	synth := &fakeDeviceSynthesizer{wav: buildDeviceTestWAV(24000, 24000*16)}
+	// A single speech chunk whose encoded MP3 exceeds the firmware part cap
+	// aborts the whole voice reply: partial audio must never reach the device.
+	// 2 runes at this rate -> 40s of audio -> ~640KB MP3 (> 500KB cap).
+	synth := &runeSizedSynthesizer{samplesPerRune: 480000}
 	resp := &IMAgentResponse{Text: "你好"}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
 	if len(resp.VoiceParts) != 0 {
@@ -299,34 +298,34 @@ func TestAttachDeviceVoicePayloadDropsOversizedAudio(t *testing.T) {
 type runeSizedSynthesizer struct {
 	samplesPerRune int
 	texts          []string
-	accepted       []string
 }
 
 func (f *runeSizedSynthesizer) SynthesizeText(text string) ([]byte, error) {
 	f.texts = append(f.texts, text)
-	if utf8.RuneCountInString(text) <= deviceVoiceRetryMaxRunes {
-		f.accepted = append(f.accepted, text)
-	}
 	return buildDeviceTestWAV(24000, utf8.RuneCountInString(text)*f.samplesPerRune), nil
 }
 
-func TestAttachDeviceVoicePayloadSplitsOversizedSegmentWithoutLosingSuffix(t *testing.T) {
-	// At this rate the 40-rune cut exceeds the 240KB cap after the 16kHz
-	// resample while the 25-rune retry fits, so the voice must survive.
+func TestAttachDeviceVoicePayloadChunksLongReplyWithoutLosingContent(t *testing.T) {
+	// An 80-rune reply splits into 64+16 rune chunks. Under the MP3 wire
+	// protocol each chunk encodes well under the part cap, so no further
+	// splitting happens; every chunk must survive, in order.
 	synth := &runeSizedSynthesizer{samplesPerRune: 6000}
 	input := strings.Repeat("好", 80)
 	resp := &IMAgentResponse{Text: input}
 	attachDeviceVoicePayload(synth, resp, "thirdparty:pet-01")
-	if len(resp.VoiceParts) < 3 {
-		t.Fatalf("oversized segments must be split into multiple parts, got %d", len(resp.VoiceParts))
+	if len(resp.VoiceParts) != 2 {
+		t.Fatalf("long reply must chunk into 2 voice parts, got %d", len(resp.VoiceParts))
 	}
-	if got := strings.Join(synth.accepted, ""); got != input {
-		t.Fatalf("final synthesized parts lost content: runes=%d texts=%q", utf8.RuneCountInString(got), synth.accepted)
+	if got := strings.Join(synth.texts, ""); got != input {
+		t.Fatalf("synthesized chunks lost content: runes=%d texts=%q", utf8.RuneCountInString(got), synth.texts)
 	}
 	for i, part := range resp.VoiceParts {
 		decoded, err := base64.StdEncoding.DecodeString(part.Data)
-		if err != nil || len(decoded) > deviceVoiceMaxWAVBytes {
+		if err != nil || len(decoded) > deviceVoiceMaxPartBytes {
 			t.Fatalf("part %d invalid or oversized: bytes=%d err=%v", i, len(decoded), err)
+		}
+		if !audioformat.LooksLikeMP3(decoded) {
+			t.Fatalf("part %d payload is not MP3", i)
 		}
 	}
 }

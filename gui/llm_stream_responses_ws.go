@@ -376,6 +376,10 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 	itemAccums := make(map[int]*responsesItemAccum)
 	var finishReason string
 	var usage *llm.Usage
+	// streamErr is set by terminal in-stream error events so the post-loop
+	// path can still return the partially accumulated content/reasoning
+	// alongside the error instead of dropping it.
+	var streamErr error
 	// Preserve only provider-issued response identity observed in the Responses
 	// lifecycle envelope. This is parser evidence, not a WebSocket connection
 	// identity and not a substitute for the Coding S1-C adapter lifecycle.
@@ -486,7 +490,10 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if responseID == "" {
 				responseID = eventResponseID
 			} else if responseID != eventResponseID {
-				return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("Responses API WebSocket stream response ID changed: %q -> %q", responseID, eventResponseID)
+				// Keep the partial response so already-accumulated
+				// content/reasoning is not lost with the error.
+				streamErr = fmt.Errorf("Responses API WebSocket stream response ID changed: %q -> %q", responseID, eventResponseID)
+				goto postLoop
 			}
 		}
 
@@ -542,6 +549,22 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 				reasoningRoleFilterWS.Write(rd.Delta)
 			}
 
+		case responsesEventReasoningSummaryPartAdded:
+			// Some compatible providers send the whole summary for a part in
+			// one shot instead of streaming reasoning_summary_text.delta
+			// events. appendResponsesReasoningSummary deduplicates against any
+			// already-streamed deltas for the same summary.
+			var sp struct {
+				Part struct {
+					Text string `json:"text"`
+				} `json:"part"`
+			}
+			if json.Unmarshal(msgData, &sp) == nil {
+				if emitted := appendResponsesReasoningSummary(&reasoningBuf, sp.Part.Text); emitted != "" {
+					reasoningRoleFilterWS.Write(emitted)
+				}
+			}
+
 		case responsesEventFunctionCallArgumentsDelta:
 			var ad struct {
 				Delta       string `json:"delta"`
@@ -561,7 +584,10 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 					if toolName == "" {
 						toolName = fmt.Sprintf("function_call_%d", ad.OutputIndex)
 					}
-					return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
+					// Keep the partial response so already-accumulated
+					// content/reasoning is not lost with the error.
+					streamErr = fmt.Errorf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, acc.args.Len(), guiMaxToolArgumentsBytes)
+					goto postLoop
 				}
 			}
 
@@ -620,7 +646,10 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+			// Keep the partial response so already-accumulated
+			// content/reasoning is not lost with the error.
+			streamErr = fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
+			goto postLoop
 
 		case responsesEventIncomplete:
 			finishReason = "length"
@@ -641,7 +670,10 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			return agent.VerifiedToolSurfaceDispatch{Receipt: receipt}, fmt.Errorf("Responses API WebSocket error: %s (code=%s, status=%d)", errMsg, errFrame.Error.Code, errFrame.Status)
+			// Keep the partial response so already-accumulated
+			// content/reasoning is not lost with the error.
+			streamErr = fmt.Errorf("Responses API WebSocket error: %s (code=%s, status=%d)", errMsg, errFrame.Error.Code, errFrame.Status)
+			goto postLoop
 		}
 	}
 
@@ -736,7 +768,7 @@ postLoop:
 		ResponseID: responseID,
 		Choices:    []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:      usage,
-	}, Receipt: receipt}, nil
+	}, Receipt: receipt}, streamErr
 }
 
 // responsesWSResponseID extracts the provider response ID from a Responses

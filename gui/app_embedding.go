@@ -926,7 +926,7 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 //
 // Timeout: 30s for the HTTP/LLM call itself (tree-only Classify can still use
 // DefaultLLMTimeout). Dual-channel fusion only waits DefaultFusionTreeDeadline
-// (5s) before degrading to embedding-only — see corelib/intent.classifyWithFusion.
+// (12s) before degrading to embedding-only — see corelib/intent.classifyWithFusion.
 func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 	return func(systemPrompt, userText string) (string, error) {
 		cfg := a.GetMaclawLLMConfig()
@@ -976,7 +976,15 @@ func (a *App) buildUICLLMContextFunc() intent.LLMClassifyContextFunc {
 			ResponseFormat:         intentTreeResponseFormat(),
 			PreserveResponseFormat: true,
 		})
-		a.observeLLMEndpointResult(cfg, err)
+		// A failure raised by our own fusion deadline (ctx fires first) says
+		// nothing about endpoint health. Reporting it to the endpoint gate
+		// poisoned the next 30s of classifications: one slow tree call made
+		// every following ambiguous turn skip the tree and degrade to
+		// unknown (2026-08-25 production chain). Successes and errors from a
+		// still-live context remain endpoint evidence.
+		if err == nil || ctx.Err() == nil {
+			a.observeLLMEndpointResult(cfg, err)
+		}
 		if err != nil {
 			return "", err
 		}

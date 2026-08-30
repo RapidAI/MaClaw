@@ -1,12 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetWorkspaceDirectoryCacheForTests, CodePreviewWorkspace, workspaceFileIconKind } from '../CodePreviewWorkspace';
+import { __resetWorkspaceDirectoryCacheForTests, CodePreviewWorkspace, isLikelyBinaryName, workspaceErrorMessage, workspaceFileIconKind } from '../CodePreviewWorkspace';
 
 const getDirectory = vi.fn();
 const getFilePreview = vi.fn();
 const getEntryProperties = vi.fn();
 const isVSCodeAvailable = vi.fn();
 const openFileInVSCode = vi.fn();
+const downloadEntry = vi.fn();
+const openLocally = vi.fn();
+const deleteEntry = vi.fn();
+const showConfirm = vi.fn(async (..._args: unknown[]) => true);
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetCodingWorkbenchDirectory: (...args: unknown[]) => getDirectory(...args),
@@ -14,6 +18,17 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetCodingWorkbenchEntryProperties: (...args: unknown[]) => getEntryProperties(...args),
     IsCodingWorkbenchVSCodeAvailable: (...args: unknown[]) => isVSCodeAvailable(...args),
     OpenCodingWorkbenchFileInVSCode: (...args: unknown[]) => openFileInVSCode(...args),
+    OpenCodingWorkbenchFileLocally: (...args: unknown[]) => openLocally(...args),
+    DownloadCodingWorkbenchEntry: (...args: unknown[]) => downloadEntry(...args),
+    DeleteCodingWorkbenchEntry: (...args: unknown[]) => deleteEntry(...args),
+}));
+
+vi.mock('../../CustomDialog', () => ({
+    useDialog: () => ({
+        showAlert: vi.fn(),
+        showConfirm: (...args: unknown[]) => showConfirm(...args),
+        showPrompt: vi.fn(),
+    }),
 }));
 
 const theme = {
@@ -31,6 +46,14 @@ beforeEach(() => {
     isVSCodeAvailable.mockReset();
     isVSCodeAvailable.mockResolvedValue(false);
     openFileInVSCode.mockReset();
+    downloadEntry.mockReset();
+    downloadEntry.mockResolvedValue('');
+    openLocally.mockReset();
+    openLocally.mockResolvedValue(undefined);
+    deleteEntry.mockReset();
+    deleteEntry.mockResolvedValue(undefined);
+    showConfirm.mockReset();
+    showConfirm.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -120,6 +143,43 @@ describe('CodePreviewWorkspace hidden entries', () => {
         expect(screen.queryByText('.maclaw-tmp')).toBeNull();
         expect(screen.queryByText('.git')).toBeNull();
     });
+
+    it('hides the local cache path in cloud file properties', async () => {
+        getDirectory.mockResolvedValueOnce({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'report.md', path: 'report.md', is_dir: false }],
+        });
+        getEntryProperties.mockResolvedValueOnce({
+            name: 'report.md',
+            path: 'report.md',
+            abs_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc/report.md',
+            is_dir: false,
+            size: 128,
+            size_known: true,
+            modified_at: 1_720_000_000,
+            mode: '0644',
+            extension: 'md',
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-properties'));
+        const properties = await screen.findByTestId('code-preview-workspace-properties');
+        expect(properties.textContent).toContain('report.md');
+        expect(properties.textContent).not.toContain('完整路径');
+        expect(properties.textContent).not.toMatch(/cloud-workspaces/i);
+    });
+
+    it('labels a cloud workspace without exposing the local cache path', async () => {
+        getDirectory.mockResolvedValueOnce({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: '南京天气预报报告.pdf', path: '南京天气预报报告.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('云端工作区')).toBeTruthy();
+        expect(screen.getByTestId('code-preview-workspace-root-label').textContent).toBe('云端文件');
+        expect(screen.queryByText(/cloud-workspaces/i)).toBeNull();
+        expect(await screen.findByText('南京天气预报报告.pdf')).toBeTruthy();
+    });
 });
 
 describe('workspaceFileIconKind', () => {
@@ -129,6 +189,20 @@ describe('workspaceFileIconKind', () => {
         expect(workspaceFileIconKind('README.md')).toEqual({ badge: 'TXT', kind: 'text' });
         expect(workspaceFileIconKind('layout.html')).toEqual({ badge: '<>', kind: 'markup' });
         expect(workspaceFileIconKind('LICENSE')).toEqual({ badge: 'FILE', kind: 'file' });
+        expect(workspaceFileIconKind('guide.pdf')).toEqual({ badge: 'PDF', kind: 'file' });
+        expect(workspaceFileIconKind('photo.PNG')).toEqual({ badge: 'IMG', kind: 'file' });
+    });
+});
+
+describe('isLikelyBinaryName', () => {
+    it('detects office and archive extensions and ignores missing or trailing dots', () => {
+        expect(isLikelyBinaryName('人工智能数学入门教程.pdf')).toBe(true);
+        expect(isLikelyBinaryName('notes.PDF')).toBe(true);
+        expect(isLikelyBinaryName('pack.tar.gz')).toBe(true);
+        expect(isLikelyBinaryName('report.md')).toBe(false);
+        expect(isLikelyBinaryName('pdf')).toBe(false);
+        expect(isLikelyBinaryName('.pdf')).toBe(false);
+        expect(isLikelyBinaryName('file.')).toBe(false);
     });
 });
 
@@ -230,6 +304,108 @@ describe('CodePreviewWorkspace context menu', () => {
         await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ filePath: 'main.go', content: 'package main' })));
     });
 
+    it('localizes binary preview notices for Chinese and English', async () => {
+        expect(workspaceErrorMessage(new Error('binary files cannot be previewed'), true, 'zh-Hans')).toBe('无法预览二进制文件。可双击或右键「在本地打开」。');
+        expect(workspaceErrorMessage({ message: 'GetCodingWorkbenchFilePreview: binary files cannot be previewed' }, true, 'zh-Hant')).toBe('無法預覽二進位檔案。可按兩下或右鍵「在本機開啟」。');
+        expect(workspaceErrorMessage('Error: binary files cannot be previewed.', false, 'en')).toBe('Binary files cannot be previewed.');
+        expect(workspaceErrorMessage('binary files cannot be previewed', false, 'zh-Hans')).toBe('无法预览二进制文件。');
+        expect(workspaceErrorMessage(
+            new Error('create local VS Code cache: mkdir C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\t\\cws\\tmp'),
+            true,
+            'zh-Hans',
+        )).toBe('无法创建本地 VS Code 缓存。');
+        expect(workspaceErrorMessage('delete is only available for cloud workspaces', true, 'zh-Hans')).toBe('仅云端工作区支持删除文件。');
+        expect(workspaceErrorMessage('local file deleted, but remote delete failed: hub returned 500', true, 'zh-Hans')).toBe('本地缓存已删除，但云端文件删除失败。');
+    });
+
+    it('does not launch a second local open while the first is still in flight', async () => {
+        let resolveOpen: ((value?: unknown) => void) | undefined;
+        openLocally.mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve; }));
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'notes.pdf', path: 'notes.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        const file = await screen.findByText('notes.pdf');
+        fireEvent.click(file);
+        await waitFor(() => expect(openLocally).toHaveBeenCalledTimes(1));
+        fireEvent.click(file);
+        fireEvent.doubleClick(file);
+        expect(openLocally).toHaveBeenCalledTimes(1);
+        resolveOpen?.();
+        await act(async () => { await Promise.resolve(); });
+        expect(openLocally).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a failed local open be retried immediately', async () => {
+        openLocally.mockRejectedValueOnce(new Error('entry cannot be opened locally'));
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'notes.pdf', path: 'notes.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        const file = await screen.findByText('notes.pdf');
+        fireEvent.click(file);
+        expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('无法在本地打开该项。');
+        fireEvent.click(file);
+        await waitFor(() => expect(openLocally).toHaveBeenCalledTimes(2));
+    });
+
+    it('opens a cloud PDF from the local cache on click without previewing', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: '南京天气预报报告.pdf', path: '南京天气预报报告.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('南京天气预报报告.pdf'));
+        await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-task', '南京天气预报报告.pdf'));
+        expect(getFilePreview).not.toHaveBeenCalled();
+        expect(onOpenFile).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('code-preview-workspace-notice')).toBeNull();
+    });
+
+    it('opens an unrecognized cloud binary locally after preview rejects it', async () => {
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            entries: [{ name: 'payload.dat', path: 'payload.dat', is_dir: false }],
+        });
+        getFilePreview.mockRejectedValue(new Error('binary files cannot be previewed'));
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.click(await screen.findByText('payload.dat'));
+        await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-task', 'payload.dat'));
+        expect(screen.queryByTestId('code-preview-workspace-notice')).toBeNull();
+    });
+
+    it('hides local cache paths in cloud workspace load errors', async () => {
+        getDirectory.mockRejectedValueOnce(new Error('open C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\t\\cws: access denied'));
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        const status = await screen.findByTestId('code-preview-workspace-notice');
+        expect(status.textContent).toContain('无法加载云端文件。');
+        expect(status.textContent).not.toMatch(/cloud-workspaces/i);
+    });
+
+    it('omits the local cache path when opening a cloud workspace file', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'report.md', path: 'report.md', is_dir: false }],
+        });
+        getFilePreview.mockResolvedValue({
+            path: 'report.md',
+            abs_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc/report.md',
+            content: '# report',
+            language: 'markdown',
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('report.md'));
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+            filePath: 'report.md',
+            absPath: undefined,
+            content: '# report',
+        })));
+    });
+
     it('shows and invokes Open with VS Code only when VS Code is available', async () => {
         isVSCodeAvailable.mockResolvedValue(true);
         getDirectory.mockResolvedValue({ root: '/remote/app', entries: [{ name: 'main.go', path: 'main.go', is_dir: false }] });
@@ -238,6 +414,181 @@ describe('CodePreviewWorkspace context menu', () => {
         fireEvent.contextMenu(file, { clientX: 30, clientY: 30 });
         fireEvent.click(await screen.findByTestId('code-preview-workspace-context-open-vscode'));
         await waitFor(() => expect(openFileInVSCode).toHaveBeenCalledWith('remote-task', 'main.go'));
+    });
+
+    it('does not offer VS Code for cloud workspace files', async () => {
+        isVSCodeAvailable.mockResolvedValue(true);
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'main.go', path: 'main.go', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="en" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByTestId('code-preview-workspace-file'), { clientX: 30, clientY: 30 });
+        expect(screen.queryByTestId('code-preview-workspace-context-open-vscode')).toBeNull();
+    });
+
+    it('offers Download on cloud files and directories and saves through the backend dialog', async () => {
+        downloadEntry.mockResolvedValue('D:/Downloads/report.md');
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [
+                { name: 'report.md', path: 'report.md', is_dir: false },
+                { name: 'docs', path: 'docs', is_dir: true },
+            ],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        expect(screen.getByTestId('code-preview-workspace-context-download').textContent).toBe('下载');
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-download'));
+        await waitFor(() => expect(downloadEntry).toHaveBeenCalledWith('cloud-task', 'report.md'));
+        expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('已保存到 D:/Downloads/report.md');
+
+        downloadEntry.mockResolvedValueOnce('D:/Downloads/docs.tar');
+        fireEvent.contextMenu(await screen.findByText('docs'), { clientX: 40, clientY: 40 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-download'));
+        await waitFor(() => expect(downloadEntry).toHaveBeenCalledWith('cloud-task', 'docs'));
+    });
+
+    it('opens a cloud file from the local cache on double-click without previewing', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: '人工智能数学入门教程.pdf', path: '人工智能数学入门教程.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.doubleClick(await screen.findByText('人工智能数学入门教程.pdf'));
+        await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-task', '人工智能数学入门教程.pdf'));
+        expect(openLocally).toHaveBeenCalledTimes(1);
+        expect(onOpenFile).not.toHaveBeenCalled();
+        expect(getFilePreview).not.toHaveBeenCalled();
+    });
+
+    it('hides Preview for cloud PDFs because they open locally instead', async () => {
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'guide.pdf', path: 'guide.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('guide.pdf'), { clientX: 30, clientY: 30 });
+        expect(screen.queryByTestId('code-preview-workspace-context-preview')).toBeNull();
+        expect(screen.getByTestId('code-preview-workspace-context-open-local').textContent).toBe('在本地打开');
+    });
+
+    it('offers Open locally on cloud files and opens the cached copy', async () => {
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [
+                { name: 'report.md', path: 'report.md', is_dir: false },
+                { name: 'docs', path: 'docs', is_dir: true },
+            ],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        expect(screen.getByTestId('code-preview-workspace-context-open-local').textContent).toBe('在本地打开');
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-open-local'));
+        await waitFor(() => expect(openLocally).toHaveBeenCalledWith('cloud-task', 'report.md'));
+
+        fireEvent.contextMenu(await screen.findByText('docs'), { clientX: 40, clientY: 40 });
+        expect(screen.queryByTestId('code-preview-workspace-context-open-local')).toBeNull();
+    });
+
+    it('does not offer Open locally for ordinary local working directories', async () => {
+        getDirectory.mockResolvedValue({ root: 'D:/work/app', entries: [{ name: 'main.go', path: 'main.go', is_dir: false }] });
+        render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByTestId('code-preview-workspace-file'), { clientX: 30, clientY: 30 });
+        expect(screen.queryByTestId('code-preview-workspace-context-open-local')).toBeNull();
+        fireEvent.doubleClick(screen.getByTestId('code-preview-workspace-file'));
+        expect(openLocally).not.toHaveBeenCalled();
+    });
+
+    it('hides Download for ordinary local working directories', async () => {
+        getDirectory.mockResolvedValue({ root: 'D:/work/app', entries: [{ name: 'main.go', path: 'main.go', is_dir: false }] });
+        render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByTestId('code-preview-workspace-file'), { clientX: 30, clientY: 30 });
+        expect(screen.queryByTestId('code-preview-workspace-context-download')).toBeNull();
+    });
+
+    it('offers Delete on cloud files after a custom confirm and removes the listing', async () => {
+        const onFileDeleted = vi.fn();
+        getDirectory
+            .mockResolvedValueOnce({
+                root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+                entries: [
+                    { name: 'report.md', path: 'report.md', is_dir: false },
+                    { name: 'keep.md', path: 'keep.md', is_dir: false },
+                ],
+            })
+            .mockResolvedValueOnce({
+                root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+                entries: [{ name: 'keep.md', path: 'keep.md', is_dir: false }],
+            });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} onFileDeleted={onFileDeleted} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        expect(screen.getByTestId('code-preview-workspace-context-delete').textContent).toBe('删除');
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        await waitFor(() => expect(showConfirm).toHaveBeenCalledTimes(1));
+        expect(showConfirm.mock.calls[0][0]).toContain('将同时删除本地缓存和云端文件');
+        expect(showConfirm.mock.calls[0][1]).toBe('删除文件');
+        expect(showConfirm.mock.calls[0][2]).toMatchObject({ confirmVariant: 'danger', confirmText: '删除' });
+        await waitFor(() => expect(deleteEntry).toHaveBeenCalledWith('cloud-task', 'report.md'));
+        await waitFor(() => expect(screen.queryByText('report.md')).toBeNull());
+        expect(screen.getByText('keep.md')).toBeTruthy();
+        expect(onFileDeleted).toHaveBeenCalledWith('report.md');
+    });
+
+    it('does not delete a cloud file when the custom confirm is cancelled', async () => {
+        showConfirm.mockResolvedValueOnce(false);
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'report.md', path: 'report.md', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        await waitFor(() => expect(showConfirm).toHaveBeenCalledTimes(1));
+        expect(deleteEntry).not.toHaveBeenCalled();
+        expect(screen.getByText('report.md')).toBeTruthy();
+    });
+
+    it('does not offer Delete for ordinary local working directories', async () => {
+        getDirectory.mockResolvedValue({ root: 'D:/work/app', entries: [{ name: 'main.go', path: 'main.go', is_dir: false }] });
+        render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByTestId('code-preview-workspace-file'), { clientX: 30, clientY: 30 });
+        expect(screen.queryByTestId('code-preview-workspace-context-delete')).toBeNull();
+    });
+
+    it('confirms cloud folder deletion with the custom dialog then deletes the directory', async () => {
+        getDirectory
+            .mockResolvedValueOnce({
+                root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+                entries: [{ name: 'docs', path: 'docs', is_dir: true }],
+            })
+            .mockResolvedValueOnce({
+                root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+                entries: [],
+            });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('docs'), { clientX: 30, clientY: 30 });
+        expect(screen.getByTestId('code-preview-workspace-context-delete').textContent).toBe('删除文件夹');
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        await waitFor(() => expect(showConfirm).toHaveBeenCalledTimes(1));
+        expect(showConfirm.mock.calls[0][1]).toBe('删除文件夹');
+        await waitFor(() => expect(deleteEntry).toHaveBeenCalledWith('cloud-task', 'docs'));
+        await waitFor(() => expect(screen.queryByText('docs')).toBeNull());
+    });
+
+    it('shows a notice when cloud file deletion fails after confirm', async () => {
+        deleteEntry.mockRejectedValueOnce(new Error('cloud workspace is read-only'));
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'report.md', path: 'report.md', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        fireEvent.contextMenu(await screen.findByText('report.md'), { clientX: 30, clientY: 30 });
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-delete'));
+        const notice = await screen.findByTestId('code-preview-workspace-notice');
+        expect(notice.textContent || '').toContain('云端工作区当前为只读。');
+        expect(notice.getAttribute('role')).toBe('alert');
     });
 
     it('explains that remote VS Code files are local temporary copies', async () => {

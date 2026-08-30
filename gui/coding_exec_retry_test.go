@@ -222,8 +222,11 @@ func TestRepairCompletedCodingWorkflowProjectionDoesNotReplayExecutor(t *testing
 	}
 	app.repairCompletedCodingWorkflowProjections(wf)
 	app.closeCodingRuntimeStore()
+	// The finish report is i18n'd (English per-task paragraphs); assert the
+	// repaired projection carries the ledger-backed task evidence rather than
+	// the old "通过: 1" count wording.
 	updated, err := wf.store.Load(userID)
-	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseCompleted || !strings.Contains(updated.Phases[0].Output, "通过: 1") {
+	if err != nil || updated == nil || updated.Phases[0].Status != v2.PhaseCompleted || !strings.Contains(updated.Phases[0].Output, "already completed") {
 		t.Fatalf("completed projection was not repaired: state=%#v err=%v", updated, err)
 	}
 	if _, err := os.Stat(codingExecCheckpointFilePath(userID, dir)); !os.IsNotExist(err) {

@@ -115,7 +115,7 @@ func (s *SQLiteStore) searchImageNodesLike(ctx context.Context, opts SearchOptio
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at,
 		n.text, 0.0
 		FROM document_nodes n JOIN knowledge_sources s ON s.id = n.source_id
-		WHERE `+strings.Join(where, " AND ")+` ORDER BY n.updated_at DESC, n.id ASC LIMIT ?`, args...)
+		WHERE `+strings.Join(where, " AND ")+` ORDER BY s.fetched_at DESC, n.id ASC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}

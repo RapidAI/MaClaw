@@ -375,6 +375,14 @@ func TestPreflightMaclawAppOneClickPublishReportsConfigAndDeps(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
+	// Machine enrollment fields are backend-owned: plain SaveConfig preserves
+	// the on-disk values, so the enrollment fixture must go through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteMachineID = "m1"
+		cfg.RemoteViewerToken = "viewer-token-16chars"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
+	}
 	// Bundle dep so readiness/gate can pass without full governance evidence.
 	pkgBundled := `{
   "schema": "maclaw.app.pack.v1",

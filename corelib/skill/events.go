@@ -6,12 +6,17 @@ package skill
 //	gui/events.go
 //	gui/frontend/src/constants/events.ts
 const (
-	EventSkillUsageUpdated       = "skill:usage_updated"
-	EventSkillRepaired           = "skill:repaired"
-	EventSkillOptimized          = "skill:optimized"
-	EventSkillAutoDiscovered     = "skill:auto_discovered"
-	EventSkillExecutionFailed    = "skill:execution_failed"
-	EventSkillRepairDraftReady   = "skill:repair_draft_ready"
-	EventSkillIndexRefreshed     = "skill:index_refreshed"
-	EventSkillEvolutionQueueFull = "skill:evolution_queue_full"
+	EventSkillUsageUpdated            = "skill:usage_updated"
+	EventSkillRepaired                = "skill:repaired"
+	EventSkillOptimized               = "skill:optimized"
+	EventSkillAutoDiscovered          = "skill:auto_discovered"
+	EventSkillExecutionFailed         = "skill:execution_failed"
+	EventSkillRepairDraftReady        = "skill:repair_draft_ready"
+	EventSkillIndexRefreshed          = "skill:index_refreshed"
+	EventSkillEvolutionQueueFull      = "skill:evolution_queue_full"
+	EventSkillEvolutionCancelled      = "skill:evolution_cancelled"
+	EventSkillEvolutionTimedOut       = "skill:evolution_timed_out"
+	EventSkillEvolutionRolledBack     = "skill:evolution_rolled_back"
+	EventSkillCompensationRecovered   = "skill:compensation_recovered"
+	EventSkillCompensationNeedsReview = "skill:compensation_needs_review"
 )

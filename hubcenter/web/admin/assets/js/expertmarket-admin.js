@@ -30,7 +30,8 @@ function ensureExpertMarketAdminNav() {
   const anchor = document.querySelector('.nav button[data-tab="petstore"]') || document.querySelector('.nav button[data-tab="skillmarket"]');
   if (!anchor || !anchor.parentElement) return;
   const button = document.createElement('button'); button.type = 'button'; button.dataset.tab = 'expertmarket';
-  button.innerHTML = '<span class="nav-icon" aria-hidden="true">AI</span><span></span><small></small>';
+  const expertIcon = (typeof TAB_ICONS === 'object' && TAB_ICONS.expertmarket) ? TAB_ICONS.expertmarket : '<svg viewBox="0 0 24 24"><path d="M8 7.5h8"></path><path d="M8 12h8"></path><path d="M8 16.5h5"></path><path d="M5.5 3.5h13a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"></path><path d="m16.2 16.3 1.2 1.2 2.4-2.7"></path></svg>';
+  button.innerHTML = '<span class="nav-icon" aria-hidden="true">' + expertIcon + '</span><span></span><small></small>';
   button.addEventListener('click', () => window.openTab('expertmarket'));
   anchor.parentElement.insertBefore(button, anchor.nextSibling);
   applyExpertMarketAdminI18n();

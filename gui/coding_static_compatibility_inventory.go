@@ -1,8 +1,10 @@
 package main
 
 import (
+	"maps"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/security"
@@ -193,6 +195,54 @@ func codingStaticCompatibilitySurfaceNames(definitions []map[string]interface{})
 		}
 	}
 	return names
+}
+
+// nextCodingStaticCompatibilityRevision advances only when a new complete
+// static surface is actually installed. Re-rendering the same tool names for
+// the next LLM iteration is not a replacement: bumping on every request made
+// report_localization evidence and todo_write CAS tokens stale before the
+// model could use them on the following turn.
+func nextCodingStaticCompatibilityRevision(current uint64, previous, next map[string]struct{}) uint64 {
+	if current == 0 || !maps.Equal(previous, next) {
+		return current + 1
+	}
+	return current
+}
+
+// installCodingStaticCompatibilitySurface returns the revision and name set to
+// store after a request render. Identical names keep the previous map so a
+// same-surface re-render does not allocate a replacement grant.
+func installCodingStaticCompatibilitySurface(currentRevision uint64, currentNames, nextNames map[string]struct{}) (uint64, map[string]struct{}) {
+	revision := nextCodingStaticCompatibilityRevision(currentRevision, currentNames, nextNames)
+	if revision != currentRevision || currentNames == nil {
+		return revision, nextNames
+	}
+	return revision, currentNames
+}
+
+func replaceCodingStaticCompatibilitySurface(mu *sync.RWMutex, names *map[string]struct{}, revision *uint64, definitions []map[string]interface{}) uint64 {
+	if mu == nil || names == nil || revision == nil {
+		return 0
+	}
+	next := codingStaticCompatibilitySurfaceNames(definitions)
+	mu.Lock()
+	*revision, *names = installCodingStaticCompatibilitySurface(*revision, *names, next)
+	out := *revision
+	mu.Unlock()
+	return out
+}
+
+func quarantineCodingStaticCompatibilitySurface(mu *sync.RWMutex, quarantined *bool, epoch *string, revision *uint64, names *map[string]struct{}) uint64 {
+	if mu == nil || quarantined == nil || epoch == nil || revision == nil || names == nil {
+		return 0
+	}
+	mu.Lock()
+	*quarantined = true
+	*epoch = ""
+	*revision, *names = installCodingStaticCompatibilitySurface(*revision, *names, map[string]struct{}{})
+	out := *revision
+	mu.Unlock()
+	return out
 }
 
 // codingStaticCompatibilitySurfaceObservation is the S0 audit shape for one

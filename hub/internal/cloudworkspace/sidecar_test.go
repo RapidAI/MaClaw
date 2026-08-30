@@ -3,11 +3,22 @@ package cloudworkspace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestParseTaskSidecar(t *testing.T) {
+	got := ParseTaskSidecar([]byte(`{"name":"跨设备任务","mode":"coding_dev","tag":"cloud_workspace:cws_1"}`))
+	if got.Name != "跨设备任务" || got.Mode != "coding_dev" || got.Tag != "cloud_workspace:cws_1" {
+		t.Fatalf("got=%+v", got)
+	}
+	if empty := ParseTaskSidecar(nil); empty.Name != "" || empty.Mode != "" {
+		t.Fatalf("empty=%+v", empty)
+	}
+}
 
 func TestValidateSidecarName(t *testing.T) {
 	for _, name := range []string{SidecarSession, SidecarTask, SidecarWorkbench, SidecarCheckpoint} {
@@ -59,5 +70,44 @@ func TestBlobStoreSidecarEncryptedAtRest(t *testing.T) {
 	}
 	if err := bs.PutSidecar(ctx, "t1", "u1", "cws_one", "nope.json", plain); err != ErrInvalidSidecarName {
 		t.Fatalf("invalid name err=%v", err)
+	}
+}
+
+func TestSidecarCompressionRoundTrip(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	root := t.TempDir()
+	bs := &BlobStore{Root: root, KeyDir: filepath.Join(root, "keys"), DB: st.db}
+	plain := bytes.Repeat([]byte("conversation turn\n"), 4096)
+	if err := bs.PutSidecar(context.Background(), "t1", "u1", "cws_one", SidecarSession, plain); err != nil {
+		t.Fatal(err)
+	}
+	got, err := bs.GetSidecar(context.Background(), "t1", "u1", "cws_one", SidecarSession)
+	if err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("round trip len=%d err=%v", len(got), err)
+	}
+}
+
+func TestSessionSidecarWriteMergesExistingHistory(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	root := t.TempDir()
+	bs := &BlobStore{Root: root, KeyDir: filepath.Join(root, "keys"), DB: st.db}
+	ctx := context.Background()
+	first, _ := json.Marshal(map[string]any{"conversation": []any{map[string]any{"id": "a"}}})
+	second, _ := json.Marshal(map[string]any{"conversation": []any{map[string]any{"id": "b"}}})
+	if err := bs.PutSidecar(ctx, "t1", "u1", "cws_one", SidecarSession, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := bs.PutSidecar(ctx, "t1", "u1", "cws_one", SidecarSession, second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := bs.GetSidecar(ctx, "t1", "u1", "cws_one", SidecarSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Conversation []map[string]any `json:"conversation"`
+	}
+	if err := json.Unmarshal(got, &payload); err != nil || len(payload.Conversation) != 2 {
+		t.Fatalf("merged=%s err=%v", got, err)
 	}
 }

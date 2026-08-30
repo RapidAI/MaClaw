@@ -82,8 +82,47 @@ func TestSemanticNeedsDropLookupWhenConversationHasFacts(t *testing.T) {
 	}
 	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
 	got := semanticNeedsForReusableConversationLookup(needs, ctx, pengzhouWeatherPDFText())
-	if semanticNeedsHaveLookup(got) || !semanticNeedsHaveGenerate(got) || len(got) != 2 {
-		t.Fatalf("reusable facts must drop only lookup: %#v", got)
+	if semanticNeedsHaveWebLookup(got) || !semanticNeedsHaveGenerate(got) || len(got) != 2 {
+		t.Fatalf("reusable facts must drop only web lookup: %#v", got)
+	}
+}
+
+func TestConversationReusesFetchResultsAndIgnoresKnowledgeSearch(t *testing.T) {
+	fetchHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "彭州天气，生成pdf"},
+		{Role: "tool", ToolName: "web_fetch", Content: "Pengzhou weather: cloudy, 26C, light rain in the afternoon."},
+	}
+	if !conversationHasReusableLookupFacts(fetchHistory, pengzhouWeatherPDFText()) {
+		t.Fatal("same-topic prior fetch must satisfy generate facts")
+	}
+	knowledgeHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "彭州天气，生成pdf"},
+		{Role: "tool", ToolName: "knowledge_search", Content: "Pengzhou weather: cloudy, 26C, light rain in the afternoon."},
+	}
+	if conversationHasReusableLookupFacts(knowledgeHistory, pengzhouWeatherPDFText()) {
+		t.Fatal("knowledge_search must not count as public web lookup evidence")
+	}
+}
+
+func TestSemanticNeedsKeepClockWhenConversationHasWebFacts(t *testing.T) {
+	needs := []tool.CapabilityNeed{
+		{ID: "search", Capability: "information.search.web", Required: true},
+		{ID: "clock", Capability: "information.current_time", Required: true},
+		{ID: "generate", Capability: "document.generate.file", Required: true},
+	}
+	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
+	got := semanticNeedsForReusableConversationLookup(needs, ctx, pengzhouWeatherPDFText())
+	if semanticNeedsHaveWebLookup(got) {
+		t.Fatalf("web lookup should drop: %#v", got)
+	}
+	foundClock := false
+	for _, need := range got {
+		if need.Capability == "information.current_time" {
+			foundClock = true
+		}
+	}
+	if !foundClock {
+		t.Fatalf("clock must survive web-fact reuse: %#v", got)
 	}
 }
 

@@ -292,6 +292,13 @@ device_status_t mp3_player_play(const uint8_t *mp3, size_t mp3_len) {
             audio_arbitration_playback_end(result == DEVICE_STATUS_OK);
         if (result == DEVICE_STATUS_OK) result = end_result;
     }
+    /* An authoritative Alarm stop is an expected §9 interruption, not a
+     * decoder/codec failure.  Consume only the exact PCM generation fact after
+     * the normal playback-end cleanup has released the physical owner. */
+    if (audio_arbitration_consume_alarm_interruption(
+            AUDIO_ARBITRATION_KIND_PCM_PLAYBACK)) {
+        result = DEVICE_STATUS_BUSY;
+    }
     free(output);
     esp_audio_simple_dec_close(decoder);
     if (result == DEVICE_STATUS_OK) {

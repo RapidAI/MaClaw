@@ -104,7 +104,6 @@ func runServer(ctx context.Context) error {
 	executor.SetSkillToolProvider(agentservice.NewSkillToolBridge(svc))
 
 	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
-	server.StartHTTPThreat(ctx)
 	if server != nil {
 		server.enterpriseSync = enterpriseSync
 		wireSrvReviewedHostSpeechTranscriber(executor, server)

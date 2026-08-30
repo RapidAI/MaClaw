@@ -6,6 +6,7 @@ type agentStatusCategory string
 
 const (
 	agentStatusCategoryAll         agentStatusCategory = "all"
+	agentStatusCategoryMainAgent   agentStatusCategory = "main_agent"
 	agentStatusCategoryLocalTasks  agentStatusCategory = "local_tasks"
 	agentStatusCategorySSHTasks    agentStatusCategory = "ssh_tasks"
 	agentStatusCategorySessions    agentStatusCategory = "sessions"
@@ -18,6 +19,8 @@ func normalizeAgentStatusCategory(category string) agentStatusCategory {
 		return agentStatusCategoryAll
 	case agentStatusCategoryAll:
 		return agentStatusCategoryAll
+	case agentStatusCategoryMainAgent:
+		return agentStatusCategoryMainAgent
 	case agentStatusCategoryLocalTasks:
 		return agentStatusCategoryLocalTasks
 	case agentStatusCategorySSHTasks:
@@ -36,7 +39,7 @@ func (category agentStatusCategory) String() string {
 }
 
 func (category agentStatusCategory) IncludesMainAgent() bool {
-	return category == agentStatusCategoryAll
+	return category == agentStatusCategoryAll || category == agentStatusCategoryMainAgent
 }
 
 func (category agentStatusCategory) IncludesLocalTasks() bool {

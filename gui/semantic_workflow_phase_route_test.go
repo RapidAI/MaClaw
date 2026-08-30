@@ -58,6 +58,76 @@ func TestAWorkflowPhaseKeepsTheCapabilityItAlsoClaims(t *testing.T) {
 
 // The exemption is scoped to phases. An ordinary chat turn must still be
 // refused, or the whole point of not auto-starting workflows from chat is lost.
+func TestNamedSkillInvocationFallsThroughLikeTheMainAssistant(t *testing.T) {
+	h := semanticCodingHandler(t, intent.LabelCoding)
+	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		context.Background(), "user-1", "使用book pdf skill生成书籍", "desktop", "root-skill", "turn-skill",
+		ptrClassification(workflowPhaseClassification(intent.LabelWorkflowTask)), nil,
+	)
+	if err != nil {
+		t.Fatalf("named skill was refused as a workflow panel start: %v", err)
+	}
+	if handled {
+		t.Fatal("named skill must fall through to the shared agent, not a managed surface")
+	}
+}
+
+func TestNamedSkillInvocationDoesNotLockOntoGeneratePDF(t *testing.T) {
+	h := semanticCodingHandler(t, intent.LabelCoding)
+	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		context.Background(), "user-1", "使用book pdf skill生成书籍", "desktop", "root-skill-pdf", "turn-skill-pdf",
+		ptrClassification(workflowPhaseClassification(intent.LabelDocumentGenerate)), nil,
+	)
+	if err != nil {
+		t.Fatalf("named skill was intercepted as document_generate: %v", err)
+	}
+	if handled {
+		t.Fatal("named skill must not become a generate_pdf grant")
+	}
+}
+
+func TestHyphenatedEnglishCompoundStillRefusesWorkflowTask(t *testing.T) {
+	h := semanticCodingHandler(t, intent.LabelCoding)
+	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		context.Background(), "user-1", "使用 open-source 方法写一份商业计划书", "desktop", "root-compound", "turn-compound",
+		ptrClassification(workflowPhaseClassification(intent.LabelWorkflowTask)), nil,
+	)
+	if err == nil {
+		t.Fatal("an open-source compound must not be guessed as a named skill")
+	}
+	if !handled {
+		t.Fatal("the refusal fell through to the legacy router")
+	}
+}
+
+func TestSpacedSkillNameWithoutInstalledSkillStillRefusesWorkflowTask(t *testing.T) {
+	h := semanticCodingHandler(t, intent.LabelCoding)
+	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		context.Background(), "user-1", "使用book pdf生成书籍", "desktop", "root-spaced", "turn-spaced",
+		ptrClassification(workflowPhaseClassification(intent.LabelWorkflowTask)), nil,
+	)
+	if err == nil {
+		t.Fatal("a skill name without the word skill must not be guessed when no agent-guided skill is installed")
+	}
+	if !handled {
+		t.Fatal("the refusal fell through to the legacy router")
+	}
+}
+
+func TestNegatedSkillInvocationStillRefusesWorkflowTask(t *testing.T) {
+	h := semanticCodingHandler(t, intent.LabelCoding)
+	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		context.Background(), "user-1", "不要使用 book-pdf skill", "desktop", "root-negated", "turn-negated",
+		ptrClassification(workflowPhaseClassification(intent.LabelWorkflowTask)), nil,
+	)
+	if err == nil {
+		t.Fatal("a negated skill mention planned instead of being refused")
+	}
+	if !handled {
+		t.Fatal("the refusal fell through to the legacy router")
+	}
+}
+
 func TestAnOrdinaryTurnIsStillRefusedForWorkflowTask(t *testing.T) {
 	h := semanticCodingHandler(t, intent.LabelCoding)
 	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(

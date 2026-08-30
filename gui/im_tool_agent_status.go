@@ -170,11 +170,19 @@ func (h *IMMessageHandler) collectMainAgentRuntimeStatusForOwner(rs *RuntimeStat
 			state.stateMu.RLock()
 			ctx := state.loopCtx
 			userText := state.userText
+			startedAt := time.Time{}
+			if ctx != nil {
+				startedAt = ctx.StartedAt
+			}
 			state.stateMu.RUnlock()
 			if ctx != nil && !ctx.IsCancelled() {
 				rs.MainAgentRunning = true
 				rs.MainAgentTask = userText
-				rs.MainAgentElapsed = time.Since(ctx.StartedAt).Round(time.Second)
+				if !startedAt.IsZero() {
+					if elapsed := time.Since(startedAt); elapsed > 0 {
+						rs.MainAgentElapsed = elapsed.Round(time.Second)
+					}
+				}
 			}
 		}
 		return
@@ -209,17 +217,7 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 
 	// Main agent loop status — always included for "all" category.
 	if categoryKind.IncludesMainAgent() {
-		if rs.MainAgentRunning {
-			taskPreview := rs.MainAgentTask
-			if len([]rune(taskPreview)) > 80 {
-				taskPreview = string([]rune(taskPreview)[:80]) + "..."
-			}
-			sections = append(sections, fmt.Sprintf(
-				"**主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s",
-				rs.MainAgentElapsed, taskPreview))
-		} else {
-			sections = append(sections, "**主 Agent**: 空闲")
-		}
+		sections = append(sections, formatMainAgentStatus(rs, ""))
 	}
 
 	// Filter and format tasks by category.
@@ -249,6 +247,50 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+func formatMainAgentStatus(rs RuntimeStatus, lang string) string {
+	// agent_status historically returns Simplified Chinese. Keep that default for
+	// tool callers that do not provide a language, while /btw passes its
+	// explicitly resolved response language for localized output.
+	languageKind := appLanguageZhHans
+	if strings.TrimSpace(lang) != "" {
+		languageKind = normalizeAppLanguageKind(lang)
+	}
+
+	if !rs.MainAgentRunning {
+		switch languageKind {
+		case appLanguageEnglish:
+			return "**Main Agent**: Idle"
+		case appLanguageZhHant:
+			return "**主 Agent**: 閒置"
+		default:
+			return "**主 Agent**: 空闲"
+		}
+	}
+
+	taskPreview := rs.MainAgentTask
+	if strings.TrimSpace(taskPreview) == "" {
+		switch languageKind {
+		case appLanguageEnglish:
+			taskPreview = "Task details are initializing."
+		case appLanguageZhHant:
+			taskPreview = "任務詳情正在初始化。"
+		default:
+			taskPreview = "任务详情正在初始化。"
+		}
+	}
+	if len([]rune(taskPreview)) > 80 {
+		taskPreview = string([]rune(taskPreview)[:80]) + "..."
+	}
+	switch languageKind {
+	case appLanguageEnglish:
+		return fmt.Sprintf("**Main Agent**: Running (for %s)\n   Task: %s", rs.MainAgentElapsed, taskPreview)
+	case appLanguageZhHant:
+		return fmt.Sprintf("**主 Agent**: 正在執行任務（已運行 %s）\n   任務: %s", rs.MainAgentElapsed, taskPreview)
+	default:
+		return fmt.Sprintf("**主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s", rs.MainAgentElapsed, taskPreview)
+	}
 }
 
 // agentStatusByTaskID looks up a specific task by ID across all managers.

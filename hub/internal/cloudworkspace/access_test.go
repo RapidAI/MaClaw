@@ -143,6 +143,29 @@ func TestGranted_AllUsersAllowsUngrouped(t *testing.T) {
 	}
 }
 
+func TestGranted_AllUsersAllowsMissingEmail(t *testing.T) {
+	svc := newTestService(&fakeUsers{byID: map[string]*store.User{
+		"u1": {ID: "u1", TenantID: "t1"},
+	}}, nil)
+	if !mustGrant(t, svc, Settings{Mode: ModeAllUsers, Quota: 5}, testPrincipal()) {
+		t.Fatal("all_users should allow an authenticated user even without email")
+	}
+}
+
+func TestGranted_EmptyTenantIDUsesDefaultTenantSettings(t *testing.T) {
+	svc := newTestService(nil, nil)
+	if _, err := svc.SaveTenantSettings(context.Background(), store.DefaultTenantID, Settings{Mode: ModeAllUsers, Quota: 5}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := svc.Granted(context.Background(), auth.MachinePrincipal{UserID: "u1", MachineID: "m1"})
+	if err != nil {
+		t.Fatalf("Granted err=%v", err)
+	}
+	if !ok {
+		t.Fatal("empty tenant id should use default-tenant all_users settings")
+	}
+}
+
 func TestGranted_DepartmentsUngroupedDenies(t *testing.T) {
 	svc := newTestService(nil, &fakeGroups{userGroup: map[string]string{}})
 	if mustGrant(t, svc, Settings{Mode: ModeDepartments, DepartmentIDs: []string{"eng"}}, testPrincipal()) {
@@ -217,12 +240,12 @@ func TestGranted_UnknownDepartmentIDsSkipped(t *testing.T) {
 
 func TestGranted_MissingUserOrEmailDenies(t *testing.T) {
 	svc := newTestService(&fakeUsers{byID: map[string]*store.User{}}, nil)
-	if mustGrant(t, svc, Settings{Mode: ModeAllUsers}, testPrincipal()) {
-		t.Fatal("missing user should deny")
+	if mustGrant(t, svc, Settings{Mode: ModeDepartments, DepartmentIDs: []string{"eng"}}, testPrincipal()) {
+		t.Fatal("missing user should deny in departments mode")
 	}
 	svc = newTestService(&fakeUsers{byID: map[string]*store.User{"u1": {ID: "u1", Email: ""}}}, nil)
-	if mustGrant(t, svc, Settings{Mode: ModeAllUsers}, testPrincipal()) {
-		t.Fatal("empty email should deny")
+	if mustGrant(t, svc, Settings{Mode: ModeDepartments, DepartmentIDs: []string{"eng"}}, testPrincipal()) {
+		t.Fatal("empty email should deny in departments mode")
 	}
 	if mustGrant(t, svc, Settings{Mode: ModeAllUsers}, auth.MachinePrincipal{TenantID: "t1"}) {
 		t.Fatal("empty user id should deny")

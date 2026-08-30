@@ -58,11 +58,12 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
 	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), ctx)
+	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, h.filterPolicyRejectedSurfaceTools(h.getTools()))
 	tools = stripExecutionContractMetadataForLLM(tools)
 	// Injection is a new direction, so it must receive a complete replacement
 	// surface. Do not return the post-filter raw definitions on a planner error:
 	// that would make the old compatibility path an authorization fallback.
-	rendered, _, planBacked, err := h.renderClosedLegacyReplacementSurface(injectionReplacementPolicyText(ctx, tools), ctx, tools)
+	rendered, _, planBacked, err := h.renderClosedLegacyReplacementSurface(injectionReplacementPolicyText(ctx, tools), ctx, tools, nil)
 	if err != nil || !planBacked {
 		if err != nil {
 			log.Printf("[legacy-adapter] injection replacement rejected user=%q reason=%v", userID, err)

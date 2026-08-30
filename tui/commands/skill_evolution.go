@@ -25,6 +25,7 @@ var (
 // SkillEvolutionDisabled reports whether skill evolution is opted out via:
 //   - env MACLAW_DISABLE_SKILL_EVOLUTION=1|true|yes|on
 //   - session flag (nlskill evolution disable)
+//
 // Used by CLI and TUI agent paths as a global kill switch.
 func SkillEvolutionDisabled() bool {
 	if sessionEvolutionDisabled.Load() {
@@ -63,12 +64,12 @@ func SharedEvolutionStatus() map[string]interface{} {
 	}
 	disabled := SkillEvolutionDisabled() || !configEnabled
 	out := map[string]interface{}{
-		"session_disabled": SkillEvolutionSessionDisabled(),
-		"env_disabled":     SkillEvolutionEnvDisabled(),
-		"config_enabled":   configEnabled,
-		"config_disabled":  !configEnabled,
-		"disabled":         disabled,
-		"pipeline_started": false,
+		"session_disabled":      SkillEvolutionSessionDisabled(),
+		"env_disabled":          SkillEvolutionEnvDisabled(),
+		"config_enabled":        configEnabled,
+		"config_disabled":       !configEnabled,
+		"disabled":              disabled,
+		"pipeline_started":      false,
 		"repair_cooldown_hours": cooldownHours,
 	}
 	sharedEvolutionMu.Lock()
@@ -130,6 +131,18 @@ func NotifySharedSkillEvolution(cfg corelib.AppConfig, store ConfigStore, entry 
 	p.NotifySkillExecution(entry.Name, entry, &skill.SkillExecutionResultCompat{
 		Success:       success,
 		OutputQuality: "basic",
+		Error: func() string {
+			if !success {
+				return entry.LastError
+			}
+			return ""
+		}(),
+		ErrorClass: func() string {
+			if !success {
+				return skill.ExtractErrorClass(entry.LastError)
+			}
+			return ""
+		}(),
 	}, runArgs)
 }
 

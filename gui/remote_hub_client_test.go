@@ -490,6 +490,12 @@ func TestRemoteHubClientFlushesQueuedIMProactiveMessageAfterConnect(t *testing.T
 	received := make(chan map[string]any, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Tolerate non-websocket probes (hub discovery / health checks from
+		// other code paths): only the WS handshake is under test.
+		if !strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+			http.NotFound(w, r)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)
@@ -515,6 +521,14 @@ func TestRemoteHubClientFlushesQueuedIMProactiveMessageAfterConnect(t *testing.T
 	app := &App{testHomeDir: tmpHome}
 	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-queue", RemoteMachineToken: "token-queue"}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	// Machine credentials are backend-owned: plain SaveConfig preserves the
+	// on-disk values, so the fixture must go through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteMachineID = "machine-queue"
+		cfg.RemoteMachineToken = "token-queue"
+	}); err != nil {
+		t.Fatalf("PatchConfig: %v", err)
 	}
 	client := NewRemoteHubClient(app, NewRemoteSessionManager(app))
 	if err := client.SendIMProactiveMessageToTarget("task complete", "telegram", "group-42"); err != nil {

@@ -202,6 +202,110 @@ class FirmwareReleaseContractTest(unittest.TestCase):
             for key, value in previous.items():
                 setattr(sync, key, value)
 
+    def test_stable_history_preserves_existing_entries_and_only_initializes_on_404(self):
+        class Response:
+            def __init__(self, status_code):
+                self.status_code = status_code
+
+        class MissingHistory(Exception):
+            def get_response(self):
+                return Response("404")
+
+        class UnavailableHistory(Exception):
+            def get_response(self):
+                return Response(503)
+
+        class Body:
+            def __init__(self, raw):
+                self.raw = raw
+
+            def get_raw_stream(self):
+                return self
+
+            def read(self):
+                return self.raw
+
+        class Client:
+            def __init__(self, raw=None, error=None):
+                self.raw = raw
+                self.error = error
+                self.uploaded = []
+
+            def get_object(self, **_kwargs):
+                if self.error:
+                    raise self.error
+                return {"Body": Body(self.raw)}
+
+        installer = self.assets / "MaClaw-Setup.exe"
+        installer.write_bytes(b"desktop installer")
+        previous = {
+            "tag": sync.tag,
+            "asset_dir": sync.asset_dir,
+            "bucket": sync.bucket,
+            "public_base_url": sync.public_base_url,
+            "r2_public_base_url": sync.r2_public_base_url,
+            "upload_file": sync.upload_file,
+        }
+        try:
+            sync.tag = "V7.0.0.11970"
+            sync.asset_dir = self.assets
+            sync.bucket = "test-bucket"
+            sync.public_base_url = contract.COS_PUBLIC_BASE_URL
+            sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
+            sync.upload_file = lambda client, path, key, _cache: client.uploaded.append((key, json.loads(path.read_text(encoding="utf-8"))))
+
+            missing = Client(error=MissingHistory())
+            sync.update_stable_history(missing, [installer])
+            self.assertEqual(["V7.0.0.11970"], [item["build"] for item in missing.uploaded[0][1]["releases"]])
+
+            existing = {
+                "releases": [
+                    {"build": "V7.0.0.11968", "published_at": "2026-08-26T00:00:00Z", "assets": {}},
+                    {"build": "V7.0.0.11969", "published_at": "2026-08-27T00:00:00Z", "assets": {}},
+                    {"build": " V7.0.0.11970 ", "published_at": "2026-08-28T00:00:00Z", "assets": {}},
+                    {"build": "invalid-date", "published_at": "yesterday", "assets": {}},
+                    {"build": "missing-assets", "published_at": "2026-08-29T00:00:00Z"},
+                ]
+            }
+            retained = Client(raw=json.dumps(existing).encode("utf-8"))
+            sync.update_stable_history(retained, [installer])
+            self.assertEqual(
+                ["V7.0.0.11970", "V7.0.0.11969", "V7.0.0.11968"],
+                [item["build"].strip() for item in retained.uploaded[0][1]["releases"]],
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "failed to load stable-history.json"):
+                sync.update_stable_history(Client(error=UnavailableHistory()), [installer])
+        finally:
+            for key, value in previous.items():
+                setattr(sync, key, value)
+
+    def test_stable_history_urls_follow_the_desktop_path_escape_contract(self):
+        installer = self.assets / "MaClaw+Setup:beta@1.exe"
+        installer.write_bytes(b"desktop installer")
+        previous = {"tag": sync.tag, "public_base_url": sync.public_base_url, "r2_public_base_url": sync.r2_public_base_url}
+        try:
+            sync.tag = "V7+candidate:1@host"
+            sync.public_base_url = contract.COS_PUBLIC_BASE_URL
+            sync.r2_public_base_url = contract.R2_PUBLIC_BASE_URL
+            asset = sync.stable_history_asset(installer)
+            expected = "/releases/V7+candidate:1@host/MaClaw+Setup:beta@1.exe"
+            self.assertEqual(contract.R2_PUBLIC_BASE_URL + expected, asset["urls"][0])
+            self.assertEqual(contract.COS_PUBLIC_BASE_URL + expected, asset["urls"][1])
+        finally:
+            for key, value in previous.items():
+                setattr(sync, key, value)
+
+    def test_release_workflow_serializes_repository_scoped_publication(self):
+        workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
+        self.assertIn("group: desktop-release-publication-${{ github.repository }}", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
+
+    def test_release_workflow_keeps_raw_r2_immutable_object_keys(self):
+        workflow = (ROOT.parent / "workflows" / "main.yml").read_text(encoding="utf-8")
+        self.assertIn('"$R2_BUCKET/releases/${RELEASE_TAG}/$name"', workflow)
+        self.assertNotIn("RELEASE_TAG_PATH=$(python3 -c", workflow)
+
     def test_desktop_update_mirror_verifier_requires_exact_mirror_urls(self):
         name = "MaClaw-Setup.exe"
         path = self.assets / name
@@ -301,6 +405,12 @@ class FirmwareReleaseContractTest(unittest.TestCase):
         self.assertLess(workflow.index("Verify desktop update publication on Cloudflare R2 and Tencent COS"), workflow.index("- name: Create GitHub Release"))
         self.assertIn("- name: Verify GitHub update manifest is published", workflow)
         self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("- name: Verify GitHub update manifest is published"))
+        self.assertIn("- name: Verify GitHub rollback installer attachments are published", workflow)
+        self.assertLess(workflow.index("- name: Create GitHub Release"), workflow.index("- name: Verify GitHub rollback installer attachments are published"))
+        self.assertIn("published GitHub rollback installer verified", workflow)
+        self.assertIn('"Range": "bytes=0-0"', workflow)
+        self.assertIn("rollback_installers = {", workflow)
+        self.assertNotIn('installers = [name for name in names if name.endswith(("-Setup.exe", "-Universal.pkg"))]', workflow)
         self.assertIn("releases/latest/download/{manifest_name}", workflow)
         self.assertIn('required = {"MaClaw-Setup.exe", "MaClaw-Universal.pkg"}', workflow)
         self.assertNotIn("COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}", workflow)

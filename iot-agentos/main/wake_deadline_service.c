@@ -47,6 +47,11 @@ static SemaphoreHandle_t s_stopped;
 static deadline_slot_t s_slots[WAKE_DEADLINE_MAX_SLOTS];
 static volatile bool s_initialized;
 static volatile bool s_stop_requested;
+/* This is an explicit trust assertion from Clock Sync, not a heuristic based
+ * on the calendar value returned by gettimeofday().  It is boot-local on
+ * purpose: a retained RTC value after reset is untrusted until an admitted
+ * authenticated Hub or SNTP sample is applied in this boot. */
+static volatile bool s_wall_clock_trusted;
 /* System Sleep retains the dispatcher and every client slot; it only closes
  * physical timer delivery/callback selection until a parent Power rollback
  * decides whether those logical deadlines may resume. */
@@ -120,8 +125,12 @@ static int64_t current_epoch_ms(void) {
     return (int64_t)tv.tv_sec * 1000LL + tv.tv_usec / 1000;
 }
 
-static bool clock_is_trusted(int64_t epoch_ms) {
+static bool clock_is_plausible(int64_t epoch_ms) {
     return epoch_ms >= WAKE_DEADLINE_TRUSTED_EPOCH_MS;
+}
+
+static bool clock_is_trusted(int64_t epoch_ms) {
+    return s_wall_clock_trusted && clock_is_plausible(epoch_ms);
 }
 
 static bool valid_handle(wake_deadline_handle_t handle, size_t *out_index) {
@@ -296,6 +305,7 @@ device_status_t wake_deadline_service_init(void) {
     s_initialized = true;
     s_system_sleep_preparing = false;
     s_system_sleep_callbacks_inflight = 0;
+    s_wall_clock_trusted = false;
     xSemaphoreGive(s_deinit_lock);
     ESP_LOGI(TAG, "service ready: slots=%u", WAKE_DEADLINE_MAX_SLOTS);
     return DEVICE_STATUS_OK;
@@ -376,6 +386,7 @@ device_status_t wake_deadline_service_deinit(uint32_t timeout_ms) {
     }
     s_stop_requested = false;
     s_system_sleep_callbacks_inflight = 0;
+    s_wall_clock_trusted = false;
     xSemaphoreGive(s_lock);
     /* No worker or queued timer callback can touch this completion object
      * after the joined task signal and timer deletion, so it is safe to
@@ -564,6 +575,26 @@ void wake_deadline_service_unregister(wake_deadline_handle_t handle) {
     (void)wake_deadline_service_unregister_with_timeout(handle, 1000);
 }
 
-void wake_deadline_service_on_wall_clock_updated(void) {
-    if (s_task && !s_stop_requested && !s_system_sleep_preparing) xTaskNotifyGive(s_task);
+void wake_deadline_service_on_trusted_wall_clock_updated(void) {
+    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return;
+    if (s_initialized && !s_stop_requested && clock_is_plausible(current_epoch_ms())) {
+        s_wall_clock_trusted = true;
+        if (!s_system_sleep_preparing && s_task) xTaskNotifyGive(s_task);
+    }
+    xSemaphoreGive(s_lock);
+}
+
+device_status_t wake_deadline_service_get_clock_status(int64_t *out_epoch_ms,
+                                                       bool *out_trusted) {
+    if (!out_epoch_ms || !out_trusted) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    const bool available = s_initialized && !s_stop_requested;
+    const int64_t now_ms = current_epoch_ms();
+    xSemaphoreGive(s_lock);
+    if (!available) return DEVICE_STATUS_UNAVAILABLE;
+    *out_epoch_ms = now_ms;
+    *out_trusted = clock_is_trusted(now_ms);
+    return DEVICE_STATUS_OK;
 }

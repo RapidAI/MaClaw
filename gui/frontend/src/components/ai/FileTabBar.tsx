@@ -437,6 +437,8 @@ export interface FileTabBarProps {
     onTogglePinFile?: (filePath: string) => void;
     theme: CodePreviewTheme;
     lang?: string;
+    /** Cloud workspace: never leak the local cache path in tooltips/menus. */
+    cloudMode?: boolean;
 }
 
 // ── Context Menu ──
@@ -465,6 +467,7 @@ function FileTabContextMenu({
     onCloseAllFiles,
     onTogglePinFile,
     lang,
+    cloudMode = false,
 }: {
     menu: ContextMenuState;
     theme: CodePreviewTheme;
@@ -475,6 +478,7 @@ function FileTabContextMenu({
     onCloseAllFiles?: () => void;
     onTogglePinFile?: (filePath: string) => void;
     lang?: string;
+    cloudMode?: boolean;
 }) {
     // Match CodePreviewPanel default (`lang = 'en'`) — undefined is English, not Chinese.
     const isZh = (lang ?? 'en').startsWith('zh');
@@ -482,7 +486,7 @@ function FileTabContextMenu({
     const text = (en: string, zhHans: string, zhHant: string = zhHans) => (
         isZhHant ? zhHant : isZh ? zhHans : en
     );
-    const hasAbsPath = Boolean(menu.absPath);
+    const hasAbsPath = !cloudMode && Boolean(menu.absPath);
     const hasCloseActions = Boolean(onCloseFile || onCloseOtherFiles || onCloseFilesToTheRight || onCloseAllFiles);
 
     const copyToClipboard = async (text: string) => {
@@ -521,7 +525,7 @@ function FileTabContextMenu({
     };
     const handleCopyPath = () => {
         onClose();
-        void copyToClipboard(menu.absPath || menu.filePath);
+        void copyToClipboard(cloudMode ? menu.filePath : (menu.absPath || menu.filePath));
     };
     const handleCopyRelativePath = () => {
         onClose();
@@ -744,6 +748,7 @@ const FileTabButton = React.memo(function FileTabButton({
     dragOverSide,
     onDragStateChange,
     onDropOnTab,
+    cloudMode = false,
 }: {
     filePath: string;
     file: CodeFile;
@@ -757,14 +762,16 @@ const FileTabButton = React.memo(function FileTabButton({
     dragOverSide: 'before' | 'after' | null;
     onDragStateChange: (overPath: string | null, placeAfter: boolean) => void;
     onDropOnTab?: (fromPath: string, overPath: string, placeAfter: boolean) => void;
+    cloudMode?: boolean;
 }) {
     const [hovered, setHovered] = useState(false);
     const fileName = extractFileName(filePath);
     const dirty = isCodeFileDirty(file);
     const deltaLabel = formatCodeFileLineDelta(computeCodeFileLineDelta(file));
+    const displayPath = cloudMode ? filePath : (file.absPath || filePath);
     const tabTitle = deltaLabel
-        ? `${file.absPath || filePath}  ${deltaLabel}`
-        : (file.absPath || filePath);
+        ? `${displayPath}  ${deltaLabel}`
+        : displayPath;
 
     let backgroundColor = theme.tabBg;
     if (isActive) {
@@ -830,7 +837,7 @@ const FileTabButton = React.memo(function FileTabButton({
                 if (!fromPath || fromPath === filePath) return;
                 onDropOnTab(fromPath, filePath, placeAfter);
             }}
-            onContextMenu={(e) => onContextMenu(e, filePath, file.absPath)}
+            onContextMenu={(e) => onContextMenu(e, filePath, cloudMode ? undefined : file.absPath)}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
             style={{
@@ -945,6 +952,7 @@ export function FileTabBar({
     onTogglePinFile,
     theme,
     lang,
+    cloudMode = false,
 }: FileTabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     /** Clipped strip only — capacity is measured here so the sticky +N slot is free. */
@@ -1260,6 +1268,7 @@ export function FileTabBar({
                     onCloseAllFiles={onCloseAllFiles}
                     onTogglePinFile={onTogglePinFile}
                     lang={lang}
+                    cloudMode={cloudMode}
                 />
             )}
             <div
@@ -1320,6 +1329,7 @@ export function FileTabBar({
                                 dragOverSide={overSide}
                                 onDragStateChange={handleDragStateChange}
                                 onDropOnTab={onMoveFile ? handleDropOnTab : undefined}
+                                cloudMode={cloudMode}
                             />
                         );
                     })}
@@ -1488,7 +1498,7 @@ export function FileTabBar({
                                                 fontWeight: isActive ? 600 : 400,
                                                 background: isHighlighted ? theme.tabHoverBg : 'transparent',
                                             }}
-                                            title={file.absPath || filePath}
+                                            title={cloudMode ? filePath : (file.absPath || filePath)}
                                             onClick={() => handleEditorsActivate(filePath)}
                                             onMouseEnter={() => setHighlightIndex(index)}
                                         >
@@ -1515,7 +1525,7 @@ export function FileTabBar({
                                                     fontSize: 10,
                                                     color: theme.textMuted,
                                                     opacity: 0.85,
-                                                }}>{file.absPath || filePath}</span>
+                                                }}>{cloudMode ? filePath : (file.absPath || filePath)}</span>
                                             </span>
                                             {onCloseFile && (
                                                 <span

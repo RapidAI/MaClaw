@@ -24,15 +24,21 @@ func TestIMSemanticOfficeWriteUsesClosedHostAdapter(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	if surface.plan.Selections[0].AdapterName != semanticTrustedOfficeWriteAdapter {
-		t.Fatalf("selection=%+v", surface.plan.Selections[0])
+	officeSelectionFound := false
+	for _, selection := range surface.plan.Selections {
+		if selection.AdapterName == semanticTrustedOfficeWriteAdapter {
+			officeSelectionFound = true
+		}
+		if selection.AdapterName == "office" {
+			t.Fatal("adapter leaked soup name")
+		}
 	}
-	name := extractToolName(defs[0])
+	if !officeSelectionFound {
+		t.Fatalf("office selection missing: %#v", surface.plan.Selections)
+	}
+	name := semanticGrantNameForAdapter(surface, semanticTrustedOfficeWriteAdapter)
 	if name != "office" {
 		t.Fatalf("managed office name=%q, want office", name)
-	}
-	if surface.plan.Selections[0].AdapterName == "office" {
-		t.Fatal("adapter leaked soup name")
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"path":"sheet.xlsx","sheets":[{"name":"S1","rows":[["a"]]}],"action":"write_excel"}`); !strings.Contains(got, "parameter_unknown_field") && !strings.Contains(got, "parameter_reserved_field") && !strings.Contains(got, "parameter_schema_invalid") {
@@ -44,11 +50,25 @@ func TestIMSemanticOfficeWriteUsesClosedHostAdapter(t *testing.T) {
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("exec surface handled=%v err=%v", handled, err)
 	}
-	name = extractToolName(defs[0])
+	name = semanticGrantNameForAdapter(surface, semanticTrustedOfficeWriteAdapter)
 	cb = &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"path":"sheet.xlsx","sheets":[{"name":"S1","rows":[["a"]]}]}`); !strings.Contains(got, "Wrote spreadsheet") {
 		t.Fatalf("write=%q", got)
 	}
+}
+
+// semanticGrantNameForAdapter finds the model-visible grant name bound to a
+// trusted host adapter on a materialized surface.
+func semanticGrantNameForAdapter(surface *semanticCallSurface, adapter string) string {
+	if surface == nil {
+		return ""
+	}
+	for name, grant := range surface.grants {
+		if grant.AdapterName == adapter {
+			return name
+		}
+	}
+	return ""
 }
 
 func TestSemanticTreeConfirmedIsRouteAuthorityNotFamilyAllowlist(t *testing.T) {
@@ -85,6 +105,59 @@ func TestSemanticTreeConfirmedIsRouteAuthorityNotFamilyAllowlist(t *testing.T) {
 	}
 }
 
+func TestSemanticDegradedOfficeHintPlansBelowResolverFloor(t *testing.T) {
+	// A tree-timeout L2 office guess at the lookup floor plans through the
+	// governed office surface instead of collapsing to unknown leftover.
+	hint := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.75, Layer: 2, Degraded: true}
+	if !semanticOfficeGovernedHint(hint) || !semanticClassificationPlansBelowResolverFloor(hint) {
+		t.Fatal("degraded office hint at 0.75 must plan below the resolver floor")
+	}
+	// Sub-floor hints and non-office degraded mutating families stay a miss.
+	weak := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.65, Layer: 2, Degraded: true}
+	if semanticOfficeGovernedHint(weak) || semanticClassificationPlansBelowResolverFloor(weak) {
+		t.Fatal("sub-floor office hint must not mint needs")
+	}
+	if semanticOfficeGovernedHint(intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.9, Layer: 3}) {
+		t.Fatal("non-degraded office is the resolver floor's job, not the hint gate")
+	}
+	degradedShell := intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: 0.75, Layer: 2, Degraded: true}
+	if semanticClassificationPlansBelowResolverFloor(degradedShell) {
+		t.Fatal("degraded shell guess must stay a miss")
+	}
+}
+
+func TestSemanticDegradedOfficeHintRendersGovernedOfficeSurface(t *testing.T) {
+	// End-to-end: a tree-timeout L2 office hint still materializes the managed
+	// office surface, so a slow hub no longer strips document tools off
+	// 「生成PPT/报告」 turns.
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelOffice)}
+	if err := h.registry.Register(RegisteredTool{
+		Name: "office", Description: "office doc tool", Status: RegToolAvailable,
+		InputSchema:          map[string]interface{}{"type": "object", "properties": map[string]interface{}{"action": map[string]interface{}{"type": "string"}}},
+		CapabilityProvisions: []tool.CapabilityProvision{{Capability: tool.CapabilityDocumentWriteOffice, Qualifiers: map[string]string{"format": "spreadsheet"}, Quality: 1}},
+		SemanticEffects:      []tool.EffectClass{tool.EffectSensitive},
+		Handler:              func(map[string]interface{}) string { return "ok" },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "生成庆祝布偶宝宝5岁生日的ppt", "desktop", "root-office-hint", "turn-office-hint",
+		&intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.75, Layer: 2, Degraded: true},
+	)
+	if err != nil || !handled || surface == nil || len(defs) == 0 {
+		t.Fatalf("degraded office hint must plan, handled=%v err=%v defs=%#v", handled, err, defs)
+	}
+	found := false
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability == tool.CapabilityDocumentWriteOffice {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("office capability not planned: %#v", surface.plan.Selections)
+	}
+}
+
 func TestSemanticSubFloorShellCommandPlansInsteadOfLeftover(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelShellCommand)}
 	h.semanticTrustedShell = func(string, string, time.Duration) (string, error) { return "cleared", nil }
@@ -96,11 +169,11 @@ func TestSemanticSubFloorShellCommandPlansInsteadOfLeftover(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("sub-floor shell must plan, handled=%v err=%v defs=%#v", handled, err, defs)
 	}
-	if extractToolName(defs[0]) != "bash" {
-		t.Fatalf("first tool=%q, want bash; leftover would have stripped it", extractToolName(defs[0]))
+	if name := semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter); name != "bash" {
+		t.Fatalf("shell grant=%q, want bash; leftover would have stripped it", name)
 	}
-	if surface.plan.Selections[0].FitProof.MatchedCapability != tool.CapabilityShellExecuteLocal {
-		t.Fatalf("capability=%q", surface.plan.Selections[0].FitProof.MatchedCapability)
+	if _, ok := semanticSelectionForCapability(surface.plan, tool.CapabilityShellExecuteLocal); !ok {
+		t.Fatalf("shell capability missing: %#v", surface.plan.Selections)
 	}
 }
 
@@ -123,7 +196,13 @@ func TestSemanticTreeConfirmedShellLoopCloseKeepsBash(t *testing.T) {
 		t.Fatalf("tree shell must plan, handled=%v err=%v", handled, err)
 	}
 	tools := closedManagedSemanticDefinitionsForTurn(defs, surface, profile.PromptIsLight())
-	if len(tools) == 0 || extractToolName(tools[0]) != "bash" {
+	kept := false
+	for _, def := range tools {
+		if extractToolName(def) == "bash" {
+			kept = true
+		}
+	}
+	if len(tools) == 0 || !kept {
 		t.Fatalf("loop-start close must keep bash, tools=%#v", tools)
 	}
 }
@@ -152,8 +231,8 @@ func TestSemanticTreeConfirmedOfficePlansBelowResolverFloor(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("tree-confirmed office must plan, handled=%v err=%v defs=%#v", handled, err, defs)
 	}
-	if extractToolName(defs[0]) != "office" {
-		t.Fatalf("first tool=%q, want office", extractToolName(defs[0]))
+	if name := semanticGrantNameForAdapter(surface, semanticTrustedOfficeWriteAdapter); name != "office" {
+		t.Fatalf("managed office name=%q, want office", name)
 	}
 }
 
@@ -236,27 +315,28 @@ func TestIMSemanticShellUsesClosedHostAdapter(t *testing.T) {
 		return "hi", nil
 	}
 	registerBuiltinTools(h.registry, h)
-	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "运行 echo hi", "lansenger", "root-shell", "turn-shell", &intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98},
 	)
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}
-	if surface.plan.Selections[0].AdapterName != semanticTrustedShellAdapter {
-		t.Fatalf("selection=%+v", surface.plan.Selections[0])
+	selection, ok := semanticSelectionForCapability(surface.plan, tool.CapabilityShellExecuteLocal)
+	if !ok || selection.AdapterName != semanticTrustedShellAdapter {
+		t.Fatalf("selection=%+v found=%v", selection, ok)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter)
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"command":"echo hi","project_path":"/tmp"}`); !strings.Contains(got, "parameter_unknown_field") && !strings.Contains(got, "parameter_reserved_field") {
 		t.Fatalf("project_path soup=%q", got)
 	}
-	defs, surface, handled, err = h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+	_, surface, handled, err = h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "运行 echo hi", "lansenger", "root-shell-exec", "turn-shell-exec", &intent.ClassificationResult{Primary: intent.LabelShellCommand, Confidence: .98},
 	)
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("exec surface handled=%v err=%v", handled, err)
 	}
-	name = extractToolName(defs[0])
+	name = semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter)
 	cb = &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := cb.ExecuteTool(name, `{"command":"echo hi"}`); got != "hi" {
 		t.Fatalf("shell=%q", got)

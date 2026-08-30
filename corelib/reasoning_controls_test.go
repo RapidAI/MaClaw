@@ -262,6 +262,116 @@ func TestApplyReasoningControlsAutoEnablesAlwaysOnThinking(t *testing.T) {
 	}
 }
 
+func TestApplyReasoningControlsAgnesUsesReasoningEffort(t *testing.T) {
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash", ThinkingMode: "enabled"},
+		body,
+		ReasoningAPIChat,
+	)
+	if got := body["reasoning_effort"]; got != "medium" {
+		t.Fatalf("agnes reasoning_effort = %#v, want medium", got)
+	}
+	if _, exists := body["thinking"]; exists {
+		t.Fatalf("agnes request must not keep the thinking object: %#v", body)
+	}
+}
+
+func TestApplyReasoningControlsAgnesDisabledOmitsControl(t *testing.T) {
+	// Agnes rejects reasoning_effort=minimal with HTTP 400, and its fieldless
+	// default already skips reasoning, so disabled must omit the control.
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash", ThinkingMode: "disabled"},
+		body,
+		ReasoningAPIChat,
+	)
+	for _, key := range []string{"thinking", "reasoning", "reasoning_effort", "enable_thinking"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("agnes disabled request must omit %q: %#v", key, body)
+		}
+	}
+}
+
+func TestApplyReasoningControlsAgnesClampsUnsupportedEfforts(t *testing.T) {
+	body := map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash", ThinkingMode: "enabled", ReasoningEffort: "minimal"},
+		body,
+		ReasoningAPIChat,
+	)
+	if got := body["reasoning_effort"]; got != "low" {
+		t.Fatalf("agnes minimal clamp = %#v, want low", got)
+	}
+
+	body = map[string]interface{}{}
+	ApplyReasoningControls(
+		MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash", ThinkingMode: "enabled", ReasoningEffort: "xhigh"},
+		body,
+		ReasoningAPIChat,
+	)
+	if got := body["reasoning_effort"]; got != "high" {
+		t.Fatalf("agnes xhigh clamp = %#v, want high", got)
+	}
+}
+
+func TestRetargetReasoningControlsForUpstream(t *testing.T) {
+	// A DeepSeek-style thinking object forwarded to Agnes must become
+	// reasoning_effort; otherwise Agnes silently skips reasoning.
+	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	RetargetReasoningControlsForUpstream(
+		MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash"},
+		body,
+		ReasoningAPIChat,
+	)
+	if got := body["reasoning_effort"]; got != "medium" {
+		t.Fatalf("retargeted agnes reasoning_effort = %#v, want medium", got)
+	}
+	if _, exists := body["thinking"]; exists {
+		t.Fatalf("retargeted body must not keep the thinking object: %#v", body)
+	}
+
+	// The reverse direction: an OpenAI-style effort forwarded to DeepSeek must
+	// become the thinking object, preserving the requested mode.
+	body = map[string]interface{}{"reasoning_effort": "high"}
+	RetargetReasoningControlsForUpstream(
+		MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner"},
+		body,
+		ReasoningAPIChat,
+	)
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("retargeted deepseek thinking = %#v, want type=enabled", body["thinking"])
+	}
+	if _, exists := body["reasoning_effort"]; exists {
+		t.Fatalf("retargeted body must not keep reasoning_effort: %#v", body)
+	}
+
+	// enable_thinking=false is an explicit off and must survive the retarget.
+	body = map[string]interface{}{"enable_thinking": false}
+	RetargetReasoningControlsForUpstream(
+		MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner"},
+		body,
+		ReasoningAPIChat,
+	)
+	thinking, _ = body["thinking"].(map[string]interface{})
+	if thinking["type"] != "disabled" {
+		t.Fatalf("retargeted disabled thinking = %#v, want type=disabled", body["thinking"])
+	}
+}
+
+func TestRetargetReasoningControlsForUpstreamLeavesAutoUntouched(t *testing.T) {
+	body := map[string]interface{}{"model": "auto", "stream": true}
+	RetargetReasoningControlsForUpstream(
+		MaclawLLMConfig{URL: "https://api.agnes-ai.cn/v1", Model: "agnes-2.5-flash"},
+		body,
+		ReasoningAPIChat,
+	)
+	if len(body) != 2 {
+		t.Fatalf("auto body changed: %#v", body)
+	}
+}
+
 func TestCoerceAlwaysOnThinkingMode(t *testing.T) {
 	got := CoerceAlwaysOnThinkingMode(MaclawLLMConfig{Model: "glm-5.3", ThinkingMode: "off"})
 	if got.ThinkingMode != "enabled" {

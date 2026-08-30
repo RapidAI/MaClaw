@@ -904,7 +904,9 @@ func TestDoAnthropicLLMRequestStreamKeepsThinkingAndSanitizesReasoning(t *testin
 	if err != nil {
 		t.Fatalf("doAnthropicLLMRequestStream: %v", err)
 	}
-	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking kept" {
+	// Mid-text "Browser:" no longer truncates saved reasoning; the live token
+	// channel still suppresses it via the streaming role-prefix filter.
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking kept\nBrowser: hidden" {
 		t.Fatalf("response = %#v", resp)
 	}
 	if got, want := resp.Choices[0].Message.Content, "Answer."; got != want {
@@ -941,7 +943,9 @@ func TestDoOpenAILLMRequestStreamKeepsThinkingAndSanitizesReasoning(t *testing.T
 	if err != nil {
 		t.Fatalf("doOpenAILLMRequestStream: %v", err)
 	}
-	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking kept" {
+	// Mid-text "Browser:" no longer truncates saved reasoning; the live token
+	// channel still suppresses it via the streaming role-prefix filter.
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "thinking kept\nBrowser: hidden" {
 		t.Fatalf("response = %#v", resp)
 	}
 	if got, want := resp.Choices[0].Message.Content, "Answer."; got != want {
@@ -999,7 +1003,8 @@ func TestDoOpenAILLMRequestStreamKeepsPartialThinkingOnStreamError(t *testing.T)
 	if !errors.Is(err, readErr) {
 		t.Fatalf("error = %v, want wrapped %v", err, readErr)
 	}
-	if resp == nil || resp.Choices[0].Message.ReasoningContent != "partial thinking" {
+	// Mid-text "Browser:" no longer truncates saved partial reasoning.
+	if resp == nil || resp.Choices[0].Message.ReasoningContent != "partial thinking\nBrowser: hidden" {
 		t.Fatalf("partial response = %#v", resp)
 	}
 	if !strings.Contains(streamed.String(), "\x01partial thinking") {

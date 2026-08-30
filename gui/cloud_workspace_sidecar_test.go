@@ -80,6 +80,25 @@ func TestCloudWorkspaceSidecarFlushOnRelease(t *testing.T) {
 	}
 }
 
+func TestMergeCloudWorkspaceSessionHistoryKeepsBothMachines(t *testing.T) {
+	local := &TabSessionData{Conversation: []interface{}{
+		map[string]any{"id": "a", "role": "user", "timestamp": 20.0},
+		map[string]any{"id": "dup", "role": "assistant", "timestamp": 30.0},
+	}, InputText: "local draft"}
+	remote := &TabSessionData{Conversation: []interface{}{
+		map[string]any{"id": "dup", "role": "assistant", "timestamp": 30.0},
+		map[string]any{"id": "b", "role": "user", "timestamp": 10.0},
+	}, InputText: ""}
+	merged := mergeCloudWorkspaceSessionHistory(local, remote)
+	if len(merged.Conversation) != 3 || merged.InputText != "local draft" {
+		t.Fatalf("merged=%+v", merged)
+	}
+	first := merged.Conversation[0].(map[string]any)
+	if first["id"] != "b" {
+		t.Fatalf("timestamp ordering lost: %+v", merged.Conversation)
+	}
+}
+
 func TestCloudWorkspaceSidecarRestoreOnCreateTask(t *testing.T) {
 	sticky := []byte(`{"kind":"local","goal":"restored sticky"}`)
 	checkpoint := []byte(`{"tasks":[{"title":"resume"}]}`)

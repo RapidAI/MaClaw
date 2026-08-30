@@ -105,7 +105,9 @@ typedef struct {
     void (*show_qr)(const char *ap_ssid, const char *ap_passphrase);
     void (*copy_runtime_wifi)(provisioning_runtime_wifi_t *out);
     void (*sync_runtime_after_network_delete)(const char *ssid);
-    const char *(*preferred_scan_ssid)(void);
+    /* Copies the selected runtime SSID into caller storage. A copy seam keeps
+     * the portal from retaining a pointer into another service's state. */
+    void (*copy_preferred_scan_ssid)(char *out, uint32_t capacity);
 } provisioning_service_host_t;
 
 device_status_t provisioning_service_init(const provisioning_service_host_t *host);

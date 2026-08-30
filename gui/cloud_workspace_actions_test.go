@@ -178,6 +178,23 @@ func TestHideTaskDropsCloudWorkspaceResumeMap(t *testing.T) {
 	}
 }
 
+func TestDeleteCloudWorkspaceTreats404AsGone(t *testing.T) {
+	resetCloudWorkspaceDialogMocks()
+	t.Cleanup(resetCloudWorkspaceDialogMocks)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	deleted, err := app.DeleteCloudWorkspace("cws_missing")
+	if err != nil {
+		t.Fatalf("404 should be treated as already gone: %v", err)
+	}
+	if deleted.ID != "cws_missing" || deleted.DeletedAt == "" {
+		t.Fatalf("deleted=%+v", deleted)
+	}
+}
+
 func TestCloudWorkspaceMutateRejectsMissingID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

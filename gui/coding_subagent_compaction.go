@@ -22,7 +22,10 @@ import (
 // Design principles:
 // - Triggered at 75% of effective context window
 // - Preserves: system prompt + last 5 tool call/result pairs + file paths
-// - Middle section replaced with compact summary (LLM or static fallback)
+// - Middle section replaced with a static anchor summary (modified/created
+//   file paths + recent command history); deliberately no LLM call — the
+//   anchors carry the durable facts and the dropped middle is mostly tool
+//   output whose key data is captured by them
 // - Recovery prefix tells model "previous work was compacted"
 // - Maximum 3 compactions per task (prevent infinite compaction loops)
 // ---------------------------------------------------------------------------

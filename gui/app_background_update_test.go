@@ -77,6 +77,43 @@ func TestAppUpdateNotifyVersion(t *testing.T) {
 	}
 }
 
+func TestRemoteAppVersion_UnlinkedBuildIsNotFakeOldRelease(t *testing.T) {
+	previous := version
+	version = "dev"
+	t.Cleanup(func() { version = previous })
+	if got := remoteAppVersion(); got != "1.0.0" {
+		t.Fatalf("remoteAppVersion() = %q, want compatibility fallback", got)
+	}
+	if hasLinkedReleaseVersion() {
+		t.Fatal("unlinked build reported as release version")
+	}
+}
+
+func TestHasLinkedReleaseVersion(t *testing.T) {
+	previous := version
+	t.Cleanup(func() { version = previous })
+	for _, candidate := range []string{"", "dev", " DEV ", "unknown", "7"} {
+		version = candidate
+		if hasLinkedReleaseVersion() {
+			t.Fatalf("version %q reported as linked", candidate)
+		}
+	}
+	version = "7.5.0.11973"
+	if !hasLinkedReleaseVersion() {
+		t.Fatal("release version reported as unlinked")
+	}
+}
+
+func TestLinkedReleaseVersionTrimsValue(t *testing.T) {
+	previous := version
+	t.Cleanup(func() { version = previous })
+	version = "  V7.5.0.11973  "
+	got, ok := linkedReleaseVersion()
+	if !ok || got != "V7.5.0.11973" {
+		t.Fatalf("linkedReleaseVersion() = (%q, %v)", got, ok)
+	}
+}
+
 func TestShouldFetchAppUpdateNow(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 

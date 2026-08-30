@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareCloudWorkspace, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkill, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, RestoreCloudWorkspaceTasks, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -95,6 +95,7 @@ import { useAIAssistant, emitDesktopPetState } from './components/ai/useAIAssist
 import { START_VOICE_INPUT_EVENT } from './components/ai/useVoiceInput';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } from './utils/hubCredits';
+import { reportBillingTimezoneOnAuthenticatedLaunch } from './utils/reportBillingTimezone';
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
@@ -111,7 +112,7 @@ import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
-import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from './components/ai/aiAssistantPanelSessionUtils';
+import { coerceActiveAssistantTask, expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
@@ -120,15 +121,28 @@ import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
-import { UpdateModal } from './components/modals/UpdateModal';
+import { UpdateModal, rollbackUpdateResult, type RollbackRelease } from './components/modals/UpdateModal';
 import { checkAppUpdate } from './utils/checkAppUpdate';
 import { InstallLogModal } from './components/modals/InstallLogModal';
 import { ProjectProxySettingsDialog } from './components/modals/ProjectProxySettingsDialog';
+
+function installerFileNameFromURL(value: unknown): string {
+    const first = String(value || '').split(/[|\r\n]/).map(v => v.trim()).find(Boolean);
+    if (!first) return '';
+    try {
+        const pathname = new URL(first).pathname;
+        const name = decodeURIComponent(pathname.slice(pathname.lastIndexOf('/') + 1));
+        return /^(MaClaw|TigerClaw|MetaStaff)-(Setup\.exe|Universal\.pkg)$/i.test(name) ? name : '';
+    } catch {
+        return '';
+    }
+}
 import { InstallSkillModal } from './components/modals/InstallSkillModal';
 import { RemoteActivationDialog } from './components/modals/RemoteActivationDialog';
 import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDialog';
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
+import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage } from './appLazyComponents';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
@@ -402,6 +416,11 @@ function App() {
     logStartupTrace('app-render-begin');
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<corelib.AppConfig | null>(null);
+    const reportedBillingTimezoneForAccountRef = useRef("");
+
+    useEffect(() => {
+        reportBillingTimezoneOnAuthenticatedLaunch(config, reportedBillingTimezoneForAccountRef);
+    }, [config]);
     const [navTab, setNavTab] = useState<string>("ai");
     // Keep Utilities alive after its first visit so long-running virtual-repository
     // work continues when the user briefly switches to the AI assistant.
@@ -535,6 +554,12 @@ function App() {
             }
             return expertIDs;
         });
+    }, []);
+    /** Currently visible assistant tab's task-list identity. Null on the local AI tab. */
+    const [activeAssistantTask, setActiveAssistantTask] = useState<ActiveAssistantTaskIdentity | null>(null);
+    const handleActiveAssistantTaskChange = useCallback((identity: ActiveAssistantTaskIdentity | null) => {
+        const next = coerceActiveAssistantTask(identity);
+        setActiveAssistantTask(prev => (sameActiveAssistantTask(prev, next) ? prev : next));
     }, []);
     const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[]): Promise<boolean> => {
         // Keep the guard: an open task must be closed before its state is deleted.
@@ -1795,7 +1820,13 @@ function App() {
         setDownloadError("");
         setInstallerPath("");
 
-        const fileName = isWindows ? "MaClaw-Setup.exe" : "MaClaw-Universal.pkg";
+        // Keep the installer name aligned with the active OEM brand. The
+        // backend selects the same target when building rollback URLs.
+        const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
+        const fallbackFileName = `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
+        // Prefer the asset name carried by the signed update URL. This keeps
+        // OEM installers correct even if brand metadata is still loading.
+        const fileName = installerFileNameFromURL(downloadUrl) || fallbackFileName;
         const expectedSHA256 = updateResult.sha256 || "";
 
         try {
@@ -1814,8 +1845,16 @@ function App() {
         }
     };
 
+    const handleRollbackRelease = (release: RollbackRelease | null) => {
+        if (!release?.download_url) return;
+        setUpdateResult(rollbackUpdateResult(release));
+        setInstallerPath("");
+        setDownloadError("");
+        setDownloadProgress(0);
+    };
     const handleCancelDownload = () => {
-        const fileName = isWindows ? "MaClaw-Setup.exe" : "MaClaw-Universal.pkg";
+        const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
+        const fileName = `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
         CancelDownload(fileName);
     };
 
@@ -2985,11 +3024,21 @@ function App() {
         const refresh = () => {
             if (navTabRef.current === 'ai') refreshTasks();
         };
+        const restoreCloudTasks = () => {
+            if (typeof RestoreCloudWorkspaceTasks !== 'function') return;
+            void RestoreCloudWorkspaceTasks()
+                .then(() => refresh())
+                .catch(() => { /* keep the last local list if Hub restore fails */ });
+        };
         const offProjectIndexChanged = safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
         const offTasksChanged = safeEventsOn(EVENT_TASKS_CHANGED, refresh);
+        const offAssistantReady = safeEventsOn('ai-assistant-init-progress', (status: string) => {
+            if (status === 'ready') restoreCloudTasks();
+        });
         return () => {
             if (typeof offProjectIndexChanged === 'function') offProjectIndexChanged(); else safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
             if (typeof offTasksChanged === 'function') offTasksChanged(); else safeEventsOff(EVENT_TASKS_CHANGED);
+            if (typeof offAssistantReady === 'function') offAssistantReady(); else safeEventsOff('ai-assistant-init-progress');
         };
     }, [refreshTasks]);
 
@@ -3022,7 +3071,15 @@ function App() {
             }
             const cloudWorkspaceId = cloudWorkspaceIdFromTags(proj?.tags);
             if (cloudWorkspaceId) {
-                await PrepareCloudWorkspace(cloudWorkspaceId);
+                const bound = await ResumeCloudWorkspaceTask(cloudWorkspaceId);
+                if (!bound?.project_path) {
+                    throw new Error(lang === 'zh-Hans'
+                        ? '无法打开云端工作区任务'
+                        : lang === 'zh-Hant'
+                            ? '無法開啟雲端工作區任務'
+                            : 'Unable to open the cloud workspace task');
+                }
+                projectPath = bound.project_path;
             }
             await ResumeTask(projectPath);
             const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
@@ -3074,6 +3131,10 @@ function App() {
             });
         } catch (error) {
             console.error("resumeTask failed:", error);
+            const message = error instanceof Error ? error.message.trim() : String(error || '').trim();
+            if (message && !message.includes('已取消')) {
+                showAlert(message);
+            }
         }
     }, [lang, openCodingTask, refreshTasks, showAlert, switchTool]);
 
@@ -4784,58 +4845,32 @@ ${instruction}`;
     if (isLoading) {
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
-            <div data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} className="app-loading-shell">
-                <div className="app-loading-drag-zone" data-window-drag />
-                <h2 className="app-loading-title">{t("envCheckTitle")}</h2>
-                <div className="app-loading-progress" aria-hidden="true">
-                    <div className="app-loading-progress__bar" />
-                </div>
-
-                {showLogs ? (
-                    <textarea
-                        ref={logEndRef}
-                        readOnly
-                        value={envLogs.join('\n')}
-                        className="app-loading-log"
-                    />
-                ) : (
-                    <div className="app-loading-status">
-                        {envLogs.length > 0 ? envLogs[envLogs.length - 1] : t("initializing")}
-                    </div>
-                )}
-
-                <div className="app-loading-actions">
-                    <button
-                        onClick={() => setShowLogs(!showLogs)}
-                        className="app-loading-link"
-                    >
-                        {showLogs ? (lang === 'zh-Hans' ? '\u9690\u85cf\u8be6\u60c5' : lang === 'zh-Hant' ? '\u96b1\u85cf\u8a73\u60c5' : 'Hide Details') : (lang === 'zh-Hans' ? '\u67e5\u770b\u8be6\u60c5' : lang === 'zh-Hant' ? '\u67e5\u770b\u8a73\u60c5' : 'Show Details')}
-                    </button>
-
-                    {showLogs && (
-                        isManualCheck ? (
-                            <button onClick={() => {
-                                if (loadingShellCtlRef.current) {
-                                    // A manual check can be dismissed before its completion
-                                    // event. Still restore the main geometry first so an
-                                    // onboarding portal can never inherit the compact shell.
-                                    loadingShellCtlRef.current.complete('user-dismiss');
-                                } else {
-                                    setIsLoading(false);
-                                    setIsManualCheck(false);
-                                }
-                            }} className="btn-hide app-loading-action app-loading-action--primary">
-                                {lang === 'zh-Hans' ? '\u6536\u8d77' : lang === 'zh-Hant' ? '\u6536\u8d77' : 'Hide'}
-                            </button>
-                        ) : (
-                            <button onClick={Quit} className="btn-hide app-loading-action app-loading-action--danger">
-                                {lang === 'zh-Hans' ? '\u9000\u51fa\u7a0b\u5e8f' : lang === 'zh-Hant' ? '\u9000\u51fa\u7a0b\u5f0f' : 'Quit'}
-                            </button>
-                        )
-                    )}
-                </div>
-
-            </div>
+            <EnvCheckSplash
+                themeMode={aiThemeMode}
+                darkSchemeId={aiDarkSchemeId}
+                lightSchemeId={aiLightSchemeId}
+                nativeRounded={nativeRounded}
+                useCSSWindowCorners={useCSSWindowCorners}
+                isLegacyWindowsFrameless={isLegacyWindowsFrameless}
+                t={t}
+                envLogs={envLogs}
+                showLogs={showLogs}
+                isManualCheck={isManualCheck}
+                logEndRef={logEndRef}
+                onToggleLogs={() => setShowLogs(!showLogs)}
+                onDismiss={() => {
+                    if (loadingShellCtlRef.current) {
+                        // A manual check can be dismissed before its completion
+                        // event. Still restore the main geometry first so an
+                        // onboarding portal can never inherit the compact shell.
+                        loadingShellCtlRef.current.complete('user-dismiss');
+                    } else {
+                        setIsLoading(false);
+                        setIsManualCheck(false);
+                    }
+                }}
+                onQuit={Quit}
+            />
         );
     }
 
@@ -4918,12 +4953,12 @@ ${instruction}`;
             className="app-viewport"
             data-ai-theme={aiThemeMode}
             data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}
-            data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}
+            data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
+                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
@@ -4969,6 +5004,7 @@ ${instruction}`;
                 hideTask={hideTaskGuarded}
                 openProjectTabPaths={openProjectTabPaths}
                 openExpertTabIDs={openExpertTabIDs}
+                activeAssistantTask={activeAssistantTask}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                 sidebarHubCredits={sidebarHubCredits}
                 formatSidebarTokens={formatSidebarTokens}
@@ -5021,7 +5057,7 @@ ${instruction}`;
                 moaSticky={moaSession}
                 onToggleMoASticky={handleToggleMoASticky}
             />
-            <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
+            <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
                 {/* AI and non-AI panes use separate Suspense roots so a page chunk load
                     never blanks the shared header/status chrome (fallback={null} used to). */}
                 {/* Keep the assistant mounted while another page is open. Project tabs own
@@ -5057,6 +5093,7 @@ ${instruction}`;
                             onEnsureAssistantTabTask={ensureAssistantTabTask}
                             onOpenProjectTabsChange={handleOpenProjectTabsChange}
                             onOpenExpertTabsChange={handleOpenExpertTabsChange}
+                            onActiveAssistantTaskChange={handleActiveAssistantTaskChange}
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
@@ -5389,7 +5426,7 @@ ${instruction}`;
 
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
+                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
                         <div className="coding-launch-panel wails-no-drag">
                             <div className="coding-launch-meta-row">
                                 <div className="coding-launch-summary">
@@ -6005,6 +6042,7 @@ ${instruction}`;
                     onDownload={handleDownload}
                     onInstall={handleInstall}
                     onUpdateResultChange={setUpdateResult}
+                    onRollbackReleaseChange={handleRollbackRelease}
                     onClose={() => {
                         setShowUpdateModal(false);
                         setDownloadError("");

@@ -60,6 +60,20 @@ static fault_domain_t s_fault_domain = {
  * sleep PREPARE can reopen normal traffic without rebuilding Wi-Fi/ML307. */
 static bool s_system_sleep_preparing;
 static uint32_t s_network_request_users;
+/* The generic request count protects whole-Connectivity drain, while this
+ * narrower fact proves a profile-private cellular request is still in flight.
+ * It lets a late worker cancel its own already-admitted ML307 request after
+ * an uplink selection changed, without letting an idle Wi-Fi generation touch
+ * the cellular adapter merely by calling a cancellation API. */
+static uint32_t s_cellular_network_request_users;
+/* Physical modem lifecycle calls are separate from HTTP borrowers.  Only one
+ * bounded lifecycle call may own the profile at once, and it must not overlap
+ * an admitted cellular HTTP/stream borrower: prepare/start/quiesce can change
+ * modem state below that request. A selected-uplink change may alter the
+ * profile transport hint, so it must not overlap an adapter call already
+ * inside the private adapter. System Sleep and deinit retain this admission
+ * until it returns, then park or release the same generation. */
+static uint32_t s_cellular_transport_operation_users;
 /* ESP-IDF's default event loop belongs to the composition root, but a queued
  * callback may still start shared Connectivity/Gateway work while that root
  * is draining a System Sleep or teardown transaction. Keep this value-only
@@ -187,6 +201,35 @@ device_status_t connectivity_service_begin_network_request(void) {
     return admitted ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
 }
 
+/* Cellular HTTP must not reuse the transport-neutral admission unchanged:
+ * that would let a Wi-Fi-selected generation enter the profile-private modem
+ * seam.  Check the selected fault domain and take the shared drain reference
+ * in one critical section, so a System Sleep/deinit marker cannot slip
+ * between the selection check and request admission. An already-admitted
+ * synchronous request is allowed to finish if a later configuration action
+ * selects another uplink; its admission is linearized before that change and
+ * the common drain still observes it. */
+static device_status_t begin_cellular_network_request(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool admitted = s_connectivity_initialized && !s_connectivity_stopping &&
+                          !s_system_sleep_preparing &&
+                          s_active_uplink == DEVICE_UPLINK_CELLULAR &&
+                          s_cellular_transport_operation_users == 0;
+    if (admitted) {
+        ++s_network_request_users;
+        ++s_cellular_network_request_users;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return admitted ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
+}
+
+static void end_cellular_network_request(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_cellular_network_request_users) --s_cellular_network_request_users;
+    if (s_network_request_users) --s_network_request_users;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
 void connectivity_service_end_network_request(void) {
     taskENTER_CRITICAL(&s_connectivity_lock);
     if (s_network_request_users) --s_network_request_users;
@@ -257,14 +300,29 @@ device_status_t connectivity_service_prepare_system_sleep(uint32_t timeout_ms) {
      * cancellation of work it owns.  Keep admission closed on failure until
      * Power's mandatory rollback reopens it. */
     if (canceller) {
-        device_status_t cancel_status = canceller(timeout_ms, canceller_context);
+        /* Every participant consumes the same parent budget.  Passing the
+         * original timeout here would let a slow cancel bridge run for a
+         * second full interval and then still admit the physical park. */
+        TickType_t cancel_remaining = connectivity_remaining_ticks(started, budget);
+        if (cancel_remaining == 0) return DEVICE_STATUS_TIMEOUT;
+        uint32_t cancel_timeout_ms =
+            (uint32_t)cancel_remaining * (uint32_t)portTICK_PERIOD_MS;
+        if (cancel_timeout_ms == 0u) cancel_timeout_ms = 1u;
+        device_status_t cancel_status = canceller(cancel_timeout_ms, canceller_context);
         if (cancel_status != DEVICE_STATUS_OK) return cancel_status;
+        if (connectivity_remaining_ticks(started, budget) == 0) {
+            /* A callback that reports success after consuming its allowance
+             * cannot prove the physical request lane is still parkable. */
+            return DEVICE_STATUS_TIMEOUT;
+        }
     }
 
     for (;;) {
         taskENTER_CRITICAL(&s_connectivity_lock);
         const bool drained = s_wifi_attempt_users == 0 &&
                              s_network_request_users == 0 &&
+                             s_cellular_network_request_users == 0 &&
+                             s_cellular_transport_operation_users == 0 &&
                              s_transport_selection_users == 0;
         taskEXIT_CRITICAL(&s_connectivity_lock);
         if (drained) break;
@@ -282,8 +340,19 @@ device_status_t connectivity_service_prepare_system_sleep(uint32_t timeout_ms) {
      * It remains below the value-only Device API and is undone by ABORT. */
     const TickType_t remaining = connectivity_remaining_ticks(started, budget);
     if (remaining == 0) return DEVICE_STATUS_TIMEOUT;
-    return platform_connectivity_prepare_system_sleep(
-        (uint32_t)(remaining * portTICK_PERIOD_MS));
+    uint32_t remaining_ms = (uint32_t)remaining * (uint32_t)portTICK_PERIOD_MS;
+    if (remaining_ms == 0u) remaining_ms = 1u;
+    const device_status_t transport_status =
+        platform_connectivity_prepare_system_sleep(remaining_ms);
+    if (transport_status != DEVICE_STATUS_OK) return transport_status;
+    /* A profile callback may synchronously consume its complete allowance
+     * while still returning OK.  In that case its physical park result is too
+     * late to prove safe completion of this parent transaction; keep the
+     * logical fence closed and require the caller's ABORT path. */
+    if (connectivity_remaining_ticks(started, budget) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return DEVICE_STATUS_OK;
 }
 
 void connectivity_service_abort_system_sleep_prepare(void) {
@@ -475,6 +544,8 @@ static esp_err_t connectivity_service_deinit_legacy(uint32_t timeout_ms) {
          * while either a Wi-Fi attempt waiter or a transport-neutral HTTP
          * borrower still holds its short-lived logical admission. */
         bool drained = s_wifi_attempt_users == 0 && s_network_request_users == 0 &&
+                       s_cellular_network_request_users == 0 &&
+                       s_cellular_transport_operation_users == 0 &&
                        s_transport_selection_users == 0;
         taskEXIT_CRITICAL(&s_connectivity_lock);
         if (drained) break;
@@ -632,7 +703,17 @@ static bool acquire_transport_selection_admission(void) {
      * Fangtang restores durable policy before the composition root decides
      * whether to build Wi-Fi or ML307.  Once PREPARE begins, however, no new
      * profile-side selection transaction may enter. */
-    const bool admitted = !s_connectivity_stopping && !s_system_sleep_preparing;
+    /* Changing the profile hint is not merely a presentation update: on
+     * Fangtang it can change which transport adapter owns subsequent work.
+     * A request that was already admitted must finish/cancel against the same
+     * physical hint, so selection waits for *all* generic and cellular request
+     * borrowers to leave instead of racing an in-flight ML307 request. The
+     * caller gets a fail-closed no-op and may retry after the synchronous
+     * request returns. */
+    const bool admitted = !s_connectivity_stopping && !s_system_sleep_preparing &&
+                          s_network_request_users == 0 &&
+                          s_cellular_network_request_users == 0 &&
+                          s_cellular_transport_operation_users == 0;
     if (admitted) ++s_transport_selection_users;
     taskEXIT_CRITICAL(&s_connectivity_lock);
     return admitted;
@@ -825,21 +906,72 @@ static bool cellular_http_request_is_valid(
            request->timeout_ms > 0;
 }
 
-device_status_t connectivity_service_prepare_cellular_transport(void) {
+/* Linearize a physical cellular lifecycle call with the selected profile.
+ * Unlike an HTTP admission this only protects the bounded adapter call, but
+ * it takes the same lifecycle/sleep/selection predicate in one critical
+ * section.  Sleep/deinit may close admission after this point; their drain
+ * waits for the retained reference before touching the physical generation. */
+static bool begin_cellular_transport_operation(void) {
     taskENTER_CRITICAL(&s_connectivity_lock);
-    const bool sleep_preparing = s_system_sleep_preparing;
+    const bool admitted = s_connectivity_initialized && !s_connectivity_stopping &&
+                          !s_system_sleep_preparing &&
+                          s_active_uplink == DEVICE_UPLINK_CELLULAR &&
+                          s_cellular_transport_operation_users == 0 &&
+                          s_network_request_users == 0 &&
+                          s_cellular_network_request_users == 0;
+    if (admitted) ++s_cellular_transport_operation_users;
     taskEXIT_CRITICAL(&s_connectivity_lock);
-    if (sleep_preparing) return DEVICE_STATUS_BUSY;
-    return platform_connectivity_prepare_cellular_transport();
+    return admitted;
+}
+
+static void end_cellular_transport_operation(void) {
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    if (s_cellular_transport_operation_users) {
+        --s_cellular_transport_operation_users;
+    }
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+}
+
+/* Quiesce is terminal for the current cellular session, so it must remain
+ * available to a root teardown even after a persisted uplink selection has
+ * moved to Wi-Fi. It still may not enter from a Wi-Fi-only normal generation:
+ * require an observable current/physical cellular session before admitting
+ * the profile-private drain. This preserves the fault-domain split while
+ * letting a stale but live ML307 session be retired deterministically. */
+static bool begin_cellular_transport_quiesce(void) {
+    /* The profile query can take an adapter-private lock, so sample it before
+     * taking the common service lock. A false-to-true transition only makes a
+     * conservative retry necessary; the ensuing bounded quiesce is itself
+     * serialized by the operation admission below. */
+    const bool physically_ready = platform_connectivity_is_cellular_transport_ready();
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool session_exists = s_active_uplink == DEVICE_UPLINK_CELLULAR ||
+                                s_cellular_ready ||
+                                physically_ready;
+    const bool admitted = s_connectivity_initialized && !s_connectivity_stopping &&
+                          !s_system_sleep_preparing && session_exists &&
+                          s_cellular_transport_operation_users == 0 &&
+                          s_network_request_users == 0 &&
+                          s_cellular_network_request_users == 0;
+    if (admitted) ++s_cellular_transport_operation_users;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return admitted;
+}
+
+device_status_t connectivity_service_prepare_cellular_transport(void) {
+    if (!begin_cellular_transport_operation()) return DEVICE_STATUS_BUSY;
+    const device_status_t status = platform_connectivity_prepare_cellular_transport();
+    end_cellular_transport_operation();
+    return status;
 }
 
 device_status_t connectivity_service_start_cellular_transport(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    taskENTER_CRITICAL(&s_connectivity_lock);
-    const bool sleep_preparing = s_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_connectivity_lock);
-    if (sleep_preparing) return DEVICE_STATUS_BUSY;
-    return platform_connectivity_start_cellular_transport(timeout_ms);
+    if (!begin_cellular_transport_operation()) return DEVICE_STATUS_BUSY;
+    const device_status_t status =
+        platform_connectivity_start_cellular_transport(timeout_ms);
+    end_cellular_transport_operation();
+    return status;
 }
 
 device_status_t connectivity_service_establish_cellular_transport(uint32_t timeout_ms) {
@@ -848,28 +980,41 @@ device_status_t connectivity_service_establish_cellular_transport(uint32_t timeo
     /* Fail closed before the adapter touches UART, power or the modem. This
      * readiness predicate belongs to the bounded service generation, not to a
      * particular recovery task in the composition root. */
+    if (!begin_cellular_transport_operation()) {
+        taskENTER_CRITICAL(&s_connectivity_lock);
+        const bool sleep_preparing = s_system_sleep_preparing;
+        const bool available =
+            s_connectivity_initialized && !s_connectivity_stopping;
+        const bool cellular_selected =
+            s_active_uplink == DEVICE_UPLINK_CELLULAR;
+        taskEXIT_CRITICAL(&s_connectivity_lock);
+        if (sleep_preparing || !cellular_selected) return DEVICE_STATUS_BUSY;
+        return available ? DEVICE_STATUS_BUSY : DEVICE_STATUS_UNAVAILABLE;
+    }
     taskENTER_CRITICAL(&s_connectivity_lock);
-    const bool sleep_preparing = s_system_sleep_preparing;
-    const bool available = s_connectivity_initialized && !s_connectivity_stopping;
-    const bool cellular_selected = s_active_uplink == DEVICE_UPLINK_CELLULAR;
-    if (!sleep_preparing && available && cellular_selected) s_cellular_ready = false;
+    s_cellular_ready = false;
     taskEXIT_CRITICAL(&s_connectivity_lock);
-    if (sleep_preparing) return DEVICE_STATUS_BUSY;
-    if (!available) return DEVICE_STATUS_UNAVAILABLE;
-    if (!cellular_selected) return DEVICE_STATUS_BUSY;
 
     device_status_t status = platform_connectivity_prepare_cellular_transport();
-    if (status != DEVICE_STATUS_OK) return status;
+    if (status != DEVICE_STATUS_OK) {
+        end_cellular_transport_operation();
+        return status;
+    }
     status = platform_connectivity_start_cellular_transport(timeout_ms);
-    if (status != DEVICE_STATUS_OK) return status;
+    if (status != DEVICE_STATUS_OK) {
+        end_cellular_transport_operation();
+        return status;
+    }
 
     /* A physical start can finish after lifecycle rollback or uplink selection
      * changes. Revalidate the same logical generation before publishing it. */
     taskENTER_CRITICAL(&s_connectivity_lock);
     const bool still_current = s_connectivity_initialized && !s_connectivity_stopping &&
+                               !s_system_sleep_preparing &&
                                s_active_uplink == DEVICE_UPLINK_CELLULAR;
     if (still_current) s_cellular_ready = true;
     taskEXIT_CRITICAL(&s_connectivity_lock);
+    end_cellular_transport_operation();
     return still_current ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
 }
 
@@ -888,28 +1033,62 @@ bool connectivity_service_is_cellular_transport_ready(void) {
     return published_ready && platform_connectivity_is_cellular_transport_ready();
 }
 
+bool connectivity_service_has_cellular_transport_session(void) {
+    const bool physically_ready = platform_connectivity_is_cellular_transport_ready();
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool session_exists = s_connectivity_initialized && !s_connectivity_stopping &&
+                                (s_active_uplink == DEVICE_UPLINK_CELLULAR ||
+                                 s_cellular_ready || physically_ready);
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return session_exists;
+}
+
 device_status_t connectivity_service_quiesce_cellular_transport(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     /* Close the service-side observation before asking the profile to drain
      * ML307 work. A timeout leaves the physical adapter to finish its own
      * bounded quiesce, but callers must already see this session as offline. */
+    if (!begin_cellular_transport_quiesce()) return DEVICE_STATUS_BUSY;
     taskENTER_CRITICAL(&s_connectivity_lock);
-    const bool sleep_preparing = s_system_sleep_preparing;
-    if (!sleep_preparing && s_active_uplink == DEVICE_UPLINK_CELLULAR) {
-        s_cellular_ready = false;
-    }
+    s_cellular_ready = false;
     taskEXIT_CRITICAL(&s_connectivity_lock);
-    if (sleep_preparing) return DEVICE_STATUS_BUSY;
-    return platform_connectivity_quiesce_cellular_transport(timeout_ms);
+    const device_status_t status =
+        platform_connectivity_quiesce_cellular_transport(timeout_ms);
+    end_cellular_transport_operation();
+    return status;
+}
+
+device_status_t connectivity_service_deinit_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!begin_cellular_transport_quiesce()) return DEVICE_STATUS_BUSY;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    s_cellular_ready = false;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    const device_status_t status = platform_connectivity_deinit_cellular_transport(timeout_ms);
+    end_cellular_transport_operation();
+    return status;
+}
+
+device_status_t connectivity_service_reinitialize_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    if (!begin_cellular_transport_operation()) return DEVICE_STATUS_BUSY;
+    const device_status_t status =
+        platform_connectivity_reinitialize_cellular_transport(timeout_ms);
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    s_cellular_ready = status == DEVICE_STATUS_OK &&
+                       platform_connectivity_is_cellular_transport_ready();
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    end_cellular_transport_operation();
+    return status;
 }
 
 device_status_t connectivity_service_cellular_http_request(
     const device_connectivity_http_request_t *request) {
     if (!cellular_http_request_is_valid(request)) return DEVICE_STATUS_INVALID_ARGUMENT;
-    device_status_t admission = connectivity_service_begin_network_request();
+    device_status_t admission = begin_cellular_network_request();
     if (admission != DEVICE_STATUS_OK) return admission;
     device_status_t status = platform_connectivity_cellular_http_request(request);
-    connectivity_service_end_network_request();
+    end_cellular_network_request();
     return status;
 }
 
@@ -920,19 +1099,26 @@ device_status_t connectivity_service_cellular_http_stream_request(
         request->stream_buffer_size == 0) {
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
-    device_status_t admission = connectivity_service_begin_network_request();
+    device_status_t admission = begin_cellular_network_request();
     if (admission != DEVICE_STATUS_OK) return admission;
     device_status_t status = platform_connectivity_cellular_http_stream_request(request);
-    connectivity_service_end_network_request();
+    end_cellular_network_request();
     return status;
 }
 
 bool connectivity_service_cancel_cellular_foreground_request(void) {
-    return platform_connectivity_cancel_cellular_foreground_request();
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool active_request = s_cellular_network_request_users != 0;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return active_request && platform_connectivity_cancel_cellular_foreground_request();
 }
 
 bool connectivity_service_cancel_cellular_requests_for_owner(const void *owner) {
-    return owner && platform_connectivity_cancel_cellular_requests_for_owner(owner);
+    if (!owner) return false;
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    const bool active_request = s_cellular_network_request_users != 0;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
+    return active_request && platform_connectivity_cancel_cellular_requests_for_owner(owner);
 }
 
 void connectivity_service_adapt_gateway_url(char *gateway_url,

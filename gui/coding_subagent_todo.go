@@ -53,10 +53,10 @@ type codingAgentTodoSnapshot struct {
 
 // bindControlPlaneRevision advances the callback-local generation while
 // preserving the checklist. Initializing revision one is not a replacement;
-// later changes invalidate the prior version so an old model payload cannot
-// mutate a freshly rendered control-plane surface. It is a local fence, not a
-// durable task revision: callers must not persist or derive it from
-// request/runtime IDs.
+// a later different name-set invalidates the prior version so an old model
+// payload cannot mutate a freshly rendered control-plane surface. Re-rendering
+// the same names keeps the current tokens. It is a local fence, not a durable
+// task revision: callers must not persist or derive it from request/runtime IDs.
 func (s *codingAgentTodoState) bindControlPlaneRevision(revision uint64) {
 	if s == nil {
 		return

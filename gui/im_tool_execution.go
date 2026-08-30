@@ -79,6 +79,13 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		tc.Function.Arguments = rewrittenArgs
 	}
 	tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
+	// Record the tool call for trajectory before any reject/execute path so
+	// policy/surface/gateway rejections still pair with a later tool_result
+	// entry. Every rejection branch below returns through the caller's
+	// commitAgentLoopToolResult, which always writes the tool_result half.
+	if opts.RecordToolCall != nil {
+		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+	}
 	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.Allows(tc.Function.Name) {
 		name := strings.TrimSpace(tc.Function.Name)
 		text := legacyToolSurfaceDeniedText(name)
@@ -102,11 +109,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if isLegacyModelManageSkillGateway(tc.Function.Name, tc.Function.Arguments) {
 		name := strings.TrimSpace(tc.Function.Name)
 		return toolExecutionResult{Text: legacyModelManageSkillGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
-	}
-	// Record the tool call for trajectory before any reject/execute path so
-	// policy/truncation rejections still pair with a later tool_result entry.
-	if opts.RecordToolCall != nil {
-		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 	}
 	// Tool visibility is not an execution boundary: a model can still emit a
 	// stale/hallucinated computer_* call after a local attachment turn has
@@ -1002,6 +1004,14 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 	if reason := manageScheduleCreateBlockReason(name, args, userText); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
+	if reason := taskAnchorDeliverableWriteBlockReason(taskAnchor, name, args); reason != "" {
+		return toolExecutionResult{Text: "[system rejected] " + reason, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	defer func() {
+		if result.Outcome == toolOutcomeSucceeded {
+			h.rememberTaskAnchorDeliverable(policyUserID, taskAnchor, name, args)
+		}
+	}()
 	// File delivery: structured only. send_to_im forces IM; send_file needs flag/destination.
 	// Do not keyword-scan userText.
 	switch name {
@@ -1319,10 +1329,13 @@ func registeredToolExecutionResult(text string) toolExecutionResult {
 
 func registeredToolExecutionResultForContext(text string, ctx context.Context) toolExecutionResult {
 	if ctx != nil && ctx.Err() != nil {
-		if strings.TrimSpace(text) == "" {
-			text = "tool execution interrupted: " + ctx.Err().Error()
+		errText := ctx.Err().Error()
+		// A context-aware handler commonly returns ctx.Err() itself; appending
+		// it after the interruption prefix would duplicate the same sentence.
+		if strings.TrimSpace(text) == "" || strings.EqualFold(strings.TrimSpace(text), errText) {
+			text = "tool execution interrupted: " + errText
 		} else {
-			text = "tool execution interrupted: " + ctx.Err().Error() + "; " + text
+			text = "tool execution interrupted: " + errText + "; " + text
 		}
 		return toolExecutionResult{Text: text, Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}
 	}

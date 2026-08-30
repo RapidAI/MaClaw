@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -119,6 +120,16 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 	if h.getSkillExecutor() == nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but SkillExecutor is not initialized", displayName)}
 	}
+	if h.app != nil {
+		if err := ensureSkillEvolutionMutationAdmission(h.app, skill.Name); err != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s blocked: %v", displayName, err), SilentFailure: true}
+		}
+		if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s blocked: compensation queue unavailable: %v", displayName, err), SilentFailure: true}
+		}
+	}
+	h.getSkillExecutor().suspendStatusOverlayPersistence()
+	defer h.getSkillExecutor().resumeStatusOverlayPersistence()
 
 	stagingDir := skillStagingDir(skill.SkillDir)
 
@@ -153,7 +164,101 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 	}
 
 	sendStatus(fmt.Sprintf("Registering Skill: %s ...", skill.Name))
+	if err := ctx.Err(); err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s cancelled: %v", displayName, err), SilentFailure: true}
+	}
+	// Install-only still mutates the filesystem, so it must have the App-owned
+	// durable transaction context. Never publish an unrecoverable standalone
+	// install and merely refresh an in-memory index.
+	if stagingDir != "" && h.app == nil {
+		cskill.CleanupStaging(stagingDir)
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s blocked: durable transaction context unavailable", displayName), SilentFailure: true}
+	}
+	// New directory-backed installs use the same durable transaction as the
+	// explicit GUI Hub install. Existing-version replacement remains on the
+	// install-only adapter below because it has source-specific update semantics.
+	if stagingDir != "" && h.app != nil {
+		var existingEntry *corelib.NLSkillEntry
+		for _, installed := range h.getSkillExecutor().loadSkills() {
+			if installed.Name == skill.Name || installed.MatchesName(skill.Name) {
+				copy := installed
+				existingEntry = &copy
+				break
+			}
+		}
+		if existingEntry != nil && skillInstallAlreadyCurrent(existingEntry, skill) {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{
+				Text:    fmt.Sprintf("Skill「%s」已是最新版本，无需重复安装。", displayName),
+				Success: true,
+			}
+		}
+		if existingEntry == nil && !h.app.skillNameAlreadyRegistered(skill.Name) {
+			requestID := fmt.Sprintf("evo_im_install_only_%d", time.Now().UnixNano())
+			if err := h.app.commitStagedSkillInstall(ctx, skill, stagingDir, source, installScanReport, requestID, skillEvolutionConfigRevision(h.app)); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, err), SilentFailure: true}
+			}
+			go h.app.installSkillDepsIfMissing(skill.SkillDir, skill.Name)
+			return skillInstallExecutionResult{
+				Text:    fmt.Sprintf("Skill「%s」已安装。LLM 可在下一轮对话中通过 manage_skill(action=\"run\", name=\"%s\") 执行。", skill.Name, skill.Name),
+				Success: true,
+			}
+		}
+	}
+	var compensation cskill.EvolutionCompensationRecord
+	transactionActive := false
+	installRequestID := ""
 	if stagingDir != "" {
+		if h.app != nil {
+			finalRoot, rootErr := h.app.primarySkillsDir()
+			if rootErr != nil {
+				cskill.CleanupStaging(stagingDir)
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, rootErr)}
+			}
+			installRequestID = fmt.Sprintf("evo_im_install_only_%d", time.Now().UnixNano())
+			compensation = cskill.NewEvolutionCompensationRecord(installRequestID, skill.Name, "install", "", nil, false, h.getSkillExecutor().loadSkills(), "im_install_only_rollback_incomplete")
+			finalDir := cskill.PlannedSkillDir(finalRoot, skill.Name)
+			compensation.SetCreatedDirectories([]string{finalDir})
+			if _, statErr := os.Stat(finalDir); statErr == nil {
+				compensation.SetDirectoryBackupIntent(finalDir, finalDir+".prev")
+			} else if !os.IsNotExist(statErr) {
+				cskill.CleanupStaging(stagingDir)
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: inspect destination: %v", displayName, statErr)}
+			}
+			if err := cskill.PersistEvolutionCompensation(compensation); err != nil {
+				cskill.CleanupStaging(stagingDir)
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: persist rollback snapshot: %v", displayName, err)}
+			}
+			if err := cskill.RecordEvolutionEventStrict("skill:definition_install_started", map[string]string{
+				"skill": skill.Name, "action": "install", "decision": "pending", "via": "im_install_only",
+				"request_id": installRequestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app),
+				"schema_version": "2", "evidence_mode": "none",
+			}, "desktop"); err != nil {
+				_ = cskill.ClearEvolutionCompensation(installRequestID, skill.Name, "install")
+				cskill.CleanupStaging(stagingDir)
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: audit preflight: %v", displayName, err)}
+			}
+			transactionActive = true
+			defer func() {
+				if !transactionActive {
+					return
+				}
+				if rollbackErr := cskill.RestoreEvolutionCompensation(compensation, func(skills []corelib.NLSkillEntry) error { return h.getSkillExecutor().restoreSkillsSnapshot(skills) }, func() error { return h.app.refreshSkillIndexesAfterMutationChecked(compensation.Skill) }); rollbackErr != nil {
+					compensation.LastError = rollbackErr.Error()
+					compensation.TransactionState = "audit_pending"
+					compensation.CleanupStatus = "pending"
+					_ = cskill.PersistEvolutionCompensation(compensation)
+				} else {
+					compensation.TransactionState = "rolled_back"
+					compensation.CleanupStatus = "pending"
+					if clearErr := cskill.ClearEvolutionCompensation(compensation.RequestID, compensation.Skill, "install"); clearErr != nil {
+						compensation.LastError = clearErr.Error()
+						_ = cskill.ReplaceEvolutionCompensation(compensation)
+					}
+				}
+			}()
+		}
 		finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
@@ -162,6 +267,13 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 		skill.SkillDir = finalDir
 		if h.app != nil {
 			skill = h.app.normalizeInstalledSkill(skill)
+			if _, statErr := os.Stat(finalDir + ".prev"); statErr == nil {
+				compensation.SetDirectoryBackup(finalDir, finalDir+".prev", true)
+			}
+			compensation.SetDirectoryPublished(true)
+			if err := cskill.PersistEvolutionCompensation(compensation); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: persist post-move rollback snapshot: %v", displayName, err)}
+			}
 		}
 	}
 	if err := h.getSkillExecutor().Register(*skill); err != nil {
@@ -170,7 +282,15 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 
 	// Refresh skill BM25 index.
 	if h.getAppToolRouter() != nil {
-		h.getAppToolRouter().RefreshSkillIndex()
+		if h.app != nil {
+			if err := h.app.refreshSkillIndexesAfterMutationChecked(skill.Name, *skill); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: refresh index: %v", displayName, err)}
+			}
+		} else {
+			if err := h.getAppToolRouter().RefreshSkillIndexChecked(); err != nil {
+				return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: refresh index: %v", displayName, err)}
+			}
+		}
 	}
 
 	// Audit log (consistent with registerAndExecuteSkill).
@@ -187,6 +307,29 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 			PolicyAction: security.PolicyAllow,
 			Result:       fmt.Sprintf("installed skill %s from %s (install-only, not auto-executed)", displayName, source),
 		})
+	}
+	if transactionActive {
+		if err := cskill.RecordEvolutionEventStrict("skill:definition_installed", map[string]string{
+			"skill": skill.Name, "action": "install", "decision": "applied", "via": "im_install_only",
+			"request_id": installRequestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app),
+			"schema_version": "2", "evidence_mode": "none",
+		}, "desktop"); err != nil {
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s installed but final audit is pending: %v", displayName, err)}
+		}
+		compensation.TransactionState = "committed"
+		compensation.CleanupStatus = "pending"
+		compensation.FailureReason = "post_commit_cleanup_pending"
+		if err := cskill.ReplaceEvolutionCompensation(compensation); err != nil {
+			transactionActive = false
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s committed but cleanup state could not be persisted: %v", displayName, err)}
+		}
+		transactionActive = false
+		if err := cskill.ClearEvolutionCompensation(compensation.RequestID, compensation.Skill, "install"); err != nil {
+			compensation.LastError = err.Error()
+			compensation.FailureReason = "post_commit_cleanup_failed"
+			_ = cskill.ReplaceEvolutionCompensation(compensation)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Skill %s installed but rollback cleanup is pending: %v", displayName, err)}
+		}
 	}
 
 	log.Printf("[skill-install-only] skill %q registered from %s (not auto-executed)", skill.Name, source)

@@ -79,6 +79,14 @@ device_status_t configuration_reconcile_service_init(void);
  * Audio/Display hardware; their normal lifecycle remains independently owned. */
 device_status_t configuration_reconcile_service_deinit(uint32_t timeout_ms);
 
+/* Reversible fence used by destructive storage transactions and System
+ * Sleep. PREPARE drains the serialized reconcile pass, stops the retained
+ * expiry/retry timers, and rejects new consumer side effects; ABORT reopens
+ * the same generation and rearms the timers. */
+device_status_t configuration_reconcile_service_prepare_system_sleep(
+    uint32_t timeout_ms);
+void configuration_reconcile_service_abort_system_sleep_prepare(void);
+
 /* Loads exactly one effective revisioned snapshot, updates desired state, then
  * serially applies volume, brightness and screen-idle policy. A non-OK result
  * means durable intent remains published but at least one consumer lacks

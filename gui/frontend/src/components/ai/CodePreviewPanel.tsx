@@ -27,6 +27,8 @@ import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
 import { MarkdownPreview } from './CodePreviewMarkdown';
 import { CodePreviewWorkspace } from './CodePreviewWorkspace';
+import { CloudWorkspaceEntitlement } from '../../../wailsjs/go/main/App';
+import { cloudWorkspaceIdFromPath, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, FOCUS_CLOUD_WORKSPACE_TREE_EVENT } from './codingTaskMode';
 import { relativeLuminance, type Theme } from './aiAssistantPanelTheme';
 import {
     CODE_PREVIEW_FONT_DEFAULT,
@@ -195,12 +197,43 @@ export interface CodePreviewPanelProps {
     onToggleMaximize?: () => void;
     theme: CodePreviewTheme;
     lang?: string;
+    /** Cloud workspace: file tree is remote content, not a local folder. */
+    cloudMode?: boolean;
+    /** Known Hub workspace name. Entitlement lookup overrides this when it matches the mount. */
+    cloudWorkspaceName?: string;
+    /** Preview pane already has a close control; hide the inner header X. */
+    hideHeaderClose?: boolean;
 }
 
 /** Skip maximize when double-clicking interactive header controls / tab bar. */
 function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTarget: HTMLElement): boolean {
     if (!(target instanceof HTMLElement) || target === currentTarget) return false;
     return !!target.closest('button, a, input, select, textarea, [role="button"], [role="tab"], [data-preview-no-maximize="true"]');
+}
+
+function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: string; theme: CodePreviewTheme; compact?: boolean }) {
+    const text = name.trim();
+    if (!text) return null;
+    return (
+        <span
+            data-testid="code-preview-cloud-workspace-name"
+            title={text}
+            style={{
+                color: theme.textMuted,
+                fontSize: 12,
+                fontWeight: 400,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+                flex: compact ? '0 1 auto' : 1,
+                maxWidth: compact ? 160 : undefined,
+                marginLeft: compact ? 6 : undefined,
+            }}
+        >
+            {text}
+        </span>
+    );
 }
 
 /** True when the file should render with the markdown preview (case-insensitive). */
@@ -899,7 +932,31 @@ export function CodePreviewPanel({
     onToggleMaximize,
     theme,
     lang = 'en',
+    cloudMode = false,
+    cloudWorkspaceName = '',
+    hideHeaderClose = false,
 }: CodePreviewPanelProps) {
+    const cloudWorkspaceId = cloudMode ? cloudWorkspaceIdFromPath(projectPath) : '';
+    const [resolvedCloudName, setResolvedCloudName] = useState(() => (
+        cloudMode ? lookupCloudWorkspaceDisplayName(cloudWorkspaceIdFromPath(projectPath), cloudWorkspaceName) : ''
+    ));
+    useEffect(() => {
+        if (!cloudMode) {
+            setResolvedCloudName('');
+            return;
+        }
+        const known = lookupCloudWorkspaceDisplayName(cloudWorkspaceId, cloudWorkspaceName);
+        setResolvedCloudName(known);
+        if (!cloudWorkspaceId || typeof CloudWorkspaceEntitlement !== 'function') return;
+        let cancelled = false;
+        void CloudWorkspaceEntitlement().then((ent) => {
+            if (cancelled) return;
+            rememberCloudWorkspaceDisplayNames(ent);
+            const name = lookupCloudWorkspaceDisplayName(cloudWorkspaceId, known);
+            if (name) setResolvedCloudName(name);
+        }).catch(() => {});
+        return () => { cancelled = true; };
+    }, [cloudMode, cloudWorkspaceId, cloudWorkspaceName]);
     // Every source-preview opening starts with the project tree. Source files
     // remain open beside it, but never replace the confirmation that a local
     // or remote working directory is available.
@@ -960,8 +1017,16 @@ export function CodePreviewPanel({
     const activeFile = files.get(activeFilePath);
 
     useEffect(() => {
-        if (projectPath) setWorkspaceActive(true);
-    }, [projectPath]);
+        if (!projectPath) return;
+        if (cloudMode && activeFilePath && files.has(activeFilePath)) return;
+        setWorkspaceActive(true);
+    }, [projectPath, cloudMode, activeFilePath, files]);
+    useEffect(() => {
+        if (!cloudMode) return;
+        const focusTree = () => setWorkspaceActive(true);
+        window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
+        return () => window.removeEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
+    }, [cloudMode]);
 
     useEffect(() => {
         if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
@@ -1376,7 +1441,7 @@ export function CodePreviewPanel({
                         style={{
                             display: 'flex',
                             alignItems: 'center',
-                        justifyContent: 'space-between',
+                            justifyContent: 'space-between',
                             padding: '8px 14px',
                             borderBottom: `1px solid ${theme.border}`,
                             background: theme.tabBg,
@@ -1384,9 +1449,18 @@ export function CodePreviewPanel({
                             '--wails-draggable': 'no-drag',
                         } as any}
                     >
-                        <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600 }}>
-                            {lang.startsWith('zh') ? '工作目录' : 'Working directory'}
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1, marginRight: 8 }}>
+                            <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+                                {cloudMode ? (lang.startsWith('zh') ? '云端工作区' : 'Cloud workspace') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
+                            </span>
+                            {cloudMode && resolvedCloudName ? (
+                                <>
+                                    <span aria-hidden="true" style={{ color: theme.textMuted, flexShrink: 0 }}>·</span>
+                                    <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} />
+                                </>
+                            ) : null}
                         </span>
+                        {!hideHeaderClose ? (
                         <button
                             onClick={onClose}
                             style={{
@@ -1404,8 +1478,9 @@ export function CodePreviewPanel({
                         >
                             X
                         </button>
+                        ) : null}
                     </div>
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={(path) => { onCloseFile?.(path); for (const filePath of Array.from(files.keys())) { if (filePath !== path && (filePath.startsWith(`${path}/`) || filePath.startsWith(`${path}\\`))) onCloseFile?.(filePath); } }} />
                 </div>
             </div>
         );
@@ -1480,7 +1555,10 @@ export function CodePreviewPanel({
                         data-testid="code-preview-workspace-tab"
                         onClick={() => setWorkspaceActive(true)}
                         style={{
-                            flexShrink: 0,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            flexShrink: 1,
+                            minWidth: 0,
                             height: 36,
                             padding: '0 10px',
                             border: 'none',
@@ -1494,7 +1572,8 @@ export function CodePreviewPanel({
                             fontWeight: 600,
                         }}
                     >
-                        {lang.startsWith('zh') ? '工作目录' : 'Working directory'}
+                        {cloudMode ? (lang.startsWith('zh') ? '云端文件' : 'Cloud files') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
+                        {cloudMode ? <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} compact /> : null}
                     </button>
                     <FileTabBar
                         files={files}
@@ -1510,6 +1589,7 @@ export function CodePreviewPanel({
                         onTogglePinFile={onTogglePinFile}
                         theme={theme}
                         lang={lang}
+                        cloudMode={cloudMode}
                     />
                 </div>
                 <CodePreviewViewToolbar
@@ -1522,6 +1602,7 @@ export function CodePreviewPanel({
                     onZoomOut={zoomOut}
                     onZoomReset={zoomReset}
                 />
+                {!hideHeaderClose ? (
                 <button
                     onClick={onClose}
                     style={{
@@ -1541,13 +1622,14 @@ export function CodePreviewPanel({
                 >
                     X
                 </button>
+                ) : null}
             </div>
 
             {/* Active file path breadcrumb (VS Code-style status under tabs) */}
             {!workspaceActive && activeFile && (
                 <div
                     data-testid="code-preview-active-path"
-                    title={activeFile.absPath || activeFile.filePath}
+                    title={cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
                     style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -1570,7 +1652,7 @@ export function CodePreviewPanel({
                         minWidth: 0,
                         flex: 1,
                     }}>
-                        {activeFile.absPath || activeFile.filePath}
+                        {cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
                     </span>
                     <span
                         data-testid="code-preview-lang-badge"
@@ -1691,7 +1773,7 @@ export function CodePreviewPanel({
                 }}
             >
                 {workspaceActive ? (
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={(path) => { onCloseFile?.(path); for (const filePath of Array.from(files.keys())) { if (filePath !== path && (filePath.startsWith(`${path}/`) || filePath.startsWith(`${path}\\`))) onCloseFile?.(filePath); } }} />
                 ) : activeFile ? (
                     diffLines ? (
                         <DiffView

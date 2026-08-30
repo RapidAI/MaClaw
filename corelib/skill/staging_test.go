@@ -76,6 +76,31 @@ func TestCommitStaging_MovesToFinalLocation(t *testing.T) {
 	}
 }
 
+func TestCommitStaging_RefusesToOverwriteStalePreviousBackup(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "staging")
+	finalRoot := filepath.Join(root, "skills")
+	final := filepath.Join(finalRoot, "demo")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(final, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(final, "skill.yaml"), []byte("name: old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(final+".prev", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CommitStagingToDir(staging, "demo", finalRoot); err == nil {
+		t.Fatal("CommitStagingToDir should refuse an existing .prev backup")
+	}
+	if data, err := os.ReadFile(filepath.Join(final, "skill.yaml")); err != nil || string(data) != "name: old" {
+		t.Fatalf("existing installation changed after refusal: data=%q err=%v", data, err)
+	}
+}
+
 func TestBuildFileManifest_ListsFiles(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: test"), 0o644)

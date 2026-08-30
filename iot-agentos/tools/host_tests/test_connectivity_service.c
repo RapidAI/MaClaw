@@ -28,12 +28,27 @@ static unsigned s_platform_startup_toggle_calls;
 static unsigned s_platform_cellular_prepare_calls;
 static unsigned s_platform_cellular_start_calls;
 static unsigned s_platform_cellular_quiesce_calls;
+static unsigned s_platform_cellular_http_calls;
+static unsigned s_platform_cellular_stream_calls;
+static unsigned s_platform_cellular_cancel_foreground_calls;
+static unsigned s_platform_cellular_cancel_owner_calls;
 static bool s_platform_cellular_ready;
 static bool s_startup_toggle_result;
 static bool s_startup_toggle_selected_cellular;
+static bool s_cancel_foreground_during_cellular_http;
+static bool s_cancel_foreground_result;
+static bool s_cancel_owner_during_cellular_stream;
+static bool s_cancel_owner_result;
+static bool s_switch_uplink_during_cellular_http;
+static bool s_quiesce_during_cellular_http;
+static device_status_t s_quiesce_during_cellular_http_status;
+static bool s_switch_uplink_during_cellular_prepare;
+static bool s_switch_uplink_during_cellular_start;
+static bool s_switch_uplink_during_cellular_quiesce;
 static unsigned s_event_set_calls;
 static unsigned s_canceller_calls;
 static unsigned s_resumer_calls;
+static bool s_cancel_consumes_budget;
 
 TickType_t xTaskGetTickCount(void) { return s_ticks; }
 void vTaskDelay(TickType_t ticks) { s_ticks += ticks ? ticks : 1; }
@@ -89,11 +104,17 @@ void platform_connectivity_set_network_transport(bool cellular) {
 }
 device_status_t platform_connectivity_prepare_cellular_transport(void) {
     ++s_platform_cellular_prepare_calls;
+    if (s_switch_uplink_during_cellular_prepare) {
+        connectivity_service_set_active_uplink(DEVICE_UPLINK_WIFI);
+    }
     return DEVICE_STATUS_OK;
 }
 device_status_t platform_connectivity_start_cellular_transport(uint32_t timeout_ms) {
     (void)timeout_ms;
     ++s_platform_cellular_start_calls;
+    if (s_switch_uplink_during_cellular_start) {
+        connectivity_service_set_active_uplink(DEVICE_UPLINK_WIFI);
+    }
     s_platform_cellular_ready = true;
     return DEVICE_STATUS_OK;
 }
@@ -103,6 +124,9 @@ bool platform_connectivity_is_cellular_transport_ready(void) {
 device_status_t platform_connectivity_quiesce_cellular_transport(uint32_t timeout_ms) {
     (void)timeout_ms;
     ++s_platform_cellular_quiesce_calls;
+    if (s_switch_uplink_during_cellular_quiesce) {
+        connectivity_service_set_active_uplink(DEVICE_UPLINK_WIFI);
+    }
     s_platform_cellular_ready = false;
     return DEVICE_STATUS_OK;
 }
@@ -115,17 +139,45 @@ void platform_connectivity_abort_system_sleep_prepare(void) { ++s_platform_abort
 device_status_t platform_connectivity_cellular_http_request(
     const device_connectivity_http_request_t *request) {
     (void)request;
-    return DEVICE_STATUS_UNAVAILABLE;
+    ++s_platform_cellular_http_calls;
+    if (s_switch_uplink_during_cellular_http) {
+        connectivity_service_set_active_uplink(DEVICE_UPLINK_WIFI);
+    }
+    if (s_quiesce_during_cellular_http) {
+        s_quiesce_during_cellular_http_status =
+            connectivity_service_quiesce_cellular_transport(10);
+    }
+    if (s_cancel_foreground_during_cellular_http) {
+        s_cancel_foreground_result = connectivity_service_cancel_cellular_foreground_request();
+    }
+    return DEVICE_STATUS_OK;
+}
+device_status_t platform_connectivity_deinit_cellular_transport(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return DEVICE_STATUS_OK;
+}
+device_status_t platform_connectivity_reinitialize_cellular_transport(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return DEVICE_STATUS_OK;
 }
 device_status_t platform_connectivity_cellular_http_stream_request(
     const device_connectivity_stream_request_t *request) {
     (void)request;
-    return DEVICE_STATUS_UNAVAILABLE;
+    ++s_platform_cellular_stream_calls;
+    if (s_cancel_owner_during_cellular_stream) {
+        s_cancel_owner_result = connectivity_service_cancel_cellular_requests_for_owner(
+            (const void *)request);
+    }
+    return DEVICE_STATUS_OK;
 }
-bool platform_connectivity_cancel_cellular_foreground_request(void) { return false; }
+bool platform_connectivity_cancel_cellular_foreground_request(void) {
+    ++s_platform_cellular_cancel_foreground_calls;
+    return true;
+}
 bool platform_connectivity_cancel_cellular_requests_for_owner(const void *owner) {
-    (void)owner;
-    return false;
+    if (!owner) return false;
+    ++s_platform_cellular_cancel_owner_calls;
+    return true;
 }
 bool platform_connectivity_load_transport_selection(bool *out_cellular) {
     ++s_platform_load_selection_calls;
@@ -153,11 +205,35 @@ static device_status_t cancel_for_sleep(uint32_t timeout_ms, void *context) {
     (void)context;
     CHECK(timeout_ms != 0);
     ++s_canceller_calls;
+    if (s_cancel_consumes_budget) s_ticks += timeout_ms;
     return DEVICE_STATUS_OK;
 }
 static void resume_after_sleep(void *context) {
     (void)context;
     ++s_resumer_calls;
+}
+
+static device_status_t read_empty_stream(void *context, void *buffer,
+                                         uint32_t requested, uint32_t *read_bytes) {
+    (void)context;
+    (void)buffer;
+    (void)requested;
+    if (read_bytes) *read_bytes = 0;
+    return DEVICE_STATUS_OK;
+}
+
+static device_connectivity_http_request_t make_cellular_request(
+    char *response, uint32_t *response_len, int *status_code, bool *truncated) {
+    return (device_connectivity_http_request_t){
+        .method = "GET",
+        .url = "https://example.invalid/test",
+        .response = response,
+        .response_capacity = 2,
+        .response_len = response_len,
+        .status_code = status_code,
+        .truncated = truncated,
+        .timeout_ms = 10,
+    };
 }
 
 int main(void) {
@@ -172,6 +248,40 @@ int main(void) {
     CHECK(initial_epoch != 0);
     CHECK(connectivity_service_observe_wifi_got_ip("test-ap"));
     CHECK(connectivity_service_is_active_uplink_ready());
+
+    /* Wi-Fi-selected generations must not enter the profile-private cellular
+     * seam merely because their logical Connectivity service is otherwise
+     * ready. This prevents a Wi-Fi fault from touching the independent 4G
+     * fault domain. */
+    CHECK(connectivity_service_prepare_cellular_transport() == DEVICE_STATUS_BUSY);
+    CHECK(connectivity_service_start_cellular_transport(10) == DEVICE_STATUS_BUSY);
+    CHECK(connectivity_service_quiesce_cellular_transport(10) == DEVICE_STATUS_BUSY);
+    char cellular_response[2] = {0};
+    uint32_t cellular_response_len = 0;
+    int cellular_status_code = 0;
+    bool cellular_truncated = false;
+    device_connectivity_http_request_t cellular_request = make_cellular_request(
+        cellular_response, &cellular_response_len, &cellular_status_code,
+        &cellular_truncated);
+    char stream_buffer[4] = {0};
+    device_connectivity_stream_request_t cellular_stream_request = {
+        .request = cellular_request,
+        .body_reader = read_empty_stream,
+        .stream_buffer = stream_buffer,
+        .stream_buffer_size = sizeof(stream_buffer),
+    };
+    CHECK(connectivity_service_cellular_http_request(&cellular_request) == DEVICE_STATUS_BUSY);
+    CHECK(connectivity_service_cellular_http_stream_request(&cellular_stream_request) ==
+          DEVICE_STATUS_BUSY);
+    CHECK(s_platform_cellular_prepare_calls == 0);
+    CHECK(s_platform_cellular_start_calls == 0);
+    CHECK(s_platform_cellular_quiesce_calls == 0);
+    CHECK(s_platform_cellular_http_calls == 0);
+    CHECK(s_platform_cellular_stream_calls == 0);
+    CHECK(!connectivity_service_cancel_cellular_foreground_request());
+    CHECK(!connectivity_service_cancel_cellular_requests_for_owner(&cellular_request));
+    CHECK(s_platform_cellular_cancel_foreground_calls == 0);
+    CHECK(s_platform_cellular_cancel_owner_calls == 0);
 
     /* Default-loop callbacks remain physically registered by the composition
      * root, but their lifecycle fence is now Connectivity-owned. A callback
@@ -190,6 +300,17 @@ int main(void) {
 
     connectivity_service_set_system_sleep_request_canceller(cancel_for_sleep, NULL);
     connectivity_service_set_system_sleep_request_resumer(resume_after_sleep, NULL);
+    /* A bridge that reports OK only after consuming the caller's remaining
+     * budget must not allow the physical transport PREPARE to proceed. */
+    s_cancel_consumes_budget = true;
+    const unsigned prepare_before_late_cancel = s_platform_prepare_calls;
+    CHECK(connectivity_service_prepare_system_sleep(50) == DEVICE_STATUS_TIMEOUT);
+    CHECK(s_platform_prepare_calls == prepare_before_late_cancel);
+    connectivity_service_abort_system_sleep_prepare();
+    s_cancel_consumes_budget = false;
+    s_canceller_calls = 0;
+    s_resumer_calls = 0;
+    s_platform_abort_calls = 0;
     const unsigned event_sets_before_prepare = s_event_set_calls;
     CHECK(connectivity_service_prepare_system_sleep(50) == DEVICE_STATUS_OK);
     CHECK(s_canceller_calls == 1);
@@ -243,12 +364,83 @@ int main(void) {
     CHECK(s_platform_startup_toggle_calls == 1);
     CHECK(s_platform_transport_set_calls == 2);
     connectivity_service_set_active_uplink(DEVICE_UPLINK_CELLULAR);
-    CHECK(connectivity_service_establish_cellular_transport(10) == DEVICE_STATUS_OK);
+    const unsigned transport_sets_before_cellular_operation =
+        s_platform_transport_set_calls;
+    /* Lifecycle calls use a separate physical-operation admission. A profile
+     * adapter must not observe its transport hint changing halfway through a
+     * prepare/start/quiesce or combined establish transaction. */
+    s_switch_uplink_during_cellular_prepare = true;
+    CHECK(connectivity_service_prepare_cellular_transport() == DEVICE_STATUS_OK);
+    s_switch_uplink_during_cellular_prepare = false;
+    CHECK(connectivity_service_is_active_cellular());
+    CHECK(s_platform_transport_set_calls == transport_sets_before_cellular_operation);
+    s_switch_uplink_during_cellular_start = true;
+    CHECK(connectivity_service_start_cellular_transport(10) == DEVICE_STATUS_OK);
+    s_switch_uplink_during_cellular_start = false;
+    CHECK(connectivity_service_is_active_cellular());
+    CHECK(s_platform_transport_set_calls == transport_sets_before_cellular_operation);
     CHECK(s_platform_cellular_prepare_calls == 1);
     CHECK(s_platform_cellular_start_calls == 1);
-    CHECK(connectivity_service_is_cellular_transport_ready());
+    s_switch_uplink_during_cellular_quiesce = true;
     CHECK(connectivity_service_quiesce_cellular_transport(10) == DEVICE_STATUS_OK);
+    s_switch_uplink_during_cellular_quiesce = false;
+    CHECK(connectivity_service_is_active_cellular());
+    CHECK(s_platform_transport_set_calls == transport_sets_before_cellular_operation);
     CHECK(s_platform_cellular_quiesce_calls == 1);
+    s_switch_uplink_during_cellular_prepare = true;
+    s_switch_uplink_during_cellular_start = true;
+    CHECK(connectivity_service_establish_cellular_transport(10) == DEVICE_STATUS_OK);
+    s_switch_uplink_during_cellular_prepare = false;
+    s_switch_uplink_during_cellular_start = false;
+    CHECK(connectivity_service_is_active_cellular());
+    CHECK(s_platform_transport_set_calls == transport_sets_before_cellular_operation);
+    CHECK(s_platform_cellular_prepare_calls == 2);
+    CHECK(s_platform_cellular_start_calls == 2);
+    CHECK(connectivity_service_is_cellular_transport_ready());
+    /* An uplink update must not alter the adapter hint while this request is
+     * in flight. The old borrower can then finish or be cancelled against the
+     * same cellular physical session. */
+    s_switch_uplink_during_cellular_http = true;
+    s_quiesce_during_cellular_http = true;
+    s_cancel_foreground_during_cellular_http = true;
+    CHECK(connectivity_service_cellular_http_request(&cellular_request) == DEVICE_STATUS_OK);
+    s_switch_uplink_during_cellular_http = false;
+    s_quiesce_during_cellular_http = false;
+    s_cancel_foreground_during_cellular_http = false;
+    CHECK(connectivity_service_is_active_cellular());
+    CHECK(s_quiesce_during_cellular_http_status == DEVICE_STATUS_BUSY);
+    CHECK(s_platform_cellular_quiesce_calls == 1);
+    s_cancel_owner_during_cellular_stream = true;
+    CHECK(connectivity_service_cellular_http_stream_request(&cellular_stream_request) ==
+          DEVICE_STATUS_OK);
+    s_cancel_owner_during_cellular_stream = false;
+    CHECK(s_platform_cellular_http_calls == 1);
+    CHECK(s_platform_cellular_stream_calls == 1);
+    CHECK(s_cancel_foreground_result);
+    CHECK(s_cancel_owner_result);
+    CHECK(s_platform_cellular_cancel_foreground_calls == 1);
+    CHECK(s_platform_cellular_cancel_owner_calls == 1);
+    /* Once the synchronous cellular borrower returns, selection is allowed;
+     * the later Wi-Fi generation cannot issue a stray modem cancellation. */
+    connectivity_service_set_active_uplink(DEVICE_UPLINK_WIFI);
+    CHECK(!connectivity_service_cancel_cellular_foreground_request());
+    CHECK(!connectivity_service_cancel_cellular_requests_for_owner(&cellular_request));
+    CHECK(s_platform_cellular_cancel_foreground_calls == 1);
+    CHECK(s_platform_cellular_cancel_owner_calls == 1);
+    /* Selection is durable policy, not proof that a prior cellular physical
+     * session already vanished. Terminal root teardown may still drain that
+     * last ML307 generation, but a fresh Wi-Fi-only generation cannot enter
+     * this seam without current/published cellular session evidence. */
+    s_platform_cellular_ready = true;
+    CHECK(connectivity_service_has_cellular_transport_session());
+    CHECK(connectivity_service_quiesce_cellular_transport(10) == DEVICE_STATUS_OK);
+    CHECK(s_platform_cellular_quiesce_calls == 2);
+    s_platform_cellular_ready = false;
+    CHECK(!connectivity_service_has_cellular_transport_session());
+    CHECK(connectivity_service_quiesce_cellular_transport(10) == DEVICE_STATUS_BUSY);
+    connectivity_service_set_active_uplink(DEVICE_UPLINK_CELLULAR);
+    CHECK(connectivity_service_quiesce_cellular_transport(10) == DEVICE_STATUS_OK);
+    CHECK(s_platform_cellular_quiesce_calls == 3);
 
     CHECK(connectivity_service_stop_wifi_event_callback_admission(10) == DEVICE_STATUS_OK);
     CHECK(!connectivity_service_wifi_event_callback_enter());

@@ -2297,7 +2297,9 @@ export namespace corelib {
 	    skill_hub_urls?: SkillHubEntry[];
 	    external_skill_dirs?: string[];
 	    skill_evolution_repair_cooldown_hours?: number;
-	    skill_evolution_enabled?: boolean;
+		skill_evolution_enabled?: boolean;
+		skill_maintenance_observation_enabled?: boolean;
+		skill_evolution_max_concurrent_workers?: number;
 	    embed_hw_accel?: boolean;
 	    skill_auto_upload_enabled?: boolean;
 	    skill_auto_upload_min_successes?: number;
@@ -2567,7 +2569,9 @@ export namespace corelib {
 	        this.skill_hub_urls = this.convertValues(source["skill_hub_urls"], SkillHubEntry);
 	        this.external_skill_dirs = source["external_skill_dirs"];
 	        this.skill_evolution_repair_cooldown_hours = source["skill_evolution_repair_cooldown_hours"];
-	        this.skill_evolution_enabled = source["skill_evolution_enabled"];
+		this.skill_evolution_enabled = source["skill_evolution_enabled"];
+		this.skill_maintenance_observation_enabled = source["skill_maintenance_observation_enabled"];
+		this.skill_evolution_max_concurrent_workers = source["skill_evolution_max_concurrent_workers"];
 	        this.embed_hw_accel = source["embed_hw_accel"];
 	        this.skill_auto_upload_enabled = source["skill_auto_upload_enabled"];
 	        this.skill_auto_upload_min_successes = source["skill_auto_upload_min_successes"];
@@ -8461,6 +8465,7 @@ export namespace main {
 	    max_workspace_bytes: number;
 	    workspaces: CloudWorkspaceEntitlementWorkspace[];
 	    deleted: CloudWorkspaceDeletedWorkspace[];
+	    reason?: string;
 	    hub_unavailable: boolean;
 	    banner: string;
 	
@@ -8470,14 +8475,15 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.quota = source["quota"];
-	        this.used = source["used"];
-	        this.max_workspace_bytes = source["max_workspace_bytes"];
-	        this.workspaces = this.convertValues(source["workspaces"], CloudWorkspaceEntitlementWorkspace);
-	        this.deleted = this.convertValues(source["deleted"], CloudWorkspaceDeletedWorkspace);
-	        this.hub_unavailable = source["hub_unavailable"];
-	        this.banner = source["banner"];
+	        this.enabled = source["enabled"] ?? source["Enabled"];
+	        this.quota = source["quota"] ?? source["Quota"];
+	        this.used = source["used"] ?? source["Used"];
+	        this.max_workspace_bytes = source["max_workspace_bytes"] ?? source["MaxWorkspaceBytes"];
+	        this.workspaces = this.convertValues(source["workspaces"] ?? source["Workspaces"], CloudWorkspaceEntitlementWorkspace);
+	        this.deleted = this.convertValues(source["deleted"] ?? source["Deleted"], CloudWorkspaceDeletedWorkspace);
+	        this.reason = source["reason"] ?? source["Reason"];
+	        this.hub_unavailable = source["hub_unavailable"] ?? source["HubUnavailable"];
+	        this.banner = source["banner"] ?? source["Banner"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -8503,6 +8509,8 @@ export namespace main {
 	    name: string;
 	    used_bytes: number;
 	    updated_at: string;
+	    task_name: string;
+	    task_mode: string;
 	    lease_in_use: boolean;
 	    lease_holder: string;
 	
@@ -8512,12 +8520,14 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.used_bytes = source["used_bytes"];
-	        this.updated_at = source["updated_at"];
-	        this.lease_in_use = source["lease_in_use"];
-	        this.lease_holder = source["lease_holder"];
+	        this.id = source["id"] ?? source["ID"];
+	        this.name = source["name"] ?? source["Name"];
+	        this.used_bytes = source["used_bytes"] ?? source["UsedBytes"];
+	        this.updated_at = source["updated_at"] ?? source["UpdatedAt"];
+	        this.task_name = source["task_name"] ?? source["TaskName"];
+	        this.task_mode = source["task_mode"] ?? source["TaskMode"];
+	        this.lease_in_use = source["lease_in_use"] ?? source["LeaseInUse"];
+	        this.lease_holder = source["lease_holder"] ?? source["LeaseHolder"];
 	    }
 	}
 	export class PreparedCloudWorkspace {
@@ -8530,8 +8540,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.local_path = source["local_path"];
-	        this.workspace_id = source["workspace_id"];
+	        this.local_path = source["local_path"] ?? source["LocalPath"];
+	        this.workspace_id = source["workspace_id"] ?? source["WorkspaceID"];
 	    }
 	}
 	export class CodeGenModelItem {
@@ -15226,8 +15236,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
-	        this.project_path = source["project_path"];
-	        this.working_dir = source["working_dir"];
+	        this.project_path = source["project_path"] ?? source["ProjectPath"];
+	        this.working_dir = source["working_dir"] ?? source["WorkingDir"];
 	        this.workflow_type = source["workflow_type"];
 	        this.active_workflow = this.convertValues(source["active_workflow"], ProjectWorkflowState);
 	        this.preview = source["preview"];
@@ -16699,11 +16709,28 @@ export namespace main {
 	    has_repair_hook: boolean;
 	    has_optimizer: boolean;
 	    has_promoter: boolean;
+	    max_concurrent_workers: number;
 	    repair_cooldown_hours: number;
+	    observation_enabled: boolean;
+	    max_concurrent_workers_configured: number;
+	    worker_timeout_seconds: number;
 	    env_disabled: boolean;
 	    config_enabled: boolean;
 	    config_disabled: boolean;
 	    disabled: boolean;
+	    audit_available: boolean;
+	    last_audit_error: string;
+	    audit_failure_count: number;
+	    last_audit_success_at: string;
+	    oldest_pending_at: string;
+	    queue_wait_seconds: number;
+	    active_skills: number;
+	    cancelled_requests: number;
+	    timed_out_requests: number;
+	    pending_compensations: number;
+	    compensation_queue_healthy: boolean;
+	    compensation_queue_error: string;
+	    failure_summaries: Array<any>;
 	
 	    static createFrom(source: any = {}) {
 	        return new SkillEvolutionStatus(source);
@@ -16723,11 +16750,28 @@ export namespace main {
 	        this.has_repair_hook = source["has_repair_hook"];
 	        this.has_optimizer = source["has_optimizer"];
 	        this.has_promoter = source["has_promoter"];
+	        this.max_concurrent_workers = source["max_concurrent_workers"];
 	        this.repair_cooldown_hours = source["repair_cooldown_hours"];
+	        this.observation_enabled = source["observation_enabled"];
+	        this.max_concurrent_workers_configured = source["max_concurrent_workers_configured"];
+	        this.worker_timeout_seconds = source["worker_timeout_seconds"];
 	        this.env_disabled = source["env_disabled"];
 	        this.config_enabled = source["config_enabled"];
 	        this.config_disabled = source["config_disabled"];
 	        this.disabled = source["disabled"];
+	        this.audit_available = source["audit_available"];
+	        this.last_audit_error = source["last_audit_error"];
+	        this.audit_failure_count = source["audit_failure_count"];
+	        this.last_audit_success_at = source["last_audit_success_at"];
+	        this.oldest_pending_at = source["oldest_pending_at"];
+	        this.queue_wait_seconds = source["queue_wait_seconds"];
+	        this.active_skills = source["active_skills"];
+	        this.cancelled_requests = source["cancelled_requests"];
+	        this.timed_out_requests = source["timed_out_requests"];
+	        this.pending_compensations = source["pending_compensations"];
+	        this.compensation_queue_healthy = source["compensation_queue_healthy"];
+	        this.compensation_queue_error = source["compensation_queue_error"];
+	        this.failure_summaries = source["failure_summaries"];
 	    }
 	}
 	export class SkillExecutor {
@@ -17321,6 +17365,27 @@ export namespace main {
 	        this.maclaw_llm_current_provider = source["maclaw_llm_current_provider"];
 	    }
 	}
+	export class RollbackRelease {
+	    build: string;
+	    published_at: string;
+	    download_url: string;
+	    sha256?: string;
+	    download_unavailable: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new RollbackRelease(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.build = source["build"];
+	        this.published_at = source["published_at"];
+	        this.download_url = source["download_url"];
+	        this.sha256 = source["sha256"];
+	        this.download_unavailable = source["download_unavailable"];
+	    }
+	}
+
 	export class UpdateResult {
 	    has_update: boolean;
 	    latest_version: string;

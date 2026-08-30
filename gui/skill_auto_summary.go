@@ -409,6 +409,39 @@ func isAutoSummaryOrchestrationAction(action string) bool {
 	}
 }
 
+// filterAutoSummaryRunnerSteps adapts each extracted step to the GUI runner
+// contract and drops steps the runner cannot execute. Steps that survive the
+// runner's own normalization (python -> bash, shell aliases -> bash, mcp ->
+// call_mcp_tool) are stored in their normalized form so the persisted draft is
+// directly runnable; host-only tool calls (web_search, generate_pdf, ...) are
+// evidence of work the host loop did, not instructions a runner can replay.
+func filterAutoSummaryRunnerSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	filtered := make([]skill.SkillYAMLStep, 0, len(steps))
+	for _, step := range steps {
+		normalized := skill.NormalizeStepForRunnerCopy(corelib.NLSkillStep{
+			Action:    step.Action,
+			Params:    step.Params,
+			OnError:   step.OnError,
+			Name:      step.Name,
+			Capture:   step.Capture,
+			When:      step.When,
+			Label:     step.Label,
+			Condition: step.Condition,
+		}, "")
+		if err := skill.EnsureStepActionSupported(skill.RunnerBackendGUI, normalized.Action); err != nil {
+			continue
+		}
+		step.Action = normalized.Action
+		step.Params = normalized.Params
+		step.OnError = normalized.OnError
+		filtered = append(filtered, step)
+	}
+	return filtered
+}
+
 // validateAutoSummaryRunnerCompatibility stops invalid generated drafts before
 // they can replace a similar learned skill or be registered. Auto summaries are
 // produced by the GUI application, so GUI is the execution contract to verify.
@@ -883,6 +916,10 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		log.Printf("[skill-auto-summary] session=%s skipped due to terminal status=%q", sid, session.Status)
 		return
 	}
+	if codingSubAgentSessionLacksEffectEvidence(session) {
+		log.Printf("[skill-auto-summary] session=%s skipped: coding session produced no file/command effect (plan-only or read-only run teaches no executable recipe)", sid)
+		return
+	}
 
 	// Idempotency check must check and mark in the same critical section
 	// to prevent two goroutines from both passing the check.
@@ -924,6 +961,18 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	}
 	log.Printf("[skill-auto-summary] session=%s stage=DraftSkill result=ok name=%s steps=%d",
 		sid, draft.Name, len(draft.Steps))
+
+	// A trajectory records host-loop tool calls (web_search, generate_pdf,
+	// send_file, ...), but a learned skill is replayed by the GUI skill runner,
+	// whose action vocabulary is much smaller. Rewrite each step the way the
+	// runner would (python->bash, shell aliases->bash, ...) and drop the steps
+	// that still have no runner-executable form. Keeping them produced dead
+	// drafts that failed RunnerCompatibility validation on every turn.
+	draft.Steps = filterAutoSummaryRunnerSteps(draft.Steps)
+	if len(draft.Steps) == 0 {
+		log.Printf("[skill-auto-summary] session=%s no runner-executable steps after adapting host tool calls, skipping", sid)
+		return
+	}
 
 	// Validate before similarity matching or disk mutation. Previously a draft
 	// could reach VersionedUpdate before its structure and security policy were
@@ -1092,6 +1141,42 @@ func isAutoSummaryEligibleSession(session *TrajectorySession) bool {
 	default:
 		return false
 	}
+}
+
+// codingSubAgentEffectToolNames are the coding tools whose invocation changes
+// the workspace or runs a command. todo_write is deliberately absent: it is a
+// control-plane checklist mutation, not task evidence.
+var codingSubAgentEffectToolNames = map[string]struct{}{
+	"write_file":                {},
+	"edit_file":                 {},
+	"edit_lines":                {},
+	"bash":                      {},
+	"download_file":             {},
+	"ssh_write_file":            {},
+	"ssh_edit_file":             {},
+	"ssh_bash":                  {},
+	codingSubAgentSpawnToolName: {},
+	reportLocalizationToolName:  {},
+}
+
+// codingSubAgentSessionLacksEffectEvidence reports whether a coding_subagent
+// session ran without any workspace mutation or command. Such a session (for
+// example a plan-only turn on the read-only compatibility surface) must not
+// teach a skill: the learned recipe would encode "inspect and stop" instead of
+// an executable procedure.
+func codingSubAgentSessionLacksEffectEvidence(session *TrajectorySession) bool {
+	if session == nil || session.Kind != "coding_subagent" {
+		return false
+	}
+	for _, entry := range session.Entries {
+		if entry.Role != "tool" {
+			continue
+		}
+		if _, ok := codingSubAgentEffectToolNames[strings.TrimSpace(entry.ToolName)]; ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *SkillAutoSummaryPipeline) autoSummaryExistingSkillNames() map[string]bool {

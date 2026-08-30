@@ -194,12 +194,21 @@ func TestCodingAgentTodoWriteControlPlaneCASRejectsStaleReplacement(t *testing.T
 		t.Fatalf("first todo result=%#v", first)
 	}
 	before := cb.todos.controlPlaneSnapshot()
-	secondDefinitions := cb.BuildToolsForModelRequest("implement feature again", 1)
+	sameDefinitions := cb.BuildToolsForModelRequest("implement feature again", 1)
+	afterSame := cb.todos.controlPlaneSnapshot()
+	if afterSame.Revision != before.Revision || afterSame.Version != before.Version {
+		t.Fatalf("identical surface re-render must keep CAS tokens, before=%+v after=%+v", before, afterSame)
+	}
+	assertCodingTodoDefinitionTokenForTest(t, sameDefinitions, before.Revision, before.Version)
+	if rev := cb.setStaticCompatibilitySurface([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": codingAgentTodoToolName}},
+	}); rev != 2 {
+		t.Fatalf("name-set replacement revision=%d", rev)
+	}
 	afterReplacement := cb.todos.controlPlaneSnapshot()
 	if afterReplacement.Revision != 2 || afterReplacement.Version != before.Version+1 {
 		t.Fatalf("replacement must advance CAS generation, before=%+v after=%+v", before, afterReplacement)
 	}
-	assertCodingTodoDefinitionTokenForTest(t, secondDefinitions, 2, afterReplacement.Version)
 	stale := cb.executeTodoWrite(`{
 		"expected_revision":1,
 		"expected_version":1,
@@ -253,6 +262,14 @@ func TestRemoteCodingTodoWriteControlPlaneCASRejectsStaleReplacement(t *testing.
 		t.Fatalf("first remote todo=%q", got)
 	}
 	_ = cb.BuildToolsForModelRequest("implement feature again", 1)
+	if cb.currentControlPlaneRevision() != 1 {
+		t.Fatalf("identical remote surface must keep revision, got %d", cb.currentControlPlaneRevision())
+	}
+	if rev := cb.setStaticCompatibilitySurface([]map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": codingAgentTodoToolName}},
+	}); rev != 2 {
+		t.Fatalf("remote name-set replacement revision=%d", rev)
+	}
 	stale := cb.executeRemoteTodoWrite(`{
 		"expected_revision":1,"expected_version":1,"merge":false,
 		"todos":[{"id":"1","content":"stale overwrite","status":"completed"}]

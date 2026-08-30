@@ -32,10 +32,12 @@ export type AssistantLightScheme = {
 };
 
 export const ASSISTANT_LIGHT_SCHEME_STORAGE_KEY = "maclaw.ai.lightScheme";
+/** The palette used when no light-mode preference has been saved yet. */
+export const DEFAULT_ASSISTANT_LIGHT_SCHEME_ID: AssistantLightSchemeId = "github";
 
 /**
- * Default — the existing calm blue-gray light theme (current production theme).
- * Users who don't select anything get this.
+ * Classic Blue-Gray — the original calm blue-gray light theme.
+ * Kept as an explicit option for users who prefer the previous appearance.
  */
 export const defaultLightScheme: AssistantLightScheme = {
     id: "default",
@@ -531,23 +533,26 @@ export const vercelLightScheme: AssistantLightScheme = {
     },
 };
 
-export const assistantLightSchemes = [defaultLightScheme, notionLightScheme, linearLightScheme, githubLightScheme, stripeLightScheme, vercelLightScheme] as const;
+// Keep GitHub first so it is the primary/default choice shown in settings.
+export const assistantLightSchemes = [githubLightScheme, defaultLightScheme, notionLightScheme, linearLightScheme, stripeLightScheme, vercelLightScheme] as const;
 
 export function isAssistantLightSchemeId(value: unknown): value is AssistantLightSchemeId {
     return value === "default" || value === "notion" || value === "linear" || value === "github" || value === "stripe" || value === "vercel";
 }
 
 export function getAssistantLightScheme(id: unknown): AssistantLightScheme {
-    return assistantLightSchemes.find((scheme) => scheme.id === id) || defaultLightScheme;
+    return assistantLightSchemes.find((scheme) => scheme.id === id)
+        || assistantLightSchemes.find((scheme) => scheme.id === DEFAULT_ASSISTANT_LIGHT_SCHEME_ID)
+        || githubLightScheme;
 }
 
 export function readStoredAssistantLightSchemeId(): AssistantLightSchemeId {
-    if (typeof window === "undefined") return "default";
+    if (typeof window === "undefined") return DEFAULT_ASSISTANT_LIGHT_SCHEME_ID;
     try {
         const stored = window.localStorage.getItem(ASSISTANT_LIGHT_SCHEME_STORAGE_KEY);
-        return isAssistantLightSchemeId(stored) ? stored : "default";
+        return isAssistantLightSchemeId(stored) ? stored : DEFAULT_ASSISTANT_LIGHT_SCHEME_ID;
     } catch {
-        return "default";
+        return DEFAULT_ASSISTANT_LIGHT_SCHEME_ID;
     }
 }
 

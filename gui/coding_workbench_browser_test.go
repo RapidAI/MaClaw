@@ -1,8 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +65,25 @@ func TestCodingWorkbenchBrowserRemotePathKeepsRemoteWorkDirForRoot(t *testing.T)
 func TestRemotePathWithinDirAllowsChildrenOfFilesystemRoot(t *testing.T) {
 	if !remotePathWithinDir("/etc/hosts", "/") {
 		t.Fatal("a remote work_dir of / must allow paths under the filesystem root")
+	}
+}
+
+func TestOmitCloudWorkspaceAbsPath(t *testing.T) {
+	if got := omitCloudWorkspaceAbsPath(`C:\Users\me\.maclaw\data\cloud-workspaces\t\cws\a.md`); got != "" {
+		t.Fatalf("cloud cache path leaked: %q", got)
+	}
+	if got := omitCloudWorkspaceAbsPath("/workspace/src/main.go"); got != "/workspace/src/main.go" {
+		t.Fatalf("local path omitted unexpectedly: %q", got)
+	}
+}
+
+func TestCodingWorkbenchEntryPropertiesOmitsCloudCacheAbsPath(t *testing.T) {
+	properties := codingWorkbenchEntryProperties("report.md", `C:\Users\me\.maclaw\data\cloud-workspaces\t\cws\report.md`, "report.md", false, 10, 1, "0644")
+	if properties.AbsPath != "" {
+		t.Fatalf("cloud cache abs path leaked: %q", properties.AbsPath)
+	}
+	if properties.Path != "report.md" {
+		t.Fatalf("path = %q", properties.Path)
 	}
 }
 
@@ -200,6 +222,102 @@ func TestCollectCodingWorkbenchDirectoryEntriesSkipsHiddenNames(t *testing.T) {
 	}
 }
 
+func TestCopyCodingWorkbenchDownloadCopiesFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.md")
+	dest := filepath.Join(dir, "out.md")
+	if err := os.WriteFile(src, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCodingWorkbenchDownload(src, dest, 1024); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCopyCodingWorkbenchDownloadEnforcesSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.bin")
+	dest := filepath.Join(dir, "out.bin")
+	if err := os.WriteFile(src, []byte("abcd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyCodingWorkbenchDownload(src, dest, 2); err == nil {
+		t.Fatal("expected size limit error")
+	}
+}
+
+func TestTarCodingWorkbenchDownloadIncludesFilesAndSkipsMaclawCloud(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.md"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "docs", "b.txt"), []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, ".maclaw-cloud"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".maclaw-cloud", "state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "pack.tar")
+	if err := tarCodingWorkbenchDownload(src, dest, "pack"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	names := map[string]string{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag == tar.TypeReg {
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			names[hdr.Name] = string(body)
+		} else {
+			names[hdr.Name] = ""
+		}
+	}
+	if names["pack/a.md"] != "hi" || names["pack/docs/b.txt"] != "b" {
+		t.Fatalf("tar contents = %#v", names)
+	}
+	for name := range names {
+		if strings.Contains(name, ".maclaw-cloud") {
+			t.Fatalf("internal cache leaked into tar: %q", name)
+		}
+	}
+}
+
+func TestSanitizeCodingWorkbenchDownloadName(t *testing.T) {
+	if got := sanitizeCodingWorkbenchDownloadName(`a/b:c`); got != "a_b_c" {
+		t.Fatalf("got %q", got)
+	}
+	if got := sanitizeCodingWorkbenchDownloadName(".."); got != "download" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestParseCodingWorkbenchRemoteDirectoryRecordsKeepsJSONBeforeSSHExitMarker(t *testing.T) {
 	raw := strings.Join([]string{
 		"$ python3 -c '<hidden>'",
@@ -283,6 +401,179 @@ func TestCleanupCodingWorkbenchVSCodeRemoteSnapshotsKeepsRecentCopies(t *testing
 	}
 	if _, err := os.Stat(recentSnapshot); err != nil {
 		t.Fatalf("recent snapshot should be retained: %v", err)
+	}
+}
+
+func TestCodingWorkbenchLocalFileAbsPathUsesLocalCache(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "report.pdf")
+	if err := os.WriteFile(file, []byte("%PDF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := codingWorkbenchLocalFileAbsPath(root, "report.pdf")
+	if err != nil {
+		t.Fatalf("codingWorkbenchLocalFileAbsPath: %v", err)
+	}
+	if filepath.Clean(got) != filepath.Clean(file) {
+		t.Fatalf("got %q, want %q", got, file)
+	}
+}
+
+func TestCodingWorkbenchLocalFileAbsPathRejectsDirectoryAndEscape(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codingWorkbenchLocalFileAbsPath(root, "docs"); err == nil {
+		t.Fatal("expected directory error")
+	} else if !strings.Contains(err.Error(), "path is a directory") {
+		t.Fatalf("directory error = %v", err)
+	}
+	if _, err := codingWorkbenchLocalFileAbsPath(root, "../secret.pdf"); err == nil {
+		t.Fatal("expected path escape error")
+	}
+	if _, err := codingWorkbenchLocalFileAbsPath(root, ""); err == nil {
+		t.Fatal("expected empty path error")
+	}
+	if _, err := codingWorkbenchLocalFileAbsPath(root, "missing.pdf"); err == nil {
+		t.Fatal("expected missing file error")
+	}
+}
+
+func TestCodingWorkbenchRejectsLocalOpenForRemoteTag(t *testing.T) {
+	if (&App{}).codingWorkbenchRejectsLocalOpen("any") {
+		t.Fatal("an App without a project index must not treat paths as remote")
+	}
+}
+
+func TestOpenCodingWorkbenchFileLocallyRequiresProjectPath(t *testing.T) {
+	app := &App{}
+	if err := app.OpenCodingWorkbenchFileLocally("", "a.pdf"); err == nil {
+		t.Fatal("expected project path error")
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryRequiresCloudWorkspace(t *testing.T) {
+	app := &App{}
+	if err := app.DeleteCodingWorkbenchEntry("", "notes.md"); err == nil || !strings.Contains(err.Error(), "project path is required") {
+		t.Fatalf("empty project: %v", err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry("local-task", "notes.md"); err == nil || !strings.Contains(err.Error(), "only available for cloud workspaces") {
+		t.Fatalf("non-cloud: %v", err)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryRemovesLocalCacheAndRemoteFile(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "notes.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "gone.md"), []byte("drop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := app.pushCloudWorkspace(ctx, "cws_delete_file", prepared.LocalPath); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "gone.md"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "gone.md")); !os.IsNotExist(err) {
+		t.Fatalf("local cache still has gone.md: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "notes.md")); err != nil {
+		t.Fatalf("notes.md should remain: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for _, entry := range hub.entries {
+		if entry.Path == "gone.md" {
+			t.Fatalf("remote still has gone.md: %+v", hub.entries)
+		}
+	}
+	foundNotes := false
+	for _, entry := range hub.entries {
+		if entry.Path == "notes.md" {
+			foundNotes = true
+		}
+	}
+	if !foundNotes {
+		t.Fatalf("remote lost notes.md: %+v", hub.entries)
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryRemovesDirectoryAndRemoteFiles(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prepared.LocalPath, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "docs", "a.md"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "keep.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := app.pushCloudWorkspace(ctx, "cws_delete_dir", prepared.LocalPath); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "docs"); err != nil {
+		t.Fatalf("delete dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "docs")); !os.IsNotExist(err) {
+		t.Fatalf("local docs still present: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for _, entry := range hub.entries {
+		if entry.Path == "docs/a.md" || strings.HasPrefix(entry.Path, "docs/") {
+			t.Fatalf("remote still has %q", entry.Path)
+		}
+	}
+}
+
+func TestDeleteCodingWorkbenchEntryRejectsProtectedAndEscapingPaths(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_delete_guard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prepared.LocalPath, cloudWorkspaceCacheStateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, cloudWorkspaceCacheStateDir, "state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, ""); err == nil || !strings.Contains(err.Error(), "file path is required") {
+		t.Fatalf("root: %v", err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, cloudWorkspaceCacheStateDir+"/state.json"); err == nil || !strings.Contains(err.Error(), "entry cannot be deleted") {
+		t.Fatalf("protected: %v", err)
+	}
+	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "../secret.md"); err == nil {
+		t.Fatal("expected path escape error")
+	}
+}
+
+func TestCodingWorkbenchEntryProtected(t *testing.T) {
+	if !codingWorkbenchEntryProtected(".maclaw-cloud") || !codingWorkbenchEntryProtected("docs/.maclaw-cloud/state.json") {
+		t.Fatal("cloud cache internals must be protected")
+	}
+	if codingWorkbenchEntryProtected("notes.md") || codingWorkbenchEntryProtected("docs/report.pdf") {
+		t.Fatal("ordinary files must be deletable")
 	}
 }
 

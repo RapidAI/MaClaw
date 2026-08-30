@@ -82,14 +82,55 @@ func hubServiceStatusCacheMatches(hubURL, viewerToken string) bool {
 		time.Since(hubServiceStatusCache.fetchedAt) < hubServiceStatusLocalCacheTTL
 }
 
-func storeHubServiceStatusCache(hubURL, viewerToken string, status HubLLMServiceStatus) {
+// storeHubServiceStatusCache stores the latest Hub status and reports whether
+// an existing cache entry for the same signed-in Hub account changed. Keeping
+// this comparison at the cache boundary lets callers notify the GUI about
+// entitlement-only changes without persisting a policy snapshot to config.
+func storeHubServiceStatusCache(hubURL, viewerToken string, status HubLLMServiceStatus) bool {
 	hubServiceStatusCache.mu.Lock()
+	sameIdentity := hubServiceStatusCache.valid &&
+		hubServiceStatusCache.hubURL == strings.TrimSpace(hubURL) &&
+		hubServiceStatusCache.viewerTok == strings.TrimSpace(viewerToken)
+	changed := sameIdentity && !hubLLMServiceStatusDisplayEqual(hubServiceStatusCache.status, status)
 	hubServiceStatusCache.status = status
 	hubServiceStatusCache.fetchedAt = time.Now()
 	hubServiceStatusCache.valid = true
 	hubServiceStatusCache.hubURL = strings.TrimSpace(hubURL)
 	hubServiceStatusCache.viewerTok = strings.TrimSpace(viewerToken)
 	hubServiceStatusCache.mu.Unlock()
+	return changed
+}
+
+// hubLLMServiceStatusDisplayEqual ignores the countdown-only retry field. Hub
+// may decrease it on every poll while the actual entitlement, including the
+// stable retry deadline, is unchanged; emitting for that would needlessly
+// re-render the status area every cache cycle.
+func hubLLMServiceStatusDisplayEqual(left, right HubLLMServiceStatus) bool {
+	left.ActiveGrants = append([]HubLLMActiveGrant(nil), left.ActiveGrants...)
+	left.CreditGrants = append([]HubLLMActiveGrant(nil), left.CreditGrants...)
+	right.ActiveGrants = append([]HubLLMActiveGrant(nil), right.ActiveGrants...)
+	right.CreditGrants = append([]HubLLMActiveGrant(nil), right.CreditGrants...)
+	for i := range left.ActiveGrants {
+		left.ActiveGrants[i].RetryAfterSeconds = 0
+	}
+	for i := range left.CreditGrants {
+		left.CreditGrants[i].RetryAfterSeconds = 0
+	}
+	for i := range right.ActiveGrants {
+		right.ActiveGrants[i].RetryAfterSeconds = 0
+	}
+	for i := range right.CreditGrants {
+		right.CreditGrants[i].RetryAfterSeconds = 0
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+// notifyHubLLMServiceStatusChanged emits the runtime-status update only when
+// config synchronization did not already emit the same frontend event.
+func (a *App) notifyHubLLMServiceStatusChanged(statusChanged, configChanged bool) {
+	if statusChanged && !configChanged && a != nil && a.ctx != nil {
+		a.emitEvent("hub-llm-service-changed")
+	}
 }
 
 // hubLLMSyncRespectLogThrottle suppresses the repetitive "respecting user
@@ -305,10 +346,12 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 		// Stale cache from a different Hub must not mask auth/network errors.
 		return HubLLMServiceStatus{}, err
 	}
-	// Update local cache with fresh data keyed by Hub identity.
-	storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
-
-	if _, err := a.syncHubLLMServiceStatusToConfig(status, false); err != nil {
+	// Cache first so a config-change event emitted during synchronization can
+	// never make the GUI re-read an older entitlement snapshot.
+	statusChanged := storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
+	configChanged, err := a.syncHubLLMServiceStatusToConfig(status, false)
+	a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
+	if err != nil {
 		return status, err
 	}
 	return status, nil
@@ -318,9 +361,6 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 // cache. Used by explicit user actions (e.g. opening Redeem panel, clicking
 // refresh button) where stale data is unacceptable.
 func (a *App) RefreshHubLLMServiceStatus() (HubLLMServiceStatus, error) {
-	// Invalidate cache so the next fetch actually hits the Hub.
-	clearHubServiceStatusCache()
-
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return HubLLMServiceStatus{}, err
@@ -333,9 +373,12 @@ func (a *App) RefreshHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if err != nil {
 		return HubLLMServiceStatus{}, err
 	}
-	storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
-
-	if _, err := a.syncHubLLMServiceStatusToConfig(status, false); err != nil {
+	// This method fetches directly, so it bypasses the cache without discarding
+	// the previous snapshot needed to detect a changed entitlement view.
+	statusChanged := storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
+	configChanged, err := a.syncHubLLMServiceStatusToConfig(status, false)
+	a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
+	if err != nil {
 		return status, err
 	}
 	return status, nil
@@ -397,19 +440,18 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 		}
 		serviceStatus = refreshed
 	}
+	// Store the runtime response before synchronizing config so a config-change
+	// event can immediately re-read the current entitlement view.
+	_ = storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, serviceStatus)
 	changed, err := a.syncHubLLMServiceStatusToConfig(serviceStatus, false)
 	if err != nil {
 		return serviceStatus, err
 	}
-	// Update local cache so subsequent GetMaclawLLMProviders calls see
-	// the fresh post-redeem status immediately.
-	storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, serviceStatus)
-
-	// syncHubLLMServiceStatusToConfig only emits "hub-llm-service-changed" when
-	// config file changes. But credit grants (runtime data, not persisted in
-	// config) always change after a redeem. Emit unconditionally when sync
-	// didn't already emit, so the sidebar refreshes.
-	if !changed && a.ctx != nil {
+	// Redeem is an explicit user action. Always refresh the status surfaces even
+	// when the Hub returns an identical entitlement; for background refreshes,
+	// only material status changes emit an event. The cache was updated before
+	// config synchronization, so any emitted event can re-read this response.
+	if !changed && a != nil && a.ctx != nil {
 		a.emitEvent("hub-llm-service-changed")
 	}
 	return serviceStatus, nil
@@ -462,13 +504,12 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 		log.Printf("[hub-llm-service] status fetch failed (transient), preserving config: %v", err)
 		return
 	}
-	// Cache the successful response for this Hub identity.
-	storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
-
 	// Only apply status if Hub explicitly returned a response.
 	// An empty/zero status (Active=false, no grants, no base URL) from a
 	// successful HTTP 200 response means the entitlement was genuinely revoked.
-	_, _ = a.syncHubLLMServiceStatusToConfig(status, false)
+	statusChanged := storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
+	configChanged, _ := a.syncHubLLMServiceStatusToConfig(status, false)
+	a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
 	if freshCfg, err := a.LoadConfig(); err == nil {
 		// Update the caller's copy so syncedMaclawLLMProviders returns fresh data.
 		*cfg = freshCfg
@@ -477,6 +518,49 @@ func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
 
 func (a *App) fetchHubLLMServiceStatus(cfg corelib.AppConfig) (HubLLMServiceStatus, error) {
 	return a.fetchHubLLMServiceStatusWithTimeout(cfg, 30*time.Second)
+}
+
+// ReportHubLLMBillingTimezone sends the GUI runtime's IANA timezone after the
+// user has authenticated. The Hub treats it as a one-time account attribute;
+// this call is safe to repeat on every desktop launch.
+func (a *App) ReportHubLLMBillingTimezone(timezone string) error {
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" || (timezone != "UTC" && !strings.Contains(timezone, "/")) {
+		return fmt.Errorf("timezone must be an IANA location")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return fmt.Errorf("hub URL is not configured")
+	}
+	if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+		if cfg, err = a.ensureViewerToken(cfg); err != nil {
+			return err
+		}
+	}
+	body, err := json.Marshal(map[string]string{"timezone": timezone})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hubServiceStatusTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/timezone"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("billing timezone update failed: %s", resp.Status)
+	}
+	return nil
 }
 
 func (a *App) fetchHubLLMServiceStatusWithTimeout(cfg corelib.AppConfig, timeout time.Duration) (HubLLMServiceStatus, error) {

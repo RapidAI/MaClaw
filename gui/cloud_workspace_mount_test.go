@@ -37,6 +37,8 @@ type fakeCloudWorkspaceHub struct {
 	objects            map[string][]byte
 	chunks             map[string]map[int][]byte
 	sidecars           map[string][]byte
+	sidecarGets        int
+	entitlement        *CloudWorkspaceEntitlement
 }
 
 func cloudWorkspaceSHA256Hex(body []byte) string {
@@ -68,6 +70,19 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	path := r.URL.Path
 	switch {
+	case r.Method == http.MethodGet && path == cloudWorkspaceEntitlementPath:
+		if h.entitlement == nil {
+			http.NotFound(w, r)
+			return
+		}
+		ent := *h.entitlement
+		if ent.Workspaces == nil {
+			ent.Workspaces = []CloudWorkspaceEntitlementWorkspace{}
+		}
+		if ent.Deleted == nil {
+			ent.Deleted = []CloudWorkspaceDeletedWorkspace{}
+		}
+		_ = json.NewEncoder(w).Encode(ent)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/leases"):
 		var req struct {
 			Force bool `json:"force"`
@@ -119,6 +134,48 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 			entries = []cloudWorkspaceManifestEntry{}
 		}
 		_ = json.NewEncoder(w).Encode(cloudWorkspaceManifest{Revision: h.revision, Entries: entries})
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/operations"):
+		if h.failPush {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "CLOUD_WORKSPACE_FAILED", "message": "push failed"})
+			return
+		}
+		var op cloudWorkspaceOperation
+		_ = json.NewDecoder(r.Body).Decode(&op)
+		if h.entries == nil {
+			h.entries = []cloudWorkspaceManifestEntry{}
+		}
+		switch op.Kind {
+		case "delete":
+			kept := h.entries[:0]
+			for _, entry := range h.entries {
+				if entry.Path != op.Path {
+					kept = append(kept, entry)
+				}
+			}
+			h.entries = kept
+		case "put":
+			updated := false
+			next := cloudWorkspaceManifestEntry{Path: op.Path, SHA256: op.ObjectSHA256, Size: op.PlainSize}
+			for i, entry := range h.entries {
+				if entry.Path == op.Path {
+					h.entries[i] = next
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				h.entries = append(h.entries, next)
+			}
+		}
+		if h.revision == "" {
+			h.revision = "rev-op"
+		}
+		_ = json.NewEncoder(w).Encode(cloudWorkspaceOperationResult{
+			Accepted: true, WorkspaceSeq: 1, FileRevision: "fr-" + op.OpID, Merge: "ok",
+		})
+	case r.Method == http.MethodGet && strings.Contains(path, "/events"):
+		_ = json.NewEncoder(w).Encode(map[string]any{"events": []cloudWorkspaceEvent{}})
 	case r.Method == http.MethodPut && strings.HasSuffix(path, "/manifest"):
 		if h.failPush {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -144,6 +201,7 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 			h.sidecars[name] = append([]byte(nil), body...)
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": name, "size": len(body)})
 		case http.MethodGet:
+			h.sidecarGets++
 			body, ok := h.sidecars[name]
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -188,9 +246,86 @@ func (h *fakeCloudWorkspaceHub) ServeHTTP(w http.ResponseWriter, r *http.Request
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
+	case r.Method == http.MethodDelete && fakeCloudWorkspaceItemPath(path):
+		id := strings.TrimPrefix(path, cloudWorkspaceCollectionPath+"/")
+		row := h.takeEntitlementWorkspace(id)
+		if row.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": row.ID, "name": row.Name, "status": "deleted",
+			"used_bytes": row.UsedBytes, "deleted_at": "2026-08-29T00:00:00Z",
+		})
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/restore"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, cloudWorkspaceCollectionPath+"/"), "/restore")
+		row := h.returnEntitlementWorkspace(id)
+		if row.ID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": row.ID, "name": row.Name, "status": "active", "used_bytes": row.UsedBytes,
+		})
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func fakeCloudWorkspaceItemPath(path string) bool {
+	prefix := cloudWorkspaceCollectionPath + "/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func (h *fakeCloudWorkspaceHub) takeEntitlementWorkspace(id string) CloudWorkspaceEntitlementWorkspace {
+	if h.entitlement == nil {
+		return CloudWorkspaceEntitlementWorkspace{}
+	}
+	kept := h.entitlement.Workspaces[:0]
+	var found CloudWorkspaceEntitlementWorkspace
+	for _, ws := range h.entitlement.Workspaces {
+		if ws.ID == id {
+			found = ws
+			continue
+		}
+		kept = append(kept, ws)
+	}
+	if found.ID == "" {
+		return CloudWorkspaceEntitlementWorkspace{}
+	}
+	h.entitlement.Workspaces = kept
+	h.entitlement.Used = len(kept)
+	h.entitlement.Deleted = append(h.entitlement.Deleted, CloudWorkspaceDeletedWorkspace{
+		ID: found.ID, Name: found.Name, UsedBytes: found.UsedBytes, DeletedAt: "2026-08-29T00:00:00Z",
+	})
+	return found
+}
+
+func (h *fakeCloudWorkspaceHub) returnEntitlementWorkspace(id string) CloudWorkspaceEntitlementWorkspace {
+	if h.entitlement == nil {
+		return CloudWorkspaceEntitlementWorkspace{}
+	}
+	kept := h.entitlement.Deleted[:0]
+	var found CloudWorkspaceDeletedWorkspace
+	for _, ws := range h.entitlement.Deleted {
+		if ws.ID == id {
+			found = ws
+			continue
+		}
+		kept = append(kept, ws)
+	}
+	if found.ID == "" {
+		return CloudWorkspaceEntitlementWorkspace{}
+	}
+	h.entitlement.Deleted = kept
+	row := CloudWorkspaceEntitlementWorkspace{ID: found.ID, Name: found.Name, UsedBytes: found.UsedBytes}
+	h.entitlement.Workspaces = append(h.entitlement.Workspaces, row)
+	h.entitlement.Used = len(h.entitlement.Workspaces)
+	return row
 }
 
 func sidecarNameFromPath(path string) string {
@@ -978,4 +1113,178 @@ func (m *memCloudWorkspaceTransport) CompleteObject(ctx context.Context, sha str
 	}
 	m.objects[sha] = buf
 	return nil
+}
+
+func TestIsCloudWorkspaceCachePath(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	cache := filepath.Join(dataDir, "cloud-workspaces", "tenant_acme", "cws_demo")
+	if !isCloudWorkspaceCachePath(dataDir, cache) {
+		t.Fatal("cache root")
+	}
+	if !isCloudWorkspaceCachePath(dataDir, filepath.Join(cache, "out.pdf")) {
+		t.Fatal("cache file")
+	}
+	if isCloudWorkspaceCachePath(dataDir, filepath.Join(t.TempDir(), "maclaw", "workspace", "book")) {
+		t.Fatal("default workspace is not a cloud cache")
+	}
+	decoy := filepath.Join(t.TempDir(), "cloud-workspaces", "tenant_acme", "cws_demo")
+	if isCloudWorkspaceCachePath(dataDir, decoy) {
+		t.Fatal("unrelated cloud-workspaces folder must not count")
+	}
+	if isCloudWorkspaceCachePath(dataDir, "") {
+		t.Fatal("empty")
+	}
+}
+
+func TestCloudWorkspaceExecutionDirDoesNotFollowDesktopDefault(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	desktop := filepath.Join(t.TempDir(), "desktop-default")
+	if err := os.MkdirAll(desktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SetTabWorkingDir("", desktop); err != nil {
+		t.Fatalf("SetTabWorkingDir desktop: %v", err)
+	}
+	created := mustCreateCloudWorkspaceTask(t, app, "数学基础", "", "", "cws_math")
+	owner := projectSessionOwnerID(created.ProjectPath)
+	if got := app.EffectiveWorkingDirForOwner(owner); got != created.WorkingDir {
+		t.Fatalf("unbound owner dir = %q, want cloud cache %q (desktop=%q)", got, created.WorkingDir, desktop)
+	}
+	if !isCloudWorkspaceCachePath(app.GetDataDir(), created.WorkingDir) {
+		t.Fatalf("created working dir is not a cache path: %q", created.WorkingDir)
+	}
+
+	tabID := "proj-cloud-math"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != created.WorkingDir {
+		t.Fatalf("tab working dir = %q, want cache %q", got, created.WorkingDir)
+	}
+
+	pdfName := "人工智能数学基础-v1.1.0.pdf"
+	if err := os.WriteFile(filepath.Join(created.WorkingDir, pdfName), []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(created.ProjectPath, "")
+	if err != nil {
+		t.Fatalf("GetCodingWorkbenchDirectory after write: %v", err)
+	}
+	found := false
+	for _, entry := range listed.Entries {
+		if entry.Name == pdfName && !entry.IsDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("preview listing missing %q: %+v (root=%q)", pdfName, listed.Entries, listed.Root)
+	}
+
+	h := &IMMessageHandler{app: app}
+	if got := h.effectiveWorkingDirForUser(owner); got != created.WorkingDir {
+		t.Fatalf("skill/tool working dir = %q, want cache %q", got, created.WorkingDir)
+	}
+}
+
+func TestCreateProjectTabSessionRepairsStaleCloudWorkingDir(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	desktop := filepath.Join(t.TempDir(), "stale-desktop")
+	if err := os.MkdirAll(desktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SetTabWorkingDir("", desktop); err != nil {
+		t.Fatalf("SetTabWorkingDir desktop: %v", err)
+	}
+	created := mustCreateCloudWorkspaceTask(t, app, "云端成果", "", "", "cws_stale")
+	tabID := "proj-cloud-stale"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+
+	persist := app.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		t.Fatalf("LoadSession: %v %#v", err, session)
+	}
+	session.WorkingDir = desktop
+	if err := persist.SaveSession(session); err != nil {
+		t.Fatalf("SaveSession stale dir: %v", err)
+	}
+	app.tabWorkingDirOverrides.Store(tabID, desktop)
+	app.assistantSessionWorkingDirs.Store(projectSessionOwnerID(created.ProjectPath), desktop)
+
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("reopen CreateProjectTabSession returned empty")
+	}
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != created.WorkingDir {
+		t.Fatalf("repaired tab dir = %q, want cache %q", got, created.WorkingDir)
+	}
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(created.ProjectPath)); got != created.WorkingDir {
+		t.Fatalf("repaired owner dir = %q, want cache %q", got, created.WorkingDir)
+	}
+	reloaded, err := persist.LoadSession(tabID)
+	if err != nil || reloaded == nil {
+		t.Fatalf("reloaded session: %v %#v", err, reloaded)
+	}
+	if normalizeProjectSessionPath(reloaded.WorkingDir) != created.WorkingDir {
+		t.Fatalf("persisted session working dir = %q, want cache %q", reloaded.WorkingDir, created.WorkingDir)
+	}
+}
+
+func TestCloudWorkspacePreviewAndToolsShareCacheAfterStaleWorkingDirTag(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	desktop := filepath.Join(t.TempDir(), "stale-tag-desktop")
+	if err := os.MkdirAll(desktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(desktop, "local-only.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	created := mustCreateCloudWorkspaceTask(t, app, "stale tag", "", "", "cws_tag")
+	if err := app.persistTaskWorkingDir(created.ProjectPath, desktop); err != nil {
+		t.Fatalf("persistTaskWorkingDir: %v", err)
+	}
+	pdfName := "book.pdf"
+	if err := os.WriteFile(filepath.Join(created.WorkingDir, pdfName), []byte("%PDF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	owner := projectSessionOwnerID(created.ProjectPath)
+	if got := app.EffectiveWorkingDirForOwner(owner); got != created.WorkingDir {
+		t.Fatalf("owner dir = %q, want cache %q after stale tag", got, created.WorkingDir)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(created.ProjectPath, "")
+	if err != nil {
+		t.Fatalf("GetCodingWorkbenchDirectory: %v", err)
+	}
+	foundPDF, foundLocal := false, false
+	for _, entry := range listed.Entries {
+		if entry.Name == pdfName {
+			foundPDF = true
+		}
+		if entry.Name == "local-only.txt" {
+			foundLocal = true
+		}
+	}
+	if !foundPDF || foundLocal {
+		t.Fatalf("listing should be cache (pdf=%v local=%v entries=%+v)", foundPDF, foundLocal, listed.Entries)
+	}
+
+	tabID := "proj-cloud-outside-dir"
+	if msg := app.CreateProjectTabSession(tabID, created.ProjectPath); strings.TrimSpace(msg) == "" {
+		t.Fatal("CreateProjectTabSession returned empty")
+	}
+	outside := filepath.Join(t.TempDir(), "user-picked")
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("precondition: outside path should not exist, err=%v", err)
+	}
+	if err := app.SetTabWorkingDir(tabID, outside); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != created.WorkingDir {
+		t.Fatalf("SetTabWorkingDir outside cache = %q, want cache %q", got, created.WorkingDir)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("rejected out-of-cache pick must not be created, err=%v", err)
+	}
 }

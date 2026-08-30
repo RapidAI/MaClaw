@@ -13,10 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func makeSkillZipBytes(t *testing.T, entries map[string]string) []byte {
@@ -1246,5 +1248,191 @@ func TestInstallSkillHonorsCanceledContextBeforePersist(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(svc.userSkillsRoot(tenant.ID, user.ID), "cancel-install")); !os.IsNotExist(statErr) {
 		t.Fatalf("canceled install should not persist skill, stat err = %v", statErr)
+	}
+}
+
+func TestPersistImportedEntriesSamePackageIsNoOp(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	source := t.TempDir()
+	yaml := "name: idempotent-import\ndescription: demo\nsteps:\n  - action: prompt\n    prompt: say hello\n"
+	if err := os.WriteFile(filepath.Join(source, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := corelib.NLSkillEntry{Name: "idempotent-import", Description: "demo", Source: "test", SkillDir: source, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "say hello"}}}}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	before, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("ListSkills before no-op: len=%d err=%v", len(before), err)
+	}
+	items, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, true)
+	if err != nil {
+		t.Fatalf("repeat import: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("repeat import returned %d items, want no-op", len(items))
+	}
+	after, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(after) != 1 || after[0].Name != before[0].Name {
+		t.Fatalf("ListSkills after no-op: items=%#v err=%v", after, err)
+	}
+}
+
+func TestPersistImportedEntriesRejectsStalePreviousBackup(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "skill.yaml"), []byte("name: backup-conflict\ndescription: old\nsteps:\n  - action: prompt\n    prompt: say old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := corelib.NLSkillEntry{Name: "backup-conflict", Description: "old", Source: "test", SkillDir: source, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "say old"}}}}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	installed, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(installed) != 1 {
+		t.Fatalf("ListSkills: %#v err=%v", installed, err)
+	}
+	prev := installed[0].SkillDir + ".prev"
+	if err := os.MkdirAll(prev, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry.Description = "new"
+	_, err = svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, true)
+	if err == nil || !strings.Contains(err.Error(), "backup conflict") {
+		t.Fatalf("replacement error = %v, want backup conflict", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(installed[0].SkillDir, "skill.yaml")); statErr != nil {
+		t.Fatalf("original installation missing after backup conflict: %v", statErr)
+	}
+}
+
+func TestNewServiceRecoversAgentSkillDirectoryCompensation(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	root := filepath.Join(dataRoot, "tenants", "tenant", "users", "user", "skills")
+	original := filepath.Join(root, "boot-recover")
+	backup := original + ".prev"
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: boot-recover\ndescription: restored\nsteps:\n  - action: prompt\n    prompt: restored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := skill.NewEvolutionCompensationRecord("boot-recovery-request", "boot-recover", "agentservice_install", "", nil, false, nil, "publish interrupted")
+	record.Status = "pending"
+	record.TransactionState = "audit_pending"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(dataRoot)
+	record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{
+		OriginalPath: original,
+		BackupPath:   backup,
+		HadPrevious:  true,
+		Moved:        true,
+		Published:    true,
+	}})
+	if err := skill.PersistEvolutionCompensation(record); err != nil {
+		t.Fatalf("PersistEvolutionCompensation: %v", err)
+	}
+
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(original, "skill.yaml")); err != nil {
+		t.Fatalf("startup recovery did not restore original directory: %v", err)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("startup recovery left backup directory, stat err = %v", err)
+	}
+	if _, err := skill.ListEvolutionCompensationSummaries(); err != nil {
+		t.Fatalf("ListEvolutionCompensationSummaries: %v", err)
+	} else if summaries, _ := skill.ListEvolutionCompensationSummaries(); len(summaries) != 0 {
+		t.Fatalf("startup recovery left %d compensation records", len(summaries))
+	}
+	if svc == nil || svc.skillInstallRecoveryBlocked {
+		t.Fatalf("service should not remain recovery-blocked after successful startup recovery")
+	}
+}
+
+func TestAgentServiceRuntimeAndUploadBlockOnScopedCompensation(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	deferred := skill.NewEvolutionCompensationRecord("runtime-block", "blocked-skill", "agentservice_install", "", nil, false, nil, "manual pending")
+	deferred.TransactionState = "audit_pending"
+	deferred.CleanupStatus = "pending"
+	deferred.SetRecoveryScope(dataRoot)
+	// A durable path under this service root makes the scope ownership
+	// provable while retaining the record as pending for admission checks.
+	deferred.YAMLPath = filepath.Join(dataRoot, "tenants", "t", "users", "u", "skills", "blocked-skill", "skill.yaml")
+	if err := skill.PersistEvolutionCompensation(deferred); err != nil {
+		t.Fatalf("PersistEvolutionCompensation: %v", err)
+	}
+
+	bridge := NewSkillToolBridge(svc)
+	if _, err := bridge.runSkillEntry(context.Background(), Principal{}, &corelib.NLSkillEntry{Name: "blocked-skill", Status: "active", Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "x"}}}}, nil); err == nil || !strings.Contains(err.Error(), "pending compensation") {
+		t.Fatalf("RunSkill error = %v, want pending compensation block", err)
+	}
+	if _, err := svc.UploadSkill(context.Background(), Principal{}, "blocked-skill", SkillUploadInput{Email: "user@example.com"}); err == nil || !strings.Contains(err.Error(), "pending compensation") {
+		t.Fatalf("UploadSkill error = %v, want pending compensation block", err)
+	}
+}
+
+func TestAgentServiceDeleteSkillUsesQuarantineTransaction(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := NewMemoryStore()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "delete-me")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: delete-me\ndescription: test\nsteps:\n  - action: prompt\n    prompt: hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteSkill(context.Background(), principal, "delete-me"); err != nil {
+		t.Fatalf("DeleteSkill: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("skill directory still exists: %v", err)
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil {
+		t.Fatal(err)
+	} else if len(summaries) != 0 {
+		t.Fatalf("delete left compensation records: %d", len(summaries))
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
 	"log"
 	"os"
 	"strings"
@@ -198,6 +197,26 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		directModeToolsFiltered = recoverPromptResult.DirectModeToolsFiltered
 	}
 
+	// A floor tool call was policy_rejected on an earlier round: runtime proof
+	// the request surface is under-scoped for this turn. Re-union the
+	// invariant-11 floor tools from the base surface so the model's next
+	// attempt can execute (see MissFloorToolsUnlock).
+	if opts.Phase != nil && opts.Phase.MissFloorToolsUnlock {
+		if !loopContextBlocksLegacyToolRouter(ctx) {
+			tools = unionMissFloorToolsForSurface(tools, opts.BaseTools)
+			// The unlock must not resurrect a tool the Hub security policy
+			// rejects for every argument set (e.g. bash under a mandated
+			// sandbox); execution-time EnforceConfig stays as the defense, but
+			// a never-executable tool must not occupy a surface slot either.
+			tools = h.filterPolicyRejectedSurfaceTools(tools)
+			toolsTokenBudget = estimateToolsTokens(tools)
+			if h.traceService != nil && ctx != nil && ctx.RunID != "" {
+				h.appendTraceEvent(ctx, "surface.floor_unlocked", "warn", "Re-united floor tools after under-scoped surface", truncateTraceText(strings.Join(agentLoopToolNamesForLog(tools), ","), 220), "", "")
+			}
+		}
+		opts.Phase.MissFloorToolsUnlock = false
+	}
+
 	toolsBeforeOrchestrator := len(tools)
 	orchestratorStep := h.applyAgentLoopTaskOrchestratorStep(opts.UserID, ctx, tools, conversation, directModeToolsFiltered)
 	tools = orchestratorStep.Tools
@@ -209,6 +228,10 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	if forceLightFinalizeWithoutTools && !keepGroupKnowledgeLookup {
 		tools = nil
 		toolsTokenBudget = 0
+	}
+	if opts.Phase != nil && opts.Phase.SkillMode == skillPreferenceAgentGuided {
+		tools = h.filterPolicyRejectedSurfaceTools(applyAgentGuidedWorkflowSurface(tools, opts.BaseTools))
+		toolsTokenBudget = estimateToolsTokens(tools)
 	}
 
 	if opts.RecordSystemMessages != nil {
@@ -230,7 +253,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	}
 }
 
-func contextCheckpointMode(sessionKey string) agent.ContextCheckpointMode {
+func contextCheckpointMode() agent.ContextCheckpointMode {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_CONTEXT_CHECKPOINT"))) {
 	case "off", "0", "false":
 		return agent.ContextCheckpointOff
@@ -239,14 +262,10 @@ func contextCheckpointMode(sessionKey string) agent.ContextCheckpointMode {
 	case "on", "1", "true":
 		return agent.ContextCheckpointOn
 	default:
-		// Conservative process-independent rollout: 10% active, 90% shadow.
-		// Stable owner hashing keeps one session on one behavior and requires no
-		// user-facing setting. Operators may force off/shadow/on with the env above.
-		sum := sha256.Sum256([]byte(strings.TrimSpace(sessionKey)))
-		if sum[0] < 26 { // 26/256 ~= 10.2%
-			return agent.ContextCheckpointOn
-		}
-		return agent.ContextCheckpointShadow
+		// Lossless checkpoints are on by default so long-running tasks (e.g.
+		// large document processing) never silently lose earlier context.
+		// Operators may force off/shadow with the env above.
+		return agent.ContextCheckpointOn
 	}
 }
 
@@ -259,26 +278,41 @@ func contextCheckpointStatusMode() string {
 	case "on", "1", "true":
 		return string(agent.ContextCheckpointOn)
 	default:
-		return "rollout_10pct"
+		return string(agent.ContextCheckpointOn)
 	}
+}
+
+// agentLoopCompactionSummarizer builds the LLM summarizer used when
+// trimConversation drops older history in the agent loop.
+//
+// Without this, dropped history was replaced by a static placeholder and the
+// model lost the task goal, file paths and prior decisions — long-running
+// tasks (e.g. large document processing) derailed a few rounds after the
+// first compaction.
+func (h *IMMessageHandler) agentLoopCompactionSummarizer() func(string) string {
+	if h == nil {
+		return nil
+	}
+	return guardedCompactionSummarizer(h.getMaclawLLMConfig(), h.client)
 }
 
 func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int, firstRequestLatencyBudget bool) []interface{} {
 	// A first-response latency budget is intentionally smaller than the normal
 	// context window. Checkpoints are lossless, but their file flush/spill work
 	// is still avoidable local I/O on the critical path. For this one request,
-	// use the fast structural compactor; subsequent rounds retain the normal
-	// checkpoint rollout and its lossless handles.
+	// use the fast structural compactor; subsequent rounds go through the normal
+	// lossless checkpointing and its lossless handles.
 	if firstRequestLatencyBudget {
 		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
 	}
+	summarizer := h.agentLoopCompactionSummarizer()
 	sessionKey := userID
 	if h != nil {
 		sessionKey = h.workflowPolicyOwnerID(userID, ctx)
 	}
-	mode := contextCheckpointMode(sessionKey)
+	mode := contextCheckpointMode()
 	if mode == agent.ContextCheckpointOff {
-		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
+		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, summarizer)
 	}
 	var flush func() error
 	if h != nil && h.memoryStore != nil {
@@ -301,7 +335,7 @@ func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID
 			return checkpoint.Conversation
 		}
 	}
-	return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
+	return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, summarizer)
 }
 
 func shouldForceLightFinalizeWithoutTools(ctx *LoopContext, iteration int, effectiveMax int, chatFinalizeGrace int) bool {

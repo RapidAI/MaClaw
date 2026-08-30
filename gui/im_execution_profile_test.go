@@ -100,6 +100,28 @@ func TestClassifyIMExecutionProfileSemanticWeatherPDFUsesFullPlannedChain(t *tes
 	}
 }
 
+func TestClassifyIMExecutionProfileTreeSynthesizedLookupPDFCompositeStaysManaged(t *testing.T) {
+	// 2026-08-25 production shape for "全网搜索张惠妹歌曲列表，生成详细pdf版本清单":
+	// the tree answered web_fetch 0.95 and the classifier synthesized the
+	// declared lookup+generate composite.  The verdict must keep the tree's
+	// score so the turn stays capability-managed; when the composite carried
+	// the weaker half's 0.68 it fell under both floors and shipped without
+	// generate_pdf ("当前工具列表中没有PDF生成权限").
+	semantic := &intent.ClassificationResult{
+		Primary:    intent.LabelWebFetch,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.95,
+		Layer:      3,
+		Reason:     "tree-after-embedding+synthesized composite: web_fetch(0.950)+document_generate(0.683)",
+	}
+	profile := classifyIMExecutionProfileWithSemantic(
+		IMUserMessage{Text: "全网搜索张惠妹歌曲列表，生成详细pdf版本清单"}, false, false, semantic,
+	)
+	if profile.IsLight() || profile.Reason != "semantic capability-managed mutating intent" {
+		t.Fatalf("profile = %+v, want full governed lookup+document-generation chain", profile)
+	}
+}
+
 func TestClassifyIMExecutionProfileBorderlineLiveDataUsesLight(t *testing.T) {
 	semantic := &intent.ClassificationResult{
 		Primary:    intent.LabelLiveData,
@@ -834,10 +856,12 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 		Reason:        "test",
 	}
 	prompt := buildLightIMSystemPrompt(IMUserMessage{Text: "\u5927\u8fde\u5929\u6c14"}, profile)
-	// Light bundle includes the shared Chinese output-format fence (~1.5KB) plus a
-	// short GUI capability fence. Keep a hard cap so full-agent sections cannot creep in.
-	if len(prompt) > 2800 {
-		t.Fatalf("light prompt len = %d, want <= 2800", len(prompt))
+	// Light bundle includes the shared Chinese output-format fence (~1.5KB), a
+	// short GUI capability fence, and the ~0.5KB governed-tool grant fence
+	// (semanticGrantPromptFence). Keep a hard cap so full-agent sections
+	// cannot creep in; measured size is ~2.9KB.
+	if len(prompt) > 3200 {
+		t.Fatalf("light prompt len = %d, want <= 3200", len(prompt))
 	}
 	for _, blocked := range []string{"Group Discussion", "CodingSubAgent", "compress_context"} {
 		if containsText(prompt, blocked) {
@@ -850,8 +874,8 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 	if !containsText(prompt, "Do not ask the user to re-authorize tools") {
 		t.Fatalf("light prompt missing re-authorize fence: %s", prompt)
 	}
-	if !containsText(prompt, "one-time grants") || !containsText(prompt, "web_search") {
-		t.Fatalf("light prompt missing one-time grant fence: %s", prompt)
+	if !containsText(prompt, "the live tool list is the ground truth") || !containsText(prompt, "web_search") {
+		t.Fatalf("light prompt missing governed-tools fence: %s", prompt)
 	}
 }
 

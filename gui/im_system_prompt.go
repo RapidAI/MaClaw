@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
@@ -992,6 +994,7 @@ type matchedKnowledgeSkill struct {
 	Content     string
 	ParamSchema string // formatted parameter schema for LLM context
 	Score       int    // number of triggers that matched
+	AgentGuided bool
 }
 
 // appendKnowledgeSkillSection injects matched skill documentation into the
@@ -1013,6 +1016,10 @@ type matchedKnowledgeSkill struct {
 // Both categories use the same trigger-matching and token-budget mechanism.
 // The section is placed after the memory section and before tool definitions.
 // When no skills match the current user message, the section is omitted.
+//
+// Imported agent-guided workflows (Book-PDF) store SKILL.md in the single
+// craft_tool step when no SkillDir exists; that blob is the documentation
+// the unmanaged turn needs in order to run the workflow with host tools.
 func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userMessage, ownerID string) {
 	if h.app == nil || h.getSkillExecutor() == nil || userMessage == "" {
 		return
@@ -1026,8 +1033,103 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 		return
 	}
 
-	msgLower := strings.ToLower(userMessage)
+	matched := collectMatchedSkillDocs(skills, userMessage)
+	matched = mergeStickyAgentGuidedDocs(matched, skills, h.recallAgentGuidedSkill(ownerID, h.getSkillExecutor()))
+	if len(matched) == 0 {
+		return
+	}
 
+	tokenBudget := defaultKnowledgeSkillTokenBudget
+	if cfg, err := h.loadConfig(); err == nil && cfg.KnowledgeSkillTokenBudget > 0 {
+		tokenBudget = cfg.KnowledgeSkillTokenBudget
+	}
+	writeMatchedSkillDocs(b, matched, tokenBudget)
+}
+
+const agentGuidedSkillDocsLeadIn = "以下是已安装且匹配当前请求的 agent 工作流。它不是工具名：不要 discover_tool / search_and_install_skill 寻找同名工具，不要用 generate_pdf 替代，不要 manage_skill。按文档用 bash、read_file、write_file、edit_file 执行各阶段。\n"
+
+func writeMatchedSkillDocs(b *strings.Builder, matched []matchedKnowledgeSkill, tokenBudget int) {
+	if b == nil || len(matched) == 0 {
+		return
+	}
+	if tokenBudget <= 0 {
+		tokenBudget = defaultKnowledgeSkillTokenBudget
+	}
+	b.WriteString("\n## Skill 使用文档\n")
+	if matchedSkillDocsIncludeAgentGuided(matched) {
+		b.WriteString(agentGuidedSkillDocsLeadIn)
+	}
+	totalTokensUsed := 0
+	for _, m := range matched {
+		if totalTokensUsed >= tokenBudget {
+			log.Printf("[skill_doc_inject] token budget exhausted (%d/%d), skipping skill %q", totalTokensUsed, tokenBudget, m.Name)
+			break
+		}
+		content := m.Content
+		contentTokens := estimateTokens(content)
+		remaining := tokenBudget - totalTokensUsed
+		if contentTokens > remaining {
+			content = truncateToTokenBudget(content, remaining)
+			contentTokens = estimateTokens(content)
+			log.Printf("[skill_doc_inject] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, remaining)
+		}
+		totalTokensUsed += contentTokens
+		b.WriteString(fmt.Sprintf("\n### Skill: %s\n", m.Name))
+		if m.ParamSchema != "" {
+			b.WriteString(m.ParamSchema)
+		}
+		b.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n---\n")
+	}
+}
+
+func mergeStickyAgentGuidedDocs(matched []matchedKnowledgeSkill, skills []NLSkillDefinition, name string) []matchedKnowledgeSkill {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return matched
+	}
+	for _, m := range matched {
+		if m.Name == name {
+			return matched
+		}
+	}
+	for _, s := range skills {
+		if s.Name != name {
+			continue
+		}
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive && normalizeSkillEntryStatus(s.Status) != skillEntryStatusUnknown {
+			return matched
+		}
+		content := skillDocContentForInjection(s)
+		if content == "" {
+			return matched
+		}
+		extra := matchedKnowledgeSkill{
+			Name:        s.Name,
+			Content:     content,
+			ParamSchema: buildParamSchemaForSkill(s),
+			Score:       1,
+			AgentGuided: true,
+		}
+		return append([]matchedKnowledgeSkill{extra}, matched...)
+	}
+	return matched
+}
+
+func matchedSkillDocsIncludeAgentGuided(matched []matchedKnowledgeSkill) bool {
+	for _, m := range matched {
+		if m.AgentGuided {
+			return true
+		}
+	}
+	return false
+}
+
+func collectMatchedSkillDocs(skills []NLSkillDefinition, userMessage string) []matchedKnowledgeSkill {
+	msgLower := strings.ToLower(userMessage)
 	var matched []matchedKnowledgeSkill
 	for _, s := range skills {
 		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
@@ -1039,95 +1141,218 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 		if isShellBrowserAutomationSkill(s) {
 			continue
 		}
-
-		// Determine the content to inject.
-		var content string
-		skillKind := normalizeSkillTypeKind(s.Type)
-		switch {
-		case skillKind.IsKnowledge() && s.Content != "":
-			// Category 1: knowledge skill with inline content.
-			content = s.Content
-		case !skillKind.IsKnowledge() && s.SkillDir != "":
-			// Category 2: executable skill with SKILL.md.
-			// Load documentation directly from the skill directory.
-			// Only loaded when triggers match (lazy), so no wasted IO.
-			content = loadSkillDocContent(s.SkillDir)
-		}
-		if content == "" {
+		guided := nlSkillIsAgentGuided(s)
+		if len(s.Triggers) == 0 && !guided {
 			continue
 		}
-
-		// Match triggers against user message.
-		triggers := s.Triggers
-		if len(triggers) == 0 {
-			continue
-		}
-		score := countTriggerMatches(triggers, msgLower)
-		// Also match by skill name (covers "用 drawio-skill 画..." pattern).
-		if score == 0 && strings.Contains(msgLower, strings.ToLower(s.Name)) {
-			score = 1
-		}
+		score := skillDocMatchScore(s.Name, s.Triggers, msgLower)
 		if score == 0 {
 			continue
 		}
-
+		content := skillDocContentForInjection(s)
+		if content == "" {
+			continue
+		}
 		matched = append(matched, matchedKnowledgeSkill{
 			Name:        s.Name,
 			Content:     content,
 			ParamSchema: buildParamSchemaForSkill(s),
 			Score:       score,
+			AgentGuided: guided,
 		})
 	}
+	sortMatchedKnowledgeSkills(matched)
+	return matched
+}
 
-	if len(matched) == 0 {
+func (h *IMMessageHandler) agentGuidedNamedSkillTurn(ownerID, userMessage string) bool {
+	if h == nil || strings.TrimSpace(userMessage) == "" || h.getSkillExecutor() == nil {
+		return false
+	}
+	skills := filterSkillsForExperienceDomain(h.skillExperienceDomainForOwner(ownerID), h.getSkillExecutor().List())
+	return agentGuidedSkillDocsMatch(skills, userMessage)
+}
+
+func (h *IMMessageHandler) releaseNamedSkillOnLoopIntent(ctx *LoopContext, userID, userText string) {
+	if ctx == nil || ctx.Runtime.SemanticIntent == nil {
 		return
 	}
+	h.releaseNamedSkillIntercept(ctx.Runtime.SemanticIntent, userID, userText)
+}
 
-	// Sort by relevance: higher score first, then alphabetically by name for stability.
-	sortMatchedKnowledgeSkills(matched)
-
-	// Determine token budget from config or use default.
-	tokenBudget := defaultKnowledgeSkillTokenBudget
-	if cfg, err := h.loadConfig(); err == nil && cfg.KnowledgeSkillTokenBudget > 0 {
-		tokenBudget = cfg.KnowledgeSkillTokenBudget
+func (h *IMMessageHandler) releaseNamedSkillIntercept(result *intent.ClassificationResult, userID, userText string) {
+	if result == nil {
+		return
 	}
-
-	totalTokensUsed := 0
-
-	b.WriteString("\n## Skill 使用文档\n")
-	for _, m := range matched {
-		// If the total budget is exhausted, skip remaining skills.
-		if totalTokensUsed >= tokenBudget {
-			log.Printf("[skill_doc_inject] token budget exhausted (%d/%d), skipping skill %q", totalTokensUsed, tokenBudget, m.Name)
-			break
-		}
-
-		content := m.Content
-		contentTokens := estimateTokens(content)
-		remaining := tokenBudget - totalTokensUsed
-
-		if contentTokens > remaining {
-			// Truncate content to fit within remaining budget.
-			content = truncateToTokenBudget(content, remaining)
-			contentTokens = estimateTokens(content)
-			log.Printf("[skill_doc_inject] truncated skill %q to fit budget (remaining=%d tokens)", m.Name, remaining)
-		}
-
-		totalTokensUsed += contentTokens
-
-		b.WriteString(fmt.Sprintf("\n### Skill: %s\n", m.Name))
-
-		// Inject parameter schema if available (explicit or synthesized).
-		if m.ParamSchema != "" {
-			b.WriteString(m.ParamSchema)
-		}
-
-		b.WriteString(content)
-		if !strings.HasSuffix(content, "\n") {
-			b.WriteString("\n")
-		}
-		b.WriteString("\n---\n")
+	intentText := semanticUserIntentText(userText)
+	injected := false
+	if !intent.ExplicitSkillInvocation(intentText) && intent.NamedSkillInterceptCandidate(*result) {
+		injected = h.agentGuidedNamedSkillTurn(userID, intentText)
 	}
+	intent.ReleaseNamedSkillIntercept(intentText, injected, result)
+}
+
+func agentGuidedSkillDocsMatch(skills []NLSkillDefinition, userMessage string) bool {
+	if len(skills) == 0 || strings.TrimSpace(userMessage) == "" {
+		return false
+	}
+	msgLower := strings.ToLower(userMessage)
+	for _, s := range skills {
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
+			continue
+		}
+		if cskill.IsInstructionOnlySkillType(s.Type) || isShellBrowserAutomationSkill(s) {
+			continue
+		}
+		if skillDocMatchScore(s.Name, s.Triggers, msgLower) == 0 {
+			continue
+		}
+		if cskill.AgentGuidedWorkflowInstructions(skillDefinitionAsEntry(s)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func skillDocContentForInjection(s NLSkillDefinition) string {
+	skillKind := normalizeSkillTypeKind(s.Type)
+	if skillKind.IsKnowledge() && strings.TrimSpace(s.Content) != "" {
+		return s.Content
+	}
+	if !skillKind.IsKnowledge() && strings.TrimSpace(s.SkillDir) != "" {
+		if content := loadSkillDocContent(s.SkillDir); content != "" {
+			return content
+		}
+	}
+	// Imported agent-guided workflows store SKILL.md in the craft_tool step.
+	return cskill.AgentGuidedWorkflowInstructions(skillDefinitionAsEntry(s))
+}
+
+func skillDefinitionAsEntry(s NLSkillDefinition) *corelib.NLSkillEntry {
+	return &corelib.NLSkillEntry{
+		Name:         s.Name,
+		Description:  s.Description,
+		Type:         s.Type,
+		Source:       s.Source,
+		Params:       s.Params,
+		Steps:        s.Steps,
+		RequiredArgs: s.RequiredArgs,
+		SkillDir:     s.SkillDir,
+		Content:      s.Content,
+	}
+}
+
+func skillDocMatchScore(name string, triggers []string, msgLower string) int {
+	score := countTriggerMatches(triggers, msgLower)
+	if score > 0 {
+		return score
+	}
+	// Do not substring-match the raw name: "handbook-pdf" contains "book-pdf".
+	for _, alias := range skillDocMatchAliases(name, triggers) {
+		if skillDocPhraseOccurs(msgLower, alias) {
+			return 1
+		}
+	}
+	return 0
+}
+
+func skillDocMatchAliases(name string, triggers []string) []string {
+	seen := make(map[string]struct{}, 4)
+	out := make([]string, 0, 2)
+	add := func(alias string) {
+		alias = strings.ToLower(strings.TrimSpace(alias))
+		if compactSkillDocLen(alias) < 6 {
+			return
+		}
+		if _, ok := seen[alias]; ok {
+			return
+		}
+		seen[alias] = struct{}{}
+		out = append(out, alias)
+	}
+	if n := strings.ToLower(strings.TrimSpace(name)); n != "" {
+		if i := strings.IndexAny(n, ":："); i > 0 {
+			add(n[:i])
+			add(n[i+1:])
+		} else {
+			add(n)
+		}
+	}
+	for _, trigger := range triggers {
+		parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(trigger)), isSkillDocSeparator)
+		if len(parts) < 2 {
+			continue
+		}
+		add(strings.Join(parts[len(parts)-2:], "-"))
+	}
+	return out
+}
+
+func skillDocPhraseOccurs(msgLower, phrase string) bool {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(phrase)), isSkillDocSeparator)
+	if len(parts) == 0 {
+		return false
+	}
+	msg := []rune(strings.ToLower(msgLower))
+	first := []rune(parts[0])
+	if len(first) == 0 {
+		return false
+	}
+	for i := 0; i+len(first) <= len(msg); i++ {
+		if !slices.Equal(msg[i:i+len(first)], first) {
+			continue
+		}
+		if i > 0 && isSkillDocASCIIWord(msg[i-1]) {
+			continue
+		}
+		pos := i + len(first)
+		ok := true
+		for _, part := range parts[1:] {
+			sepAt := pos
+			for pos < len(msg) && isSkillDocSeparator(msg[pos]) {
+				pos++
+			}
+			if pos == sepAt {
+				ok = false
+				break
+			}
+			pr := []rune(part)
+			if pos+len(pr) > len(msg) || !slices.Equal(msg[pos:pos+len(pr)], pr) {
+				ok = false
+				break
+			}
+			pos += len(pr)
+		}
+		if ok && (pos == len(msg) || !isSkillDocASCIIWord(msg[pos])) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSkillDocSeparator(r rune) bool {
+	switch r {
+	case '-', '_', ' ', '\t', '\n', '\r',
+		'\u00a0', '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212', '\uff0d':
+		return true
+	default:
+		return false
+	}
+}
+
+func isSkillDocASCIIWord(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+}
+
+func compactSkillDocLen(s string) int {
+	n := 0
+	for _, r := range s {
+		if isSkillDocSeparator(r) {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // appendSkillRepairNotifications injects notifications about recently
@@ -1302,14 +1527,16 @@ func truncateToTokenBudget(content string, tokenBudget int) string {
 }
 
 // countTriggerMatches counts how many of the skill's triggers match the user
-// message via case-insensitive substring matching. Returns 0 if none match.
+// message as bounded phrases (hyphen/space/dash variants allowed). Returns 0
+// if none match. Substring matching would treat trigger "git" as a hit inside
+// "github".
 func countTriggerMatches(triggers []string, msgLower string) int {
 	count := 0
 	for _, t := range triggers {
 		if t == "" {
 			continue
 		}
-		if strings.Contains(msgLower, strings.ToLower(t)) {
+		if skillDocPhraseOccurs(msgLower, t) {
 			count++
 		}
 	}
@@ -1319,16 +1546,12 @@ func countTriggerMatches(triggers []string, msgLower string) int {
 // sortMatchedKnowledgeSkills sorts matched skills by descending relevance
 // score, with alphabetical name as tiebreaker for deterministic ordering.
 func sortMatchedKnowledgeSkills(matched []matchedKnowledgeSkill) {
-	for i := 1; i < len(matched); i++ {
-		for j := i; j > 0; j-- {
-			if matched[j].Score > matched[j-1].Score ||
-				(matched[j].Score == matched[j-1].Score && matched[j].Name < matched[j-1].Name) {
-				matched[j], matched[j-1] = matched[j-1], matched[j]
-			} else {
-				break
-			}
+	slices.SortFunc(matched, func(a, b matchedKnowledgeSkill) int {
+		if a.Score != b.Score {
+			return b.Score - a.Score
 		}
-	}
+		return strings.Compare(a.Name, b.Name)
+	})
 }
 
 // buildParamSchemaForSkill returns a formatted parameter schema string for
@@ -1336,17 +1559,7 @@ func sortMatchedKnowledgeSkills(matched []matchedKnowledgeSkill) {
 // that the author omitted from the declared schema. Missing descriptions are
 // filled from SKILL.md when SkillDir is available.
 func buildParamSchemaForSkill(s NLSkillDefinition) string {
-	entry := &corelib.NLSkillEntry{
-		Name:         s.Name,
-		Description:  s.Description,
-		Type:         s.Type,
-		Params:       s.Params,
-		Steps:        s.Steps,
-		RequiredArgs: s.RequiredArgs,
-		SkillDir:     s.SkillDir,
-		Content:      s.Content,
-	}
-	params := cskill.CompleteParamsForSkill(entry)
+	params := cskill.CompleteParamsForSkill(skillDefinitionAsEntry(s))
 	if len(params) == 0 {
 		return ""
 	}

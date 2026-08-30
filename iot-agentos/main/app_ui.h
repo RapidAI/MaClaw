@@ -69,6 +69,10 @@ typedef struct {
 } app_ui_display_off_idle_policy_state_t;
 
 void app_ui_init(void);
+/* True only after the shared UI model and its replay synchronization have
+ * been initialized for this boot. This is a model-owner readiness fact, not a
+ * panel/DMA completion or a runtime hardware-restart capability. */
+bool app_ui_is_initialized(void);
 app_ui_model_t app_ui_snapshot(void);
 // Atomically accepts the idle policy used before the ambient display enters
 // DISPLAY_OFF. Zero disables automatic display-off; this never requests MCU

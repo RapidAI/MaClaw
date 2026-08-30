@@ -398,6 +398,29 @@ func TrimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	return append(systemMsg, fallbackPlaceholder...)
 }
 
+// TruncateToolContentPreservingHandle truncates tool-result content to a
+// head/tail rune window, but keeps a trailing toolresult.HandleFooterMarker
+// footer intact. Cutting the footer would orphan the spilled full result:
+// the model could no longer read it back with read_tool_result. The footer
+// takes the tail budget; it is kept whole even if it alone exceeds the
+// window, because an oversized-but-readable handle beats a lost one.
+func TruncateToolContentPreservingHandle(content string, headRunes, tailRunes int) string {
+	runes := []rune(content)
+	if len(runes) <= headRunes+tailRunes {
+		return content
+	}
+	const sep = "\n…(截断)…\n"
+	if idx := strings.LastIndex(content, toolresult.HandleFooterMarker); idx >= 0 {
+		body := []rune(content[:idx])
+		head := headRunes
+		if head > len(body) {
+			head = len(body)
+		}
+		return string(body[:head]) + sep + content[idx:]
+	}
+	return string(runes[:headRunes]) + sep + string(runes[len(runes)-tailRunes:])
+}
+
 // truncateLastGroup builds a result from system + placeholder + the last
 // message group, truncating tool-result content to fit.
 func truncateLastGroup(msgs []interface{}, start, end int, systemMsg, placeholder []interface{}) []interface{} {
@@ -413,7 +436,7 @@ func truncateLastGroup(msgs []interface{}, start, end int, systemMsg, placeholde
 					headRunes := 400
 					tailRunes := 200
 					if len(runes) > headRunes+tailRunes {
-						truncated := string(runes[:headRunes]) + "\n…(截断)…\n" + string(runes[len(runes)-tailRunes:])
+						truncated := TruncateToolContentPreservingHandle(content, headRunes, tailRunes)
 						cp := make(map[string]interface{}, len(mm))
 						for k, v := range mm {
 							cp[k] = v
@@ -823,6 +846,29 @@ func StripRolePrefixHallucination(s string) string {
 	}
 
 	return s
+}
+
+// StripRolePrefixHallucinationLeading is the reasoning-safe variant of
+// StripRolePrefixHallucination: it applies only Case 1 (strip a role-prefix
+// token at the very start of the text) and never performs Case 2's mid-text
+// truncation. Model reasoning ("thinking") legitimately contains lines like
+// "Tool: bash ..." when planning tool use, so truncating at the first such
+// line would silently destroy most of the recorded reasoning_content.
+func StripRolePrefixHallucinationLeading(s string) string {
+	if s == "" {
+		return s
+	}
+	loc := rolePrefixRe.FindStringIndex(s)
+	if loc == nil {
+		return s
+	}
+	// Only strip when nothing but whitespace/markdown markers precede the
+	// match. Any real content before it (including an opening code fence)
+	// means this is not a leading hallucinated prefix — leave it alone.
+	if strings.TrimSpace(s[:loc[0]]) != "" {
+		return s
+	}
+	return strings.TrimSpace(s[loc[1]:])
 }
 
 // ---------------------------------------------------------------------------

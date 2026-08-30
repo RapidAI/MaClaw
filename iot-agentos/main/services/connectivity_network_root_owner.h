@@ -40,13 +40,16 @@ typedef struct {
 device_status_t connectivity_network_root_owner_configure_lifecycle_host(
     const connectivity_network_root_owner_lifecycle_host_t *host);
 
-/* ESP-NETIF/default-loop singleton allocation. A partial generation remains
- * fail-closed until stop() has actually released it. */
+/* ESP-NETIF/default-loop singleton allocation. The lifecycle host must be
+ * configured first, otherwise allocation is rejected: a physical generation
+ * is never created without its complete teardown bridge. A partial generation
+ * remains fail-closed until stop() has actually released it. */
 device_status_t connectivity_network_root_owner_ensure_core(void);
 bool connectivity_network_root_owner_core_ready(void);
 bool connectivity_network_root_owner_has_resources(void);
 
-/* Wi-Fi driver plus the application's normalized event routes. */
+/* Wi-Fi driver plus the application's normalized event routes. Like core
+ * allocation, this requires the lifecycle host to have been bound first. */
 device_status_t connectivity_network_root_owner_initialize_wifi(
     connectivity_wifi_driver_event_callback_t callback, void *callback_arg);
 bool connectivity_network_root_owner_wifi_ready(void);
@@ -54,7 +57,9 @@ bool connectivity_network_root_owner_wifi_has_resources(void);
 
 /* Drains terminal portal/restart user-space work before the generic
  * Connectivity worker sweep. It is separate because a post-save coordinator
- * itself owns portal cleanup. */
+ * itself owns portal cleanup. An OK return also means a post-stop live-resource
+ * observation was false; a portal generation that appears during the stop
+ * callback makes this phase fail closed with BUSY. */
 device_status_t connectivity_network_root_owner_stop_provisioning(uint32_t timeout_ms);
 
 /* Stops physical resources in the only safe order after

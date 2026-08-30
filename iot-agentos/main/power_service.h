@@ -5,10 +5,10 @@
 
 #include "device_api.h"
 
-/* The composition root may retain a small internal-stack storage worker for
- * legacy request paths which cannot yet be routed through Persistence
- * Service.  Power owns only this value-only reversible participant seam;
- * the concrete queue, task and NVS schema remain in the composition root. */
+/* A private internal-stack storage worker may serve request paths which cannot
+ * yet run on their caller's stack. Power owns only this value-only reversible
+ * participant seam; queue, task and NVS schema details remain private to that
+ * worker service. */
 typedef device_status_t (*power_service_system_sleep_storage_prepare_t)(
     uint32_t timeout_ms, void *context);
 typedef void (*power_service_system_sleep_storage_abort_t)(void *context);

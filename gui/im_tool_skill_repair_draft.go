@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -177,6 +178,11 @@ func (h *IMMessageHandler) toolListSkillRepairDrafts(args map[string]interface{}
 	if h == nil || h.app == nil {
 		return `{"ok":false,"error":"app not initialized"}`
 	}
+	if h.app.skillExecutor == nil {
+		return `{"ok":false,"error":"skill executor not initialized"}`
+	}
+	h.app.skillExecutor.suspendStatusOverlayPersistence()
+	defer h.app.skillExecutor.resumeStatusOverlayPersistence()
 	h.app.ensureInteractionInfra()
 	if h.app.skillExecutor == nil {
 		return `{"ok":false,"error":"skill executor not initialized"}`
@@ -287,8 +293,23 @@ func skillYAMLPath(skillDir string) string {
 // automatic ApplyRepair path) so failure notifications queued before the
 // apply don't regenerate drafts from the stale error.
 func recordReviewedDraftRepair(skill *corelib.NLSkillEntry, draft cskill.RepairDraft, via string, success bool) {
-	skill.RepairAttemptCount++
-	skill.LastRepairAt = time.Now().Format(time.RFC3339)
+	if skill == nil {
+		return
+	}
+	// A reviewed apply is a successful candidate application and keeps the
+	// current lifecycle status. A rejection, however, is a failed repair
+	// attempt and must use the shared max-attempt policy so the draft path
+	// cannot bypass automatic/force repair limits.
+	if !success {
+		cskill.RecordRepairAttemptFailure(skill, cskill.ExtractErrorClass(draft.LastError), draft.Explanation)
+		if n := len(skill.RepairHistory); n > 0 {
+			skill.RepairHistory[n-1].Via = via
+		}
+		return
+	} else {
+		skill.RepairAttemptCount++
+		skill.LastRepairAt = time.Now().Format(time.RFC3339)
+	}
 	skill.RepairHistory = append(skill.RepairHistory, corelib.SkillRepairRecord{
 		Timestamp:   skill.LastRepairAt,
 		ErrorClass:  cskill.ExtractErrorClass(draft.LastError),
@@ -313,14 +334,106 @@ func recordReviewedDraftRepair(skill *corelib.NLSkillEntry, draft cskill.RepairD
 // the draft content, but the counter must still advance so max_attempts
 // eventually gates the LLM cost loop.
 func recordRejectedDraftAttempt(skill *corelib.NLSkillEntry) {
-	skill.RepairAttemptCount++
-	skill.LastRepairAt = time.Now().Format(time.RFC3339)
+	if skill == nil {
+		return
+	}
+	before := len(skill.RepairHistory)
+	cskill.RecordRepairAttemptFailure(skill, "draft_unreadable", "reviewed repair draft could not be parsed")
+	// The unreadable file has no trustworthy explanation to retain. Keep the
+	// counter/status transition, but preserve the historical contract that a
+	// corrupt draft does not create a fabricated history row.
+	if len(skill.RepairHistory) > before {
+		skill.RepairHistory = skill.RepairHistory[:before]
+	}
 }
 
 // saveRepairDraftSkills is indirected so tests can simulate a config persist
 // failure and verify the skill.yaml rollback in toolApplySkillRepairDraft.
 var saveRepairDraftSkills = func(exec *SkillExecutor, skills []corelib.NLSkillEntry) error {
 	return exec.saveSkills(skills)
+}
+
+// persistReviewedDraftCompensation records the complete pre-mutation snapshot
+// when a reviewed-draft transaction cannot finish its rollback. The durable
+// queue is consumed by the evolution pipeline on startup; until recovery
+// succeeds the affected skill must remain out of the executable path.
+func persistReviewedDraftCompensation(requestID string, entry *corelib.NLSkillEntry, action, yamlPath string, yamlBackup []byte, yamlExists bool, config []corelib.NLSkillEntry, draftPath string, draftBackup []byte, draftExists bool, reason string) error {
+	if entry == nil {
+		return fmt.Errorf("missing skill for compensation")
+	}
+	record := cskill.NewEvolutionCompensationRecord(requestID, entry.Name, action, yamlPath, yamlBackup, yamlExists, config, reason)
+	record.SetDraftBackup(draftPath, draftBackup, draftExists)
+	return cskill.PersistEvolutionCompensation(record)
+}
+
+// commitReviewedDraftRejection records the rejection attempt through the
+// shared committer. Reject does not rewrite skill.yaml; it only updates the
+// config overlay and removes the draft after the final audit succeeds.
+func (h *IMMessageHandler) commitReviewedDraftRejection(entry *corelib.NLSkillEntry, draft cskill.RepairDraft, draftErr error, draftPath string, draftBytes []byte, auditData map[string]string) string {
+	fail := func(extra map[string]interface{}, msg string) string {
+		payload := map[string]interface{}{"ok": false, "error": msg}
+		for k, v := range extra {
+			payload[k] = v
+		}
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		return string(data)
+	}
+	if h == nil || h.app == nil || h.app.skillExecutor == nil || entry == nil {
+		return fail(nil, "skill executor not initialized")
+	}
+	exec := h.app.skillExecutor
+	candidate := *entry
+	committer := &cskill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return exec.loadSkills() },
+		SkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return exec.withSkillListMutate(func() error { return saveRepairDraftSkills(exec, skills) })
+		},
+		RollbackSkillSaver: func(skills []corelib.NLSkillEntry) error {
+			// Keep the rejection path's injectable saver on rollback as well. This
+			// preserves the durable-compensation guarantee when the config store
+			// itself is unavailable (and lets fault-injection tests exercise both
+			// forward and restore writes).
+			return exec.withSkillListMutate(func() error { return saveRepairDraftSkills(exec, skills) })
+		},
+		EntryMerger: func(dst, _ *corelib.NLSkillEntry) {
+			if dst == nil {
+				return
+			}
+			if draftErr != nil {
+				recordRejectedDraftAttempt(dst)
+			} else {
+				recordReviewedDraftRepair(dst, draft, "reviewed_draft_rejected", false)
+			}
+		},
+		DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+		IndexRefresher:   func() error { return h.app.refreshSkillIndexesAfterMutationChecked(entry.Name) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		CompensationMutator: func(record *cskill.EvolutionCompensationRecord) {
+			record.SetDraftBackup(draftPath, draftBytes, true)
+			record.SetPostCommitCleanupPaths([]string{draftPath})
+		},
+		PostCommitCleanup: func() error {
+			err := os.Remove(draftPath)
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		},
+		ConfigRevision: auditData["config_revision"],
+	}
+	result := committer.Commit(context.Background(), entry.Name, &candidate, cskill.EventSkillRepairDraftReady, auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		return fail(map[string]interface{}{"skill": entry.Name, "draft": auditData["draft"], "state": result.State, "cleanup_status": result.CleanupStatus}, fmt.Sprintf("reviewed draft rejection not committed: %s (%s)", result.State, result.FailureReason))
+	}
+	h.app.emitEvent(EventSkillRepairDraftReady, auditData)
+	data, _ := json.MarshalIndent(map[string]interface{}{
+		"ok": true, "skill": entry.Name, "draft": auditData["draft"], "rejected": true,
+		"message": "repair draft rejected and removed", "state": result.State,
+		"cleanup_status": result.CleanupStatus,
+	}, "", "  ")
+	return string(data)
 }
 
 // toolApplySkillRepairDraft applies a reviewed repair draft: validates the
@@ -341,6 +454,11 @@ func (h *IMMessageHandler) toolApplySkillRepairDraft(args map[string]interface{}
 	if h == nil || h.app == nil {
 		return `{"ok":false,"error":"app not initialized"}`
 	}
+	if h.app.skillExecutor == nil {
+		return `{"ok":false,"error":"skill executor not initialized"}`
+	}
+	h.app.skillExecutor.suspendStatusOverlayPersistence()
+	defer h.app.skillExecutor.resumeStatusOverlayPersistence()
 	name := strings.TrimSpace(stringVal(args, "name"))
 	if name == "" {
 		name = strings.TrimSpace(stringVal(args, "skill"))
@@ -349,6 +467,9 @@ func (h *IMMessageHandler) toolApplySkillRepairDraft(args map[string]interface{}
 	entry, errMsg := findFileBackedSkillEntry(h.app, name)
 	if entry == nil {
 		return fail(nil, errMsg)
+	}
+	if err := ensureSkillEvolutionMutationAdmission(h.app, entry.Name); err != nil {
+		return fail(map[string]interface{}{"skill": entry.Name}, err.Error())
 	}
 	base := map[string]interface{}{"skill": entry.Name, "draft": draftName}
 	draftPath, err := resolveRepairDraftPath(entry.SkillDir, draftName)
@@ -359,59 +480,88 @@ func (h *IMMessageHandler) toolApplySkillRepairDraft(args map[string]interface{}
 	if err != nil {
 		return fail(map[string]interface{}{"skill": entry.Name}, err.Error())
 	}
+	draftBytes, draftBytesErr := os.ReadFile(draftPath)
+	if draftBytesErr != nil {
+		return fail(map[string]interface{}{"skill": entry.Name}, "read draft backup failed: "+draftBytesErr.Error())
+	}
+	requestID := fmt.Sprintf("evo_reviewed_draft_%d", time.Now().UnixNano())
+	auditBase := map[string]string{
+		"skill":           entry.Name,
+		"draft":           draftName,
+		"request_id":      requestID,
+		"attempt":         "1",
+		"config_revision": skillEvolutionConfigRevision(h.app),
+		"schema_version":  "2",
+		"evidence_mode":   "real",
+	}
 
 	if draft.Disable {
 		// "Disable suggestion" draft (LLM judged the skill unfixable): no step
 		// validation, no TOCTOU check and no skill.yaml write-back — only the
-		// stored status flips to disabled. Counter/history/audit/event reuse
-		// the standard apply path with via="reviewed_draft_disable".
+		// stored status flips to disabled. The shared committer still owns the
+		// config/index/final-audit boundary and removes the draft only after the
+		// business commit is durable.
+		auditBase["via"] = "reviewed_draft_disable"
+		auditBase["action"] = "disable"
+		auditBase["reason"] = "reviewed_draft"
+		if err := cskill.RecordEvolutionEventStrict("skill:repair_draft_apply_started", auditBase, "desktop"); err != nil {
+			return fail(base, "audit unavailable: "+err.Error())
+		}
 		exec := h.app.skillExecutor
-		exec.skillListMutateMu.Lock()
-		skills := exec.loadSkills()
-		saved := false
-		var saveErr error
-		for i := range skills {
-			if skills[i].MatchesName(entry.Name) {
-				skills[i].Status = "disabled"
-				recordReviewedDraftRepair(&skills[i], draft, "reviewed_draft_disable", true)
-				saveErr = exec.saveSkills(skills)
-				saved = true
-				break
-			}
+		auditData := cloneStringMap(auditBase)
+		auditData["decision"] = "applied"
+		auditData["explanation"] = draft.Explanation
+		candidate := *entry
+		candidate.Status = "disabled"
+		committer := &cskill.SkillCommitter{
+			SkillLoader: func() []corelib.NLSkillEntry { return exec.loadSkills() },
+			SkillSaver: func(skills []corelib.NLSkillEntry) error {
+				return exec.withSkillListMutate(func() error { return saveRepairDraftSkills(exec, skills) })
+			},
+			RollbackSkillSaver: func(skills []corelib.NLSkillEntry) error {
+				return exec.withSkillListMutate(func() error { return exec.restoreSkillsSnapshot(skills) })
+			},
+			EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+				if dst == nil || src == nil {
+					return
+				}
+				dst.Status = "disabled"
+				recordReviewedDraftRepair(dst, draft, "reviewed_draft_disable", true)
+			},
+			// Disable is a config-overlay mutation. Keep the YAML backup in the
+			// compensation record for authoritative rollback, but do not rewrite
+			// the definition file as a side effect of changing status.
+			DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+			IndexRefresher:   func() error { return h.app.refreshSkillIndexesAfterMutationChecked(entry.Name) },
+			FinalAuditor: func(event string, data map[string]string) error {
+				return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+			},
+			CompensationMutator: func(record *cskill.EvolutionCompensationRecord) {
+				record.SetDraftBackup(draftPath, draftBytes, true)
+				record.SetPostCommitCleanupPaths([]string{draftPath})
+			},
+			PostCommitCleanup: func() error {
+				err := os.Remove(draftPath)
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			},
+			ConfigRevision: auditBase["config_revision"],
 		}
-		exec.skillListMutateMu.Unlock()
-		if !saved {
-			return fail(base, "skill disappeared from storage during apply")
+		result := committer.Commit(context.Background(), entry.Name, &candidate, cskill.EventSkillRepaired, auditData)
+		if result.State != "committed" || result.CleanupStatus != "clear" {
+			base["state"] = result.State
+			base["cleanup_status"] = result.CleanupStatus
+			return fail(base, fmt.Sprintf("reviewed disable not committed: %s (%s)", result.State, result.FailureReason))
 		}
-		if saveErr != nil {
-			return fail(base, "save config failed: "+saveErr.Error())
-		}
-		deleteWarning := ""
-		if err := os.Remove(draftPath); err != nil {
-			deleteWarning = "delete applied draft failed: " + err.Error()
-			log.Printf("[skill-repair-draft] delete applied draft %s failed: %v", draftPath, err)
-		}
-		auditData := map[string]string{
-			"skill":       entry.Name,
-			"draft":       draftName,
-			"via":         "reviewed_draft_disable",
-			"explanation": draft.Explanation,
-		}
-		cskill.RecordEvolutionEvent(cskill.EventSkillRepaired, auditData, "desktop")
 		h.app.emitEvent(EventSkillRepaired, auditData)
-		payload := map[string]interface{}{
-			"ok":          true,
-			"skill":       entry.Name,
-			"draft":       draftName,
-			"applied":     true,
-			"disabled":    true,
-			"explanation": draft.Explanation,
-			"message":     "skill disabled per reviewed draft (config overlay) and draft removed",
-		}
-		if deleteWarning != "" {
-			payload["warning"] = deleteWarning
-		}
-		data, _ := json.MarshalIndent(payload, "", "  ")
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok": true, "skill": entry.Name, "draft": draftName, "applied": true,
+			"disabled": true, "explanation": draft.Explanation,
+			"message": "skill disabled per reviewed draft (config overlay) and draft removed",
+			"state":   result.State, "cleanup_status": result.CleanupStatus,
+		}, "", "  ")
 		return string(data)
 	}
 
@@ -456,87 +606,74 @@ func (h *IMMessageHandler) toolApplySkillRepairDraft(args map[string]interface{}
 	if cskill.StepsHavePollLoop(freshSteps) || cskill.StepsHavePollLoop(draft.NewSteps) {
 		return fail(base, "skill steps carry poll/loop configs which the draft flow cannot round-trip; merge manually or reject the draft")
 	}
+	auditBase["via"] = "reviewed_draft"
+	auditBase["action"] = "repair"
+	auditBase["reason"] = "reviewed_draft"
+	if err := cskill.RecordEvolutionEventStrict("skill:repair_draft_apply_started", auditBase, "desktop"); err != nil {
+		return fail(base, "audit unavailable: "+err.Error())
+	}
 
-	// 1. Write the new steps back to skill.yaml FIRST: it is the durable
-	// store. WriteBackOptimizedSteps re-reads the yaml and only replaces the
-	// steps section, so hand edits to other fields survive. Any failure
-	// aborts the apply — the draft is kept and no repaired event is emitted.
-	// Description is refreshed from disk as well: the cached entry may hold a
-	// stale one, and WriteBackOptimizedSteps writes it back when non-empty.
+	// The shared committer owns config/YAML/index/final-audit ordering and the
+	// durable rollback snapshot. Draft removal is explicitly post-commit cleanup:
+	// a cleanup failure keeps the committed version blocked instead of being
+	// reported as a successful apply.
 	entry.Steps = draft.NewSteps
 	entry.Description = freshDescription
-	if err := cskill.WriteBackOptimizedSteps(entry); err != nil {
-		return fail(base, "write back "+filepath.Base(yamlPath)+" failed: "+err.Error())
-	}
-
-	// 2. Persist the config overlay (steps stripped for file-backed skills)
-	// plus repair counters/history so max_attempts also gates the draft flow.
 	exec := h.app.skillExecutor
-	exec.skillListMutateMu.Lock()
-	skills := exec.loadSkills()
-	saved := false
-	var saveErr error
-	for i := range skills {
-		if skills[i].MatchesName(entry.Name) {
-			skills[i].Steps = draft.NewSteps
-			recordReviewedDraftRepair(&skills[i], draft, "reviewed_draft", true)
-			saveErr = saveRepairDraftSkills(exec, skills)
-			saved = true
-			break
+	auditData := cloneStringMap(auditBase)
+	auditData["decision"] = "applied"
+	auditData["explanation"] = draft.Explanation
+	committer := &cskill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return exec.loadSkills() },
+		SkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return exec.withSkillListMutate(func() error { return saveRepairDraftSkills(exec, skills) })
+		},
+		RollbackSkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return exec.withSkillListMutate(func() error { return exec.restoreSkillsSnapshot(skills) })
+		},
+		EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+			if dst == nil || src == nil {
+				return
+			}
+			dst.Steps = src.Steps
+			dst.Description = src.Description
+			recordReviewedDraftRepair(dst, draft, "reviewed_draft", true)
+		},
+		DefinitionWriter: cskill.WriteBackOptimizedSteps,
+		IndexRefresher:   func() error { return h.app.refreshSkillIndexesAfterMutationChecked(entry.Name) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		CompensationMutator: func(record *cskill.EvolutionCompensationRecord) {
+			record.SetDraftBackup(draftPath, draftBytes, true)
+			record.SetPostCommitCleanupPaths([]string{draftPath})
+		},
+		PostCommitCleanup: func() error {
+			err := os.Remove(draftPath)
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		},
+		ConfigRevision: auditBase["config_revision"],
+	}
+	result := committer.Commit(context.Background(), entry.Name, entry, cskill.EventSkillRepaired, auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		base["state"] = result.State
+		base["cleanup_status"] = result.CleanupStatus
+		message := fmt.Sprintf("reviewed draft not committed: %s (%s)", result.State, result.FailureReason)
+		if strings.Contains(result.FailureReason, "persistence_failed") {
+			message = "save config failed; reviewed draft rolled back: " + result.FailureReason
 		}
+		return fail(base, message)
 	}
-	exec.skillListMutateMu.Unlock()
-	// Rollback: the yaml already holds new_steps. Leaving it there while the
-	// config save failed would make every retry hit the TOCTOU check above
-	// (disk new_steps != draft old_steps) and brick the draft forever, so
-	// restore the pre-apply steps before reporting the failure.
-	if !saved || saveErr != nil {
-		msg := "skill disappeared from storage during apply"
-		if saveErr != nil {
-			msg = "save config failed: " + saveErr.Error()
-		}
-		rollbackEntry := *entry
-		rollbackEntry.Steps = freshSteps
-		if rbErr := cskill.WriteBackOptimizedSteps(&rollbackEntry); rbErr != nil {
-			msg += "; rollback of " + filepath.Base(yamlPath) + " ALSO FAILED: " + rbErr.Error() +
-				" — skill.yaml currently contains the draft's new_steps while the config was not updated; regenerate the draft"
-		} else {
-			msg += "; " + filepath.Base(yamlPath) + " was rolled back to its pre-apply steps"
-		}
-		return fail(base, msg)
-	}
-
-	// 3. Delete the reviewed draft file. A deletion failure is reported as a
-	// warning but does not fail the apply — the repair itself is durable.
-	deleteWarning := ""
-	if err := os.Remove(draftPath); err != nil {
-		deleteWarning = "delete applied draft failed: " + err.Error()
-		log.Printf("[skill-repair-draft] delete applied draft %s failed: %v", draftPath, err)
-	}
-
-	// 4. Audit + frontend notification (same event/kind as an applied repair).
-	auditData := map[string]string{
-		"skill":       entry.Name,
-		"draft":       draftName,
-		"via":         "reviewed_draft",
-		"explanation": draft.Explanation,
-	}
-	cskill.RecordEvolutionEvent(cskill.EventSkillRepaired, auditData, "desktop")
 	h.app.emitEvent(EventSkillRepaired, auditData)
-
 	payload := map[string]interface{}{
-		"ok":          true,
-		"skill":       entry.Name,
-		"draft":       draftName,
-		"applied":     true,
-		"explanation": draft.Explanation,
-		// Named new_steps_summary (not new_steps) to avoid clashing with the
-		// list contract where new_steps is the full step array.
+		"ok": true, "skill": entry.Name, "draft": draftName, "applied": true,
+		"explanation":       draft.Explanation,
 		"new_steps_summary": summarizeRepairDraftSteps(draft.NewSteps),
 		"message":           "repair draft applied (skill.yaml + config overlay) and removed",
-	}
-	if deleteWarning != "" {
-		payload["warning"] = deleteWarning
+		"state":             result.State, "cleanup_status": result.CleanupStatus,
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
 	return string(data)
@@ -561,6 +698,11 @@ func (h *IMMessageHandler) toolRejectSkillRepairDraft(args map[string]interface{
 	if h == nil || h.app == nil {
 		return `{"ok":false,"error":"app not initialized"}`
 	}
+	if h.app.skillExecutor == nil {
+		return `{"ok":false,"error":"skill executor not initialized"}`
+	}
+	h.app.skillExecutor.suspendStatusOverlayPersistence()
+	defer h.app.skillExecutor.resumeStatusOverlayPersistence()
 	name := strings.TrimSpace(stringVal(args, "name"))
 	if name == "" {
 		name = strings.TrimSpace(stringVal(args, "skill"))
@@ -570,6 +712,9 @@ func (h *IMMessageHandler) toolRejectSkillRepairDraft(args map[string]interface{
 	if entry == nil {
 		return fail(nil, errMsg)
 	}
+	if err := ensureSkillEvolutionMutationAdmission(h.app, entry.Name); err != nil {
+		return fail(map[string]interface{}{"skill": entry.Name}, err.Error())
+	}
 	draftPath, err := resolveRepairDraftPath(entry.SkillDir, draftName)
 	if err != nil {
 		return fail(map[string]interface{}{"skill": entry.Name}, err.Error())
@@ -578,64 +723,23 @@ func (h *IMMessageHandler) toolRejectSkillRepairDraft(args map[string]interface{
 	// Best-effort read: an unreadable draft is still rejected (counted +
 	// deleted + audited), only the history row is skipped.
 	draft, draftErr := readRepairDraftFile(draftPath)
-
-	// 1. Count the rejection (and append history when the draft parsed) so
-	// repeated rejections cannot regenerate drafts forever. A persist failure
-	// keeps the draft — the user may retry.
-	exec := h.app.skillExecutor
-	exec.skillListMutateMu.Lock()
-	skills := exec.loadSkills()
-	saved := false
-	var saveErr error
-	for i := range skills {
-		if skills[i].MatchesName(entry.Name) {
-			if draftErr != nil {
-				recordRejectedDraftAttempt(&skills[i])
-			} else {
-				recordReviewedDraftRepair(&skills[i], draft, "reviewed_draft_rejected", false)
-			}
-			saveErr = exec.saveSkills(skills)
-			saved = true
-			break
-		}
+	draftBytes, readBytesErr := os.ReadFile(draftPath)
+	if readBytesErr != nil {
+		return fail(map[string]interface{}{"skill": entry.Name, "draft": draftName}, "read draft for rollback failed: "+readBytesErr.Error())
 	}
-	exec.skillListMutateMu.Unlock()
-	if !saved {
-		return fail(map[string]interface{}{"skill": entry.Name, "draft": draftName}, "skill disappeared from storage during reject")
-	}
-	if saveErr != nil {
-		return fail(map[string]interface{}{"skill": entry.Name, "draft": draftName}, "save config failed: "+saveErr.Error())
-	}
-
-	// 2. Delete the draft file.
-	if err := os.Remove(draftPath); err != nil {
-		return fail(map[string]interface{}{"skill": entry.Name, "draft": draftName}, "delete draft failed: "+err.Error())
-	}
-	log.Printf("[skill-repair-draft] rejected draft %s for skill %q", draftName, entry.Name)
-
-	// 3. Audit + frontend notification (kind repair_draft is registered).
-	auditData := map[string]string{
-		"skill":  entry.Name,
-		"draft":  draftName,
-		"status": "rejected",
-	}
+	requestID := fmt.Sprintf("evo_reviewed_draft_reject_%d", time.Now().UnixNano())
+	auditData := map[string]string{"skill": entry.Name, "draft": draftName, "status": "rejected", "request_id": requestID, "attempt": "1", "config_revision": skillEvolutionConfigRevision(h.app), "schema_version": "2", "evidence_mode": "none", "via": "reviewed_draft_rejected", "action": "reject", "decision": "rejected"}
 	if draftErr == nil {
 		auditData["explanation"] = draft.Explanation
 	}
-	cskill.RecordEvolutionEvent(cskill.EventSkillRepairDraftReady, auditData, "desktop")
-	h.app.emitEvent(EventSkillRepairDraftReady, map[string]string{
-		"skill":  entry.Name,
-		"draft":  draftName,
-		"status": "rejected",
-	})
-	data, _ := json.MarshalIndent(map[string]interface{}{
-		"ok":       true,
-		"skill":    entry.Name,
-		"draft":    draftName,
-		"rejected": true,
-		"message":  "repair draft rejected and removed",
-	}, "", "  ")
-	return string(data)
+	if err := cskill.RecordEvolutionEventStrict("skill:repair_draft_reject_started", auditData, "desktop"); err != nil {
+		return fail(map[string]interface{}{"skill": entry.Name, "draft": draftName}, "audit unavailable: "+err.Error())
+	}
+	// Rejection mutates the config overlay (attempt/history), so use the same
+	// durable commit boundary as apply/disable. The historical implementation
+	// has been removed so this entry cannot accidentally bypass the shared
+	// transaction protocol.
+	return h.commitReviewedDraftRejection(entry, draft, draftErr, draftPath, draftBytes, auditData)
 }
 
 // ListSkillRepairDrafts is a Wails binding for the Skills panel "pending

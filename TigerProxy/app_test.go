@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
 type tigerProxyUpstreamRequest struct {
@@ -68,6 +69,227 @@ func TestSaveSettingsRejectsInvalidCodexCompactionThreshold(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "必须小于上下文长度") {
 		t.Fatalf("SaveSettings error = %v, want invalid Codex threshold error", err)
+	}
+}
+
+func TestGenerateAPIKeySynchronizesConfiguredCodexCredential(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := writeSettings(Settings{APIKey: "old-proxy-key"}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := configfile.WriteTigerProxyCodexConfig("old-proxy-key", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("write Codex config: %v", err)
+	}
+
+	result, err := NewApp().GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("GenerateAPIKey: %v", err)
+	}
+	key := result.APIKey
+	if key == "" || key == "old-proxy-key" {
+		t.Fatalf("generated key = %q, want a new non-empty key", key)
+	}
+	if !result.CodexCredentialSync.Configured || !result.CodexCredentialSync.Updated || result.CodexCredentialSync.Error != "" {
+		t.Fatalf("Codex sync = %+v, want configured and updated without error", result.CodexCredentialSync)
+	}
+	auth, err := configfile.ReadCodexAuth()
+	if err != nil {
+		t.Fatalf("read Codex auth: %v", err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != key {
+		t.Fatalf("Codex key = %q, want generated key", got)
+	}
+}
+
+func TestSaveSettingsSynchronizesConfiguredCodexCredentialAfterManualKeyChange(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := writeSettings(Settings{APIKey: "old-proxy-key"}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := configfile.WriteTigerProxyCodexConfig("old-proxy-key", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("write Codex config: %v", err)
+	}
+
+	status, err := NewApp().SaveSettings(Settings{APIKey: "manual-new-proxy-key"})
+	if err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if status.CodexCredentialSync == nil || !status.CodexCredentialSync.Configured || !status.CodexCredentialSync.Updated || status.CodexCredentialSync.Error != "" {
+		t.Fatalf("Codex sync = %+v, want configured and updated without error", status.CodexCredentialSync)
+	}
+	auth, err := configfile.ReadCodexAuth()
+	if err != nil {
+		t.Fatalf("read Codex auth: %v", err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "manual-new-proxy-key" {
+		t.Fatalf("Codex key = %q, want manually saved key", got)
+	}
+}
+
+func TestSaveSettingsRollsBackPersistedSettingsWhenRestartFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	if err := writeSettings(Settings{ListenAddress: "127.0.0.1:0", APIKey: "old-key"}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer occupied.Close()
+
+	app := NewApp()
+	_, err = app.SaveSettings(Settings{ListenAddress: occupied.Addr().String(), APIKey: "new-key"})
+	if err == nil || !strings.Contains(err.Error(), "listen") {
+		t.Fatalf("SaveSettings error = %v, want listener error", err)
+	}
+	if app.isRunning() {
+		t.Fatal("proxy started despite a failed replacement listener")
+	}
+	saved, err := loadSettings()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if saved.ListenAddress != "127.0.0.1:0" || saved.APIKey != "old-key" {
+		t.Fatalf("settings after failed restart = %+v, want original listener and key", saved)
+	}
+}
+
+func TestSaveSettingsKeepsRunningProxyAndSettingsWhenReplacementBindFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	app := NewApp()
+	if err := app.restartProxy(Settings{ListenAddress: "127.0.0.1:0", APIKey: "old-key"}); err != nil {
+		t.Fatalf("start initial proxy: %v", err)
+	}
+	defer app.stopProxy()
+	oldURL := tigerProxyTestBaseURL(t, app)
+	if err := writeSettings(Settings{ListenAddress: oldURL[len("http://"):], APIKey: "old-key"}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer occupied.Close()
+
+	if _, err := app.SaveSettings(Settings{ListenAddress: occupied.Addr().String(), APIKey: "new-key"}); err == nil {
+		t.Fatal("SaveSettings succeeded with an occupied listener")
+	}
+	if !app.isRunning() || tigerProxyTestBaseURL(t, app) != oldURL {
+		t.Fatal("running proxy changed after failed replacement")
+	}
+	saved, err := loadSettings()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if saved.ListenAddress != oldURL[len("http://"):] || saved.APIKey != "old-key" {
+		t.Fatalf("settings after failed restart = %+v, want original settings", saved)
+	}
+}
+
+func TestSaveSettingsRestartsOnSameAddressForUpstreamChanges(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	app := NewApp()
+	if err := app.restartProxy(Settings{ListenAddress: "127.0.0.1:0", APIKey: "local-key"}); err != nil {
+		t.Fatalf("start initial proxy: %v", err)
+	}
+	defer app.stopProxy()
+	if err := writeSettings(Settings{ListenAddress: "127.0.0.1:0", APIKey: "local-key"}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if _, err := app.SaveSettings(Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "updated-upstream-token",
+		BaseURL:       "https://example.com",
+	}); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if !app.isRunning() {
+		t.Fatal("proxy did not restart successfully on the existing listener")
+	}
+	saved, err := loadSettings()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if saved.AccessToken != "updated-upstream-token" || saved.BaseURL != "https://example.com" {
+		t.Fatalf("settings = %+v, want updated upstream credentials", saved)
+	}
+}
+
+func TestUpdateModelsForCurrentTokenOnlyUpdatesModels(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	if err := writeSettings(Settings{
+		APIKey:      "new-user-key",
+		AccessToken: "current-token",
+		BaseURL:     "https://current.example",
+		ModelID:     "current-model",
+		Models:      []ModelOption{{ID: "old", Name: "Old"}},
+	}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	app := NewApp()
+	if !app.updateModelsForCurrentToken("current-token", []ModelOption{{ID: "fresh", Name: "Fresh"}}) {
+		t.Fatal("model refresh update was not applied")
+	}
+	after, err := loadSettings()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if after.APIKey != "new-user-key" || after.BaseURL != "https://current.example" || after.ModelID != "current-model" {
+		t.Fatalf("credential fields were overwritten: %+v", after)
+	}
+	if len(after.Models) != 1 || after.Models[0].ID != "fresh" {
+		t.Fatalf("models = %+v, want refreshed list", after.Models)
+	}
+	if app.updateModelsForCurrentToken("stale-token", []ModelOption{{ID: "wrong", Name: "Wrong"}}) {
+		t.Fatal("stale token unexpectedly overwrote the model list")
+	}
+}
+
+func TestRestartProxyKeepsCurrentServerRunningWhenReplacementBindFails(t *testing.T) {
+	app := NewApp()
+	if err := app.restartProxy(Settings{ListenAddress: "127.0.0.1:0", APIKey: "old-key"}); err != nil {
+		t.Fatalf("start initial proxy: %v", err)
+	}
+	defer app.stopProxy()
+	oldURL := tigerProxyTestBaseURL(t, app)
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer occupied.Close()
+
+	if err := app.restartProxy(Settings{ListenAddress: occupied.Addr().String(), APIKey: "new-key"}); err == nil {
+		t.Fatal("restartProxy succeeded with an occupied listener")
+	}
+	if !app.isRunning() {
+		t.Fatal("initial proxy stopped after failed replacement bind")
+	}
+	if got := tigerProxyTestBaseURL(t, app); got != oldURL {
+		t.Fatalf("running proxy URL = %q, want %q", got, oldURL)
 	}
 }
 

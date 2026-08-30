@@ -31,6 +31,16 @@ device_status_t platform_connectivity_quiesce_cellular_transport(uint32_t timeou
     return platform_connectivity_profile_quiesce_cellular_transport(timeout_ms);
 }
 
+device_status_t platform_connectivity_deinit_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return platform_connectivity_profile_deinit_cellular_transport(timeout_ms);
+}
+
+device_status_t platform_connectivity_reinitialize_cellular_transport(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return platform_connectivity_profile_reinitialize_cellular_transport(timeout_ms);
+}
+
 device_status_t platform_connectivity_prepare_system_sleep(uint32_t timeout_ms) {
     if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
     return platform_connectivity_profile_prepare_system_sleep(timeout_ms);

@@ -340,7 +340,7 @@ func (s *codingDurableDynamicSurface) ExecuteBoundSelection(ctx context.Context,
 		Grant:    grant, RequestDigest: requestDigest, Scope: scope, Selection: selection, Now: now,
 	}
 	if canonicalErr != nil {
-		return s.rejectBoundSelection(admission, "[system rejected] parameter_schema_invalid", "parameter_schema_invalid")
+		return s.rejectBoundSelection(admission, semanticModelParameterRejection(semanticCanonicalRejectionText(canonicalErr)), "parameter_schema_invalid")
 	}
 	record, action, err := s.coordinator.Admit(admission)
 	if err != nil {

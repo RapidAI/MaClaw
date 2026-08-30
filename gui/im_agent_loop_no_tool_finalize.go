@@ -446,6 +446,15 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 		promiseOnlyDeliverable = false
 	}
 	promiseOnlyDeliverable = suppressPostToolPromiseOnlyDeliverable(promiseOnlyDeliverable, *phase, opts.TotalToolCallsInLoop, opts.Iteration)
+	if intentOK && intent == agentNoToolReplyPromise && len(opts.ToolCalls) == 0 {
+		// A promised deliverable is runtime evidence that the request surface
+		// may be under-scoped for this turn (for example an ambient chat
+		// projection on a file-delivery task). Whichever continue path fires
+		// below — deliverable recover or the generic no-tool prompt — the
+		// follow-up round regains the invariant-11 floor tools so the model
+		// can actually deliver instead of being policy_rejected.
+		phase.MissFloorToolsUnlock = true
+	}
 	noToolStall := emptyVisibleResult || promiseOnlyDeliverable || (intentOK && intent == agentNoToolReplyStall)
 	hasPendingSkillRun := strings.TrimSpace(phase.PreferredSkillRunID) != ""
 	preferSkill := phase.ForceSkillPreference && phase.PreferredSkillName != ""
@@ -461,12 +470,12 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	if hasPendingSkillRun {
-		enterRecoverPhase(phase, agentRecoverPendingSkillRunNoTool, buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+		enterRecoverPhase(phase, agentRecoverPendingSkillRunNoTool, phaseNoToolStallRecoverPrompt(h, codingWorkflowImplementationRecover, phase, preferSkill))
 		result.ContinueLoop = true
 		return result
 	}
 	if emptyVisibleResult && phase.SkillFailed {
-		enterRecoverPhase(phase, agentRecoverNoToolStall, buildNoToolStallRecoverPrompt(phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+		enterRecoverPhase(phase, agentRecoverNoToolStall, phaseNoToolStallRecoverPrompt(h, codingWorkflowImplementationRecover, phase, preferSkill))
 		result.ContinueLoop = true
 		return result
 	}
@@ -481,11 +490,11 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	if promiseOnlyDeliverable {
 		phase.DeliverableRecoverCount++
 		if phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold {
-			enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+			enterRecoverPhase(phase, agentRecoverNoToolStall, phaseNoToolStallRecoverPrompt(h, codingWorkflowImplementationRecover, phase, preferSkill))
 			result.ContinueLoop = true
 			return result
 		}
-		enterRecoverPhase(phase, agentRecoverDeliverablePending, buildDeliverableRecoverPrompt(phase.PreferredSkillName, preferSkill, phase.PreferredSkillRunID))
+		enterRecoverPhase(phase, agentRecoverDeliverablePending, buildDeliverableRecoverPromptForSkillMode(phase.PreferredSkillName, preferSkill, phase.SkillMode == skillPreferenceAgentGuided, phase.PreferredSkillRunID))
 		if shouldBypassSkillPreference(opts.ToolCalls) {
 			phase.ForceSkillPreference = false
 		}
@@ -512,7 +521,9 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 	}
 
 	noToolPrompt := h.buildNoToolActionPromptForContext(codingWorkflowImplementationRecover, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID)
-	if shouldRestrictToSkillSearch(*phase) {
+	if phase.SkillMode == skillPreferenceAgentGuided {
+		noToolPrompt = buildNoToolActionPromptForSkillMode(preferSkill, true, phase.PreferredSkillName, phase.PreferredSkillRunID)
+	} else if shouldRestrictToSkillSearch(*phase) {
 		noToolPrompt = buildRemoteSkillSearchPrompt()
 	}
 	shouldPromptForAction := opts.RequiresExecution && !(intentOK && intent == agentNoToolReplyComplete) && !phase.NoToolActionPrompted
@@ -535,12 +546,12 @@ func (h *IMMessageHandler) handleAgentLoopNoToolRecover(opts agentLoopNoToolReco
 		return result
 	}
 	if opts.RequiresExecution && phase.NoToolActionPrompted && phase.TotalRecoverInjections == 0 && phase.ConsecutiveNoTool >= effectiveNoToolRecoverThreshold {
-		enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+		enterRecoverPhase(phase, agentRecoverNoToolStall, phaseNoToolStallRecoverPrompt(h, codingWorkflowImplementationRecover, phase, preferSkill))
 		result.ContinueLoop = true
 		return result
 	}
 	if noToolStall && (phase.ConsecutiveNoTool >= effectiveNoToolRecoverThreshold || phase.DeliverableRecoverCount >= effectiveNoToolRecoverThreshold || (phase.SkillFailed && phase.ConsecutiveNoTool >= 1)) {
-		enterRecoverPhase(phase, agentRecoverNoToolStall, h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementationRecover, phase.ConsecutiveNoTool, preferSkill, phase.PreferredSkillName, phase.PreferredSkillRunID))
+		enterRecoverPhase(phase, agentRecoverNoToolStall, phaseNoToolStallRecoverPrompt(h, codingWorkflowImplementationRecover, phase, preferSkill))
 		result.ContinueLoop = true
 		return result
 	}
@@ -570,6 +581,22 @@ func (h *IMMessageHandler) buildNoToolStallRecoverPromptForContext(codingWorkflo
 		return buildCodingWorkflowImplementationNoToolStallRecoverPrompt(consecutive)
 	}
 	return buildNoToolStallRecoverPrompt(consecutive, preferSkill, skillName, runID)
+}
+
+func phaseNoToolStallRecoverPrompt(h *IMMessageHandler, codingWorkflowImplementation bool, phase *agentLoopPhase, preferSkill bool) string {
+	consecutive := 0
+	name, runID := "", ""
+	agentGuided := false
+	if phase != nil {
+		consecutive = phase.ConsecutiveNoTool
+		name = phase.PreferredSkillName
+		runID = phase.PreferredSkillRunID
+		agentGuided = phase.SkillMode == skillPreferenceAgentGuided
+	}
+	if agentGuided {
+		return buildNoToolStallRecoverPromptForSkillMode(consecutive, preferSkill, true, name, runID)
+	}
+	return h.buildNoToolStallRecoverPromptForContext(codingWorkflowImplementation, consecutive, preferSkill, name, runID)
 }
 
 func workflowDocNoToolRequiresExecution(ctx *LoopContext, text string) bool {

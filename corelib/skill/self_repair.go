@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,6 +23,13 @@ const SelfRepairMaxAttempts = 3
 type LLMRepairer interface {
 	ChatCall(messages []map[string]string) (string, error)
 	IsConfigured() bool
+}
+
+// ContextualLLMRepairer is optionally implemented by repairers that can abort
+// an in-flight provider request when the owning evolution job is cancelled.
+// LLMRepairer remains the compatibility interface for headless callers.
+type ContextualLLMRepairer interface {
+	ChatCallContext(ctx context.Context, messages []map[string]string) (string, error)
 }
 
 // RepairContext provides detailed failure context for the LLM repairer.
@@ -180,16 +188,20 @@ func formatParamContractNote(missing, unknown []string, aliasHits map[string]str
 // automated repair. Delegates to the unified rules table in error_classifier.go
 // which is the single source of truth for repairable/non-repairable classification.
 //
-// When the errorClass matches a known rule, returns that rule's repairable flag.
-// Unknown error classes default to repairable (optimistic — worth trying).
+// Unknown or empty classes are not automatically repairable. They require
+// human review because the system cannot establish that changing a skill is
+// safer than addressing an external/environmental fault.
 func IsRepairableError(errorClass string) bool {
+	if strings.TrimSpace(errorClass) == "" || ErrorClass(strings.TrimSpace(errorClass)) == ErrUnknown {
+		return false
+	}
 	ec := ErrorClass(errorClass)
 	for _, rule := range rules {
 		if rule.class == ec {
 			return rule.repairable
 		}
 	}
-	return true // unknown → optimistic
+	return false
 }
 
 // ShouldAttemptRepair returns true if the skill should undergo an automated
@@ -340,6 +352,23 @@ func isHubSource(source string) bool {
 func ExtractErrorClass(lastError string) string {
 	idx := strings.Index(lastError, errorClassPrefix)
 	if idx < 0 {
+		// Compatibility with older persisted records that used
+		// `error_class=<value>` instead of the current `[class: <value>]`
+		// envelope. Only accept a known class; arbitrary legacy text remains
+		// unknown and therefore review-only.
+		const legacyPrefix = "error_class="
+		if legacy := strings.Index(strings.ToLower(lastError), legacyPrefix); legacy >= 0 {
+			rest := lastError[legacy+len(legacyPrefix):]
+			if end := strings.IndexAny(rest, " \t\r\n,;|]"); end >= 0 {
+				rest = rest[:end]
+			}
+			candidate := strings.TrimSpace(rest)
+			for _, rule := range rules {
+				if string(rule.class) == candidate {
+					return candidate
+				}
+			}
+		}
 		return string(ErrUnknown)
 	}
 	rest := lastError[idx+len(errorClassPrefix):]
@@ -373,6 +402,16 @@ func AttemptRepair(llm LLMRepairer, skill *corelib.NLSkillEntry) (*RepairResult,
 // not just reasons to retry. The LLM sees the specific failure trace and
 // proposes targeted fixes rather than generic rewrites.
 func AttemptRepairWithContext(llm LLMRepairer, skill *corelib.NLSkillEntry, ctx *RepairContext) (*RepairResult, error) {
+	return AttemptRepairWithGoContext(context.Background(), llm, skill, ctx)
+}
+
+// AttemptRepairWithGoContext is the cancellation-aware variant used by
+// EvolutionPipeline workers. The RepairContext argument remains the model
+// prompt context; goCtx controls the lifetime of the provider request.
+func AttemptRepairWithGoContext(goCtx context.Context, llm LLMRepairer, skill *corelib.NLSkillEntry, ctx *RepairContext) (*RepairResult, error) {
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
 	if llm == nil || !llm.IsConfigured() {
 		return nil, fmt.Errorf("LLM not configured for skill repair")
 	}
@@ -492,10 +531,20 @@ Propose a fix.`,
 		stepsDesc.String(),
 	)
 
-	resp, err := llm.ChatCall([]map[string]string{
+	messages := []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
-	})
+	}
+	var resp string
+	var err error
+	if contextual, ok := llm.(ContextualLLMRepairer); ok {
+		resp, err = contextual.ChatCallContext(goCtx, messages)
+	} else {
+		if err := goCtx.Err(); err != nil {
+			return nil, err
+		}
+		resp, err = llm.ChatCall(messages)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("LLM repair call failed: %w", err)
 	}
@@ -670,6 +719,34 @@ func recordRepairAttempt(skill *corelib.NLSkillEntry, errorClass, explanation st
 	skill.RepairHistory = append(skill.RepairHistory, record)
 	if len(skill.RepairHistory) > 5 {
 		skill.RepairHistory = skill.RepairHistory[len(skill.RepairHistory)-5:]
+	}
+}
+
+// RecordRepairAttemptFailure records a repair attempt that did not produce a
+// verified repair (for example an LLM error, Gate rejection, or rejected
+// reviewed draft).  All repair entry points use this helper so the persisted
+// attempt limit cannot be bypassed by choosing a different UI/API path.
+//
+// A successful ApplyRepair is deliberately not handled here: its counter is
+// recorded by ApplyRepair and is reset after a later successful execution.
+// Failed attempts reaching the limit are moved to needs_review, which blocks
+// both automatic and force-triggered repair until an operator resets review.
+func RecordRepairAttemptFailure(skill *corelib.NLSkillEntry, errorClass, explanation string) {
+	if skill == nil {
+		return
+	}
+	// Keep the counter monotonic but bounded. Once the governance ceiling is
+	// reached, additional rejects must not turn a stable needs_review record
+	// into an unbounded retry counter (or make its value differ by entry point).
+	if skill.RepairAttemptCount >= SelfRepairMaxAttempts {
+		if isRepairEligibleStatus(skill.Status) {
+			skill.Status = "needs_review"
+		}
+		return
+	}
+	recordRepairAttempt(skill, errorClass, explanation)
+	if skill.RepairAttemptCount >= SelfRepairMaxAttempts && isRepairEligibleStatus(skill.Status) {
+		skill.Status = "needs_review"
 	}
 }
 

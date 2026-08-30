@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -33,6 +34,62 @@ type SkillDiagEntry struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// skillEvolutionConfigRevision returns a stable, non-sensitive digest of the
+// effective evolution policy. Manual lifecycle actions use the same revision
+// contract as pipeline events, so audit rows can be correlated to the policy
+// that authorized the mutation without persisting credentials or full config.
+func skillEvolutionConfigRevision(a *App) string {
+	if a == nil {
+		return "unknown"
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "unknown"
+	}
+	type policy struct {
+		Enabled       *bool `json:"enabled,omitempty"`
+		Observation   *bool `json:"observation,omitempty"`
+		Workers       int   `json:"workers"`
+		Timeout       int   `json:"timeout"`
+		CooldownHours int   `json:"cooldown_hours"`
+		AutoUpload    *bool `json:"auto_upload,omitempty"`
+	}
+	b, err := json.Marshal(policy{
+		Enabled: cfg.SkillEvolutionEnabled, Observation: cfg.SkillMaintenanceObservationEnabled,
+		Workers:       cfg.EffectiveSkillEvolutionMaxConcurrentWorkers(),
+		Timeout:       cfg.EffectiveSkillEvolutionWorkerTimeoutSeconds(),
+		CooldownHours: cfg.SkillEvolutionRepairCooldownHours, AutoUpload: cfg.SkillAutoUploadEnabled,
+	})
+	if err != nil {
+		return "unknown"
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:8])
+}
+
+// ensureSkillEvolutionMutationAdmission prevents lifecycle APIs from
+// activating a definition while a durable rollback is still pending. The
+// queue is authoritative: unreadable/unsupported data is also a hard block.
+func ensureSkillEvolutionMutationAdmission(a *App, skillName string) error {
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return fmt.Errorf("skill activation blocked: evolution compensation queue unavailable: %v", err)
+	}
+	if a != nil {
+		pipeline := a.evolutionPipeline
+		if pipeline == nil {
+			pipeline = skill.NewEvolutionPipeline()
+		}
+		if pipeline.HasPendingCompensation(skillName) {
+			return fmt.Errorf("skill activation blocked: pending evolution compensation for skill %q", skillName)
+		}
+	}
+	return nil
 }
 
 // NLSkillDefinition is the Wails-facing view of a Skill.
@@ -75,14 +132,18 @@ type NLSkillDefinition struct {
 	LastError           string                      `json:"last_error,omitempty"`
 	ReviewReason        string                      `json:"review_reason,omitempty"`
 	// Self-repair audit (from NLSkillEntry runtime state).
-	RepairAttemptCount int                         `json:"repair_attempt_count,omitempty"`
-	LastRepairAt       string                      `json:"last_repair_at,omitempty"`
-	RepairHistory      []corelib.SkillRepairRecord `json:"repair_history,omitempty"`
-	OptimizationCount  int                         `json:"optimization_count,omitempty"`
-	LastOptimizedAt    string                      `json:"last_optimized_at,omitempty"`
-	IsMaclawApp        bool                        `json:"is_maclaw_app,omitempty"`
-	MaclawAppCount     int                         `json:"maclaw_app_count,omitempty"`
-	MaclawAppEntry     string                      `json:"maclaw_app_entry,omitempty"`
+	RepairAttemptCount     int                         `json:"repair_attempt_count,omitempty"`
+	LastRepairAt           string                      `json:"last_repair_at,omitempty"`
+	RepairHistory          []corelib.SkillRepairRecord `json:"repair_history,omitempty"`
+	OptimizationCount      int                         `json:"optimization_count,omitempty"`
+	LastOptimizedAt        string                      `json:"last_optimized_at,omitempty"`
+	VerifiedAt             string                      `json:"verified_at,omitempty"`
+	VerificationRunID      string                      `json:"verification_run_id,omitempty"`
+	VerificationDigest     string                      `json:"verification_digest,omitempty"`
+	VerificationGateStatus string                      `json:"verification_gate_status,omitempty"`
+	IsMaclawApp            bool                        `json:"is_maclaw_app,omitempty"`
+	MaclawAppCount         int                         `json:"maclaw_app_count,omitempty"`
+	MaclawAppEntry         string                      `json:"maclaw_app_entry,omitempty"`
 }
 
 // QualifiedID returns the canonical unique identifier for this skill definition.
@@ -211,9 +272,10 @@ type SkillExecutor struct {
 	// by loadSkills.  In particular, shutdown must wait for them: otherwise a
 	// late patch can recreate files while the application (or a test) is
 	// already tearing down its data directory.
-	statusOverlayPersistMu     sync.Mutex
-	statusOverlayPersistWG     sync.WaitGroup
-	statusOverlayPersistClosed bool
+	statusOverlayPersistMu        sync.Mutex
+	statusOverlayPersistWG        sync.WaitGroup
+	statusOverlayPersistClosed    bool
+	statusOverlayPersistSuspended atomic.Int32
 }
 
 const skillLoadCacheTTL = 10 * time.Minute
@@ -429,7 +491,7 @@ func (e *SkillExecutor) persistSkillStatusOverlaysAsync(skills []corelib.NLSkill
 		return
 	}
 	e.statusOverlayPersistMu.Lock()
-	if e.statusOverlayPersistClosed {
+	if e.statusOverlayPersistClosed || e.statusOverlayPersistSuspended.Load() > 0 {
 		e.statusOverlayPersistMu.Unlock()
 		return
 	}
@@ -444,6 +506,27 @@ func (e *SkillExecutor) persistSkillStatusOverlaysAsync(skills []corelib.NLSkill
 	}()
 }
 
+// suspendStatusOverlayPersistence prevents load-time reconciliation from
+// racing an explicit lifecycle transaction. Callers must pair this with
+// resumeStatusOverlayPersistence; all in-flight writes should be drained
+// before suspension begins.
+func (e *SkillExecutor) suspendStatusOverlayPersistence() {
+	if e == nil {
+		return
+	}
+	e.drainStatusOverlayPersistence()
+	e.statusOverlayPersistSuspended.Add(1)
+}
+
+func (e *SkillExecutor) resumeStatusOverlayPersistence() {
+	if e == nil {
+		return
+	}
+	if e.statusOverlayPersistSuspended.Load() > 0 {
+		e.statusOverlayPersistSuspended.Add(-1)
+	}
+}
+
 // waitForStatusOverlayPersistence stops new load-time overlay writes and
 // waits for all already-scheduled writes. It is used during App shutdown.
 func (e *SkillExecutor) waitForStatusOverlayPersistence() {
@@ -453,6 +536,17 @@ func (e *SkillExecutor) waitForStatusOverlayPersistence() {
 	e.statusOverlayPersistMu.Lock()
 	e.statusOverlayPersistClosed = true
 	e.statusOverlayPersistMu.Unlock()
+	e.statusOverlayPersistWG.Wait()
+}
+
+// drainStatusOverlayPersistence waits for already queued load-time overlay
+// writes without closing the executor. Lifecycle transactions call this before
+// taking their snapshot so a stale asynchronous reconciliation cannot publish
+// an older skill name/status after the transaction commits.
+func (e *SkillExecutor) drainStatusOverlayPersistence() {
+	if e == nil {
+		return
+	}
 	e.statusOverlayPersistWG.Wait()
 }
 
@@ -890,6 +984,35 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	return nil
 }
 
+// restoreSkillsSnapshot is the explicit rollback counterpart to saveSkills.
+// It intentionally bypasses saveSkills' anti-wipe merge heuristic: a rollback
+// has an authoritative, pre-mutation snapshot and must remove entries created
+// by the failed transaction rather than merge them back in.
+func (e *SkillExecutor) restoreSkillsSnapshot(skills []corelib.NLSkillEntry) error {
+	if e == nil || e.app == nil {
+		return fmt.Errorf("skill executor app not initialized")
+	}
+	// This is an authoritative rollback snapshot. Do not run the normal
+	// disk-overlay projection here: a source:"file" entry may intentionally
+	// have no runtime overlay, yet it still must be restored byte-for-byte in
+	// the registry after a failed lifecycle transaction.
+	filtered := append([]corelib.NLSkillEntry(nil), skills...)
+	if err := e.app.PatchConfig(func(cfg *corelib.AppConfig) { cfg.NLSkills = filtered }); err != nil {
+		return err
+	}
+	// Keep the derived async scanner aligned with the authoritative rollback
+	// snapshot before invalidating it.  A failed install/update may already have
+	// queued a newer entry via UpsertSkills; merely invalidating the scanner
+	// leaves that pending upsert in place, so the next loadSkills() can merge the
+	// failed version back over the restored config/YAML.  Re-seeding the snapshot
+	// is idempotent and closes that rollback/cache race.
+	if e.app.cachedSkillScanner != nil {
+		e.app.cachedSkillScanner.UpsertSkills(filtered)
+	}
+	e.invalidateSkillCache()
+	return nil
+}
+
 // persistSkillStatusOverlays updates status/error/stats for skills already in
 // config (and adds thin overlays for demoted disk skills) without replacing the
 // entire NLSkills table. Used after demote/normalize on load.
@@ -1069,19 +1192,23 @@ func diskSkillConfigOverlay(s corelib.NLSkillEntry) corelib.NLSkillEntry {
 		source = string(skillEntrySourceFile)
 	}
 	return corelib.NLSkillEntry{
-		Name:               s.Name,
-		Source:             source,
-		SkillDir:           s.SkillDir,
-		Status:             fileSkillOverlayStatus(s.Status),
-		UsageCount:         s.UsageCount,
-		SuccessCount:       s.SuccessCount,
-		FailureCount:       s.FailureCount,
-		WorkaroundCount:    s.WorkaroundCount,
-		LastUsedAt:         s.LastUsedAt,
-		LastError:          s.LastError,
-		RepairAttemptCount: s.RepairAttemptCount,
-		LastRepairAt:       s.LastRepairAt,
-		RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+		Name:                   s.Name,
+		Source:                 source,
+		SkillDir:               s.SkillDir,
+		Status:                 fileSkillOverlayStatus(s.Status),
+		UsageCount:             s.UsageCount,
+		SuccessCount:           s.SuccessCount,
+		FailureCount:           s.FailureCount,
+		WorkaroundCount:        s.WorkaroundCount,
+		LastUsedAt:             s.LastUsedAt,
+		LastError:              s.LastError,
+		RepairAttemptCount:     s.RepairAttemptCount,
+		LastRepairAt:           s.LastRepairAt,
+		RepairHistory:          append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+		VerifiedAt:             s.VerifiedAt,
+		VerificationRunID:      s.VerificationRunID,
+		VerificationDigest:     s.VerificationDigest,
+		VerificationGateStatus: s.VerificationGateStatus,
 	}
 }
 
@@ -1385,10 +1512,46 @@ func (e *SkillExecutor) UpdateStatus(name, status string) error {
 	return e.saveSkills(skills)
 }
 
+// UpdateVerification records the evidence produced by a constrained replay.
+// Status is changed in the same read-modify-write transaction so a verified
+// candidate cannot be observed as active without its proof metadata.
+func (e *SkillExecutor) UpdateVerification(name, status, runID, digest, gateStatus, verifiedAt string) error {
+	if e == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
+	skills := e.loadSkills()
+	idx := -1
+	for i := range skills {
+		if skills[i].Name == name || skills[i].MatchesName(name) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	if strings.TrimSpace(status) != "" {
+		skills[idx].Status = strings.TrimSpace(status)
+	}
+	skills[idx].VerifiedAt = strings.TrimSpace(verifiedAt)
+	skills[idx].VerificationRunID = strings.TrimSpace(runID)
+	skills[idx].VerificationDigest = strings.TrimSpace(digest)
+	skills[idx].VerificationGateStatus = strings.TrimSpace(gateStatus)
+	return e.saveSkills(skills)
+}
+
 // UpdateFromHub checks for a newer version of a Hub Skill and updates it locally.
 // It preserves Name, Source, HubSkillID, SourceProject, Status, and CreatedAt.
 // Network calls are made outside the mutex to avoid blocking other skill operations.
 func (e *SkillExecutor) UpdateFromHub(name string) error {
+	if e == nil || e.app == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	if err := ensureSkillEvolutionMutationAdmission(e.app, name); err != nil {
+		return err
+	}
 	// Phase 1: snapshot skill info (loadSkills is self-synchronized).
 	skills := e.loadSkills()
 	var installedSkill corelib.NLSkillEntry
@@ -1431,57 +1594,50 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 		return nil // already up to date
 	}
 
-	updated, err := e.app.skillHubClient.Install(ctx, installedSkill.HubSkillID, meta.HubURL)
+	// Materialize into an isolated staging directory. The legacy Install method
+	// extracts directly into the live destination, which makes a later scan or
+	// index/audit failure irreversible. Directory publication is owned by the
+	// shared transaction below.
+	stagingDir, err := skill.PrepareStagingDir(installedSkill.HubSkillID)
 	if err != nil {
+		return fmt.Errorf("prepare skill update staging: %w", err)
+	}
+	updated, err := e.app.skillHubClient.InstallToDir(ctx, installedSkill.HubSkillID, meta.HubURL, stagingDir)
+	if err != nil {
+		skill.CleanupStaging(stagingDir)
 		return fmt.Errorf("failed to download update for skill %q: %w", name, err)
 	}
-
-	// Phase 3: Apply update under write lock.
-	e.skillListMutateMu.Lock()
-	defer e.skillListMutateMu.Unlock()
-
-	// Re-read skills in case they changed while we were doing network I/O.
-	skills = e.loadSkills()
-	idx := -1
-	for i, s := range skills {
-		if s.Name == name {
-			idx = i
-			break
-		}
+	if updated == nil {
+		skill.CleanupStaging(stagingDir)
+		return fmt.Errorf("hub returned an empty update for skill %q", name)
 	}
-	if idx < 0 {
-		for i, s := range skills {
-			if s.MatchesName(name) {
-				idx = i
-				break
-			}
-		}
+	if isShellBrowserAutomationSkillEntry(*updated) {
+		skill.CleanupStaging(stagingDir)
+		return browserAutomationSkillRejectedError(updated.Name)
 	}
-	if idx == -1 {
-		return fmt.Errorf("skill %q was removed during update", name)
+	// The package supplies the new definition, but local lifecycle/governance
+	// fields remain authoritative.  Seed them into the candidate before the
+	// shared replacement merger runs; otherwise a Hub update could implicitly
+	// reactivate a disabled Skill or reset its creation/provenance metadata.
+	updated.Name = installedSkill.Name
+	updated.Source = installedSkill.Source
+	updated.SourceProject = installedSkill.SourceProject
+	updated.Status = installedSkill.Status
+	updated.CreatedAt = installedSkill.CreatedAt
+	updated.HubSkillID = installedSkill.HubSkillID
+	updated.Capability = installedSkill.Capability
+	reconcileAgentGuidedWorkflowEntry(updated)
+	report, err := e.app.scanAndAdmitSkillBeforeRegister(ctx, updated, "hub update")
+	if err != nil {
+		skill.CleanupStaging(stagingDir)
+		return err
 	}
-
-	// Replace mutable fields, preserve identity fields.
-	skills[idx].Description = updated.Description
-	skills[idx].Triggers = updated.Triggers
-	skills[idx].Steps = updated.Steps
-	skills[idx].HubVersion = updated.HubVersion
-	skills[idx].TrustLevel = updated.TrustLevel
-	if isShellBrowserAutomationSkillEntry(skills[idx]) {
-		return browserAutomationSkillRejectedError(skills[idx].Name)
+	requestID := fmt.Sprintf("evo_hub_update_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(e.app)
+	if err := e.app.commitStagedSkillInstallWithExisting(ctx, updated, stagingDir, "hub_update", report, requestID, configRevision, &installedSkill); err != nil {
+		return fmt.Errorf("commit Hub update for skill %q: %w", name, err)
 	}
-	reconcileAgentGuidedWorkflowEntry(&skills[idx])
-
-	// Invalidate the security scan cache: the content hash changed (new steps),
-	// so the next StartRunForOwner → ensureSkillSecurityScanned will trigger a
-	// fresh scan before execution. Without this, a stale "allowed" cache from
-	// the previous version could let new (potentially malicious) steps execute
-	// without re-scanning.
-	if skillDir := strings.TrimSpace(skills[idx].SkillDir); skillDir != "" {
-		_ = removeSkillScanCacheFile(skillDir, skills[idx].Name)
-	}
-
-	return e.saveSkills(skills)
+	return nil
 }
 
 // Delete removes a Skill by name.
@@ -1546,6 +1702,114 @@ func (e *SkillExecutor) Delete(name string) error {
 		e.removeSkillDirs(name)
 	}
 	return nil
+}
+
+// deleteConfigOnly removes a skill from the persisted registry but leaves its
+// directory untouched. App.DeleteNLSkill uses this primitive to move the
+// directory into a recoverable quarantine before the config/index/audit
+// transaction commits. The public Delete method keeps the historical behavior
+// for non-GUI callers; lifecycle entry points should use the App wrapper.
+func (e *SkillExecutor) deleteConfigOnly(name string) (corelib.NLSkillEntry, error) {
+	if e == nil {
+		return corelib.NLSkillEntry{}, fmt.Errorf("skill executor not initialized")
+	}
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
+	skills := e.loadSkills()
+	idx := -1
+	for i, s := range skills {
+		if s.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		for i, s := range skills {
+			if s.MatchesName(name) {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		return corelib.NLSkillEntry{}, fmt.Errorf("skill %q not found", name)
+	}
+	target := skills[idx]
+	// saveSkills intentionally refuses an empty replacement as protection
+	// against an accidental NLSkills wipe. Deletion is an explicit, audited
+	// operation, so bypass that heuristic while still using PatchConfig's
+	// atomic read-modify-write boundary.
+	if e.app == nil {
+		return corelib.NLSkillEntry{}, fmt.Errorf("skill executor app not initialized")
+	}
+	if err := e.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		filtered := make([]corelib.NLSkillEntry, 0, len(cfg.NLSkills))
+		for _, item := range cfg.NLSkills {
+			if item.Name == target.Name || item.Name == name || item.MatchesName(name) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		cfg.NLSkills = filtered
+	}); err != nil {
+		return corelib.NLSkillEntry{}, err
+	}
+	e.invalidateSkillCache()
+	return target, nil
+}
+
+// renameConfigOnly updates the persisted registry entry without touching the
+// YAML or directory. It is the config phase of App.RenameNLSkill's transaction.
+func (e *SkillExecutor) renameConfigOnly(oldName, newName string) (corelib.NLSkillEntry, error) {
+	if e == nil {
+		return corelib.NLSkillEntry{}, fmt.Errorf("skill executor not initialized")
+	}
+	e.skillListMutateMu.Lock()
+	defer e.skillListMutateMu.Unlock()
+	skills := e.loadSkills()
+	idx := -1
+	for i := range skills {
+		if skills[i].Name == oldName || skills[i].MatchesName(oldName) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return corelib.NLSkillEntry{}, fmt.Errorf("skill %q not found", oldName)
+	}
+	for i := range skills {
+		if i != idx && strings.EqualFold(strings.TrimSpace(skills[i].Name), newName) {
+			return corelib.NLSkillEntry{}, fmt.Errorf("skill %q already exists", skills[i].Name)
+		}
+	}
+	target := skills[idx]
+	target.Name = newName
+	if target.DirName == "" || strings.EqualFold(target.DirName, oldName) {
+		target.DirName = oldName
+	}
+	if target.SkillDir != "" {
+		target.SkillDir = filepath.Join(filepath.Dir(target.SkillDir), newName)
+	}
+	skills[idx] = target
+	if e.app == nil {
+		return corelib.NLSkillEntry{}, fmt.Errorf("skill executor app not initialized")
+	}
+	if err := e.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		for i := range cfg.NLSkills {
+			if cfg.NLSkills[i].Name == target.Name || cfg.NLSkills[i].Name == oldName || cfg.NLSkills[i].MatchesName(oldName) {
+				cfg.NLSkills[i] = diskSkillConfigOverlay(target)
+				if !skillPersistsAsDiskOverlay(target) {
+					cfg.NLSkills[i] = target
+				}
+				return
+			}
+		}
+		cfg.NLSkills = append(cfg.NLSkills, target)
+	}); err != nil {
+		return corelib.NLSkillEntry{}, err
+	}
+	e.invalidateSkillCache()
+	return target, nil
 }
 
 // removeSkillDirs removes on-disk skill directories whose resolved name
@@ -1775,44 +2039,48 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			steps = []corelib.NLSkillStep{}
 		}
 		d := NLSkillDefinition{
-			Name:                s.Name,
-			DirName:             s.DirName,
-			SkillID:             s.SkillID,
-			Description:         s.Description,
-			Triggers:            triggers,
-			Steps:               steps,
-			Status:              s.Status,
-			Source:              s.Source,
-			SourceProject:       s.SourceProject,
-			ExperienceDomain:    corelib.NormalizeSkillExperienceDomain(s.ExperienceDomain),
-			ExecutionClass:      classifySkillExecutionClass(s),
-			HubSkillID:          s.HubSkillID,
-			HubVersion:          s.HubVersion,
-			TrustLevel:          s.TrustLevel,
-			Type:                s.Type,
-			Content:             s.Content,
-			Publisher:           s.Publisher,
-			Mode:                s.Mode,
-			HasDocumentation:    (normalizeSkillTypeKind(s.Type).IsKnowledge() && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
-			SkillDir:            s.SkillDir,
-			Params:              s.Params,
-			RequiredArgs:        s.RequiredArgs,
-			RequiresGUI:         s.RequiresGUI,
-			Capabilities:        cloneStringSlice(s.Capabilities),
-			RequiresTools:       cloneStringSlice(s.RequiresTools),
-			FallbackForTools:    cloneStringSlice(s.FallbackForTools),
-			RequiresToolsets:    cloneStringSlice(s.RequiresToolsets),
-			FallbackForToolsets: cloneStringSlice(s.FallbackForToolsets),
-			UsageCount:          s.UsageCount,
-			SuccessCount:        s.SuccessCount,
-			FailureCount:        s.FailureCount,
-			LastError:           s.LastError,
-			ReviewReason:        skillReviewReason(s),
-			RepairAttemptCount:  s.RepairAttemptCount,
-			LastRepairAt:        s.LastRepairAt,
-			RepairHistory:       append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
-			OptimizationCount:   s.OptimizationCount,
-			LastOptimizedAt:     s.LastOptimizedAt,
+			Name:                   s.Name,
+			DirName:                s.DirName,
+			SkillID:                s.SkillID,
+			Description:            s.Description,
+			Triggers:               triggers,
+			Steps:                  steps,
+			Status:                 s.Status,
+			Source:                 s.Source,
+			SourceProject:          s.SourceProject,
+			ExperienceDomain:       corelib.NormalizeSkillExperienceDomain(s.ExperienceDomain),
+			ExecutionClass:         classifySkillExecutionClass(s),
+			HubSkillID:             s.HubSkillID,
+			HubVersion:             s.HubVersion,
+			TrustLevel:             s.TrustLevel,
+			Type:                   s.Type,
+			Content:                s.Content,
+			Publisher:              s.Publisher,
+			Mode:                   s.Mode,
+			HasDocumentation:       (normalizeSkillTypeKind(s.Type).IsKnowledge() && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
+			SkillDir:               s.SkillDir,
+			Params:                 s.Params,
+			RequiredArgs:           s.RequiredArgs,
+			RequiresGUI:            s.RequiresGUI,
+			Capabilities:           cloneStringSlice(s.Capabilities),
+			RequiresTools:          cloneStringSlice(s.RequiresTools),
+			FallbackForTools:       cloneStringSlice(s.FallbackForTools),
+			RequiresToolsets:       cloneStringSlice(s.RequiresToolsets),
+			FallbackForToolsets:    cloneStringSlice(s.FallbackForToolsets),
+			UsageCount:             s.UsageCount,
+			SuccessCount:           s.SuccessCount,
+			FailureCount:           s.FailureCount,
+			LastError:              s.LastError,
+			ReviewReason:           skillReviewReason(s),
+			RepairAttemptCount:     s.RepairAttemptCount,
+			LastRepairAt:           s.LastRepairAt,
+			RepairHistory:          append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+			OptimizationCount:      s.OptimizationCount,
+			LastOptimizedAt:        s.LastOptimizedAt,
+			VerifiedAt:             s.VerifiedAt,
+			VerificationRunID:      s.VerificationRunID,
+			VerificationDigest:     s.VerificationDigest,
+			VerificationGateStatus: s.VerificationGateStatus,
 		}
 		d.IsMaclawApp, d.MaclawAppCount, d.MaclawAppEntry = inspectMaclawAppSkillMetadata(s.SkillDir)
 		if s.UsageCount > 0 {
@@ -4792,14 +5060,13 @@ func (a *App) CreateNLSkill(def corelib.NLSkillEntry) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), &def, "manual skill create")
-	if err != nil {
-		return err
+	if a.skillNameAlreadyRegistered(def.Name) {
+		return fmt.Errorf("skill %q already exists", strings.TrimSpace(def.Name))
 	}
-	if err := writeSkillScanCacheForInstalledEntry(&def, report); err != nil {
-		return fmt.Errorf("write skill scan cache: %w", err)
-	}
-	if err := a.skillExecutor.Register(def); err != nil {
+	// Validate and persist through the shared transaction coordinator. The
+	// coordinator owns config/YAML/index/audit ordering and durable rollback;
+	// this entry point only supplies GUI-specific callbacks and scan policy.
+	if err := a.commitNLSkillDefinition(context.Background(), def, "create", "skill:definition_created", true); err != nil {
 		return err
 	}
 	return nil
@@ -4814,15 +5081,73 @@ func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), &def, "manual skill update")
+	if err := a.commitNLSkillDefinition(context.Background(), def, "update", "skill:definition_updated", false); err != nil {
+		return err
+	}
+	return nil
+}
+
+// commitNLSkillDefinition adapts the shared core SkillCommitter to the GUI
+// executor. Scanning remains outside the commit boundary; once admitted, all
+// durable mutations follow one protocol.
+func (a *App) commitNLSkillDefinition(ctx context.Context, def corelib.NLSkillEntry, action, event string, allowCreate bool) error {
+	if a == nil || a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	if strings.TrimSpace(def.Name) == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	a.ensureRemoteInfra()
+	if normalizeSkillEntryStatus(def.Status) == skillEntryStatusActive {
+		if err := ensureSkillEvolutionMutationAdmission(a, def.Name); err != nil {
+			return err
+		}
+	}
+	report, err := a.scanAndAdmitSkillBeforeRegister(ctx, &def, "manual skill "+action)
 	if err != nil {
 		return err
 	}
 	if err := writeSkillScanCacheForInstalledEntry(&def, report); err != nil {
 		return fmt.Errorf("write skill scan cache: %w", err)
 	}
-	if err := a.skillExecutor.Update(def); err != nil {
-		return err
+	requestID := fmt.Sprintf("evo_%s_%d", action, time.Now().UnixNano())
+	ctx = skill.WithEvolutionRequestMetadata(ctx, requestID, 1)
+	configRevision := skillEvolutionConfigRevision(a)
+	if err := skill.RecordEvolutionEventStrict("skill:definition_"+action+"_started", map[string]string{
+		"skill": def.Name, "action": action, "decision": "pending", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return fmt.Errorf("%s audit preflight failed: %w", action, err)
+	}
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(skills) })
+		},
+		DefinitionWriter: func(entry *corelib.NLSkillEntry) error {
+			// Create/update APIs already receive a complete definition; when it is
+			// file-backed, use the same atomic writer as the evolution pipeline.
+			if strings.TrimSpace(entry.SkillDir) == "" {
+				return nil
+			}
+			return skill.WriteBackOptimizedSteps(entry)
+		},
+		IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(def.Name) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		ConfigRevision: configRevision,
+		AllowCreate:    allowCreate,
+	}
+	result := committer.Commit(ctx, def.Name, &def, event, map[string]string{
+		"skill": def.Name, "action": action, "request_id": requestID,
+		"attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none",
+	})
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		return fmt.Errorf("skill %s not committed: %s (%s)", action, result.State, result.FailureReason)
 	}
 	return nil
 }
@@ -4837,7 +5162,7 @@ func (a *App) SetNLSkillStatus(name, status string) error {
 		return fmt.Errorf("skill name is required")
 	}
 	switch normalizeSkillEntryStatus(status) {
-	case skillEntryStatusActive, skillEntryStatusDisabled, skillEntryStatusNeedsSetup, skillEntryStatusNeedsReview:
+	case skillEntryStatusActive, skillEntryStatusDisabled, skillEntryStatusNeedsSetup, skillEntryStatusNeedsReview, skillEntryStatusStaged:
 	default:
 		return fmt.Errorf("unsupported skill status %q", status)
 	}
@@ -4848,16 +5173,380 @@ func (a *App) SetNLSkillStatus(name, status string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
+	originalSkills := a.skillExecutor.loadSkills()
+	requestID := fmt.Sprintf("evo_status_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	var current *corelib.NLSkillEntry
+	for i := range originalSkills {
+		if originalSkills[i].Name == name || originalSkills[i].MatchesName(name) {
+			current = skill.CloneNLSkillEntry(&originalSkills[i])
+			break
+		}
+	}
+	if current == nil {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	// Moving an auto-discovered entry out of staged is an explicit admission
+	// decision. Re-run the local security gate immediately before activation so
+	// a stale scan cannot be used to bypass current policy.
+	if normalizeSkillEntryStatus(status) == skillEntryStatusActive {
+		if err := ensureSkillEvolutionMutationAdmission(a, name); err != nil {
+			return err
+		}
+		for _, existing := range a.skillExecutor.loadSkills() {
+			if existing.Name != name || normalizeSkillEntryStatus(existing.Status) != skillEntryStatusStaged {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(existing.Source), "auto_discovered") {
+				return fmt.Errorf("skill %q is staged; call VerifyAndActivateNLSkill after constrained runtime verification", name)
+			}
+			if _, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), &existing, "staged skill approval"); err != nil {
+				return fmt.Errorf("staged skill approval scan failed: %w", err)
+			}
+			break
+		}
+	}
+	// Lifecycle status changes are durable governance decisions. Write the
+	// admission intent only after all preconditions pass and immediately before
+	// mutating state, so failed scans do not produce misleading "applied" rows.
+	auditEvent := "skill:status_changed"
+	if normalizeSkillEntryStatus(status) == skillEntryStatusNeedsReview {
+		auditEvent = "skill:mark_needs_review"
+	}
+	if err := skill.RecordEvolutionEventStrict(auditEvent, map[string]string{
+		"skill": name, "status": string(normalizeSkillEntryStatus(status)),
+		"action": "status", "decision": "requested", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return fmt.Errorf("skill status audit unavailable: %w", err)
+	}
 	normalized := string(normalizeSkillEntryStatus(status))
-	if err := a.skillExecutor.UpdateStatus(name, normalized); err != nil {
+	updated := skill.CloneNLSkillEntry(current)
+	updated.Status = normalized
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(skills) })
+		},
+		RollbackSkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(skills) })
+		},
+		EntriesMutator: func(skills []corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+			changed := false
+			for i := range skills {
+				if skills[i].Name == name || skills[i].MatchesName(name) {
+					skills[i].Status = normalized
+					if normalized == string(skillEntryStatusActive) && strings.HasPrefix(strings.TrimSpace(skills[i].LastError), "retired_by_maintenance_duplicate:") {
+						skills[i].LastError = ""
+					}
+					changed = true
+					break
+				}
+			}
+			if !changed {
+				return nil, fmt.Errorf("skill %q not found", name)
+			}
+			return skills, nil
+		},
+		EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+			if dst == nil || src == nil {
+				return
+			}
+			// This is a status-only mutation. Preserve runtime statistics but
+			// clear lifecycle retirement markers once an operator explicitly
+			// re-enables the Skill.
+			dst.Status = src.Status
+			if src.Status == string(skillEntryStatusActive) && strings.HasPrefix(strings.TrimSpace(dst.LastError), "retired_by_maintenance_duplicate:") {
+				dst.LastError = ""
+			}
+		},
+		// Status is governance overlay state; do not rewrite the authoritative
+		// definition YAML as a side effect of a status-only transaction.
+		DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+		IndexRefresher:   func() error { return a.refreshSkillIndexesAfterMutationChecked(name) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		ConfigRevision: configRevision,
+	}
+	commitCtx := skill.WithEvolutionRequestMetadata(context.Background(), requestID, 1)
+	commitResult := committer.Commit(commitCtx, name, updated, "skill:status_applied", map[string]string{
+		"skill": name, "status": normalized, "action": "status", "decision": "applied", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none",
+	})
+	if commitResult.State != "committed" || commitResult.CleanupStatus != "clear" {
+		if strings.Contains(commitResult.FailureReason, "index_refresh_failed") {
+			return fmt.Errorf("status index refresh failed: %s", commitResult.FailureReason)
+		}
+		return fmt.Errorf("skill status not committed: %s (%s)", commitResult.State, commitResult.FailureReason)
+	}
+	if normalized == string(skillEntryStatusActive) {
+		for _, existing := range a.skillExecutor.loadSkills() {
+			if existing.Name == name && strings.EqualFold(strings.TrimSpace(existing.Source), "auto_discovered") {
+				if err := skill.RecordEvolutionEventStrict("skill:staged_approved", map[string]string{
+					"skill": name, "status": "active", "via": "explicit_approval",
+					"action": "status", "decision": "applied", "request_id": requestID,
+					"attempt": "1", "config_revision": configRevision,
+					"schema_version": "2", "evidence_mode": "none",
+				}, "desktop"); err != nil {
+					// status_applied is the commit record; this event is supplementary.
+					log.Printf("[skill-status] supplementary staged approval audit failed skill=%s: %v", name, err)
+				}
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// VerifyAndActivateNLSkill performs the explicit admission transition for an
+// auto-discovered staged skill. The candidate is replayed once in the default
+// temporary sandbox; only a passed gate can move it into active routing.
+func (a *App) VerifyAndActivateNLSkill(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	// Reuse the most recent recorded invocation when available. A missing
+	// history is intentionally not replaced with an empty argument map: that
+	// would make a required-argument skill look verified without real evidence.
+	var runArgs map[string]interface{}
+	if a != nil && a.usageTracker != nil {
+		if history := a.usageTracker.RecentRunArgs("skill:"+name, 1); len(history) > 0 {
+			runArgs = make(map[string]interface{}, len(history[0]))
+			for key, value := range history[0] {
+				runArgs[key] = value
+			}
+		}
+	}
+	return a.verifyAndActivateNLSkillWithArgs(name, runArgs)
+}
+
+// VerifyAndActivateNLSkillWithArgs is the explicit admission API for staged
+// auto-discovered skills. The supplied arguments are replayed in a constrained
+// sandbox and are never persisted in plaintext as verification metadata.
+func (a *App) VerifyAndActivateNLSkillWithArgs(name string, runArgs map[string]interface{}) error {
+	return a.verifyAndActivateNLSkillWithArgs(strings.TrimSpace(name), runArgs)
+}
+
+func (a *App) verifyAndActivateNLSkillWithArgs(name string, runArgs map[string]interface{}) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	if a == nil || a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	// Explicit activation is a lifecycle transaction. Pause asynchronous
+	// status-overlay persistence so a load-time reconciliation cannot overwrite
+	// the staged/active decision while YAML, config and index are being updated.
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	if err := ensureSkillEvolutionMutationAdmission(a, name); err != nil {
 		return err
 	}
-	// Durable audit when operators park a skill for review (e.g. from repair draft UI).
-	if normalizeSkillEntryStatus(status) == skillEntryStatusNeedsReview {
-		skill.RecordEvolutionEvent("skill:mark_needs_review", map[string]string{
-			"skill":       name,
-			"explanation": "status set to needs_review by operator",
-		}, "desktop")
+	var staged *corelib.NLSkillEntry
+	for _, item := range a.skillExecutor.loadSkills() {
+		if item.Name == name {
+			if normalizeSkillEntryStatus(item.Status) != skillEntryStatusStaged || !strings.EqualFold(strings.TrimSpace(item.Source), "auto_discovered") {
+				return fmt.Errorf("skill %q is not an auto-discovered staged skill", name)
+			}
+			copy := item
+			staged = &copy
+			break
+		}
+	}
+	if staged == nil {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	if _, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), staged, "staged skill verification"); err != nil {
+		return fmt.Errorf("staged skill security scan failed: %w", err)
+	}
+	if len(runArgs) == 0 {
+		return fmt.Errorf("staged skill remains staged: no replay arguments or runtime evidence")
+	}
+	vars := skill.NormalizeRunVars(runArgs)
+	if missing := skill.MissingRunRequiredArgs(staged.RequiredArgs, staged.Params, vars); len(missing) > 0 {
+		return fmt.Errorf("staged skill remains staged: missing replay arguments: %s", strings.Join(missing, ", "))
+	}
+	args := make(map[string]string, len(vars))
+	for key, value := range vars {
+		args[key] = value
+	}
+	gate := skill.NewRepairGate(skill.RepairGateConfig{}, skill.NewDefaultSandboxExecutor())
+	if a.evolutionPipeline != nil && a.evolutionPipeline.Gate != nil {
+		gate = a.evolutionPipeline.Gate
+	}
+	result, err := gate.Verify(context.Background(), staged, staged.Steps, []map[string]string{args})
+	if err != nil {
+		return fmt.Errorf("staged skill verification failed: %w", err)
+	}
+	if !result.IsRealPass() {
+		reason := "no verification result"
+		if result != nil {
+			reason = result.Reason
+			if result.Status == "passed" && result.EvidenceMode != "real" {
+				reason = "passed gate lacks real evidence"
+			}
+		}
+		return fmt.Errorf("staged skill remains staged: %s", reason)
+	}
+	runID, digest := stagedVerificationIdentity(name, staged, args)
+	requestID := fmt.Sprintf("evo_verify_%s_%d", time.Now().UTC().Format("20060102T150405.000000000Z"), time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	verifiedAt := time.Now().UTC().Format(time.RFC3339)
+	// Audit availability is a prerequisite for this irreversible lifecycle
+	// transition. A best-effort event after activation would leave an active
+	// skill with no durable admission evidence when the sink is unavailable.
+	if err := skill.RecordEvolutionEventStrict("skill:staged_verification_started", map[string]string{
+		"skill": name, "status": "verifying", "verification_run_id": runID,
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "real",
+	}, "desktop"); err != nil {
+		return fmt.Errorf("staged skill verification audit unavailable: %w", err)
+	}
+	verified := *staged
+	verified.Status = string(skillEntryStatusActive)
+	verified.VerifiedAt = verifiedAt
+	verified.VerificationRunID = runID
+	verified.VerificationDigest = digest
+	verified.VerificationGateStatus = result.Status
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(skills []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(skills) })
+		},
+		EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+			if dst == nil || src == nil {
+				return
+			}
+			// Copy lifecycle proof and status atomically while retaining live usage
+			// counters that may have changed during replay.
+			dst.Status = src.Status
+			dst.VerifiedAt = src.VerifiedAt
+			dst.VerificationRunID = src.VerificationRunID
+			dst.VerificationDigest = src.VerificationDigest
+			dst.VerificationGateStatus = src.VerificationGateStatus
+		},
+		DefinitionWriter: func(entry *corelib.NLSkillEntry) error {
+			return persistSkillVerificationToYAML(entry.SkillDir, string(skillEntryStatusActive), runID, digest, result.Status, verifiedAt)
+		},
+		IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(name) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		ConfigRevision: configRevision,
+	}
+	commitResult := committer.Commit(context.Background(), name, &verified, "skill:staged_verified", map[string]string{
+		"skill": name, "action": "staged_activation", "status": "active", "via": "constrained_runtime_verification",
+		"verification_run_id": runID, "verification_digest": digest,
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "real", "decision": "applied",
+	})
+	if commitResult.State != "committed" || commitResult.CleanupStatus != "clear" {
+		return fmt.Errorf("staged activation not committed: %s (%s)", commitResult.State, commitResult.FailureReason)
+	}
+	return nil
+}
+
+func readSkillDefinitionBytes(skillDir string) ([]byte, error) {
+	_, data, err := readSkillDefinitionWithPath(skillDir)
+	return data, err
+}
+
+func readSkillDefinitionWithPath(skillDir string) (string, []byte, error) {
+	for _, candidate := range []string{"skill.yaml", "skill.yml"} {
+		path := filepath.Join(strings.TrimSpace(skillDir), candidate)
+		if data, err := os.ReadFile(path); err == nil {
+			return path, data, nil
+		}
+	}
+	return "", nil, fmt.Errorf("skill.yaml/skill.yml not found")
+}
+
+func restoreSkillDefinitionBytes(skillDir string, data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("empty skill definition backup")
+	}
+	for _, candidate := range []string{"skill.yaml", "skill.yml"} {
+		path := filepath.Join(strings.TrimSpace(skillDir), candidate)
+		if _, err := os.Stat(path); err == nil {
+			tmp := path + ".verification.rollback.tmp"
+			if err := os.WriteFile(tmp, data, 0o644); err != nil {
+				return err
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				_ = os.Remove(tmp)
+				return err
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("skill.yaml/skill.yml not found")
+}
+
+func stagedVerificationIdentity(name string, entry *corelib.NLSkillEntry, args map[string]string) (string, string) {
+	payload := struct {
+		Name  string                `json:"name"`
+		Steps []corelib.NLSkillStep `json:"steps"`
+		Args  map[string]string     `json:"args"`
+	}{Name: name, Args: args}
+	if entry != nil {
+		payload.Steps = entry.Steps
+	}
+	data, _ := json.Marshal(payload)
+	digestBytes := sha256.Sum256(data)
+	digest := "sha256:" + hex.EncodeToString(digestBytes[:])
+	return "verify-" + hex.EncodeToString(digestBytes[:8]), digest
+}
+
+// persistSkillVerificationToYAML makes the file definition authoritative for
+// the lifecycle transition. Config overlays intentionally omit active status,
+// so changing only the overlay would regress to staged after a restart.
+func persistSkillVerificationToYAML(skillDir, status, runID, digest, gateStatus, verifiedAt string) error {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return fmt.Errorf("skill directory is required")
+	}
+	var path string
+	for _, candidate := range []string{"skill.yaml", "skill.yml"} {
+		p := filepath.Join(skillDir, candidate)
+		if _, err := os.Stat(p); err == nil {
+			path = p
+			break
+		}
+	}
+	if path == "" {
+		return fmt.Errorf("skill.yaml/skill.yml not found")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw == nil {
+		return fmt.Errorf("empty skill definition")
+	}
+	raw["status"] = status
+	raw["source"] = "auto_discovered"
+	raw["verified_at"] = verifiedAt
+	raw["verification_run_id"] = runID
+	raw["verification_digest"] = digest
+	raw["verification_gate_status"] = gateStatus
+	out, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".verification.tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }
@@ -4902,8 +5591,8 @@ func (a *App) BatchSetNLSkillStatus(names []string, status string) map[string]in
 	return out
 }
 
-// DeleteNLSkill removes an NL Skill by name (Wails binding).
-func (a *App) DeleteNLSkill(name string) error {
+// deleteNLSkillLegacy contains the pre-committer implementation.
+func (a *App) deleteNLSkillLegacy(name string) error {
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "delete", "name": name}); err != nil {
 		return err
 	}
@@ -4911,25 +5600,251 @@ func (a *App) DeleteNLSkill(name string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	err := a.skillExecutor.Delete(name)
-	if err == nil {
-		if a.hubUpdCache != nil {
-			a.hubUpdCache.invalidate()
-		}
-		// Refresh the tool router's skill index so that subsequent LLM
-		// Route() calls no longer include the deleted skill in matches.
-		if a.toolRouter != nil {
-			a.toolRouter.RefreshSkillIndex()
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	if err := ensureSkillEvolutionMutationAdmission(a, name); err != nil {
+		return err
+	}
+	requestID := fmt.Sprintf("evo_delete_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	// Snapshot the complete pre-delete state before moving any directory. The
+	// directory is quarantined (not removed) so a failed config/index/audit step
+	// can restore it after restart.
+	originalSkills := a.skillExecutor.loadSkills()
+	var target *corelib.NLSkillEntry
+	for i := range originalSkills {
+		if originalSkills[i].Name == name || originalSkills[i].MatchesName(name) {
+			cp := originalSkills[i]
+			target = &cp
+			break
 		}
 	}
-	return err
+	if target == nil {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_delete_started", map[string]string{
+		"skill": name, "action": "delete", "decision": "pending", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return fmt.Errorf("delete audit preflight failed: %w", err)
+	}
+	var compensation skill.EvolutionCompensationRecord
+	if target.SkillDir != "" {
+		quarantine := target.SkillDir + fmt.Sprintf(".delete-pending-%d", time.Now().UnixNano())
+		if err := os.Rename(target.SkillDir, quarantine); err != nil {
+			return fmt.Errorf("quarantine skill directory: %w", err)
+		}
+		compensation = skill.NewEvolutionCompensationRecord(requestID, name, "delete", "", nil, false, originalSkills, "skill_delete_rollback_incomplete")
+		compensation.SetDirectoryBackup(target.SkillDir, quarantine, true)
+	}
+	if _, err := a.skillExecutor.deleteConfigOnly(name); err != nil {
+		if compensation.DirMoved {
+			_ = os.Rename(compensation.DirBackupPath, compensation.DirPath)
+		}
+		return err
+	}
+	rollback := func(cause error) error {
+		configErr := a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(originalSkills) })
+		dirErr := error(nil)
+		if compensation.DirMoved {
+			if _, statErr := os.Stat(compensation.DirPath); os.IsNotExist(statErr) {
+				dirErr = os.Rename(compensation.DirBackupPath, compensation.DirPath)
+			}
+		}
+		indexErr := a.refreshSkillIndexesAfterMutationChecked(name)
+		if configErr == nil && dirErr == nil && indexErr == nil {
+			return fmt.Errorf("%v; delete rolled back", cause)
+		}
+		compensation.LastError = fmt.Sprintf("%v (config rollback: %v; directory rollback: %v; index rollback: %v)", cause, configErr, dirErr, indexErr)
+		if err := skill.PersistEvolutionCompensation(compensation); err != nil {
+			return fmt.Errorf("%v; rollback incomplete; persist compensation: %w", cause, err)
+		}
+		return fmt.Errorf("%v; rollback incomplete; compensation queued: %s", cause, compensation.LastError)
+	}
+	if err := a.refreshSkillIndexesAfterMutationChecked(name); err != nil {
+		return rollback(fmt.Errorf("delete index refresh failed: %w", err))
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_deleted", map[string]string{
+		"skill": name, "action": "delete", "decision": "applied", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return rollback(fmt.Errorf("delete audit commit failed: %w", err))
+	}
+	if compensation.DirMoved {
+		if err := os.RemoveAll(compensation.DirBackupPath); err != nil {
+			// The deletion has already been audited and committed. Do not enqueue
+			// this snapshot: replaying it would resurrect a deliberately deleted
+			// Skill. Keep the quarantine for operator cleanup and expose a
+			// structured warning instead.
+			_ = skill.RecordEvolutionEventStrict("skill:definition_delete_cleanup_pending", map[string]string{
+				"skill": name, "action": "delete", "decision": "committed",
+				"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+				"failure_reason": "quarantine_cleanup_failed", "schema_version": "2", "evidence_mode": "none",
+			}, "desktop")
+			return fmt.Errorf("delete committed but quarantine cleanup failed: %w", err)
+		}
+	}
+	if a.hubUpdCache != nil {
+		a.hubUpdCache.invalidate()
+	}
+	if a.cachedSkillScanner != nil && target.SkillDir != "" {
+		// The directory was quarantined before the config mutation. Remove the
+		// old identity synchronously so a stale scanner snapshot cannot
+		// resurrect the deleted entry on the next loadSkills call.
+		a.cachedSkillScanner.RemoveByDir(target.SkillDir)
+	}
+	if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.RemoveByName(name)
+	}
+	// RemoveByName updates the scanner snapshot, but the executor may still
+	// hold a pre-mutation merged list. Drop that cache so a subsequent list or
+	// admission check cannot observe the deleted definition.
+	a.skillExecutor.clearSkillListCache()
+	if a.toolRouter != nil {
+		// refresh already happened transactionally; this is only a notification.
+		a.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": name})
+	}
+	return nil
 }
 
-// RenameNLSkill renames a learned/crafted skill to a user-friendly name (Wails binding).
-// It updates the name field in skill.yaml, renames the on-disk directory,
-// and updates the config.json entry.
-func (a *App) RenameNLSkill(oldName, newName string) error {
+// DeleteNLSkill removes an NL Skill through the shared durable committer.
+// The directory is quarantined before the config mutation and removed only
+// after final audit; rollback restores both the registry and directory.
+func (a *App) DeleteNLSkill(name string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "delete", "name": name}); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	a.ensureRemoteInfra()
+	if a == nil || a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	if err := ensureSkillEvolutionMutationAdmission(a, name); err != nil {
+		return err
+	}
+	original := a.skillExecutor.loadSkills()
+	var target *corelib.NLSkillEntry
+	for i := range original {
+		if original[i].Name == name || original[i].MatchesName(name) {
+			cp := original[i]
+			target = &cp
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	requestID := fmt.Sprintf("evo_delete_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	auditData := map[string]string{"skill": name, "action": "delete", "decision": "applied", "via": "operator", "request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none"}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_delete_started", auditData, "desktop"); err != nil {
+		return fmt.Errorf("delete audit preflight failed: %w", err)
+	}
+	oldDir := strings.TrimSpace(target.SkillDir)
+	quarantine := ""
+	if oldDir != "" {
+		quarantine = oldDir + fmt.Sprintf(".delete-pending-%d", time.Now().UnixNano())
+	}
+	candidate := *target
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(entries) })
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(entries) })
+		},
+		EntriesMutator: func(entries []corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+			filtered := make([]corelib.NLSkillEntry, 0, len(entries))
+			for _, item := range entries {
+				if item.Name == name || item.MatchesName(name) {
+					continue
+				}
+				filtered = append(filtered, item)
+			}
+			return filtered, nil
+		},
+		// Delete only mutates the registry and quarantines the directory.  It
+		// must never rewrite the definition YAML while the directory is moved
+		// out of its original location (the committer's default writer assumes
+		// an in-place update and would reintroduce a delete-time write).
+		DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+		ExternalCommit: func() error {
+			if oldDir == "" {
+				return nil
+			}
+			return skill.RetryDirectoryRename(oldDir, quarantine)
+		},
+		ExternalRollback: func() error {
+			if oldDir == "" {
+				return nil
+			}
+			if _, err := os.Stat(quarantine); os.IsNotExist(err) {
+				return nil
+			}
+			return skill.RetryDirectoryRename(quarantine, oldDir)
+		},
+		IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(name) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			if oldDir != "" {
+				record.SetDirectoryBackup(oldDir, quarantine, true)
+			}
+			record.SetPostCommitCleanupPaths([]string{quarantine})
+		},
+		PostCommitCleanup: func() error {
+			if quarantine == "" {
+				return nil
+			}
+			err := os.RemoveAll(quarantine)
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		},
+		ConfigRevision: configRevision,
+	}
+	result := committer.Commit(context.Background(), name, &candidate, "skill:definition_deleted", auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		// Keep the state explicit for API callers while retaining a human
+		// readable phrase used by existing clients/tests.  A rolled-back delete
+		// is not a generic failure: the original registry and directory remain
+		// authoritative.
+		if result.State == "rolled_back" {
+			return fmt.Errorf("delete rolled back: %s (%s)", result.State, result.FailureReason)
+		}
+		return fmt.Errorf("delete not committed: %s (%s)", result.State, result.FailureReason)
+	}
+	if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.RemoveByName(name)
+		a.cachedSkillScanner.RemoveByDir(oldDir)
+	}
+	a.skillExecutor.clearSkillListCache()
+	return nil
+}
+
+// renameNLSkillLegacy is retained for compatibility with older callers that
+// may still be linked by downstream builds. New Wails calls use the shared
+// committer implementation below.
+func (a *App) renameNLSkillLegacy(oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
 	newName = strings.TrimSpace(newName)
+	if oldName == "" {
+		return fmt.Errorf("old name cannot be empty")
+	}
 	if newName == "" {
 		return fmt.Errorf("new name cannot be empty")
 	}
@@ -4944,7 +5859,265 @@ func (a *App) RenameNLSkill(oldName, newName string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	return a.skillExecutor.Rename(oldName, newName)
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	if err := ensureSkillEvolutionMutationAdmission(a, oldName); err != nil {
+		return err
+	}
+	requestID := fmt.Sprintf("evo_rename_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	originalSkills := a.skillExecutor.loadSkills()
+	var target *corelib.NLSkillEntry
+	for i := range originalSkills {
+		if originalSkills[i].Name == oldName || originalSkills[i].MatchesName(oldName) {
+			cp := originalSkills[i]
+			target = &cp
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("skill %q not found", oldName)
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_rename_started", map[string]string{
+		"skill": oldName, "new_skill": newName, "action": "rename", "decision": "pending", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return fmt.Errorf("rename audit preflight failed: %w", err)
+	}
+	compensation := skill.NewEvolutionCompensationRecord(requestID, oldName, "rename", "", nil, false, originalSkills, "skill_rename_rollback_incomplete")
+	if target.SkillDir != "" {
+		oldDir := target.SkillDir
+		newDir := filepath.Join(filepath.Dir(oldDir), newName)
+		if _, err := os.Stat(newDir); err == nil {
+			return fmt.Errorf("skill directory %q already exists", newName)
+		}
+		if err := os.Rename(oldDir, newDir); err != nil {
+			return fmt.Errorf("rename skill directory: %w", err)
+		}
+		compensation.SetDirectoryBackup(oldDir, newDir, true)
+		defPath, _ := findSkillDefinitionFile(newDir)
+		if defPath != "" {
+			data, err := os.ReadFile(defPath)
+			if err != nil {
+				_ = os.Rename(newDir, oldDir)
+				return fmt.Errorf("read skill definition: %w", err)
+			}
+			updated := replaceYAMLNameField(string(data), oldName, newName)
+			if updated == "" {
+				_ = os.Rename(newDir, oldDir)
+				return fmt.Errorf("skill definition has no matching top-level name")
+			}
+			tmp := defPath + ".rename.tmp"
+			if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
+				_ = os.Rename(newDir, oldDir)
+				return fmt.Errorf("write renamed skill definition: %w", err)
+			}
+			if err := os.Rename(tmp, defPath); err != nil {
+				_ = os.Remove(tmp)
+				_ = os.Rename(newDir, oldDir)
+				return fmt.Errorf("commit renamed skill definition: %w", err)
+			}
+			// Keep the original definition bytes in the durable record. If a
+			// later config/index/audit step fails, recovery first moves the
+			// directory back and then restores this exact file content.
+			compensation.YAMLPath = filepath.Join(oldDir, filepath.Base(defPath))
+			compensation.YAMLExists = true
+			compensation.YAMLBackup = base64.StdEncoding.EncodeToString(data)
+		}
+	}
+	if _, err := a.skillExecutor.renameConfigOnly(oldName, newName); err != nil {
+		_ = a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(originalSkills) })
+		if compensation.DirMoved {
+			if os.Rename(compensation.DirBackupPath, compensation.DirPath) == nil && compensation.YAMLExists {
+				if data, decodeErr := base64.StdEncoding.DecodeString(compensation.YAMLBackup); decodeErr == nil {
+					_ = atomicWriteFile(filepath.Join(compensation.DirPath, filepath.Base(compensation.YAMLPath)), data)
+				}
+			}
+		}
+		return err
+	}
+	rollback := func(cause error) error {
+		configErr := a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(originalSkills) })
+		dirErr := error(nil)
+		if compensation.DirMoved {
+			if _, oldErr := os.Stat(compensation.DirPath); os.IsNotExist(oldErr) {
+				dirErr = os.Rename(compensation.DirBackupPath, compensation.DirPath)
+				if dirErr == nil && compensation.YAMLExists {
+					data, decodeErr := base64.StdEncoding.DecodeString(compensation.YAMLBackup)
+					if decodeErr != nil {
+						dirErr = decodeErr
+					} else {
+						dirErr = atomicWriteFile(filepath.Join(compensation.DirPath, filepath.Base(compensation.YAMLPath)), data)
+					}
+				}
+			}
+		}
+		indexErr := a.refreshSkillIndexesAfterMutationChecked(oldName)
+		if configErr == nil && dirErr == nil && indexErr == nil {
+			return fmt.Errorf("%v; rename rolled back", cause)
+		}
+		compensation.LastError = fmt.Sprintf("%v (config rollback: %v; directory rollback: %v; index rollback: %v)", cause, configErr, dirErr, indexErr)
+		if err := skill.PersistEvolutionCompensation(compensation); err != nil {
+			return fmt.Errorf("%v; rollback incomplete; persist compensation: %w", cause, err)
+		}
+		return fmt.Errorf("%v; rollback incomplete; compensation queued: %s", cause, compensation.LastError)
+	}
+	if err := a.refreshSkillIndexesAfterMutationChecked(newName); err != nil {
+		return rollback(fmt.Errorf("rename index refresh failed: %w", err))
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_renamed", map[string]string{
+		"skill": oldName, "new_skill": newName, "action": "rename", "decision": "applied", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return rollback(fmt.Errorf("rename audit commit failed: %w", err))
+	}
+	if a.hubUpdCache != nil {
+		a.hubUpdCache.invalidate()
+	}
+	if a.cachedSkillScanner != nil && target.SkillDir != "" {
+		// Remove the pre-rename path from any already-published scan snapshot;
+		// the config overlay now points at newName/newDir and the next scan will
+		// repopulate the new identity.
+		a.cachedSkillScanner.RemoveByDir(filepath.Join(filepath.Dir(target.SkillDir), newName))
+		a.cachedSkillScanner.RemoveByDir(target.SkillDir)
+	}
+	if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.RemoveByName(oldName)
+	}
+	a.skillExecutor.clearSkillListCache()
+	return nil
+}
+
+// RenameNLSkill renames a learned/crafted skill through the shared durable
+// committer. Directory movement is treated as an external transaction phase;
+// config/index/final-audit use the same result and compensation protocol as
+// other Skill mutations.
+func (a *App) RenameNLSkill(oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if oldName == "" || newName == "" {
+		return fmt.Errorf("skill names cannot be empty")
+	}
+	if oldName == newName {
+		return nil
+	}
+	if strings.ContainsAny(newName, "/\\") {
+		return fmt.Errorf("skill name cannot contain path separators")
+	}
+	a.ensureRemoteInfra()
+	if a == nil || a.skillExecutor == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	if err := ensureSkillEvolutionMutationAdmission(a, oldName); err != nil {
+		return err
+	}
+	original := a.skillExecutor.loadSkills()
+	var target *corelib.NLSkillEntry
+	for i := range original {
+		if original[i].Name == oldName || original[i].MatchesName(oldName) {
+			cp := original[i]
+			target = &cp
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("skill %q not found", oldName)
+	}
+	requestID := fmt.Sprintf("evo_rename_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	auditData := map[string]string{"skill": oldName, "new_skill": newName, "action": "rename", "decision": "applied", "via": "operator", "request_id": requestID, "attempt": "1", "config_revision": configRevision, "schema_version": "2", "evidence_mode": "none"}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_rename_started", auditData, "desktop"); err != nil {
+		return fmt.Errorf("rename audit preflight failed: %w", err)
+	}
+	oldDir := strings.TrimSpace(target.SkillDir)
+	newDir := oldDir
+	if oldDir != "" {
+		newDir = filepath.Join(filepath.Dir(oldDir), newName)
+		if _, err := os.Stat(newDir); err == nil {
+			return fmt.Errorf("skill directory %q already exists", newName)
+		}
+	}
+	var definitionBackup []byte
+	var definitionPath string
+	if oldDir != "" {
+		definitionPath, _ = findSkillDefinitionFile(oldDir)
+		if definitionPath != "" {
+			definitionBackup, _ = os.ReadFile(definitionPath)
+		}
+	}
+	candidate := *target
+	candidate.Name = newName
+	if candidate.SkillDir != "" {
+		candidate.SkillDir = newDir
+	}
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return a.skillExecutor.loadSkills() },
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.saveSkills(entries) })
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(entries) })
+		},
+		EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+			if dst == nil || src == nil {
+				return
+			}
+			*dst = *src
+		},
+		ExternalCommit: func() error {
+			if oldDir == "" {
+				return nil
+			}
+			if err := skill.RetryDirectoryRename(oldDir, newDir); err != nil {
+				return err
+			}
+			if definitionPath != "" {
+				path := filepath.Join(newDir, filepath.Base(definitionPath))
+				data := replaceYAMLNameField(string(definitionBackup), oldName, newName)
+				if data == "" {
+					return fmt.Errorf("skill definition has no matching top-level name")
+				}
+				return atomicWriteFile(path, []byte(data))
+			}
+			return nil
+		},
+		ExternalRollback: func() error {
+			if oldDir == "" {
+				return nil
+			}
+			if _, err := os.Stat(newDir); err == nil {
+				if err := skill.RetryDirectoryRename(newDir, oldDir); err != nil {
+					return err
+				}
+			}
+			if definitionPath != "" && len(definitionBackup) > 0 {
+				return atomicWriteFile(filepath.Join(oldDir, filepath.Base(definitionPath)), definitionBackup)
+			}
+			return nil
+		},
+		IndexRefresher: func() error { return a.refreshSkillIndexesAfterMutationChecked(newName) },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "desktop")
+		},
+		ConfigRevision: configRevision,
+	}
+	result := committer.Commit(context.Background(), oldName, &candidate, "skill:definition_renamed", auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		if result.State == "rolled_back" {
+			return fmt.Errorf("rename rolled back: %s", result.FailureReason)
+		}
+		return fmt.Errorf("rename not committed: %s (%s)", result.State, result.FailureReason)
+	}
+	if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.RemoveByName(oldName)
+		a.cachedSkillScanner.RemoveByDir(oldDir)
+	}
+	a.skillExecutor.clearSkillListCache()
+	return nil
 }
 
 // ImportNLSkillZip opens a file dialog to select a zip file, validates it as a
@@ -4986,6 +6159,14 @@ func (a *App) importNLSkillZipPath(selection string) (string, error) {
 var errNoRecognizableSkillDefinition = errors.New("no recognizable skill definition")
 
 func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
+	if a == nil || a.skillExecutor == nil {
+		return "", fmt.Errorf("skill executor not initialized")
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	requestID := fmt.Sprintf("evo_import_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	originalSkills := a.skillExecutor.loadSkills()
 	tmpDir, err := os.MkdirTemp("", "skill-import-*")
 	if err != nil {
 		return "", fmt.Errorf("create temporary skill import directory: %w", err)
@@ -5031,23 +6212,71 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 	if err := os.MkdirAll(primaryDir, 0o755); err != nil {
 		return "", fmt.Errorf("create primary skills directory: %w", err)
 	}
+	plannedDirs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		plannedDirs = append(plannedDirs, filepath.Join(primaryDir, entry.Name))
+	}
+	// Validate every destination before creating the durable rollback record.
+	// This prevents a later validation error from treating an unrelated,
+	// pre-existing directory as an import-created path.
+	for _, dir := range plannedDirs {
+		if _, statErr := os.Stat(dir); statErr == nil {
+			return "", fmt.Errorf("skill directory %q already exists", filepath.Base(dir))
+		} else if !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("check destination skill directory: %w", statErr)
+		}
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_import_started", map[string]string{
+		"skill": entries[0].Name, "action": "import", "decision": "pending", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return "", fmt.Errorf("import audit preflight failed: %w", err)
+	}
+	compensation := skill.NewEvolutionCompensationRecord(requestID, entries[0].Name, "import", "", nil, false, originalSkills, "skill_import_rollback_incomplete")
+	compensation.TransactionState = "prepared"
+	compensation.CleanupStatus = "pending"
+	compensation.SetCreatedDirectories(plannedDirs)
+	// Persist the rollback intent before publishing any directory. A crash at
+	// any subsequent filesystem step can therefore be repaired on restart.
+	if err := skill.PersistEvolutionCompensation(compensation); err != nil {
+		return "", fmt.Errorf("persist import compensation: %w", err)
+	}
+	rollbackImport := func(cause error) error {
+		cleanupImportedSkillDirs(plannedDirs)
+		if a.cachedSkillScanner != nil {
+			for _, dir := range plannedDirs {
+				a.cachedSkillScanner.RemoveByDir(dir)
+			}
+		}
+		if a.skillExecutor != nil {
+			a.skillExecutor.clearSkillListCache()
+		}
+		if err := a.refreshSkillIndexesAfterMutationChecked(entries[0].Name); err != nil {
+			compensation.LastError = fmt.Sprintf("%v (rollback index refresh: %v)", cause, err)
+			compensation.TransactionState = "audit_pending"
+			compensation.CleanupStatus = "pending"
+			_ = skill.ReplaceEvolutionCompensation(compensation)
+			return fmt.Errorf("%v; import rollback incomplete; compensation queued", cause)
+		}
+		if err := skill.ClearEvolutionCompensation(requestID, entries[0].Name, "import"); err != nil {
+			compensation.LastError = fmt.Sprintf("%v (clear rollback compensation: %v)", cause, err)
+			compensation.TransactionState = "rolled_back"
+			compensation.CleanupStatus = "pending"
+			_ = skill.ReplaceEvolutionCompensation(compensation)
+			return fmt.Errorf("%v; import rollback incomplete; compensation queued", cause)
+		}
+		return fmt.Errorf("%v; import rolled back", cause)
+	}
 
 	var installedDirs []string
 	installedEntries := make([]corelib.NLSkillEntry, 0, len(packageRoots))
 	for i, packageRoot := range packageRoots {
 		entry := entries[i]
 		destDir := filepath.Join(primaryDir, entry.Name)
-		if _, err := os.Stat(destDir); err == nil {
-			cleanupImportedSkillDirs(installedDirs)
-			return "", fmt.Errorf("skill %q already exists", entry.Name)
-		} else if !os.IsNotExist(err) {
-			cleanupImportedSkillDirs(installedDirs)
-			return "", fmt.Errorf("check destination skill directory: %w", err)
-		}
 		if err := os.Rename(packageRoot, destDir); err != nil {
 			if err := copySkillPackageRootAtomically(packageRoot, destDir, primaryDir); err != nil {
-				cleanupImportedSkillDirs(installedDirs)
-				return "", err
+				return "", rollbackImport(err)
 			}
 			installedDirs = append(installedDirs, destDir)
 		} else {
@@ -5056,8 +6285,7 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 		installedEntry := *entry
 		installedEntry.SkillDir = destDir
 		if err := writeSkillScanCacheForInstalledEntry(&installedEntry, scanReports[i]); err != nil {
-			cleanupImportedSkillDirs(installedDirs)
-			return "", fmt.Errorf("write skill scan cache: %w", err)
+			return "", rollbackImport(fmt.Errorf("write skill scan cache: %w", err))
 		}
 		installedEntries = append(installedEntries, installedEntry)
 	}
@@ -5065,7 +6293,31 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 	// Instant list refresh: zip import only writes to disk, so without an
 	// immediate cache upsert the UI can keep serving a 10-minute stale skill
 	// index until a background rescan finishes.
-	a.refreshSkillIndexesAfterMutation(entries[0].Name, installedEntries...)
+	if err := a.refreshSkillIndexesAfterMutationChecked(entries[0].Name, installedEntries...); err != nil {
+		return "", rollbackImport(fmt.Errorf("import index refresh failed: %w", err))
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:definition_imported", map[string]string{
+		"skill": entries[0].Name, "action": "import", "decision": "applied", "via": "operator",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	}, "desktop"); err != nil {
+		return "", rollbackImport(fmt.Errorf("import audit commit failed: %w", err))
+	}
+	// Final audit crosses the business-commit boundary. From this point on a
+	// queue cleanup failure must not delete the audited installation; recovery
+	// only retries queue cleanup and keeps the imported Skill blocked.
+	compensation.TransactionState = "committed"
+	compensation.CleanupStatus = "pending"
+	compensation.FailureReason = "post_commit_cleanup_pending"
+	if err := skill.ReplaceEvolutionCompensation(compensation); err != nil {
+		return entries[0].Name, fmt.Errorf("import committed but cleanup state could not be persisted: %w", err)
+	}
+	if err := skill.ClearEvolutionCompensation(requestID, entries[0].Name, "import"); err != nil {
+		compensation.LastError = err.Error()
+		compensation.FailureReason = "post_commit_cleanup_failed"
+		_ = skill.ReplaceEvolutionCompensation(compensation)
+		return entries[0].Name, fmt.Errorf("import committed but cleanup is pending: %w", err)
+	}
 
 	a.emitSkillInstallProgress(entries[0].Name, "done", "Skill imported successfully.", scanReports[0])
 	return entries[0].Name, nil
@@ -5079,8 +6331,18 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 // without a second scanner Invalidate (UpsertSkills already marks stale and
 // schedules a background rescan).
 func (a *App) refreshSkillIndexesAfterMutation(skillName string, installed ...corelib.NLSkillEntry) {
+	if err := a.refreshSkillIndexesAfterMutationChecked(skillName, installed...); err != nil {
+		log.Printf("[skill-index] refresh after mutation failed skill=%q: %v", skillName, err)
+	}
+}
+
+// refreshSkillIndexesAfterMutationChecked is the transactional variant. The
+// skill list/scanner caches are derived and rebuildable, but the routing index
+// must expose provider failures so a caller can compensate instead of claiming
+// a committed definition that is not routable.
+func (a *App) refreshSkillIndexesAfterMutationChecked(skillName string, installed ...corelib.NLSkillEntry) error {
 	if a == nil {
-		return
+		return nil
 	}
 	if len(installed) > 0 && a.cachedSkillScanner != nil {
 		a.cachedSkillScanner.UpsertSkills(installed)
@@ -5093,9 +6355,36 @@ func (a *App) refreshSkillIndexesAfterMutation(skillName string, installed ...co
 		a.cachedSkillScanner.Invalidate()
 	}
 	if a.toolRouter != nil {
-		a.toolRouter.RefreshSkillIndex()
+		if err := a.toolRouter.RefreshSkillIndexChecked(); err != nil {
+			return err
+		}
 	}
 	a.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": skillName})
+	return nil
+}
+
+// refreshSkillIndexesAfterRollbackChecked restores the derived scanner/index
+// from an authoritative pre-image. It avoids re-upserting the forward
+// candidate during rollback when a background scan raced the transaction.
+func (a *App) refreshSkillIndexesAfterRollbackChecked(skillName string, restored []corelib.NLSkillEntry) error {
+	if a == nil {
+		return nil
+	}
+	if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.ReplaceSkills(restored)
+		if a.skillExecutor != nil {
+			a.skillExecutor.clearSkillListCache()
+		}
+	} else if a.skillExecutor != nil {
+		a.skillExecutor.invalidateSkillCache()
+	}
+	if a.toolRouter != nil {
+		if err := a.toolRouter.RefreshSkillIndexChecked(); err != nil {
+			return err
+		}
+	}
+	a.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": skillName})
+	return nil
 }
 
 func cleanupImportedSkillDirs(paths []string) {
@@ -5105,6 +6394,24 @@ func cleanupImportedSkillDirs(paths []string) {
 		}
 		_ = os.RemoveAll(paths[i])
 	}
+}
+
+func installedSkillDirSet(destRoot string) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, dir := range candidateInstalledSkillDirs(destRoot) {
+		set[filepath.Clean(dir)] = struct{}{}
+	}
+	return set
+}
+
+func newlyInstalledSkillDirs(destRoot string, before map[string]struct{}) []string {
+	var out []string
+	for _, dir := range candidateInstalledSkillDirs(destRoot) {
+		if _, exists := before[filepath.Clean(dir)]; !exists {
+			out = append(out, dir)
+		}
+	}
+	return out
 }
 
 func copySkillPackageRootAtomically(packageRoot, destDir, primaryDir string) error {
@@ -5335,13 +6642,20 @@ func skillYAMLStepToEntryStep(s skill.SkillYAMLStep) corelib.NLSkillStep {
 }
 
 func importedSkillEntryFromDefinition(sf *skill.SkillYAMLFile, name, status, skillDir string, steps []corelib.NLSkillStep, defPath string) *corelib.NLSkillEntry {
+	source := "file"
+	if sf != nil && strings.TrimSpace(sf.Source) != "" {
+		source = strings.TrimSpace(sf.Source)
+	}
 	entry := &corelib.NLSkillEntry{
+		SkillID:          strings.TrimSpace(sf.ID),
 		Name:             name,
 		Description:      sf.Description,
 		Triggers:         sf.Triggers,
 		Steps:            steps,
 		Status:           status,
-		Source:           "file",
+		Source:           source,
+		Version:          strings.TrimSpace(sf.Version),
+		HubVersion:       strings.TrimSpace(sf.Version),
 		SkillDir:         skillDir,
 		ProducesArtifact: true,
 	}
@@ -5353,6 +6667,24 @@ func applyImportedSkillDefinitionFields(entry *corelib.NLSkillEntry, sf *skill.S
 	if entry == nil || sf == nil {
 		return
 	}
+	if strings.TrimSpace(sf.ID) != "" {
+		entry.SkillID = strings.TrimSpace(sf.ID)
+	}
+	if strings.TrimSpace(sf.Version) != "" {
+		entry.Version = strings.TrimSpace(sf.Version)
+		entry.HubVersion = strings.TrimSpace(sf.Version)
+	}
+	if strings.TrimSpace(sf.Source) != "" {
+		entry.Source = strings.TrimSpace(sf.Source)
+	}
+	// Verification metadata is definition-owned. Preserve it when loading a
+	// skill directly (for example after a process restart), not only through
+	// the scanner path; otherwise a valid active admission can appear to have
+	// lost its proof until the next full scan.
+	entry.VerifiedAt = strings.TrimSpace(sf.VerifiedAt)
+	entry.VerificationRunID = strings.TrimSpace(sf.VerificationRunID)
+	entry.VerificationDigest = strings.TrimSpace(sf.VerificationDigest)
+	entry.VerificationGateStatus = strings.TrimSpace(sf.VerificationGateStatus)
 	if sf.Description != "" {
 		entry.Description = sf.Description
 	}

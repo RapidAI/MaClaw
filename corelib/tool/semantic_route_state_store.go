@@ -531,6 +531,16 @@ func routeArtifactHasCurrentConsumer(ref RouteArtifactRef, plan ToolPlan) bool {
 			if strings.TrimSpace(dependency.ProducerSelection) == ref.ProducerSelection || strings.TrimSpace(dependency.ArtifactID) == ref.ArtifactID {
 				return true
 			}
+			// Repeat families revise: a draft-then-revise office turn publishes
+			// one artifact per sibling, and the consumer bound to the first
+			// sibling is the consumer of the whole family (the newest revision
+			// is delivered). Exact producer matching would orphan the revision
+			// and report route_state_corrupt on the next retire (2026-08-26,
+			// office×2 budget).
+			if strings.TrimSpace(dependency.ArtifactID) == "" &&
+				RepeatFamilyID(dependency.ProducerSelection) == RepeatFamilyID(ref.ProducerSelection) {
+				return true
+			}
 		}
 	}
 	return false

@@ -56,7 +56,10 @@ func TestIMSemanticWebNeedResolverIgnoresLegacyToolNames(t *testing.T) {
 		Primary: intent.LabelLiveData, Confidence: .98,
 		ToolNames: []string{"call_mcp_tool", "send_to_im", "reference_lookup"},
 	})
-	if err != nil || !managed || len(needs) != 1 {
+	// The declared search family (1 required invocation + the archetype
+	// bundle's 4 optional ceiling siblings, §4.2 max-budget rule) plus the
+	// retrieval archetype bundle's 5 optional web_fetch siblings.
+	if err != nil || !managed || len(needs) != 10 {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "current" || strings.Contains(needs[0].ID, "mcp") {
@@ -74,7 +77,21 @@ func TestIMSemanticWebProviderUsesOneCanonicalSchemaForRenderAndExecution(t *tes
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	definition := defs[0]["function"].(map[string]interface{})
+	// The retrieval bundle also offers web_fetch on this face; locate the
+	// search def by its stable grant name rather than by position.
+	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	if searchName == "" {
+		t.Fatalf("search grant missing: defs=%#v", defs)
+	}
+	var definition map[string]interface{}
+	for _, def := range defs {
+		if extractToolName(def) == searchName {
+			definition = def["function"].(map[string]interface{})
+		}
+	}
+	if definition == nil {
+		t.Fatalf("search def missing for grant %q: defs=%#v", searchName, defs)
+	}
 	parameters := definition["parameters"].(map[string]interface{})
 	properties := parameters["properties"].(map[string]interface{})
 	if _, ok := properties["query"].(map[string]interface{}); !ok || len(properties) != 1 {
@@ -83,7 +100,7 @@ func TestIMSemanticWebProviderUsesOneCanonicalSchemaForRenderAndExecution(t *tes
 	if _, exists := properties["max_results"]; exists {
 		t.Fatalf("host search schema still exposes max_results: %#v", properties)
 	}
-	grant := surface.grants[extractToolName(defs[0])]
+	grant := surface.grants[searchName]
 	selection, ok := semanticSelectionByID(surface.plan, grant.SelectionID)
 	if !ok {
 		t.Fatalf("selection not found for grant=%+v", grant)
@@ -294,7 +311,10 @@ func TestIMSemanticNeedResolverLiveDataKeepsNeedWhenSecondaryIsNonCoding(t *test
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
 		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelNonCoding}, Confidence: .90,
 	})
-	if err != nil || !managed || len(needs) != 1 {
+	// The declared live_data family (1 required invocation + the bundle's 4
+	// optional ceiling siblings, §4.2 max-budget rule) plus the retrieval
+	// bundle's 5 optional web_fetch siblings.
+	if err != nil || !managed || len(needs) != 10 {
 		t.Fatalf("generic secondary discarded live_data need: needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "current" {
@@ -308,11 +328,16 @@ func TestIMSemanticNeedResolverHandlesManagedSecondaryLabel(t *testing.T) {
 		Primary: intent.LabelNonCoding, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: .98,
 		ToolNames: []string{"send_to_im", "web_fetch"},
 	})
-	if err != nil || !managed || len(needs) != 1 {
+	if err != nil || !managed || len(needs) != 5 {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "reference" {
 		t.Fatalf("secondary managed label did not select web capability: %#v", needs[0])
+	}
+	for i, need := range needs[1:] {
+		if need.Capability != needs[0].Capability || need.Qualifiers["freshness"] != "reference" {
+			t.Fatalf("repeat sibling %d must share the search capability: %#v", i+2, need)
+		}
 	}
 }
 
@@ -336,7 +361,9 @@ func TestIMSemanticDocumentReadNeedRequiresTrustedInput(t *testing.T) {
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
 		Primary: intent.LabelDocumentRead, Confidence: .98, ToolNames: []string{"office", "read_file", "send_file"},
 	})
-	if err != nil || !managed || len(needs) != 1 || needs[0].Capability != "document.read.local" {
+	// The declared document read plus the local-file bundle's optional
+	// fs.read/fs.write offers.
+	if err != nil || !managed || len(needs) != 3 || needs[0].Capability != "document.read.local" {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if _, err := semanticNeedsForTrustedDocumentInputs(needs, nil); err == nil || !strings.Contains(err.Error(), "trusted_document_input_missing") {
@@ -386,7 +413,7 @@ func TestIMSemanticAttachmentDeliveryUsesBoundFileArtifact(t *testing.T) {
 	selection = surface.plan.Selections[0]
 	name = extractToolName(defs[0])
 	cb = &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "lansenger", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "lansenger", DestinationID: "user:user-1"}}}
-	if got := cb.ExecuteTool(name, `{}`); !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteTool(name, `{}`); !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("delivery result=%q", got)
 	}
 	resp := &IMAgentResponse{}
@@ -438,7 +465,7 @@ func TestIMSemanticAttachmentDeliveryRejectsForgedBoundArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "lansenger", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "lansenger", DestinationID: "user:user-1"}}}
-	if got := cb.ExecuteTool(extractToolName(defs[0]), `{}`); !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteTool(extractToolName(defs[0]), `{}`); !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("delivery result=%q", got)
 	}
 	if cb.semanticDeliveryFileData != attachment.Data || cb.semanticDeliveryFileData == forged.Base64 {
@@ -454,7 +481,7 @@ func TestSemanticDeliveryProjectionSettlesOnlyAfterClaimedReceipt(t *testing.T) 
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, platform: "lansenger", loopCtx: &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "lansenger", DestinationID: "user:user-1"}}}
-	if got := cb.ExecuteTool(extractToolName(defs[0]), `{}`); !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteTool(extractToolName(defs[0]), `{}`); !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("delivery result=%q", got)
 	}
 	projection := cb.semanticDelivery
@@ -923,7 +950,7 @@ func TestSemanticPlanLiveDataWithNonCodingSecondaryStillPlans(t *testing.T) {
 		"user", "北京天气", "desktop", "root", "turn",
 		&intent.ClassificationResult{Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelNonCoding}, Confidence: .90},
 	)
-	if err != nil || !handled || prepared == nil || len(prepared.plan.Selections) != 1 {
+	if err != nil || !handled || prepared == nil || !planHasCapabilities(prepared.plan, "information.search.web") {
 		t.Fatalf("live_data + non_coding secondary must keep the search plan, prepared=%#v handled=%v err=%v", prepared, handled, err)
 	}
 }
@@ -950,11 +977,12 @@ func TestSemanticPlanTreeConfirmedLiveDataKeepsCurrentFreshness(t *testing.T) {
 	prepared, handled, err := h.semanticPlanForTurnWithClassification(
 		"user", "网上查北京天气", "desktop", "root", "turn", classification,
 	)
-	if err != nil || !handled || prepared == nil || len(prepared.plan.Selections) != 1 {
+	if err != nil || !handled || prepared == nil {
 		t.Fatalf("tree-confirmed live_data must plan lookup, prepared=%#v handled=%v err=%v", prepared, handled, err)
 	}
-	if prepared.plan.Selections[0].FitProof.QualifierBindings["freshness"] != "current" {
-		t.Fatalf("freshness=%q, want current", prepared.plan.Selections[0].FitProof.QualifierBindings["freshness"])
+	selection, ok := semanticSelectionForCapability(prepared.plan, "information.search.web")
+	if !ok || selection.FitProof.QualifierBindings["freshness"] != "current" {
+		t.Fatalf("freshness=%q found=%v, want current", selection.FitProof.QualifierBindings["freshness"], ok)
 	}
 }
 
@@ -982,6 +1010,7 @@ func TestSemanticPlanConfirmedSearchPreservesSemanticGenerateChain(t *testing.T)
 	if !planHasCapabilities(prepared.plan, "information.search.web", "document.generate.file", "artifact.deliver.current_channel") {
 		t.Fatalf("selections=%#v", prepared.plan.Selections)
 	}
+	assertGenerateRequiresOnlyBaseSearch(t, prepared.plan)
 	degraded := &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: .65, Degraded: true}
 	prepared, handled, err = h.semanticPlanForTurnWithClassification(
 		"user", "全网搜索张慧妹资料，并生成pdf报告", "desktop", "root-degraded", "turn", degraded,
@@ -1093,13 +1122,13 @@ func TestSemanticWebSearchUsesFreshnessQualifiedOpaqueBoundCapability(t *testing
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
 	if name != "web_search" {
 		t.Fatalf("function name=%q, want web_search", name)
 	}
-	selection := surface.plan.Selections[0]
-	if selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.MatchedCapability != "information.search.web" || selection.FitProof.QualifierBindings["freshness"] != "reference" {
-		t.Fatalf("selection=%+v, want host search adapter with reference freshness", selection)
+	selection, ok := semanticSelectionForCapability(surface.plan, "information.search.web")
+	if !ok || selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.QualifierBindings["freshness"] != "reference" {
+		t.Fatalf("selection=%+v found=%v, want host search adapter with reference freshness", selection, ok)
 	}
 	callback := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
 	if got := callback.ExecuteTool("public_web_lookup", `{"query":"forged"}`); !strings.Contains(got, "selection_not_authorized") {
@@ -1132,9 +1161,9 @@ func TestSemanticLiveDataSelectsCurrentFreshnessProvider(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	selection := surface.plan.Selections[0]
-	if selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.QualifierBindings["freshness"] != "current" {
-		t.Fatalf("selection=%+v, want host search adapter with current qualifier", selection)
+	selection, ok := semanticSelectionForCapability(surface.plan, "information.search.web")
+	if !ok || selection.AdapterName != semanticTrustedWebSearchAdapter || selection.FitProof.QualifierBindings["freshness"] != "current" {
+		t.Fatalf("selection=%+v found=%v, want host search adapter with current qualifier", selection, ok)
 	}
 }
 
@@ -1151,8 +1180,9 @@ func TestSemanticWebSearchUsesHostAdapterWhenOnlyWrongFreshnessSoupExists(t *tes
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("handled=%v surface=%#v err=%v", handled, surface, err)
 	}
-	if surface.plan.Selections[0].AdapterName != semanticTrustedWebSearchAdapter {
-		t.Fatalf("wrong-freshness soup must stay unpublished, selection=%+v", surface.plan.Selections[0])
+	selection, ok := semanticSelectionForCapability(surface.plan, "information.search.web")
+	if !ok || selection.AdapterName != semanticTrustedWebSearchAdapter {
+		t.Fatalf("wrong-freshness soup must stay unpublished, selection=%+v found=%v", selection, ok)
 	}
 }
 
@@ -1307,8 +1337,9 @@ func TestSemanticAdapterFailureRetiresOpaqueFunctionWithoutCoordinator(t *testin
 	}
 }
 
-func TestCoordinatedSemanticParameterRejectionRetiresOpaqueFunction(t *testing.T) {
+func TestCoordinatedSemanticParameterRejectionKeepsGrantLive(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Beijing weather: clear, 28C", nil }
 	registerBuiltinTools(h.registry, h)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "北京天气", "desktop", "root-web-reject", "turn-web-reject",
@@ -1317,26 +1348,36 @@ func TestCoordinatedSemanticParameterRejectionRetiresOpaqueFunction(t *testing.T
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	name := extractToolName(defs[0])
-	callback := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, checkpointRunID: "loop-web-reject"}
+	name := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	callback := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, tools: defs, checkpointRunID: "loop-web-reject"}
 	first := callback.ExecuteToolCall(name, `{"query":"北京天气","unknown":true}`, "call-invalid")
-	if !strings.Contains(first.Result, "parameter_schema_invalid") {
-		t.Fatalf("invalid parameter result=%+v", first)
+	if !strings.Contains(first.Result, "parameter_unknown_field: unknown") {
+		t.Fatalf("invalid parameter result must localize the offending field: %+v", first)
 	}
-	if _, active := surface.grants[name]; active {
-		t.Fatalf("coordinated rejected grant remained active: %#v", surface.grants)
+	if !strings.Contains(first.Result, "remains available") {
+		t.Fatalf("rejection must tell the model the grant survived: %+v", first)
 	}
-	if _, retired := surface.retiredGrants[name]; !retired {
-		t.Fatalf("coordinated rejected grant lost replay binding: %#v", surface.retiredGrants)
+	// A pre-execution refusal consumes nothing: the grant stays live, the tool
+	// stays rendered, and no durable record is needed because the same invalid
+	// arguments fail validation deterministically on replay. Grant maps are
+	// keyed by the opaque invoke_* name, not the model-visible stable name.
+	resolved := surface.resolveFunctionName(name)
+	if _, active := surface.grants[resolved]; !active {
+		t.Fatalf("pre-execution rejection consumed the grant: %#v", surface.grants)
 	}
-	if tools := callback.BuildTools(""); len(tools) != 0 {
-		t.Fatalf("terminal rejection left model-visible tools=%#v", tools)
+	if _, retired := surface.retiredGrants[resolved]; retired {
+		t.Fatalf("pre-execution rejection retired the grant: %#v", surface.retiredGrants)
 	}
-	if replay := callback.ExecuteToolCall(name, `{"query":"北京天气","unknown":true}`, "call-invalid"); !strings.Contains(replay.Result, "parameter_schema_invalid") {
-		t.Fatalf("same host call did not replay terminal rejection: %+v", replay)
+	if tools := callback.BuildTools(""); len(tools) == 0 {
+		t.Fatal("pre-execution rejection hid the model-visible tool")
 	}
-	if retry := callback.ExecuteToolCall(name, `{"query":"北京天气"}`, "call-valid-after-reject"); !strings.Contains(retry.Result, "invocation_grant_replayed") {
-		t.Fatalf("new host call reused retired grant: %+v", retry)
+	if replay := callback.ExecuteToolCall(name, `{"query":"北京天气","unknown":true}`, "call-invalid"); !strings.Contains(replay.Result, "parameter_unknown_field: unknown") {
+		t.Fatalf("same invalid call must replay the deterministic refusal: %+v", replay)
+	}
+	// The corrected call rides the same still-live grant and executes.
+	retry := callback.ExecuteToolCall(name, `{"query":"北京天气"}`, "call-valid-after-reject")
+	if !strings.Contains(retry.Result, "Beijing weather: clear, 28C") {
+		t.Fatalf("corrected retry did not execute on the surviving grant: %+v", retry)
 	}
 }
 
@@ -1597,7 +1638,7 @@ func TestSemanticScreenshotRequiresArtifactDeliverySelection(t *testing.T) {
 	if deliveryName == "" {
 		t.Fatalf("delivery selection was not materialized: %#v", surface.grants)
 	}
-	if got := cb.ExecuteTool(deliveryName, `{}`); !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteTool(deliveryName, `{}`); !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("delivery result = %q", got)
 	}
 	selectionID := ""
@@ -1663,7 +1704,7 @@ func TestSemanticScreenshotLocalRuntimePlatformUsesCanonicalChannelBinding(t *te
 	}
 	for name, grant := range surface.grants {
 		if grant.AdapterName == "semantic_deliver_current_image" {
-			if got := cb.ExecuteTool(name, `{}`); !strings.Contains(got, "prepared for delivery") {
+			if got := cb.ExecuteTool(name, `{}`); !strings.Contains(got, "Delivery committed") {
 				t.Fatalf("delivery result = %q", got)
 			}
 			if cb.semanticDelivery == nil || cb.semanticDelivery.ChannelScope != "lansenger" {
@@ -1724,7 +1765,7 @@ func TestSemanticDeliveryConsumesOnlyItsPlannedProducerArtifact(t *testing.T) {
 	if err := surface.artifacts.registerPublished(foreignRef); err == nil {
 		t.Fatal("route state accepted an artifact from an unplanned producer")
 	}
-	if got := cb.ExecuteTool(deliveryName, `{}`); !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteTool(deliveryName, `{}`); !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("delivery result=%q", got)
 	}
 	if cb.semanticDeliveryImageKey != testOnePixelPNGBase64 {
@@ -1766,7 +1807,7 @@ func TestRecoveredSemanticSurfaceHidesDeliveryAwaitingReceipt(t *testing.T) {
 	// the host journal before invoking the semantic executor. Receipt-bound
 	// effects must retire this opaque function even though they cannot mark the
 	// DAG selection complete yet.
-	if got := cb.ExecuteToolCall(deliveryName, `{}`, "call:receipt-bound-delivery").Result; !strings.Contains(got, "prepared for delivery") {
+	if got := cb.ExecuteToolCall(deliveryName, `{}`, "call:receipt-bound-delivery").Result; !strings.Contains(got, "Delivery committed") {
 		t.Fatalf("delivery did not prepare: %q", got)
 	}
 	selectionID := surface.retiredGrants[deliveryName].SelectionID
@@ -1847,11 +1888,20 @@ func TestSemanticDynamicMCPUsesOpaqueBoundCatalogWithoutRequestStartup(t *testin
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("dynamic surface defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	name := extractToolName(defs[0])
-	if !strings.HasPrefix(name, "invoke_") || strings.Contains(name, "ping") || strings.Contains(defs[0]["function"].(map[string]interface{})["description"].(string), "untrusted") {
-		t.Fatalf("dynamic MCP leaked identity: %#v", defs[0])
+	var dynamicDef map[string]interface{}
+	for _, def := range defs {
+		if strings.HasPrefix(extractToolName(def), "invoke_") {
+			dynamicDef = def
+		}
 	}
-	parameters := defs[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})
+	if dynamicDef == nil {
+		t.Fatalf("dynamic MCP def missing: %#v", defs)
+	}
+	name := extractToolName(dynamicDef)
+	if strings.Contains(name, "ping") || strings.Contains(dynamicDef["function"].(map[string]interface{})["description"].(string), "untrusted") {
+		t.Fatalf("dynamic MCP leaked identity: %#v", dynamicDef)
+	}
+	parameters := dynamicDef["function"].(map[string]interface{})["parameters"].(map[string]interface{})
 	if _, leaked := parameters["server_id"]; leaked {
 		t.Fatalf("dynamic MCP leaked server selector: %#v", parameters)
 	}
@@ -1866,8 +1916,12 @@ func TestSemanticDynamicMCPUsesOpaqueBoundCatalogWithoutRequestStartup(t *testin
 		t.Fatalf("revoked dynamic MCP executed: %q", got)
 	}
 	defs, surface, handled, err = h.semanticCallSurfaceForSharedTurn("user-1", "current information", "desktop")
-	if err != nil || !handled || surface == nil || surface.plan.Selections[0].Provider.Kind != "builtin" {
-		t.Fatalf("revoked MCP must fall back to host search handled=%v err=%v surface=%#v", handled, err, surface)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("revoked MCP must still plan: handled=%v err=%v surface=%#v", handled, err, surface)
+	}
+	searchSelection, found := semanticSelectionForCapability(surface.plan, "information.search.web")
+	if !found || searchSelection.Provider.Kind != "builtin" {
+		t.Fatalf("revoked MCP must fall back to host search: selection=%+v found=%v", searchSelection, found)
 	}
 }
 
@@ -1970,7 +2024,15 @@ func TestSemanticDynamicBindingStalePublishesRestrictedReplacementRevision(t *te
 	if err != nil || !handled || parent == nil || len(defs) < 1 {
 		t.Fatalf("parent defs=%#v handled=%v parent=%#v err=%v", defs, handled, parent, err)
 	}
-	parentName := extractToolName(defs[0])
+	parentName := ""
+	for _, def := range defs {
+		if strings.HasPrefix(extractToolName(def), "invoke_") {
+			parentName = extractToolName(def)
+		}
+	}
+	if parentName == "" {
+		t.Fatalf("dynamic parent def missing: %#v", defs)
+	}
 	parentGrant := parent.grants[parentName]
 	parentSelection, ok := semanticSelectionByID(parent.plan, parentGrant.SelectionID)
 	if !ok || parentSelection.Provider.Kind != "mcp" {
@@ -1995,14 +2057,18 @@ func TestSemanticDynamicBindingStalePublishesRestrictedReplacementRevision(t *te
 		if err := parent.routeState.IsCurrent(parent.scope); err == nil || !strings.Contains(err.Error(), "superseded") {
 			t.Fatalf("parent revision remained executable: %v", err)
 		}
-		if len(callback.tools) != 1 || len(child.grants) != 1 {
-			t.Fatalf("child exposure tools=%#v grants=%#v", callback.tools, child.grants)
-		}
-		childName := extractToolName(callback.tools[0])
-		childGrant := child.grants[childName]
-		childSelection, ok := semanticSelectionByID(child.plan, childGrant.SelectionID)
+		childSelection, ok := semanticSelectionForCapability(child.plan, "information.search.web")
 		if !ok || childSelection.Provider.Kind != "builtin" || childSelection.AdapterName != "bounded_fallback_lookup" {
 			t.Fatalf("child widened or retained stale provider: %+v", childSelection)
+		}
+		childName := ""
+		for grantName, grant := range child.grants {
+			if grant.SelectionID == childSelection.ID {
+				childName = grantName
+			}
+		}
+		if childName == "" || semanticDefForGrantName(callback.tools, childName) == nil {
+			t.Fatalf("child exposure tools=%#v grants=%#v", callback.tools, child.grants)
 		}
 		if childName == parentName || callback.ExecuteToolCall(parentName, `{}`, "call-old-function").Outcome != agent.ToolExecutionOutcomeError {
 			t.Fatalf("retired parent function remained usable: old=%q child=%q", parentName, childName)
@@ -2019,10 +2085,10 @@ func TestSemanticDynamicBindingStalePublishesRestrictedReplacementRevision(t *te
 		"user-1", "current information", "desktop", "root-dynamic-replan-fresh", "turn-dynamic-replan-fresh",
 		&intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: .98},
 	)
-	if err != nil || !handled || fresh == nil || len(freshDefs) != 1 {
+	if err != nil || !handled || fresh == nil || len(freshDefs) == 0 {
 		t.Fatalf("fresh plan after revoke defs=%#v handled=%v err=%v", freshDefs, handled, err)
 	}
-	freshSelection, ok := semanticSelectionByID(fresh.plan, fresh.grants[extractToolName(freshDefs[0])].SelectionID)
+	freshSelection, ok := semanticSelectionForCapability(fresh.plan, "information.search.web")
 	if !ok || freshSelection.Provider.Kind == "mcp" {
 		t.Fatalf("revoked MCP remained selected: %+v", freshSelection)
 	}
@@ -2046,8 +2112,10 @@ func TestSemanticDynamicSkillIsQuarantinedWithoutReviewedBinding(t *testing.T) {
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("unreviewed skill planning handled=%v surface=%#v err=%v", handled, surface, err)
 	}
-	if surface.plan.Selections[0].Provider.Kind == "skill" {
-		t.Fatalf("unreviewed skill was routable: %+v", surface.plan.Selections[0])
+	for _, selection := range surface.plan.Selections {
+		if selection.Provider.Kind == "skill" {
+			t.Fatalf("unreviewed skill was routable: %+v", selection)
+		}
 	}
 	entry := app.skillExecutor.loadSkills()[0]
 	contracts, err := app.semanticDynamicCapabilityContractsForApp()
@@ -2065,11 +2133,20 @@ func TestSemanticDynamicSkillIsQuarantinedWithoutReviewedBinding(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("reviewed skill surface defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
-	if name := extractToolName(defs[0]); !strings.HasPrefix(name, "invoke_") || strings.Contains(name, "skill") || strings.Contains(defs[0]["function"].(map[string]interface{})["description"].(string), "untrusted") {
-		t.Fatalf("skill identity leaked: %#v", defs[0])
+	var skillDef map[string]interface{}
+	for _, def := range defs {
+		if strings.HasPrefix(extractToolName(def), "invoke_") {
+			skillDef = def
+		}
 	}
-	if _, ok := defs[0]["function"].(map[string]interface{})["parameters"].(map[string]interface{})["skill_name"]; ok {
-		t.Fatalf("skill selector leaked: %#v", defs[0])
+	if skillDef == nil {
+		t.Fatalf("reviewed skill def missing: %#v", defs)
+	}
+	if name := extractToolName(skillDef); strings.Contains(name, "skill") || strings.Contains(skillDef["function"].(map[string]interface{})["description"].(string), "untrusted") {
+		t.Fatalf("skill identity leaked: %#v", skillDef)
+	}
+	if _, ok := skillDef["function"].(map[string]interface{})["parameters"].(map[string]interface{})["skill_name"]; ok {
+		t.Fatalf("skill selector leaked: %#v", skillDef)
 	}
 	_ = context.Background() // guards accidental future conversion of this test to a model-controlled context
 }
@@ -2215,20 +2292,36 @@ func TestSemanticLiveDataSecondTurnDoesNotInheritCompletedSearch(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) < 1 {
 		t.Fatalf("first defs=%#v handled=%v err=%v", defs, handled, err)
 	}
-	name := extractToolName(defs[0])
+	name := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	if name != "web_search" {
+		t.Fatalf("first turn search grant=%q, want web_search", name)
+	}
 	first.Runtime.Execution = ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light"}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, loopCtx: first, tools: defs, systemPrompt: "light fence"}
 	if !cb.IsToolAllowed(name) {
 		t.Fatalf("light authorizer rejected granted lookup %q", name)
 	}
-	if filtered := agent.FilterToolDefinitionsByAuthorizer(cb, defs); len(filtered) != 1 {
+	if filtered := agent.FilterToolDefinitionsByAuthorizer(cb, defs); semanticDefForGrantName(filtered, name) == nil {
 		t.Fatalf("light authorizer stripped lookup: %#v", filtered)
+	}
+	consumedToken := ""
+	if grant, ok := surface.grants[name]; ok {
+		consumedToken = grant.Token
+	}
+	if consumedToken == "" {
+		t.Fatal("first turn must start with a live search grant")
 	}
 	if got := cb.ExecuteTool(name, `{"query":"北京天气"}`); !strings.Contains(got, "Public web results") || !strings.Contains(got, "北京天气") {
 		t.Fatalf("first search=%q", got)
 	}
-	if _, stillIssued := surface.grants[name]; stillIssued {
+	// The consumed sibling's grant is retired from the active surface; the
+	// family's optional ceiling siblings keep the stable name live under a
+	// NEW grant, exactly as on a declared search turn (§4.2 max-budget rule).
+	if grant, stillIssued := surface.grants[name]; stillIssued && grant.Token == consumedToken {
 		t.Fatal("consumed lookup grant remained on the active surface")
+	}
+	if retired, ok := surface.retiredGrants[name]; !ok || retired.Token != consumedToken {
+		t.Fatalf("consumed lookup grant was not retired: %#v", surface.retiredGrants)
 	}
 	if !cb.RefreshAfterToolExecution(name) {
 		t.Fatal("consumed lookup must refresh so the loop drops the spent tool")
@@ -2236,10 +2329,7 @@ func TestSemanticLiveDataSecondTurnDoesNotInheritCompletedSearch(t *testing.T) {
 	if cb.systemPrompt != "light fence" {
 		t.Fatalf("light prompt was replaced: %q", cb.systemPrompt)
 	}
-	if len(cb.BuildTools("")) != 0 {
-		t.Fatalf("consumed lookup still advertised tools: %#v", cb.BuildTools(""))
-	}
-	if cb.IsToolAllowed("write_file") || cb.IsToolAllowed("web_fetch") {
+	if cb.IsToolAllowed("write_file") {
 		t.Fatal("ungranted tools were authorized after lookup")
 	}
 	second := NewLoopContext("chat", 3, nil)
@@ -2252,7 +2342,7 @@ func TestSemanticLiveDataSecondTurnDoesNotInheritCompletedSearch(t *testing.T) {
 	if surface2.scope.RootTaskID == surface.scope.RootTaskID {
 		t.Fatalf("chat turns shared lineage %q", surface.scope.RootTaskID)
 	}
-	name2 := extractToolName(defs2[0])
+	name2 := semanticGrantNameForAdapter(surface2, semanticTrustedWebSearchAdapter)
 	if name2 != "web_search" {
 		t.Fatalf("second turn name=%q, want web_search", name2)
 	}
@@ -2441,15 +2531,15 @@ func TestRoutingMissRecoverAndInjectionKeepPrivilegeStripped(t *testing.T) {
 	}
 	leaky := []map[string]interface{}{
 		{"function": map[string]interface{}{"name": "read_file"}},
-		{"function": map[string]interface{}{"name": "bash"}},
-		{"function": map[string]interface{}{"name": "write_file"}},
+		{"function": map[string]interface{}{"name": "edit_file"}},
+		{"function": map[string]interface{}{"name": "download_file"}},
 	}
 	restored, _, _ := h.restoreToolsAfterSkillRecover("user-1", ctx, leaky, agentLoopPhase{})
 	augmented, _ := h.finalizeInjectionAugmentedTools(ctx, "user-1", leaky)
 	for _, got := range [][]map[string]interface{}{restored, augmented} {
 		for _, def := range got {
 			switch extractToolName(def) {
-			case "bash", "write_file":
+			case "edit_file", "download_file":
 				t.Fatalf("leftover rebuild must not restore %s", extractToolName(def))
 			}
 		}
@@ -2504,13 +2594,18 @@ func TestRoutingMissLeftoverDropsPrivilegeAndGovernedGenerate(t *testing.T) {
 	for _, def := range got {
 		names[extractToolName(def)] = true
 	}
-	for _, name := range []string{"bash", "write_file", "download_file", "call_mcp_tool"} {
+	for _, name := range []string{"download_file", "call_mcp_tool"} {
 		if names[name] {
 			t.Fatalf("routing miss must not expand privilege with %s", name)
 		}
 	}
-	if !names["read_file"] || !names["web_fetch"] {
-		t.Fatalf("routing miss must keep read/fetch: %v", names)
+	// bash and write_file are the guaranteed basic capability floor: a
+	// routing-miss leftover turn must keep them so basic functionality
+	// survives a degraded or offline planner.
+	for _, name := range []string{"read_file", "web_fetch", "bash", "write_file"} {
+		if !names[name] {
+			t.Fatalf("routing miss must keep basic-floor tool %s: %v", name, names)
+		}
 	}
 	if names["generate_pdf"] {
 		t.Fatalf("routing miss must not expose governed generate_pdf: %v", names)
@@ -2636,13 +2731,13 @@ func TestRoutingMissUnknownIntentStillBoundsLeftover(t *testing.T) {
 	got := applyRoutingMissLeftoverTools(
 		[]map[string]interface{}{
 			{"function": map[string]interface{}{"name": "memory"}},
-			{"function": map[string]interface{}{"name": "bash"}},
+			{"function": map[string]interface{}{"name": "edit_file"}},
 		},
 		nil,
 		ctx,
 	)
 	if len(got) != 1 || extractToolName(got[0]) != "memory" {
-		t.Fatalf("unknown leftover must drop bash, got %#v", got)
+		t.Fatalf("unknown leftover must drop edit_file, got %#v", got)
 	}
 }
 
@@ -2676,8 +2771,8 @@ func TestRoutingMissWorkflowGenerateDoesNotReopenLegacyAdapter(t *testing.T) {
 	for _, def := range got {
 		names[extractToolName(def)] = true
 	}
-	if names["bash"] || names["generate_pdf"] || !names["read_file"] {
-		t.Fatalf("workflow generate fallback must strip bash and generate_pdf: %v", names)
+	if !names["bash"] || names["generate_pdf"] || !names["read_file"] {
+		t.Fatalf("workflow generate fallback must strip generate_pdf but keep basic-floor bash/read_file: %v", names)
 	}
 }
 
@@ -2695,12 +2790,24 @@ func TestRoutingMissNilIntentStillBoundsLeftover(t *testing.T) {
 			{"function": map[string]interface{}{"name": "memory"}},
 			{"function": map[string]interface{}{"name": "bash"}},
 			{"function": map[string]interface{}{"name": "write_file"}},
+			{"function": map[string]interface{}{"name": "edit_file"}},
 		},
 		[]map[string]interface{}{{"function": map[string]interface{}{"name": "generate_pdf"}}},
 		ctx,
 	)
-	if len(got) != 1 || extractToolName(got[0]) != "memory" {
-		t.Fatalf("nil-intent leftover must drop writers, got %#v", got)
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[extractToolName(def)] = true
+	}
+	// bash/write_file are the guaranteed basic floor and survive a nil-intent
+	// miss; editors and governed publishers still do not leak.
+	for _, name := range []string{"memory", "bash", "write_file"} {
+		if !names[name] {
+			t.Fatalf("nil-intent leftover must keep basic-floor %s, got %#v", name, got)
+		}
+	}
+	if names["edit_file"] || names["generate_pdf"] {
+		t.Fatalf("nil-intent leftover must drop edit_file/generate_pdf, got %#v", got)
 	}
 }
 
@@ -2743,13 +2850,13 @@ func TestRoutingMissChatProjectionAlsoStripsPrivilege(t *testing.T) {
 	got := applyRoutingMissLeftoverTools(
 		[]map[string]interface{}{
 			{"function": map[string]interface{}{"name": "memory"}},
-			{"function": map[string]interface{}{"name": "bash"}},
+			{"function": map[string]interface{}{"name": "edit_file"}},
 		},
 		nil,
 		ctx,
 	)
 	if len(got) != 1 || extractToolName(got[0]) != "memory" {
-		t.Fatalf("chat leftover must drop bash, got %#v", got)
+		t.Fatalf("chat leftover must drop edit_file, got %#v", got)
 	}
 }
 

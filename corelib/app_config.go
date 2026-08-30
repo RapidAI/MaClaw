@@ -108,7 +108,7 @@ type AppConfig struct {
 	WebSearchCurrentProvider string                     `json:"web_search_current_provider,omitempty"`
 	WebSearchStrategy        WebSearchStrategy          `json:"web_search_strategy,omitempty"`
 	MaclawAgentMaxIterations int                        `json:"maclaw_agent_max_iterations,omitempty"`
-	MaclawLLMThinkingMode    string                     `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = auto, "enabled" | "disabled"
+	MaclawLLMThinkingMode    string                     `json:"maclaw_llm_thinking_mode,omitempty"` // global: "" = unset (resolves to enabled), "enabled" | "disabled"
 	SubAgentConcurrency      int                        `json:"subagent_concurrency,omitempty"`
 	SubAgentFullAccess       bool                       `json:"subagent_full_access,omitempty"`
 	// MaClaw Role configuration
@@ -133,6 +133,18 @@ type AppConfig struct {
 	// MACLAW_DISABLE_SKILL_EVOLUTION still overrides when set. Manual
 	// manage_skill trigger_repair/trigger_optimize remain available.
 	SkillEvolutionEnabled *bool `json:"skill_evolution_enabled,omitempty"`
+	// SkillMaintenanceObservationEnabled controls read-only usage observation,
+	// maintenance planning, and experience ingestion. Governance audit remains
+	// always-on for lifecycle safety. It is independent from SkillEvolutionEnabled
+	// so operators can keep evidence collection on while pausing automatic
+	// repair/optimize/promote. Nil means enabled.
+	SkillMaintenanceObservationEnabled *bool `json:"skill_maintenance_observation_enabled,omitempty"`
+	// SkillEvolutionMaxConcurrentWorkers bounds unrelated evolution jobs. A
+	// value <=0 uses the default (2); values are capped by the GUI patch path.
+	SkillEvolutionMaxConcurrentWorkers int `json:"skill_evolution_max_concurrent_workers,omitempty"`
+	// SkillEvolutionWorkerTimeoutSeconds bounds one background evolution job.
+	// Values outside the supported range resolve to the default (180 seconds).
+	SkillEvolutionWorkerTimeoutSeconds int `json:"skill_evolution_worker_timeout_seconds,omitempty"`
 	// EmbedHWAccel prefers NPU when present. Nil means default true.
 	// Detect-fail machines must not persist false just because NPU is absent.
 	EmbedHWAccel *bool `json:"embed_hw_accel,omitempty"`
@@ -1017,6 +1029,51 @@ func (c *AppConfig) SetSkillEvolutionEnabled(v bool) {
 		return
 	}
 	c.SkillEvolutionEnabled = &v
+}
+
+// IsSkillMaintenanceObservationEnabled reports whether read-only maintenance
+// observation and experience collection are enabled. Nil defaults to true.
+func (c AppConfig) IsSkillMaintenanceObservationEnabled() bool {
+	return c.SkillMaintenanceObservationEnabled == nil || *c.SkillMaintenanceObservationEnabled
+}
+
+// SetSkillMaintenanceObservationEnabled persists the observation switch.
+func (c *AppConfig) SetSkillMaintenanceObservationEnabled(v bool) {
+	if c == nil {
+		return
+	}
+	c.SkillMaintenanceObservationEnabled = &v
+}
+
+const DefaultSkillEvolutionMaxConcurrentWorkers = 2
+
+const (
+	DefaultSkillEvolutionWorkerTimeoutSeconds = 180
+	MinSkillEvolutionWorkerTimeoutSeconds     = 30
+	MaxSkillEvolutionWorkerTimeoutSeconds     = 30 * 60
+)
+
+// EffectiveSkillEvolutionMaxConcurrentWorkers returns a bounded worker count.
+func (c AppConfig) EffectiveSkillEvolutionMaxConcurrentWorkers() int {
+	v := c.SkillEvolutionMaxConcurrentWorkers
+	if v <= 0 {
+		return DefaultSkillEvolutionMaxConcurrentWorkers
+	}
+	if v > 16 {
+		return 16
+	}
+	return v
+}
+
+// EffectiveSkillEvolutionWorkerTimeoutSeconds returns a bounded worker
+// timeout. Keeping this policy in AppConfig gives GUI and headless callers the
+// same deadline semantics.
+func (c AppConfig) EffectiveSkillEvolutionWorkerTimeoutSeconds() int {
+	v := c.SkillEvolutionWorkerTimeoutSeconds
+	if v < MinSkillEvolutionWorkerTimeoutSeconds || v > MaxSkillEvolutionWorkerTimeoutSeconds {
+		return DefaultSkillEvolutionWorkerTimeoutSeconds
+	}
+	return v
 }
 
 // EmbedHWAccelEnabled returns the persisted prefer-NPU flag (default true).

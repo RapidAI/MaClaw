@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -980,6 +979,35 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 	if a.skillExecutor == nil {
 		return false, fmt.Errorf("skill executor not initialized")
 	}
+	// The queue is a system-wide safety boundary. Do this before any remote
+	// download or filesystem mutation so an unreadable/unsupported queue cannot
+	// be bypassed by an Enterprise/ClawHub/GitHub install path.
+	if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+		return false, fmt.Errorf("managed skill install blocked: evolution compensation queue unavailable: %w", err)
+	}
+	// Managed installs mutate YAML/config/index state. Prevent asynchronous
+	// status-overlay reconciliation from racing the transaction.
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	requestID := fmt.Sprintf("evo_managed_install_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	var compensation cskill.EvolutionCompensationRecord
+	var txnActive bool
+	defer func() {
+		if !txnActive {
+			return
+		}
+		rollbackErr := cskill.RestoreEvolutionCompensation(compensation,
+			func(skills []corelib.NLSkillEntry) error {
+				return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(skills) })
+			}, func() error { return a.refreshSkillIndexesAfterMutationChecked(item.ID) })
+		if rollbackErr != nil {
+			compensation.LastError = rollbackErr.Error()
+			_ = cskill.PersistEvolutionCompensation(compensation)
+			return
+		}
+		_ = cskill.ClearEvolutionCompensation(requestID, compensation.Skill, "install")
+	}()
 	skillID := firstCapabilityNonEmpty(stringFromMap(metadata, "skill_id"), item.CapabilityID, item.ID)
 	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", map[string]interface{}{"action": "install", "source": originSource, "skill_id": skillID, "install_ref": stringFromMap(metadata, "install_ref")}); !ok {
 		return false, fmt.Errorf("%s", reason)
@@ -1063,27 +1091,19 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 		a.emitSkillInstallProgress(entry.Name, "approved", skillInstallRiskAllowedStatusForSource(originSource), report)
 		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", report.FinalLevel, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s: %s", item.ID, entry.Name, report.Summary))
 	}
-	finalRoot, err := a.primarySkillsDir()
-	if err != nil {
-		cskill.CleanupStaging(stagingDir)
+	if existing == nil {
+		if err := a.commitStagedSkillInstall(ctx, entry, stagingDir, "managed_capability_external", report, requestID, configRevision); err != nil {
+			return false, err
+		}
+		go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
+		return true, nil
+	}
+	// Existing managed-capability installs use the same shared directory
+	// transaction as fresh installs. The committer preserves runtime counters,
+	// retains .prev until final audit, and owns rollback/cleanup state.
+	if err := a.commitStagedSkillInstallWithExisting(ctx, entry, stagingDir, "managed_capability_external", report, requestID, configRevision, existing); err != nil {
 		return false, err
 	}
-	finalDir, err := cskill.CommitStagingToDir(stagingDir, entry.Name, finalRoot)
-	if err != nil {
-		cskill.CleanupStaging(stagingDir)
-		return false, err
-	}
-	rewriteSkillStepWorkingDir(entry, finalDir)
-	entry.SkillDir = finalDir
-	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
-		_ = os.RemoveAll(finalDir)
-		return false, fmt.Errorf("write skill scan cache: %w", err)
-	}
-	if err := a.registerOrReplaceManagedCapabilitySkill(*entry, existing); err != nil {
-		_ = os.RemoveAll(finalDir)
-		return false, err
-	}
-	a.emitSkillInstallProgress(entry.Name, "done", "Managed capability skill installed successfully.", report)
 	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 	return true, nil
 }
@@ -1120,6 +1140,30 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 	if a.skillExecutor == nil {
 		return false, fmt.Errorf("skill executor not initialized")
 	}
+	if err := cskill.CheckEvolutionCompensationQueue(); err != nil {
+		return false, fmt.Errorf("managed Hub install blocked: evolution compensation queue unavailable: %w", err)
+	}
+	a.skillExecutor.suspendStatusOverlayPersistence()
+	defer a.skillExecutor.resumeStatusOverlayPersistence()
+	requestID := fmt.Sprintf("evo_managed_hub_install_%d", time.Now().UnixNano())
+	configRevision := skillEvolutionConfigRevision(a)
+	var compensation cskill.EvolutionCompensationRecord
+	var txnActive bool
+	defer func() {
+		if !txnActive {
+			return
+		}
+		rollbackErr := cskill.RestoreEvolutionCompensation(compensation,
+			func(skills []corelib.NLSkillEntry) error {
+				return a.skillExecutor.withSkillListMutate(func() error { return a.skillExecutor.restoreSkillsSnapshot(skills) })
+			}, func() error { return a.refreshSkillIndexesAfterMutationChecked(capabilityID) })
+		if rollbackErr != nil {
+			compensation.LastError = rollbackErr.Error()
+			_ = cskill.PersistEvolutionCompensation(compensation)
+			return
+		}
+		_ = cskill.ClearEvolutionCompensation(requestID, compensation.Skill, "install")
+	}()
 	if existing := a.findManagedCapabilitySkill(capabilityID, skillID, ""); existing != nil && managedSkillVersionCurrent(*existing, versionKey) {
 		return false, nil
 	}
@@ -1193,27 +1237,16 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 			fmt.Sprintf("current policy allowed managed capability %s skill %s: %s", capabilityID, entry.Name, report.Summary),
 		)
 	}
-	finalRoot, err := a.primarySkillsDir()
-	if err != nil {
-		cskill.CleanupStaging(stagingDir)
+	if existing == nil {
+		if err := a.commitStagedSkillInstall(ctx, entry, stagingDir, "managed_capability_hub", report, requestID, configRevision); err != nil {
+			return false, err
+		}
+		go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
+		return true, nil
+	}
+	if err := a.commitStagedSkillInstallWithExisting(ctx, entry, stagingDir, "managed_capability_hub", report, requestID, configRevision, existing); err != nil {
 		return false, err
 	}
-	finalDir, err := cskill.CommitStagingToDir(stagingDir, entry.Name, finalRoot)
-	if err != nil {
-		cskill.CleanupStaging(stagingDir)
-		return false, err
-	}
-	rewriteSkillStepWorkingDir(entry, finalDir)
-	entry.SkillDir = finalDir
-	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
-		_ = os.RemoveAll(finalDir)
-		return false, fmt.Errorf("write skill scan cache: %w", err)
-	}
-	if err := a.registerOrReplaceManagedCapabilitySkill(*entry, existing); err != nil {
-		_ = os.RemoveAll(finalDir)
-		return false, err
-	}
-	a.emitSkillInstallProgress(entry.Name, "done", "Managed capability skill installed successfully.", report)
 	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 	return true, nil
 }

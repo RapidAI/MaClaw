@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { CheckUpdate, CheckUpdateBeta, PatchConfigFields } from '../../../wailsjs/go/main/App';
+import { CheckUpdate, CheckUpdateBeta, ListRollbackReleases, PatchConfigFields } from '../../../wailsjs/go/main/App';
 
 // Info panels use var(--theme-info-bg). Latest marker uses the check icon escape below.
+
+export type RollbackRelease = {
+    build: string;
+    published_at: string;
+    download_url: string;
+    sha256?: string;
+    download_unavailable?: boolean;
+};
 
 type UpdateModalProps = {
     updateResult: any;
@@ -18,6 +26,7 @@ type UpdateModalProps = {
     onInstall: () => void;
     onClose: () => void;
     onUpdateResultChange?: (result: any) => void;
+    onRollbackReleaseChange?: (release: RollbackRelease | null) => void;
 };
 
 export function downloadSourceName(value: unknown): string {
@@ -36,6 +45,32 @@ export function downloadSourceName(value: unknown): string {
     if (normalizedHost.includes('myqcloud.com') || normalizedHost.includes('cos.')) return 'Tencent Cloud COS';
     if (normalizedHost.includes('cloudflare') || normalizedHost.includes('r2.')) return 'Cloudflare R2';
     return host;
+}
+
+export function rollbackUpdateResult(release: RollbackRelease) {
+    return {
+        has_update: true,
+        latest_version: release.build,
+        tag_name: release.build,
+        download_url: release.download_url,
+        sha256: release.sha256 || '',
+        download_unavailable: Boolean(release.download_unavailable),
+        channel: 'stable',
+        is_rollback: true,
+    };
+}
+
+export function rollbackReleaseDate(release: Pick<RollbackRelease, 'published_at'>): string {
+    const publishedAt = String(release.published_at || '').trim();
+    // The server sends an ISO timestamp. Keep its calendar date stable across
+    // timezones rather than converting it to the browser's local date.
+    return publishedAt ? publishedAt.slice(0, 10) : '';
+}
+
+export function rollbackReleaseLabel(release: { build?: unknown; published_at?: unknown }): string {
+    const build = String(release.build || '').trim();
+    const date = rollbackReleaseDate({ published_at: String(release.published_at || '') });
+    return date ? `${build} · ${date}` : build;
 }
 
 export function failedUpdateResult(message: string) {
@@ -73,9 +108,14 @@ export const UpdateModal = ({
     onInstall,
     onClose,
     onUpdateResultChange,
+    onRollbackReleaseChange,
 }: UpdateModalProps) => {
     const [betaChecked, setBetaChecked] = useState(preferBetaChannel ?? false);
     const [betaLoading, setBetaLoading] = useState(false);
+    const [rollbackOpen, setRollbackOpen] = useState(false);
+    const [rollbackLoading, setRollbackLoading] = useState(false);
+    const [rollbackError, setRollbackError] = useState('');
+    const [rollbackReleases, setRollbackReleases] = useState<RollbackRelease[]>([]);
     // Cache the stable result so we can restore it when user unchecks beta
     const stableResultRef = useRef(updateResult);
     // Monotonic id so out-of-order CheckUpdate* responses cannot clobber newer UI state
@@ -158,6 +198,23 @@ export const UpdateModal = ({
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+    const showRollback = () => {
+        setRollbackOpen(true);
+        setRollbackError('');
+        setRollbackLoading(true);
+        ListRollbackReleases()
+            .then((releases: RollbackRelease[]) => setRollbackReleases(Array.isArray(releases) ? releases : []))
+            .catch(() => {
+                setRollbackReleases([]);
+                setRollbackError(t('rollbackLoadFailed'));
+            })
+            .finally(() => setRollbackLoading(false));
+    };
+
+    const selectRollbackRelease = (release: RollbackRelease) => {
+        onRollbackReleaseChange?.(release);
+        setRollbackOpen(false);
+    };
     const handleBetaToggle = (checked: boolean) => {
         setBetaChecked(checked);
         // Persist the preference so startup auto-check uses the right channel
@@ -200,7 +257,37 @@ export const UpdateModal = ({
                     </label>
                 </div>
 
-                {betaLoading ? (
+                {rollbackOpen ? (
+                    <div className="update-modal__info update-modal__rollback" aria-live="polite">
+                        <div className="update-modal__rollback-heading">
+                            <div>
+                                <div className="update-modal__label">{t('rollbackVersions')}</div>
+                                <p>{t('rollbackHint')}</p>
+                            </div>
+                            <button type="button" className="btn-link" onClick={() => setRollbackOpen(false)}>{t('back')}</button>
+                        </div>
+                        {rollbackLoading ? <p className="update-modal__checking">{t('checkingUpdate')}</p> : rollbackError ? (
+                            <p className="update-modal__error-message">{rollbackError}</p>
+                        ) : rollbackReleases.length === 0 ? (
+                            <p className="update-modal__message">{t('rollbackEmpty')}</p>
+                        ) : (
+                            <div className="update-modal__rollback-list">
+                                {rollbackReleases.map((release) => (
+                                    <button
+                                        type="button"
+                                        className="update-modal__rollback-item"
+                                        key={String(release.build)}
+                                        disabled={isDownloading || release.download_unavailable}
+                                        onClick={() => selectRollbackRelease(release)}
+                                    >
+                                        <strong>{release.build}</strong>
+                                        <span>{rollbackReleaseDate(release)}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                ) : betaLoading ? (
                     <div className="update-modal__info update-modal__info--center">
                         <p className="update-modal__checking">{t("checkingUpdate")}</p>
                     </div>
@@ -279,7 +366,7 @@ export const UpdateModal = ({
                                                 <p className="update-modal__message">{t("downloadUnavailable")}</p>
                                             ) : (
                                                 <>
-                                                    <p className="update-modal__message">{t("foundNewVersionMsg")}</p>
+                                                    <p className="update-modal__message">{updateResult.is_rollback ? t("rollbackSelectedMsg") : t("foundNewVersionMsg")}</p>
                                                     <button className="btn-primary update-modal__full-button" onClick={onDownload}>
                                                         {t("downloadAndUpdate")}
                                                     </button>
@@ -302,6 +389,7 @@ export const UpdateModal = ({
                     </div>
                 )}
                 <div className="update-modal__actions">
+                    {!rollbackOpen && <button type="button" className="btn-link" disabled={isDownloading || betaLoading} onClick={showRollback}>{t('rollback')}</button>}
                     <button className="btn-primary" disabled={isDownloading} onClick={onClose}>{t("close")}</button>
                 </div>
             </div>

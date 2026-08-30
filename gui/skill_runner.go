@@ -165,6 +165,11 @@ type SkillRunner struct {
 	// Receives notifications after each skill execution; handles optimization,
 	// nudge promotion, and upload triggering independently of the main agent loop.
 	evolutionPipeline *cskill.EvolutionPipeline
+	// indexRefreshFn and auditFn are injectable commit-boundary hooks. Tests use
+	// them to force publication/audit failures; production falls back to the
+	// application's index refresh and strict evolution audit sink.
+	indexRefreshFn func(string) error
+	auditFn        func(string, map[string]string) error
 
 	// outcomeReporter reports local execution outcomes to HubCenter,
 	// closing the feedback loop between local quality and global ranking.
@@ -651,6 +656,12 @@ func (r *SkillRunner) startRunForOwner(policyOwnerID, skillName string, preResol
 	if cskill.IsAgentGuidedWorkflowSkill(target) {
 		return "", fmt.Errorf("skill %q is an agent-guided workflow, not a one-step GUI runner skill; use Start with AI Agent", skillName)
 	}
+	if r.evolutionPipeline != nil && r.evolutionPipeline.HasPendingCompensation(target.Name) {
+		return "", fmt.Errorf("skill %q has pending evolution compensation and is blocked until recovery or review completes", skillName)
+	}
+	if strings.EqualFold(strings.TrimSpace(target.Source), "auto_discovered") && normalizeSkillEntryStatus(target.Status) == skillEntryStatusStaged {
+		return "", fmt.Errorf("skill %q is staged and requires explicit approval plus runtime verification before it can run", skillName)
+	}
 
 	// Bug #3: Distinguish needs_setup / disabled / needs_review from active
 	switch normalizeSkillEntryStatus(target.Status) {
@@ -670,6 +681,8 @@ func (r *SkillRunner) startRunForOwner(policyOwnerID, skillName string, preResol
 			errMsg += ". Prefer download_file / web_fetch(save_path=...) for simple HTTP downloads, or fix/re-enable the skill."
 		}
 		return "", fmt.Errorf("%s", errMsg)
+	case skillEntryStatusStaged:
+		return "", fmt.Errorf("skill %q is staged and requires explicit approval plus runtime verification before it can run", skillName)
 	case skillEntryStatusActive, skillEntryStatusUnknown:
 	default:
 		return "", fmt.Errorf("skill %q status is %q, expected active", skillName, target.Status)
@@ -3582,6 +3595,18 @@ func (r *SkillRunner) notifyEvolutionPipeline(skill *corelib.NLSkillEntry, stats
 	r.evolutionPipeline.NotifySkillExecution(skill.Name, evoEntry, &cskill.SkillExecutionResultCompat{
 		Success:       execErr == nil,
 		OutputQuality: r.skillRunOutputQuality(run, execErr),
+		Error: func() string {
+			if execErr != nil {
+				return execErr.Error()
+			}
+			return ""
+		}(),
+		ErrorClass: func() string {
+			if execErr != nil {
+				return cskill.ExtractErrorClass(formatExecErrorForStorage(execErr))
+			}
+			return ""
+		}(),
 	}, runArgsStr)
 }
 
@@ -3709,7 +3734,8 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 // evolutionOwnsRepair reports whether self-repair is scheduled by EvolutionPipeline.
 func (r *SkillRunner) evolutionOwnsRepair() bool {
 	return r != nil && r.evolutionPipeline != nil &&
-		r.evolutionPipeline.EnableRepair && r.evolutionPipeline.RepairHook != nil
+		r.evolutionPipeline.EnableRepair &&
+		(r.evolutionPipeline.RepairHookWithContext != nil || r.evolutionPipeline.RepairHook != nil)
 }
 
 func mergeSkillRunIdentityForUsageStats(dst, runtimeEntry *corelib.NLSkillEntry) {
@@ -3735,6 +3761,11 @@ func mergeSkillRunIdentityForUsageStats(dst, runtimeEntry *corelib.NLSkillEntry)
 
 func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, execErr error, runArgs map[string]interface{}) {
 	if r == nil || r.executor == nil || r.executor.app == nil || r.executor.app.usageTracker == nil || skill == nil {
+		return
+	}
+	// Observation is independently switchable from automatic evolution. When
+	// disabled, do not persist run arguments or experience records at all.
+	if cfg, err := r.executor.app.LoadConfig(); err == nil && !cfg.IsSkillMaintenanceObservationEnabled() {
 		return
 	}
 	text := strings.TrimSpace(skill.Name + " " + skill.Description + " " + strings.Join(skill.Triggers, " "))
@@ -3811,13 +3842,23 @@ func (r *SkillRunner) canStartRepairSkill(entry *corelib.NLSkillEntry) bool {
 // and attempts it in the background. The entry must be a deep copy; this
 // method runs in a goroutine and must not hold any locks.
 func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
-	r.maybeRepairSkillWithForce(entry, false)
+	r.maybeRepairSkillWithContext(context.Background(), entry, false)
 }
 
 // maybeRepairSkillWithForce is like maybeRepairSkill but force=true allows
 // repair when CanForceAttemptRepair holds even if usage-rate thresholds fail
 // (used by manage_skill trigger_repair).
 func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, force bool) {
+	r.maybeRepairSkillWithContext(context.Background(), entry, force)
+}
+
+// maybeRepairSkillWithContext runs repair under the owning evolution job's
+// context. Cancellation is checked before every side effect and is propagated
+// to contextual LLM providers and the RepairGate.
+func (r *SkillRunner) maybeRepairSkillWithContext(ctx context.Context, entry *corelib.NLSkillEntry, force bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if entry == nil {
 		return
 	}
@@ -3827,6 +3868,9 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 	}
 	if !ok {
 		r.repairingSkills.Delete(entry.Name)
+		return
+	}
+	if err := ctx.Err(); err != nil {
 		return
 	}
 	// Ensure the repair marker is cleared when this goroutine exits,
@@ -3849,9 +3893,15 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 	}
 	repairCtx := cskill.NewRepairContext(entry, runArgs)
 
-	result, err := cskill.AttemptRepairWithContext(repairer, entry, repairCtx)
+	result, err := cskill.AttemptRepairWithGoContext(ctx, repairer, entry, repairCtx)
 	if err != nil {
+		if ctx.Err() == nil {
+			r.recordRepairFailure(ctx, entry, cskill.ExtractErrorClass(entry.LastError), err.Error())
+		}
 		log.Printf("[skill-repair-gui] repair failed for %q: %v", entry.Name, err)
+		return
+	}
+	if err := ctx.Err(); err != nil {
 		return
 	}
 
@@ -3861,8 +3911,8 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 		if r.executor != nil && r.executor.app != nil && r.executor.app.usageTracker != nil {
 			historicalArgs = r.executor.app.usageTracker.RecentRunArgs("skill:"+entry.Name, 3)
 		}
-		if len(historicalArgs) > 0 {
-			gateCtx, gateCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		{
+			gateCtx, gateCancel := context.WithTimeout(ctx, 3*time.Minute)
 			nlSteps := make([]corelib.NLSkillStep, len(result.NewSteps))
 			for i, s := range result.NewSteps {
 				nlSteps[i] = corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError}
@@ -3871,14 +3921,22 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 			gateCancel()
 			if gateErr != nil {
 				// Fail closed: a broken gate must not silently accept a repair.
+				r.recordRepairFailure(ctx, entry, "gate_error", gateErr.Error())
 				log.Printf("[skill-repair-gui] gate verification error for %q: %v — rejecting repair", entry.Name, gateErr)
 				return
 			}
-			if gateResult == nil || !gateResult.Passed {
+			if err := ctx.Err(); err != nil {
+				return
+			}
+			if !gateResult.IsRealPass() {
 				reason := "nil gate result"
 				if gateResult != nil {
 					reason = gateResult.Reason
+					if gateResult.Status == "passed" && gateResult.EvidenceMode != "real" {
+						reason = "passed gate lacks real evidence"
+					}
 				}
+				r.recordRepairFailure(ctx, entry, "gate_rejected", reason)
 				log.Printf("[skill-repair-gui] gate REJECTED repair for %q: %s", entry.Name, reason)
 				return
 			}
@@ -3887,12 +3945,21 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 	}
 
 	originalSteps := cloneSkillSteps(entry.Steps)
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	if !cskill.ApplyRepair(entry, result) {
 		log.Printf("[skill-repair-gui] repair not applied for %q: repaired=%v should_disable=%v",
-			entry.Name, result.Repaired, result.ShouldDisable)
+			entry.Name, result != nil && result.Repaired, result != nil && result.ShouldDisable)
+		if result != nil && !result.ShouldDisable && ctx.Err() == nil {
+			r.recordRepairFailure(ctx, entry, cskill.ExtractErrorClass(entry.LastError), result.Explanation)
+		}
 		// If should_disable, persist the status change.
 		if result.ShouldDisable {
-			if err := r.persistRepairResult(entry); err != nil {
+			if err := ctx.Err(); err != nil {
+				return
+			}
+			if err := r.persistRepairResultWithContext(ctx, entry); err != nil {
 				log.Printf("[skill-repair-gui] persist disabled repair result for %q failed: %v", entry.Name, err)
 			}
 		}
@@ -3905,15 +3972,18 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 	}
 	var repairReport *cskill.ScanReport
 	if app == nil || !app.isRiskGuardrailOffMode() {
-		repairReport = r.scanRepairedSkill(entry)
+		repairReport = r.scanRepairedSkillWithContext(ctx, entry)
 	}
 	missingScanBlocked := repairReport == nil && (app == nil || app.skillInstallMissingScanShouldBlock())
 	riskyScanBlocked := repairReport != nil && app != nil && app.skillInstallScanShouldBlock(repairReport)
 	legacyRiskyScanBlocked := repairReport != nil && app == nil && repairReport.NeedsUserReview()
 	if missingScanBlocked || riskyScanBlocked || legacyRiskyScanBlocked {
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		markRepairBlockedBySecurity(entry, originalSteps, repairReport)
 		log.Printf("[skill-repair-gui] blocked repaired skill %q by security scan: %s", entry.Name, entry.LastError)
-		if err := r.persistRepairResult(entry); err != nil {
+		if err := r.persistRepairResultWithContext(ctx, entry); err != nil {
 			log.Printf("[skill-repair-gui] persist blocked repair result for %q failed: %v", entry.Name, err)
 		}
 		if app != nil {
@@ -3927,6 +3997,9 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 		}
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	if app != nil && repairReport != nil && repairReport.NeedsUserReview() {
 		app.logSkillInstallSecurityEvent(
 			security.AuditActionHubSkillUpdate,
@@ -3938,12 +4011,47 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 	}
 
 	// Persist the repaired steps back to config.
-	if err := r.persistRepairResult(entry); err != nil {
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	if err := r.persistRepairResultWithContext(ctx, entry); err != nil {
 		log.Printf("[skill-repair-gui] repaired skill %q passed scan but failed to persist: %v", entry.Name, err)
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	if err := writeSkillScanCacheForInstalledEntry(entry, repairReport); err != nil {
-		log.Printf("[skill-repair-gui] repaired skill %q persisted but scan cache write failed: %v", entry.Name, err)
+		// The scan cache is a rebuildable, non-authoritative derivative. Its
+		// failure must be observable, but must not invalidate an already
+		// committed YAML/config/index transaction or suppress its success event.
+		cacheData := map[string]string{
+			"skill": entry.Name, "action": "scan_cache", "decision": "degraded",
+			"reason": "scan_cache_write_failed", "failure_reason": err.Error(),
+			"schema_version": "2", "evidence_mode": "real",
+		}
+		if requestID, attempt := cskill.EvolutionRequestMetadata(ctx); requestID != "" {
+			cacheData["request_id"] = requestID
+			if attempt <= 0 {
+				attempt = 1
+			}
+			cacheData["attempt"] = fmt.Sprintf("%d", attempt)
+		}
+		if cacheData["request_id"] == "" {
+			cacheData["request_id"] = fmt.Sprintf("evo_gui_repair_%d", time.Now().UnixNano())
+		}
+		if r.executor.app != nil {
+			cacheData["config_revision"] = skillEvolutionConfigRevision(r.executor.app)
+		}
+		if auditErr := cskill.RecordEvolutionEventStrict("skill:scan_cache_failed", cacheData, "desktop"); auditErr != nil {
+			log.Printf("[skill-repair-gui] scan cache failure audit for %q failed: %v", entry.Name, auditErr)
+		}
+		if r.executor.app != nil {
+			r.executor.app.emitEvent("skill:scan_cache_failed", cacheData)
+		}
+		log.Printf("[skill-repair-gui] repaired skill %q committed; scan cache write failed (degraded): %v", entry.Name, err)
+	}
+	if err := ctx.Err(); err != nil {
 		return
 	}
 	r.refreshSkillIndexesAfterMutation(entry.Name)
@@ -3954,16 +4062,33 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 
 	// Notify frontend and re-check any quality-blocked upload for this skill.
 	if r.executor.app != nil {
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		r.executor.app.emitEvent(EventSkillRepaired)
-		go func(skillName string) {
-			r.executor.app.ensureSkillLifecycleManager()
-			if r.executor.app.skillLifecycle == nil {
-				return
+		// Keep this in the worker context: launching a goroutine here would let
+		// the deferred worker cancel race with (and immediately cancel) the
+		// upload reevaluation, while a synchronous call remains cancellable.
+		r.executor.app.ensureSkillLifecycleManager()
+		if r.executor.app.skillLifecycle != nil {
+			if err := r.executor.app.skillLifecycle.RetryBlockedAndProcess(ctx, entry.Name, 1); err != nil {
+				log.Printf("[skill-repair-gui] blocked upload reevaluation failed for %s: %v", entry.Name, err)
 			}
-			if err := r.executor.app.skillLifecycle.RetryBlockedAndProcess(context.Background(), skillName, 1); err != nil {
-				log.Printf("[skill-repair-gui] blocked upload reevaluation failed for %s: %v", skillName, err)
-			}
-		}(entry.Name)
+		}
+	}
+}
+
+// recordRepairFailure applies the shared attempt-limit policy to a failed
+// LLM/Gate repair and persists the governance metadata.  This is intentionally
+// used by both automatic and manual-force GUI repair entry points; force only
+// bypasses statistical eligibility, never the attempt limit.
+func (r *SkillRunner) recordRepairFailure(ctx context.Context, entry *corelib.NLSkillEntry, errorClass, explanation string) {
+	if r == nil || entry == nil || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	cskill.RecordRepairAttemptFailure(entry, errorClass, explanation)
+	if err := r.persistRepairMetadataWithContext(ctx, entry); err != nil {
+		log.Printf("[skill-repair-gui] persist failed-attempt metadata for %q failed: %v", entry.Name, err)
 	}
 }
 
@@ -4011,11 +4136,18 @@ func repairScanRiskLevel(report *cskill.ScanReport) security.RiskLevel {
 }
 
 func (r *SkillRunner) scanRepairedSkill(entry *corelib.NLSkillEntry) *cskill.ScanReport {
+	return r.scanRepairedSkillWithContext(context.Background(), entry)
+}
+
+func (r *SkillRunner) scanRepairedSkillWithContext(ctx context.Context, entry *corelib.NLSkillEntry) *cskill.ScanReport {
 	if entry == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	scanner := cskill.NewSecurityScanner(nil)
-	return scanner.ScanInstallStaged(context.Background(), entry, entry.SkillDir, func(status string) {
+	return scanner.ScanInstallStaged(ctx, entry, entry.SkillDir, func(status string) {
 		if r != nil && r.executor != nil && r.executor.app != nil {
 			r.executor.app.log(fmt.Sprintf("[skill-repair-gui] security scan %s: %s", entry.Name, status))
 		}
@@ -4025,39 +4157,356 @@ func (r *SkillRunner) scanRepairedSkill(entry *corelib.NLSkillEntry) *cskill.Sca
 // persistRepairResult writes the repaired skill entry back to the config and,
 // for file-backed skills, to the authoritative skill.yaml definition.
 func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) error {
+	return r.persistRepairResultWithContext(context.Background(), entry)
+}
+
+// persistRepairResultWithContext is the cancellation-aware commit path used by
+// background evolution. All durable definition changes go through the shared
+// SkillCommitter so GUI repair has the same compensation and cleanup semantics
+// as pipeline and lifecycle mutations.
+func (r *SkillRunner) persistRepairResultWithContext(ctx context.Context, entry *corelib.NLSkillEntry) error {
 	if r == nil || r.executor == nil || entry == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if isShellBrowserAutomationSkillEntry(*entry) {
 		return browserAutomationSkillRejectedError(entry.Name)
 	}
-	var yamlErr error
-	if strings.TrimSpace(entry.SkillDir) != "" {
-		if err := writeSkillYAMLForEntry(entry.SkillDir, entry); err != nil {
-			yamlErr = err
-			log.Printf("[skill-repair-gui] persist repaired skill.yaml for %q failed: %v", entry.Name, err)
+	app := r.executor.app
+	if app == nil {
+		return fmt.Errorf("skill repair app not initialized")
+	}
+	// Prevent load-time status reconciliation from racing the explicit
+	// definition transaction. The committer owns the durable boundary; this
+	// overlay guard keeps a concurrent async status write from reintroducing a
+	// stale entry between config/YAML/index phases.
+	r.executor.suspendStatusOverlayPersistence()
+	defer r.executor.resumeStatusOverlayPersistence()
+	requestID, attempt := cskill.EvolutionRequestMetadata(ctx)
+	if attempt <= 0 {
+		attempt = 1
+	}
+	if strings.TrimSpace(requestID) == "" {
+		requestID = fmt.Sprintf("evo_gui_repair_%d", time.Now().UnixNano())
+	}
+	status := strings.TrimSpace(entry.Status)
+	auditEvent := cskill.EventSkillRepaired
+	if status == "needs_review" {
+		auditEvent = "skill:repair_blocked"
+	}
+	auditData := map[string]string{
+		"skill": entry.Name, "action": "repair", "decision": "applied",
+		"request_id": requestID, "attempt": fmt.Sprintf("%d", attempt),
+		"config_revision": skillEvolutionConfigRevision(app),
+		"schema_version":  "2", "evidence_mode": "real", "failure_reason": "",
+	}
+	auditFn := r.auditFn
+	if auditFn == nil {
+		auditFn = func(event string, data map[string]string) error {
+			return cskill.RecordEvolutionEventStrict(event, data, "desktop")
 		}
+	}
+	committer := &cskill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return r.executor.loadSkills() },
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return r.executor.withSkillListMutate(func() error { return r.executor.saveSkills(entries) })
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			return r.executor.withSkillListMutate(func() error { return r.executor.restoreSkillsSnapshot(entries) })
+		},
+		// Preserve live usage counters from the freshly loaded destination while
+		// copying the complete repair artifact. Security-blocked repairs carry a
+		// non-prefixed LastError that is intentional governance evidence (the
+		// generic evolution merger otherwise treats LastError as a stale runtime
+		// failure and drops it).
+		EntryMerger: func(dst, src *corelib.NLSkillEntry) {
+			if dst == nil || src == nil {
+				return
+			}
+			dst.Steps = src.Steps
+			dst.Description = src.Description
+			dst.Status = src.Status
+			dst.RepairAttemptCount = src.RepairAttemptCount
+			dst.LastRepairAt = src.LastRepairAt
+			dst.RepairHistory = src.RepairHistory
+			dst.OptimizationCount = src.OptimizationCount
+			dst.LastOptimizedAt = src.LastOptimizedAt
+			if strings.HasPrefix(src.LastError, "auto-repaired:") ||
+				strings.HasPrefix(src.LastError, "auto-disabled:") ||
+				strings.HasPrefix(src.LastError, "auto-repair blocked by security scan:") ||
+				strings.EqualFold(strings.TrimSpace(src.Status), "needs_review") {
+				dst.LastError = src.LastError
+			}
+		},
+		DefinitionWriter: func(candidate *corelib.NLSkillEntry) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if strings.TrimSpace(candidate.SkillDir) == "" {
+				return nil
+			}
+			// Keep the established GUI backup sidecar for operator-visible
+			// Versioner/restore workflows. The committer's durable pre-image remains
+			// the rollback authority; this sidecar is compatibility evidence, not a
+			// substitute for the compensation record.
+			return writeSkillYAMLForEntry(candidate.SkillDir, candidate)
+		},
+		IndexRefresher: func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if r.indexRefreshFn != nil {
+				return r.indexRefreshFn(entry.Name)
+			}
+			return app.refreshSkillIndexesAfterMutationChecked(entry.Name)
+		},
+		FinalAuditor: func(event string, data map[string]string) error {
+			return auditFn(event, data)
+		},
+		ConfigRevision: skillEvolutionConfigRevision(app),
+	}
+	result := committer.Commit(ctx, entry.Name, entry, auditEvent, auditData)
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		reason := result.FailureReason
+		switch {
+		case strings.HasPrefix(result.FailureReason, "final_audit_failed"):
+			reason = "final repair audit failed: " + reason
+		case strings.HasPrefix(result.FailureReason, "index_refresh_failed"):
+			reason = "refresh skill index failed: " + reason
+		case strings.HasPrefix(result.FailureReason, "yaml_write_failed"):
+			reason = "write repaired skill.yaml failed: " + reason
+		case strings.HasPrefix(result.FailureReason, "config_write_failed"):
+			reason = "save repaired skill config failed: " + reason
+		}
+		return fmt.Errorf("repair not committed: %s (%s), cleanup_status=%s", result.State, reason, result.CleanupStatus)
+	}
+	return nil
+}
+
+// persistRepairResultWithContextLegacy is retained temporarily for source
+// bisectability. Production callers use the shared-committer implementation
+// above; remove this adapter after downstream integrations stop referencing it.
+func (r *SkillRunner) persistRepairResultWithContextLegacy(ctx context.Context, entry *corelib.NLSkillEntry) error {
+	if r == nil || r.executor == nil || entry == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if isShellBrowserAutomationSkillEntry(*entry) {
+		return browserAutomationSkillRejectedError(entry.Name)
+	}
+	// Snapshot the complete overlay before touching the authoritative YAML. A
+	// failed config/index/audit commit must restore counters and lifecycle
+	// metadata together with the definition.
+	originalSkills := cloneSkillEntries(r.executor.loadSkills())
+	if len(originalSkills) == 0 {
+		return fmt.Errorf("skill %q not found before repair commit", entry.Name)
+	}
+	var originalYAML []byte
+	var yamlWritten bool
+	configCommitAttempted := false
+	refreshIndex := func() error {
+		if r.indexRefreshFn != nil {
+			return r.indexRefreshFn(entry.Name)
+		}
+		r.refreshSkillIndexesAfterMutation(entry.Name)
+		return nil
+	}
+	rollback := func(cause error) error {
+		var rollbackErrs []string
+		if yamlWritten && len(originalYAML) > 0 {
+			if err := restoreSkillDefinitionBytes(entry.SkillDir, originalYAML); err != nil {
+				rollbackErrs = append(rollbackErrs, "yaml: "+err.Error())
+			}
+		}
+		if configCommitAttempted {
+			r.executor.skillListMutateMu.Lock()
+			if err := r.executor.saveSkills(originalSkills); err != nil {
+				rollbackErrs = append(rollbackErrs, "config: "+err.Error())
+			}
+			r.executor.skillListMutateMu.Unlock()
+		}
+		if err := refreshIndex(); err != nil {
+			rollbackErrs = append(rollbackErrs, "index: "+err.Error())
+		}
+		state := "rolled_back"
+		if len(rollbackErrs) > 0 {
+			state = "audit_pending"
+		}
+		requestID, attempt := cskill.EvolutionRequestMetadata(ctx)
+		if requestID == "" {
+			requestID = fmt.Sprintf("evo_gui_repair_%d", time.Now().UnixNano())
+		}
+		if attempt <= 0 {
+			attempt = 1
+		}
+		failureReason := strings.TrimSpace(cause.Error())
+		if len(failureReason) > 512 {
+			failureReason = failureReason[:512]
+		}
+		rollbackData := map[string]string{
+			"skill": entry.Name, "action": "repair", "decision": state,
+			"reason": "repair_commit_failed", "failure_reason": failureReason,
+			"request_id": requestID, "attempt": fmt.Sprintf("%d", attempt),
+			"config_revision": skillEvolutionConfigRevision(r.executor.app),
+			"schema_version":  "2", "evidence_mode": "real",
+		}
+		// The sink may itself be unavailable (especially on final-audit
+		// failure), so the event is attempted but never masks the original error.
+		_ = cskill.RecordEvolutionEventStrict(cskill.EventSkillEvolutionRolledBack, rollbackData, "desktop")
+		if len(rollbackErrs) > 0 {
+			// Keep a durable, restart-safe snapshot when any compensation step
+			// fails. The pipeline startup recovery will retry YAML/config/index
+			// restoration before this Skill can be considered executable again.
+			yamlPath := skillYAMLPath(entry.SkillDir)
+			if yamlPath == "" && strings.TrimSpace(entry.SkillDir) != "" {
+				yamlPath = filepath.Join(entry.SkillDir, "skill.yaml")
+			}
+			record := cskill.NewEvolutionCompensationRecord(
+				requestID, entry.Name, "repair", yamlPath,
+				originalYAML, yamlWritten, originalSkills, failureReason,
+			)
+			if err := cskill.PersistEvolutionCompensation(record); err != nil {
+				log.Printf("[skill-repair-gui] persist audit_pending compensation for %q failed: %v", entry.Name, err)
+			}
+		}
+		if r.executor.app != nil {
+			r.executor.app.emitEvent(cskill.EventSkillEvolutionRolledBack, rollbackData)
+		}
+		if len(rollbackErrs) > 0 {
+			return fmt.Errorf("%v; rollback incomplete: %s", cause, strings.Join(rollbackErrs, "; "))
+		}
+		return cause
+	}
+	if strings.TrimSpace(entry.SkillDir) != "" {
+		if err := ctx.Err(); err != nil {
+			return rollback(err)
+		}
+		data, err := readSkillDefinitionBytes(entry.SkillDir)
+		if err != nil {
+			return fmt.Errorf("read skill definition before repair: %w", err)
+		}
+		originalYAML = data
+		if err := writeSkillYAMLForEntry(entry.SkillDir, entry); err != nil {
+			log.Printf("[skill-repair-gui] persist repaired skill.yaml for %q failed: %v", entry.Name, err)
+			return fmt.Errorf("write repaired skill.yaml: %w", err)
+		}
+		yamlWritten = true
 	}
 
 	r.executor.skillListMutateMu.Lock()
-	defer r.executor.skillListMutateMu.Unlock()
 
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
 		if s.Name == entry.Name {
+			if err := ctx.Err(); err != nil {
+				r.executor.skillListMutateMu.Unlock()
+				return rollback(err)
+			}
 			skills[i].Steps = entry.Steps
 			skills[i].Status = entry.Status
 			skills[i].LastError = entry.LastError
 			skills[i].RepairAttemptCount = entry.RepairAttemptCount
 			skills[i].LastRepairAt = entry.LastRepairAt
 			skills[i].RepairHistory = entry.RepairHistory
+			configCommitAttempted = true
 			if err := r.executor.saveSkills(skills); err != nil {
-				return err
+				r.executor.skillListMutateMu.Unlock()
+				return rollback(err)
 			}
-			return yamlErr
+			r.executor.skillListMutateMu.Unlock()
+			if err := refreshIndex(); err != nil {
+				return rollback(fmt.Errorf("refresh skill index: %w", err))
+			}
+			if err := ctx.Err(); err != nil {
+				return rollback(err)
+			}
+			// Final audit is part of the commit. A successful repair notification
+			// is emitted by the caller only after this function returns nil.
+			auditEvent := cskill.EventSkillRepaired
+			if entry.Status == "needs_review" {
+				auditEvent = "skill:repair_blocked"
+			}
+			auditData := map[string]string{
+				"skill": entry.Name, "action": "repair", "decision": "applied",
+				"request_id": "", "attempt": "1", "config_revision": skillEvolutionConfigRevision(r.executor.app),
+				"schema_version": "2", "evidence_mode": "real",
+				"failure_reason": "",
+			}
+			if requestID, attempt := cskill.EvolutionRequestMetadata(ctx); requestID != "" {
+				auditData["request_id"] = requestID
+				if attempt > 0 {
+					auditData["attempt"] = fmt.Sprintf("%d", attempt)
+				}
+			}
+			if auditData["request_id"] == "" {
+				auditData["request_id"] = fmt.Sprintf("evo_gui_repair_%d", time.Now().UnixNano())
+			}
+			auditFn := r.auditFn
+			if auditFn == nil {
+				auditFn = func(event string, data map[string]string) error {
+					return cskill.RecordEvolutionEventStrict(event, data, "desktop")
+				}
+			}
+			if err := auditFn(auditEvent, auditData); err != nil {
+				return rollback(fmt.Errorf("final repair audit: %w", err))
+			}
+			return nil
 		}
 	}
-	return yamlErr
+	// Release the mutation lock before invoking rollback (which takes the same
+	// lock to restore the config snapshot).
+	r.executor.skillListMutateMu.Unlock()
+	if yamlWritten {
+		return rollback(fmt.Errorf("skill %q not found during repair commit", entry.Name))
+	}
+	return fmt.Errorf("skill %q not found during repair commit", entry.Name)
+}
+
+// persistRepairMetadataWithContext persists only repair governance metadata.
+// Failed LLM/Gate attempts must not rewrite the authoritative skill.yaml: no
+// definition was accepted, so the durable definition remains untouched while
+// the attempt limit and needs_review transition are still recoverable.
+func (r *SkillRunner) persistRepairMetadataWithContext(ctx context.Context, entry *corelib.NLSkillEntry) error {
+	if r == nil || r.executor == nil || entry == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.executor.skillListMutateMu.Lock()
+	defer r.executor.skillListMutateMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	skills := r.executor.loadSkills()
+	for i := range skills {
+		if !skills[i].MatchesName(entry.Name) {
+			continue
+		}
+		skills[i].Status = entry.Status
+		skills[i].LastError = entry.LastError
+		skills[i].RepairAttemptCount = entry.RepairAttemptCount
+		skills[i].LastRepairAt = entry.LastRepairAt
+		skills[i].RepairHistory = append([]corelib.SkillRepairRecord(nil), entry.RepairHistory...)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return r.executor.saveSkills(skills)
+	}
+	return nil
 }
 
 // ConsumeRepairNotifications returns and clears all pending repair
@@ -4084,11 +4533,20 @@ type guiSkillRepairer struct {
 }
 
 func (r *guiSkillRepairer) ChatCall(messages []map[string]string) (string, error) {
+	return r.ChatCallContext(context.Background(), messages)
+}
+
+// ChatCallContext binds the provider request to the evolution worker context
+// so operator cancellation and worker deadlines abort the HTTP request.
+func (r *guiSkillRepairer) ChatCallContext(ctx context.Context, messages []map[string]string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ifaces := make([]interface{}, len(messages))
 	for i, m := range messages {
 		ifaces[i] = m
 	}
-	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "skill-repair"})
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "skill-repair"})
 	resp, err := doSimpleLLMRequest(ctx, r.cfg, ifaces, r.client, 60*time.Second)
 	if err != nil {
 		return "", err

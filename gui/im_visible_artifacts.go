@@ -12,6 +12,6 @@ func (a *pendingVisibleArtifacts) Attach(resp *IMAgentResponse) {
 	}
 	attachLocalPreview(resp, a.LocalPreviewPath, a.LocalPreviewThumbnail)
 	if a.QRCodeURL != "" {
-		appendVisibleNote(resp, "娴滃瞼娣惍浣烘瑜版洟鎽奸幒銉窗"+a.QRCodeURL)
+		appendVisibleNote(resp, "二维码登录链接："+a.QRCodeURL)
 	}
 }

@@ -274,13 +274,21 @@ func TestNewIMMessageHandlerStandalone_ShortChitChat(t *testing.T) {
 }
 
 func TestNewIMMessageHandlerStandalone_CurrentTimeDirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":` + strconvQuote("当前日期时间：2026-08-25 12:30:00") + `},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		// With a classifier available the deterministic-clock shortcut is
+		// deliberately bypassed (tryImmediateCurrentTimeDirect): the query
+		// travels the governed capability-managed path to current_datetime.
 		UnifiedClassifier: intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
-			t.Fatal("current local time query should not call UIC in standalone mode")
-			return "", nil
+			return `{"top":[{"skill":"current_time","score":0.98}]}`, nil
 		}}),
 		LLMConfigFunc: func() corelib.MaclawLLMConfig {
-			return corelib.MaclawLLMConfig{URL: "http://127.0.0.1:1", Model: "m", Key: "k", Protocol: "openai"}
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
 		},
 	})
 	defer h.memory.Stop()
@@ -296,9 +304,6 @@ func TestNewIMMessageHandlerStandalone_CurrentTimeDirect(t *testing.T) {
 	}
 	if resp.Error != "" {
 		t.Fatalf("unexpected error: %s", resp.Error)
-	}
-	if resp.ResponseSource != "direct_execution" {
-		t.Fatalf("response source = %q, want direct_execution", resp.ResponseSource)
 	}
 	if !strings.Contains(resp.Text, "\u5f53\u524d\u65e5\u671f\u65f6\u95f4") {
 		t.Fatalf("response text = %q, want current date/time", resp.Text)
@@ -1230,7 +1235,7 @@ func TestPendingUserReplySkipsBrowserDebugInstructions(t *testing.T) {
 	}
 }
 
-func TestBuildAgentLoopAssistantTurnStripsRolePrefixFromReasoning(t *testing.T) {
+func TestBuildAgentLoopAssistantTurnKeepsMidTextRolePrefixInReasoning(t *testing.T) {
 	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
 	defer h.memory.Stop()
 
@@ -1240,14 +1245,15 @@ func TestBuildAgentLoopAssistantTurnStripsRolePrefixFromReasoning(t *testing.T) 
 		ReasoningContent: "thinking kept\nBrowser: hidden browser instruction",
 	}})
 
-	if strings.Contains(turn.Reasoning, "Browser:") {
-		t.Fatalf("role prefix leaked in reasoning: %q", turn.Reasoning)
+	// A mid-text "Browser:"/"Tool:" line is legitimate reasoning about tool
+	// usage — only a prefix at the very start of the reasoning is stripped,
+	// so the full reasoning must survive here.
+	want := "thinking kept\nBrowser: hidden browser instruction"
+	if turn.Reasoning != want {
+		t.Fatalf("reasoning = %q, want full reasoning %q", turn.Reasoning, want)
 	}
-	if turn.Reasoning != "thinking kept" {
-		t.Fatalf("reasoning = %q, want sanitized reasoning", turn.Reasoning)
-	}
-	if turn.HistoryEntry.ReasoningContent != "thinking kept" {
-		t.Fatalf("history reasoning = %q, want sanitized reasoning", turn.HistoryEntry.ReasoningContent)
+	if turn.HistoryEntry.ReasoningContent != want {
+		t.Fatalf("history reasoning = %q, want full reasoning %q", turn.HistoryEntry.ReasoningContent, want)
 	}
 }
 
@@ -1364,7 +1370,7 @@ func TestPendingUserReplyBindingRejectsShortSubstringMatch(t *testing.T) {
 	}
 }
 
-func TestPendingUserReplyAnswerAmbiguousIntentKeepsPending(t *testing.T) {
+func TestPendingUserReplyAnswerAmbiguousIntentBindsByFreshPending(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"probably answering"},"finish_reason":"stop"}]}`))
@@ -1391,8 +1397,16 @@ func TestPendingUserReplyAnswerAmbiguousIntentKeepsPending(t *testing.T) {
 	if resp == nil || resp.Error != "" {
 		t.Fatalf("expected successful response, got %+v", resp)
 	}
-	if _, ok := h.pendingUserReply.Load(userID); !ok {
-		t.Fatal("ambiguous pending-answer classification should keep pending context")
+	// The auxiliary answer classifier returned garbage (unclassified). The
+	// fresh pending question must bind the reply anyway — parking it costs
+	// the turn its task context and lets a short answer classify standalone
+	// (production 2026-08-27: 16-rune answer → coding surface). Downstream
+	// arbitration (a confident bare verdict) still protects a real switch.
+	if _, ok := h.pendingUserReply.Load(userID); ok {
+		t.Fatal("unclassified fresh answer must bind to the pending question, not park it")
+	}
+	if entries := h.memory.Load(userID); len(entries) == 0 {
+		t.Fatal("binding must restore the bound question context into memory")
 	}
 }
 

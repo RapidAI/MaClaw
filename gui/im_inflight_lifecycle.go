@@ -31,14 +31,19 @@ func (l *imInFlightLifecycle) SetOnce() {
 		l.loopID = fmt.Sprintf("legacy-%d", time.Now().UnixNano())
 		log.Printf("[InFlightTask] generated missing run id user=%q run=%q", l.userID, l.loopID)
 	}
-	// Prefer session-owner working dir (top bar / tools); fall back to Projects list
-	// only for non-desktop identities without an encoded project path.
+	// Prefer an explicit tab bind (top bar / tools); a project-tab owner ID's
+	// encoded path ("desktop-user:<path>") comes next and must win over the
+	// global workspace fallback inside effectiveWorkingDirForUser — otherwise a
+	// project-tab task would be stamped with the main tab's directory.
 	projectPath := ""
-	if l.handler != nil {
-		projectPath = l.handler.effectiveWorkingDirForUser(l.userID)
+	if l.handler != nil && l.handler.app != nil {
+		projectPath = strings.TrimSpace(l.handler.app.BoundWorkingDirForOwner(l.userID))
 	}
 	if projectPath == "" {
 		projectPath = projectPathFromUserID(l.userID)
+	}
+	if projectPath == "" && l.handler != nil {
+		projectPath = l.handler.effectiveWorkingDirForUser(l.userID)
 	}
 	if projectPath == "" && strings.TrimSpace(l.userID) != desktopUserID && l.handler != nil {
 		projectPath = l.handler.getCurrentProjectPath()

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -55,15 +57,18 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	if ctx != nil {
 		preResolved = ctx.Runtime.SemanticIntent
 	}
-	baseTools := h.routeSessionTools(userID, userText, allTools, loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx), preResolved)
+	baseTools, routerRankedNames := h.routeSessionToolsWithRanking(userID, userText, allTools, loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx), preResolved, ctx)
 	tools := baseTools
 
 	BrowserDiagCP1_Route(userText, tools)
 
 	if phase.ForceSkillPreference {
-		if shouldRestrictToSkillSearch(phase) {
+		switch {
+		case phase.SkillMode == skillPreferenceAgentGuided:
+			tools = applyAgentGuidedWorkflowSurface(baseTools, allTools)
+		case shouldRestrictToSkillSearch(phase):
 			tools = filterToolsForRemoteSkillSearch(baseTools)
-		} else {
+		default:
 			tools = filterToolsForSkillPreference(baseTools)
 		}
 	}
@@ -192,9 +197,25 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	// correctly selected local document handling.
 	tools = filterComputerUseToolsForLocalFileWork(ctx, userText, tools)
 
+	// Tools the Hub security policy rejects for every argument set (bash under
+	// a mandated sandbox, send_file while file outbound is disabled, …) must
+	// not occupy surface slots: the model otherwise burns iterations on calls
+	// that can never succeed. Execution-time EnforceConfig stays as the
+	// defense; this is only the rendering boundary.
+	tools = h.filterPolicyRejectedSurfaceTools(tools)
+	baseTools = h.filterPolicyRejectedSurfaceTools(baseTools)
+	// Pin after the last host-policy filter and before the closed plan so
+	// web_search is host_policy_required (unranked) rather than a retrieval
+	// tail the count guard can drop. Adding it after the plan would expose a
+	// definition the digest never bound. Expert and group allow-lists still
+	// win: a timeout leftover must not restore a tool those filters removed.
+	lookupCatalog := h.filterPolicyRejectedSurfaceTools(allTools)
+	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
+	baseTools = h.pinClassifierTimeoutWebLookup(userID, ctx, baseTools, lookupCatalog)
+
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
-	plannedTools, clientToolNames, legacyPlanBacked, planErr := h.renderClosedLegacyReplacementSurface(userText, ctx, toolsForLLM)
+	plannedTools, clientToolNames, legacyPlanBacked, planErr := h.renderClosedLegacyReplacementSurface(userText, ctx, toolsForLLM, routerRankedNames)
 	if planErr != nil {
 		// Never revive the raw compatibility slice after an adapter-plan error.
 		// Returning an empty surface keeps static chat usable while making a
@@ -203,6 +224,14 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		plannedTools = nil
 		clientToolNames = nil
 		legacyPlanBacked = false
+	}
+	// Light profiles drop bash/write_file (RequiresAgentPlanning). Discovery
+	// tools can also re-enter via ambient merge. Seal after the last filter so
+	// a named agent-guided turn still has host tools and not generate_pdf.
+	if phase.SkillMode == skillPreferenceAgentGuided {
+		catalog := stripExecutionContractMetadataForLLM(allTools)
+		plannedTools = h.filterPolicyRejectedSurfaceTools(applyAgentGuidedWorkflowSurface(plannedTools, catalog))
+		baseToolsForLLM = h.filterPolicyRejectedSurfaceTools(applyAgentGuidedWorkflowSurface(baseToolsForLLM, catalog))
 	}
 	return agentLoopToolSet{
 		Tools:            plannedTools,
@@ -214,6 +243,34 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		WorkflowDecision: workflowFilterPolicy,
 		BrowserBeforeWF:  browserBeforeWF,
 	}
+}
+
+// filterPolicyRejectedSurfaceTools drops tools that the effective Hub security
+// policy rejects for every argument set (see clientsecurity.NameLevelRejection).
+// Argument-dependent rules still render and fail at execution as before.
+func (h *IMMessageHandler) filterPolicyRejectedSurfaceTools(tools []map[string]interface{}) []map[string]interface{} {
+	if h == nil || len(tools) == 0 {
+		return tools
+	}
+	if h.surfaceSecurityConfig == nil && h.app == nil {
+		return tools
+	}
+	cfg := corelib.AppConfig{}
+	if h.surfaceSecurityConfig != nil {
+		cfg = h.surfaceSecurityConfig()
+	} else {
+		cfg = h.app.effectiveHubSecurityConfig()
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, definition := range tools {
+		name := strings.TrimSpace(extractToolName(definition))
+		if rejected, reason := clientsecurity.NameLevelRejection(cfg, name); rejected {
+			log.Printf("[exec-profile] drop policy-rejected tool=%q reason=%q", name, reason)
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+	return filtered
 }
 
 func removeLegacyModelMCPGateway(tools []map[string]interface{}) []map[string]interface{} {

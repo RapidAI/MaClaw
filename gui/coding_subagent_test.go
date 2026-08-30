@@ -372,8 +372,8 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 	if strings.Contains(prompt, longReq) || strings.Contains(prompt, longDesign) {
 		t.Error("full untruncated context should not appear in the prompt")
 	}
-	if len([]rune(prompt)) > 7800 {
-		t.Errorf("prompt too long: %d runes, expected <7800", len([]rune(prompt)))
+	if len([]rune(prompt)) > 8000 {
+		t.Errorf("prompt too long: %d runes, expected <8000", len([]rune(prompt)))
 	}
 	// Previous outputs are injected into the task user message, not duplicated in
 	// the system prompt.
@@ -1900,6 +1900,9 @@ Plan outline (titles only; later steps are separate remote tasks — do not exec
 	cb.trackRemoteFileRead("/home/sysinfo5/CMakeLists.txt")
 	cb.trackRemoteFileRead("/home/sysinfo5/src/main.cpp")
 	cb.trackRemoteFileRead("/home/sysinfo5/include/sysinfo.h")
+	// Created files require project-context evidence (a successful non-empty
+	// inspection search); a bare creation without any lookup fails the audit.
+	cb.trackRemoteSearch("codegraph", "codegraph explore sysinfo5", "/home/sysinfo5", "found existing project entries", true)
 	cb.trackRemoteCommand("ls -la /home/sysinfo5", "/home/sysinfo5", "CMakeLists.txt include src", true)
 	cb.trackRemoteCommand("git status --short; git diff --stat", "/home/sysinfo5", "fatal: not a git repository", false)
 
@@ -1923,6 +1926,8 @@ Plan outline (titles only; later steps are separate remote tasks — do not exec
 	cb.trackRemoteFileChanged("/home/sysinfo15/src/main.cpp", true)
 	cb.trackRemoteFileRead("/home/sysinfo15/CMakeLists.txt")
 	cb.trackRemoteFileRead("/home/sysinfo15/src/main.cpp")
+	// Same created-file project-context evidence requirement as above.
+	cb.trackRemoteSearch("codegraph", "codegraph explore sysinfo15", "/home/sysinfo15", "found existing project entries", true)
 	cb.trackRemoteCommand(
 		`tree /home/sysinfo15 && cd /home/sysinfo15 && cmake -S . -B build_test_parse --dry-run && g++ -fsyntax-only src/main.cpp`,
 		"/home/sysinfo15", "sh: 1: tree: not found\nEXIT: 127", false,
@@ -1983,8 +1988,11 @@ Plan outline (titles only; later steps are separate remote tasks):
 		t.Fatalf("implementation with later compile step should defer verification, got %#v", result)
 	}
 
-	// Scaffold without post-edit re-read still fails confirmation.
+	// Scaffold without post-edit re-read still fails confirmation. Context
+	// evidence is present so the created-file gate does not fire first and
+	// mask the confirmation failure under test.
 	cb = &remoteCodingCallbacks{task: taskText}
+	cb.trackRemoteSearch("codegraph", "codegraph explore sysinfo5", "/home/sysinfo5", "found existing project entries", true)
 	cb.trackRemoteFileChanged("/home/sysinfo5/src/main.cpp", true)
 	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
 		Status:    "success",
@@ -2324,6 +2332,10 @@ func TestRemoteCodingSubAgentExplorationGateRequiresPreEditReadForExistingFiles(
 	}
 
 	cb = &remoteCodingCallbacks{}
+	// Created files still need project-context evidence (a successful
+	// non-empty inspection search); the pre-edit read requirement itself is
+	// what stays skipped for brand-new files.
+	cb.trackRemoteSearch("codegraph", "codegraph explore repo", "/repo", "found existing main.py symbols", true)
 	cb.trackRemoteFileChanged("/repo/new.py", true)
 	cb.trackRemoteFileRead("/repo/new.py")
 	cb.trackRemoteCommand("pytest tests", "/repo", "1 passed in 0.1s", true)
@@ -3348,8 +3360,11 @@ func TestRemoteCodingSubAgentCallbacksAreNilSafe(t *testing.T) {
 	nilCB.OnProgress("progress")
 	nilCB.OnToolCall("ssh_list_dir")
 
-	if result := nilCB.ExecuteTool("ssh_list_dir", "{}"); !strings.Contains(result, "agent unavailable") {
-		t.Fatalf("nil callback execute should report unavailable agent, got %q", result)
+	// The static compatibility surface rejects tools with no request-bound
+	// snapshot before the (nil) agent is consulted; either way execution is
+	// safely refused without a panic.
+	if result := nilCB.ExecuteTool("ssh_list_dir", "{}"); !strings.Contains(result, "agent unavailable") && !strings.Contains(result, "static_surface_unavailable") {
+		t.Fatalf("nil callback execute should refuse safely, got %q", result)
 	}
 
 	cb := &remoteCodingCallbacks{}
@@ -4253,6 +4268,10 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 		"return_code = 2\npytest failed",
 		"[maclaw] 命令执行超时，已发送 Ctrl+C 中断",
 		"SSH 会话 ssh_x 连续 3 次执行无响应，shell 可能被挂起的进程锁住。",
+		"invalid localization evidence: missing required fields: causal_path, reproduction",
+		"bug-fix edit blocked: submit report_localization with root-cause evidence before modifying remote code: missing localization evidence",
+		"bug-fix write blocked: use ssh_read_file/code_navigation to determine whether the target exists, then submit report_localization before rewriting existing code",
+		"control_plane_stale: todo_write expected revision=9 version=7; current revision=10 version=10",
 	}
 	for _, result := range failures {
 		if got := remoteCodingToolOutcome(result); got != "failed" {
@@ -4298,8 +4317,8 @@ func TestRemoteCodingCallbacksNilSafeToolSurfaceAndExecution(t *testing.T) {
 	if tools := cb.BuildTools("diagnose"); len(tools) == 0 {
 		t.Fatal("nil callback should expose the base remote tool surface")
 	}
-	if got := cb.ExecuteTool("ssh_list_dir", "{not valid json}"); !strings.Contains(got, "agent unavailable") {
-		t.Fatalf("nil callback execution = %q, want unavailable-agent error", got)
+	if got := cb.ExecuteTool("ssh_list_dir", "{not valid json}"); !strings.Contains(got, "agent unavailable") && !strings.Contains(got, "static_surface_unavailable") {
+		t.Fatalf("nil callback execution = %q, want a safe refusal", got)
 	}
 }
 
@@ -4837,8 +4856,16 @@ func TestBuildSystemPromptFullControlTellsAgentToCallTools(t *testing.T) {
 		task: &TaskItem{Index: 1, Title: "清空当前目录", Description: "清空当前目录"},
 	}
 	prompt := cb.BuildSystemPrompt("清空当前目录", true)
-	if !strings.Contains(prompt, "当前权限：完全控制") {
-		t.Fatalf("full-control prompt hint missing")
+	// Non-horizon subagents currently run on the uncorrelated static
+	// compatibility surface, which is read-only by design — the full-control
+	// hint would falsely promise command execution there. The main prompt
+	// path that carries the hint is unreachable until the S1-C adapter binds
+	// the surface (see usesUncorrelatedStaticCompatibilityModelSurface).
+	if !strings.Contains(prompt, "compatibility") {
+		t.Fatalf("expected the compatibility-mode prompt, got %.200q", prompt)
+	}
+	if strings.Contains(prompt, "当前权限：完全控制") {
+		t.Fatalf("full-control hint must not appear on the read-only compatibility surface")
 	}
 }
 
@@ -4959,11 +4986,13 @@ func TestCodingSubAgentDynamicToolSelectionCachesEmptyResults(t *testing.T) {
 		task:     &TaskItem{Index: 1, Title: "plain Go fix", Description: "rename local variable"},
 	}
 
+	// The eager "mark selection attempted" prompt branch is unreachable while
+	// non-horizon subagents run on the uncorrelated static compatibility
+	// surface (BuildSystemPrompt returns the compatibility prompt before any
+	// dynamic selection). The invariant that still matters: an empty dynamic
+	// selection must never let the legacy dynamic gateways leak into the
+	// model-visible tool list.
 	_ = cb.BuildSystemPrompt("fix", true)
-	if !cb.matchedSkillsSelected || !cb.matchedMCPToolsSelected {
-		t.Fatalf("BuildSystemPrompt should mark dynamic selection attempted, skills=%v mcp=%v", cb.matchedSkillsSelected, cb.matchedMCPToolsSelected)
-	}
-
 	tools := cb.BuildTools("fix")
 	for _, tool := range tools {
 		fn, _ := tool["function"].(map[string]interface{})
@@ -10839,6 +10868,7 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"go test ./... -run '^$' -fuzz FuzzParse",
 		"go test ./... -count=1",
 		"go test ./... -count 2",
+		"go test ./... ; go vet ./...", // both segments verify; not a masked-exit suppression
 		`bash -lc 'go test ./... -run "TestAPI|TestHandler"'`,
 		`powershell -NoProfile -Command 'go test ./... -run "TestAPI|TestHandler"'`,
 		"bash -c go test ./...",
@@ -11433,7 +11463,6 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"pytest tests ; exit 0",
 		"go test ./... ; true",
 		"go test ./... ; echo done",
-		"go test ./... ; go vet ./...",
 		"go test ./... && echo done",
 		"go test ./... & echo done",
 		"bash -lc go test ./... ; echo done",

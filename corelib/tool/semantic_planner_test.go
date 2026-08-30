@@ -640,6 +640,150 @@ func TestToolPlannerLookupGenerateAfterAndExplainTrace(t *testing.T) {
 	}
 }
 
+// A required lookup family with a declared MaxInvocations budget must not
+// hold generate_pdf hostage to unused refinements. Production 2026-08-29:
+// search+PDF planned five required information.search.web siblings and
+// generate waited for all of them; one successful search left the PDF
+// locked, and the generate_pdf petition then failed as "already planned".
+func TestToolPlannerLookupGenerateGatesOnlyOnRequiredBaseSibling(t *testing.T) {
+	registry := NewCapabilityRegistry("v1")
+	for _, descriptor := range []CapabilityDescriptor{
+		{ID: "information.search.web", Version: "v1", Qualifiers: map[string]QualifierConstraint{"freshness": {Values: []string{"reference"}, Required: true}}, Effects: []EffectClass{EffectReadOnly}},
+		{ID: "document.generate.file", Version: "v1", Qualifiers: map[string]QualifierConstraint{"format": {Values: []string{"pdf"}, Required: true}}, Effects: []EffectClass{EffectLocalMutation}},
+		{ID: "artifact.deliver.current_channel", Version: "v1", Qualifiers: map[string]QualifierConstraint{"format": {Values: []string{"file"}, Required: true}}, Effects: []EffectClass{EffectExternalEffect}},
+	} {
+		if err := registry.Register(descriptor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	search := semanticProvider("search_adapter", "information.search.web", map[string]string{"freshness": "reference"}, EffectReadOnly)
+	generate := semanticProvider("generate_adapter", "document.generate.file", map[string]string{"format": "pdf"}, EffectLocalMutation)
+	generate.Produces = []ArtifactContract{{Kind: "document", MIMEType: "application/pdf", Required: true}}
+	deliver := semanticProvider("deliver_adapter", "artifact.deliver.current_channel", map[string]string{"format": "file"}, EffectExternalEffect)
+	deliver.Consumes = []ArtifactContract{{Kind: "document", MIMEType: "application/pdf", Required: true}}
+	base := "need:information.search.web:searchfam"
+	needs := []CapabilityNeed{
+		{ID: RepeatSiblingNeedID(base, 0), Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "reference"}, Required: true},
+		{ID: RepeatSiblingNeedID(base, 1), Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "reference"}, Required: true},
+		{ID: RepeatSiblingNeedID(base, 2), Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "reference"}, Required: true},
+		{ID: "generate", Capability: "document.generate.file", Qualifiers: map[string]string{"format": "pdf"}, Required: true},
+		{ID: "deliver", Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "file"}, Required: true},
+	}
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "task-search-pdf", TurnID: "turn-1", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{search, generate, deliver}),
+		Needs: needs,
+	})
+	if err != nil || len(plan.Unmet) != 0 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	var generateSel PlannedSelection
+	baseSearchID := "selection:" + RepeatSiblingNeedID(base, 0)
+	for _, selection := range plan.Selections {
+		if selection.NeedID == "generate" {
+			generateSel = selection
+		}
+	}
+	if generateSel.ID == "" {
+		t.Fatal("generate selection missing")
+	}
+	foundBase := false
+	for _, requirement := range generateSel.Requires {
+		if requirement == baseSearchID {
+			foundBase = true
+			continue
+		}
+		if RepeatFamilyID(requirement) == RepeatFamilyID(baseSearchID) {
+			t.Fatalf("generate Requires ceiling sibling %s: %#v", requirement, generateSel.Requires)
+		}
+	}
+	if !foundBase {
+		t.Fatalf("generate Requires=%#v, want base lookup %s", generateSel.Requires, baseSearchID)
+	}
+	ready := plan.ReadySelections(map[string]bool{baseSearchID: true})
+	foundGenerate := false
+	for _, selection := range ready {
+		if selection.NeedID == "generate" {
+			foundGenerate = true
+		}
+	}
+	if !foundGenerate {
+		t.Fatal("generate must be ready after only the required base lookup completes")
+	}
+}
+
+func TestToolPlannerLookupGenerateGatesOnRequiredFetchBase(t *testing.T) {
+	registry := NewCapabilityRegistry("v1")
+	for _, descriptor := range []CapabilityDescriptor{
+		{ID: CapabilityInformationFetchWeb, Version: "v1", Effects: []EffectClass{EffectReadOnly}},
+		{ID: "document.generate.file", Version: "v1", Qualifiers: map[string]QualifierConstraint{"format": {Values: []string{"pdf"}, Required: true}}, Effects: []EffectClass{EffectLocalMutation}},
+	} {
+		if err := registry.Register(descriptor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetch := semanticProvider("fetch_adapter", CapabilityInformationFetchWeb, nil, EffectReadOnly)
+	generate := semanticProvider("generate_adapter", "document.generate.file", map[string]string{"format": "pdf"}, EffectLocalMutation)
+	base := "need:information.fetch.web:fetchfam"
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "task-fetch-pdf", TurnID: "turn-1", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{fetch, generate}),
+		Needs: []CapabilityNeed{
+			{ID: RepeatSiblingNeedID(base, 0), Capability: CapabilityInformationFetchWeb, Required: true},
+			{ID: RepeatSiblingNeedID(base, 1), Capability: CapabilityInformationFetchWeb, Required: true},
+			{ID: "generate", Capability: "document.generate.file", Qualifiers: map[string]string{"format": "pdf"}, Required: true},
+		},
+	})
+	if err != nil || len(plan.Unmet) != 0 {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	var generateSel PlannedSelection
+	baseFetchID := "selection:" + RepeatSiblingNeedID(base, 0)
+	for _, selection := range plan.Selections {
+		if selection.NeedID == "generate" {
+			generateSel = selection
+		}
+	}
+	foundBase := false
+	for _, requirement := range generateSel.Requires {
+		if requirement == baseFetchID {
+			foundBase = true
+			continue
+		}
+		if RepeatFamilyID(requirement) == RepeatFamilyID(baseFetchID) {
+			t.Fatalf("generate Requires ceiling fetch %s: %#v", requirement, generateSel.Requires)
+		}
+	}
+	if !foundBase {
+		t.Fatalf("generate Requires=%#v, want fetch base %s", generateSel.Requires, baseFetchID)
+	}
+}
+
+func TestIsLookupCapabilityIncludesSearchFetchAndClock(t *testing.T) {
+	if !IsWebLookupCapability("information.search.web") || !IsWebLookupCapability(CapabilityInformationFetchWeb) {
+		t.Fatal("search and fetch must be web lookup evidence")
+	}
+	if IsWebLookupCapability("information.current_time") {
+		t.Fatal("the clock is lookup evidence for after-edges, not reusable web facts")
+	}
+	if !IsLookupCapability("information.search.web") || !IsLookupCapability(CapabilityInformationFetchWeb) || !IsLookupCapability("information.current_time") {
+		t.Fatal("search, fetch, and clock must be lookup evidence")
+	}
+	if IsLookupCapability("document.generate.file") || IsLookupCapability("") {
+		t.Fatal("generate and empty must not look like lookup evidence")
+	}
+}
+
+func TestFamilyBaseSelectionIDsPicksEarliestRemainingSibling(t *testing.T) {
+	base := "selection:need:information.search.web:searchfam"
+	got := familyBaseSelectionIDs([]PlannedSelection{
+		{ID: RepeatSiblingNeedID(base, 2)},
+		{ID: RepeatSiblingNeedID(base, 1)},
+		{ID: "selection:need:information.current_time:clock"},
+	}, func(PlannedSelection) bool { return true })
+	if len(got) != 2 || got[0] != "selection:need:information.current_time:clock" || got[1] != RepeatSiblingNeedID(base, 1) {
+		t.Fatalf("got %v, want earliest remaining sibling of each family", got)
+	}
+}
+
 func TestToolPlannerRenderCurrentVoiceDeliverAfter(t *testing.T) {
 	registry := NewCapabilityRegistry("v1")
 	for _, descriptor := range []CapabilityDescriptor{

@@ -24,6 +24,21 @@ func TestClassifyImmediateIMCommand_MoA(t *testing.T) {
 	}
 }
 
+func TestClassifyImmediateIMCommandAcceptsUnicodeWhitespaceForBtw(t *testing.T) {
+	cases := []struct {
+		in   string
+		want imCommandKind
+	}{
+		{"/btw\tstatus", imCommandBTW},
+		{"/btw-status", imCommandUnknown},
+	}
+	for _, tc := range cases {
+		if got := classifyImmediateIMCommand(tc.in); got != tc.want {
+			t.Fatalf("classifyImmediateIMCommand(%q)=%v want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestMoaPromptFromText(t *testing.T) {
 	if got := moaPromptFromText("/moa"); got != "" {
 		t.Fatalf("bare /moa: got %q", got)

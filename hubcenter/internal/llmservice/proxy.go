@@ -208,18 +208,19 @@ func (s *ProxyBillingAttemptStore) GetContext(ctx context.Context, hubID, tenant
 // authorizing it is opaque and lives only in ProxyQuoteStore; this public
 // snapshot is safe to return to Hub for admission control and audit.
 type ProxyQuote struct {
-	Token          string                       `json:"-"`
-	RequestDigest  string                       `json:"-"`
-	Claimed        bool                         `json:"-"`
-	HubID          string                       `json:"hub_id"`
-	TenantID       string                       `json:"tenant_id"`
-	RequestID      string                       `json:"request_id"`
-	ServiceGroupID string                       `json:"service_group_id"`
-	LogicalModel   string                       `json:"logical_model"`
-	ProviderID     string                       `json:"provider_id"`
-	UpstreamModel  string                       `json:"upstream_model"`
-	Pricing        llmpool.ResolvedTokenPricing `json:"pricing"`
-	ExpiresAt      time.Time                    `json:"expires_at"`
+	Token              string                       `json:"-"`
+	RequestDigest      string                       `json:"-"`
+	Claimed            bool                         `json:"-"`
+	HubID              string                       `json:"hub_id"`
+	TenantID           string                       `json:"tenant_id"`
+	RequestID          string                       `json:"request_id"`
+	ServiceGroupID     string                       `json:"service_group_id"`
+	LogicalModel       string                       `json:"logical_model"`
+	ProviderID         string                       `json:"provider_id"`
+	UpstreamModel      string                       `json:"upstream_model"`
+	Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
+	ProviderMultiplier float64                      `json:"provider_multiplier"`
+	ExpiresAt          time.Time                    `json:"expires_at"`
 }
 
 // ProxyQuoteStore is intentionally process-local: HubCenter node binding
@@ -716,23 +717,29 @@ func proxyTokenPricingSnapshot(group *llmpool.ServiceGroup, provider *llmpool.Pr
 	if !ok {
 		return nil
 	}
+	providerMultiplier := 1.0
+	if provider != nil {
+		providerMultiplier = llmpool.ResolveCreditMultiplier(provider.BillingPolicy(), startedAt)
+	}
 	return &llmpool.TokenPricingSnapshot{
-		ProviderID:    strings.TrimSpace(providerID),
-		UpstreamModel: strings.TrimSpace(upstreamModel),
-		Pricing:       pricing,
-		InputTokens:   inputTokens,
-		OutputTokens:  outputTokens,
+		ProviderID:         strings.TrimSpace(providerID),
+		UpstreamModel:      strings.TrimSpace(upstreamModel),
+		Pricing:            pricing,
+		ProviderMultiplier: providerMultiplier,
+		InputTokens:        inputTokens,
+		OutputTokens:       outputTokens,
 	}
 }
 
 func proxyRequestTokenPricingSnapshot(req *ProxyRequest, group *llmpool.ServiceGroup, provider *llmpool.ProviderConfig, providerID, upstreamModel string, inputTokens, outputTokens int64, startedAt time.Time) *llmpool.TokenPricingSnapshot {
 	if pricing := proxyResolvedRequestTokenPricing(req, group, provider, providerID, upstreamModel, startedAt); pricing != nil {
 		return &llmpool.TokenPricingSnapshot{
-			ProviderID:    strings.TrimSpace(providerID),
-			UpstreamModel: strings.TrimSpace(upstreamModel),
-			Pricing:       *pricing,
-			InputTokens:   inputTokens,
-			OutputTokens:  outputTokens,
+			ProviderID:         strings.TrimSpace(providerID),
+			UpstreamModel:      strings.TrimSpace(upstreamModel),
+			Pricing:            *pricing,
+			ProviderMultiplier: proxyProviderMultiplierForRequest(req, provider, providerID, startedAt),
+			InputTokens:        inputTokens,
+			OutputTokens:       outputTokens,
 		}
 	}
 	return nil
@@ -765,17 +772,20 @@ func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, 
 	}
 	if frozenPricing != nil {
 		snapshot = &llmpool.TokenPricingSnapshot{
-			ProviderID:    strings.TrimSpace(providerID),
-			UpstreamModel: strings.TrimSpace(upstreamModel),
-			Pricing:       *frozenPricing,
-			InputTokens:   inputTokens,
-			OutputTokens:  outputTokens,
+			ProviderID:         strings.TrimSpace(providerID),
+			UpstreamModel:      strings.TrimSpace(upstreamModel),
+			Pricing:            *frozenPricing,
+			ProviderMultiplier: proxyProviderMultiplierForRequest(req, provider, providerID, startedAt),
+			InputTokens:        inputTokens,
+			OutputTokens:       outputTokens,
 		}
 	} else {
 		snapshot = proxyRequestTokenPricingSnapshot(req, group, provider, providerID, upstreamModel, inputTokens, outputTokens, startedAt)
 	}
 	if snapshot != nil {
-		displayMultiplier = proxyCreditMultiplierForRoute(model, route)
+		// Directional pricing is the provider's base price. Its time-of-use
+		// multiplier and the route markup are both part of the final debit.
+		displayMultiplier = llmpool.CombineCreditMultipliers(snapshot.ProviderMultiplier, proxyCreditMultiplierForRoute(model, route))
 		if microcredits, ok := llmpool.EstimateTokenPricingMicrocredits(inputTokens, outputTokens, snapshot.Pricing, displayMultiplier); ok {
 			return llmpool.MicrocreditsToCredits(microcredits), displayMultiplier, snapshot
 		}
@@ -792,6 +802,19 @@ func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, 
 
 	displayMultiplier = proxyEffectiveCreditMultiplier(provider, model, route, startedAt)
 	return estimateProxyCreditsWithFloor(inputTokens+outputTokens, displayMultiplier), displayMultiplier, nil
+}
+
+// proxyProviderMultiplierForRequest freezes a quoted provider's resolved
+// HubCenter multiplier for the entire request. Direct requests resolve it at
+// their request start, which is the same ownership boundary as token pricing.
+func proxyProviderMultiplierForRequest(req *ProxyRequest, provider *llmpool.ProviderConfig, providerID string, startedAt time.Time) float64 {
+	if req != nil && req.Quote != nil && strings.EqualFold(strings.TrimSpace(req.Quote.ProviderID), strings.TrimSpace(providerID)) {
+		return llmpool.NormalizeCreditMultiplier(req.Quote.ProviderMultiplier)
+	}
+	if provider != nil {
+		return llmpool.ResolveCreditMultiplier(provider.BillingPolicy(), startedAt)
+	}
+	return 1
 }
 
 func proxyRouteBillingMode(group *llmpool.ServiceGroup, providerID, upstreamModel string) string {
@@ -1131,6 +1154,7 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 			responseModel = model
 		}
 		upstreamModel := proxyUpstreamModelForRoute(route, provider, model)
+		pricing := proxyResolvedRequestTokenPricing(req, matchedGroup, provider, provider.ID, upstreamModel, proxyRequestStartedAt(req))
 		dispatches = append(dispatches, &proxyDispatch{
 			model:         model,
 			responseModel: responseModel,
@@ -1140,7 +1164,7 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 			provider:      provider,
 			auth:          auth,
 			requiresGrant: requiresGrant,
-			pricing:       proxyResolvedRequestTokenPricing(req, matchedGroup, provider, provider.ID, upstreamModel, proxyRequestStartedAt(req)),
+			pricing:       pricing,
 		})
 	}
 	if len(dispatches) == 0 {
@@ -1190,6 +1214,15 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 			reqBody["max_tokens"] = 65536
 		}
 	}
+	// Client-stated reasoning intent must reach the upstream in its own
+	// spelling: Agnes only honors reasoning_effort and silently ignores the
+	// DeepSeek-style thinking object. Auto (no control in the body) stays
+	// untouched. (Mirrors the non-stream path in
+	// corelib/openai_compat_forward.go sanitizeOpenAICompatForwardBody.)
+	corelib.RetargetReasoningControlsForUpstream(corelib.MaclawLLMConfig{
+		URL:   provider.APIURL,
+		Model: upstreamModel,
+	}, reqBody, corelib.ReasoningAPIChat)
 	// DeepSeek V4+ thinking mode: ensure thinking is enabled and budget is capped
 	// when tools are present. The maclaw client normally sets these, but older
 	// clients or third-party integrations may omit them. This is the authoritative
@@ -2779,10 +2812,11 @@ func proxyEffectiveCreditMultiplier(provider *llmpool.ProviderConfig, model *llm
 	return llmpool.CombineCreditMultipliers(vendor, proxyCreditMultiplierForRoute(model, route))
 }
 
-// proxyDispatchCreditMultiplier returns the multiplier that is meaningful to
-// expose alongside a dispatch. Directional pricing already contains the
-// provider-owned price, so only the service-group route multiplier applies.
-func proxyDispatchCreditMultiplier(dispatch *proxyDispatch, startedAt time.Time) float64 {
+// proxyDispatchCreditMultiplier returns the combined provider time-of-use and
+// service-group route multiplier that applies to a completed dispatch. A
+// quoted request must use the value frozen in its quote, rather than resolve a
+// provider schedule again while producing the response trailer.
+func proxyDispatchCreditMultiplier(req *ProxyRequest, dispatch *proxyDispatch, startedAt time.Time) float64 {
 	if dispatch == nil {
 		return 0
 	}
@@ -2793,10 +2827,8 @@ func proxyDispatchCreditMultiplier(dispatch *proxyDispatch, startedAt time.Time)
 	if dispatch.matchedGroup != nil && proxyRouteBillingMode(dispatch.matchedGroup, providerID, proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)) == llmpool.BillingModeFree {
 		return 1
 	}
-	if dispatch.pricing != nil {
-		return proxyCreditMultiplierForRoute(dispatch.dispatchModel, dispatch.route)
-	}
-	return proxyEffectiveCreditMultiplier(dispatch.provider, dispatch.dispatchModel, dispatch.route, startedAt)
+	providerMultiplier := proxyProviderMultiplierForRequest(req, dispatch.provider, providerID, startedAt)
+	return llmpool.CombineCreditMultipliers(providerMultiplier, proxyCreditMultiplierForRoute(dispatch.dispatchModel, dispatch.route))
 }
 
 func proxyCacheHitCreditMultiplier(reg *Registry, model *llmpool.DispatchModel, providerID string, startedAt time.Time) float64 {
@@ -2819,14 +2851,14 @@ func proxyRouteForProvider(model *llmpool.DispatchModel, providerID string) llmp
 	return llmpool.DispatchProviderRoute{ProviderID: providerID}
 }
 
-func proxySharedCreditMultiplier(dispatches []*proxyDispatch, startedAt time.Time) (float64, bool) {
+func proxySharedCreditMultiplier(req *ProxyRequest, dispatches []*proxyDispatch, startedAt time.Time) (float64, bool) {
 	var shared float64
 	found := false
 	for _, dispatch := range dispatches {
 		if dispatch == nil || dispatch.provider == nil {
 			continue
 		}
-		multiplier := proxyDispatchCreditMultiplier(dispatch, startedAt)
+		multiplier := proxyDispatchCreditMultiplier(req, dispatch, startedAt)
 		if !found {
 			shared, found = multiplier, true
 			continue

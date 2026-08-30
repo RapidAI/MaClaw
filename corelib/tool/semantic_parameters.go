@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -44,15 +45,35 @@ type ParameterAuthorization struct {
 
 const semanticCanonicalizerVersion = "semantic-parameters-v1"
 
-// ParameterError carries a stable, model-safe rejection code. Its detail is
-// intentionally not needed by callers outside trusted diagnostics.
+// ParameterError carries a stable, model-safe rejection code in Error(); the
+// optional Path/Hint fields localize shape failures against the RENDERED
+// schema (an unknown field, a type mismatch, a missing required key). That
+// detail is not an oracle — the model already sees the full rendered schema —
+// and withholding it forced blind argument guessing in production (2026-08-27
+// birthday-deck turn: three parameter_schema_invalid rejections while the
+// model trimmed the wrong field, then the no-progress breaker killed the
+// turn). Path/Hint also localize reserved-field refusals (the name is the
+// model's own argument). Only the authorization-closure codes (target/artifact
+// not authorized, stale authorization) keep Path/Hint empty: those constraints
+// are server-side and stay narrowed at the model boundary.
 type ParameterError struct {
 	Code string
+	// Path is the dotted field path of the offending value, e.g.
+	// "slides[5].subtitle". Empty for authorization-closure codes.
+	Path string
+	// Hint states the expectation in one short clause, e.g. "expected array".
+	Hint string
 }
 
 func (e *ParameterError) Error() string { return e.Code }
 
 func parameterError(code string) error { return &ParameterError{Code: code} }
+
+// parameterFieldError builds a shape error localized to one field path. The
+// path and hint describe only what the rendered schema already declares.
+func parameterFieldError(code, path, hint string) error {
+	return &ParameterError{Code: code, Path: path, Hint: hint}
+}
 
 // CanonicalizeInvocationArguments parses one model-controlled argument object
 // with duplicate-key detection, applies a closed subset of JSON Schema, and
@@ -74,7 +95,7 @@ func CanonicalizeInvocationArguments(argsJSON string, schema map[string]interfac
 	if schema == nil {
 		return CanonicalRequest{}, parameterError("parameter_schema_missing")
 	}
-	if err := validateCanonicalObject(values, schema); err != nil {
+	if err := validateCanonicalObject(values, schema, ""); err != nil {
 		return CanonicalRequest{}, err
 	}
 	encoded, err := json.Marshal(values)
@@ -366,29 +387,42 @@ func decodeCanonicalValue(decoder *json.Decoder) (interface{}, error) {
 	}
 }
 
-func validateCanonicalObject(values map[string]interface{}, schema map[string]interface{}) error {
+// validateCanonicalObject checks values against one object schema. path is the
+// dotted path of this object within the argument tree ("" at the root) and is
+// only used to localize shape errors for the model; it never influences the
+// accept/reject decision.
+func validateCanonicalObject(values map[string]interface{}, schema map[string]interface{}, path string) error {
 	properties, err := schemaProperties(schema)
 	if err != nil {
 		return err
 	}
 	for field, value := range values {
+		fieldPath := joinParameterPath(path, field)
 		if reservedInvocationField(field) {
-			return parameterError("parameter_reserved_field")
+			return parameterFieldError("parameter_reserved_field", fieldPath, "field is reserved and host-owned; omit it")
 		}
 		propertySchema, ok := properties[field]
 		if !ok {
-			return parameterError("parameter_unknown_field")
+			return parameterFieldError("parameter_unknown_field", fieldPath, "field is not declared in this tool's rendered schema; remove it or check the spelling")
 		}
-		if err := validateCanonicalValue(value, propertySchema); err != nil {
+		if err := validateCanonicalValue(value, propertySchema, fieldPath); err != nil {
 			return err
 		}
 	}
 	for _, required := range schemaStringList(schema["required"]) {
 		if _, ok := values[required]; !ok {
-			return parameterError("parameter_required_field_missing")
+			return parameterFieldError("parameter_required_field_missing", joinParameterPath(path, required), "required field is missing")
 		}
 	}
 	return nil
+}
+
+// joinParameterPath appends one object key to a dotted parameter path.
+func joinParameterPath(path, field string) string {
+	if path == "" {
+		return field
+	}
+	return path + "." + field
 }
 
 func schemaProperties(schema map[string]interface{}) (map[string]map[string]interface{}, error) {
@@ -428,43 +462,43 @@ func schemaProperties(schema map[string]interface{}) (map[string]map[string]inte
 	return properties, nil
 }
 
-func validateCanonicalValue(value interface{}, schema map[string]interface{}) error {
+func validateCanonicalValue(value interface{}, schema map[string]interface{}, path string) error {
 	kind, _ := schema["type"].(string)
 	switch kind {
 	case "", "any":
 		return parameterError("parameter_schema_invalid")
 	case "string":
 		if _, ok := value.(string); !ok {
-			return parameterError("parameter_type_mismatch")
+			return parameterFieldError("parameter_type_mismatch", path, "expected string")
 		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
-			return parameterError("parameter_type_mismatch")
+			return parameterFieldError("parameter_type_mismatch", path, "expected boolean")
 		}
 	case "number", "integer":
 		number, ok := value.(json.Number)
 		if !ok {
-			return parameterError("parameter_type_mismatch")
+			return parameterFieldError("parameter_type_mismatch", path, "expected "+kind)
 		}
 		if kind == "integer" && strings.ContainsAny(number.String(), ".eE") {
-			return parameterError("parameter_type_mismatch")
+			return parameterFieldError("parameter_type_mismatch", path, "expected integer")
 		}
 	case "object":
 		object, ok := value.(map[string]interface{})
 		if !ok {
-			return parameterError("parameter_type_mismatch")
+			return parameterFieldError("parameter_type_mismatch", path, "expected object")
 		}
-		if err := validateCanonicalObject(object, schema); err != nil {
+		if err := validateCanonicalObject(object, schema, path); err != nil {
 			return err
 		}
 	case "array":
 		items, ok := value.([]interface{})
 		if !ok {
-			return parameterError("parameter_type_mismatch")
+			return parameterFieldError("parameter_type_mismatch", path, "expected array")
 		}
 		if itemSchema, ok := schema["items"].(map[string]interface{}); ok {
-			for _, item := range items {
-				if err := validateCanonicalValue(item, itemSchema); err != nil {
+			for index, item := range items {
+				if err := validateCanonicalValue(item, itemSchema, path+"["+strconv.Itoa(index)+"]"); err != nil {
 					return err
 				}
 			}

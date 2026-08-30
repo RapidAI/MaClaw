@@ -161,6 +161,15 @@ config MACLAW_FANGTANG_CHARGE_STATUS_GPIO
         second; high means external charging power is present. This is a status
         input only and is independent from the physical power switch.
 
+config MACLAW_FANGTANG_CHARGE_STATUS_ACTIVE_LEVEL
+    int "Battery charging-status active level"
+    range 0 1
+    default 1
+    help
+        Electrical polarity of the charging-status input. Keep this value
+        aligned with the board schematic and measured GPIO level; the profile
+        adapter rejects an invalid polarity rather than guessing.
+
 config MACLAW_FANGTANG_BATTERY_ADC_UNIT
     int "Battery ADC unit"
     range 1 2
@@ -174,6 +183,23 @@ config MACLAW_FANGTANG_BATTERY_ADC_CHANNEL
         Matches the original Fangtang board's ADC2 channel 6 battery divider.
         Keep this separate from MACLAW_BATTERY_ADC_GPIO, whose generic ADC1
         assumptions do not apply to this PCB.
+
+config MACLAW_FANGTANG_BATTERY_DIVIDER_NUMERATOR
+    int "Battery divider scale numerator"
+    range 1 32
+    default 2
+    help
+        Numerator used to reconstruct battery voltage from calibrated ADC mV.
+        The default 2 models a 1:1 divider (Vbat = 2 x Vadc); production
+        values must be confirmed against the schematic and measurement.
+
+config MACLAW_FANGTANG_BATTERY_DIVIDER_DENOMINATOR
+    int "Battery divider scale denominator"
+    range 1 32
+    default 1
+    help
+        Denominator paired with the battery divider scale numerator. Both
+        values are profile calibration data, not shared policy constants.
 
 endif
 

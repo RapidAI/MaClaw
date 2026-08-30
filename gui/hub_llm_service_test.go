@@ -23,6 +23,64 @@ func findProviderByName(providers []corelib.MaclawLLMProvider, name string) (cor
 	return corelib.MaclawLLMProvider{}, false
 }
 
+func TestHubServiceStatusCacheDetectsEntitlementDetailChanges(t *testing.T) {
+	clearHubServiceStatusCache()
+	t.Cleanup(clearHubServiceStatusCache)
+
+	base := HubLLMServiceStatus{
+		Active: true,
+		CreditGrants: []HubLLMActiveGrant{{
+			ID:             "welcome-limit-card",
+			ServiceGroupID: "welcome",
+			Source:         "new_user_limit_card",
+			StartsAt:       "2026-08-25T00:00:00Z",
+			Permanent:      true,
+			Active:         true,
+			Status:         "active",
+			PeriodLimits:   &HubLLMPeriodLimits{FiveHour: 50, Daily: 100},
+			PeriodUsage: &HubLLMPeriodUsage{
+				FiveHour: HubLLMPeriodUsageWindow{WindowStart: "2026-08-25T00:00:00Z", CreditsUsed: 10, Rolling: true},
+			},
+		}},
+	}
+	if changed := storeHubServiceStatusCache("https://hub.example", "viewer", base); changed {
+		t.Fatal("first cache entry must not report a prior entitlement change")
+	}
+	if changed := storeHubServiceStatusCache("https://hub.example", "viewer", base); changed {
+		t.Fatal("identical Hub status must not refresh the GUI")
+	}
+	withCountdownChange := base
+	withCountdownChange.CreditGrants = append([]HubLLMActiveGrant(nil), base.CreditGrants...)
+	withCountdownChange.CreditGrants[0].RetryAfterSeconds = 60
+	if changed := storeHubServiceStatusCache("https://hub.example", "viewer", withCountdownChange); changed {
+		t.Fatal("retry countdown alone must not refresh the GUI")
+	}
+
+	withPolicyChange := withCountdownChange
+	withPolicyChange.CreditGrants = append([]HubLLMActiveGrant(nil), base.CreditGrants...)
+	withPolicyChange.CreditGrants[0].PeriodLimits = &HubLLMPeriodLimits{FiveHour: 75, Daily: 100}
+	if changed := storeHubServiceStatusCache("https://hub.example", "viewer", withPolicyChange); !changed {
+		t.Fatal("five-hour policy change must refresh the GUI")
+	}
+
+	withValidityChange := withPolicyChange
+	withValidityChange.CreditGrants = append([]HubLLMActiveGrant(nil), withPolicyChange.CreditGrants...)
+	withValidityChange.CreditGrants[0].Permanent = false
+	withValidityChange.CreditGrants[0].ExpiresAt = "2026-09-24T00:00:00Z"
+	if changed := storeHubServiceStatusCache("https://hub.example", "viewer", withValidityChange); !changed {
+		t.Fatal("validity change must refresh the GUI")
+	}
+
+	withUsageChange := withValidityChange
+	withUsageChange.CreditGrants = append([]HubLLMActiveGrant(nil), withValidityChange.CreditGrants...)
+	withUsageChange.CreditGrants[0].PeriodUsage = &HubLLMPeriodUsage{
+		FiveHour: HubLLMPeriodUsageWindow{WindowStart: "2026-08-25T00:00:00Z", CreditsUsed: 12, Rolling: true},
+	}
+	if changed := storeHubServiceStatusCache("https://hub.example", "viewer", withUsageChange); !changed {
+		t.Fatal("period usage change must refresh the GUI")
+	}
+}
+
 func TestEnsureViewerTokenThrottlesRecoveryWhenHubOmitsToken(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

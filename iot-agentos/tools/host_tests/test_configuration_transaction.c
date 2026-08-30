@@ -146,6 +146,16 @@ int main(void) {
     CHECK(!strcmp(transaction.staged_snapshot.wifi_networks[0].ssid, "older-wifi"));
     CHECK(!strcmp(transaction.staged_snapshot.wifi_networks[1].ssid, "candidate-wifi"));
 
+    /* Gateway origins are HTTPS-only and reject ambiguous authority input. */
+    configuration_snapshot_t before_gateway_reject = transaction.staged_snapshot;
+    snprintf(request.gateway, sizeof(request.gateway), "http://hub.example");
+    CHECK(!configuration_transaction_stage_provisioning_request(&transaction, &request));
+    snprintf(request.gateway, sizeof(request.gateway), "https://hub.example?x=1");
+    CHECK(!configuration_transaction_stage_provisioning_request(&transaction, &request));
+    CHECK(!memcmp(&before_gateway_reject, &transaction.staged_snapshot,
+                  sizeof(before_gateway_reject)));
+    snprintf(request.gateway, sizeof(request.gateway), "https://hub.example");
+
     /* A normal policy write may arrive while the candidate is waiting for Hub
      * confirmation (for example remote volume or uplink selection).  It must
      * survive the later candidate promotion without replacing candidate-owned
@@ -238,6 +248,11 @@ int main(void) {
     snprintf(request.ttls_phase2, sizeof(request.ttls_phase2), "pap");
     snprintf(request.ca_mode, sizeof(request.ca_mode), "none");
     snprintf(request.server_domain, sizeof(request.server_domain), "radius.example");
+    configuration_snapshot_t before_enterprise_reject = transaction.staged_snapshot;
+    CHECK(!configuration_transaction_stage_provisioning_request(&transaction, &request));
+    CHECK(!memcmp(&before_enterprise_reject, &transaction.staged_snapshot,
+                  sizeof(before_enterprise_reject)));
+    snprintf(request.ca_mode, sizeof(request.ca_mode), "system");
     CHECK(configuration_transaction_stage_provisioning_request(&transaction, &request));
     CHECK(!strcmp(transaction.staged_snapshot.wifi_security, "enterprise"));
     CHECK(transaction.staged_snapshot.wifi_network_count == 2);

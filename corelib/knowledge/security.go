@@ -5,18 +5,17 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
 // ValidatePublicHTTPURL normalizes a user-provided URL and rejects obvious
 // local/private targets before any fetch is attempted. DNS rebinding-safe
 // resolution is handled by the future fetcher; this guard covers direct hosts.
 func ValidatePublicHTTPURL(raw string) (*url.URL, error) {
-	value := strings.TrimSpace(raw)
+	value := websearch.CanonicalFetchURL(raw)
 	if value == "" {
 		return nil, fmt.Errorf("empty URL")
-	}
-	if !strings.Contains(value, "://") {
-		value = "https://" + value
 	}
 	u, err := url.Parse(value)
 	if err != nil {
@@ -37,20 +36,7 @@ func ValidatePublicHTTPURL(raw string) (*url.URL, error) {
 }
 
 func IsBlockedHost(host string) bool {
-	h := strings.Trim(strings.ToLower(host), "[]")
-	if h == "" {
-		return true
-	}
-	if h == "localhost" || strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local") {
-		return true
-	}
-	if strings.HasSuffix(h, ".internal") || strings.HasSuffix(h, ".lan") || strings.HasSuffix(h, ".home") {
-		return true
-	}
-	if ip := net.ParseIP(h); ip != nil {
-		return isBlockedIP(ip)
-	}
-	return false
+	return websearch.IsBlockedPublicHost(host)
 }
 
 func isBlockedIP(ip net.IP) bool {

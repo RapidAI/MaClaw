@@ -94,11 +94,9 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 	if rawURL == "" {
 		return nil, fmt.Errorf("URL is empty")
 	}
-	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") &&
-		!strings.HasPrefix(rawURL, "ftp://") {
-		rawURL = "https://" + rawURL
-	}
-	if _, err := url.Parse(rawURL); err != nil {
+	rawURL = CanonicalFetchURL(rawURL)
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL == nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 
@@ -135,18 +133,12 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 		opts.MaxChars = 0
 	}
 	if opts.PublicNetworkOnly {
-		publicURL, err := validatePublicHTTPURL(rawURL)
-		if err != nil {
-			return nil, err
-		}
-		rawURL = publicURL.String()
-		// Public mode makes an authenticated/rendered request contractually
-		// impossible even if a caller accidentally supplies those options.
+		// Strip credentials and cap limits before URL admission so a reserved
+		// host (example.invalid) cannot retain caller headers or oversized
+		// limits on the way out, and save-path escape checks still run.
 		opts.DisableCookies = true
 		opts.DisableBrowserAuthFallback = true
 		opts.RenderJS = false
-		// The public-network contract is stronger than a schema filter: callers
-		// must not be able to smuggle credentials through FetchOptions directly.
 		opts.Headers = nil
 		if strings.TrimSpace(opts.SavePath) != "" {
 			if opts.MaxBytes > publicNetworkDownloadMaxBytes {
@@ -163,14 +155,20 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 				return nil, err
 			}
 		}
+		publicURL, err := validatePublicHTTPURL(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		rawURL = publicURL.String()
 		client = newPublicHTTPClient(time.Duration(opts.TimeoutS) * time.Second)
 	}
 
-	// Dispatch by scheme
-	if strings.HasPrefix(rawURL, "ftps://") {
+	// Dispatch by parsed scheme so FTP:// and ftps:// match after
+	// CanonicalFetchURL leaves the original casing in place.
+	switch strings.ToLower(parsedURL.Scheme) {
+	case "ftps":
 		return nil, fmt.Errorf("FTPS (FTP over TLS) is not supported yet, use ftp:// instead")
-	}
-	if strings.HasPrefix(rawURL, "ftp://") {
+	case "ftp":
 		return fetchFTPCtx(parent, rawURL, opts)
 	}
 

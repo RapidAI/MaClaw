@@ -1,4 +1,4 @@
-import { AppsRailIcon } from './SidebarNavIcons';
+import { AppsRailIcon, ExpertRailIcon } from './SidebarNavIcons';
 import { IconRankBadge } from '../ai/WorkbenchIcons';
 
 type SidebarMedal = {
@@ -34,11 +34,14 @@ type SidebarPrimaryNavProps = {
     appsLabel: string;
     showAppEntry: boolean;
     showWorkflowEntry: boolean;
-	showUtilitiesEntry?: boolean;
+    showUtilitiesEntry?: boolean;
     switchTool: (tool: string) => void;
     workflowLabel?: string;
-    utilitiesLabel?: string;
+    utilitiesLabel: string;
+    utilitiesTitle?: string;
 };
+
+const railItemLabelStyle = { fontSize: '0.72rem', lineHeight: 1.15, fontWeight: 700, textAlign: 'center', width: '100%' } as const;
 
 const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
 const maclawHeaderStyle = { ...sharedHeaderStyle, height: '64px', padding: '0 0 2px 0', gap: '0' } as const;
@@ -134,20 +137,20 @@ export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinke
     </div>
 );
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, showUtilitiesEntry = true, switchTool, workflowLabel, utilitiesLabel }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, showUtilitiesEntry = true, switchTool, workflowLabel, utilitiesLabel, utilitiesTitle }: SidebarPrimaryNavProps) => {
     const isAiActive = navTab === 'ai';
 
     return (
         <>
-            <div
+            <button
+                type="button"
                 className={'sidebar-item left-nav-item left-nav-item--ai ' + (isAiActive ? 'active' : '')}
                 onClick={() => { switchTool('ai'); }}
-                style={{ flexDirection: 'column', padding: '8px 4px', width: '100%', gap: '3px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: isAiActive ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center' }}
                 title={aiAssistantLabel}
+                aria-current={isAiActive ? 'page' : undefined}
             >
-                {/* Badge colors live in App.css tokens (--ai-icon-*). Dark: dark glyph on light badge. */}
                 <div className="ai-nav-icon-badge" aria-hidden="true">
-                    <svg className="ai-nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg className="ai-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
                         <circle cx="12" cy="11.5" r="1" fill="currentColor" stroke="none" />
                         <circle cx="8.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
@@ -155,7 +158,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                     </svg>
                 </div>
                 <span className="ai-nav-label">{aiAssistantLabel}</span>
-            </div>
+            </button>
             <div style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
             {showAppEntry && (
                 <div
@@ -165,7 +168,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                     title={appsLabel}
                 >
                     <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'apps' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}><AppsRailIcon /></span>
-                    <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{appsLabel}</span>
+                    <span style={railItemLabelStyle}>{appsLabel}</span>
                 </div>
             )}
             <div
@@ -180,21 +183,19 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                         <path d="M6 9v3a3 3 0 0 0 3 3h0M18 9v3a3 3 0 0 1-3 3h0" />
                     </svg>
                 </span>
-                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{workflowLabel || '工作流'}</span>
+                <span style={railItemLabelStyle}>{workflowLabel || '工作流'}</span>
             </div>
             <div
                 className={'sidebar-item left-nav-item ' + (navTab === 'utilities' ? 'active' : '')}
                 onClick={() => switchTool('utilities')}
                 data-testid="sidebar-utilities-nav"
-				style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'utilities' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showUtilitiesEntry ? undefined : 'none' }}
-                title={utilitiesLabel || '实用工具'}
+                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'utilities' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showUtilitiesEntry ? undefined : 'none' }}
+                title={utilitiesTitle || utilitiesLabel}
             >
                 <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'utilities' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                    </svg>
+                    <ExpertRailIcon />
                 </span>
-                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{utilitiesLabel || '实用工具'}</span>
+                <span style={railItemLabelStyle}>{utilitiesLabel}</span>
             </div>
         </>
     );

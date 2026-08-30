@@ -42,7 +42,12 @@ func semanticS2b1AllFamilyCases() []semanticS2b1FamilyCase {
 }
 
 // TestSemanticS2b1FamiliesAreManagedAndMapToGovernedNeeds pins the coverage
-// gate and the label → capability projection for every S2b1 family.
+// gate and the label → capability projection for every S2b1 family. A family
+// whose rule declares an invocation budget (shell_command is iterative:
+// write, run, fix, rerun) projects one sibling need per permitted invocation
+// of the same capability, never a different capability. The archetype bundle
+// may add optional offers on top; those are validated against the bundle
+// table (derived from the rule set), never against a hand-maintained list.
 func TestSemanticS2b1FamiliesAreManagedAndMapToGovernedNeeds(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	for _, tc := range semanticS2b1AllFamilyCases() {
@@ -53,11 +58,46 @@ func TestSemanticS2b1FamiliesAreManagedAndMapToGovernedNeeds(t *testing.T) {
 				t.Fatalf("coverage managed=%v unmapped=%q, want managed without unmapped", managed, unmapped)
 			}
 			needs, resolvedManaged, err := semanticIntentNeedsFromClassification(registry, classification)
-			if err != nil || !resolvedManaged || len(needs) != 1 {
-				t.Fatalf("needs=%#v managed=%v err=%v", needs, resolvedManaged, err)
+			want := 0
+			for _, template := range imSemanticIntentRuleSet[tc.label] {
+				if template.Required {
+					want++
+				}
 			}
-			if needs[0].Capability != tc.capability || !needs[0].Required {
-				t.Fatalf("need=%+v, want required %s", needs[0], tc.capability)
+			var required, optional []tool.CapabilityNeed
+			for _, need := range needs {
+				if need.Required {
+					required = append(required, need)
+				} else {
+					optional = append(optional, need)
+				}
+			}
+			if err != nil || !resolvedManaged || len(required) != want {
+				t.Fatalf("required=%#v managed=%v err=%v, want %d required sibling needs (all=%#v)", required, resolvedManaged, err, want, needs)
+			}
+			for _, need := range required {
+				if need.Capability != tc.capability {
+					t.Fatalf("required need=%+v, want required %s", need, tc.capability)
+				}
+			}
+			// Optional needs are either the family's declared ceiling
+			// siblings or archetype-bundle offers. Same-capability ceiling
+			// siblings used to be required; they are an exposure budget.
+			bundled := make(map[tool.CapabilityID]bool)
+			for _, companion := range semanticArchetypeBundles[tc.label] {
+				for _, template := range imSemanticIntentRuleSet[companion] {
+					if !strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
+						bundled[template.Capability] = true
+					}
+				}
+			}
+			for _, need := range optional {
+				if need.Capability == tc.capability && tool.IsRepeatCeilingID(need.ID) {
+					continue
+				}
+				if !bundled[need.Capability] {
+					t.Fatalf("unexpected optional need %#v (all needs %#v)", need, needs)
+				}
 			}
 		})
 	}

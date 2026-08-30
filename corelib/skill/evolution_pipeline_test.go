@@ -40,6 +40,242 @@ func TestEvolutionPipeline_Status(t *testing.T) {
 	}
 }
 
+func TestEvolutionPipeline_StatusIncludesFailureSummary(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.recordFailure(evolutionRequest{
+		SkillName: "broken",
+		RunArgs:   map[string]string{"input": "secret-value"},
+		ExecResult: &SkillExecutionResultCompat{
+			Success:    false,
+			Error:      "[class: dependency] missing package",
+			ErrorClass: "dependency",
+		},
+	})
+	status := p.Status()
+	if len(status.FailureSummaries) != 1 {
+		t.Fatalf("failure summaries = %+v", status.FailureSummaries)
+	}
+	summary := status.FailureSummaries[0]
+	if summary.Skill != "broken" || summary.FailureCount != 1 || summary.LastErrorClass != "dependency" {
+		t.Fatalf("unexpected failure summary: %+v", summary)
+	}
+	if summary.LastArgsDigest == "" || strings.Contains(summary.LastArgsDigest, "secret-value") {
+		t.Fatalf("arguments were not redacted: %+v", summary)
+	}
+}
+
+func TestEvolutionPipeline_DifferentSkillsRunConcurrently(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.PostExecDelay = time.Millisecond
+	p.MaxConcurrentWorkers = 2
+	p.EnableOptimizer = false
+	p.EnablePromoter = false
+	var active, maxActive atomic.Int32
+	p.RepairHook = func(_ *corelib.NLSkillEntry, _ map[string]string) {
+		current := active.Add(1)
+		for {
+			old := maxActive.Load()
+			if current <= old || maxActive.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		time.Sleep(60 * time.Millisecond)
+		active.Add(-1)
+	}
+	p.Start()
+	defer p.Stop()
+	for _, name := range []string{"parallel-a", "parallel-b"} {
+		entry := &corelib.NLSkillEntry{
+			Name: name, Source: "hub", Status: "active", UsageCount: 1,
+			LastError: "[class: command_not_found] missing",
+			Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "missing"}}},
+		}
+		p.NotifySkillExecution(name, entry, &SkillExecutionResultCompat{Success: false}, nil)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && maxActive.Load() < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p.requestCount.Load() < 2 {
+		t.Fatalf("requests not processed: %d", p.requestCount.Load())
+	}
+	if maxActive.Load() < 2 {
+		t.Fatalf("different skills did not run concurrently, max_active=%d", maxActive.Load())
+	}
+}
+
+func TestEvolutionPipeline_CancelPendingSkill(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.NotifySkillExecution("pending-cancel", &corelib.NLSkillEntry{Name: "pending-cancel"}, &SkillExecutionResultCompat{Success: true}, nil)
+	if !p.CancelSkill("pending-cancel") {
+		t.Fatal("CancelSkill should remove a pending request")
+	}
+	if p.PendingSkillCount() != 0 {
+		t.Fatalf("pending count=%d after cancellation", p.PendingSkillCount())
+	}
+	if p.CancelSkill("pending-cancel") {
+		t.Fatal("second cancellation should be idempotent")
+	}
+}
+
+func TestEvolutionPipeline_CancelActiveSkill(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.PostExecDelay = time.Millisecond
+	p.EnableOptimizer = false
+	p.EnablePromoter = false
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	p.RepairHook = func(_ *corelib.NLSkillEntry, _ map[string]string) {
+		close(started)
+		<-finished
+	}
+	p.Start()
+	defer p.Stop()
+	p.NotifySkillExecution("active-cancel", &corelib.NLSkillEntry{
+		Name: "active-cancel", Source: "hub", Status: "active", UsageCount: 1,
+		LastError: "[class: command_not_found] missing", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "missing"}}},
+	}, &SkillExecutionResultCompat{Success: false}, nil)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active worker did not start")
+	}
+	if !p.CancelSkill("active-cancel") {
+		t.Fatal("CancelSkill should signal active worker")
+	}
+	close(finished)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && p.Status().ActiveSkills != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := p.Status().CancelledRequests; got == 0 {
+		t.Fatal("cancellation metric was not updated")
+	}
+}
+
+func TestEvolutionPipeline_CancelActiveContextAwareHook(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.PostExecDelay = time.Millisecond
+	p.EnableOptimizer = false
+	p.EnablePromoter = false
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	p.RepairHookWithContext = func(ctx context.Context, _ *corelib.NLSkillEntry, _ map[string]string) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+	}
+	p.Start()
+	defer p.Stop()
+	p.NotifySkillExecution("context-cancel", &corelib.NLSkillEntry{
+		Name: "context-cancel", Source: "hub", Status: "active", UsageCount: 1,
+		LastError: "[class: command_not_found] missing",
+	}, &SkillExecutionResultCompat{Success: false}, nil)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("context-aware hook did not start")
+	}
+	if !p.CancelSkill("context-cancel") {
+		t.Fatal("CancelSkill should signal context-aware hook")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("context-aware hook did not observe cancellation")
+	}
+}
+
+func TestEvolutionPipeline_WorkerTimeoutEmitsEvent(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.PostExecDelay = time.Millisecond
+	p.WorkerTimeout = 25 * time.Millisecond
+	p.EnableOptimizer = false
+	p.EnablePromoter = false
+	started := make(chan struct{})
+	done := make(chan struct{})
+	events := make(chan string, 4)
+	p.RepairHookWithContext = func(ctx context.Context, _ *corelib.NLSkillEntry, _ map[string]string) {
+		close(started)
+		<-ctx.Done()
+		close(done)
+	}
+	p.EventEmitter = func(event string, _ map[string]string) { events <- event }
+	p.Start()
+	defer p.Stop()
+	p.NotifySkillExecution("timeout-skill", &corelib.NLSkillEntry{
+		Name: "timeout-skill", Source: "hub", Status: "active", UsageCount: 1,
+		LastError: "[class: command_not_found] missing",
+	}, &SkillExecutionResultCompat{Success: false}, nil)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timeout worker did not start")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout context was not observed")
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event == EventSkillEvolutionTimedOut {
+				if p.Status().TimedOutRequests == 0 {
+					t.Fatal("timeout event emitted before timeout metric was updated")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timeout event not emitted; status=%+v", p.Status())
+		}
+	}
+}
+
+func TestEvolutionPipeline_LifecycleEventsCarryCorrelationAndTermination(t *testing.T) {
+	p := NewEvolutionPipeline()
+	p.PostExecDelay = time.Millisecond
+	p.WorkerTimeout = 20 * time.Millisecond
+	p.EnableOptimizer = false
+	p.EnablePromoter = false
+	started := make(chan struct{})
+	events := make(chan map[string]string, 8)
+	p.RepairHookWithContext = func(ctx context.Context, _ *corelib.NLSkillEntry, _ map[string]string) {
+		close(started)
+		<-ctx.Done()
+	}
+	p.EventEmitter = func(_ string, data map[string]string) { events <- data }
+	p.Start()
+	defer p.Stop()
+	p.NotifySkillExecution("correlated-timeout", &corelib.NLSkillEntry{
+		Name: "correlated-timeout", Source: "hub", Status: "active", UsageCount: 1,
+		LastError: "[class: command_not_found] missing",
+	}, &SkillExecutionResultCompat{Success: false, ErrorClass: "command_not_found"}, nil)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case data := <-events:
+			if data["request_id"] == "" || data["schema_version"] != "2" || data["config_revision"] == "" {
+				t.Fatalf("missing correlation metadata: %#v", data)
+			}
+			if data["termination"] == "worker_timeout" {
+				if data["failure_reason"] != "deadline_exceeded" || data["reason"] != "worker_deadline" {
+					t.Fatalf("bad timeout metadata: %#v", data)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout lifecycle event not observed")
+		}
+	}
+}
+
 func TestEventConstantsStable(t *testing.T) {
 	// Guard against accidental renames that would desync GUI/frontend listeners.
 	if EventSkillRepaired != "skill:repaired" || EventSkillOptimized != "skill:optimized" {
@@ -339,6 +575,7 @@ func TestTriggerOptimize_ForceAppliesAndEmits(t *testing.T) {
 	p.Optimizer = NewSkillOptimizer(llm, nil, nil)
 
 	var saved []corelib.NLSkillEntry
+	var saveCalls int
 	p.SkillLoader = func() []corelib.NLSkillEntry {
 		return []corelib.NLSkillEntry{{
 			Name: "apply-opt", Source: "learned", Status: "active",
@@ -347,6 +584,7 @@ func TestTriggerOptimize_ForceAppliesAndEmits(t *testing.T) {
 		}}
 	}
 	p.SkillSaver = func(skills []corelib.NLSkillEntry) error {
+		saveCalls++
 		saved = append([]corelib.NLSkillEntry(nil), skills...)
 		return nil
 	}
@@ -510,6 +748,779 @@ func TestRunOptimize_NotPersistedSkipsEventAndUpload(t *testing.T) {
 			t.Fatalf("events=%d uploads=%d, want all 0", events.Load(), uploads.Load())
 		}
 	})
+}
+
+func TestPersistDefinitionChange_RollsBackYAMLWhenConfigSaveFails(t *testing.T) {
+	dir := t.TempDir()
+	original := []byte("name: tx-skill\ndescription: old\nsteps:\n  - action: bash\n    params:\n      command: echo old\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{Name: "tx-skill", SkillDir: dir, Description: "new", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo new"}}}}
+	p := NewEvolutionPipeline()
+	p.SkillLoader = func() []corelib.NLSkillEntry {
+		return []corelib.NLSkillEntry{{Name: "tx-skill", SkillDir: dir, Description: "old", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo old"}}}}}
+	}
+	var saveCalls int
+	p.SkillSaver = func([]corelib.NLSkillEntry) error {
+		saveCalls++
+		if saveCalls == 1 {
+			return fmt.Errorf("injected config failure")
+		}
+		return nil
+	}
+	got := p.persistDefinitionChange(context.Background(), entry.Name, entry)
+	if got.State != "rolled_back" || !got.RollbackComplete || saveCalls != 2 {
+		t.Fatalf("commit result = %+v, want rolled_back", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("YAML changed after config failure: %q", string(data))
+	}
+}
+
+func TestPersistDefinitionChange_RollsBackConfigWhenYAMLWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: tx-yaml-fail\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "tx-yaml-fail", SkillDir: dir, Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo new"}}}}
+	var saved []corelib.NLSkillEntry
+	var saveCalls int
+	p := NewEvolutionPipeline()
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} }
+	p.SkillSaver = func(skills []corelib.NLSkillEntry) error {
+		saveCalls++
+		saved = append([]corelib.NLSkillEntry(nil), skills...)
+		return nil
+	}
+	p.DefinitionWriter = func(*corelib.NLSkillEntry) error { return fmt.Errorf("injected YAML failure") }
+	got := p.persistDefinitionChange(context.Background(), after.Name, after)
+	if got.State != "rolled_back" {
+		t.Fatalf("commit result = %+v, want rolled_back", got)
+	}
+	if saveCalls != 2 {
+		t.Fatalf("save calls = %d, want forward and rollback", saveCalls)
+	}
+	if saved[len(saved)-1].Description != "old" {
+		t.Fatalf("config rollback description = %q, want old", saved[len(saved)-1].Description)
+	}
+}
+
+func TestPersistDefinitionChange_RollsBackOnFinalAuditFailure(t *testing.T) {
+	dir := t.TempDir()
+	originalYAML := []byte("name: tx-audit\ndescription: old\nsteps:\n  - action: bash\n    params:\n      command: echo old\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), originalYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "tx-audit", SkillDir: dir, Description: "old", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo old"}}}}
+	after := &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo new"}}}}
+	var saveCalls int
+	p := NewEvolutionPipeline()
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} }
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { saveCalls++; return nil }
+	p.DefinitionWriter = func(entry *corelib.NLSkillEntry) error { return WriteBackOptimizedSteps(entry) }
+	p.FinalAuditor = func(string, map[string]string) error { return fmt.Errorf("injected final audit failure") }
+	got := p.persistDefinitionChangeWithAudit(context.Background(), after.Name, after, "skill:test_commit", map[string]string{"skill": after.Name})
+	if got.State != "rolled_back" || !got.RollbackComplete || saveCalls != 2 {
+		t.Fatalf("commit result = %+v, saveCalls=%d, want complete rollback", got, saveCalls)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(originalYAML) {
+		t.Fatalf("YAML changed after final audit failure: %q", data)
+	}
+}
+
+func TestSkillCommitter_CommitsOnlyAfterAuditAndCleansCompensation(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "committer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: committer-skill\ndescription: old\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "committer-skill", SkillDir: dir, Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new"}
+	var saved []corelib.NLSkillEntry
+	var auditorCalls int
+	committer := &SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver: func(skills []corelib.NLSkillEntry) error {
+			saved = cloneSkillEntries(skills)
+			return nil
+		},
+		DefinitionWriter: WriteBackOptimizedSteps,
+		IndexRefresher:   func() error { return nil },
+		FinalAuditor: func(event string, data map[string]string) error {
+			auditorCalls++
+			if event != "skill:test_commit" || data["skill"] != old.Name {
+				t.Fatalf("audit = event:%q data:%+v", event, data)
+			}
+			return nil
+		},
+		ConfigRevision: "sha256:test-policy",
+	}
+	ctx := WithEvolutionRequestMetadata(context.Background(), "req-committer", 1)
+	got := committer.Commit(ctx, old.Name, after, "skill:test_commit", map[string]string{"skill": old.Name, "action": "repair"})
+	if got.State != "committed" || got.CleanupStatus != "clear" || !got.RollbackComplete || got.RequestID != "req-committer" || got.ConfigRevision != "sha256:test-policy" {
+		t.Fatalf("commit result = %+v", got)
+	}
+	if auditorCalls != 1 || len(saved) != 1 || saved[0].Description != "new" {
+		t.Fatalf("auditorCalls=%d saved=%+v", auditorCalls, saved)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("compensation records = %+v, err=%v; want cleaned", records, err)
+	}
+}
+
+func TestSkillCommitter_UsesForwardIndexOnCommitAndRollbackIndexOnFailure(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	dir := filepath.Join(base, "skills", "index-callbacks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: index-callbacks\ndescription: old\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "index-callbacks", SkillDir: dir, Description: "old"}
+	forward, rollback := 0, 0
+	committer := &SkillCommitter{
+		SkillLoader:            func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver:             func([]corelib.NLSkillEntry) error { return nil },
+		DefinitionWriter:       WriteBackOptimizedSteps,
+		IndexRefresher:         func() error { forward++; return nil },
+		RollbackIndexRefresher: func() error { rollback++; return nil },
+		FinalAuditor:           func(string, map[string]string) error { return fmt.Errorf("injected audit failure") },
+	}
+	got := committer.Commit(context.Background(), old.Name, &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new"}, "skill:test_index_callbacks", map[string]string{"action": "repair"})
+	if got.State != "rolled_back" || forward != 1 || rollback != 1 {
+		t.Fatalf("result=%+v forward=%d rollback=%d", got, forward, rollback)
+	}
+}
+
+func TestSkillCommitter_FinalAuditFailureRestoresAndClearsCompensation(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "committer-audit")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalYAML := []byte("name: committer-audit\ndescription: old\nsteps: []\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), originalYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "committer-audit", SkillDir: dir, Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new"}
+	var saveCalls int
+	committer := &SkillCommitter{
+		SkillLoader:      func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver:       func([]corelib.NLSkillEntry) error { saveCalls++; return nil },
+		DefinitionWriter: WriteBackOptimizedSteps,
+		IndexRefresher:   func() error { return nil },
+		FinalAuditor:     func(string, map[string]string) error { return fmt.Errorf("injected final audit failure") },
+	}
+	got := committer.Commit(context.Background(), old.Name, after, "skill:test_commit", map[string]string{"action": "repair"})
+	if got.State != "rolled_back" || got.CleanupStatus != "clear" || !got.RollbackComplete || saveCalls != 2 {
+		t.Fatalf("commit result = %+v saveCalls=%d", got, saveCalls)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil || string(data) != string(originalYAML) {
+		t.Fatalf("YAML after rollback = %q, err=%v", data, err)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("compensation records = %+v, err=%v; want cleaned", records, err)
+	}
+}
+
+func TestSkillCommitter_RollbackRemovesTransactionBackupOnly(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "committer-backup")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("name: committer-backup\ndescription: old\nsteps: []\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Keep an older user-visible backup. Rollback must remove only the backup
+	// created by this transaction and preserve the older history.
+	oldBackup := filepath.Join(dir, "skill.yaml.v1")
+	if err := os.WriteFile(oldBackup, []byte("name: committer-backup\ndescription: history\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newBackup := filepath.Join(dir, "skill.yaml.v2")
+	old := corelib.NLSkillEntry{Name: "committer-backup", SkillDir: dir, Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new"}
+	refreshCalls := 0
+	committer := &SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
+		DefinitionWriter: func(entry *corelib.NLSkillEntry) error {
+			if _, err := (&Versioner{}).BackupCurrent(dir); err != nil {
+				return err
+			}
+			return WriteBackOptimizedSteps(entry)
+		},
+		CompensationMutator: func(record *EvolutionCompensationRecord) {
+			record.SetRollbackCleanupPaths([]string{newBackup})
+		},
+		IndexRefresher: func() error {
+			refreshCalls++
+			if refreshCalls == 1 {
+				return fmt.Errorf("injected index failure")
+			}
+			return nil
+		},
+	}
+	got := committer.Commit(context.Background(), old.Name, after, "skill:test_backup_rollback", map[string]string{"action": "maintenance"})
+	if got.State != "rolled_back" || !got.RollbackComplete || got.CleanupStatus != "clear" {
+		t.Fatalf("commit result = %+v", got)
+	}
+	if _, err := os.Stat(newBackup); !os.IsNotExist(err) {
+		t.Fatalf("transaction backup remains after rollback: %v", err)
+	}
+	if _, err := os.Stat(oldBackup); err != nil {
+		t.Fatalf("pre-existing backup was removed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("YAML after rollback = %q, err=%v", data, err)
+	}
+}
+
+func TestEvolutionCompensationRecoveryCleansRollbackArtifacts(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "recovery-backup")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldYAML := []byte("name: recovery-backup\ndescription: old\nsteps: []\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: recovery-backup\ndescription: partial\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(dir, "skill.yaml.v9")
+	if err := os.WriteFile(artifact, []byte("transaction backup"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := newEvolutionCompensationRecord("req-recovery-backup", "recovery-backup", "maintenance", filepath.Join(dir, "skill.yaml"), oldYAML, true, []corelib.NLSkillEntry{{Name: "recovery-backup", SkillDir: dir, Description: "old"}}, "index_refresh_failed")
+	record.SetRollbackCleanupPaths([]string{artifact})
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	p := NewEvolutionPipeline()
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { return nil }
+	p.IndexRefresher = func() error { return nil }
+	recovered, pending, err := p.RecoverPendingCompensations()
+	if err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("rollback artifact remains after recovery: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil || string(data) != string(oldYAML) {
+		t.Fatalf("YAML after recovery = %q, err=%v", data, err)
+	}
+}
+
+func TestSkillCommitter_RecoveryNeverRollsBackCommittedCleanupPending(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "committed-recovery")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backup := dir + ".prev"
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: committed-recovery\ndescription: new\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: committed-recovery\ndescription: old\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := newEvolutionCompensationRecord("req-committed-recovery", "committed-recovery", "repair", "", nil, false, nil, "post_commit_cleanup_pending")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	record.SetDirectoryBackup(dir, backup, true)
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	var saved int
+	p := NewEvolutionPipeline()
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { saved++; return nil }
+	p.IndexRefresher = func() error { return nil }
+	recovered, pending, err := p.RecoverPendingCompensations()
+	if err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	if saved != 0 {
+		t.Fatalf("committed cleanup recovery unexpectedly restored config (%d saves)", saved)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("backup still exists after cleanup: err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil || !strings.Contains(string(data), "description: new") {
+		t.Fatalf("published YAML changed during cleanup: %q err=%v", data, err)
+	}
+}
+
+func TestRecoverPendingCompensationsScopedByServiceRoot(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	serviceA := filepath.Join(base, "service-a")
+	serviceB := filepath.Join(base, "service-b")
+	makePending := func(scope, name string) (string, string) {
+		original := filepath.Join(scope, "skills", name)
+		backup := original + ".prev"
+		if err := os.MkdirAll(backup, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: "+name+"\ndescription: restored\nsteps: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		record := NewEvolutionCompensationRecord("scope-"+name, name, "agentservice_install", "", nil, false, nil, "publish interrupted")
+		record.TransactionState = "audit_pending"
+		record.CleanupStatus = "pending"
+		record.SetRecoveryScope(scope)
+		record.SetDirectoryMoves([]EvolutionDirectoryMove{{OriginalPath: original, BackupPath: backup, HadPrevious: true, Moved: true, Published: true}})
+		if err := PersistEvolutionCompensation(record); err != nil {
+			t.Fatal(err)
+		}
+		return original, backup
+	}
+	aOriginal, aBackup := makePending(serviceA, "scope-a")
+	bOriginal, bBackup := makePending(serviceB, "scope-b")
+
+	recovered, pending, err := RecoverPendingEvolutionCompensationsForActionPrefixAndScope("agentservice_install", serviceA, func([]corelib.NLSkillEntry) error { return nil }, nil)
+	if err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("scoped recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	if _, err := os.Stat(filepath.Join(aOriginal, "skill.yaml")); err != nil {
+		t.Fatalf("service A was not restored: %v", err)
+	}
+	if _, err := os.Stat(aBackup); !os.IsNotExist(err) {
+		t.Fatalf("service A backup remains: %v", err)
+	}
+	if _, err := os.Stat(bOriginal); !os.IsNotExist(err) {
+		t.Fatalf("scoped recovery touched service B original: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(bBackup, "skill.yaml")); err != nil {
+		t.Fatalf("service B backup was changed or removed: %v", err)
+	}
+
+	if recovered, pending, err = RecoverPendingEvolutionCompensationsForActionPrefixAndScope("agentservice_install", serviceB, func([]corelib.NLSkillEntry) error { return nil }, nil); err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("service B recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+}
+
+func TestRecoverPendingCompensationsScopeRejectsOutOfRootPaths(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	serviceA := filepath.Join(base, "service-a")
+	serviceB := filepath.Join(base, "service-b")
+	original := filepath.Join(serviceB, "skills", "escape")
+	backup := original + ".prev"
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: escape\ndescription: keep\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("scope-escape", "escape", "agentservice_install", "", nil, false, nil, "out-of-scope path")
+	record.TransactionState = "audit_pending"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(serviceA)
+	record.SetDirectoryMoves([]EvolutionDirectoryMove{{OriginalPath: original, BackupPath: backup, HadPrevious: true, Moved: true, Published: true}})
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, pending, err := RecoverPendingEvolutionCompensationsForActionPrefixAndScope("agentservice_install", serviceA, func([]corelib.NLSkillEntry) error { return nil }, nil)
+	if err != nil {
+		t.Fatalf("scoped recovery returned error: %v", err)
+	}
+	if recovered != 0 || pending != 1 {
+		t.Fatalf("out-of-scope recovery = recovered:%d pending:%d", recovered, pending)
+	}
+	if _, err := os.Stat(filepath.Join(backup, "skill.yaml")); err != nil {
+		t.Fatalf("out-of-scope backup was touched: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(original, "skill.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("out-of-scope original was unexpectedly restored: %v", err)
+	}
+}
+
+func TestSkillCommitter_ExternalPublishPersistsRecoveryIntentBeforeIndex(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	staging := filepath.Join(base, "staging", "external-publish")
+	final := filepath.Join(base, "skills", "external-publish")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "skill.yaml"), []byte("name: external-publish\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "external-publish", Status: "active"}
+	entry := &corelib.NLSkillEntry{Name: old.Name, Status: "active", SkillDir: final}
+	var indexCalls int
+	committer := &SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
+		ExternalCommitWithCompensation: func(record *EvolutionCompensationRecord) error {
+			if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+				return err
+			}
+			if err := os.Rename(staging, final); err != nil {
+				return err
+			}
+			record.SetCreatedDirectories([]string{final})
+			record.SetDirectoryPublished(true)
+			return nil
+		},
+		ExternalRollback: func() error { return os.RemoveAll(final) },
+		IndexRefresher: func() error {
+			indexCalls++
+			if indexCalls == 1 {
+				return fmt.Errorf("injected external publish index failure")
+			}
+			return nil
+		},
+	}
+	got := committer.Commit(context.Background(), entry.Name, entry, "skill:test_external_publish", map[string]string{"skill": entry.Name, "action": "install"})
+	if got.State != "rolled_back" || !got.RollbackComplete || got.CleanupStatus != "clear" {
+		t.Fatalf("commit result = %+v, want complete rollback", got)
+	}
+	if _, err := os.Stat(final); !os.IsNotExist(err) {
+		t.Fatalf("published directory remains after rollback: %v", err)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging directory unexpectedly remains after rollback: %v", err)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("compensation records = %+v, err=%v; want cleaned", records, err)
+	}
+}
+
+func TestPersistDefinitionChange_PersistsAndRecoversAuditPending(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "pending")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalYAML := []byte("name: pending-skill\ndescription: old\nsteps: []\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), originalYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "pending-skill", SkillDir: dir, Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new"}
+
+	var indexCalls int
+	p := NewEvolutionPipeline()
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} }
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { return nil }
+	p.DefinitionWriter = func(entry *corelib.NLSkillEntry) error {
+		return WriteBackOptimizedSteps(entry)
+	}
+	p.IndexRefresher = func() error {
+		indexCalls++
+		if indexCalls == 2 { // rollback refresh fails, leaving compensation pending
+			return fmt.Errorf("injected rollback index failure")
+		}
+		return nil
+	}
+	p.FinalAuditor = func(string, map[string]string) error {
+		return fmt.Errorf("injected final audit failure")
+	}
+	ctx := WithEvolutionRequestMetadata(context.Background(), "req-pending", 1)
+	result := p.persistDefinitionChangeWithAudit(ctx, old.Name, after, "skill:test_commit", map[string]string{"action": "repair"})
+	if result.State != "audit_pending" || result.RollbackComplete {
+		t.Fatalf("result = %+v, want incomplete audit_pending", result)
+	}
+	queuePath := DefaultEvolutionCompensationPath()
+	if _, err := os.Stat(queuePath); err != nil {
+		t.Fatalf("compensation queue missing: %v", err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records = %d, err=%v; want one durable record", len(records), err)
+	}
+	if records[0].RequestID != "req-pending" || records[0].Skill != old.Name {
+		t.Fatalf("record = %+v, missing correlation fields", records[0])
+	}
+
+	// A fresh pipeline simulates a process restart. Recovery succeeds and
+	// atomically removes the queue record.
+	restarted := NewEvolutionPipeline()
+	restarted.SkillSaver = func([]corelib.NLSkillEntry) error { return nil }
+	restarted.IndexRefresher = func() error { return nil }
+	recovered, pending, err := restarted.RecoverPendingCompensations()
+	if err != nil || recovered != 1 || pending != 0 {
+		t.Fatalf("recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	if _, err := os.Stat(queuePath); !os.IsNotExist(err) {
+		t.Fatalf("queue still exists after recovery, stat err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(originalYAML) {
+		t.Fatalf("YAML after recovery = %q, want original", data)
+	}
+}
+
+func TestRecoverPendingCompensationsEventuallyNeedsReview(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-review", "review-skill", "repair", "", nil, false, nil, "rollback_incomplete")
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	p := NewEvolutionPipeline()
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { return fmt.Errorf("still unavailable") }
+	for i := 0; i < evolutionCompensationMaxAttempts; i++ {
+		_, _, err := p.RecoverPendingCompensations()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records = %d, err=%v", len(records), err)
+	}
+	if records[0].Status != "needs_review" || records[0].Attempts != evolutionCompensationMaxAttempts {
+		t.Fatalf("record = %+v, want bounded needs_review", records[0])
+	}
+}
+
+func TestRecoverPendingCompensationsSerializesConcurrentCalls(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-serial", "serial-skill", "repair", "", nil, false, nil, "test")
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	p := NewEvolutionPipeline()
+	p.SkillSaver = func([]corelib.NLSkillEntry) error {
+		time.Sleep(25 * time.Millisecond)
+		return nil
+	}
+	p.IndexRefresher = func() error { return nil }
+	done := make(chan struct{}, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, _, _ = p.RecoverPendingCompensations()
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("concurrent recovery did not complete")
+		}
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("queue after concurrent recovery = %d, err=%v; want empty", len(records), err)
+	}
+}
+
+func TestRestoreEvolutionCompensationRemovesDraftWhenSnapshotAbsent(t *testing.T) {
+	root := t.TempDir()
+	draftPath := filepath.Join(root, "draft.json")
+	if err := os.WriteFile(draftPath, []byte(`{"stale":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := EvolutionCompensationRecord{
+		SchemaVersion: evolutionCompensationSchemaVersion,
+		Skill:         "demo",
+		YAMLPath:      filepath.Join(root, "skill.yaml"),
+		DraftPath:     draftPath,
+		DraftExists:   false,
+		ConfigBackup:  []corelib.NLSkillEntry{{Name: "demo", Status: "active"}},
+	}
+	if err := restoreEvolutionCompensation(record, func([]corelib.NLSkillEntry) error { return nil }, nil); err != nil {
+		t.Fatalf("restoreEvolutionCompensation() error = %v", err)
+	}
+	if _, err := os.Stat(draftPath); !os.IsNotExist(err) {
+		t.Fatalf("draft still exists after recovery, stat err=%v", err)
+	}
+}
+
+func TestListEvolutionCompensationSummariesRedactsPathsAndBoundsErrors(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-summary", "summary-skill", "repair", "C:\\private\\skill.yaml", nil, false, nil, "")
+	record.LastError = "restore failed at C:\\private\\skill.yaml: " + strings.Repeat("x", 400)
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := ListEvolutionCompensationSummaries()
+	if err != nil || len(summaries) != 1 {
+		t.Fatalf("summaries=%+v err=%v", summaries, err)
+	}
+	if strings.Contains(summaries[0].LastError, "C:\\private") || len([]rune(summaries[0].LastError)) > 256 {
+		t.Fatalf("summary leaked/unbounded path error: %q", summaries[0].LastError)
+	}
+}
+
+func TestReadEvolutionCompensationsRejectsUnsupportedSchemaAndCorruptRecords(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	path := DefaultEvolutionCompensationPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []string{
+		`{"schema_version":"99","skill":"demo","attempts":0}`,
+		`{"schema_version":"1","skill":"demo","attempts":-1}`,
+		`{"schema_version":"1","skill":"demo","status":"mystery"}`,
+		`{"schema_version":"1","attempts":0}`,
+	}
+	for _, line := range cases {
+		if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readEvolutionCompensations(); err == nil {
+			t.Fatalf("readEvolutionCompensations() accepted invalid record %s", line)
+		}
+	}
+}
+
+func TestReadEvolutionCompensationsAcceptsLegacyMissingSchema(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	path := DefaultEvolutionCompensationPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"skill":"legacy","action":"repair","attempts":0}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 || records[0].SchemaVersion != evolutionCompensationSchemaVersion {
+		t.Fatalf("legacy records=%+v err=%v", records, err)
+	}
+}
+
+func TestWriteEvolutionCompensationsReplacesExistingQueueWithoutBackupResidue(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	first := newEvolutionCompensationRecord("req-replace-1", "replace-skill", "repair", "", nil, false, nil, "first")
+	second := newEvolutionCompensationRecord("req-replace-2", "replace-skill", "repair", "", nil, false, nil, "second")
+	if err := writeEvolutionCompensations([]EvolutionCompensationRecord{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEvolutionCompensations([]EvolutionCompensationRecord{second}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 || records[0].RequestID != "req-replace-2" {
+		t.Fatalf("records=%+v err=%v, want latest queue record", records, err)
+	}
+	if _, err := os.Stat(DefaultEvolutionCompensationPath() + ".replace-backup"); !os.IsNotExist(err) {
+		t.Fatalf("replace backup residue exists, stat err=%v", err)
+	}
+}
+
+func TestRunOptimize_YAMLErrorDoesNotEmitSuccessOrUpload(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: optimize-tx\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tracker, err := tool.NewUsageTracker("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewEvolutionPipeline()
+	p.UsageTracker = tracker
+	p.Optimizer = NewSkillOptimizer(&mockLLMRepairer{response: `{"optimized":true,"explanation":"change","new_steps":[{"action":"bash","params":{"command":"echo new"}}]}`}, nil, nil)
+	entry := corelib.NLSkillEntry{Name: "optimize-tx", SkillDir: dir, Status: "active", Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo old"}}}}
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{entry} }
+	var saveCalls, optimizedEvents, rollbackEvents, uploads atomic.Int32
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { saveCalls.Add(1); return nil }
+	p.EventEmitter = func(event string, _ map[string]string) {
+		if event == EventSkillOptimized {
+			optimizedEvents.Add(1)
+		}
+		if event == EventSkillEvolutionRolledBack {
+			rollbackEvents.Add(1)
+		}
+	}
+	p.UploadTrigger = func(string, *SkillExecutionResultCompat) { uploads.Add(1) }
+	p.DefinitionWriter = func(*corelib.NLSkillEntry) error { return fmt.Errorf("injected YAML failure") }
+
+	res := p.TriggerOptimize(context.Background(), &entry, true)
+	if res.Optimized || !res.Attempted {
+		t.Fatalf("result = %+v, want attempted but not optimized", res)
+	}
+	if optimizedEvents.Load() != 0 || uploads.Load() != 0 {
+		t.Fatalf("optimized events=%d uploads=%d, want both zero", optimizedEvents.Load(), uploads.Load())
+	}
+	if rollbackEvents.Load() != 1 {
+		t.Fatalf("rollback events=%d, want 1", rollbackEvents.Load())
+	}
+	if saveCalls.Load() != 2 {
+		t.Fatalf("save calls=%d, want forward and rollback", saveCalls.Load())
+	}
 }
 
 func TestMergeEvolvedEntry_PreservesLiveStats(t *testing.T) {
@@ -750,6 +1761,33 @@ func TestEvolutionPipeline_tryRepair_LLMErrorConsumesCooldown(t *testing.T) {
 	p3.tryRepair(context.Background(), req)
 	if repairCooldownRecorded(p3, "broken") {
 		t.Fatal("nil LLM must not consume the repair cooldown")
+	}
+}
+
+func TestRecordRepairAttemptFailureEnforcesSharedLimit(t *testing.T) {
+	entry := repairEligibleCoreEntry()
+	for i := 0; i < SelfRepairMaxAttempts; i++ {
+		if entry.Status != "active" {
+			t.Fatalf("attempt %d status=%q before limit, want active", i+1, entry.Status)
+		}
+		RecordRepairAttemptFailure(entry, "gate_rejected", fmt.Sprintf("rejected-%d", i+1))
+		want := i + 1
+		if entry.RepairAttemptCount != want {
+			t.Fatalf("attempt count=%d, want %d", entry.RepairAttemptCount, want)
+		}
+	}
+	if entry.Status != "needs_review" {
+		t.Fatalf("status after limit=%q, want needs_review", entry.Status)
+	}
+	if ok, reason := ExplainRepairGate(entry); ok || reason != "status_not_active" {
+		t.Fatalf("ExplainRepairGate after limit=(%v,%q), want status_not_active", ok, reason)
+	}
+	if CanForceAttemptRepair(entry) {
+		t.Fatal("force repair must not bypass the shared attempt limit")
+	}
+	RecordRepairAttemptFailure(entry, "gate_rejected", "extra")
+	if entry.RepairAttemptCount != SelfRepairMaxAttempts {
+		t.Fatalf("attempt count must remain bounded at %d, got %d", SelfRepairMaxAttempts, entry.RepairAttemptCount)
 	}
 }
 

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import pathlib
+import urllib.parse
 
 from firmware_manifest_contract import (
     COS_PUBLIC_BASE_URL,
@@ -36,6 +37,9 @@ only_assets = [
 # stable → latest/  |  beta → beta/
 release_channel = (os.environ.get("RELEASE_CHANNEL") or "stable").strip()
 asset_prefix = "beta" if release_channel == "beta" else "latest"
+# net/url.PathEscape's allowed characters for a single path segment. Keep
+# release history URLs identical to the desktop client's construction.
+GO_PATH_SEGMENT_SAFE = "$&+-.0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~"
 
 
 def resolve_manifest_name(value=None):
@@ -57,22 +61,6 @@ def upload_file(client, local_path, key, cache_control):
             CacheControl=cache_control,
         )
 
-
-def list_objects_with_prefix(client, prefix):
-    marker = ""
-    keys = []
-    while True:
-        response = client.list_objects(
-            Bucket=bucket,
-            Prefix=prefix,
-            Marker=marker,
-            MaxKeys=1000,
-        )
-        contents = response.get("Contents") or []
-        keys.extend(item["Key"] for item in contents)
-        if response.get("IsTruncated") != "true":
-            return keys
-        marker = response.get("NextMarker") or keys[-1]
 
 
 def collect_assets():
@@ -150,6 +138,111 @@ def write_latest_manifest(assets, manifest_name="latest.json"):
     return latest_path
 
 
+def stable_history_asset(path):
+    # Keep history URLs byte-for-byte aligned with the Go client's PathEscape
+    # construction. A release build remains an opaque server value.
+    build_path = urllib.parse.quote(tag, safe=GO_PATH_SEGMENT_SAFE)
+    asset_path = urllib.parse.quote(path.name, safe=GO_PATH_SEGMENT_SAFE)
+    urls = []
+    if r2_public_base_url:
+        urls.append(f"{validate_public_base_url('R2_PUBLIC_BASE_URL', r2_public_base_url)}/releases/{build_path}/{asset_path}")
+    urls.append(f"{validate_public_base_url('COS_PUBLIC_BASE_URL', public_base_url)}/releases/{build_path}/{asset_path}")
+    return {
+        "name": path.name,
+        "size": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "url": urls[-1],
+        "urls": urls,
+    }
+
+
+def stable_history_entry(assets, published_at):
+    return {
+        "build": tag,
+        "published_at": published_at,
+        "assets": {path.name: stable_history_asset(path) for path in assets},
+    }
+
+
+def stable_history_release_sort_key(release):
+    """Sort persisted records newest-first without interpreting build strings."""
+    if not isinstance(release, dict):
+        return ""
+    published_at = release.get("published_at")
+    return published_at.strip() if isinstance(published_at, str) else ""
+
+
+def history_build_key(value):
+    """Canonical identity for an opaque server build value."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def cos_error_status(exc):
+    """Return COS's HTTP status across the SDK's supported error shapes."""
+    status = getattr(exc, "get_status_code", lambda: None)()
+    if status is None:
+        response = getattr(exc, "get_response", lambda: None)()
+        status = getattr(response, "status_code", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def update_stable_history(client, assets):
+    """Prepend the formal build and retain the five newest server records."""
+    from datetime import datetime, timezone
+
+    history_name = "stable-history.json"
+    existing = {"releases": []}
+    try:
+        response = client.get_object(Bucket=bucket, Key=history_name)
+        raw = response["Body"].get_raw_stream().read()
+        candidate = json.loads(raw)
+        if not isinstance(candidate, dict) or not isinstance(candidate.get("releases"), list):
+            raise RuntimeError(f"{history_name} has an invalid release list")
+        existing = candidate
+    except Exception as exc:
+        # A missing history is expected only for the first stable release. Do
+        # not silently discard a valid rollback catalogue on transient errors.
+        if cos_error_status(exc) != 404:
+            raise RuntimeError(f"failed to load {history_name}: {exc}") from exc
+        log(f"{history_name} does not exist yet; creating it")
+
+    published_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    current = stable_history_entry(assets, published_at)
+    releases = [current]
+    current_build = history_build_key(tag)
+
+    def is_valid_prior_release(release):
+        if not isinstance(release, dict) or not history_build_key(release.get("build")) or not isinstance(release.get("assets"), dict):
+            return False
+        published = stable_history_release_sort_key(release)
+        if not published:
+            return False
+        try:
+            datetime.fromisoformat(published.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return True
+
+    # Do not assume an interrupted legacy publication left the array ordered.
+    # ISO-8601 UTC timestamps sort chronologically as strings, and the build
+    # itself remains an opaque identity rather than a locally parsed version.
+    prior_releases = sorted(existing["releases"], key=stable_history_release_sort_key, reverse=True)
+    for release in prior_releases:
+        if not is_valid_prior_release(release) or history_build_key(release.get("build")) == current_build:
+            continue
+        releases.append(release)
+        if len(releases) == 5:
+            break
+
+    history_path = asset_dir / history_name
+    history_path.write_text(json.dumps({"releases": releases}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    upload_file(client, history_path, history_name, "public, max-age=60")
+    log(f"updated {history_name} releases={len(releases)}")
+
+
 def main():
     manifest_name = resolve_manifest_name(os.environ.get("MANIFEST_OUTPUT_NAME"))
     assets = collect_assets()
@@ -180,15 +273,23 @@ def main():
             f"{asset_prefix}/{path.name}",
             "public, max-age=31536000, immutable",
         )
+        if release_channel == "stable":
+            # Preserve each formal installer under its build number. The
+            # rollback client will only construct URLs under this namespace.
+            upload_file(
+                client,
+                path,
+                # Object-store keys are raw names. Their public URL is
+                # percent-encoded separately by stable_history_asset, just as
+                # Go's URL client does when it requests the object.
+                f"releases/{tag}/{path.name}",
+                "public, max-age=31536000, immutable",
+            )
     upload_file(client, latest_path, manifest_name, "public, max-age=60")
+    if release_channel == "stable":
+        update_stable_history(client, assets)
 
-    old_keys = list_objects_with_prefix(client, "releases/")
-    log(f"cleanup old tagged release objects count={len(old_keys)}")
-    for key in old_keys:
-        log(f"delete old object {key}")
-        client.delete_object(Bucket=bucket, Key=key)
-
-    log(f"synced COS release {tag}: uploaded={len(assets)} manifest={manifest_name} deleted_old={len(old_keys)}")
+    log(f"synced COS release {tag}: uploaded={len(assets)} manifest={manifest_name}")
 
 
 if __name__ == "__main__":

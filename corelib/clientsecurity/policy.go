@@ -47,6 +47,30 @@ func IsDeveloperMode(cfg corelib.AppConfig) bool {
 	return strings.EqualFold(strings.TrimSpace(cfg.SecurityPolicyMode), "developer")
 }
 
+// NameLevelRejection reports whether EnforceConfig rejects the tool for every
+// possible argument set under cfg. Only name-only, config-static rules qualify
+// (bash under a mandated sandbox, file/image outbound while disabled); rules
+// that depend on arguments (network level, skill sources, im_message send
+// intent) never report a rejection here. Callers use this to keep guaranteed-
+// rejected tools out of the rendered model surface; EnforceConfig remains the
+// execution-time defense and is unchanged.
+func NameLevelRejection(cfg corelib.AppConfig, name string) (bool, string) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if !cfg.HubSecurityCentralized {
+		return false, ""
+	}
+	if sandbox := strings.ToLower(strings.TrimSpace(cfg.SandboxMode)); name == "bash" && sandbox != "" && sandbox != "none" {
+		return true, fmt.Sprintf("bash requires %s sandbox, but this client path cannot guarantee sandbox enforcement", sandbox)
+	}
+	if (name == "send_file" || name == "send_to_im") && !cfg.FileOutboundEnabled {
+		return true, "file outbound is disabled by Hub security policy"
+	}
+	if isImageOutboundTool(name) && !cfg.ImageOutboundEnabled {
+		return true, "image outbound is disabled by Hub security policy"
+	}
+	return false, ""
+}
+
 func IsHubManagedSecurityConfigKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "hub_security_centralized",
@@ -99,7 +123,7 @@ func enforceNetworkLevel(level string, allowlist []string, name string, args map
 	if level == "" || level == "full" {
 		return true, ""
 	}
-	if !isNetworkTool(name) && !skillInstallNeedsNetwork(name, args) && !toolArgsContainURL(args) && !toolArgsContainHost(args) && !bashCommandLooksNetworked(name, args) {
+	if !isNetworkTool(name) && !skillInstallNeedsNetwork(name, args) && !toolArgsContainNetworkEndpoint(args) && !toolArgsContainHost(args) && !bashCommandLooksNetworked(name, args) {
 		return true, ""
 	}
 	if level == "none" {
@@ -290,6 +314,79 @@ func firstStringArg(args map[string]interface{}, keys ...string) string {
 
 func toolArgsContainURL(args map[string]interface{}) bool {
 	return len(urlsFromAny(args)) > 0
+}
+
+// toolArgsContainNetworkEndpoint reports whether args carry a URL where the
+// tool would plausibly consume it as a network endpoint: the argument key
+// designates an endpoint, the whole value is itself a URL, or the value is a
+// command/script containing a URL. URLs merely embedded in prose payloads
+// (document content, report text, message bodies) are data, not network
+// targets — scanning them false-rejects purely offline tools such as
+// generate_pdf under the intranet/allowlist network levels.
+func toolArgsContainNetworkEndpoint(args map[string]interface{}) bool {
+	return valueContainsNetworkEndpoint(args, "")
+}
+
+func valueContainsNetworkEndpoint(value interface{}, key string) bool {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for k, item := range v {
+			if valueContainsNetworkEndpoint(item, k) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if valueContainsNetworkEndpoint(item, key) {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range v {
+			if valueContainsNetworkEndpoint(item, key) {
+				return true
+			}
+		}
+	case string:
+		return stringArgLooksNetworkEndpoint(key, v)
+	}
+	return false
+}
+
+func stringArgLooksNetworkEndpoint(key, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || !strings.Contains(strings.ToLower(value), "http") {
+		return false
+	}
+	if looksHTTPURL(value) {
+		return true
+	}
+	if isEndpointArgKey(key) || isExecArgKey(key) {
+		return len(embeddedHTTPURLRe.FindAllString(value, -1)) > 0
+	}
+	return false
+}
+
+func isEndpointArgKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "url", "urls", "uri", "endpoint", "link", "links", "href", "src", "target",
+		"image_url", "avatar_url", "download_url", "file_url", "base_url",
+		"repo_url", "raw_url", "hub_url", "install_ref", "webhook", "webhook_url",
+		"callback_url", "api_url", "icon_url", "logo_url", "audio_url", "video_url",
+		"media_url", "page_url", "site", "homepage", "feed", "feed_url":
+		return true
+	default:
+		return false
+	}
+}
+
+func isExecArgKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "command", "cmd", "script":
+		return true
+	default:
+		return false
+	}
 }
 
 func toolArgsContainHost(args map[string]interface{}) bool {

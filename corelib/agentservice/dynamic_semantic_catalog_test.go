@@ -139,8 +139,15 @@ func TestProjectedDynamicProvidersUseCommonPlannerAndRenderer(t *testing.T) {
 	if function["name"] == second.AdapterName || strings.Contains(function["name"].(string), "second") {
 		t.Fatalf("renderer leaked dynamic provider identity: %#v", function)
 	}
-	if function["description"] != "Execute the approved dynamic capability. One-time grant this turn. After it succeeds this name may leave the list and later reappear for the next authorized step." {
+	description, _ := function["description"].(string)
+	if !strings.HasPrefix(description, "Execute the approved dynamic capability. One-time grant this turn. After it succeeds this name may leave the list and later reappear for the next authorized step.") {
 		t.Fatalf("renderer did not derive capability description: %#v", function)
+	}
+	// The projected adapter has a closed empty schema, so the renderer must
+	// also append the no-arguments guidance (2026-08-25 weather-PDF turn: a
+	// guessed path field used to burn the one-shot delivery grant).
+	if !strings.Contains(description, "It takes no arguments") {
+		t.Fatalf("empty-schema adapter must carry the no-arguments guidance: %#v", function)
 	}
 }
 

@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -214,7 +216,24 @@ func (s *Service) GetSkill(ctx context.Context, p Principal, name string) (*core
 }
 
 func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) error {
-	_ = ctx
+	if s == nil {
+		return fmt.Errorf("service is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	if s.skillInstallRecoveryBlocked {
+		return fmt.Errorf("pending skill install compensation requires review")
+	}
+	if _, pending, err := s.recoverAgentSkillInstallCompensations(); err != nil {
+		s.skillInstallRecoveryBlocked = true
+		return fmt.Errorf("recover pending skill compensation: %w", err)
+	} else if pending > 0 {
+		s.skillInstallRecoveryBlocked = true
+		return fmt.Errorf("pending skill compensation requires review")
+	}
 	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
 		return err
@@ -225,10 +244,63 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 	if err := s.revokeSkillDynamicContract(p, skillStableID(entry)); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
+	quarantine := filepath.Join(filepath.Dir(dir), fmt.Sprintf(".skill-delete-pending-%d", time.Now().UnixNano()))
+	requestID := fmt.Sprintf("agent_skill_delete_%d", time.Now().UnixNano())
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return skill.ScanSkillDirAll(filepath.Dir(dir)) },
+		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
+		// Delete is a directory lifecycle operation. The directory is moved to
+		// quarantine and removed after final audit; it must not invoke the
+		// default YAML writer against the now-absent original path.
+		DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+		EntriesMutator: func(items []corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+			filtered := make([]corelib.NLSkillEntry, 0, len(items))
+			for _, item := range items {
+				if item.Name == entry.Name || item.MatchesName(entry.Name) || filepath.Clean(item.SkillDir) == filepath.Clean(dir) {
+					continue
+				}
+				filtered = append(filtered, item)
+			}
+			return filtered, nil
+		},
+		IndexRefresher: func() error { return nil },
+		FinalAuditor: func(event string, data map[string]string) error {
+			return s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: event, ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: data})
+		},
+		ConfigRevision: "agentservice-skill-delete-v1",
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			record.SetRecoveryScope(s.dataRoot)
+			record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: dir, BackupPath: quarantine, HadPrevious: true}})
+			record.SetAffectedSkills([]string{entry.Name})
+		},
+		ExternalCommitWithCompensation: func(record *skill.EvolutionCompensationRecord) error {
+			if err := skill.RetryDirectoryRename(dir, quarantine); err != nil {
+				return fmt.Errorf("quarantine skill %s: %w", entry.Name, err)
+			}
+			moves := []skill.EvolutionDirectoryMove{{OriginalPath: dir, BackupPath: quarantine, HadPrevious: true, Moved: true}}
+			record.SetDirectoryMoves(moves)
+			return skill.ReplaceEvolutionCompensation(*record)
+		},
+		ExternalRollback: func() error {
+			if _, statErr := os.Stat(quarantine); os.IsNotExist(statErr) {
+				return nil
+			}
+			return skill.RetryDirectoryRename(quarantine, dir)
+		},
+		PostCommitCleanup: func() error {
+			if err := os.RemoveAll(quarantine); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove deleted skill quarantine: %w", err)
+			}
+			return nil
+		},
 	}
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.deleted", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
+	result := committer.Commit(skill.WithEvolutionRequestMetadata(ctx, requestID, 1), entry.Name, &entry, "skill.deleted", map[string]string{
+		"skill": entry.Name, "action": "agentservice_delete", "decision": "applied", "request_id": requestID,
+		"attempt": "1", "config_revision": "agentservice-skill-delete-v1", "schema_version": "2", "evidence_mode": "none",
+	})
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		return fmt.Errorf("skill delete not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
+	}
 	return nil
 }
 
@@ -613,6 +685,14 @@ func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in
 }
 
 func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in SkillUploadInput) (*SkillUploadResult, error) {
+	if s == nil {
+		return nil, fmt.Errorf("skill %q is blocked by pending compensation", name)
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	if s.hasPendingSkillCompensationLocked(name) {
+		return nil, fmt.Errorf("skill %q is blocked by pending compensation", name)
+	}
 	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
 		return nil, err
@@ -769,15 +849,14 @@ func (s *Service) installSkillArchiveBytes(ctx context.Context, p Principal, dat
 		}
 		scanned = append(scanned, scannedPackageRoot{entry: entry, root: root})
 	}
-	installed := make([]corelib.NLSkillEntry, 0, len(scanned))
+	// Keep every package in one durable transaction. A multi-package archive
+	// must not leave earlier entries installed when a later directory publish
+	// or final audit fails.
+	entries := make([]corelib.NLSkillEntry, 0, len(scanned))
 	for _, item := range scanned {
-		stored, err := s.persistExtractedSkillDir(p, *item.entry, item.root, overwrite)
-		if err != nil {
-			return nil, err
-		}
-		installed = append(installed, stored)
+		entries = append(entries, *item.entry)
 	}
-	return installed, nil
+	return s.persistImportedEntries(ctx, p, entries, overwrite)
 }
 
 func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillEntry, skillDir string) (*skill.ScanReport, error) {
@@ -810,17 +889,31 @@ func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillE
 }
 
 func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entries []corelib.NLSkillEntry, overwrite bool) ([]corelib.NLSkillEntry, error) {
+	if s == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	// A queue that cannot be read is a hard admission failure. Recover only
+	// AgentService-owned records before preparing a new package so a stale
+	// process cannot be silently overwritten by a later import.
+	if s.skillInstallRecoveryBlocked {
+		// Retry recovery under the same transaction lock. A pending record is
+		// still an unresolved filesystem decision and must prevent a new
+		// install from competing with it.
+		s.skillInstallRecoveryBlocked = false
+	}
+	if _, pending, err := s.recoverAgentSkillInstallCompensations(); err != nil {
+		s.skillInstallRecoveryBlocked = true
+		return nil, fmt.Errorf("recover pending skill install compensation: %w", err)
+	} else if pending > 0 {
+		s.skillInstallRecoveryBlocked = true
+		return nil, fmt.Errorf("pending skill install compensation requires review")
+	}
 	root, err := s.ensureUserSkillsRoot(p)
 	if err != nil {
 		return nil, err
 	}
-	type stagedInstall struct {
-		entry    corelib.NLSkillEntry
-		stageDir string
-		finalDir string
-		backup   string
-	}
-	installed := make([]corelib.NLSkillEntry, 0, len(entries))
 	scanned := make([]corelib.NLSkillEntry, 0, len(entries))
 	seenNames := make(map[string]struct{}, len(entries))
 	seenDirs := make(map[string]struct{}, len(entries))
@@ -844,28 +937,6 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 			}
 			revokedStableIDs[skillStableID(existing)] = struct{}{}
 		}
-		scanned = append(scanned, entry)
-	}
-	// Replacement cannot retain the previous package's contract. Perform this
-	// fence before altering directories; an interrupted import is quarantined
-	// until a trusted lifecycle publisher binds the new content.
-	for stableID := range revokedStableIDs {
-		if err := s.revokeSkillDynamicContract(p, stableID); err != nil {
-			return nil, err
-		}
-	}
-	staged := make([]stagedInstall, 0, len(scanned))
-	defer func() {
-		for _, item := range staged {
-			if strings.TrimSpace(item.stageDir) != "" {
-				_ = os.RemoveAll(item.stageDir)
-			}
-			if strings.TrimSpace(item.backup) != "" {
-				_ = os.RemoveAll(item.backup)
-			}
-		}
-	}()
-	for _, entry := range scanned {
 		dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
 		cleanDir := filepath.Clean(dir)
 		dirKey := cleanDir
@@ -876,8 +947,79 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 			return nil, fmt.Errorf("duplicate skill directory %q in import", filepath.Base(cleanDir))
 		}
 		seenDirs[dirKey] = struct{}{}
-		if _, statErr := os.Stat(cleanDir); statErr == nil && !overwrite {
-			return nil, fmt.Errorf("skill directory %q already exists", filepath.Base(cleanDir))
+		scanned = append(scanned, entry)
+	}
+	// Replacement cannot retain the previous package's contract. Perform this
+	// fence before altering directories; an interrupted import is quarantined
+	// until a trusted lifecycle publisher binds the new content.
+	for stableID := range revokedStableIDs {
+		if err := s.revokeSkillDynamicContract(p, stableID); err != nil {
+			return nil, err
+		}
+	}
+	return s.persistImportedEntriesWithCommitter(ctx, p, root, scanned, overwrite)
+}
+
+// persistImportedEntryWithCommitter is retained as a compatibility adapter for
+// callers that install one package. The actual implementation is batch based
+// so a multi-package archive cannot leave a committed first package when a
+// later package fails.
+func (s *Service) persistImportedEntryWithCommitter(ctx context.Context, p Principal, root string, entry corelib.NLSkillEntry, overwrite bool) (corelib.NLSkillEntry, error) {
+	items, err := s.persistImportedEntriesWithCommitter(ctx, p, root, []corelib.NLSkillEntry{entry}, overwrite)
+	if err != nil {
+		return corelib.NLSkillEntry{}, err
+	}
+	if len(items) == 0 {
+		entry.Status = "skipped"
+		return entry, nil
+	}
+	return items[0], nil
+}
+
+type agentSkillInstallItem struct {
+	entry     corelib.NLSkillEntry
+	stageDir  string
+	finalDir  string
+	backup    string
+	hadPrev   bool
+	moved     bool
+	published bool
+}
+
+// persistImportedEntriesWithCommitter publishes all packages from one import
+// through one durable directory transaction. The AgentService registry is
+// filesystem-derived, so config/index callbacks are intentionally no-ops; the
+// checked directory scan and strict audit are still part of the commit.
+func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Principal, root string, entries []corelib.NLSkillEntry, overwrite bool) ([]corelib.NLSkillEntry, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	items := make([]agentSkillInstallItem, 0, len(entries))
+	for _, entry := range entries {
+		finalDir := filepath.Clean(filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name))))
+		existing, _, findErr := s.findSkill(p, entry.Name)
+		item := agentSkillInstallItem{entry: entry, finalDir: finalDir}
+		if findErr == nil {
+			if !overwrite {
+				return nil, fmt.Errorf("skill %q already exists", entry.Name)
+			}
+			if strings.TrimSpace(existing.SkillDir) != "" {
+				item.finalDir = filepath.Clean(existing.SkillDir)
+			}
+			item.backup = item.finalDir + ".prev"
+			item.hadPrev = true
+			if _, statErr := os.Stat(item.backup); statErr == nil {
+				return nil, fmt.Errorf("skill backup conflict: %s already exists", filepath.Base(item.backup))
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				return nil, statErr
+			}
+		} else if !strings.Contains(strings.ToLower(findErr.Error()), "not found") {
+			return nil, findErr
+		} else if info, statErr := os.Stat(item.finalDir); statErr == nil && info.IsDir() {
+			return nil, fmt.Errorf("skill directory %q already exists under a different identity", filepath.Base(item.finalDir))
 		} else if statErr != nil && !os.IsNotExist(statErr) {
 			return nil, statErr
 		}
@@ -885,72 +1027,199 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 		if err != nil {
 			return nil, err
 		}
-		staged = append(staged, stagedInstall{entry: entry, stageDir: stageDir, finalDir: cleanDir})
-		item := &staged[len(staged)-1]
-		if err := writeEntryToSkillDir(stageDir, entry); err != nil {
+		item.stageDir = stageDir
+		if err := writeEntryToSkillDir(item.stageDir, entry); err != nil {
+			for _, prior := range items {
+				_ = os.RemoveAll(prior.stageDir)
+			}
+			_ = os.RemoveAll(item.stageDir)
 			return nil, err
 		}
-		loaded, err := loadImportedSkillEntry(stageDir)
-		if err != nil {
+		loaded, err := loadImportedSkillEntry(item.stageDir)
+		if err != nil || !loaded.MatchesName(entry.Name) {
+			for _, prior := range items {
+				_ = os.RemoveAll(prior.stageDir)
+			}
+			_ = os.RemoveAll(item.stageDir)
+			if err == nil {
+				err = fmt.Errorf("parsed name %q does not match", loaded.Name)
+			}
 			return nil, fmt.Errorf("validate staged skill %q: %w", entry.Name, err)
 		}
-		if !loaded.MatchesName(entry.Name) {
-			return nil, fmt.Errorf("validate staged skill %q: parsed name %q does not match", entry.Name, loaded.Name)
+		if findErr == nil && sameImportedSkillDirectory(item.stageDir, existing.SkillDir) {
+			_ = os.RemoveAll(item.stageDir)
+			continue
 		}
-		item.stageDir = stageDir
+		items = append(items, item)
 	}
-	committed := make([]int, 0, len(staged))
-	rollbackCommitted := func() {
-		for i := len(committed) - 1; i >= 0; i-- {
-			item := &staged[committed[i]]
-			if item.backup != "" {
-				_ = os.RemoveAll(item.finalDir)
-				_ = os.Rename(item.backup, item.finalDir)
-				item.backup = ""
-				continue
+	if len(items) == 0 {
+		return nil, nil
+	}
+	requestID := fmt.Sprintf("agent_skill_install_%d", time.Now().UnixNano())
+	cleanupStages := func() {
+		for _, item := range items {
+			if item.stageDir != "" {
+				_ = os.RemoveAll(item.stageDir)
 			}
-			_ = os.RemoveAll(item.finalDir)
 		}
 	}
-	for i := range staged {
-		item := &staged[i]
-		if overwrite {
-			if _, statErr := os.Stat(item.finalDir); statErr == nil {
-				backup := filepath.Join(root, ".skill-backup-"+filepath.Base(item.finalDir)+"-"+strings.ReplaceAll(NewID("backup"), "-", ""))
-				if err := os.Rename(item.finalDir, backup); err != nil {
-					rollbackCommitted()
-					return nil, err
+	defer cleanupStages()
+	first := items[0].entry
+	first.SkillDir = items[0].finalDir
+	first.Source = firstNonEmpty(first.Source, "file")
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return skill.ScanSkillDirAll(root) },
+		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
+		IndexRefresher: func() error {
+			// The AgentService registry is filesystem-derived; force a scan by
+			// validating the published definition before final audit.
+			for _, item := range items {
+				if _, statErr := os.Stat(item.finalDir); os.IsNotExist(statErr) {
+					return fmt.Errorf("published skill directory missing: %s", filepath.Base(item.finalDir))
+				} else if statErr != nil {
+					return statErr
 				}
-				item.backup = backup
-			} else if statErr != nil && !os.IsNotExist(statErr) {
-				rollbackCommitted()
-				return nil, statErr
+				if _, err := loadImportedSkillEntry(item.finalDir); err != nil {
+					return err
+				}
 			}
-		}
-		if err := os.Rename(item.stageDir, item.finalDir); err != nil {
-			if item.backup != "" {
-				_ = os.Rename(item.backup, item.finalDir)
-				item.backup = ""
+			return nil
+		},
+		FinalAuditor: func(event string, data map[string]string) error {
+			return s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: event, ResourceType: "skill", ResourceID: first.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: data})
+		},
+		ConfigRevision: "agentservice-skill-install-v1",
+		AllowCreate:    true,
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			record.SetRecoveryScope(s.dataRoot)
+			created := make([]string, 0, len(items))
+			moves := make([]skill.EvolutionDirectoryMove, 0, len(items))
+			affected := make([]string, 0, len(items))
+			for i := range items {
+				created = append(created, items[i].finalDir)
+				moves = append(moves, skill.EvolutionDirectoryMove{OriginalPath: items[i].finalDir, BackupPath: items[i].backup, HadPrevious: items[i].hadPrev})
+				affected = append(affected, items[i].entry.Name)
 			}
-			rollbackCommitted()
-			return nil, err
-		}
-		item.stageDir = ""
-		committed = append(committed, i)
+			record.SetCreatedDirectories(created)
+			record.SetDirectoryMoves(moves)
+			record.SetAffectedSkills(affected)
+		},
+		ExternalCommitWithCompensation: func(record *skill.EvolutionCompensationRecord) error {
+			moves := append([]skill.EvolutionDirectoryMove(nil), record.DirectoryMoves...)
+			for i := range items {
+				if items[i].hadPrev {
+					if err := skill.RetryDirectoryRename(items[i].finalDir, items[i].backup); err != nil {
+						return fmt.Errorf("backup existing skill %s: %w", items[i].entry.Name, err)
+					}
+					items[i].moved = true
+					moves[i].Moved = true
+					if err := replaceAgentSkillCompensation(record, moves); err != nil {
+						return err
+					}
+				}
+				if err := skill.RetryDirectoryRename(items[i].stageDir, items[i].finalDir); err != nil {
+					return fmt.Errorf("publish skill %s: %w", items[i].entry.Name, err)
+				}
+				items[i].published = true
+				moves[i].Published = true
+				items[i].stageDir = ""
+				if err := replaceAgentSkillCompensation(record, moves); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		ExternalRollback: func() error {
+			for i := len(items) - 1; i >= 0; i-- {
+				if items[i].published {
+					if err := os.RemoveAll(items[i].finalDir); err != nil && !os.IsNotExist(err) {
+						return err
+					}
+				}
+				if items[i].moved {
+					if err := skill.RetryDirectoryRename(items[i].backup, items[i].finalDir); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		PostCommitCleanup: func() error {
+			for _, item := range items {
+				if !item.hadPrev || strings.TrimSpace(item.backup) == "" {
+					continue
+				}
+				if err := os.RemoveAll(item.backup); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("remove committed backup %s: %w", filepath.Base(item.backup), err)
+				}
+			}
+			return nil
+		},
 	}
-	for i := range staged {
-		item := &staged[i]
-		if item.backup != "" {
-			_ = os.RemoveAll(item.backup)
-			item.backup = ""
-		}
-		entry := item.entry
-		entry.SkillDir = item.finalDir
-		entry.Source = firstNonEmpty(entry.Source, "file")
-		installed = append(installed, entry)
-		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.installed", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}})
+	result := committer.Commit(skill.WithEvolutionRequestMetadata(ctx, requestID, 1), first.Name, &first, "skill.installed", map[string]string{"skill": first.Name, "action": "agentservice_install", "decision": "applied", "source": first.Source, "request_id": requestID, "attempt": "1", "config_revision": "agentservice-skill-install-v1", "schema_version": "2", "evidence_mode": "none", "package_count": fmt.Sprintf("%d", len(items))})
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		return nil, fmt.Errorf("skill install not committed: state=%s cleanup_status=%s reason=%s", result.State, result.CleanupStatus, result.FailureReason)
+	}
+	installed := make([]corelib.NLSkillEntry, 0, len(items))
+	for _, item := range items {
+		item.entry.SkillDir = item.finalDir
+		item.entry.Source = firstNonEmpty(item.entry.Source, "file")
+		installed = append(installed, item.entry)
 	}
 	return installed, nil
+}
+
+func replaceAgentSkillCompensation(record *skill.EvolutionCompensationRecord, moves []skill.EvolutionDirectoryMove) error {
+	record.SetDirectoryMoves(moves)
+	return skill.ReplaceEvolutionCompensation(*record)
+}
+
+func sameImportedSkillDirectory(left, right string) bool {
+	left = filepath.Clean(strings.TrimSpace(left))
+	right = filepath.Clean(strings.TrimSpace(right))
+	if left == "." || right == "." || left == "" || right == "" {
+		return false
+	}
+	leftDigest, leftErr := importedSkillDirectoryDigest(left)
+	rightDigest, rightErr := importedSkillDirectoryDigest(right)
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
+}
+
+func importedSkillDirectoryDigest(root string) (string, error) {
+	h := sha256.New()
+	paths := make([]string, 0)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return filepath.SkipDir
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			return "", err
+		}
+		_, _ = h.Write([]byte(rel))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (s *Service) recordSkillScanRejection(p Principal, entry *corelib.NLSkillEntry, report *skill.ScanReport, scanErr error) {

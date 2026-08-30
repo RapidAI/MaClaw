@@ -141,7 +141,7 @@ func sampleNeeds(sample Sample) ([]tool.CapabilityNeed, error) {
 				Capability: tool.CapabilityID(spec.Capability),
 				Qualifiers: spec.Qualifiers,
 				Polarity:   polarity,
-				Required:   required,
+				Required:   tool.RepeatSiblingRequired(required, index),
 			})
 		}
 	}

@@ -504,6 +504,19 @@ func TestDocumentReadMaxRunesForContextScalesWithProjectionBudget(t *testing.T) 
 	if got := DocumentReadMaxRunesForContext(400_000); got != 81_968 {
 		t.Fatalf("400K context max runes = %d, want 81968", got)
 	}
+	// Small windows: the page must stay within the projection budget instead
+	// of being raised to the legacy 30k floor, which would exceed the budget
+	// and get its middle cut by head/tail truncation.
+	if got := DocumentReadMaxRunesForContext(8_000); got != 9_557 {
+		t.Fatalf("8K context max runes = %d, want 9557", got)
+	}
+	for _, ctx := range []int{8_000, 32_000, 100_000, 200_000, 400_000} {
+		runes := DocumentReadMaxRunesForContext(ctx)
+		limit := DocumentReadToolResultLimit(ctx)
+		if bytes := runes*3 + 4*1024; bytes > limit {
+			t.Fatalf("context %d: page %d runes needs %d bytes, exceeds projection budget %d", ctx, runes, bytes, limit)
+		}
+	}
 }
 
 func TestToolReadDocumentWithContextLineNumbersFitsProjectionBudget(t *testing.T) {

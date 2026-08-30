@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +30,258 @@ const (
 
 // cloudWorkspaceLocalState is {cache}/.maclaw-cloud/state.json.
 type cloudWorkspaceLocalState struct {
-	LastPushedRevision string `json:"last_pushed_revision"`
+	LastPushedRevision  string                        `json:"last_pushed_revision"`
+	LastEventSeq        int64                         `json:"last_event_seq,omitempty"`
+	PendingOperationIDs []string                      `json:"pending_operation_ids,omitempty"`
+	FileRevisions       map[string]string             `json:"file_revisions,omitempty"`
+	LastEntries         []cloudWorkspaceManifestEntry `json:"last_entries,omitempty"`
+}
+
+var errCloudWorkspaceV2Unavailable = errors.New("cloud workspace v2 operations unavailable")
+
+// PushOperations uploads only changed files and appends per-file operations.
+// It is intentionally additive: callers can fall back to Push when talking to
+// an older Hub that does not expose the v2 endpoints.
+func (p *cloudWorkspaceProtocol) PushOperations(ctx context.Context, root string) error {
+	if p == nil || p.Transport == nil {
+		return fmt.Errorf("cloud workspace sync unavailable")
+	}
+	if _, ok := p.Transport.(cloudWorkspaceV2Transport); !ok {
+		return errCloudWorkspaceV2Unavailable
+	}
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return err
+	}
+	local, err := scanCloudWorkspaceLocal(root)
+	if err != nil {
+		return err
+	}
+	old := make(map[string]cloudWorkspaceManifestEntry, len(state.LastEntries))
+	for _, e := range state.LastEntries {
+		old[e.Path] = e
+	}
+	cur := make(map[string]cloudWorkspaceManifestEntry, len(local))
+	for _, e := range local {
+		cur[e.Path] = e
+	}
+	_, _, clientID, _ := p.clientIdentity()
+	if clientID == "" {
+		clientID = "maclaw-gui"
+	}
+	paths := make([]string, 0, len(cur))
+	for path := range cur {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		e := cur[path]
+		if prev, ok := old[path]; ok && prev.SHA256 == e.SHA256 && prev.Size == e.Size {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			return err
+		}
+		if err := p.putBytes(ctx, e.SHA256, data); err != nil {
+			return err
+		}
+		op := cloudWorkspaceOperation{OpID: operationID("put", path, state.FileRevisions[path], e.SHA256), Path: path, Kind: "put", BaseFileRevision: state.FileRevisions[path], ObjectSHA256: e.SHA256, PlainSize: e.Size, ClientInstanceID: clientID}
+		res, err := p.SubmitOperation(ctx, op)
+		if err != nil {
+			return err
+		}
+		if res.Accepted {
+			if state.FileRevisions == nil {
+				state.FileRevisions = map[string]string{}
+			}
+			state.FileRevisions[path] = res.FileRevision
+		} else {
+			return p.materializeConflict(ctx, root, op, res)
+		}
+	}
+	deleted := make([]string, 0)
+	for path := range old {
+		if _, ok := cur[path]; !ok {
+			deleted = append(deleted, path)
+		}
+	}
+	sort.Strings(deleted)
+	for _, path := range deleted {
+		op := cloudWorkspaceOperation{OpID: operationID("delete", path, state.FileRevisions[path], ""), Path: path, Kind: "delete", BaseFileRevision: state.FileRevisions[path], ClientInstanceID: clientID}
+		res, err := p.SubmitOperation(ctx, op)
+		if err != nil {
+			return err
+		}
+		if res.Accepted {
+			delete(state.FileRevisions, path)
+		} else {
+			return p.materializeConflict(ctx, root, op, res)
+		}
+	}
+	state.LastEntries = local
+	return writeCloudWorkspaceState(root, state)
+}
+
+// PullEvents applies remote operations newer than the local cursor. Unmodified
+// files are updated in place; locally edited files are preserved and the
+// remote version is written as a conflict copy.
+func (p *cloudWorkspaceProtocol) PullEvents(ctx context.Context, root string) error {
+	if p == nil || p.Transport == nil {
+		return fmt.Errorf("cloud workspace sync unavailable")
+	}
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return err
+	}
+	events, err := p.GetEvents(ctx, state.LastEventSeq, 500)
+	if err != nil {
+		return err
+	}
+	_, _, clientID, _ := p.clientIdentity()
+	known := make(map[string]cloudWorkspaceManifestEntry, len(state.LastEntries))
+	for _, e := range state.LastEntries {
+		known[e.Path] = e
+	}
+	if state.LastEntries == nil {
+		// Older caches did not persist a local baseline. Treat the current tree
+		// as that baseline so the first event poll can update clean files instead
+		// of producing spurious conflict copies.
+		baseline, scanErr := scanCloudWorkspaceLocal(root)
+		if scanErr != nil {
+			return scanErr
+		}
+		for _, e := range baseline {
+			known[e.Path] = e
+		}
+	}
+	for _, ev := range events {
+		if ev.Seq > state.LastEventSeq {
+			state.LastEventSeq = ev.Seq
+		}
+		if ev.ClientInstanceID == clientID {
+			continue
+		}
+		localPath := filepath.Join(root, filepath.FromSlash(ev.Path))
+		localChanged := false
+		if old, ok := known[ev.Path]; ok {
+			if sum, size, e := hashCloudWorkspaceFile(localPath); e == nil && (sum != old.SHA256 || size != old.Size) {
+				localChanged = true
+			}
+		} else if _, e := os.Stat(localPath); e == nil {
+			localChanged = true
+		}
+		if ev.Kind == "delete" {
+			if localChanged {
+				continue
+			}
+			_ = os.Remove(localPath)
+			delete(known, ev.Path)
+			delete(state.FileRevisions, ev.Path)
+			continue
+		}
+		if ev.ObjectSHA256 == "" {
+			continue
+		}
+		data, e := p.Transport.GetObject(ctx, ev.ObjectSHA256, 0)
+		if e != nil {
+			return e
+		}
+		if localChanged {
+			conflict := conflictCopyPath(root, ev.Path, time.Now())
+			if conflict == "" {
+				return fmt.Errorf("invalid cloud workspace conflict path %q", ev.Path)
+			}
+			if e := atomicWriteFile(conflict, data); e != nil {
+				return e
+			}
+			continue
+		}
+		if e := os.MkdirAll(filepath.Dir(localPath), 0o700); e != nil {
+			return e
+		}
+		if e := atomicWriteFile(localPath, data); e != nil {
+			return e
+		}
+		known[ev.Path] = cloudWorkspaceManifestEntry{Path: ev.Path, SHA256: ev.ObjectSHA256, Size: int64(len(data))}
+		if state.FileRevisions == nil {
+			state.FileRevisions = map[string]string{}
+		}
+		state.FileRevisions[ev.Path] = ev.NewFileRevision
+	}
+	// If the page was full, continue until caught up. This avoids leaving a
+	// large workspace partially stale when a watcher fires once.
+	if len(events) == 500 {
+		state.LastEntries = state.LastEntries[:0]
+		for _, e := range known {
+			state.LastEntries = append(state.LastEntries, e)
+		}
+		sort.Slice(state.LastEntries, func(i, j int) bool { return state.LastEntries[i].Path < state.LastEntries[j].Path })
+		if err := writeCloudWorkspaceState(root, state); err != nil {
+			return err
+		}
+		return p.PullEvents(ctx, root)
+	}
+	state.LastEntries = state.LastEntries[:0]
+	for _, e := range known {
+		state.LastEntries = append(state.LastEntries, e)
+	}
+	sort.Slice(state.LastEntries, func(i, j int) bool { return state.LastEntries[i].Path < state.LastEntries[j].Path })
+	return writeCloudWorkspaceState(root, state)
+}
+
+func conflictCopyPath(root, rel string, now time.Time) string {
+	clean, ok := cloudWorkspaceSafeRelPath(rel)
+	if !ok {
+		return ""
+	}
+	base := filepath.Join(root, filepath.FromSlash(clean))
+	stamp := now.UTC().Format("20060102-150405.000000000")
+	return base + ".conflict-" + stamp
+}
+
+func operationID(kind, path, base, sha string) string {
+	h := sha256.Sum256([]byte(kind + "\x00" + path + "\x00" + base + "\x00" + sha))
+	return "op_" + hex.EncodeToString(h[:])
+}
+
+func (p *cloudWorkspaceProtocol) materializeConflict(ctx context.Context, root string, op cloudWorkspaceOperation, res *cloudWorkspaceOperationResult) error {
+	if res == nil {
+		return fmt.Errorf("cloud workspace operation rejected")
+	}
+	events, err := p.GetEvents(ctx, res.ConflictSeq-1, 1)
+	if err != nil || len(events) == 0 {
+		return fmt.Errorf("cloud workspace conflict for %s", op.Path)
+	}
+	ev := events[0]
+	if ev.ObjectSHA256 == "" || op.Kind == "delete" {
+		return fmt.Errorf("cloud workspace conflict for %s", op.Path)
+	}
+	data, err := p.Transport.GetObject(ctx, ev.ObjectSHA256, 0)
+	if err != nil {
+		return err
+	}
+	dest := conflictCopyPath(root, op.Path, time.Now())
+	if dest == "" {
+		return fmt.Errorf("invalid cloud workspace conflict path %q", op.Path)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return err
+	}
+	if err := atomicWriteFile(dest, data); err != nil {
+		return err
+	}
+	return fmt.Errorf("cloud workspace conflict for %s (copy saved as %s)", op.Path, filepath.Base(dest))
+}
+
+func (p *cloudWorkspaceProtocol) clientIdentity() (string, string, string, error) {
+	if p == nil || p.Transport == nil {
+		return "", "", "", fmt.Errorf("transport unavailable")
+	}
+	if t, ok := p.Transport.(*cloudWorkspaceHTTPTransport); ok && t.app != nil {
+		return t.app.virtualRepositorySyncClient()
+	}
+	return "", "", "", nil
 }
 
 func cloudWorkspaceSafeRelPath(p string) (string, bool) {
@@ -76,6 +329,59 @@ type cloudWorkspaceProtocol struct {
 	Transport    cloudWorkspaceSyncTransport
 	MaxDirectPut int64
 	MaxChunk     int64
+}
+
+// cloudWorkspaceOperation mirrors the Hub v2 multi-writer operation contract.
+type cloudWorkspaceOperation struct {
+	OpID             string `json:"op_id"`
+	Path             string `json:"path"`
+	Kind             string `json:"kind"`
+	BaseFileRevision string `json:"base_file_revision,omitempty"`
+	ObjectSHA256     string `json:"object_sha256,omitempty"`
+	PlainSize        int64  `json:"plain_size,omitempty"`
+	ClientInstanceID string `json:"client_instance_id"`
+}
+
+type cloudWorkspaceOperationResult struct {
+	Accepted     bool   `json:"accepted"`
+	WorkspaceSeq int64  `json:"workspace_seq"`
+	FileRevision string `json:"file_revision"`
+	Merge        string `json:"merge"`
+	ConflictSeq  int64  `json:"conflict_seq,omitempty"`
+}
+
+type cloudWorkspaceEvent struct {
+	Seq              int64  `json:"seq"`
+	OpID             string `json:"op_id"`
+	Path             string `json:"path"`
+	Kind             string `json:"kind"`
+	BaseFileRevision string `json:"base_file_revision,omitempty"`
+	NewFileRevision  string `json:"new_file_revision"`
+	ObjectSHA256     string `json:"object_sha256,omitempty"`
+	ClientInstanceID string `json:"client_instance_id"`
+	ConflictOfSeq    int64  `json:"conflict_of_seq,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
+type cloudWorkspaceV2Transport interface {
+	SubmitOperation(context.Context, cloudWorkspaceOperation) (*cloudWorkspaceOperationResult, error)
+	GetEvents(context.Context, int64, int64) ([]cloudWorkspaceEvent, error)
+}
+
+func (p *cloudWorkspaceProtocol) SubmitOperation(ctx context.Context, op cloudWorkspaceOperation) (*cloudWorkspaceOperationResult, error) {
+	t, ok := p.Transport.(cloudWorkspaceV2Transport)
+	if !ok {
+		return nil, errCloudWorkspaceV2Unavailable
+	}
+	return t.SubmitOperation(ctx, op)
+}
+
+func (p *cloudWorkspaceProtocol) GetEvents(ctx context.Context, after, limit int64) ([]cloudWorkspaceEvent, error) {
+	t, ok := p.Transport.(cloudWorkspaceV2Transport)
+	if !ok {
+		return nil, fmt.Errorf("cloud workspace v2 events unavailable")
+	}
+	return t.GetEvents(ctx, after, limit)
 }
 
 func (p *cloudWorkspaceProtocol) maxDirectPut() int64 {
@@ -130,7 +436,27 @@ func writeCloudWorkspaceLocalState(root, revision string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(cloudWorkspaceLocalState{LastPushedRevision: revision})
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return err
+	}
+	state.LastPushedRevision = revision
+	if state.FileRevisions == nil {
+		state.FileRevisions = map[string]string{}
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(filepath.Join(dir, cloudWorkspaceCacheStateFile), raw)
+}
+
+func writeCloudWorkspaceState(root string, state cloudWorkspaceLocalState) error {
+	dir := filepath.Join(root, cloudWorkspaceCacheStateDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
@@ -602,6 +928,43 @@ func (t *cloudWorkspaceHTTPTransport) CompleteObject(ctx context.Context, sha256
 		return cloudWorkspaceAPIError(status, resp)
 	}
 	return nil
+}
+
+func (t *cloudWorkspaceHTTPTransport) SubmitOperation(ctx context.Context, op cloudWorkspaceOperation) (*cloudWorkspaceOperationResult, error) {
+	raw, err := json.Marshal(op)
+	if err != nil {
+		return nil, err
+	}
+	data, status, err := t.app.cloudWorkspaceHubDo(ctx, http.MethodPost, cloudWorkspaceItemPath(t.workspaceID)+"/operations", cloudWorkspaceHTTPOptions{timeout: cloudWorkspaceRequestTimeout, maxRead: cloudWorkspaceResponseMaxSize, accept: "application/json", contentType: "application/json", rawBody: raw})
+	if err != nil {
+		return nil, err
+	}
+	if status >= 300 {
+		return nil, cloudWorkspaceAPIError(status, data)
+	}
+	var out cloudWorkspaceOperationResult
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (t *cloudWorkspaceHTTPTransport) GetEvents(ctx context.Context, after, limit int64) ([]cloudWorkspaceEvent, error) {
+	urlPath := cloudWorkspaceItemPath(t.workspaceID) + "/events?after_seq=" + strconv.FormatInt(after, 10) + "&limit=" + strconv.FormatInt(limit, 10)
+	data, status, err := t.app.cloudWorkspaceHubDo(ctx, http.MethodGet, urlPath, cloudWorkspaceHTTPOptions{timeout: cloudWorkspaceRequestTimeout, maxRead: cloudWorkspaceResponseMaxSize, accept: "application/json"})
+	if err != nil {
+		return nil, err
+	}
+	if status >= 300 {
+		return nil, cloudWorkspaceAPIError(status, data)
+	}
+	var payload struct {
+		Events []cloudWorkspaceEvent `json:"events"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Events, nil
 }
 
 func (a *App) cloudWorkspaceProtocol(workspaceID string) *cloudWorkspaceProtocol {

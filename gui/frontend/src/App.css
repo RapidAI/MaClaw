@@ -1502,55 +1502,79 @@ body {
     opacity: 0.96;
 }
 
+.left-nav-item.left-nav-item--ai {
+    /*
+     * Light pairing (dark rebinds tokens below):
+     *   idle     → muted glyph on a surface chip
+     *   selected → primary glyph + stronger ring; row wash carries the fill
+     */
+    appearance: none;
+    margin: 0;
+    background: transparent;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    align-self: stretch;
+    width: 100%;
+    padding: 8px 4px;
+    gap: 3px;
+    border: 0;
+    font: inherit;
+    color: inherit;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+    --ai-row-active-shadow: inset -1px 0 0 color-mix(in srgb, var(--theme-primary) 70%, transparent);
+    --ai-icon-inactive-fg: var(--theme-text-secondary);
+    --ai-icon-inactive-bg: var(--theme-surface);
+    --ai-icon-inactive-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-text-muted) 18%, transparent);
+    --ai-icon-hover-fg: var(--theme-primary);
+    --ai-icon-hover-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 32%, transparent);
+    --ai-icon-active-fg: var(--theme-primary-strong);
+    --ai-icon-active-bg: var(--theme-surface);
+    --ai-icon-active-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 40%, transparent);
+}
+
 .left-nav-item--ai:hover,
 .left-nav-item--ai.active {
     color: var(--theme-primary-strong);
 }
 
-/* AI nav badge: defaults (light + dark base). Dark theme overrides tokens below. */
+.left-nav-item.left-nav-item--ai.active,
+.left-nav-item.left-nav-item--ai.active:hover {
+    background: var(--theme-primary-soft);
+    box-shadow: var(--ai-row-active-shadow);
+    transform: none;
+}
+
+.left-nav-item.left-nav-item--ai:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 48%, transparent);
+    outline-offset: -2px;
+}
+
 .left-nav-item--ai .ai-nav-icon-badge {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    color: var(--ai-icon-inactive-fg, var(--theme-text-primary));
-    background: var(
-        --ai-icon-inactive-bg,
-        color-mix(in srgb, var(--theme-page-bg) 78%, #000000 22%)
-    );
-    box-shadow: var(
-        --ai-icon-inactive-shadow,
-        inset 0 0 0 1px color-mix(in srgb, var(--theme-text-primary) 18%, transparent),
-        0 6px 14px rgba(0, 0, 0, 0.28)
-    );
-    transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-    /* Parent row is the hit target; keep badge non-interactive for a11y tree. */
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    color: var(--ai-icon-inactive-fg);
+    background: var(--ai-icon-inactive-bg);
+    box-shadow: var(--ai-icon-inactive-shadow);
+    transition: background var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast);
     pointer-events: none;
 }
 
-/* Hover chrome only when inactive — avoid fighting active gradient/ring. */
 .left-nav-item--ai:hover:not(.active) .ai-nav-icon-badge {
-    transform: translateY(-1px);
-    box-shadow: var(
-        --ai-icon-hover-shadow,
-        inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 35%, transparent),
-        0 8px 16px rgba(0, 0, 0, 0.22)
-    );
+    color: var(--ai-icon-hover-fg);
+    box-shadow: var(--ai-icon-hover-shadow);
 }
 
 .left-nav-item--ai.active .ai-nav-icon-badge {
-    /* Default: light glyph on primary gradient. Dark theme may override via --ai-icon-active-fg. */
-    color: var(--ai-icon-active-fg, #ffffff);
-    background: var(
-        --ai-icon-active-bg,
-        linear-gradient(135deg, var(--theme-primary), var(--theme-primary-strong))
-    );
-    box-shadow:
-        0 2px 8px color-mix(in srgb, var(--theme-primary) 40%, transparent),
-        0 0 0 2px color-mix(in srgb, var(--theme-primary) 20%, transparent);
-    transform: none;
+    color: var(--ai-icon-active-fg);
+    background: var(--ai-icon-active-bg);
+    box-shadow: var(--ai-icon-active-shadow);
 }
 
 .left-nav-item--ai .ai-nav-icon {
@@ -1562,7 +1586,7 @@ body {
 .left-nav-item.left-nav-item--ai .ai-nav-label {
     font-size: 0.68rem;
     line-height: 1;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--theme-text-primary);
 }
 
@@ -1572,12 +1596,17 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .left-nav-item.left-nav-item--ai,
     .left-nav-item--ai .ai-nav-icon-badge {
         transition: none;
     }
+}
 
-    .left-nav-item--ai:hover:not(.active) .ai-nav-icon-badge {
-        transform: none;
+@media (prefers-contrast: more) {
+    .left-nav-item--ai.active .ai-nav-icon-badge {
+        color: var(--theme-on-primary);
+        background: var(--theme-primary);
+        box-shadow: inset 0 0 0 1px var(--theme-primary-strong);
     }
 }
 
@@ -2481,8 +2510,8 @@ body {
     padding: calc(16px + var(--dwm-top-offset, 0px)) 20px 16px;
     border: 1px solid var(--theme-border);
     border-radius: 12px;
-    background: var(--theme-page-bg);
-    color: var(--theme-text-primary);
+    background: #f3f5f7;
+    color: #1c1c1e;
     text-align: center;
 }
 
@@ -2499,6 +2528,8 @@ body {
        invisible on dark page bg; make loading chrome readable in dark mode. */
     --theme-primary: #7ea8e0;
     --theme-primary-strong: #a5c4ee;
+    background: #0f141b;
+    color: #e3e9f1;
 }
 
 /* macOS / Windows 11: native rounded corners from the OS — remove CSS rounding */
@@ -2529,30 +2560,120 @@ body {
     --wails-draggable: drag;
 }
 
+.app-loading-card {
+    width: min(400px, 100%);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 24px 28px 16px;
+    overflow: auto;
+    border-radius: 28px;
+    background: #ffffff;
+    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.app-loading-card--logs {
+    width: 100%;
+}
+
+.app-loading-prepare {
+    width: 100%;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+    min-height: 0;
+}
+
+.app-loading-prepare[hidden] {
+    display: none !important;
+}
+
+.app-loading-shell[data-ai-theme='dark'] .app-loading-card {
+    background: #161c26;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+}
+
+.app-loading-mascot {
+    flex: 0 0 auto;
+    width: 148px;
+    height: auto;
+    aspect-ratio: 192 / 220;
+    margin: 0 0 2px;
+    pointer-events: none;
+}
+
+.app-loading-card--logs .app-loading-mascot {
+    width: 88px;
+}
+
+.app-loading-mascot__mark {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
 .app-loading-title {
-    display: inline-block;
-    margin: 0 0 12px;
-    color: var(--theme-primary-strong, #183b63);
-    font-weight: 800;
-    font-size: 1.1rem;
+    width: 100%;
+    margin: 2px 0 6px;
+    color: #1c1c1e;
+    font-weight: 700;
+    font-size: 1.42rem;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+}
+
+.app-loading-shell[data-ai-theme='dark'] .app-loading-title {
+    color: #f2f5f8;
+}
+
+.app-loading-subtitle {
+    max-width: 34em;
+    margin: 0 0 16px;
+    color: #8e8e93;
+    font-size: 0.86rem;
+    font-weight: 400;
+    line-height: 1.45;
+}
+
+.app-loading-shell[data-ai-theme='dark'] .app-loading-subtitle {
+    color: #8b97a8;
 }
 
 .app-loading-progress {
     width: 100%;
-    height: 4px;
+    height: 10px;
     overflow: hidden;
-    margin-bottom: 10px;
-    border: 1px solid var(--theme-border);
-    border-radius: 2px;
-    background: var(--theme-surface-muted);
+    margin-bottom: 14px;
+    border: 0;
+    border-radius: 999px;
+    background: #e6e8ec;
+}
+
+.app-loading-shell[data-ai-theme='dark'] .app-loading-progress {
+    background: #2b3444;
 }
 
 .app-loading-progress__bar {
-    width: 50%;
+    position: relative;
+    width: 42%;
     height: 100%;
-    border-radius: 2px;
-    background: var(--theme-primary, #2f5f98);
-    animation: indeterminate 1.5s infinite linear;
+    overflow: hidden;
+    border-radius: inherit;
+    background: #34c759;
+}
+
+.app-loading-progress__bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.48), transparent);
+    animation: app-loading-progress-shimmer 1.6s ease-in-out infinite;
 }
 
 @keyframes sidebar-task-restore-progress {
@@ -2560,7 +2681,20 @@ body {
     to { transform: translateX(152%); }
 }
 
+.sidebar-task-row {
+    position: relative;
+    background: transparent;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sidebar-task-row:hover:not(.is-busy):not(.is-active) {
+    background: color-mix(in srgb, var(--theme-text-primary) 7%, transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
+    .sidebar-task-row {
+        transition: none;
+    }
     .sidebar-task-progress__bar {
         width: 100% !important;
         animation: none !important;
@@ -2576,11 +2710,11 @@ body {
     flex: 1;
     margin-bottom: 10px;
     padding: 10px;
-    border: 1px solid var(--theme-border);
+    border: 1px solid var(--theme-border, #e6e8ec);
     border-radius: 8px;
     outline: none;
-    background: var(--theme-surface);
-    color: var(--theme-text-primary);
+    background: var(--theme-surface, #f8f9fb);
+    color: var(--theme-text-primary, #1c1c1e);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.85rem;
     resize: none;
@@ -2588,32 +2722,77 @@ body {
 
 .app-loading-status {
     width: 100%;
-    height: 20px;
+    min-height: 20px;
     margin-bottom: 10px;
     overflow: hidden;
-    color: var(--theme-text-secondary);
-    font-size: 0.85rem;
+    color: #8e8e93;
+    font-size: 0.88rem;
+    line-height: 1.4;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
+.app-loading-shell[data-ai-theme='dark'] .app-loading-status {
+    color: #8b97a8;
+}
+
 .app-loading-actions {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
 }
 
 .app-loading-link {
     border: 0;
     background: transparent;
-    color: var(--theme-primary, #2f5f98);
+    color: #8e8e93;
     cursor: pointer;
     font-size: 0.8rem;
+}
+
+.app-loading-link:hover,
+.app-loading-link:focus-visible {
+    color: var(--theme-primary, #2f5f98);
     text-decoration: underline;
+}
+
+.app-loading-shell[data-ai-theme='dark'] .app-loading-link {
+    color: #8b97a8;
+}
+
+.app-loading-quit {
+    width: 100%;
+}
+
+.app-loading-quit__title {
+    margin: 0 0 6px;
+    color: inherit;
+    font-size: 0.92rem;
+    font-weight: 600;
+}
+
+.app-loading-quit__message {
+    max-height: 7.2em;
+    margin: 0 0 12px;
+    overflow: auto;
+    color: #8e8e93;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    white-space: pre-line;
+}
+
+.app-loading-shell[data-ai-theme='dark'] .app-loading-quit__message {
+    color: #8b97a8;
 }
 
 .app-loading-action {
     padding: 4px 12px;
+}
+
+.app-loading-quit .app-loading-action {
+    padding: 6px 14px;
 }
 
 .app-loading-action--primary {
@@ -2626,9 +2805,15 @@ body {
     color: var(--theme-danger, #c43d34);
 }
 
-@keyframes indeterminate {
+@keyframes app-loading-progress-shimmer {
     0% { transform: translateX(-100%); }
-    100% { transform: translateX(200%); }
+    100% { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-loading-progress__bar::after {
+        animation: none !important;
+    }
 }
 
 .no-scrollbar {
@@ -2687,6 +2872,21 @@ body {
 }
 
 /* AI assistant panel — wider, more visible scrollbar for easy grab */
+.assistant-reasoning-summary::-webkit-details-marker { display: none; }
+.assistant-reasoning-summary::before {
+    content: "›";
+    display: inline-block;
+    width: 10px;
+    margin-right: 2px;
+    font-size: 16px;
+    line-height: 1;
+    transform: rotate(0deg);
+    transition: transform 120ms ease;
+}
+details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+    .assistant-reasoning-summary::before { transition: none; }
+}
 .ai-chat-scrollbar {
     scrollbar-width: auto;
     scrollbar-color: var(--theme-primary-soft) rgba(128, 128, 128, 0.08);
@@ -9920,6 +10120,63 @@ body {
     flex-shrink: 0;
 }
 
+.update-modal__rollback {
+    margin-bottom: 15px;
+}
+
+.update-modal__rollback-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.update-modal__rollback-heading p {
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.update-modal__rollback-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.update-modal__rollback-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    cursor: pointer;
+    text-align: left;
+}
+
+.update-modal__rollback-item:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: var(--theme-info-bg);
+}
+
+.update-modal__rollback-item:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.update-modal__rollback-item strong {
+    color: var(--theme-primary);
+}
+
+.update-modal__rollback-item span {
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
 .update-modal__actions {
     display: flex;
     justify-content: flex-end;
@@ -10939,6 +11196,14 @@ body {
     color: var(--theme-success);
 }
 
+.hub-service-redeem__period-card[data-kind="warning"] .hub-service-redeem__period-available {
+    color: var(--theme-primary-strong);
+}
+
+.hub-service-redeem__period-card[data-kind="exhausted"] .hub-service-redeem__period-available {
+    color: var(--theme-danger);
+}
+
 .hub-service-redeem__period-available-label {
     color: var(--theme-text-secondary);
     font-size: 0.7rem;
@@ -10967,7 +11232,7 @@ body {
 .hub-service-redeem__period-bar-fill {
     height: 100%;
     border-radius: 3px;
-    transition: width 0.3s ease;
+    transition: width var(--transition-normal);
 }
 
 .hub-service-redeem__period-bar[data-kind="normal"] .hub-service-redeem__period-bar-fill {
@@ -16649,39 +16914,34 @@ body {
 }
 
 /*
- * Dark AI icon contrast pairing (do not invert):
- *   inactive → dark bubble on light gray-white badge
- *   active   → white bubble on deep primary gradient
- * Near-white-on-gray-white was unreadable; primary+white active washout was too.
- * Prefer theme tokens so custom dark schemes stay consistent.
+ * Dark pairing: muted-on-muted chip. Do not use --theme-surface for the
+ * selected fill — it is darker than surface-muted and the chip would sink.
  */
 .sidebar[data-ai-theme='dark'] .left-nav-item--ai {
-    --ai-icon-inactive-bg: color-mix(in srgb, var(--theme-text-primary) 90%, var(--theme-primary) 10%);
-    --ai-icon-inactive-fg: var(--theme-page-bg);
-    --ai-icon-inactive-shadow:
-        inset 0 0 0 1px color-mix(in srgb, var(--theme-page-bg) 16%, transparent),
-        0 4px 12px rgba(0, 0, 0, 0.35);
-    --ai-icon-hover-shadow:
-        inset 0 0 0 1px color-mix(in srgb, var(--theme-primary-strong) 45%, transparent),
-        0 6px 14px rgba(0, 0, 0, 0.4);
-    --ai-icon-active-fg: #ffffff;
-    /* Deep end anchors to page-bg so white stroke stays readable. */
-    --ai-icon-active-bg: linear-gradient(
-        135deg,
-        var(--theme-primary-strong),
-        color-mix(in srgb, var(--theme-primary-strong) 55%, var(--theme-page-bg) 45%)
-    );
+    --ai-icon-inactive-bg: var(--theme-surface-muted);
+    --ai-icon-inactive-fg: var(--theme-text-secondary);
+    --ai-icon-inactive-shadow: inset 0 0 0 1px var(--theme-border);
+    --ai-icon-hover-fg: var(--theme-primary);
+    --ai-icon-hover-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 40%, transparent);
+    --ai-icon-active-fg: var(--theme-primary-strong);
+    --ai-icon-active-bg: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface-muted));
+    --ai-icon-active-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 42%, transparent);
 }
 
-.sidebar[data-ai-theme='dark'] .left-nav-item--ai.active .ai-nav-icon-badge {
-    box-shadow:
-        0 2px 10px color-mix(in srgb, var(--theme-primary-strong) 55%, transparent),
-        0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent);
+.sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai:hover,
+.sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai.active {
+    transform: none;
 }
 
-/* Keep dark bubble on hover (only ring/shadow changes). */
-.sidebar[data-ai-theme='dark'] .left-nav-item--ai:hover:not(.active) .ai-nav-icon-badge {
-    color: var(--ai-icon-inactive-fg);
+.sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai:hover:not(.active) {
+    background: var(--theme-primary-soft);
+    box-shadow: none;
+}
+
+.sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai.active,
+.sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai.active:hover {
+    background: var(--theme-primary-soft);
+    box-shadow: var(--ai-row-active-shadow);
 }
 
 /* Beat dark `.left-nav-item span { color: inherit }` so labels keep intended contrast. */

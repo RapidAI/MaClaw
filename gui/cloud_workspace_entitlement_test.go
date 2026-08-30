@@ -62,6 +62,26 @@ func TestCloudWorkspaceEntitlementDisabledDoesNotMarkHubUnavailable(t *testing.T
 	}
 }
 
+func TestCloudWorkspaceEntitlementKeepsHubReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"enabled":false,"reason":"machine_unbound","quota":5,"used":0,"workspaces":[],"deleted":[]}`))
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	ent := app.CloudWorkspaceEntitlement()
+	if ent.Enabled || ent.HubUnavailable {
+		t.Fatalf("ent=%+v", ent)
+	}
+	if ent.Reason != "machine_unbound" {
+		t.Fatalf("reason=%q", ent.Reason)
+	}
+	if ent.Banner != "" {
+		t.Fatalf("banner=%q, Hub reason must not be treated as an outage banner", ent.Banner)
+	}
+}
+
 func TestCloudWorkspaceEntitlementEnabledCachesWorkspaces(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -218,6 +238,61 @@ func TestCloudWorkspaceEntitlementLeaseFallsBackToMachineID(t *testing.T) {
 	}
 	if !ws.LeaseInUse || ws.LeaseHolder != "mid" {
 		t.Fatalf("empty machine_name should fall back to machine_id: %+v", ws)
+	}
+}
+
+func TestCloudWorkspaceEntitlementHub401IsDisabledNotUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED"}`))
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	ent := app.CloudWorkspaceEntitlement()
+	if ent.Enabled {
+		t.Fatalf("401 must not report enabled: %+v", ent)
+	}
+	if ent.HubUnavailable {
+		t.Fatalf("401 is Hub answering, not an outage: %+v", ent)
+	}
+	if ent.Banner != "" {
+		t.Fatalf("banner=%q", ent.Banner)
+	}
+}
+
+func TestCloudWorkspaceEntitlementHub403AfterGrantClearsEnabled(t *testing.T) {
+	var mu sync.Mutex
+	status := http.StatusOK
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cur := status
+		mu.Unlock()
+		if cur != http.StatusOK {
+			w.WriteHeader(cur)
+			_, _ = w.Write([]byte(`{"code":"CLOUD_WORKSPACE_FORBIDDEN"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"enabled":true,"quota":5,"used":0,"max_workspace_bytes":1,"workspaces":[],"deleted":[]}`))
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	ok := app.CloudWorkspaceEntitlement()
+	if !ok.Enabled || ok.HubUnavailable {
+		t.Fatalf("grant=%+v", ok)
+	}
+
+	mu.Lock()
+	status = http.StatusForbidden
+	mu.Unlock()
+	denied := app.CloudWorkspaceEntitlement()
+	if denied.Enabled {
+		t.Fatalf("403 must clear grant: %+v", denied)
+	}
+	if denied.HubUnavailable {
+		t.Fatalf("403 is Hub answering, not an outage: %+v", denied)
 	}
 }
 

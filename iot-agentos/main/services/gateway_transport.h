@@ -109,11 +109,59 @@ int32_t gateway_transport_request(const char *method, const char *path,
                                   const char *content_type,
                                   const char *body, int32_t body_len,
                                   gateway_transport_response_t *out);
+/* Posts an already-serialized JSON envelope through the shared transport
+ * lane. Serialization remains a domain concern; HTTP admission, bearer
+ * handling, response ownership and accepted status are transport concerns. */
+enum {
+    GATEWAY_TRANSPORT_ACCEPT_200 = 1u << 0,
+    GATEWAY_TRANSPORT_ACCEPT_202 = 1u << 1,
+    GATEWAY_TRANSPORT_ACCEPT_204 = 1u << 2,
+};
+int32_t gateway_transport_post_json(const char *path, const char *payload,
+                                    uint32_t accepted_status_mask);
+int32_t gateway_transport_ack_messages(const char *payload);
+int32_t gateway_transport_create_meeting(const char *base_path,
+                                         char *out_recording_id,
+                                         uint32_t capacity);
+int32_t gateway_transport_get_meeting_status(const char *base_path,
+                                             const char *recording_id,
+                                             char *out_status,
+                                             uint32_t capacity);
+int32_t gateway_transport_post_meeting_action(const char *base_path,
+                                              const char *recording_id,
+                                              const char *action,
+                                              const char *payload,
+                                              int32_t expected_a,
+                                              int32_t expected_b);
 int32_t gateway_transport_request_with_capacity(const char *method, const char *path,
                                                 const char *content_type,
                                                 const char *body, int32_t body_len,
                                                 uint32_t response_capacity,
                                                 gateway_transport_response_t *out);
+/* Sends a protocol text event using the transport-owned JSON envelope.  The
+ * optional reply_to preserves control-message correlation (for example the
+ * command cancellation path) without exposing cJSON or HTTP ownership. */
+int32_t gateway_transport_send_text_event(const char *text, const char *reply_to);
+/* Voice media upload and incoming-event submission share the same transport
+ * admission, retry and bearer lane.  The caller supplies PCM/WAV bytes and
+ * receives only value strings; cJSON and HTTP response ownership stay here. */
+int32_t gateway_transport_upload_voice(const uint8_t *wav, uint32_t wav_len,
+                                       char *out_media_id,
+                                       uint32_t media_id_capacity);
+int32_t gateway_transport_send_voice_event(const char *media_id,
+                                           const char *event_id,
+                                           char *out_reply_to,
+                                           uint32_t reply_to_capacity);
+/* Downloads a bounded media body through the transport lane. The returned
+ * bytes are transport-owned and must be released with
+ * gateway_transport_response_release(); no media/audio policy is applied. */
+int32_t gateway_transport_download_media(const char *url,
+                                         uint8_t **out_data,
+                                         uint32_t *out_len);
+int32_t gateway_transport_download_frame(const char *url, uint32_t expected_bytes,
+                                         uint8_t **out_data, uint32_t *out_len,
+                                         int32_t *out_http_status);
+void gateway_transport_release_media(uint8_t *data);
 void gateway_transport_response_release(gateway_transport_response_t *response);
 
 /* Bounded cancellation for active Wi-Fi ESP HTTP requests owned by this
@@ -159,6 +207,10 @@ void gateway_transport_set_device_id(const char *device_id);
 void gateway_transport_set_gateway_credentials(const char *gateway_url,
                                                const char *gateway_token,
                                                const char *pair_code);
+/* Retire the active boot credential after a destructive ownership reset has
+ * delivered its final result. This clears both Credential Service state and
+ * the transport's compatibility mirror; it never creates a new generation. */
+void gateway_transport_revoke_credentials(void);
 /* Returns the current value-only capability projection.  A successful
  * transport request alone never manufactures Hub acceptance; callers must
  * treat a false return or zero operational set as unavailable. */

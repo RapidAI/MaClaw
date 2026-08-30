@@ -261,6 +261,9 @@ func CloudWorkspacePutSidecarHandler(svc *cloudworkspace.Service, identity veMac
 			writeCloudWorkspaceError(w, err)
 			return
 		}
+		if name == cloudworkspace.SidecarSession {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"name": name, "size": len(body)})
 	}
 }

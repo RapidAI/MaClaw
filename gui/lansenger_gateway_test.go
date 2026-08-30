@@ -349,6 +349,20 @@ func TestLansengerProfileBotDoesNotOwnLegacyHubClaim(t *testing.T) {
 func TestLansengerProfilePrivatePeersDoNotSharePersistence(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MACLAW_DATA_DIR", root)
+	// The store resolves through maclawpath (which does not honor
+	// MACLAW_DATA_DIR), so this test runs against the real peers.json.
+	// Snapshot and restore it: the test must neither leak its fixture peers
+	// into real data nor depend on the file's prior contents.
+	peersPath := improactive.DefaultPath()
+	originalPeers, readErr := os.ReadFile(peersPath)
+	t.Cleanup(func() {
+		if readErr != nil {
+			_ = os.Remove(peersPath)
+			return
+		}
+		_ = os.MkdirAll(filepath.Dir(peersPath), 0o755)
+		_ = os.WriteFile(peersPath, originalPeers, 0o600)
+	})
 	legacyPeer := "legacy-user"
 	if err := improactive.NewStore("").Patch(func(peers *improactive.Peers) {
 		peers.LansengerPrivateUserID = legacyPeer

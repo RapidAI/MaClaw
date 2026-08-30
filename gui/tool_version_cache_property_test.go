@@ -159,9 +159,11 @@ func TestProperty4_GetInstallStatus_ExistingTool_NoVersionExecution(t *testing.T
 			}
 		}
 
-		// Property: should complete in < 10ms (LookPath is sub-millisecond).
-		// If it were executing the binary (e.g., cmd --version), it would take much longer.
-		if elapsed > 10*time.Millisecond {
+		// Property: should complete fast (LookPath/stat is ~1ms; executing the
+		// binary for a version probe would cost process-startup time, typically
+		// hundreds of milliseconds with AV). 10ms was too tight under full-suite
+		// parallel load on Windows; 500ms still separates lookup from execution.
+		if elapsed > 500*time.Millisecond {
 			t.Fatalf("GetInstallStatus took %v for existing tool %q — suspiciously slow, may be executing the binary", elapsed, existingBinary)
 		}
 	})

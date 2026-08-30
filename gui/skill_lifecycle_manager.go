@@ -61,6 +61,44 @@ type skillUploadBlockedError struct {
 
 func (e *skillUploadBlockedError) Error() string { return e.Message }
 
+// skillEvolutionAdmissionError is a policy/integrity block, not a transient
+// network failure. Queue processing must persist it as blocked (without
+// incrementing retry attempts) until compensation recovery or operator review
+// clears the condition.
+type skillEvolutionAdmissionError struct {
+	Message string
+}
+
+func (e *skillEvolutionAdmissionError) Error() string { return e.Message }
+
+// ensureEvolutionUploadAdmission is the common fail-closed guard for every
+// SkillMarket upload entry point (manual, automatic, and queue retry). A
+// pending or unreadable evolution compensation queue means the durable Skill
+// definition and its derived index cannot be proven consistent, so upload is
+// forbidden until pipeline recovery has completed.
+func (m *SkillLifecycleManager) ensureEvolutionUploadAdmission(skillName string) error {
+	if m == nil || m.app == nil {
+		return fmt.Errorf("skill lifecycle manager not initialized")
+	}
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		return fmt.Errorf("skill name is empty")
+	}
+	// Do not call ensureEvolutionPipeline here. Upload queue operations are
+	// also used by tests and startup probes, and lazy-starting the pipeline from
+	// this guard would create background workers as a side effect of a read-only
+	// admission check. A short-lived, unstarted pipeline has the same
+	// fail-closed queue reader and no goroutine lifecycle.
+	pipeline := m.app.evolutionPipeline
+	if pipeline == nil {
+		pipeline = skill.NewEvolutionPipeline()
+	}
+	if pipeline.HasPendingCompensation(skillName) {
+		return &skillEvolutionAdmissionError{Message: fmt.Sprintf("upload blocked: pending evolution compensation for skill %q", skillName)}
+	}
+	return nil
+}
+
 func NewSkillLifecycleManager(app *App) *SkillLifecycleManager {
 	return &SkillLifecycleManager{
 		app:       app,
@@ -201,6 +239,17 @@ func (m *SkillLifecycleManager) EnqueueUpload(ctx context.Context, skillName, sk
 	if skillName == "" {
 		return nil, fmt.Errorf("skill name is empty")
 	}
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return nil, &skillEvolutionAdmissionError{Message: fmt.Sprintf("upload blocked: evolution compensation queue unavailable: %v", err)}
+	}
+	// Resolve aliases only when the executor is already initialized. This
+	// admission path is also used by startup probes and must not lazily create
+	// infrastructure just to inspect queue health.
+	if m.app.skillExecutor != nil {
+		if registered := m.findRegisteredSkill(skillName); registered != nil && strings.TrimSpace(registered.Name) != "" {
+			skillName = strings.TrimSpace(registered.Name)
+		}
+	}
 	entry, err := m.resolveSkillEntry(skillName, skillDir)
 	if err != nil {
 		return nil, err
@@ -209,6 +258,9 @@ func (m *SkillLifecycleManager) EnqueueUpload(ctx context.Context, skillName, sk
 		if canonicalName := strings.TrimSpace(entry.Name); canonicalName != "" {
 			skillName = canonicalName
 		}
+	}
+	if err := m.ensureEvolutionUploadAdmission(skillName); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(skillDir) == "" && entry != nil {
 		skillDir = entry.SkillDir
@@ -277,6 +329,16 @@ func (m *SkillLifecycleManager) UploadNowWithCompletedTargets(ctx context.Contex
 	m.app.ensureInteractionInfra()
 	if m.app.skillExecutor == nil {
 		return "", fmt.Errorf("skill executor not initialized")
+	}
+	// Re-check after executor initialization so aliases resolve to the
+	// canonical registered Skill while direct/manual upload calls remain
+	// protected by the same queue gate as enqueue and retry paths.
+	canonicalSkillName := skillName
+	if target := m.findRegisteredSkill(skillName); target != nil {
+		canonicalSkillName = target.Name
+	}
+	if err := m.ensureEvolutionUploadAdmission(canonicalSkillName); err != nil {
+		return "", err
 	}
 	m.app.ensureSkillMarketClient()
 	if m.app.skillMarketClient == nil {
@@ -383,6 +445,9 @@ func (m *SkillLifecycleManager) UploadDirNowWithCompletedTargets(ctx context.Con
 	if strings.TrimSpace(entry.Name) == "" {
 		entry.Name = skillName
 	}
+	if err := m.ensureEvolutionUploadAdmission(entry.Name); err != nil {
+		return "", err
+	}
 	entry.SkillDir = skillDir
 	if registered := m.findRegisteredSkill(entry.Name); registered != nil {
 		mergeSkillPackagingRuntimeFields(entry, registered)
@@ -468,6 +533,12 @@ func (m *SkillLifecycleManager) processPendingUploads(ctx context.Context, limit
 	}
 	m.processMu.Lock()
 	defer m.processMu.Unlock()
+	// Check once before selecting queue items. A malformed/unsupported
+	// compensation queue is a system-wide integrity failure, not an ordinary
+	// upload retry; stop without mutating upload attempts or statuses.
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return &skillEvolutionAdmissionError{Message: fmt.Sprintf("upload blocked: evolution compensation queue unavailable: %v", err)}
+	}
 	processed := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -481,6 +552,10 @@ func (m *SkillLifecycleManager) processPendingUploads(ctx context.Context, limit
 			return err
 		}
 		processed++
+		if err := m.ensureEvolutionUploadAdmission(item.SkillName); err != nil {
+			m.markUploadFailed(item.ID, err)
+			continue
+		}
 		submissionID, uploadErr := m.uploadQueueItem(ctx, item)
 		if uploadErr != nil {
 			m.markUploadFailed(item.ID, uploadErr)
@@ -534,6 +609,24 @@ func (m *SkillLifecycleManager) RetryBlockedAndProcess(ctx context.Context, skil
 }
 
 func (m *SkillLifecycleManager) RetryBlocked(skillName string) error {
+	// Moving a blocked item back to pending is itself an upload admission
+	// decision. Do not let the manual retry endpoint bypass the same durable
+	// compensation/integrity gate enforced by enqueue and queue processing.
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return &skillEvolutionAdmissionError{Message: fmt.Sprintf("upload blocked: evolution compensation queue unavailable: %v", err)}
+	}
+	if strings.TrimSpace(skillName) != "" {
+		var pipeline *skill.EvolutionPipeline
+		if m != nil && m.app != nil {
+			pipeline = m.app.evolutionPipeline
+		}
+		if pipeline == nil {
+			pipeline = skill.NewEvolutionPipeline()
+		}
+		if pipeline.HasPendingCompensation(skillName) {
+			return &skillEvolutionAdmissionError{Message: fmt.Sprintf("upload blocked: pending evolution compensation for skill %q", strings.TrimSpace(skillName))}
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	q, err := m.loadQueueLocked()
@@ -896,6 +989,7 @@ func (m *SkillLifecycleManager) markUploadFailed(id string, uploadErr error) {
 	}
 	now := time.Now()
 	var blocked *skillUploadBlockedError
+	var admission *skillEvolutionAdmissionError
 	var partial *skillSubmitPartialError
 	for i := range q.Items {
 		if q.Items[i].ID != id {
@@ -905,6 +999,14 @@ func (m *SkillLifecycleManager) markUploadFailed(id string, uploadErr error) {
 			q.Items[i].Status = skillUploadStatusBlocked
 			q.Items[i].LastError = blocked.Error()
 			q.Items[i].QualityScore = blocked.Score
+			q.Items[i].NextAttemptAt = ""
+			q.Items[i].UpdatedAt = now.Format(time.RFC3339)
+			break
+		}
+		if errors.As(uploadErr, &admission) {
+			q.Items[i].Status = skillUploadStatusBlocked
+			q.Items[i].LastError = admission.Error()
+			q.Items[i].QualityScore = 0
 			q.Items[i].NextAttemptAt = ""
 			q.Items[i].UpdatedAt = now.Format(time.RFC3339)
 			break

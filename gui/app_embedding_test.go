@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -273,6 +275,49 @@ func assertIntentTreeSkillEnum(t *testing.T, top map[string]interface{}) {
 	}
 	if values["get_current_weather"] {
 		t.Fatalf("skill alternatives=%#v, must not accept provider tool names", alternatives)
+	}
+}
+
+func TestBuildUICLLMContextFuncOwnDeadlineDoesNotTripEndpointGate(t *testing.T) {
+	// 2026-08-25 production chain: one tree call killed by our own 5s fusion
+	// deadline was recorded as endpoint network failure, so the endpoint gate
+	// skipped every classification for the next 30s and ambiguous turns kept
+	// degrading to unknown. Our own deadline must not be endpoint evidence.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Outlive the caller's 100ms deadline, but do not rely on request-context
+		// propagation to unblock: Server.Close would otherwise wait forever.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "test", Name: "Test", URL: server.URL, Key: "test-key", Model: "test-model",
+		}},
+		MaclawLLMCurrentProvider: "Test",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := app.buildUICLLMContextFunc()(ctx, "classify", "杭州天气，生成pdf报告"); err == nil {
+		t.Fatal("want deadline error from the hanging server")
+	}
+	cfg := app.GetMaclawLLMConfig()
+	if _, skip := app.shouldSkipLightweightLLM(cfg); skip {
+		t.Fatal("own fusion deadline must not trip the endpoint failure gate")
+	}
+
+	// The gate itself must still record genuine network failures (the exact
+	// dial error text is platform-dependent, so feed a canonical one directly).
+	app.observeLLMEndpointResult(cfg, fmt.Errorf("dial tcp 127.0.0.1:1: connectex: connection refused"))
+	if _, skip := app.shouldSkipLightweightLLM(cfg); !skip {
+		t.Fatal("genuine network failure must trip the endpoint failure gate")
 	}
 }
 

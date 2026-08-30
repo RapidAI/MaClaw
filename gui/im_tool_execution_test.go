@@ -366,8 +366,10 @@ func TestExecuteAgentLoopToolCallCancelsContextHandlerOnReplan(t *testing.T) {
 
 	select {
 	case result := <-done:
-		if result.Text != context.Canceled.Error() || result.Outcome != toolOutcomeFailed {
-			t.Fatalf("result = %+v, want context canceled failure", result)
+		// The execution wrapper prefixes the interrupted marker; the handler's
+		// own "context canceled" must not be duplicated after it.
+		if result.Text != "tool execution interrupted: "+context.Canceled.Error() || result.Outcome != toolOutcomeFailed {
+			t.Fatalf("result = %+v, want interrupted context-canceled failure", result)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("tool call did not stop after replan")
@@ -407,8 +409,9 @@ func TestLoopCycleExecuteToolCancelsContextHandler(t *testing.T) {
 
 	select {
 	case result := <-done:
-		if result != context.Canceled.Error() {
-			t.Fatalf("result = %q, want context canceled", result)
+		// Same interrupted prefix contract as the agent-loop path.
+		if result != "tool execution interrupted: "+context.Canceled.Error() {
+			t.Fatalf("result = %q, want interrupted context canceled", result)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("tool call did not stop after loop cancel")

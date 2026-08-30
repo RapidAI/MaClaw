@@ -31,6 +31,8 @@ typedef struct {
     device_status_t failure;
     uint32_t last_timeout_ms;
     uint32_t elapsed_per_call_ms;
+    enum operation late_operation;
+    bool late_enabled;
 } host_state_t;
 
 static uint64_t now_ms(void *context) {
@@ -42,7 +44,10 @@ static device_status_t invoke(host_state_t *state, enum operation operation,
     state->calls[operation]++;
     state->sequence[state->sequence_count++] = operation;
     state->last_timeout_ms = timeout_ms;
-    state->now_ms += state->elapsed_per_call_ms;
+    state->now_ms += (state->late_enabled && state->late_operation < OP_COUNT &&
+                      state->late_operation == operation)
+                         ? 100u
+                         : state->elapsed_per_call_ms;
     return state->fail_operation == operation ? state->failure : DEVICE_STATUS_OK;
 }
 
@@ -120,6 +125,63 @@ int main(void) {
                                                         &physical_stop_committed));
     CHECK(stage == CONNECTIVITY_RESTART_STAGE_FAILED && status == DEVICE_STATUS_TIMEOUT);
     CHECK(physical_stop_committed);
+
+    /* Provisioning can finish exactly at the parent deadline. No physical
+     * stop bridge is entered in that case, so the terminal snapshot must not
+     * claim that its Wi-Fi/netif generation was retired. */
+    memset(&state, 0, sizeof(state));
+    state.fail_operation = OP_COUNT;
+    state.elapsed_per_call_ms = 50;
+    host = make_host(&state);
+    CHECK(connectivity_restart_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
+    CHECK(connectivity_restart_coordinator_restart(&coordinator, 100) == DEVICE_STATUS_TIMEOUT);
+    CHECK(state.sequence_count == 2u);
+    CHECK(state.sequence[0] == OP_QUIESCE_NETWORK_DEPENDENTS);
+    CHECK(state.sequence[1] == OP_STOP_PROVISIONING);
+    CHECK(connectivity_restart_coordinator_get_snapshot(&coordinator, &stage, &status,
+                                                        &physical_stop_committed));
+    CHECK(stage == CONNECTIVITY_RESTART_STAGE_FAILED && status == DEVICE_STATUS_TIMEOUT);
+    CHECK(!physical_stop_committed);
+
+    /* A bridge that reports OK exactly at the parent deadline is not allowed
+     * to advance the transaction or publish COMPLETE. */
+    memset(&state, 0, sizeof(state));
+    state.fail_operation = OP_COUNT;
+    state.elapsed_per_call_ms = 100;
+    host = make_host(&state);
+    CHECK(connectivity_restart_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
+    CHECK(connectivity_restart_coordinator_restart(&coordinator, 100) == DEVICE_STATUS_TIMEOUT);
+    CHECK(state.sequence_count == 1u && state.sequence[0] == OP_QUIESCE_NETWORK_DEPENDENTS);
+    CHECK(connectivity_restart_coordinator_get_snapshot(&coordinator, &stage, &status,
+                                                        &physical_stop_committed));
+    CHECK(stage == CONNECTIVITY_RESTART_STAGE_FAILED && status == DEVICE_STATUS_TIMEOUT);
+    CHECK(!physical_stop_committed);
+
+    /* Every bridge is an independent parent-deadline boundary.  Exercise the
+     * exact late-OK window at each operation, including the physical stop
+     * bridge whose committed bit is published immediately before invocation.
+     * No later stage may run once that operation consumed the full budget. */
+    for (unsigned late = 0; late < OP_COUNT; ++late) {
+        memset(&state, 0, sizeof(state));
+        state.fail_operation = OP_COUNT;
+        state.elapsed_per_call_ms = 0;
+        state.late_operation = (enum operation)late;
+        state.late_enabled = true;
+        host = make_host(&state);
+        CHECK(connectivity_restart_coordinator_init(&coordinator, &host) == DEVICE_STATUS_OK);
+        CHECK(connectivity_restart_coordinator_restart(&coordinator, 100) ==
+              DEVICE_STATUS_TIMEOUT);
+        CHECK(state.sequence_count == late + 1u);
+        for (unsigned index = 0; index <= late; ++index) {
+            CHECK(state.sequence[index] == (enum operation)index);
+        }
+        CHECK(connectivity_restart_coordinator_get_snapshot(&coordinator, &stage, &status,
+                                                            &physical_stop_committed));
+        CHECK(stage == CONNECTIVITY_RESTART_STAGE_FAILED &&
+              status == DEVICE_STATUS_TIMEOUT);
+        CHECK(physical_stop_committed == (late >= OP_STOP_PHYSICAL_ROOT));
+    }
+
     puts("PASS Connectivity restart coordinator preserves ordering, deadline and fail-closed generations");
     return 0;
 }

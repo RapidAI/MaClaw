@@ -68,10 +68,13 @@ type TabSessionData struct {
 	// the main assistant's current working directory.
 	WorkingDir   string        `json:"working_dir,omitempty"`
 	Conversation []interface{} `json:"conversation"`
-	ScrollTop    int           `json:"scroll_top"`
-	InputText    string        `json:"input_text"`
-	CreatedAt    string        `json:"created_at"`
-	LastActiveAt string        `json:"last_active_at"`
+	// ConversationClearedAt is a millisecond timestamp fence. A delayed
+	// frontend snapshot that predates this clear must not resurrect history.
+	ConversationClearedAt int64  `json:"conversation_cleared_at,omitempty"`
+	ScrollTop             int    `json:"scroll_top"`
+	InputText             string `json:"input_text"`
+	CreatedAt             string `json:"created_at"`
+	LastActiveAt          string `json:"last_active_at"`
 }
 
 // ProjectTabSessionPersist handles reading and writing project tab sessions
@@ -202,6 +205,168 @@ func (p *ProjectTabSessionPersist) LoadSession(tabID string) (*TabSessionData, e
 	}
 
 	return &session, nil
+}
+
+// LoadLatestSessionForProject returns the most recently active persisted tab
+// session for projectPath. A task can be opened from the history list after its
+// tab was closed, so archived index entries remain eligible: closing a tab is
+// not the same as deleting its task or its conversation.
+//
+// This deliberately scans the session files instead of trusting only
+// _index.json. A session write can outlive an interrupted index update, and
+// that durable conversation is still the best recovery source for the task.
+func (p *ProjectTabSessionPersist) LoadLatestSessionForProject(projectPath string) (*TabSessionData, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if p == nil || projectPath == "" {
+		return nil, nil
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	dir, err := p.sessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read sessions dir: %w", err)
+	}
+
+	var latest *TabSessionData
+	var latestAt time.Time
+	var latestHasTimestamp bool
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == sessionIndexFileName || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if readErr != nil {
+			return nil, fmt.Errorf("read session %s: %w", entry.Name(), readErr)
+		}
+		var session TabSessionData
+		if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
+			continue
+		}
+		if session.TabID == "" {
+			session.TabID = strings.TrimSuffix(entry.Name(), ".json")
+		}
+		activeAt, parseErr := time.Parse(time.RFC3339, session.LastActiveAt)
+		hasTimestamp := parseErr == nil && !activeAt.IsZero()
+		if !hasTimestamp {
+			if info, infoErr := entry.Info(); infoErr == nil {
+				activeAt = info.ModTime()
+			}
+		}
+		// A real saved LastActiveAt is stronger than filesystem metadata. The
+		// latter is only a legacy fallback and can be newer after a copied or
+		// repaired session file, despite containing older conversation content.
+		if latest == nil ||
+			(hasTimestamp && !latestHasTimestamp) ||
+			(hasTimestamp == latestHasTimestamp && activeAt.After(latestAt)) {
+			copy := session
+			latest = &copy
+			latestAt = activeAt
+			latestHasTimestamp = hasTimestamp
+		}
+	}
+	return latest, nil
+}
+
+// ClearProjectSessionConversations removes transcript snapshots from every
+// persisted tab belonging to projectPath while preserving their tab metadata.
+// A user clearing a task conversation must survive a restart: otherwise the
+// history-recovery fallback can revive a transcript that was intentionally
+// discarded.
+func (p *ProjectTabSessionPersist) ClearProjectSessionConversations(projectPath string) (int, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if p == nil || projectPath == "" {
+		return 0, nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	dir, err := p.sessionsDir()
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("read sessions dir: %w", err)
+	}
+
+	cleared := 0
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == sessionIndexFileName || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			errs = append(errs, fmt.Errorf("read session %s: %w", entry.Name(), readErr))
+			continue
+		}
+		var session TabSessionData
+		if json.Unmarshal(data, &session) != nil || normalizeProjectSessionPath(session.ProjectPath) != projectPath {
+			continue
+		}
+		session.Conversation = []interface{}{}
+		session.ConversationClearedAt = time.Now().UnixMilli()
+		session.LastActiveAt = time.Now().UTC().Format(time.RFC3339)
+		encoded, marshalErr := json.MarshalIndent(&session, "", "  ")
+		if marshalErr != nil {
+			errs = append(errs, fmt.Errorf("marshal session %s: %w", entry.Name(), marshalErr))
+			continue
+		}
+		if writeErr := atomicWriteFile(path, encoded); writeErr != nil {
+			errs = append(errs, fmt.Errorf("clear session %s: %w", entry.Name(), writeErr))
+			continue
+		}
+		cleared++
+	}
+	return cleared, errors.Join(errs...)
+}
+
+// ClearSessionConversation clears exactly one tab's durable transcript. It is
+// used by the tab-level clear action; project-wide clearing uses
+// ClearProjectSessionConversations instead.
+func (p *ProjectTabSessionPersist) ClearSessionConversation(tabID string) error {
+	tabID = strings.TrimSpace(tabID)
+	if p == nil || tabID == "" {
+		return nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	path, err := p.sessionFilePath(tabID)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read session %s: %w", tabID, err)
+	}
+	var session TabSessionData
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("decode session %s: %w", tabID, err)
+	}
+	session.Conversation = []interface{}{}
+	session.ConversationClearedAt = time.Now().UnixMilli()
+	session.LastActiveAt = time.Now().UTC().Format(time.RFC3339)
+	encoded, err := json.MarshalIndent(&session, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal session %s: %w", tabID, err)
+	}
+	if err := atomicWriteFile(path, encoded); err != nil {
+		return fmt.Errorf("clear session %s: %w", tabID, err)
+	}
+	return nil
 }
 
 // SaveSession writes a single tab's session data to disk atomically.

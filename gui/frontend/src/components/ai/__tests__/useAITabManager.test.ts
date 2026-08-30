@@ -521,6 +521,29 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, [realMessage]);
     });
 
+    it("cancels a queued history save and removes local history when a tab is cleared", async () => {
+        vi.useFakeTimers();
+        const history = [{ id: "old-message", role: "user", content: "must stay cleared", timestamp: 1 }];
+        const { result } = renderHook(() => useAITabManager());
+
+        let tab: ReturnType<typeof result.current.createProjectTab> = null;
+        act(() => {
+            tab = result.current.createProjectTab("D:/tasks/clear-queued-save", "Clear queued save");
+            result.current.saveTabState(tab!.id, { history });
+            result.current.clearTabConversation(tab!.id);
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(600);
+            await Promise.resolve();
+        });
+
+        expect(SaveProjectTabConversation).toHaveBeenCalledWith(tab!.id, []);
+        expect(SaveProjectTabConversation).not.toHaveBeenCalledWith(tab!.id, history);
+        const persisted = JSON.parse(localStorage.getItem("ai_assistant_project_tab_histories") || "{}");
+        expect(persisted[tab!.id]).toBeUndefined();
+    });
+
     it("cleans transient guide receipts from backend-restored project tab history", async () => {
         const realMessage = { id: "assistant-1", role: "assistant", content: "继续处理", timestamp: 2 };
         const injection = { id: "injection-1", role: "user", kind: "guideInjection", content: "改为优先验证回归", timestamp: 1 };

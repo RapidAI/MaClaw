@@ -81,17 +81,11 @@ func TestContextCheckpointDefaultRolloutIsStable(t *testing.T) {
 			_ = os.Setenv("MACLAW_CONTEXT_CHECKPOINT", oldMode)
 		}
 	})
-	first := contextCheckpointMode("stable-owner")
-	for i := 0; i < 20; i++ {
-		if got := contextCheckpointMode("stable-owner"); got != first {
-			t.Fatalf("rollout mode changed for same owner: %s -> %s", first, got)
-		}
+	if got := contextCheckpointMode(); got != agent.ContextCheckpointOn {
+		t.Fatalf("default rollout = %q, want %q (lossless checkpoints on by default)", got, agent.ContextCheckpointOn)
 	}
-	if first != agent.ContextCheckpointOn && first != agent.ContextCheckpointShadow {
-		t.Fatalf("default rollout returned invalid mode %q", first)
-	}
-	if got := contextCheckpointStatusMode(); got != "rollout_10pct" {
-		t.Fatalf("default status mode = %q, want rollout_10pct", got)
+	if got := contextCheckpointStatusMode(); got != "on" {
+		t.Fatalf("default status mode = %q, want on", got)
 	}
 }
 

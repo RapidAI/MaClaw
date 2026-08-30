@@ -155,6 +155,10 @@ device_status_t configuration_service_load(configuration_snapshot_t *inout_snaps
  * compile-time defaults participate in its own policy. */
 device_status_t configuration_service_load_revisioned_snapshot(
     configuration_revisioned_snapshot_t *out_snapshot);
+/* Re-commits the current confirmed snapshot as a bounded durable checkpoint,
+ * preserving its contents while advancing the authoritative revision. */
+device_status_t configuration_service_checkpoint_current_snapshot(
+    uint64_t *out_revision);
 
 /* Runtime overrides are volatile, authenticated, bounded policy records.
  * Configuration Service is their only in-process owner; no board adapter or

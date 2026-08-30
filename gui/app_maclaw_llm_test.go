@@ -521,7 +521,9 @@ func TestDualLLMProfilesCodingFollowsAssistant(t *testing.T) {
 	if err := app.SaveConfig(corelib.AppConfig{
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
 			{ID: "provider-assistant", Name: "Assistant Provider", URL: "https://assistant.example.test/v1", Key: "assistant-key", Model: "assistant-default"},
-			{ID: "provider-next", Name: "Next Provider", URL: "https://next.example.test/v1", Key: "next-key", Model: "next-default"},
+			// Profile assignment deliberately requires a connection-tested
+			// provider; only the current provider is exempt via its stored key.
+			{ID: "provider-next", Name: "Next Provider", URL: "https://next.example.test/v1", Key: "next-key", Model: "next-default", ConnectionTestPassed: true},
 		},
 		MaclawLLMCurrentProvider: "Assistant Provider",
 		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
@@ -6408,31 +6410,34 @@ func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
 
 	app := &App{testHomeDir: tmpHome}
 
-	// Default: auto (empty).
-	if got := app.GetMaclawLLMThinkingMode(); got != "" {
-		t.Fatalf("default GetMaclawLLMThinkingMode() = %q, want auto(empty)", got)
+	// Default: unset resolves to enabled (behavior evolved: the legacy "auto"
+	// default left most providers without reasoning controls, so the desktop
+	// now defaults the global thinking mode to on).
+	if got := app.GetMaclawLLMThinkingMode(); got != "enabled" {
+		t.Fatalf("default GetMaclawLLMThinkingMode() = %q, want enabled", got)
 	}
 
-	for _, tc := range []struct{ in, want string }{
-		{in: "enabled", want: "enabled"},
-		{in: "ON", want: "enabled"},
-		{in: "disabled", want: "disabled"},
-		{in: "off", want: "disabled"},
-		{in: "auto", want: ""},
-		{in: "garbage", want: ""},
+	for _, tc := range []struct{ in, wantGet, wantSaved string }{
+		{in: "enabled", wantGet: "enabled", wantSaved: "enabled"},
+		{in: "ON", wantGet: "enabled", wantSaved: "enabled"},
+		{in: "disabled", wantGet: "disabled", wantSaved: "disabled"},
+		{in: "off", wantGet: "disabled", wantSaved: "disabled"},
+		// Legacy "auto"/unknown values stay stored as unset but resolve to enabled.
+		{in: "auto", wantGet: "enabled", wantSaved: ""},
+		{in: "garbage", wantGet: "enabled", wantSaved: ""},
 	} {
 		if err := app.SetMaclawLLMThinkingMode(tc.in); err != nil {
 			t.Fatalf("SetMaclawLLMThinkingMode(%q) error = %v", tc.in, err)
 		}
-		if got := app.GetMaclawLLMThinkingMode(); got != tc.want {
-			t.Fatalf("GetMaclawLLMThinkingMode() after set %q = %q, want %q", tc.in, got, tc.want)
+		if got := app.GetMaclawLLMThinkingMode(); got != tc.wantGet {
+			t.Fatalf("GetMaclawLLMThinkingMode() after set %q = %q, want %q", tc.in, got, tc.wantGet)
 		}
 		saved, err := app.LoadConfig()
 		if err != nil {
 			t.Fatalf("LoadConfig() error = %v", err)
 		}
-		if got := saved.MaclawLLMThinkingMode; got != tc.want {
-			t.Fatalf("saved MaclawLLMThinkingMode = %q, want %q", got, tc.want)
+		if got := saved.MaclawLLMThinkingMode; got != tc.wantSaved {
+			t.Fatalf("saved MaclawLLMThinkingMode = %q, want %q", got, tc.wantSaved)
 		}
 	}
 
@@ -6447,8 +6452,9 @@ func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
 	if err := app.SetMaclawLLMThinkingMode(""); err != nil {
 		t.Fatalf("SetMaclawLLMThinkingMode(empty) error = %v", err)
 	}
-	if got := app.GetMaclawLLMConfig().ThinkingMode; got != "" {
-		t.Fatalf("GetMaclawLLMConfig().ThinkingMode after reset = %q, want auto(empty)", got)
+	// Unset still materializes as enabled (default-on).
+	if got := app.GetMaclawLLMConfig().ThinkingMode; got != "enabled" {
+		t.Fatalf("GetMaclawLLMConfig().ThinkingMode after reset = %q, want enabled", got)
 	}
 }
 

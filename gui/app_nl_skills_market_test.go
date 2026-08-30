@@ -106,6 +106,14 @@ func TestInstallManagedHubSkillAllowsHighRiskWithAuditOnly(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = server.URL
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillHubClient = NewSkillHubClient(app)
 
@@ -187,6 +195,145 @@ func TestInstallHubSkillSucceedsWhenHubExtractsFileBackedSkillDir(t *testing.T) 
 	}
 	if fileCount != 0 {
 		t.Fatalf("file entry count = %d, want 0; skills = %#v", fileCount, skills)
+	}
+}
+
+func TestInstallHubSkillSameVersionIsIdempotentNoop(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	var downloads int
+	skillBody := fmt.Sprintf(`{
+		"id": "hub-idempotent",
+		"name": "idempotent-skill",
+		"description": "stable package",
+		"version": "7",
+		"semver": "1.2.3",
+		"trust_level": "trusted",
+		"triggers": ["idempotent"],
+		"steps": [{"action": "noop", "params": {}, "on_error": "stop"}],
+		"files": {"skill.yaml": %q, "marker.txt": %q}
+	}`, base64.StdEncoding.EncodeToString([]byte("name: idempotent-skill\nversion: 1.2.3\n")), base64.StdEncoding.EncodeToString([]byte("original\n")))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/hub-idempotent/download" {
+			http.NotFound(w, r)
+			return
+		}
+		downloads++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(skillBody))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = server.URL
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillHubClient = NewSkillHubClient(app)
+
+	if err := app.InstallHubSkill("hub-idempotent", server.URL); err != nil {
+		t.Fatalf("first InstallHubSkill() error = %v", err)
+	}
+	finalDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "idempotent-skill")
+	marker := filepath.Join(finalDir, "marker.txt")
+	before, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read first installed marker: %v", err)
+	}
+	if err := app.InstallHubSkill("hub-idempotent", server.URL); err != nil {
+		t.Fatalf("same-version InstallHubSkill() error = %v", err)
+	}
+	after, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker after no-op: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("no-op replaced installed directory: before=%q after=%q", before, after)
+	}
+	if _, err := os.Stat(finalDir + ".prev"); !os.IsNotExist(err) {
+		t.Fatalf("same-version no-op created .prev backup, stat error=%v", err)
+	}
+	if got := len(app.skillExecutor.loadSkills()); got != 1 {
+		t.Fatalf("same-version no-op registered duplicate skill: count=%d", got)
+	}
+	if downloads != 2 {
+		t.Fatalf("downloads=%d, want 2 (second request must still verify package identity)", downloads)
+	}
+}
+
+func TestUpdateHubSkillUsesSharedDirectoryTransaction(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	version := "1.0.0"
+	description := "first version"
+	markerEncoded := base64.StdEncoding.EncodeToString([]byte(description))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/skills/hub-update":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id":"hub-update","name":"update-skill","description":%q,"version":%q}`, description, version)
+		case "/api/v1/skills/hub-update/download":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id":"hub-update","name":"update-skill","description":%q,"version":%q,"semver":%q,"trust_level":"trusted","triggers":["update"],"steps":[{"action":"noop","params":{},"on_error":"stop"}],"files":{"marker.txt":%q}}`, description, version, version, markerEncoded)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = server.URL
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillHubClient = NewSkillHubClient(app)
+	if err := app.InstallHubSkill("hub-update", server.URL); err != nil {
+		t.Fatalf("initial InstallHubSkill() error = %v", err)
+	}
+	installed := app.skillExecutor.loadSkills()
+	if len(installed) != 1 {
+		t.Fatalf("initial skills = %#v, want one skill", installed)
+	}
+	finalDir := installed[0].SkillDir
+	if version != installed[0].HubVersion {
+		t.Fatalf("initial HubVersion=%q, want %q", installed[0].HubVersion, version)
+	}
+
+	version = "2.0.0"
+	description = "second version"
+	markerEncoded = base64.StdEncoding.EncodeToString([]byte(description))
+	if err := app.UpdateHubSkill("update-skill"); err != nil {
+		t.Fatalf("UpdateHubSkill() error = %v", err)
+	}
+	updated := app.skillExecutor.loadSkills()
+	if len(updated) != 1 || updated[0].Description != description || updated[0].HubVersion != version {
+		t.Fatalf("updated skills = %#v, want version 2", updated)
+	}
+	if filepath.Clean(updated[0].SkillDir) != filepath.Clean(finalDir) {
+		t.Fatalf("updated SkillDir=%q, want stable path %q", updated[0].SkillDir, finalDir)
+	}
+	marker, err := os.ReadFile(filepath.Join(finalDir, "marker.txt"))
+	if err != nil || string(marker) != description {
+		t.Fatalf("updated marker=%q err=%v, want %q", marker, err, description)
+	}
+	if _, err := os.Stat(finalDir + ".prev"); !os.IsNotExist(err) {
+		t.Fatalf("successful update left .prev backup: %v", err)
 	}
 }
 
@@ -478,6 +625,13 @@ func TestSearchMixedSkillsReturnsDegradedResultsForWailsClients(t *testing.T) {
 	cfg.SkillSourcesAllowed = []string{corelib.CapabilitySourceEnterpriseHub, "skillhub"}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	// RemoteViewerToken is a backend-owned field: plain SaveConfig preserves the
+	// on-disk value, so the enterprise-hub fixture must go through PatchConfig.
+	if err := app.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteViewerToken = "viewer-token"
+	}); err != nil {
+		t.Fatalf("PatchConfig() error = %v", err)
 	}
 
 	results, err := app.SearchMixedSkills("cap-degraded-search")
@@ -2004,5 +2158,79 @@ func TestInstallManagedHubSkillReplacesOlderCapabilityVersion(t *testing.T) {
 	got := skills[0]
 	if got.Description != "second version" || got.Capability == nil || got.Capability.VersionKey != "cap-v2" || got.HubVersion != "cap-v2" {
 		t.Fatalf("skill not updated: %#v", got)
+	}
+}
+
+func TestInstallManagedHubSkillIndexFailureRestoresPreviousVersion(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	version := "1.0.0"
+	description := "first version"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/hub-rollback/download" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"id": "hub-rollback",
+			"name": "rollback-skill",
+			"description": %q,
+			"version": %q,
+			"trust_level": "trusted",
+			"triggers": ["rollback"],
+			"steps": [{"action": "noop", "params": {}, "on_error": "stop"}]
+		}`, description, version)
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillHubClient = NewSkillHubClient(app)
+	if installed, err := app.installManagedHubSkill(context.Background(), "hub-rollback", server.URL, "cap-rollback", "cap-v1", corelib.CapabilitySourceEnterpriseHub, "skill:hub-rollback"); err != nil || !installed {
+		t.Fatalf("initial install installed=%v err=%v", installed, err)
+	}
+	original := app.skillExecutor.loadSkills()
+	if len(original) != 1 {
+		t.Fatalf("initial skills=%#v, want one skill", original)
+	}
+	originalDir := original[0].SkillDir
+	// Direct managed-install tests do not initialize the full remote surface;
+	// initialize it here so the checked index provider can be fault-injected.
+	app.ensureRemoteInfra()
+
+	version = "2.0.0"
+	description = "second version"
+	refreshCalls := 0
+	app.toolRouter.refreshSkillIndexOverride = func() error {
+		refreshCalls++
+		// Fail the update's first checked index refresh. Depending on the exact
+		// failure point, rollback may restore the derived index without invoking
+		// the provider a second time; the durable transaction still must reject
+		// the update and restore the prior version.
+		if refreshCalls == 1 {
+			return os.ErrPermission
+		}
+		return nil
+	}
+	installed, err := app.installManagedHubSkill(context.Background(), "hub-rollback", server.URL, "cap-rollback", "cap-v2", corelib.CapabilitySourceEnterpriseHub, "skill:hub-rollback")
+	if err == nil || installed {
+		t.Fatalf("failed update installed=%v err=%v, want rollback error", installed, err)
+	}
+	if refreshCalls < 1 {
+		t.Fatalf("refresh calls=%d, want injected index failure", refreshCalls)
+	}
+	got := app.skillExecutor.loadSkills()
+	if len(got) != 1 || got[0].Description != "first version" || got[0].HubVersion != "cap-v1" {
+		t.Fatalf("previous version not restored: %#v", got)
+	}
+	if filepath.Clean(got[0].SkillDir) != filepath.Clean(originalDir) {
+		t.Fatalf("SkillDir=%q, want original %q", got[0].SkillDir, originalDir)
+	}
+	if _, statErr := os.Stat(originalDir + ".prev"); !os.IsNotExist(statErr) {
+		t.Fatalf("stale .prev backup remains after rollback: %v", statErr)
 	}
 }

@@ -23,6 +23,7 @@
 #include "device_api.h"
 #include "provisioning_failure_injection.h"
 #include "services/audio_arbitration_service.h"
+#include "services/entropy_service.h"
 #include "services/foreground_coordinator.h"
 #include "task_registry.h"
 
@@ -146,8 +147,13 @@ static bool is_valid_setup_selected_ssid(const char *ssid) {
 }
 
 
-static const char *host_preferred_ssid(void) {
-    return s_host.preferred_scan_ssid ? s_host.preferred_scan_ssid() : "";
+static void host_copy_preferred_ssid(char *out, size_t capacity) {
+    if (!out || capacity == 0u) return;
+    out[0] = '\0';
+    if (s_host.copy_preferred_scan_ssid) {
+        s_host.copy_preferred_scan_ssid(out, (uint32_t)capacity);
+    }
+    out[capacity - 1u] = '\0';
 }
 
 static void host_copy_runtime_wifi(provisioning_runtime_wifi_t *out) {
@@ -178,11 +184,13 @@ static bool is_valid_choice(const char *value, const char *first, const char *se
 
 static bool is_valid_gateway_url(const char *url) {
     if (!url || !url[0] || strlen(url) >= URL_CAPACITY) return false;
-    const char *host = NULL;
-    if (!strncmp(url, "https://", 8)) host = url + 8;
-    else if (!strncmp(url, "http://", 7)) host = url + 7;
-    else return false;
-    return host[0] != '\0' && host[0] != '/' && !strchr(host, ' ');
+    const char *host = !strncmp(url, "https://", 8) ? url + 8 : NULL;
+    if (!host || host[0] == '\0' || host[0] == '/') return false;
+    for (const unsigned char *p = (const unsigned char *)host; *p; ++p) {
+        if (*p < 0x20u || *p == 0x7fu || *p == '#' || *p == '?' || *p == '@' ||
+            *p == '\\') return false;
+    }
+    return true;
 }
 
 static bool is_six_digit_pair_code(const char *code) {
@@ -350,26 +358,38 @@ static void cleanup_setup_portal_ap_secret_scope(
  * expose those form posts to every nearby station. Generate a printable WPA2
  * passphrase for each portal generation; it stays only in this task's stack
  * and the Wi-Fi driver, never in NVS or the runtime Wi-Fi configuration. */
-static void generate_setup_ap_passphrase(char out[PROVISIONING_AP_PASSPHRASE_CAPACITY]) {
+static bool generate_setup_ap_passphrase(char out[PROVISIONING_AP_PASSPHRASE_CAPACITY]) {
     static const char alphabet[] =
         "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     uint8_t entropy[12] = {0};
-    esp_fill_random(entropy, sizeof(entropy));
+    if (!entropy_service_fill(entropy, sizeof(entropy))) {
+        memset(out, 0, PROVISIONING_AP_PASSPHRASE_CAPACITY);
+        mbedtls_platform_zeroize(entropy, sizeof(entropy));
+        return false;
+    }
     for (size_t i = 0; i < sizeof(entropy); ++i) {
         out[i] = alphabet[entropy[i] % (sizeof(alphabet) - 1u)];
     }
     out[sizeof(entropy)] = '\0';
+    mbedtls_platform_zeroize(entropy, sizeof(entropy));
+    return true;
 }
 
-static void generate_setup_csrf_token(char out[sizeof(s_setup_csrf_token)]) {
+static bool generate_setup_csrf_token(char out[sizeof(s_setup_csrf_token)]) {
     static const char alphabet[] =
         "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     uint8_t entropy[24] = {0};
-    esp_fill_random(entropy, sizeof(entropy));
+    if (!entropy_service_fill(entropy, sizeof(entropy))) {
+        memset(out, 0, sizeof(s_setup_csrf_token));
+        mbedtls_platform_zeroize(entropy, sizeof(entropy));
+        return false;
+    }
     for (size_t i = 0; i < sizeof(entropy); ++i) {
         out[i] = alphabet[entropy[i] % (sizeof(alphabet) - 1u)];
     }
     out[sizeof(entropy)] = '\0';
+    mbedtls_platform_zeroize(entropy, sizeof(entropy));
+    return true;
 }
 
 static bool setup_portal_csrf_valid(const char *body) {
@@ -379,8 +399,11 @@ static bool setup_portal_csrf_valid(const char *body) {
         return false;
     }
     const size_t expected_length = strlen(s_setup_csrf_token);
-    return strlen(provided) == expected_length &&
-           mbedtls_ct_memcmp(provided, s_setup_csrf_token, expected_length) == 0;
+    const bool valid = strlen(provided) == expected_length &&
+                       mbedtls_ct_memcmp(provided, s_setup_csrf_token,
+                                         expected_length) == 0;
+    mbedtls_platform_zeroize(provided, sizeof(provided));
+    return valid;
 }
 
 static esp_err_t stop_setup_portal_transaction(uint32_t timeout_ms,
@@ -952,6 +975,8 @@ static bool refresh_setup_ssid_options(void) {
     }
 
     setup_scan_results_t results = {0};
+    char preferred_ssid[WIFI_VALUE_CAPACITY] = {0};
+    host_copy_preferred_ssid(preferred_ssid, sizeof(preferred_ssid));
     device_status_t scan_status = !s_host.scan_visible_wifi
                                       ? DEVICE_STATUS_UNAVAILABLE
                                       : s_host.scan_visible_wifi(SETUP_SCAN_MAX_APS,
@@ -973,7 +998,7 @@ static bool refresh_setup_ssid_options(void) {
             if (setup_ssid_is_selectable(entry->ssid)) continue;
             if (!append_setup_ssid_option(
                     entry->ssid, entry->rssi, entry->security,
-                    host_preferred_ssid()[0] && !strcmp(entry->ssid, host_preferred_ssid()))) {
+                    preferred_ssid[0] && !strcmp(entry->ssid, preferred_ssid))) {
                 break;
             }
         }
@@ -1245,8 +1270,8 @@ static esp_err_t setup_get_handler(httpd_req_t *req) {
         "<label>Identity (optional)</label><input name=identity maxlength=127 autocapitalize=none placeholder='Anonymous identity, if required'>"
         "<label>Username</label><input name=username maxlength=127 autocapitalize=none placeholder='Required'>"
         "<label>TTLS inner authentication</label><select name=ttls_phase2><option value=mschapv2 selected>MSCHAPv2 (default)</option><option value=pap>PAP</option></select>"
-        "<label>CA certificate</label><select name=ca_mode><option value=system selected>Use system certificates (recommended)</option><option value=none>Do not validate (not recommended)</option></select>"
-        "<label>Server domain (optional)</label><input name=server_domain maxlength=127 autocapitalize=none placeholder='Example: radius.company.com'></section>"
+        "<label>CA certificate</label><select name=ca_mode><option value=system selected>Use system certificates</option></select>"
+        "<label>Server domain (required for certificate binding)</label><input name=server_domain maxlength=127 required autocapitalize=none placeholder='Example: radius.company.com'></section>"
         "<label>MaClaw Hub URL</label><input name=gateway value='https://hub.mypapers.top' required maxlength=255>"
         "<label>6-digit pairing code</label><input name=code inputmode=numeric pattern='[0-9]{6}' maxlength=6 required>"
         "<button>Save and connect</button></form>";
@@ -1605,7 +1630,7 @@ static esp_err_t setup_save_handler(httpd_req_t *req) {
         else if (strlen(secrets.password) >= WIFI_VALUE_CAPACITY) snprintf(reason, sizeof(reason), "Wi-Fi password is too long (max 64 bytes)");
         else if (!strcmp(secrets.security, "enterprise") && !secrets.username[0]) snprintf(reason, sizeof(reason), "Enterprise Wi-Fi username is required");
         else if (!is_valid_choice(secrets.security, "personal", "enterprise", NULL)) snprintf(reason, sizeof(reason), "Unsupported Wi-Fi security mode");
-        else if (!is_valid_gateway_url(secrets.gateway)) snprintf(reason, sizeof(reason), "Hub URL must start with http:// or https://");
+        else if (!is_valid_gateway_url(secrets.gateway)) snprintf(reason, sizeof(reason), "Hub URL must start with https:// and contain a valid host");
         else if (!is_six_digit_pair_code(secrets.code)) snprintf(reason, sizeof(reason), "Pairing code must be exactly 6 digits");
         else snprintf(reason, sizeof(reason), "Could not save configuration: %s", esp_err_to_name(save_err));
         ESP_LOGW(TAG, "setup rejected: %s", reason);
@@ -1946,8 +1971,13 @@ static void start_setup_portal_locked(bool keep_station) {
     snprintf(ap_ssid, sizeof(ap_ssid), "MACLAW-SETUP-%02X%02X", mac[4], mac[5]);
     setup_portal_ap_secret_scope_t ap_secret
         __attribute__((cleanup(cleanup_setup_portal_ap_secret_scope))) = {0};
-    generate_setup_ap_passphrase(ap_secret.passphrase);
-    generate_setup_csrf_token(s_setup_csrf_token);
+    if (!generate_setup_ap_passphrase(ap_secret.passphrase) ||
+        !generate_setup_csrf_token(s_setup_csrf_token)) {
+        ESP_LOGE(TAG, "setup portal entropy unavailable; keeping portal closed");
+        mbedtls_platform_zeroize(s_setup_csrf_token, sizeof(s_setup_csrf_token));
+        recover_after_setup_portal_start_failure(wake_was_stopped, 0);
+        return;
+    }
     if (!s_host.init_network || s_host.init_network() != DEVICE_STATUS_OK) {
         recover_after_setup_portal_start_failure(wake_was_stopped, 0);
         ESP_LOGE(TAG, "cannot initialize network core for setup portal");

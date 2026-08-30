@@ -521,3 +521,56 @@ func TestArtifactPayloadAcceptsLegacyContentOnlyIDForRecovery(t *testing.T) {
 		t.Fatalf("legacy artifact ID rejected: %v", err)
 	}
 }
+
+func TestArtifactStorePersistsDisplayNameOutsideIdentity(t *testing.T) {
+	scope := semanticArtifactTestScope()
+	newNamedPayload := func() ArtifactPayload {
+		payload, err := NewArtifactPayload(scope, "selection:generate", "document", "application/pdf", semanticArtifactTestPNG, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload.Ref.Name = "南京天气报告.pdf"
+		return payload
+	}
+
+	path := filepath.Join(t.TempDir(), "artifacts.db")
+	store, err := NewSQLiteArtifactStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Publish(newNamedPayload()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewSQLiteArtifactStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	refs, err := store.PublishedArtifacts(scope, "selection:generate")
+	if err != nil || len(refs) != 1 || refs[0].Name != "南京天气报告.pdf" {
+		t.Fatalf("sqlite name round trip refs=%#v err=%v", refs, err)
+	}
+	// Name is display-only: a republish differing only in Name matches the
+	// stored identity and keeps the originally recorded display name.
+	renamed := newNamedPayload()
+	renamed.Ref.Name = "别的名字.pdf"
+	republished, err := store.Publish(renamed)
+	if err != nil || republished.Name != "南京天气报告.pdf" {
+		t.Fatalf("name must stay outside artifact identity: %#v err=%v", republished, err)
+	}
+
+	memory := NewMemoryArtifactStore()
+	if _, err := memory.Publish(newNamedPayload()); err != nil {
+		t.Fatal(err)
+	}
+	refs, err = memory.PublishedArtifacts(scope, "selection:generate")
+	if err != nil || len(refs) != 1 || refs[0].Name != "南京天气报告.pdf" {
+		t.Fatalf("memory name round trip refs=%#v err=%v", refs, err)
+	}
+	if republished, err := memory.Publish(renamed); err != nil || republished.Name != "南京天气报告.pdf" {
+		t.Fatalf("memory store must also keep name outside identity: %#v err=%v", republished, err)
+	}
+}

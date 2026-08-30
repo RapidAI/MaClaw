@@ -16,6 +16,15 @@ static device_power_lease_t s_capture_lease = DEVICE_POWER_LEASE_INVALID;
 static device_power_lease_t s_playback_lease = DEVICE_POWER_LEASE_INVALID;
 static audio_service_session_t s_foreground_session = AUDIO_SERVICE_SESSION_IDLE;
 static uint32_t s_session_generation;
+static bool s_alarm_interrupted;
+static uint32_t s_alarm_interrupted_generation;
+static audio_service_session_t s_alarm_interrupted_session = AUDIO_SERVICE_SESSION_IDLE;
+static bool s_alarm_transaction_active;
+static uint32_t s_alarm_transaction_epoch;
+static uint32_t s_alarm_interrupted_epoch;
+static bool s_alarm_recent_window;
+static uint32_t s_alarm_recent_generation;
+static int64_t s_alarm_recent_until_us;
 static bool s_wake_word_running;
 static bool s_wake_word_paused;
 /* A profile start may allocate a recognizer/dispatcher outside s_session_lock.
@@ -206,6 +215,18 @@ static bool begin_foreground_session(audio_service_session_t session) {
     audio_arbitration_observe_request(request_kind, current_kind);
     taskENTER_CRITICAL(&s_session_lock);
     if (s_foreground_session == AUDIO_SERVICE_SESSION_IDLE) {
+        /* Keep the marker across the Alarm hand-off itself: the displaced
+         * owner may return from its blocking capture/playback call just after
+         * Alarm acquires the foreground lease.  Any later non-Alarm owner is a
+         * replacement and retires the stale marker before advancing generation. */
+        if (s_alarm_interrupted && session != AUDIO_SERVICE_SESSION_ALARM_BURST) {
+            s_alarm_interrupted = false;
+            s_alarm_interrupted_generation = 0u;
+            s_alarm_interrupted_session = AUDIO_SERVICE_SESSION_IDLE;
+            s_alarm_interrupted_epoch = 0u;
+            s_alarm_recent_window = false;
+            s_alarm_recent_until_us = 0;
+        }
         s_foreground_session = session;
         ++s_session_generation;
         if (s_session_generation == 0) ++s_session_generation;
@@ -366,6 +387,14 @@ device_status_t audio_service_play_wav(const uint8_t *wav, uint32_t wav_len) {
     set_foreground_wake_pause(false);
     device_power_lease_release(lease);
     end_foreground_session(AUDIO_SERVICE_SESSION_WAV_PLAYBACK);
+    /* An authoritative Alarm stop is an expected interruption.  Consume the
+     * marker only after the normal WAV cleanup has released the physical
+     * owner, and preserve BUSY so callers do not ACK a partially played cue
+     * as a decoder or transport failure. */
+    if (audio_service_consume_alarm_interruption(
+            (int)AUDIO_SERVICE_SESSION_WAV_PLAYBACK)) {
+        status = DEVICE_STATUS_BUSY;
+    }
     return status;
 }
 
@@ -376,8 +405,17 @@ device_status_t audio_service_play_alarm_burst(void) {
     if (!begin_foreground_session(AUDIO_SERVICE_SESSION_ALARM_BURST)) {
         return DEVICE_STATUS_BUSY;
     }
+    uint8_t peak_percent = 100u;
+    device_battery_policy_snapshot_t battery = {0};
+    if (device_battery_policy_get_snapshot(&battery)) {
+        if (battery.level == DEVICE_BATTERY_POLICY_PROTECT) {
+            peak_percent = 35u;
+        } else if (battery.level == DEVICE_BATTERY_POLICY_CONSERVE) {
+            peak_percent = 65u;
+        }
+    }
     set_foreground_wake_pause(true);
-    device_status_t status = platform_audio_play_alarm_burst();
+    device_status_t status = platform_audio_play_alarm_burst(peak_percent);
     audio_service_note_playback_delivery(0, status, esp_timer_get_time());
     set_foreground_wake_pause(false);
     end_foreground_session(AUDIO_SERVICE_SESSION_ALARM_BURST);
@@ -542,6 +580,89 @@ void audio_service_request_capture_stop(void) {
 
 void audio_service_reset_capture_stop(void) {
     platform_audio_reset_capture_stop();
+}
+
+device_status_t audio_service_preempt_for_alarm(uint32_t timeout_ms) {
+    if (timeout_ms == 0u) return DEVICE_STATUS_INVALID_ARGUMENT;
+    taskENTER_CRITICAL(&s_session_lock);
+    const audio_service_session_t session = s_foreground_session;
+    const uint32_t generation = s_session_generation;
+    taskEXIT_CRITICAL(&s_session_lock);
+    if (session == AUDIO_SERVICE_SESSION_IDLE ||
+        session == AUDIO_SERVICE_SESSION_ALARM_BURST) return DEVICE_STATUS_OK;
+    const bool capture_session =
+        session == AUDIO_SERVICE_SESSION_COMMAND_CAPTURE ||
+        session == AUDIO_SERVICE_SESSION_MEETING_STREAM;
+    /* Publish the interruption fact before asking the owner to stop.  The
+     * fact is consumed by the owner after its normal cleanup and remains
+     * valid even if the bounded wait expires. */
+    taskENTER_CRITICAL(&s_session_lock);
+    s_alarm_interrupted = true;
+    s_alarm_interrupted_generation = generation + 1u;
+    if (s_alarm_interrupted_generation == 0u) s_alarm_interrupted_generation = 1u;
+    s_alarm_interrupted_session = session;
+    s_alarm_interrupted_epoch = s_alarm_transaction_epoch;
+    taskEXIT_CRITICAL(&s_session_lock);
+    if (capture_session) {
+        platform_audio_request_capture_stop();
+    } else {
+        platform_audio_request_playback_stop();
+    }
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t budget = pdMS_TO_TICKS(timeout_ms);
+    for (;;) {
+        taskENTER_CRITICAL(&s_session_lock);
+        const bool released = s_foreground_session == AUDIO_SERVICE_SESSION_IDLE &&
+                              s_session_generation != generation;
+        taskEXIT_CRITICAL(&s_session_lock);
+        if (released) return DEVICE_STATUS_OK;
+        if ((xTaskGetTickCount() - start) >= budget) return DEVICE_STATUS_TIMEOUT;
+        vTaskDelay(pdMS_TO_TICKS(1u));
+    }
+}
+
+bool audio_service_consume_alarm_interruption(int expected_session) {
+    taskENTER_CRITICAL(&s_session_lock);
+    const int64_t now_us = esp_timer_get_time();
+    const bool recent_window = s_alarm_recent_window &&
+                               now_us <= s_alarm_recent_until_us;
+    const bool generation_match =
+        audio_arbitration_alarm_interruption_generation_allowed_scoped(
+            s_alarm_interrupted_generation, s_session_generation,
+            kind_from_session(s_foreground_session), s_alarm_transaction_active,
+            s_alarm_interrupted_epoch, s_alarm_transaction_epoch,
+            recent_window, s_alarm_recent_generation);
+    const bool interrupted = s_alarm_interrupted && generation_match &&
+                             (int)s_alarm_interrupted_session == expected_session;
+    if (interrupted) {
+        s_alarm_interrupted = false;
+        s_alarm_interrupted_generation = 0u;
+        s_alarm_interrupted_session = AUDIO_SERVICE_SESSION_IDLE;
+        s_alarm_interrupted_epoch = 0u;
+        s_alarm_recent_window = false;
+        s_alarm_recent_until_us = 0;
+    }
+    taskEXIT_CRITICAL(&s_session_lock);
+    return interrupted;
+}
+
+void audio_service_alarm_transaction_begin(void) {
+    taskENTER_CRITICAL(&s_session_lock);
+    ++s_alarm_transaction_epoch;
+    if (s_alarm_transaction_epoch == 0u) s_alarm_transaction_epoch = 1u;
+    s_alarm_transaction_active = true;
+    taskEXIT_CRITICAL(&s_session_lock);
+}
+
+void audio_service_alarm_transaction_end(void) {
+    taskENTER_CRITICAL(&s_session_lock);
+    s_alarm_transaction_active = false;
+    s_alarm_recent_window = s_alarm_interrupted;
+    s_alarm_recent_generation = s_session_generation;
+    s_alarm_recent_until_us = s_alarm_recent_window
+                                  ? esp_timer_get_time() + 500000LL
+                                  : 0;
+    taskEXIT_CRITICAL(&s_session_lock);
 }
 
 device_status_t audio_service_wake_word_start(device_wake_word_cb_t on_wake,

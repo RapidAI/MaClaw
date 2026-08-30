@@ -187,15 +187,23 @@ func (a *App) performBackgroundUpdateCheck(
 	if !shouldFetchAppUpdateNow(state.nextNetworkNotBefore, now) {
 		return
 	}
+	currentVersion, hasVersion := linkedReleaseVersion()
+	// A development binary has no linker-injected release version.  Do not
+	// compare a real remote release against the placeholder "dev" value: that
+	// would make every release look newer and produce a false notification.
+	if !hasVersion {
+		a.log("[update-check] skipping background check: local release version is unavailable")
+		return
+	}
 	// Provisional failure backoff before the network call so a panic mid-flight
 	// still throttles retries (recover in the tick wrapper keeps the loop alive).
 	state.nextNetworkNotBefore = nextAppUpdateFetchAt(now, false, successInterval, failureBackoff)
 
 	var result UpdateResult
 	if cfg.PreferBetaChannel {
-		result, err = a.CheckUpdateBeta(remoteAppVersion())
+		result, err = a.CheckUpdateBeta(currentVersion)
 	} else {
-		result, err = a.CheckUpdate(remoteAppVersion())
+		result, err = a.CheckUpdate(currentVersion)
 	}
 
 	// Finalize schedule: success uses the longer interval; errors keep failure backoff.

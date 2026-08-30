@@ -883,9 +883,13 @@ func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RP
 		if strings.HasPrefix(delta, "\x01") {
 			// Reasoning is streamed token-by-token. Preserve its whitespace and do
 			// not inject line breaks between tokens, otherwise prose is corrupted.
-			emitThought(strings.TrimPrefix(delta, "\x01"), false)
+			// Sanitize after removing the lane marker as providers may include
+			// additional markers/control bytes between token fragments. If these
+			// reach ACP clients they render as white tofu squares.
+			reasoningDelta := visibleACPStreamDelta(strings.TrimPrefix(delta, "\x01"))
+			emitThought(reasoningDelta, false)
 			if mirrorUI {
-				s.app.mirrorACPToken(requestID, sess.UserID, delta)
+				s.app.mirrorACPToken(requestID, sess.UserID, "\x01"+reasoningDelta)
 			}
 			return
 		}
@@ -1005,6 +1009,13 @@ func visibleACPStreamDelta(delta string) string {
 			return r
 		}
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		// U+FFFC (object replacement) and U+FFFD (decode replacement) are
+		// rendered by Chromium as tofu/white squares. They can leak from ACP
+		// providers when a streamed reasoning token is not valid text; discard
+		// them at the transport boundary so every client receives clean text.
+		if r >= '\uFFF9' && r <= '\uFFFD' {
 			return -1
 		}
 		return r

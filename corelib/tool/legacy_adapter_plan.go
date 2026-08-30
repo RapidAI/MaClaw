@@ -161,10 +161,6 @@ func BuildLegacyAdapterPlan(input LegacyAdapterPlanInput) (LegacyAdapterPlan, er
 		}
 		return evidence[i].ToolName < evidence[j].ToolName
 	})
-	if len(evidence) > MaxToolBudget {
-		return LegacyAdapterPlan{}, legacyAdapterPlanError(LegacyAdapterPlanOverBudget, "%d reviewed selections exceed legacy count guard %d", len(evidence), MaxToolBudget)
-	}
-
 	seenNames := make(map[string]bool, len(evidence))
 	selections := make([]LegacyAdapterSelection, 0, len(evidence))
 	for _, item := range evidence {
@@ -200,6 +196,21 @@ func BuildLegacyAdapterPlan(input LegacyAdapterPlanInput) (LegacyAdapterPlan, er
 		selections = append(selections, selection)
 	}
 	pruned := make([]RoutingEvidence, 0)
+	// The count guard shares the schema-token budget's semantics: drop only
+	// optional retrieval candidates, lowest score first, and fail closed only
+	// when required selections alone exceed the guard. A post-route pipeline
+	// can legitimately add a few mandatory tools (channel delivery, result
+	// reader, recovery) on top of the router's own 28; rejecting the whole
+	// plan for that overflow emptied the model surface in production.
+	for len(selections) > MaxToolBudget {
+		index := legacyLowestPriorityOptionalSelection(selections)
+		if index < 0 {
+			return LegacyAdapterPlan{}, legacyAdapterPlanError(LegacyAdapterPlanOverBudget, "%d required legacy selections exceed legacy count guard %d", len(selections), MaxToolBudget)
+		}
+		pruned = append(pruned, evidence[index])
+		selections = append(selections[:index], selections[index+1:]...)
+		evidence = append(evidence[:index], evidence[index+1:]...)
+	}
 	if budget := input.SchemaTokenBudget; budget > 0 {
 		// Evidence is priority-sorted above. Drop only optional retrieval
 		// candidates, starting from the lowest score, and never silently remove

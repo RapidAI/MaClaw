@@ -1,8 +1,10 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,7 +165,7 @@ func (b *semanticArtifactBroker) newPNGPayload(producerSelection, imageBase64 st
 // publishPNG remains the legacy/non-coordinated path. App-backed semantic
 // execution keeps the payload in the callback until CompleteWithArtifactPayloads
 // commits it together with the producer's execution and route facts.
-func (b *semanticArtifactBroker) newPDFPayload(producerSelection, pdfBase64 string) (tool.ArtifactPayload, error) {
+func (b *semanticArtifactBroker) newPDFPayload(producerSelection, pdfBase64, name string) (tool.ArtifactPayload, error) {
 	if b == nil || b.store == nil {
 		return tool.ArtifactPayload{}, fmt.Errorf("artifact broker is unavailable")
 	}
@@ -178,6 +180,7 @@ func (b *semanticArtifactBroker) newPDFPayload(producerSelection, pdfBase64 stri
 	if err != nil {
 		return tool.ArtifactPayload{}, err
 	}
+	payload.Ref.Name = strings.TrimSpace(name)
 	return payload, nil
 }
 
@@ -207,8 +210,45 @@ func (b *semanticArtifactBroker) publishWAV(producerSelection, wavBase64 string)
 	return b.store.Publish(payload)
 }
 
-func (b *semanticArtifactBroker) publishPDF(producerSelection, pdfBase64 string) (tool.ArtifactRef, error) {
-	payload, err := b.newPDFPayload(producerSelection, pdfBase64)
+func (b *semanticArtifactBroker) publishPDF(producerSelection, pdfBase64, name string) (tool.ArtifactRef, error) {
+	payload, err := b.newPDFPayload(producerSelection, pdfBase64, name)
+	if err != nil {
+		return tool.ArtifactRef{}, err
+	}
+	return b.store.Publish(payload)
+}
+
+// newOfficeDocumentPayload registers a host-written spreadsheet or
+// presentation. The office adapter wrote the bytes to a workspace path rather
+// than returning a [file_base64] marker, so the caller reads the file back;
+// both formats are ZIP containers and are validated by their magic bytes.
+func (b *semanticArtifactBroker) newOfficeDocumentPayload(producerSelection, dataBase64, mimeType, name string) (tool.ArtifactPayload, error) {
+	if b == nil || b.store == nil {
+		return tool.ArtifactPayload{}, fmt.Errorf("artifact broker is unavailable")
+	}
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation":
+	default:
+		return tool.ArtifactPayload{}, fmt.Errorf("artifact is not an office document")
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(dataBase64))
+	if err != nil {
+		return tool.ArtifactPayload{}, fmt.Errorf("artifact office document decode failed: %w", err)
+	}
+	if len(data) < 4 || string(data[:2]) != "PK" {
+		return tool.ArtifactPayload{}, fmt.Errorf("artifact is not an office document")
+	}
+	payload, err := tool.NewArtifactPayload(b.scope, producerSelection, "document", mimeType, dataBase64, time.Now().UTC())
+	if err != nil {
+		return tool.ArtifactPayload{}, err
+	}
+	payload.Ref.Name = strings.TrimSpace(name)
+	return payload, nil
+}
+
+func (b *semanticArtifactBroker) publishOfficeDocument(producerSelection, dataBase64, mimeType, name string) (tool.ArtifactRef, error) {
+	payload, err := b.newOfficeDocumentPayload(producerSelection, dataBase64, mimeType, name)
 	if err != nil {
 		return tool.ArtifactRef{}, err
 	}
@@ -277,14 +317,22 @@ func (b *semanticArtifactBroker) consumePlannedArtifact(consumer tool.PlannedSel
 	if err != nil {
 		return tool.ArtifactPayload{}, err
 	}
+	// Producer identity for a repeat family is the family, not one invocation:
+	// a draft-then-revise office turn publishes one artifact per sibling, and
+	// the delivery bound to the first sibling must still reach the revision
+	// (production 2026-08-26: the revision deck was invisible to send_file).
+	// Within the family the newest artifact is the latest revision of the same
+	// meaning — that is the one to deliver. Across families the ambiguity
+	// rule is unchanged.
+	producerFamily := tool.RepeatFamilyID(dependency.ProducerSelection)
 	var source tool.ArtifactRef
 	for _, candidate := range refs {
 		ref := tool.ArtifactRef{ID: candidate.ArtifactID, Kind: candidate.Kind, MIMEType: candidate.MIMEType, IntegrityDigest: candidate.IntegrityDigest, ProducerSelection: candidate.ProducerSelection, Scope: candidate.SourceScope, CreatedAt: candidate.CreatedAt}
-		if ref.ProducerSelection != dependency.ProducerSelection || !artifactContractMatches(tool.ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}, contract) {
+		if tool.RepeatFamilyID(ref.ProducerSelection) != producerFamily || !artifactContractMatches(tool.ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}, contract) {
 			continue
 		}
-		if source.ID != "" {
-			return tool.ArtifactPayload{}, fmt.Errorf("artifact_dependency_ambiguous")
+		if source.ID != "" && !ref.CreatedAt.After(source.CreatedAt) {
+			continue
 		}
 		source = ref
 	}
@@ -310,6 +358,14 @@ func artifactContractMatches(left, right tool.ArtifactContract) bool {
 func (b *semanticArtifactBroker) prepareCurrentChannelDelivery(selection tool.PlannedSelection, channelScope, destinationID string, contract tool.ArtifactContract) (tool.ArtifactPayload, tool.DeliveryRecord, error) {
 	payload, err := b.consumePlannedArtifact(selection, contract)
 	if err != nil {
+		// A storage-level "no rows" is the domain fact "nothing produced is
+		// waiting for delivery" (production 2026-08-26: send_file retried after
+		// the office grant was denied, and the model received the raw string
+		// "sql: no rows in result set"). Translate at the broker boundary so
+		// the model gets an actionable domain rejection, never storage guts.
+		if errors.Is(err, sql.ErrNoRows) {
+			return tool.ArtifactPayload{}, tool.DeliveryRecord{}, fmt.Errorf("artifact_dependency_missing: no produced artifact is waiting for delivery; produce or acquire the artifact first")
+		}
 		return tool.ArtifactPayload{}, tool.DeliveryRecord{}, err
 	}
 	delivery := tool.DeliveryRecord{

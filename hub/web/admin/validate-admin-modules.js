@@ -59,7 +59,7 @@ const expectedExports = {
   'knowledge-management-tab.js': ['loadKnowledgeShares', 'forceDeleteKnowledgeShare'],
   'admin-ui.js': ['confirmDialog', 'promptDialog', 'dismissActiveDialog', 'isDialogOpen', 'admin-ui-dialog-overlay', 'mountDialogSession', 'DIALOG_Z_INDEX', '20000', 'bindModalOverlayDismiss', 'isImeComposing', 'skipDismiss'],
   'digital-assets-tab.js': ['loadDigitalAssetLibraries', 'createDigitalAssetLibrary', 'stopDigitalAssetsForUnauthorizedScope', 'digital-assets-merge-src', 'import/local-dir', 'import/browser-dir', 'digitalAssetsBrowserDir', 'digitalAssetsServerDir', 'trackJob', 'openContentDialog', 'import-jobs', '/sources', 'beginProgress', 'phaseLabel', 'jobIdOf', 'digitalAssetsProgressTimeout', 'digitalAssetsPhaseImporting', 'deleteContentSources', 'sources/delete', 'digitalAssetsContentDeleteSelected', 'digitalAssetsContentSearch', 'loadMoreContentSources', 'digitalAssetsContentLoadMore', 'offset=', 'scheduleContentJobsPoll', 'refreshContentJobsOnly', 'wireContentScrollLoadMore', 'maybeAutoFillSources', 'jobsStatusSignature', 'contentAutoFillRounds', 'renderAclPanel', 'renderDepartmentTree', 'saveLibraryAcl', 'loadSecurityGroups', 'set_acl', 'digitalAssetsAclSave', 'digital-assets-acl-dept', 'acl_mode', '/api/admin/security/groups', 'captureAclDraftFromDom', 'itemWithAclDraft', 'digitalAssetsAclClearDepartmentsBtn', 'digitalAssetsAclDeptFilter', 'digitalAssetsAclEmptyRestrictedWarn', 'unknownSelectedDepartments', 'showConfirm', 'showPrompt', 'confirmDialog', 'promptDialog', 'digitalAssetsDeleteLibraryConfirm', 'digitalAssetsCreateNamePrompt', 'admin-ui-dialog-overlay', 'isDialogOpen', 'createLibraryBusy', 'isAdminDialogOpen', 'aclSaveGuard', 'contentDeleteGuard', 'deleteLibraryBusy', 'downloadBackup', 'backupFilename', 'global.URL.createObjectURL', 'Authorization', 'res.status === 401', 'global.logoutAdmin'],
-  'cloud-workspace-tab.js': ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', 'renderDepartmentTree', 'renderCwsAclPanel', 'normalizeSecurityGroupTree', 'loadSecurityGroups', 'unknownSelectedDepartments', 'cwsMaxDepartmentTreeDepth', 'cws-acl-tree', 'cws-acl-tree-dept', 'cws-acl-tree-branch', 'cws-acl-tree-children', 'cws-acl-tree-toolbar', '/api/admin/security/groups', '/api/admin/cloud-workspaces/settings', 'department_ids', 'max_workspace_bytes', 'tenant_max_total_bytes', 'tenantCloudWorkspaceQuota', 'CWS_QUOTA_MAX', 'emptyDepartmentsWarn', 'selectVisible', 'tenantCloudWorkspaceSelectVisibleBtn', 'cws-acl-chip']
+  'cloud-workspace-tab.js': ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', 'renderDepartmentTree', 'renderCwsAclPanel', 'normalizeSecurityGroupTree', 'loadSecurityGroups', 'unknownSelectedDepartments', 'cwsMaxDepartmentTreeDepth', 'cws-acl-tree', 'cws-acl-tree-dept', 'cws-acl-tree-branch', 'cws-acl-tree-children', 'cws-acl-tree-toolbar', '/api/admin/security/groups', '/api/admin/cloud-workspaces/settings', 'department_ids', 'max_workspace_bytes', 'tenant_max_total_bytes', 'tenantCloudWorkspaceQuota', 'CWS_QUOTA_MAX', 'emptyDepartmentsWarn', 'selectVisible', 'tenantCloudWorkspaceSelectVisibleBtn', 'cws-acl-chip', 'previewAllUsers']
 };
 
 function fail(message) {
@@ -1541,6 +1541,41 @@ assertSecurityTenantSchemaGuards();
 assertSecurityCapabilityComplianceExportHooks();
 assertApprovalRolesHooks();
 assertConfigAgentHooks();
+assertFeatureIcons();
+
+function assertFeatureIcons() {
+  const html = read('index.html');
+  const css = read('professional.css');
+  [
+    'data-icon="cloud"',
+    'item-title" data-icon="cloud" id="tenantCloudWorkspaceSettingsTitle"',
+    'item-title" data-icon="library" id="tenantDigitalAssetsSettingsTitle"',
+    'item-title" data-icon="mail" data-i18n="mailConfigTitle"',
+    'professional.css?v=feature-icons-20260828-6',
+    'id="subtab-market" data-icon="store"',
+    'id="cardStoreManageSubtab" data-icon="store"'
+  ].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing feature icon marker: ' + marker);
+    }
+  });
+  [
+    '--icon-cloud',
+    '.item-title[data-icon]',
+    'background-image:var(--feature-icon)',
+    '.item-title[data-icon]::after{content:none',
+    '[data-icon="cloud"]',
+    '[data-icon="book"]',
+    '.im-sidebar button>span',
+    '.im-sidebar button::before',
+    '.main[data-active-tab="system"]'
+  ].forEach(function(marker) {
+    if (!css.includes(marker)) {
+      fail('professional.css is missing feature icon marker: ' + marker);
+    }
+  });
+  assertAscii('professional.css');
+}
 
 function assertConfigAgentHooks() {
   const html = read('index.html');

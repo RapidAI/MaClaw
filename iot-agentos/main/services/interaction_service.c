@@ -315,6 +315,14 @@ static void interaction_task(void *arg) {
     ESP_LOGI(TAG, "voice capture complete: generation=%lu err=%s wav=%u elapsed=%lldms",
              (unsigned long)interaction_generation, esp_err_to_name(err), (unsigned)wav_len,
              (long long)((esp_timer_get_time() - interaction_started_us) / 1000));
+    if (audio_arbitration_consume_alarm_interruption(
+            AUDIO_ARBITRATION_KIND_COMMAND_CAPTURE)) {
+        scene_presenter_publish_recording_visual(false, false, 0);
+        scene_presenter_publish_message("录音被闹钟中断", "请在闹钟结束后重新录音");
+        audio_arbitration_release_captured_wav(wav);
+        finish_interaction_message(interaction_generation, 1800);
+        return;
+    }
     if (interaction_stop_requested()) {
         audio_arbitration_release_captured_wav(wav);
         goto finish;
@@ -516,9 +524,9 @@ static esp_err_t stop_interaction_task(uint32_t timeout_ms) {
     audio_arbitration_request_capture_stop();
     (void)operation_context_request_cancel(generation);
     if (s_host.cancel_foreground_http) s_host.cancel_foreground_http(deadline_us);
-    if (device_connectivity_is_active_cellular()) {
-        (void)device_connectivity_cancel_cellular_foreground_request();
-    }
+    /* Cellular request admission, rather than the current uplink setting,
+     * determines whether an old foreground borrower still needs cancellation. */
+    (void)device_connectivity_cancel_cellular_foreground_request();
     if (s_interaction_start_gate) xSemaphoreGive(s_interaction_start_gate);
     xTaskNotifyGive(task);
     uint32_t remaining_ms = remaining_timeout_ms(deadline_us);

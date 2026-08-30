@@ -28,7 +28,7 @@ const USAGE_STATS_I18N = {
     summaryCacheWrite: 'Cache Write Tokens',
     summaryRequests: 'Requests',
     summaryCredits: 'Credits',
-    summaryCostRMB: 'Charge (RMB)',
+    summaryCostRMB: 'RMB reference cost / estimate',
     trendTitle: '24-Hour Trend',
     trendEmpty: 'No daily trend is available for the selected view.',
     rowsTitle: 'Usage Ranking',
@@ -42,6 +42,29 @@ const USAGE_STATS_I18N = {
     colRequests: 'Requests',
     colCredits: 'Credits',
     colCostRMB: 'Charge',
+    creditsTooltipTitle: 'How credits are deducted',
+    creditsTooltipFormula: 'Per-request rule: max((input tokens × provider input credits/10K × HubCenter provider multiplier × Hub service-group multiplier) + (output tokens × provider output credits/10K × HubCenter provider multiplier × Hub service-group multiplier), minimum request credits × both multipliers).',
+    creditsTooltipScope: 'Calculated from settled requests. Input and output lines are blended effective results; the provider prices and multipliers below are frozen settlement facts. Multiple entries can reflect price or multiplier changes, or different providers, during this reporting period. HubCenter provider/time-of-use and Hub service-group multipliers are each frozen at settlement and applied once.',
+    creditsTooltipInputLine: 'Input: {tokens} × {rate} Credits/10K = {credits} Credits',
+    creditsTooltipOutputLine: 'Output: {tokens} × {rate} Credits/10K = {credits} Credits',
+    creditsTooltipAdjustments: 'Adjustments: minimum {minimum} + settlement/rounding {rounding} + unitemized {unitemized}',
+    creditsTooltipActualTotal: 'Actual credits deducted: {credits}',
+    creditsTooltipMultiplier: '{provider}: {label} × {multiplier}',
+    creditsTooltipServiceGroupMultiplier: 'service-group multiplier',
+    creditsTooltipProviderMultiplier: 'provider multiplier',
+    creditsTooltipMultiplierUnavailable: 'Settlement multiplier snapshot: unavailable for this legacy usage record. Current HubCenter provider settings cannot recreate the historical charge.',
+    creditsTooltipCurrentProviderMultiplier: 'HubCenter current setting (reference only): {provider} provider multiplier × {multiplier}',
+    creditsTooltipProviderBasePricing: 'HubCenter settled provider price ({provider}, used for this debit): input {inputCredits} Credits/10K · output {outputCredits} Credits/10K; input ¥{inputRMB}/1M · output ¥{outputRMB}/1M',
+    creditsTooltipRMBRates: 'Effective RMB price: input ¥{input}/1M Tokens · output ¥{output}/1M Tokens',
+    creditsTooltipRMBRateUnavailable: 'sample insufficient',
+    creditsTooltipRMB: 'RMB: input ¥{input} + output ¥{output} + other ¥{other} = ¥{total}',
+    creditsTooltipRMBEstimate: 'RMB estimate: recorded ¥{recorded} + unpriced usage estimate ¥{estimated} = ¥{total}. It extrapolates only a direction with a representative frozen-price sample and never changes the settled Credits debit.{unestimated}',
+    creditsTooltipRMBEstimateIncomplete: ' {tokens} unpriced Token(s) have no representative frozen-price sample, so they are not included; this is a lower-bound estimate.',
+    creditsTooltipRMBCoverage: 'RMB reference-cost coverage: {pricedRequests}/{requests} settled requests · input {pricedInputTokens}/{inputTokens} Tokens · output {pricedOutputTokens}/{outputTokens} Tokens · {pricedCredits}/{credits} Credits. {missingCredits} Credits lack a frozen RMB price; current HubCenter pricing is never used to rewrite historical settlement.',
+    creditsTooltipRMBUnavailable: 'RMB reference cost is unavailable: none of the settled requests in this result retained a frozen RMB price.',
+    rmbReferencePartial: '{value} (partial)',
+    rmbReferenceEstimated: '{value} (estimated)',
+    rmbReferenceEstimatedLowerBound: '{value} (estimated lower bound)',
     loadFailed: 'Load usage stats failed: {error}',
     generatedAt: 'Generated at {time}'
     , subtabUsage: 'Usage Report'
@@ -85,7 +108,7 @@ const USAGE_STATS_I18N = {
     summaryCacheWrite: '\u7f13\u5b58\u5199\u5165 Token',
     summaryRequests: '\u8bf7\u6c42\u6570',
     summaryCredits: '\u79ef\u5206',
-    summaryCostRMB: '\u8ba1\u8d39\uff08\u5143\uff09',
+    summaryCostRMB: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\uff08\u542b\u4f30\u7b97\uff09',
     trendTitle: '24 \u5c0f\u65f6\u8d8b\u52bf',
     trendEmpty: '\u5f53\u524d\u7b5b\u9009\u4e0b\u65e0\u6bcf\u65e5\u8d8b\u52bf\u6570\u636e\u3002',
     rowsTitle: '\u7528\u91cf\u6392\u540d',
@@ -99,6 +122,29 @@ const USAGE_STATS_I18N = {
     colRequests: '\u8bf7\u6c42\u6570',
     colCredits: '\u79ef\u5206',
     colCostRMB: '\u8ba1\u8d39',
+    creditsTooltipTitle: '\u79ef\u5206\u6263\u9664\u8ba1\u7b97',
+    creditsTooltipFormula: '\u5355\u6b21\u8bf7\u6c42\u89c4\u5219\uff1amax(\u8f93\u5165 Token \u00d7 \u670d\u52a1\u5546\u8f93\u5165\u6bcf 1 \u4e07 Token \u79ef\u5206 \u00d7 HubCenter \u670d\u52a1\u5546\u500d\u7387 \u00d7 Hub \u670d\u52a1\u7ec4\u500d\u7387 + \u8f93\u51fa Token \u00d7 \u670d\u52a1\u5546\u8f93\u51fa\u6bcf 1 \u4e07 Token \u79ef\u5206 \u00d7 HubCenter \u670d\u52a1\u5546\u500d\u7387 \u00d7 Hub \u670d\u52a1\u7ec4\u500d\u7387\uff0c\u6700\u4f4e\u8bf7\u6c42\u79ef\u5206 \u00d7 \u4e24\u5c42\u500d\u7387)\u3002',
+    creditsTooltipScope: '\u660e\u7ec6\u6309\u5df2\u7ed3\u7b97\u8bf7\u6c42\u6c47\u603b\u3002\u8f93\u5165/\u8f93\u51fa\u884c\u4e3a\u52a0\u6743\u540e\u7684\u5b9e\u9645\u7ed3\u679c\uff1b\u4e0b\u65b9\u670d\u52a1\u5546\u5355\u4ef7\u4e0e\u500d\u7387\u4e3a\u56fa\u5316\u7684\u7ed3\u7b97\u4e8b\u5b9e\u3002\u591a\u6761\u8bb0\u5f55\u53ef\u80fd\u6765\u81ea\u8be5\u7edf\u8ba1\u5468\u671f\u5185\u7684\u5355\u4ef7\u3001\u500d\u7387\u53d8\u52a8\uff0c\u6216\u4e0d\u540c\u670d\u52a1\u5546\u3002HubCenter \u670d\u52a1\u5546/\u5206\u65f6\u500d\u7387\u4e0e Hub \u670d\u52a1\u7ec4\u500d\u7387\u90fd\u5728\u7ed3\u7b97\u65f6\u56fa\u5316\uff0c\u5e76\u4e14\u5404\u751f\u6548\u4e00\u6b21\u3002',
+    creditsTooltipInputLine: '\u8f93\u5165\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
+    creditsTooltipOutputLine: '\u8f93\u51fa\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
+    creditsTooltipAdjustments: '\u8c03\u6574\uff1a\u6700\u4f4e\u6d88\u8d39 {minimum} + \u7ed3\u7b97/\u56db\u820d\u4e94\u5165 {rounding} + \u672a\u62c6\u5206 {unitemized}',
+    creditsTooltipActualTotal: '\u5b9e\u9645\u6263\u9664\uff1a{credits} \u79ef\u5206',
+    creditsTooltipMultiplier: '{provider}\uff1a{label} \u00d7 {multiplier}',
+    creditsTooltipServiceGroupMultiplier: '\u670d\u52a1\u7ec4\u500d\u7387',
+    creditsTooltipProviderMultiplier: '\u670d\u52a1\u5546\u500d\u7387',
+    creditsTooltipMultiplierUnavailable: '\u7ed3\u7b97\u500d\u7387\u5feb\u7167\uff1a\u8be5\u5386\u53f2\u7528\u91cf\u672a\u4fdd\u5b58\u3002\u4e0d\u80fd\u7528 HubCenter \u5f53\u524d\u670d\u52a1\u5546\u914d\u7f6e\u53cd\u63a8\u5386\u53f2\u6263\u8d39\u3002',
+    creditsTooltipCurrentProviderMultiplier: 'HubCenter \u5f53\u524d\u914d\u7f6e\uff08\u4ec5\u4f9b\u53c2\u8003\uff09\uff1a{provider} \u670d\u52a1\u5546\u500d\u7387 \u00d7 {multiplier}',
+    creditsTooltipProviderBasePricing: 'HubCenter \u5df2\u7ed3\u7b97\u670d\u52a1\u5546\u5355\u4ef7\uff08{provider}\uff0c\u672c\u6b21\u6263\u8d39\u4f7f\u7528\uff09\uff1a\u8f93\u5165\u6bcf 1 \u4e07 Token {inputCredits} \u79ef\u5206\u00b7\u8f93\u51fa\u6bcf 1 \u4e07 Token {outputCredits} \u79ef\u5206\uff1b\u8f93\u5165\u6bcf 100 \u4e07 Token \u00a5{inputRMB}\u00b7\u8f93\u51fa\u6bcf 100 \u4e07 Token \u00a5{outputRMB}',
+    creditsTooltipRMBRates: '\u52a0\u6743\u6bcf 100 \u4e07 Token \u4eba\u6c11\u5e01\u5355\u4ef7\uff1a\u8f93\u5165 \u00a5{input}\uff0c\u8f93\u51fa \u00a5{output}',
+    creditsTooltipRMBRateUnavailable: '\u6837\u672c\u4e0d\u8db3',
+    creditsTooltipRMB: '\u4eba\u6c11\u5e01\uff1a\u8f93\u5165 \u00a5{input} + \u8f93\u51fa \u00a5{output} + \u5176\u4ed6 \u00a5{other} = \u00a5{total}',
+    creditsTooltipRMBEstimate: '\u4eba\u6c11\u5e01\u4f30\u7b97\uff1a\u5df2\u8bb0\u5f55 \u00a5{recorded} + \u672a\u56fa\u5316\u4ef7\u683c\u7528\u91cf\u4f30\u7b97 \u00a5{estimated} = \u00a5{total}\u3002\u4ec5\u5728\u67d0\u4e2a\u65b9\u5411\u6709\u4ee3\u8868\u6027\u56fa\u5316\u4ef7\u683c\u6837\u672c\u65f6\u624d\u5916\u63a8\uff0c\u4e0d\u4f1a\u5f71\u54cd\u5df2\u7ed3\u7b97\u7684\u79ef\u5206\u6263\u9664\u3002{unestimated}',
+    creditsTooltipRMBEstimateIncomplete: ' \u6709 {tokens} \u4e2a\u672a\u56fa\u5316\u4ef7\u683c\u7684 Token \u7f3a\u5c11\u4ee3\u8868\u6027\u56fa\u5316\u4ef7\u683c\u6837\u672c\uff0c\u672a\u8ba1\u5165\uff1b\u8fd9\u662f\u4f30\u7b97\u4e0b\u9650\u3002',
+    creditsTooltipRMBCoverage: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\u8986\u76d6\u5ea6\uff1a{pricedRequests}/{requests} \u7b14\u5df2\u7ed3\u7b97\u8bf7\u6c42\u00b7\u8f93\u5165 {pricedInputTokens}/{inputTokens} Token\u00b7\u8f93\u51fa {pricedOutputTokens}/{outputTokens} Token\u00b7{pricedCredits}/{credits} \u79ef\u5206\u3002{missingCredits} \u79ef\u5206\u7f3a\u5c11\u56fa\u5316\u7684\u4eba\u6c11\u5e01\u4ef7\u683c\uff1b\u4e0d\u4f7f\u7528 HubCenter \u5f53\u524d\u4ef7\u683c\u6539\u5199\u5386\u53f2\u7ed3\u7b97\u3002',
+    creditsTooltipRMBUnavailable: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\u4e0d\u53ef\u7528\uff1a\u5f53\u524d\u7ed3\u679c\u4e2d\u6ca1\u6709\u5df2\u7ed3\u7b97\u8bf7\u6c42\u4fdd\u7559\u56fa\u5316\u7684\u4eba\u6c11\u5e01\u4ef7\u683c\u3002',
+    rmbReferencePartial: '{value}\uff08\u90e8\u5206\uff09',
+    rmbReferenceEstimated: '{value}\uff08\u4f30\u7b97\uff09',
+    rmbReferenceEstimatedLowerBound: '{value}\uff08\u4f30\u7b97\u4e0b\u9650\uff09',
     loadFailed: '\u52a0\u8f7d\u4f7f\u7528\u7edf\u8ba1\u5931\u8d25: {error}',
     generatedAt: '\u751f\u6210\u65f6\u95f4 {time}'
     , subtabUsage: '\u7528\u91cf\u7edf\u8ba1'
@@ -165,10 +211,181 @@ function fmtCredits(value) {
   const n = Number(value || 0);
   return Math.abs(n - Math.round(n)) < 0.000001 ? String(Math.round(n)) : n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
+function fmtFormulaCredits(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || Math.abs(n) < 0.0000005) return '0';
+  // A request is rounded only after its input and output components are
+  // combined. Keep six decimals in the audit tooltip so small directional
+  // components and the rounding residual remain visible and reconcile with
+  // the settled three-decimal-credit debit.
+  return n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+function fmtEffectiveRate(component, tokens) {
+  const count = Number(tokens || 0);
+  if (!Number.isFinite(count) || count <= 0) return '0';
+  return fmtFormulaCredits(Number(component || 0) * 10000 / count);
+}
+function fmtEffectiveRMBPricePerM(cost, tokens) {
+  const count = Number(tokens || 0);
+  if (!Number.isFinite(count) || count <= 0) return '0';
+  return fmtRMB(Number(cost || 0) * 1000000 / count);
+}
 function fmtRMB(value) {
   const n = Number(value || 0);
-  if (!Number.isFinite(n)) return '0';
+  if (!Number.isFinite(n) || Math.abs(n) < 0.0000005) return '0';
   return n.toFixed(n >= 100 ? 2 : 4).replace(/0+$/, '').replace(/\.$/, '') || '0';
+}
+function coverageCredits(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+function rmbCoverageDetails(usage) {
+  const data = usage || {};
+  const snapshotRequests = Number(data.rmb_pricing_snapshot_requests || 0);
+  if (!Number.isFinite(snapshotRequests) || snapshotRequests <= 0) {
+    return { available: false, partial: false, text: ust('creditsTooltipRMBUnavailable') };
+  }
+  const pricedCredits = coverageCredits(data.rmb_priced_credits);
+  const totalCredits = coverageCredits(data.credits);
+  const pricedInputTokens = Math.max(0, Number(data.rmb_priced_input_tokens || 0));
+  const pricedOutputTokens = Math.max(0, Number(data.rmb_priced_output_tokens || 0));
+  const inputTokens = Math.max(0, Number(data.input_tokens || 0));
+  const outputTokens = Math.max(0, Number(data.output_tokens || 0));
+  const requests = Math.max(0, Number(data.requests || 0));
+  const pricedRequests = Math.max(0, Number(data.rmb_priced_requests || 0));
+  const partial = pricedRequests < requests || pricedCredits < totalCredits - 0.0000005;
+  return {
+    available: true,
+    partial: partial,
+    pricedInputTokens: Number.isFinite(pricedInputTokens) ? pricedInputTokens : 0,
+    pricedOutputTokens: Number.isFinite(pricedOutputTokens) ? pricedOutputTokens : 0,
+    text: ust('creditsTooltipRMBCoverage', {
+      pricedRequests: fmtInt(pricedRequests),
+      requests: fmtInt(requests),
+      pricedInputTokens: fmtInt(pricedInputTokens),
+      inputTokens: fmtInt(inputTokens),
+      pricedOutputTokens: fmtInt(pricedOutputTokens),
+      outputTokens: fmtInt(outputTokens),
+      pricedCredits: fmtFormulaCredits(pricedCredits),
+      credits: fmtFormulaCredits(totalCredits),
+      missingCredits: fmtFormulaCredits(Math.max(0, totalCredits - pricedCredits))
+    })
+  };
+}
+// Older usage records predate the frozen RMB-price snapshot.  Do not pretend
+// that a current HubCenter setting was historically settled; when this report
+// has a priced sample, however, its own weighted frozen rate is the best
+// available reference for estimating the otherwise omitted token usage.
+function rmbCostDetails(usage) {
+  const data = usage || {};
+  const coverage = rmbCoverageDetails(data);
+  const recordedInput = Number(data.input_cost_rmb || 0);
+  const recordedOutput = Number(data.output_cost_rmb || 0);
+  const recordedTotal = Number(data.total_cost_rmb || 0);
+  const pricedInputTokens = Math.max(0, Number(data.rmb_priced_input_tokens || 0));
+  const pricedOutputTokens = Math.max(0, Number(data.rmb_priced_output_tokens || 0));
+  const inputTokens = Math.max(0, Number(data.input_tokens || 0));
+  const outputTokens = Math.max(0, Number(data.output_tokens || 0));
+  if (!coverage.available) {
+    return { available: false, estimated: false, total: 0, recorded: 0, estimate: 0, text: coverage.text };
+  }
+  const representativeRatePerM = function(cost, pricedTokens, totalTokens, direction) {
+    const coverageRatio = totalTokens > 0 ? pricedTokens / totalTokens : 0;
+    // A handful of anomalous/very small directional usage values can produce
+    // an absurd effective rate (for example one streamed output accounting
+    // frame). Attribution was not retained on legacy records, so a list of
+    // provider prices cannot safely be assigned to those Tokens. Estimate only
+    // from a meaningful same-direction sample in this report.
+    if (pricedTokens >= 1000 && coverageRatio >= 0.01) {
+      const rate = cost * 1000000 / pricedTokens;
+      return Number.isFinite(rate) && rate >= 0 ? rate : null;
+    }
+    return null;
+  };
+  const inputRatePerM = representativeRatePerM(recordedInput, pricedInputTokens, inputTokens, 'input');
+  const outputRatePerM = representativeRatePerM(recordedOutput, pricedOutputTokens, outputTokens, 'output');
+  const unpricedInputTokens = Math.max(0, inputTokens - pricedInputTokens);
+  const unpricedOutputTokens = Math.max(0, outputTokens - pricedOutputTokens);
+  const estimatedInput = inputRatePerM === null ? 0 : unpricedInputTokens * inputRatePerM / 1000000;
+  const estimatedOutput = outputRatePerM === null ? 0 : unpricedOutputTokens * outputRatePerM / 1000000;
+  const estimate = estimatedInput + estimatedOutput;
+  const total = recordedTotal + estimate;
+  const estimated = estimate > 0.0000005;
+  const unestimatedTokens = (inputRatePerM === null ? unpricedInputTokens : 0) + (outputRatePerM === null ? unpricedOutputTokens : 0);
+  return {
+    available: true,
+    estimated: estimated,
+    lowerBound: unestimatedTokens > 0,
+    recorded: recordedTotal,
+    estimate: estimate,
+    total: total,
+    inputRatePerM: inputRatePerM,
+    outputRatePerM: outputRatePerM,
+    unpricedInputTokens: unpricedInputTokens,
+    unpricedOutputTokens: unpricedOutputTokens,
+    unestimatedTokens: unestimatedTokens,
+    text: estimated ? ust('creditsTooltipRMBEstimate', {
+      recorded: fmtRMB(recordedTotal),
+      estimated: fmtRMB(estimate),
+      total: fmtRMB(total),
+      inputTokens: fmtInt(unpricedInputTokens),
+      outputTokens: fmtInt(unpricedOutputTokens),
+      unestimated: unestimatedTokens > 0 ? ust('creditsTooltipRMBEstimateIncomplete', { tokens: fmtInt(unestimatedTokens) }) : ''
+    }) : coverage.text
+  };
+}
+function usageRMBValue(usage) {
+  const cost = rmbCostDetails(usage);
+  if (!cost.available) return '-';
+  const value = '\u00a5' + fmtRMB(cost.total);
+  if (!cost.estimated) return cost.lowerBound ? ust('rmbReferencePartial', { value: value }) : value;
+  return ust(cost.lowerBound ? 'rmbReferenceEstimatedLowerBound' : 'rmbReferenceEstimated', { value: value });
+}
+function creditMultiplierDetails(usage) {
+  const records = Array.isArray(usage && usage.provider_multipliers) ? usage.provider_multipliers : [];
+  const lines = records.map(function(record) {
+    const source = String(record && record.multiplier_source || '').toLowerCase();
+    return {
+      kind: 'multiplier',
+      text: ust('creditsTooltipMultiplier', {
+        provider: String(record && (record.provider_name || record.provider_id) || '-'),
+        label: ust(source === 'provider' ? 'creditsTooltipProviderMultiplier' : 'creditsTooltipServiceGroupMultiplier'),
+        multiplier: fmtFormulaCredits(record && record.multiplier)
+      })
+    };
+  });
+  if (records.length) return lines;
+  lines.push({ kind: 'note', text: ust('creditsTooltipMultiplierUnavailable') });
+  const currentBilling = Array.isArray(usage && usage.current_provider_billing)
+    ? usage.current_provider_billing
+    : (Array.isArray(usageStatsCache && usageStatsCache.current_provider_billing) ? usageStatsCache.current_provider_billing : []);
+  currentBilling.forEach(function(record) {
+    const multiplier = Number(record && record.current_multiplier);
+    if (!Number.isFinite(multiplier) || multiplier <= 0) return;
+    lines.push({
+      kind: 'multiplier-reference',
+      text: ust('creditsTooltipCurrentProviderMultiplier', {
+        provider: String(record && (record.provider_name || record.provider_id) || '-'),
+        multiplier: fmtFormulaCredits(multiplier)
+      })
+    });
+  });
+  return lines;
+}
+function providerPricingDetails(usage) {
+  const records = Array.isArray(usage && usage.provider_pricing) ? usage.provider_pricing : [];
+  return records.map(function(record) {
+    return {
+      kind: 'provider-pricing',
+      text: ust('creditsTooltipProviderBasePricing', {
+        provider: String(record && (record.provider_name || record.provider_id) || '-'),
+        inputCredits: fmtFormulaCredits(record && record.input_credits_per_10k),
+        outputCredits: fmtFormulaCredits(record && record.output_credits_per_10k),
+        inputRMB: fmtRMB(Number(record && record.input_rmb_per_10k || 0) * 100),
+        outputRMB: fmtRMB(Number(record && record.output_rmb_per_10k || 0) * 100)
+      })
+    };
+  });
 }
 function fmtDuration(seconds) {
   const total = Math.max(0, Number(seconds || 0));
@@ -177,12 +394,147 @@ function fmtDuration(seconds) {
   if (hours > 0) return hours + 'h ' + minutes + ' Min';
   return minutes + ' Min';
 }
+function creditCalculationDetails(usage) {
+  const data = usage || {};
+  const inputRate = fmtEffectiveRate(data.credit_input_component, data.input_tokens);
+  const outputRate = fmtEffectiveRate(data.credit_output_component, data.output_tokens);
+  const otherRMBCost = Number(data.total_cost_rmb || 0) - Number(data.input_cost_rmb || 0) - Number(data.output_cost_rmb || 0);
+  const rmbCoverage = rmbCoverageDetails(data);
+  const rmbCost = rmbCostDetails(data);
+  // The RMB total only covers requests that carried a frozen pricing snapshot.
+  // Its effective rates must use that same token denominator; dividing by every
+  // historical token makes a correctly-priced partial total look undercharged.
+  const rmbRateLabel = function(ratePerM, recordedCost, pricedTokens) {
+    if (rmbCost.lowerBound && ratePerM === null) return ust('creditsTooltipRMBRateUnavailable');
+    return rmbCost.estimated && ratePerM !== null
+      ? fmtRMB(ratePerM)
+      : fmtEffectiveRMBPricePerM(recordedCost, pricedTokens);
+  };
+  const inputRMBPrice = rmbRateLabel(rmbCost.inputRatePerM, data.input_cost_rmb, rmbCoverage.pricedInputTokens);
+  const outputRMBPrice = rmbRateLabel(rmbCost.outputRatePerM, data.output_cost_rmb, rmbCoverage.pricedOutputTokens);
+  const adjustments = {
+    minimum: Number(data.credit_minimum_adjustment || 0),
+    rounding: Number(data.credit_rounding_adjustment || 0),
+    unitemized: Number(data.credit_unitemized_component || 0)
+  };
+  const lines = [
+    { kind: 'title', text: ust('creditsTooltipTitle') },
+    { kind: 'note', text: ust('creditsTooltipScope') },
+    { kind: 'line', text: ust('creditsTooltipInputLine', {
+      tokens: fmtInt(data.input_tokens),
+      inputRate: inputRate,
+      rate: inputRate,
+      credits: fmtFormulaCredits(data.credit_input_component)
+    }) },
+    { kind: 'line', text: ust('creditsTooltipOutputLine', {
+      tokens: fmtInt(data.output_tokens),
+      rate: outputRate,
+      credits: fmtFormulaCredits(data.credit_output_component)
+    }) }
+  ];
+  if (Math.abs(adjustments.minimum) >= 0.0000005 || Math.abs(adjustments.rounding) >= 0.0000005 || Math.abs(adjustments.unitemized) >= 0.0000005) {
+    lines.push({ kind: 'line', text: ust('creditsTooltipAdjustments', {
+      minimum: fmtFormulaCredits(adjustments.minimum),
+      rounding: fmtFormulaCredits(adjustments.rounding),
+      unitemized: fmtFormulaCredits(adjustments.unitemized)
+    }) });
+  }
+  Array.prototype.push.apply(lines, providerPricingDetails(data));
+  Array.prototype.push.apply(lines, creditMultiplierDetails(data));
+  lines.push({ kind: 'rmb-coverage', text: rmbCoverage.text });
+  lines.push(
+    // Keep the tooltip total at the same precision as every component above it.
+    // The compact metric card still uses fmtCredits, while this audit view must
+    // visibly reconcile even for sub-milli-credit settlements.
+    { kind: 'total', text: ust('creditsTooltipActualTotal', { credits: fmtFormulaCredits(data.credits) }) },
+    { kind: 'rmb-rate', text: rmbCoverage.available ? ust('creditsTooltipRMBRates', { input: inputRMBPrice, output: outputRMBPrice }) : '' },
+    { kind: 'rmb', text: rmbCoverage.available && !rmbCost.estimated ? ust('creditsTooltipRMB', {
+      input: fmtRMB(data.input_cost_rmb),
+      output: fmtRMB(data.output_cost_rmb),
+      other: fmtRMB(otherRMBCost),
+      total: fmtRMB(data.total_cost_rmb)
+    }) : '' },
+    { kind: 'rmb-estimate', text: rmbCost.estimated ? rmbCost.text : '' },
+    { kind: 'rule', text: ust('creditsTooltipFormula') }
+  );
+  return lines;
+}
+function usageCreditsLabel(usage) {
+  const calculation = creditCalculationDetails(usage);
+  const details = calculation.map(function (line) { return line.text; }).join('. ');
+  const encoded = encodeURIComponent(JSON.stringify(calculation));
+  return '<span class="usage-credit-label">' + escapeHtml(ust('colCredits')) + '<button class="usage-credit-info" type="button" aria-expanded="false" aria-label="' + escapeHtml(details) + '" data-credit-details="' + encoded + '" onclick="toggleUsageCreditTooltip(event)" onkeydown="onUsageCreditTooltipKeydown(event)">i</button></span>';
+}
+function dismissUsageCreditTooltip() {
+  const popover = document.getElementById('usageCreditPopover');
+  if (popover) popover.remove();
+  document.querySelectorAll('.usage-credit-info[aria-expanded="true"]').forEach(function (item) {
+    item.setAttribute('aria-expanded', 'false');
+    item.removeAttribute('aria-describedby');
+  });
+}
+function positionUsageCreditTooltip(popover, trigger) {
+  const rect = trigger.getBoundingClientRect();
+  const gap = 8;
+  const viewportPadding = 12;
+  const maxWidth = Math.min(440, window.innerWidth - viewportPadding * 2);
+  popover.style.width = maxWidth + 'px';
+  const height = popover.offsetHeight;
+  const placeBelow = rect.top - gap - height < viewportPadding && rect.bottom + gap + height <= window.innerHeight - viewportPadding;
+  const top = placeBelow ? rect.bottom + gap : Math.max(viewportPadding, rect.top - gap - height);
+  const left = Math.min(Math.max(viewportPadding, rect.right - maxWidth), window.innerWidth - maxWidth - viewportPadding);
+  popover.style.top = top + 'px';
+  popover.style.left = left + 'px';
+}
+function showUsageCreditTooltip(trigger) {
+  dismissUsageCreditTooltip();
+  let details = [];
+  try { details = JSON.parse(decodeURIComponent(trigger.getAttribute('data-credit-details') || '[]')); } catch (_) { return; }
+  if (!Array.isArray(details) || !details.length) return;
+  const popover = document.createElement('section');
+  popover.id = 'usageCreditPopover';
+  popover.className = 'usage-credit-popover';
+  popover.setAttribute('role', 'tooltip');
+  popover.innerHTML = details.filter(function(line) { return String(line && line.text || '').trim(); }).map(function (line) {
+    return '<div class="usage-credit-popover-' + escapeHtml(line.kind || 'line') + '">' + escapeHtml(line.text || '') + '</div>';
+  }).join('');
+  document.body.appendChild(popover);
+  trigger.setAttribute('aria-expanded', 'true');
+  trigger.setAttribute('aria-describedby', popover.id);
+  positionUsageCreditTooltip(popover, trigger);
+  requestAnimationFrame(function () { popover.classList.add('is-visible'); });
+}
+function toggleUsageCreditTooltip(event) {
+  const trigger = event && event.currentTarget;
+  if (!trigger) return;
+  const shouldOpen = trigger.getAttribute('aria-expanded') !== 'true';
+  dismissUsageCreditTooltip();
+  if (shouldOpen) showUsageCreditTooltip(trigger);
+}
+function onUsageCreditTooltipKeydown(event) {
+  if (!event) return;
+  if (event.key === 'Escape') {
+    dismissUsageCreditTooltip();
+    event.currentTarget.focus();
+    return;
+  }
+}
+if (!window.__usageCreditTooltipDismissBound) {
+  window.__usageCreditTooltipDismissBound = true;
+  document.addEventListener('pointerdown', function (event) {
+    const target = event.target;
+    if (target && target.closest && (target.closest('#usageCreditPopover') || target.closest('.usage-credit-info'))) return;
+    dismissUsageCreditTooltip();
+  });
+  window.addEventListener('resize', dismissUsageCreditTooltip);
+  window.addEventListener('scroll', dismissUsageCreditTooltip, true);
+}
 function isRankingEmail(value) {
   const email = String(value || '').trim();
   return email.split('@').length === 2 && !/\s/.test(email) && !email.startsWith('@') && !email.endsWith('@');
 }
-function usageMetricCard(label, value, hint) {
-  return '<div class="metric" style="padding:12px 13px"><label>' + escapeHtml(label) + '</label><strong>' + escapeHtml(value) + '</strong>' + (hint ? ('<span>' + escapeHtml(hint) + '</span>') : '') + '</div>';
+function usageMetricCard(label, value, hint, labelHTML) {
+  return '<div class="metric" style="padding:12px 13px"><label>' + (labelHTML || escapeHtml(label)) + '</label><strong>' + escapeHtml(value) + '</strong>' + (hint ? ('<span>' + escapeHtml(hint) + '</span>') : '') + '</div>';
 }
 function ensureUsageStatsUI() {
   if (document.getElementById('usageStatsRoot')) return;
@@ -191,7 +543,10 @@ function ensureUsageStatsUI() {
   if (!document.getElementById('userRankingStyles')) {
     const style = document.createElement('style');
     style.id = 'userRankingStyles';
-    style.textContent = '#userRankingCards{align-items:stretch}.usage-stats-subtabs{display:inline-flex!important;gap:4px!important;padding:3px!important;border:1px solid #d7e2f2!important;border-radius:10px!important;background:#f5f8fd!important}.usage-stats-subtab{position:relative!important;height:34px!important;padding:0 15px!important;border:0!important;border-radius:7px!important;background:transparent!important;color:#5f7088!important;font-weight:700!important;box-shadow:none!important;cursor:pointer!important;transition:background .16s ease,color .16s ease,box-shadow .16s ease!important}.usage-stats-subtab:hover{background:#edf4ff!important;color:#263b59!important}.usage-stats-subtab:focus-visible{outline:2px solid rgba(31,111,235,.35)!important;outline-offset:2px!important}.usage-stats-subtab.is-active{background:#1f6feb!important;color:#fff!important;box-shadow:0 1px 2px rgba(23,70,130,.18)!important}.user-ranking-card{min-width:0;height:100%;padding:12px 13px!important;gap:8px!important;display:grid!important;grid-template-rows:22px 1fr}.user-ranking-card-title{display:flex;align-items:center;min-width:0;height:22px;font-size:13px;line-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-ranking-card-metrics{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:44px;gap:6px!important;align-items:stretch}.user-ranking-card-metrics .usage-rank-chip{min-height:44px;display:flex;flex-direction:column;justify-content:center}.user-ranking-card-metrics .usage-rank-label,.user-ranking-card-metrics .usage-rank-value{line-height:1.15}@media(max-width:1180px){#userRankingCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}}@media(max-width:760px){#userRankingCards{grid-template-columns:1fr!important}.usage-stats-subtabs{display:flex!important;width:100%!important}.usage-stats-subtab{flex:1 1 0!important}}';
+    style.textContent = '#userRankingCards{align-items:stretch}.usage-stats-subtabs{display:inline-flex!important;gap:4px!important;padding:3px!important;border:1px solid #d7e2f2!important;border-radius:10px!important;background:#f5f8fd!important}.usage-stats-subtab{position:relative!important;height:34px!important;padding:0 15px!important;border:0!important;border-radius:7px!important;background:transparent!important;color:#5f7088!important;font-weight:700!important;box-shadow:none!important;cursor:pointer!important;transition:background .16s ease,color .16s ease,box-shadow .16s ease!important}.usage-stats-subtab:hover{background:#edf4ff!important;color:#263b59!important}.usage-stats-subtab:focus-visible{outline:2px solid rgba(31,111,235,.35)!important;outline-offset:2px!important}.usage-stats-subtab.is-active{background:#1f6feb!important;color:#fff!important;box-shadow:0 1px 2px rgba(23,70,130,.18)!important}.user-ranking-card{min-width:0;height:100%;padding:12px 13px!important;gap:8px!important;display:grid!important;grid-template-rows:22px 1fr}.user-ranking-card-title{display:flex;align-items:center;min-width:0;height:22px;font-size:13px;line-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-ranking-card-metrics{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:44px;gap:6px!important;align-items:stretch}.user-ranking-card-metrics .usage-rank-chip{min-height:44px;display:flex;flex-direction:column;justify-content:center}.user-ranking-card-metrics .usage-rank-label,.user-ranking-card-metrics .usage-rank-value{line-height:1.15}.usage-credit-label{display:inline-flex;align-items:center;gap:5px}.usage-credit-info{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border:1px solid #9aa8ba;border-radius:50%;background:#fff;color:#52657d;font:700 10px/1 system-ui,sans-serif;cursor:pointer}.usage-credit-info:hover{border-color:#1f6feb;color:#1f6feb}.usage-credit-info:focus-visible{outline:2px solid rgba(31,111,235,.45);outline-offset:2px}.usage-credit-popover{position:fixed;z-index:40;max-height:calc(100vh - 24px);overflow:auto;padding:12px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:#243247;box-shadow:0 6px 8px rgba(15,23,42,.16);font-size:12px;line-height:1.5;opacity:0;transform:translateY(3px);transition:opacity .16s ease,transform .16s ease}.usage-credit-popover.is-visible{opacity:1;transform:translateY(0)}.usage-credit-popover-title{margin-bottom:5px;font-weight:700;color:#16243a}.usage-credit-popover-note{margin-bottom:8px;color:#52657d}.usage-credit-popover-line{padding:2px 0}.usage-credit-popover-multiplier{margin-top:4px;color:#345675;font-weight:600}.usage-credit-popover-total{margin-top:7px;padding-top:7px;border-top:1px solid #e2e8f0;font-weight:700;color:#16243a}.usage-credit-popover-rmb-rate{margin-top:7px;color:#345675;font-weight:600}.usage-credit-popover-rmb{margin-top:5px;padding:7px 8px;border-radius:7px;background:#f3f7fd;color:#23456f;font-weight:700}.usage-credit-popover-rule{margin-top:8px;color:#52657d;font-size:11px;line-height:1.45}@media(max-width:1180px){#userRankingCards{grid-template-columns:repeat(2,minmax(0,1fr))!important}}@media(max-width:760px){#userRankingCards{grid-template-columns:1fr!important}.usage-stats-subtabs{display:flex!important;width:100%!important}.usage-stats-subtab{flex:1 1 0!important}}@media(prefers-reduced-motion:reduce){.usage-credit-popover{transition:none}}';
+    // The admin's general button rule has a 38px minimum height. Keep this
+    // compact inline trigger immune to that rule while preserving focus styling.
+    style.textContent += '.usage-credit-label{gap:4px}.usage-credit-info{box-sizing:border-box!important;flex:0 0 14px!important;align-self:center!important;width:14px!important;min-width:14px!important;height:14px!important;min-height:14px!important;max-height:14px!important;padding:0!important;font-size:9px!important;line-height:12px!important;vertical-align:middle!important}.usage-credit-popover-multiplier-reference{margin-top:4px;color:#52657d;font-weight:600}.usage-credit-popover-provider-pricing{margin-top:5px;padding:5px 7px;border-radius:7px;background:#f7fafc;color:#345675;font-weight:600}.usage-credit-popover-rmb-coverage{margin-top:7px;padding:6px 7px;border:1px solid #d7e2f2;border-radius:7px;background:#f8fbff;color:#345675;font-size:11px;line-height:1.45}.usage-credit-popover-rmb-estimate{margin-top:5px;padding:7px 8px;border-radius:7px;background:#fff8e6;color:#76500a;font-weight:700;line-height:1.45}';
     document.head.appendChild(style);
   }
   const host = document.createElement('div');
@@ -208,8 +563,8 @@ function ensureUsageStatsUI() {
     '</div><div id="usageStatsGeneratedAt" class="item-meta" style="margin-top:8px;font-size:11px"></div></div>' +
     '<div id="usageStatsSummary" class="metrics" style="margin-top:10px;max-width:none;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px"></div>' +
     '<div class="usage-stats-detail-grid">' +
-    '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
-    '<div class="item" style="padding:12px 14px"><div class="item-title" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
+    '<div class="item" style="padding:12px 14px"><div class="item-title" data-icon="chart" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
+    '<div class="item" style="padding:12px 14px"><div class="item-title" data-icon="list" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
     '</div></div>' +
     '<div id="usageStatsRankingPane" class="hidden" role="tabpanel" aria-labelledby="usageStatsSubtabRanking">' +
     '<div class="item" style="padding:12px 14px"><div class="grid3" style="gap:8px">' +
@@ -296,6 +651,7 @@ function syncUserRankingFiltersFromState() {
   if (yearWrap) yearWrap.style.display = usageStatsState.period === 'yearly' ? 'block' : 'none';
 }
 function switchUsageStatsSubtab(tab) {
+  dismissUsageCreditTooltip();
   usageStatsState.subtab = tab === 'ranking' ? 'ranking' : 'usage';
   usageStatsState.rankingPage = 1;
   renderUsageStats();
@@ -376,8 +732,8 @@ function renderUsageRows() {
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colInput') + '</span><span class="usage-rank-value">' + fmtInt(row.input_tokens) + '</span></div>' +
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colOutput') + '</span><span class="usage-rank-value">' + fmtInt(row.output_tokens) + '</span></div>' +
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheRead') + '</span><span class="usage-rank-value cache">' + fmtInt(row.cached_input_tokens) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCredits') + '</span><span class="usage-rank-value">' + fmtCredits(row.credits) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCostRMB') + '</span><span class="usage-rank-value">\u00a5' + fmtRMB(row.total_cost_rmb) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + usageCreditsLabel(row) + '</span><span class="usage-rank-value">' + fmtCredits(row.credits) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCostRMB') + '</span><span class="usage-rank-value">' + usageRMBValue(row) + '</span></div>' +
         '</div>' +
       '</div>';
   }).join('');
@@ -395,11 +751,12 @@ function renderUsageSummary() {
     usageMetricCard(ust('summaryCacheRead'), fmtInt(s.cached_input_tokens), ust('colCacheRead')),
     usageMetricCard(ust('summaryCacheWrite'), fmtInt(s.cache_write_tokens), ust('summaryCacheWrite')),
     usageMetricCard(ust('summaryRequests'), fmtInt(s.cached_requests) + ' / ' + fmtInt(s.requests), ust('summaryRequests')),
-    usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits), ust('summaryCredits')),
-    usageMetricCard(ust('summaryCostRMB'), '\u00a5' + fmtRMB(s.total_cost_rmb), ust('summaryCostRMB'))
+    usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits), ust('summaryCredits'), usageCreditsLabel(s)),
+    usageMetricCard(ust('summaryCostRMB'), usageRMBValue(s), rmbCoverageDetails(s).text)
   ].join('');
 }
 function renderUsageStats() {
+  dismissUsageCreditTooltip();
   ensureUsageStatsUI();
   const usagePane = document.getElementById('usageStatsUsagePane');
   const rankingPane = document.getElementById('usageStatsRankingPane');
@@ -540,7 +897,17 @@ async function loadUsageStats() {
     if (usageStatsState.period === 'daily') params.set('date', usageStatsState.date);
     if (usageStatsState.period === 'monthly') params.set('month', usageStatsState.month);
     if (usageStatsState.entity) params.set('entity', usageStatsState.entity);
-    usageStatsCache = await api('/api/admin/llm/usage-report?' + params.toString());
+    const reportPath = '/api/admin/llm/usage-report?' + params.toString();
+    const results = await Promise.all([
+      api(reportPath),
+      api('/api/admin/llm/maclaw-compute-status?refresh=1').catch(function() { return null; })
+    ]);
+    usageStatsCache = results[0];
+    if (usageStatsCache && results[1] && Array.isArray(results[1].provider_billing)) {
+      // This is deliberately shown only as the live HubCenter configuration.
+      // A current schedule must never be used to recreate a historic settlement.
+      usageStatsCache.current_provider_billing = results[1].provider_billing;
+    }
     renderUsageStats();
   } catch (err) {
     const msg = ust('loadFailed', { error: err.message });

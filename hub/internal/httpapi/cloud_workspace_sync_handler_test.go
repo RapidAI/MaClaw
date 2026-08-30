@@ -238,6 +238,33 @@ func TestCloudWorkspaceSidecarLeaseGrantAndAllowlist(t *testing.T) {
 	if got.Code != http.StatusOK || !bytes.Equal(got.Body.Bytes(), body) {
 		t.Fatalf("get=%d %q", got.Code, got.Body.Bytes())
 	}
+	var lease cloudworkspace.AcquireOutcome
+	leaseRec := doCloudWorkspaceRequest(t, h, http.MethodPost, "/api/v1/cloud-workspaces/"+id+"/leases", "m1", "secret", map[string]any{"force": false})
+	if leaseRec.Code != http.StatusOK {
+		t.Fatalf("renew lease=%d %s", leaseRec.Code, leaseRec.Body.String())
+	}
+	if err := json.Unmarshal(leaseRec.Body.Bytes(), &lease); err != nil {
+		t.Fatal(err)
+	}
+	released := doCloudWorkspaceRequest(t, h, http.MethodDelete, "/api/v1/cloud-workspaces/"+id+"/leases/"+lease.LeaseID, "m1", "secret", nil)
+	if released.Code != http.StatusOK {
+		t.Fatalf("release=%d %s", released.Code, released.Body.String())
+	}
+	afterRelease := doCloudWorkspaceBytes(t, h, http.MethodGet, path, "m1", nil)
+	if afterRelease.Code != http.StatusOK || !bytes.Equal(afterRelease.Body.Bytes(), body) {
+		t.Fatalf("get without lease=%d %q", afterRelease.Code, afterRelease.Body.Bytes())
+	}
+	ent := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/entitlement", "m1", "secret", nil)
+	if ent.Code != http.StatusOK {
+		t.Fatalf("entitlement=%d %s", ent.Code, ent.Body.String())
+	}
+	var grant cloudworkspace.Entitlement
+	if err := json.Unmarshal(ent.Body.Bytes(), &grant); err != nil {
+		t.Fatal(err)
+	}
+	if len(grant.Workspaces) != 1 || grant.Workspaces[0].TaskName != "标书" || grant.Workspaces[0].TaskMode != "coding_dev" {
+		t.Fatalf("entitlement task=%+v", grant.Workspaces)
+	}
 	missing := doCloudWorkspaceBytes(t, h, http.MethodGet, "/api/v1/cloud-workspaces/"+id+"/sidecars/"+cloudworkspace.SidecarSession, "m1", nil)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("missing session=%d %s", missing.Code, missing.Body.String())

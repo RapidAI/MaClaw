@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <dirent.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,13 +9,11 @@
 #include <unistd.h>
 
 #include "cJSON.h"
-#include "esp_http_client.h"
-
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/platform_util.h"
-#include "esp_random.h"
+#include "services/entropy_service.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -25,7 +22,6 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "psa/crypto.h"
-#include "qrcode.h"
 
 #include "app_intent_service.h"
 #include "device_api.h"
@@ -44,6 +40,7 @@
 #include "resource_pressure_service.h"
 #include "battery_policy_service.h"
 #include "persistence_service.h"
+#include "services/credential_service.h"
 #include "power_service.h"
 #include "provisioning_failure_injection.h"
 #include "task_registry.h"
@@ -51,6 +48,7 @@
 #include "pet_asset_cache_storage.h"
 #include "weather_cache_service.h"
 #include "meeting_recovery_service.h"
+#include "meeting_recording_storage.h"
 #include "configuration_service.h"
 #include "configuration_reconcile_service.h"
 #include "connectivity_service.h"
@@ -62,17 +60,355 @@
 #include "services/gateway_dispatcher.h"
 #include "services/gateway_lifecycle_service.h"
 #include "services/gateway_transport.h"
+#include "services/gateway_tool_result_outbox_policy.h"
 #include "services/cellular_recovery_service.h"
+#include "services/wifi_runtime_configuration_service.h"
+#include "services/wifi_startup_service.h"
+#include "services/configuration_persistence_worker_service.h"
+#include "services/deferred_setup_worker_service.h"
+#include "services/wake_restart_worker_service.h"
 #include "services/clock_sync_service.h"
 #include "services/ambient_service.h"
 #include "services/pet_asset_service.h"
+#include "services/pet_asset_download_service.h"
+#include "services/pet_asset_integrity_service.h"
+#include "services/pet_asset_apply_service.h"
+#include "services/pet_asset_runtime_service.h"
+#include "services/pet_asset_startup_service.h"
+#include "services/pet_asset_restore_service.h"
+#include "services/pet_asset_restore_worker_service.h"
+#include "services/pet_asset_retry_service.h"
+#include "services/pet_asset_profile_service.h"
+#include "services/media_transfer_service.h"
+#include "services/server_audio_presentation_service.h"
+#include "services/startup_welcome_service.h"
+#include "services/startup_runtime_state_service.h"
+#include "services/startup_pet_asset_admission_service.h"
+#include "services/startup_pet_asset_sleep_service.h"
+#include "services/startup_pet_asset_state_service.h"
 #include "services/pet_cache_service.h"
 #include "services/startup_pet_retry_service.h"
 #include "services/startup_pet_worker_service.h"
+#include "services/factory_reset_service.h"
+
+/* Factory-reset composition callbacks are defined before the bulk of the
+ * service includes below; keep this narrow forward declaration local to the
+ * composition root. */
+bool provisioning_service_has_live_resources(void);
+static device_status_t startup_status_from_esp_err(esp_err_t err);
+static const char *json_string(cJSON *root, const char *key);
+
+typedef struct {
+    const char *name_space;
+    const char *key;
+} factory_reset_fixed_key_t;
+
+/* One authoritative fixed erase inventory is shared by the destructive pass
+ * and its post-erase verifier.  Keeping these two passes on the same table
+ * prevents a newly added personal-data key from being erased without also
+ * being checked (or vice versa).  The recovery verifier below intentionally
+ * uses a narrower table because the durable tool-result outbox is handoff
+ * evidence, not an erased class. */
+static const factory_reset_fixed_key_t s_factory_reset_fixed_keys[] = {
+    {"maclaw", "configuration"},
+    {"maclaw", "configuration_migration_journal"},
+    {"maclaw", "configuration_migration_source_fingerprint"},
+    {"maclaw", "configuration_migration_target_fingerprint"},
+    {"maclaw", "weather_cache"},
+    {"maclaw", "weather"}, {"maclaw", "weather_loc"},
+    {"maclaw", "weather_exp"}, {"maclaw", "weather_temp"},
+    {"maclaw", "update_meta"},
+    {"maclaw", "upd_seq"}, {"maclaw", "upd_after"},
+    {"maclaw", "upd_dseq"}, {"maclaw", "upd_duntil"},
+    {"maclaw", "upd_digest"}, {"maclaw", "upd_ddigest"},
+    {"maclaw", "meeting_recovery"},
+    {"maclaw", "wifi_ssid"}, {"maclaw", "wifi_pass"},
+    {"maclaw", "wifi_sec"}, {"maclaw", "wifi_eap"},
+    {"maclaw", "wifi_ident"}, {"maclaw", "wifi_user"},
+    {"maclaw", "wifi_ttls"}, {"maclaw", "wifi_ca"},
+    {"maclaw", "wifi_domain"}, {"maclaw", "gateway_url"},
+    {"maclaw", "pair_code"}, {"maclaw", "gateway_token"},
+    {"maclaw", "output_vol"},
+    {"maclaw", "net_transport"}, {"maclaw", "brightness"},
+    {"maclaw", "screen_sleep_s"},
+    {"alarms", "store"}, {"sleep_sched", "store"},
+    {"fall_detect", "config"},
+    {"gateway", "ack_outbox"}, {"gateway", "tool_result_outbox"},
+};
+
+#define FACTORY_RESET_FIXED_KEY_COUNT \
+    (sizeof(s_factory_reset_fixed_keys) / sizeof(s_factory_reset_fixed_keys[0]))
+
+static bool factory_reset_is_handoff_key(const factory_reset_fixed_key_t *entry) {
+    return entry && strcmp(entry->name_space, "gateway") == 0 &&
+           strcmp(entry->key, "tool_result_outbox") == 0;
+}
+
+static device_status_t factory_reset_erase_classes(uint32_t classes, void *context) {
+    (void)context;
+    if (classes != CONFIGURATION_FACTORY_RESET_CLASS_ALL) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    /* Closed, audited erase list.  No caller-supplied namespace/key reaches
+     * Persistence; adding a new personal-data record requires editing this
+     * composition-root inventory and its verification below. */
+    for (size_t i = 0; i < FACTORY_RESET_FIXED_KEY_COUNT; ++i) {
+        device_status_t status = persistence_service_erase_key(
+            s_factory_reset_fixed_keys[i].name_space,
+            s_factory_reset_fixed_keys[i].key);
+        if (status != DEVICE_STATUS_OK && status != DEVICE_STATUS_NOT_FOUND) {
+            return status;
+        }
+    }
+    return DEVICE_STATUS_OK;
+}
+
+static device_status_t factory_reset_verify_classes_absent(uint32_t classes,
+                                                            void *context) {
+    (void)context;
+    if (classes != CONFIGURATION_FACTORY_RESET_CLASS_ALL) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    for (size_t i = 0; i < FACTORY_RESET_FIXED_KEY_COUNT; ++i) {
+        size_t size = 0;
+        device_status_t status = persistence_service_read_blob(
+            s_factory_reset_fixed_keys[i].name_space,
+            s_factory_reset_fixed_keys[i].key, NULL, &size);
+        if (status != DEVICE_STATUS_NOT_FOUND) return DEVICE_STATUS_IO_ERROR;
+    }
+    return DEVICE_STATUS_OK;
+}
+
+static device_status_t factory_reset_clear_meeting_recording(void *context) {
+    (void)context;
+    return meeting_recording_storage_clear();
+}
+
+static device_status_t factory_reset_clear_pet_cache(void *context) {
+    (void)context;
+    /* factory_reset_prepare() has already retired the Pet cache worker and
+     * closed its normal admission.  Calling the ordinary service operation
+     * here would therefore (correctly) reject the request.  At this point the
+     * composition root owns the bounded, single-threaded reset transaction,
+     * so invoke the cache adapter's fixed-object clear directly; the service
+     * verifies the descriptor is absent before COMMITTED is published. */
+    pet_asset_cache_storage_clear();
+    return DEVICE_STATUS_OK;
+}
+
+static device_status_t factory_reset_verify_personal_storage_absent(void *context) {
+    (void)context;
+    if (meeting_recording_storage_has_pending_audio()) return DEVICE_STATUS_IO_ERROR;
+    pet_asset_descriptor_t descriptor = {0};
+    if (pet_asset_cache_storage_read_descriptor(&descriptor)) return DEVICE_STATUS_IO_ERROR;
+    return DEVICE_STATUS_OK;
+}
+
+static device_status_t factory_reset_verify_recovery_state(uint32_t classes,
+                                                           void *context) {
+    /* Recovery must prove the same fixed erase inventory is absent before it
+     * can trust a COMMITTED journal.  The setup marker and tool-result outbox
+     * are intentionally not part of this inventory: they are the durable
+     * handoff evidence required to finish the transaction after power loss. */
+    if (classes != CONFIGURATION_FACTORY_RESET_CLASS_ALL) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    /* The reset result itself is intentionally allowed to survive in the
+     * durable outbox.  Verify every other fixed erase key, then require that
+     * the queue is well-formed and that its head is the factory_reset result;
+     * an unrelated/empty outbox must never unlock recovery. */
+    for (size_t i = 0; i < FACTORY_RESET_FIXED_KEY_COUNT; ++i) {
+        /* The tool-result outbox is the only fixed key intentionally retained
+         * as handoff evidence. It is validated below and must contain the
+         * factory_reset result at its queue head. */
+        if (factory_reset_is_handoff_key(&s_factory_reset_fixed_keys[i])) continue;
+        size_t size = 0;
+        device_status_t status = persistence_service_read_blob(
+            s_factory_reset_fixed_keys[i].name_space,
+            s_factory_reset_fixed_keys[i].key, NULL, &size);
+        if (status != DEVICE_STATUS_NOT_FOUND) return DEVICE_STATUS_IO_ERROR;
+    }
+    char *queue = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *record = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *upgraded = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!queue || !record || !upgraded) {
+        free(upgraded); free(record); free(queue);
+        return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    }
+    size_t queue_size = GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY;
+    device_status_t status = persistence_service_read_blob(
+        "gateway", "tool_result_outbox", queue, &queue_size);
+    /* Devices upgraded from the original length-only queue format may reboot
+     * while a COMMITTED reset journal is pending.  Normalize that queue
+     * before peeking at the factory-reset result, but only after the complete
+     * conversion has succeeded and has been durably persisted.  Current-format
+     * corruption, magic collisions, malformed records, or persistence failure
+     * remain fail-closed and therefore cannot unlock recovery. */
+    char *active_queue = queue;
+    size_t active_queue_size = queue_size;
+    if (status == DEVICE_STATUS_OK &&
+        gateway_tool_result_outbox_validate_queue(queue, queue_size,
+                                                  GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY) != DEVICE_STATUS_OK) {
+        size_t upgraded_size = 0;
+        if (gateway_tool_result_outbox_upgrade_legacy(
+                queue, queue_size, upgraded,
+                GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &upgraded_size) != DEVICE_STATUS_OK ||
+            persistence_service_write_blob("gateway", "tool_result_outbox",
+                                           upgraded, upgraded_size) != DEVICE_STATUS_OK) {
+            free(upgraded); free(record); free(queue);
+            return DEVICE_STATUS_IO_ERROR;
+        }
+        active_queue = upgraded;
+        active_queue_size = upgraded_size;
+    }
+    size_t record_size = 0;
+    bool valid_factory_result = status == DEVICE_STATUS_OK &&
+        gateway_tool_result_outbox_peek(active_queue, active_queue_size, record,
+                                        GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                        &record_size) == DEVICE_STATUS_OK;
+    cJSON *json = valid_factory_result ? cJSON_Parse(record) : NULL;
+    const char *tool_name = json ? json_string(json, "toolName") : NULL;
+    valid_factory_result = valid_factory_result && tool_name &&
+                           strcmp(tool_name, "factory_reset") == 0;
+    cJSON_Delete(json);
+    free(upgraded); free(record); free(queue);
+    return valid_factory_result ? DEVICE_STATUS_OK : DEVICE_STATUS_IO_ERROR;
+}
+
+static bool factory_reset_validate_authorization(configuration_source_t source,
+                                                 uint64_t generation,
+                                                 void *context) {
+    (void)context;
+    if (source == CONFIGURATION_SOURCE_USER_LOCAL) {
+        /* No local UI confirmation fact is wired yet; fail closed until the
+         * physical confirmation flow supplies one. */
+        return false;
+    }
+    if (source != CONFIGURATION_SOURCE_HUB_AUTHENTICATED ||
+        generation > UINT32_MAX) return false;
+    gateway_capability_projection_t projection = {0};
+    if (!gateway_transport_get_capability_projection(&projection) ||
+        !projection.acceptance_observed || projection.generation != (uint32_t)generation ||
+        projection.operational_capabilities == 0u) return false;
+    return true;
+}
+
+static device_status_t factory_reset_prepare(uint32_t timeout_ms, void *context) {
+    (void)context;
+    if (timeout_ms == 0u) return DEVICE_STATUS_INVALID_ARGUMENT;
+    /* Destructive reset never races a user-visible meeting, alarm ring, or
+     * credential-bearing setup portal. The caller may retry after these
+     * activities have naturally quiesced. */
+    if (meeting_service_is_active() || alarm_manager_is_ringing() ||
+        provisioning_service_has_live_resources()) return DEVICE_STATUS_BUSY;
+    const int64_t deadline_us = esp_timer_get_time() +
+                                (int64_t)timeout_ms * 1000;
+#define FACTORY_RESET_REMAINING_MS() \
+    ((esp_timer_get_time() >= deadline_us) ? 0u : \
+     (uint32_t)(((deadline_us - esp_timer_get_time()) + 999) / 1000))
+#define FACTORY_RESET_REQUIRE(_expr) do { \
+    uint32_t remaining_ms = FACTORY_RESET_REMAINING_MS(); \
+    if (remaining_ms == 0u) return DEVICE_STATUS_TIMEOUT; \
+    device_status_t _status = (_expr); \
+    if (_status != DEVICE_STATUS_OK) return _status; \
+} while (0)
+    /* Cancel the transport request first, while the Gateway dispatcher and
+     * its result path remain alive for the post-reset tool envelope. */
+    FACTORY_RESET_REQUIRE(gateway_transport_cancel_active_requests(
+        GATEWAY_TRANSPORT_CANCEL_ALL, remaining_ms));
+    /* Drain the consumer-side reconcile owner before closing Configuration's
+     * value mutation gate. Its retained expiry/retry worker can otherwise
+     * apply a snapshot concurrently with the destructive erase inventory. */
+    FACTORY_RESET_REQUIRE(configuration_reconcile_service_prepare_system_sleep(
+        remaining_ms));
+    /* Close the Configuration value owner's mutation gate before draining
+     * workers.  Otherwise a portal/reconcile callback can publish a new V7
+     * record while the reset PREPARE is still quiescing its consumers. */
+    FACTORY_RESET_REQUIRE(configuration_service_prepare_system_sleep(
+        remaining_ms));
+    /* Interaction and meeting workers own foreground leases/streams. Their
+     * registry stop callbacks perform cooperative cancellation and bounded
+     * join; a timeout leaves the registry entry in place and aborts reset. */
+    FACTORY_RESET_REQUIRE(startup_status_from_esp_err(task_registry_stop_owner(
+        TASK_REGISTRY_OWNER_INTERACTION, remaining_ms)));
+    FACTORY_RESET_REQUIRE(startup_status_from_esp_err(task_registry_stop_owner(
+        TASK_REGISTRY_OWNER_AUDIO, remaining_ms)));
+    /* Configuration persistence remains available for the reset journal, but
+     * its admission is fenced and its already-queued work is quiesced. */
+    FACTORY_RESET_REQUIRE(configuration_persistence_worker_service_prepare_system_sleep(
+        remaining_ms));
+    FACTORY_RESET_REQUIRE(pet_cache_service_stop(remaining_ms));
+    FACTORY_RESET_REQUIRE(startup_pet_worker_service_stop(remaining_ms));
+    FACTORY_RESET_REQUIRE(startup_pet_retry_service_stop(remaining_ms));
+    FACTORY_RESET_REQUIRE(wake_restart_worker_service_stop(remaining_ms));
+    FACTORY_RESET_REQUIRE(deferred_setup_worker_service_stop(remaining_ms));
+    /* Re-check activity after all cooperative joins. This closes the small
+     * observation-to-stop window before destructive storage writes begin. */
+    if (meeting_service_is_active() || interaction_service_worker_active() ||
+        startup_pet_worker_service_active() || provisioning_service_has_live_resources() ||
+        media_transfer_service_audio_download_active() ||
+        media_transfer_service_server_audio_wake_lease_active()) {
+        return DEVICE_STATUS_BUSY;
+    }
+    return DEVICE_STATUS_OK;
+#undef FACTORY_RESET_REQUIRE
+#undef FACTORY_RESET_REMAINING_MS
+}
+
+static void factory_reset_abort_prepare(void *context) {
+    (void)context;
+    /* Factory-reset PREPARE uses the reversible System Sleep fences for the
+     * persistence worker. Terminal workers intentionally stay stopped. */
+    configuration_persistence_worker_service_abort_system_sleep_prepare();
+    configuration_service_abort_system_sleep_prepare();
+    configuration_reconcile_service_abort_system_sleep_prepare();
+}
+
+static device_status_t factory_reset_complete(void *context) {
+    (void)context;
+    /* The reset transaction has intentionally erased the configuration blob
+     * and all legacy scalar keys.  Calling the normal configuration mutation
+     * would therefore fail with NOT_FOUND before it could create the setup
+     * marker.  Publish the one fixed, durable handoff key directly; the next
+     * boot's authoritative configuration loader imports it into a fresh
+     * default snapshot and consumes it atomically. */
+    return persistence_service_write_u8("maclaw", "force_setup", 1u);
+}
+
+static void factory_reset_reboot(void *context) {
+    (void)context;
+    /* The final factory-reset result has already reached the Hub or durable
+     * outbox before this callback. Retire the in-RAM bearer now so a delayed
+     * worker cannot issue an authenticated request during the reboot window. */
+    gateway_transport_revoke_credentials();
+    esp_restart();
+}
+
+static const factory_reset_service_host_t s_factory_reset_service_host = {
+    .struct_size = sizeof(factory_reset_service_host_t),
+    .abi_version = FACTORY_RESET_SERVICE_HOST_ABI_VERSION,
+    .erase_classes = factory_reset_erase_classes,
+    .verify_classes_absent = factory_reset_verify_classes_absent,
+    .clear_meeting_recording = factory_reset_clear_meeting_recording,
+    .clear_pet_cache = factory_reset_clear_pet_cache,
+    .verify_personal_storage_absent = factory_reset_verify_personal_storage_absent,
+    .verify_recovery_state = factory_reset_verify_recovery_state,
+    .validate_authorization = factory_reset_validate_authorization,
+    .prepare_for_reset = factory_reset_prepare,
+    .abort_prepare_for_reset = factory_reset_abort_prepare,
+    .complete_reset = factory_reset_complete,
+    .reboot_after_reset = factory_reset_reboot,
+    .context = NULL,
+};
 #include "services/audio_arbitration_service.h"
 #include "services/provisioning_service.h"
+#include "services/provisioning_qr_service.h"
 #include "services/provisioning_network_owner.h"
 #include "services/connectivity_network_root_owner.h"
+#include "services/connectivity_network_lifecycle_service.h"
 #include "services/connectivity_wifi_driver_owner.h"
 #include "services/safe_mode_coordinator.h"
 #include "presentation/input_binding.h"
@@ -121,7 +457,6 @@
 // reached 96 KiB for one (limit=1) item, so size this PSRAM-backed buffer with
 // enough headroom to keep the outgoing cursor moving without burdening the
 // scarce internal heap used by Wi-Fi/TLS and ESP-SR.
-#define VOICE_UPLOAD_RETRY_COUNT 3
 #define SETUP_AP_IP_ADDR "192.168.4.1"
 #define DNS_PORT 53
 #define DNS_PACKET_CAPACITY 512
@@ -130,113 +465,19 @@
 #define SETUP_SSID_OPTIONS_CAPACITY 6144
 #define SETUP_SSID_CHOICES_CAPACITY (SETUP_SCAN_MAX_APS * WIFI_VALUE_CAPACITY)
 #define PET_ASSET_MAX_FRAMES PET_ASSET_SERVICE_MAX_FRAMES
-#define PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS 3
-#define PET_ASSET_STARTUP_RETRY_DELAY_MS 3000
 #define CONFIGURATION_RECONCILE_AUTHORITY_GATEWAY_CAPABILITY 1u
 
 _Static_assert(URL_CAPACITY == PET_ASSET_SERVICE_URL_CAPACITY,
                "legacy gateway URL capacity must match the pet asset service contract");
 
 static const char *TAG = "maclaw_client";
-static char s_boot_session_id[33];
-static char s_wifi_ssid[WIFI_VALUE_CAPACITY];
-static char s_wifi_password[WIFI_VALUE_CAPACITY];
-// 已存个人热点列表（NVS v3），启动时按信号强度自动选网；企业热点不进列表。
-static configuration_wifi_network_t s_wifi_networks[CONFIGURATION_WIFI_NETWORK_CAPACITY];
-static uint8_t s_wifi_network_count;
-static char s_wifi_security[WIFI_EAP_MODE_CAPACITY] = "personal";
-static char s_wifi_eap_method[WIFI_EAP_MODE_CAPACITY] = "peap";
-static char s_wifi_identity[WIFI_ENTERPRISE_VALUE_CAPACITY];
-static char s_wifi_username[WIFI_ENTERPRISE_VALUE_CAPACITY];
-static char s_wifi_ttls_phase2[WIFI_EAP_MODE_CAPACITY] = "mschapv2";
-static char s_wifi_ca_mode[WIFI_EAP_MODE_CAPACITY] = "system";
-static char s_wifi_server_domain[WIFI_ENTERPRISE_VALUE_CAPACITY];
-/* True only for the boot that is attempting a persisted provisioning
- * candidate.  It prevents multi-network convenience fallback from silently
- * connecting the confirmed network and falsely treating that as candidate
- * Wi-Fi validation. */
-static bool s_boot_provisioning_staged;
-static bool s_startup_ui_initialized;
 // Bread's first TLS certificate verification is cache/PSRAM intensive. Its
 // alarm scheduler is deliberately initialized after that transaction, not in
 // parallel with it; see ensure_alarm_manager_started().
-static bool s_alarm_manager_started;
 /* SAFE_MODE never re-opens this boot's ordinary interaction/Gateway admission.
  * Input Binding consults this value after its alarm-dismiss path, so a local
  * physical control remains useful for alarms but cannot start voice, meeting,
  * pairing, provisioning or configuration work. */
-static volatile bool s_safe_mode_active;
-static safe_mode_coordinator_t s_safe_mode_coordinator;
-// Radio/IP callbacks can run before app_main() has finished the stability-
-// sensitive startup boundary (Wi-Fi driver, clock and alarm scheduler).  They
-// may only launch TLS/pairing after app_main explicitly opens this gate.
-static volatile bool s_gateway_startup_allowed;
-static volatile bool s_wake_restart_scheduled;
-static volatile bool s_wake_restart_after_startup;
-static TaskHandle_t s_wake_restart_task;
-static SemaphoreHandle_t s_wake_restart_start_gate;
-static SemaphoreHandle_t s_wake_restart_stopped;
-static bool s_wake_restart_stop_requested;
-static bool s_wake_restart_admission_open;
-/* The offline-wake retry coordinator is a composition-root worker.  Audio
- * Service fences its eventual recognizer start, but this extra marker closes
- * the coordinator's create window and preserves a pre-existing retry across a
- * failed future System Sleep transaction. */
-static bool s_wake_restart_system_sleep_preparing;
-static bool s_wake_restart_system_sleep_was_running;
-static bool s_wake_restart_system_sleep_was_admitted;
-/* A timed-out cooperative join leaves the retiring retry worker responsible
- * for releasing its immutable Registry identity.  ABORT must not schedule a
- * replacement against its shared completion semaphore before that point. */
-static bool s_wake_restart_system_sleep_restart_pending;
-static bool s_wake_restart_retiring;
-/* Worker completion does not prove that its immutable Task Registry identity
- * was retired. Keep the result so a later stop/ABORT cannot create a second
- * generation against an old still-visible entry. */
-static esp_err_t s_wake_restart_exit_status = ESP_OK;
-static bool s_wake_restart_registry_retirement_failed;
-/* Fallback only when the durable force-setup request cannot be committed.
- * It still changes radio/portal state, so it is a normal Connectivity-owned
- * worker rather than an untracked fire-and-forget task. */
-static TaskHandle_t s_deferred_setup_task;
-static SemaphoreHandle_t s_deferred_setup_start_gate;
-static SemaphoreHandle_t s_deferred_setup_stopped;
-static bool s_deferred_setup_stop_requested;
-static bool s_deferred_setup_starting;
-/* The delayed portal coordinator is a Connectivity-root producer, rather
- * than part of the portal generation itself.  Provisioning fences the latter,
- * but future System Sleep must also prevent this waiter from being created or
- * reaching its portal-start side effect after PREPARE has reported success. */
-static bool s_deferred_setup_admission_open;
-static bool s_deferred_setup_system_sleep_preparing;
-static bool s_deferred_setup_system_sleep_was_running;
-static bool s_deferred_setup_system_sleep_was_admitted;
-/* A bounded stop may time out while the old coordinator is publishing its
- * completion.  ABORT leaves this marker for that exact old task; it restarts
- * only after unregistering its old registry identity. */
-static bool s_deferred_setup_system_sleep_restart_pending;
-static bool s_deferred_setup_retiring;
-static esp_err_t s_deferred_setup_exit_status = ESP_OK;
-static bool s_deferred_setup_registry_retirement_failed;
-static SemaphoreHandle_t s_startup_welcome_done;
-static volatile bool s_startup_welcome_gate_active;
-static volatile bool s_startup_welcome_timed_out;
-// Playback completion and Hub acknowledgement are separate transactions. If
-// the ACK request is interrupted after the speaker has already finished, Hub
-// legitimately redelivers the same queue entry. Remember that this boot's
-// greeting has been consumed so the retry only repairs the ACK and can never
-// make the device speak it a second time.
-static volatile bool s_startup_welcome_consumed;
-static volatile bool s_startup_sequence_complete;
-static bool s_handshake_startup_welcome_queued;
-static unsigned s_startup_pet_retry_count;
-/* System sleep is not enabled in production yet.  These flags only make the
- * optional startup-pet domain a truthful PREPARE participant: it can be
- * stopped and then resumed after an aborted transaction without losing the
- * work that existed before PREPARE. */
-static bool s_startup_pet_system_sleep_preparing;
-static bool s_startup_pet_system_sleep_was_pending;
-static bool s_startup_pet_system_sleep_was_preempted_by_audio;
 /* A timed-out PREPARE may observe the worker only after it has signalled its
  * completion, but before it has removed its immutable Task Registry entry.
  * Defer ABORT's replacement until that retiring generation owns neither
@@ -247,9 +488,6 @@ static bool s_startup_pet_system_sleep_was_preempted_by_audio;
 // reply, exhausting the small internal TLS heap on EchoEar.  Keep the priority
 // state separate from the normal HTTP mutexes: it is only an admission gate
 // for the optional asset worker, never an ownership token for a client handle.
-static portMUX_TYPE s_media_priority_lock = portMUX_INITIALIZER_UNLOCKED;
-static bool s_audio_media_download_active;
-static SemaphoreHandle_t s_media_transfer_mutex;
 // The outgoing worker can receive a server speech URL while the offline
 // recognizer is resident.  ESP-SR's model allocations fragment the internal
 // heap enough for mbedTLS/AES to fail even though the eventual audio body is
@@ -259,24 +497,19 @@ static SemaphoreHandle_t s_media_transfer_mutex;
 /* Large TLS media transfers share one internal-memory lease. A foreground
  * server-audio transaction may preempt an optional pet worker; only the final
  * lease holder may restore the offline recognizer. */
-static uint32_t s_media_wake_memory_lease_count;
-static bool s_server_audio_wake_memory_lease_active;
-
-static void set_audio_media_download_active(bool active);
-static bool audio_media_download_active(void);
+static void media_transfer_stop_wake_word_for_media(const char *source, void *context);
+static void media_transfer_cancel_startup_pet_for_server_audio(void *context);
+static bool media_transfer_take_startup_pet_audio_preemption(void *context);
+static void media_transfer_rearm_preempted_startup_pet(void *context);
+static void media_transfer_schedule_wake_restart(void *context);
 static void cancel_optional_startup_pet_asset_for_audio(void);
 static void apply_deferred_startup_pet_asset(void);
 static void rearm_preempted_startup_pet_asset(void);
 static device_status_t prepare_startup_pet_asset_system_sleep(uint32_t timeout_ms);
 static void abort_startup_pet_asset_system_sleep_prepare(void);
+static device_status_t stop_startup_pet_asset_for_network_restart(uint32_t timeout_ms);
 static bool startup_pet_asset_stop_requested(void);
 static esp_err_t apply_deferred_pet_asset(void);
-static bool begin_server_audio_wake_memory_lease(const char *source);
-static void begin_optional_media_wake_memory_lease(const char *source);
-static bool finish_server_audio_wake_memory_lease(void);
-static bool finish_optional_media_wake_memory_lease(void);
-static void finish_optional_pet_asset_memory_lease(void);
-static bool server_audio_wake_memory_lease_active(void);
 static void startup_stop_local_workers(void);
 typedef enum {
     /* SAFE_MODE coordinator could not be initialized, so no SAFE_MODE
@@ -304,91 +537,16 @@ static device_status_t safe_mode_publish_diagnostic_surface(
     void *context, const safe_mode_entry_t *entry, uint32_t timeout_ms);
 static uint64_t safe_mode_now_ms(void *context);
 static uint32_t startup_rollback_remaining_timeout_ms(int64_t deadline_us);
-static esp_err_t stop_output_volume_persist_worker(uint32_t timeout_ms);
-static esp_err_t stop_output_volume_persist_registry_entry(void *context,
-                                                            uint32_t timeout_ms);
-static device_status_t prepare_output_volume_persist_system_sleep(uint32_t timeout_ms,
-                                                                   void *context);
-static void abort_output_volume_persist_system_sleep_prepare(void *context);
-// Exactly one pet pack may own the renderer at a time.  A cold-start pack is
-// deliberately cancellable, but once it starts touching the display its final
-// install/cache sequence must not race an online pet_profile update.
-static SemaphoreHandle_t s_pet_asset_apply_mutex;
-// The outgoing long-poll worker deliberately has a PSRAM-backed stack so it
-// can decode audio replies without consuming the small internal-RAM budget.
-// Flash writes temporarily disable caches, however, and ESP-IDF requires the
-// calling task's stack to remain accessible while that happens.  Never invoke
-// NVS directly from that worker; route volume persistence through this small
-// internal-stack worker instead.
-/* This worker commits Configuration snapshots. The
- * resulting NVS/persistence call chain exceeds the former 4 KiB stack on
- * ESP32-S3, while a flash write can temporarily disable the PSRAM cache.
- * Keep both the larger stack and its allocation explicitly internal. */
-#define OUTPUT_VOLUME_PERSIST_TASK_STACK_BYTES 8192u
-
-typedef struct {
-    unsigned percent;
-    uint32_t screen_sleep_seconds;
-    uint32_t generation;
-    bool brightness;
-    bool screen_sleep;
-    /* A Hub display patch commits both user-visible display values in one
-     * Configuration revision before the caller asks Display/Power to apply
-     * them.  It remains a product policy, never a panel/GPIO operation. */
-    bool display_policy;
-    bool display_policy_has_brightness;
-    bool display_policy_has_screen_sleep;
-    bool output_volume_policy;
-    bool stop;
-    bool system_sleep_prepare;
-    /* Gateway startup intentionally runs on a PSRAM stack.  Its successful
-     * pairing path must still commit the one-time-code -> token transition to
-     * NVS, and flash writes cannot execute while that stack is inaccessible.
-     * Reuse this internal-stack persistence owner for that transaction. */
-    bool gateway_token;
-    /* The dispatcher receives this only after Gateway Transport has accepted
-     * the authenticated Hub session. Preserve that provenance across the
-     * internal-stack persistence hop instead of turning remote policy into an
-     * indistinguishable local NVS write. */
-    bool hub_authenticated;
-    char token[CONFIGURATION_GATEWAY_TOKEN_CAPACITY];
-} output_volume_persist_request_t;
-
-typedef struct {
-    esp_err_t result;
-    uint32_t generation;
-    uint64_t configuration_revision;
-} output_volume_persist_reply_t;
-
-static QueueHandle_t s_output_volume_persist_queue;
-static QueueHandle_t s_output_volume_persist_reply_queue;
-static SemaphoreHandle_t s_output_volume_persist_request_mutex;
-static TaskHandle_t s_output_volume_persist_task_handle;
-static SemaphoreHandle_t s_output_volume_persist_stopped;
-static SemaphoreHandle_t s_output_volume_persist_system_sleep_quiesced;
-static uint32_t s_output_volume_persist_generation;
-static bool s_output_volume_persist_stop_requested;
-/* A completed persistence operation is not equivalent to a retired Storage
- * Registry identity.  Keep the terminal result so a stop observer never
- * reports success after the worker failed to remove its immutable entry. */
-static esp_err_t s_output_volume_persist_exit_status = ESP_OK;
-static bool s_output_volume_persist_retiring;
-static bool s_output_volume_persist_registry_retirement_failed;
-/* The internal-stack persistence worker is a legacy composition-root owner,
- * not the shared Persistence Service.  Future System Sleep keeps the worker
- * alive but closes its request admission and joins the one serialized request
- * mutex, so no volume/brightness/token mutation can cross physical COMMIT. */
-static bool s_output_volume_persist_system_sleep_preparing;
-static unsigned s_configured_output_volume = 70;
-static bool s_configured_output_volume_saved;
-static uint8_t s_configured_display_brightness;
-static bool s_configured_display_brightness_saved;
-static uint32_t s_configured_screen_sleep_seconds;
-static bool s_configured_screen_sleep_seconds_saved;
+static device_status_t configuration_persistence_run_transaction(
+    const configuration_persistence_request_t *request,
+    configuration_persistence_reply_t *out_reply, void *context);
+static device_status_t battery_emergency_checkpoint(uint32_t timeout_ms, void *context);
+static device_status_t configuration_persistence_prepare_system_sleep(
+    uint32_t timeout_ms, void *context);
+static void configuration_persistence_abort_system_sleep_prepare(void *context);
 /* Last display policy revision successfully handed to the shared
  * Display/Power consumer. This is composition state only; Configuration's
  * durable revision remains authoritative after a failed external apply. */
-static portMUX_TYPE s_task_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static void on_wake_word(void *arg);
 static void on_fall_detection_event(fall_detection_event_t event, void *arg);
 static void on_schedule_display_wake(device_status_t status, void *arg);
@@ -473,8 +631,6 @@ static bool gateway_configuration_authorization_from_lease(
 }
 
 
-static bool s_storage_mounted;
-
 static void wifi_event(void *arg, const connectivity_wifi_driver_event_t *event);
 
 /* Event callbacks execute on ESP-IDF's default loop.  Do not borrow a service
@@ -482,54 +638,39 @@ static void wifi_event(void *arg, const connectivity_wifi_driver_event_t *event)
  * callback that was selected immediately before unregister: ESP-IDF marks its
  * handler unregistered, but its API does not offer a caller-bounded drain
  * guarantee. */
-typedef gateway_transport_response_t http_response_t;
-
-/* Transport delegates: the lane itself lives in Gateway Transport (A8 second
- * increment); these wrappers keep the remaining main.c callers unchanged. */
-static void response_release(http_response_t *response) {
-    gateway_transport_response_release(response);
-}
-
-static esp_err_t request_with_capacity(const char *method, const char *path, const char *content_type,
-                                       const char *body, int body_len, size_t response_capacity,
-                                       http_response_t *out) {
-    return (esp_err_t)gateway_transport_request_with_capacity(
-        method, path, content_type, body, body_len, (uint32_t)response_capacity, out);
-}
-
-static esp_err_t request(const char *method, const char *path, const char *content_type,
-                         const char *body, int body_len, http_response_t *out) {
-    return (esp_err_t)gateway_transport_request(method, path, content_type, body, body_len, out);
-}
-
 static void process_update_metadata(cJSON *update, bool defer_presentation);
 static void publish_pending_update_reminder(void);
 static device_status_t cancel_gateway_requests_for_system_sleep(uint32_t timeout_ms,
                                                                  void *context);
+static device_status_t quiesce_network_dependents_for_restart(uint32_t timeout_ms,
+                                                               void *context);
 static device_status_t startup_status_from_esp_err(esp_err_t err);
 static esp_err_t stop_network_core_transaction(uint32_t timeout_ms);
 static esp_err_t stop_connectivity_root_transaction(uint32_t timeout_ms);
-static esp_err_t send_text_event(const char *text, const char *reply_to);
 static bool hardware_audio_url_allowed(const char *url);
 static esp_err_t handle_client_tool_call(cJSON *item);
+static char s_delivered_tool_result_id[128];
 static const char *json_string(cJSON *root, const char *key);
 static bool json_number(cJSON *root, const char *key, int *value);
 static void schedule_wake_restart(void);
 static esp_err_t stop_wake_restart_task(uint32_t timeout_ms);
-static esp_err_t stop_wake_restart_registry_entry(void *context, uint32_t timeout_ms);
 static device_status_t prepare_wake_restart_system_sleep(uint32_t timeout_ms);
 static void abort_wake_restart_system_sleep_prepare(void);
-static esp_err_t stop_deferred_setup_task(uint32_t timeout_ms);
-static esp_err_t stop_deferred_setup_registry_entry(void *context, uint32_t timeout_ms);
-static bool start_deferred_setup_task(void);
+static device_status_t prepare_wake_restart_network_restart(uint32_t timeout_ms);
+static device_status_t commit_wake_restart_network_restart(void);
 static device_status_t prepare_deferred_setup_system_sleep(uint32_t timeout_ms);
 static void abort_deferred_setup_system_sleep_prepare(void);
+static device_status_t server_audio_play_mp3(const uint8_t *data, uint32_t length,
+                                             void *context);
+static device_status_t server_audio_play_wav(const uint8_t *data, uint32_t length,
+                                             void *context);
+static device_status_t prepare_deferred_setup_network_restart(uint32_t timeout_ms);
+static device_status_t commit_deferred_setup_network_restart(void);
 static esp_err_t audio_wake_word_stop(void);
 static esp_err_t audio_wake_word_stop_with_timeout(uint32_t timeout_ms);
 static void pet(const char *state);
 static void apply_deferred_startup_pet_asset(void);
 static bool ensure_alarm_manager_started(void);
-static bool start_cached_pet_restore_task(void);
 
 /* The private physical root owns the ESP-IDF object ordering. These two
  * bridges preserve the composition root's policy ownership: Connectivity owns
@@ -562,6 +703,17 @@ static device_status_t network_root_stop_clock_sync(void *context,
                                                     uint32_t timeout_ms) {
     (void)context;
     return clock_sync_service_stop(timeout_ms);
+}
+
+static device_status_t configuration_persistence_prepare_system_sleep(
+    uint32_t timeout_ms, void *context) {
+    (void)context;
+    return configuration_persistence_worker_service_prepare_system_sleep(timeout_ms);
+}
+
+static void configuration_persistence_abort_system_sleep_prepare(void *context) {
+    (void)context;
+    configuration_persistence_worker_service_abort_system_sleep_prepare();
 }
 
 
@@ -614,11 +766,15 @@ static esp_err_t handle_client_tool_call(cJSON *item) {
     cJSON *body = cJSON_CreateObject();
     if (!body) {
         cJSON_Delete(result);
+        factory_reset_service_reboot_if_pending(false);
         return ESP_ERR_NO_MEM;
     }
     cJSON_AddStringToObject(body, "clientId", gateway_transport_device_id());
     cJSON_AddStringToObject(body, "resultId", call_id);
     cJSON_AddStringToObject(body, "toolCallId", call_id);
+    /* Retain the originating tool name in the durable envelope. Gateway
+     * outbox replay uses this value to distinguish factory-reset results. */
+    cJSON_AddStringToObject(body, "toolName", name);
     cJSON_AddStringToObject(body, "conversationId", conversation_id && conversation_id[0] ? conversation_id : "default");
     if (!missing_idempotency_key) cJSON_AddStringToObject(body, "idempotencyKey", idempotency_key);
     if (execute_err == ESP_OK) {
@@ -649,15 +805,60 @@ static esp_err_t handle_client_tool_call(cJSON *item) {
     char *payload = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     cJSON_Delete(result);
-    if (!payload) return ESP_ERR_NO_MEM;
-    http_response_t response;
-    esp_err_t err = request("POST", "/api/im-gateway/v1/tool-result", "application/json",
-                            payload, strlen(payload), &response);
+    if (!payload) {
+        factory_reset_service_reboot_if_pending(false);
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = (esp_err_t)gateway_transport_post_json(
+        "/api/im-gateway/v1/tool-result", payload,
+        GATEWAY_TRANSPORT_ACCEPT_200 | GATEWAY_TRANSPORT_ACCEPT_202 |
+        GATEWAY_TRANSPORT_ACCEPT_204);
+    bool result_durable = err == ESP_OK;
+    if (err != ESP_OK) {
+        const size_t payload_bytes = strlen(payload) + 1u;
+        if (gateway_tool_result_outbox_validate_record(payload, payload_bytes,
+                                                        GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY) == DEVICE_STATUS_OK) {
+            /* A failed tool result may be close to the 64 KiB envelope bound.
+             * Keep both queue copies in PSRAM so an internal-heap pressure
+             * event cannot turn a transport failure into an undeliverable
+             * result. Persistence copies through its internal-stack worker. */
+            char *queue = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            size_t queue_size = GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY;
+            device_status_t read_status = queue ? persistence_service_read_blob(
+                "gateway", "tool_result_outbox", queue, &queue_size) : DEVICE_STATUS_RESOURCE_EXHAUSTED;
+            if (read_status == DEVICE_STATUS_NOT_FOUND) queue_size = 0;
+            char *updated = queue ? heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+            size_t updated_size = 0;
+            device_status_t append_status = (queue && updated &&
+                (read_status == DEVICE_STATUS_OK || read_status == DEVICE_STATUS_NOT_FOUND)) ?
+                gateway_tool_result_outbox_append(queue_size ? queue : NULL, queue_size,
+                                                  payload, payload_bytes, updated,
+                                                  GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &updated_size) :
+                DEVICE_STATUS_RESOURCE_EXHAUSTED;
+            const device_status_t persist_status = append_status == DEVICE_STATUS_OK ?
+                persistence_service_write_blob("gateway", "tool_result_outbox", updated, updated_size) : append_status;
+            result_durable = persist_status == DEVICE_STATUS_OK;
+            if (persist_status != DEVICE_STATUS_OK) {
+                ESP_LOGE(TAG, "cannot persist failed tool result: status=%d",
+                         (int)persist_status);
+            }
+            free(updated);
+            free(queue);
+        }
+    }
     free(payload);
-    if (err == ESP_OK && response.status != 200 && response.status != 202 && response.status != 204) err = ESP_FAIL;
-    ESP_LOGI(TAG, "client tool result delivered: name=%s call=%s http=%d err=%s",
-             name, call_id, response.status, esp_err_to_name(err));
-    response_release(&response);
+    ESP_LOGI(TAG, "client tool result delivered: name=%s call=%s err=%s",
+             name, call_id, esp_err_to_name(err));
+    /* Factory reset marks the reboot handoff only after its durable journal is
+     * cleared.  Let this tool-result path attempt delivery/outbox persistence
+     * first, then perform the final reboot exactly once. */
+    /* Only the factory_reset envelope can authorize the pending reset
+     * handoff. A later unrelated tool-result must never accidentally satisfy
+     * the delivery gate if the reset result itself was still undelivered. */
+    factory_reset_service_reboot_if_pending(
+        strcmp(name, "factory_reset") == 0 && result_durable);
     return err;
 }
 
@@ -682,8 +883,8 @@ static void process_update_metadata(cJSON *update, bool defer_presentation) {
  * this composition-time callback; Interaction orchestration remains behind
  * its typed service contract. */
 static int32_t command_host_send_server_cancel(const char *reply_to) {
-    return (int32_t)send_text_event("/cancel",
-                                    reply_to && reply_to[0] ? reply_to : NULL);
+    return gateway_transport_send_text_event(
+        "/cancel", reply_to && reply_to[0] ? reply_to : NULL);
 }
 
 static void command_host_cancel_foreground_http(void) {
@@ -718,43 +919,27 @@ static esp_err_t download_audio(const char *url, uint8_t **out_audio, size_t *ou
     // no contiguous internal block for TLS AES.  Take the same explicit
     // memory lease used by the upload paths before opening the media TLS
     // connection; the caller restores wake after the response has been ACKed.
-    (void)begin_server_audio_wake_memory_lease("server audio download");
+    (void)media_transfer_service_begin_server_audio_wake_lease(
+        "server audio download");
     // A delivered voice reply is a foreground user outcome.  The cold-start
     // pet is decorative, so stop it before waiting for the media lane.  Its
     // worker observes this flag after the one already-running bounded request,
     // releases the lane, and cannot start another frame over the reply.
     cancel_optional_startup_pet_asset_for_audio();
-    if (!s_media_transfer_mutex ||
-        xSemaphoreTake(s_media_transfer_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
+    if (media_transfer_service_take_lane(35000) != DEVICE_STATUS_OK) {
         return ESP_ERR_TIMEOUT;
     }
     // Advertise priority before starting TLS so the optional pet worker cannot
     // begin another large transfer between the cursor parse and this request.
-    set_audio_media_download_active(true);
-    http_response_t response = {0};
-    esp_err_t err = request_with_capacity("GET", url, NULL, NULL, 0,
-                                          HARDWARE_AUDIO_RESPONSE_CAPACITY, &response);
-    set_audio_media_download_active(false);
-    xSemaphoreGive(s_media_transfer_mutex);
-    if (err != ESP_OK || response.status != 200 || response.len < 2) {
-        esp_err_t result = err;
-        if (err == ESP_OK) {
-            // A successful but empty/malformed media object, or a permanent
-            // client/media-token HTTP rejection, cannot heal on another poll.
-            // Classify it as invalid content so it is ACKed instead of pinning
-            // the outgoing cursor forever. Server failures remain retryable.
-            result = (response.status >= 400 && response.status < 500) ||
-                     (response.status == 200 && response.len < 2)
-                         ? ESP_ERR_INVALID_ARG
-                         : ESP_FAIL;
-        }
-        response_release(&response);
-        return result;
-    }
-    *out_audio = (uint8_t *)response.data;
-    *out_len = response.len;
-    response.data = NULL;
-    response_release(&response);
+    media_transfer_service_set_audio_download_active(true);
+    uint8_t *audio = NULL;
+    uint32_t audio_len = 0;
+    esp_err_t err = (esp_err_t)gateway_transport_download_media(url, &audio, &audio_len);
+    media_transfer_service_set_audio_download_active(false);
+    media_transfer_service_release_lane();
+    if (err != ESP_OK) return err;
+    *out_audio = audio;
+    *out_len = audio_len;
     return ESP_OK;
 }
 
@@ -765,9 +950,6 @@ typedef pet_asset_descriptor_t pet_asset_ref_t;
 // ESP-SR before any media download or SPIFFS write takes place.
 // Written by the gateway poll task to pre-empt the optional cold-start pack,
 // then observed by the startup worker between frame downloads/installs.
-static volatile bool s_startup_pet_asset_pending;
-static bool s_startup_pet_asset_present;
-static pet_asset_ref_t *s_startup_pet_asset_ref;
 /* The cold-start descriptor may arrive before capability health has reached
  * operational.  The actual asynchronous download captures this value only
  * when it is admitted, and validates it at every network/cache/display
@@ -777,21 +959,12 @@ static pet_asset_ref_t *s_startup_pet_asset_ref;
  * a slow backhaul (Fangtang's 4G, where the welcome audio routinely arrives
  * inside the deferred pet window) no longer loses the standby pet for the
  * entire boot. */
-static bool s_startup_pet_asset_preempted_by_audio;
-static char s_startup_pet_asset_skin[32];
-static char s_loaded_pet_asset_revision[40];
-static int s_loaded_pet_asset_frame_count;
 /* 在线宠物更新失败的有序重试会停住整个出站页游标（keep_cursor_for_retry），
  * 容量类失败（ESP_ERR_NO_MEM）永不成功时后面的远程播放等消息全部被堵死。
  * 记录同一消息 id 的连续失败次数，达到上限后按永久失败 ACK 放行队列。 */
-static char s_pet_asset_retry_id[80];
-static int s_pet_asset_retry_count;
-#define PET_ASSET_RETRY_LIMIT 3
 
 static void free_pet_asset_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES], size_t frame_count) {
-    for (size_t i = 0; i < frame_count && i < PET_ASSET_MAX_FRAMES; ++i) {
-        heap_caps_free(frames[i]);
-    }
+    pet_asset_apply_service_free_frames(frames, (uint32_t)frame_count);
 }
 
 /* The display install deliberately consumes its verified HTTP sources while it
@@ -799,28 +972,6 @@ static void free_pet_asset_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES], size_t 
  * separate short-lived source set: never cache first and make a slow SPIFFS
  * operation delay the visible install. Failure is intentionally non-fatal;
  * the in-memory animation remains the user-visible result. */
-static bool clone_pet_asset_frames(const pet_asset_ref_t *ref,
-                                   uint8_t *const source[PET_ASSET_MAX_FRAMES],
-                                   uint8_t *copies[PET_ASSET_MAX_FRAMES]) {
-    if (!ref || !source || !copies || ref->frame_count < 1 ||
-        ref->frame_count > PET_ASSET_MAX_FRAMES) return false;
-    size_t bytes = 0;
-    if (!pet_asset_service_frame_bytes(ref->width, ref->height, &bytes)) return false;
-    memset(copies, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-    for (int i = 0; i < ref->frame_count; ++i) {
-        if (!source[i]) goto fail;
-        copies[i] = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!copies[i]) copies[i] = malloc(bytes);
-        if (!copies[i]) goto fail;
-        memcpy(copies[i], source[i], bytes);
-    }
-    return true;
-fail:
-    free_pet_asset_frames(copies, PET_ASSET_MAX_FRAMES);
-    memset(copies, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-    return false;
-}
-
 /* A full remote pack keeps every verified source frame until the renderer has
  * atomically accepted the pack. Reserve the aggregate peak up front, but
  * compare only the real one-shot allocation against heap largest: fragmented
@@ -910,128 +1061,40 @@ static bool pet_asset_prepare_for_display(const pet_asset_ref_t *source,
     return true;
 }
 
-static void set_audio_media_download_active(bool active) {
-    taskENTER_CRITICAL(&s_media_priority_lock);
-    s_audio_media_download_active = active;
-    taskEXIT_CRITICAL(&s_media_priority_lock);
-}
-
-static bool audio_media_download_active(void) {
-    bool active;
-    taskENTER_CRITICAL(&s_media_priority_lock);
-    active = s_audio_media_download_active;
-    taskEXIT_CRITICAL(&s_media_priority_lock);
-    return active;
-}
-
-static bool begin_server_audio_wake_memory_lease(const char *source) {
-    bool should_stop = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_server_audio_wake_memory_lease_active) {
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return false;
+static void media_transfer_stop_wake_word_for_media(const char *source, void *context) {
+    (void)context;
+    log_heap_snapshot("media-transfer-before-wake-stop");
+    esp_err_t wake_stop_err = audio_wake_word_stop();
+    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "offline wake stop before %s: %s",
+                 source ? source : "media transfer", esp_err_to_name(wake_stop_err));
     }
-    s_server_audio_wake_memory_lease_active = true;
-    should_stop = s_media_wake_memory_lease_count == 0;
-    ++s_media_wake_memory_lease_count;
-    taskEXIT_CRITICAL(&s_task_state_lock);
+    log_heap_snapshot("media-transfer-after-wake-stop");
+}
 
-    // Abort an optional cold-start asset before waiting for model teardown.
-    // Otherwise the asset worker can begin (or retain) a 192 KiB TLS body in
-    // the gap, and the eventual wake restart races its PSRAM renderer copies.
+static void media_transfer_cancel_startup_pet_for_server_audio(void *context) {
+    (void)context;
     cancel_optional_startup_pet_asset_for_audio();
-    if (!should_stop) return true;
-    log_heap_snapshot("server-audio-before-wake-stop");
-    esp_err_t wake_stop_err = audio_wake_word_stop();
-    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "offline wake stop before %s: %s",
-                 source ? source : "server audio", esp_err_to_name(wake_stop_err));
-    }
-    log_heap_snapshot("server-audio-after-wake-stop");
-    return true;
 }
 
-static void begin_optional_media_wake_memory_lease(const char *source) {
-    bool should_stop;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    should_stop = s_media_wake_memory_lease_count == 0;
-    ++s_media_wake_memory_lease_count;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!should_stop) return;
-
-    // Decorative asset downloads are still large HTTPS transactions. They
-    // must reserve internal TLS/AES memory before opening their first request,
-    // rather than repeatedly failing while MultiNet is resident. If foreground
-    // speech arrives it takes a second lease and owns the final restart.
-    log_heap_snapshot("optional-media-before-wake-stop");
-    esp_err_t wake_stop_err = audio_wake_word_stop();
-    if (wake_stop_err != ESP_OK && wake_stop_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "offline wake stop before %s: %s",
-                 source ? source : "optional media", esp_err_to_name(wake_stop_err));
-    }
-    log_heap_snapshot("optional-media-after-wake-stop");
+static bool media_transfer_take_startup_pet_audio_preemption(void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_take_audio_preemption();
 }
 
-static bool finish_server_audio_wake_memory_lease(void) {
-    bool final_owner = false;
-    bool rearm_pet = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_server_audio_wake_memory_lease_active) {
-        s_server_audio_wake_memory_lease_active = false;
-        if (s_media_wake_memory_lease_count > 0) {
-            --s_media_wake_memory_lease_count;
-            final_owner = s_media_wake_memory_lease_count == 0;
-        }
-        if (s_startup_pet_asset_preempted_by_audio) {
-            s_startup_pet_asset_preempted_by_audio = false;
-            rearm_pet = true;
-        }
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    // Outside the critical section: the re-arm may spawn the deferred pet
-    // worker or arm its retry timer.
-    if (rearm_pet) rearm_preempted_startup_pet_asset();
-    return final_owner;
+static void media_transfer_rearm_preempted_startup_pet(void *context) {
+    (void)context;
+    rearm_preempted_startup_pet_asset();
 }
 
-static bool finish_optional_media_wake_memory_lease(void) {
-    bool final_owner = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_media_wake_memory_lease_count > 0) {
-        --s_media_wake_memory_lease_count;
-        final_owner = s_media_wake_memory_lease_count == 0;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    return final_owner;
-}
-
-/* Optional pet work must not permanently leave the wake recognizer stopped.
- * Its caller owns only the temporary memory lease; when this was the last
- * lease, re-use the normal deferred restart path so all hardware profiles
- * return to the same ready/idle behavior. */
-static void finish_optional_pet_asset_memory_lease(void) {
-    if (finish_optional_media_wake_memory_lease()) schedule_wake_restart();
-}
-
-static bool server_audio_wake_memory_lease_active(void) {
-    bool active;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    active = s_server_audio_wake_memory_lease_active;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    return active;
+static void media_transfer_schedule_wake_restart(void *context) {
+    (void)context;
+    schedule_wake_restart();
 }
 
 static void cancel_optional_startup_pet_asset_for_audio(void) {
-    bool preempted = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_startup_pet_asset_pending &&
-        !startup_pet_worker_service_stop_requested()) {
-        s_startup_pet_asset_pending = false;
-        // Deferral, not abandonment: the audio lease finish re-arms the install.
-        s_startup_pet_asset_preempted_by_audio = true;
-        preempted = true;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
+    const bool preempted = startup_pet_asset_state_service_preempt_for_audio(
+        startup_pet_worker_service_stop_requested());
     if (preempted) ESP_LOGI(TAG, "startup pet asset preempted by server audio");
 }
 
@@ -1044,98 +1107,139 @@ static bool startup_pet_asset_stop_requested(void) {
  * because neither Connectivity Service nor Power Service may acquire renderer,
  * HTTP-client or FreeRTOS ownership.  This does not enable MCU sleep: it only
  * supplies a reversible participant for the future transaction. */
+static int64_t startup_pet_sleep_monotonic_time_us(void *context) {
+    (void)context;
+    return esp_timer_get_time();
+}
+
+static device_status_t startup_pet_sleep_prepare_state(void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_prepare_system_sleep();
+}
+
+static device_status_t startup_pet_sleep_prepare_worker(uint32_t timeout_ms,
+                                                         void *context) {
+    (void)context;
+    return startup_pet_worker_service_prepare_system_sleep(timeout_ms);
+}
+
+static device_status_t startup_pet_sleep_prepare_retry(uint32_t timeout_ms,
+                                                        void *context) {
+    (void)context;
+    return startup_pet_retry_service_prepare_system_sleep(timeout_ms);
+}
+
+static device_status_t startup_pet_sleep_prepare_cache(uint32_t timeout_ms,
+                                                        void *context) {
+    (void)context;
+    return pet_cache_service_prepare_system_sleep(timeout_ms);
+}
+
+static bool startup_pet_sleep_abort_state(bool *out_restored_audio_preemption,
+                                          void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_abort_system_sleep_prepare(
+        out_restored_audio_preemption);
+}
+
+static void startup_pet_sleep_abort_worker(void *context) {
+    (void)context;
+    /* The lifecycle service itself delays a replacement until an old immutable
+     * Registry identity is gone; this callback runs without root state locks. */
+    startup_pet_worker_service_abort_system_sleep_prepare();
+}
+
+static void startup_pet_sleep_abort_retry(void *context) {
+    (void)context;
+    startup_pet_retry_service_abort_system_sleep_prepare();
+}
+
+static void startup_pet_sleep_abort_cache(void *context) {
+    (void)context;
+    pet_cache_service_abort_system_sleep_prepare();
+}
+
+static bool startup_pet_sleep_server_audio_lease_active(void *context) {
+    (void)context;
+    return media_transfer_service_server_audio_wake_lease_active();
+}
+
+static bool startup_pet_sleep_take_audio_preemption(void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_take_audio_preemption();
+}
+
+static void startup_pet_sleep_rearm_preempted(void *context) {
+    (void)context;
+    rearm_preempted_startup_pet_asset();
+}
+
+static const startup_pet_asset_sleep_service_host_t s_startup_pet_asset_sleep_service_host = {
+    .struct_size = sizeof(startup_pet_asset_sleep_service_host_t),
+    .monotonic_time_us = startup_pet_sleep_monotonic_time_us,
+    .prepare_state = startup_pet_sleep_prepare_state,
+    .prepare_worker = startup_pet_sleep_prepare_worker,
+    .prepare_retry = startup_pet_sleep_prepare_retry,
+    .prepare_cache = startup_pet_sleep_prepare_cache,
+    .abort_state = startup_pet_sleep_abort_state,
+    .abort_worker = startup_pet_sleep_abort_worker,
+    .abort_retry = startup_pet_sleep_abort_retry,
+    .abort_cache = startup_pet_sleep_abort_cache,
+    .server_audio_lease_active = startup_pet_sleep_server_audio_lease_active,
+    .take_audio_preemption = startup_pet_sleep_take_audio_preemption,
+    .rearm_preempted = startup_pet_sleep_rearm_preempted,
+    .context = NULL,
+};
+
 static device_status_t prepare_startup_pet_asset_system_sleep(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_startup_pet_system_sleep_preparing) {
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return DEVICE_STATUS_BUSY;
-    }
-    s_startup_pet_system_sleep_preparing = true;
-    s_startup_pet_system_sleep_was_pending = s_startup_pet_asset_pending;
-    s_startup_pet_system_sleep_was_preempted_by_audio =
-        s_startup_pet_asset_preempted_by_audio;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-
-    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    esp_err_t stop_err = remaining_ms
-                             ? device_status_to_platform_error(
-                                   startup_pet_worker_service_prepare_system_sleep(remaining_ms))
-                             : ESP_ERR_TIMEOUT;
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (stop_err == ESP_OK) {
-        stop_err = remaining_ms
-                       ? device_status_to_platform_error(
-                             startup_pet_retry_service_prepare_system_sleep(remaining_ms))
-                       : ESP_ERR_TIMEOUT;
-        remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    }
-    if (stop_err == ESP_OK) {
-        stop_err = remaining_ms
-                       ? device_status_to_platform_error(
-                             pet_cache_service_prepare_system_sleep(remaining_ms))
-                       : ESP_ERR_TIMEOUT;
-    }
-    if (stop_err == ESP_OK) return DEVICE_STATUS_OK;
-
-    /* Keep optional pet admission closed after a timeout. The common
-     * Connectivity/Power reverse rollback is the sole owner permitted to
-     * restore its recorded retry/download generation. */
-    return startup_status_from_esp_err(stop_err);
+    return startup_pet_asset_sleep_service_prepare(
+        &s_startup_pet_asset_sleep_service_host, timeout_ms);
 }
 
 static void abort_startup_pet_asset_system_sleep_prepare(void) {
-    bool rearm_after_completed_audio = false;
-    bool abort_retry_prepare = false;
-    bool abort_pet_cache_prepare = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_startup_pet_system_sleep_preparing) {
-        s_startup_pet_system_sleep_preparing = false;
-        s_startup_pet_asset_pending = s_startup_pet_system_sleep_was_pending;
-        s_startup_pet_asset_preempted_by_audio =
-            s_startup_pet_system_sleep_was_preempted_by_audio;
-        /* Cache Service owns a separate lock.  Record the reverse action
-         * under the root lock, then call it after release: service host probes
-         * are expressly lock-free from the root's point of view. */
-        abort_pet_cache_prepare = true;
-        /* If the audio lease completed while PREPARE held this optional domain
-         * closed, its normal finish hook has already consumed the notification.
-         * Re-arm once here; otherwise leave the marker for the still-active
-         * audio lease to consume at its ordinary finish boundary. */
-        if (s_startup_pet_asset_preempted_by_audio &&
-            !s_server_audio_wake_memory_lease_active) {
-            s_startup_pet_asset_preempted_by_audio = false;
-            rearm_after_completed_audio = true;
-        }
-        abort_retry_prepare = true;
-        s_startup_pet_system_sleep_was_pending = false;
-        s_startup_pet_system_sleep_was_preempted_by_audio = false;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-
-    if (abort_pet_cache_prepare) pet_cache_service_abort_system_sleep_prepare();
-
-    if (abort_retry_prepare) startup_pet_retry_service_abort_system_sleep_prepare();
-    /* The worker service delays an ABORT restart until the old immutable
-     * Registry identity has gone away.  Invoke it outside the root lock so a
-     * host restart callback can safely re-enter the composition root. */
-    if (abort_pet_cache_prepare) startup_pet_worker_service_abort_system_sleep_prepare();
-    if (rearm_after_completed_audio) rearm_preempted_startup_pet_asset();
+    startup_pet_asset_sleep_service_abort(&s_startup_pet_asset_sleep_service_host);
 }
 
-static esp_err_t install_pet_asset_first_frame(const pet_asset_ref_t *ref,
-                                               uint8_t *const frames[PET_ASSET_MAX_FRAMES]);
+/* This is terminal fault-domain quiescence, not the reversible startup-pet
+ * sleep transaction. Once a later physical root stop begins, no ABORT may
+ * revive the old download/retry/cache generation. */
+static device_status_t stop_startup_pet_asset_for_network_restart(uint32_t timeout_ms) {
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return DEVICE_STATUS_TIMEOUT;
+    device_status_t status = startup_pet_worker_service_stop(remaining_ms);
+    if (status != DEVICE_STATUS_OK) return status;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return DEVICE_STATUS_TIMEOUT;
+    status = startup_pet_retry_service_stop(remaining_ms);
+    if (status != DEVICE_STATUS_OK) return status;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    if (remaining_ms == 0) return DEVICE_STATUS_TIMEOUT;
+    return pet_cache_service_stop(remaining_ms);
+}
 
 static bool pet_asset_gateway_lease_current(
     const gateway_capability_lease_t *lease) {
     return lease && gateway_transport_capability_lease_current(lease);
 }
 
+static esp_err_t install_pet_asset_first_frame(
+    const pet_asset_ref_t *ref,
+    uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
+    return device_status_to_platform_error(
+        pet_asset_apply_service_install_preview(ref, frames));
+}
+
+static bool startup_pet_asset_install_still_admitted(void *context) {
+    const uint32_t generation = (uint32_t)(uintptr_t)context;
+    return startup_pet_asset_state_service_pending_generation(generation) &&
+           !startup_pet_asset_stop_requested();
+}
+
 static bool pet_cache_host_storage_mounted(void *context) {
     (void)context;
-    return s_storage_mounted;
+    return storage_service_is_available();
 }
 
 static bool pet_cache_host_allows_optional_flash_work(void *context) {
@@ -1194,177 +1298,193 @@ static const startup_pet_worker_service_host_t s_startup_pet_worker_service_host
     .context = NULL,
 };
 
+static device_status_t pet_asset_download_host_admitted(bool startup_transaction,
+                                                        void *context) {
+    if (!startup_transaction) return DEVICE_STATUS_OK;
+    const uint32_t generation = (uint32_t)(uintptr_t)context;
+    return startup_pet_asset_state_service_pending_generation(generation) &&
+           !startup_pet_asset_stop_requested()
+               ? DEVICE_STATUS_OK
+               : DEVICE_STATUS_BUSY;
+}
+
+static bool pet_asset_download_host_transaction_admitted(bool startup_transaction,
+                                                         void *context) {
+    return pet_asset_download_host_admitted(startup_transaction, context) ==
+           DEVICE_STATUS_OK;
+}
+
+static bool pet_asset_download_host_gateway_lease_current(
+    const gateway_capability_lease_t *lease, void *context) {
+    (void)context;
+    return pet_asset_gateway_lease_current(lease);
+}
+
+static device_status_t pet_asset_download_host_request_frame(
+    const char *url, uint32_t expected_bytes, bool startup_transaction,
+    const gateway_capability_lease_t *lease, uint8_t **out_frame,
+    uint32_t *out_length, int32_t *out_http_status, void *context) {
+    if (!url || !out_frame || !out_length || !out_http_status) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    *out_frame = NULL;
+    *out_length = 0;
+    *out_http_status = 0;
+    if (!pet_asset_download_host_transaction_admitted(startup_transaction, context) ||
+        !pet_asset_gateway_lease_current(lease)) {
+        return DEVICE_STATUS_BUSY;
+    }
+    /* Decorative startup artwork yields between frames to foreground voice
+     * work.  A reply that arrives while a request is active still cancels via
+     * the admission probe below, but no new TLS transfer may start ahead of
+     * an interactive exchange. */
+    while (startup_transaction &&
+           (interaction_service_foreground_http_requested() ||
+            media_transfer_service_audio_download_active() ||
+            media_transfer_service_server_audio_wake_lease_active()) &&
+           pet_asset_download_host_transaction_admitted(true, context)) {
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) != 0) {
+            return DEVICE_STATUS_BUSY;
+        }
+    }
+    if (!pet_asset_download_host_transaction_admitted(startup_transaction, context)) {
+        return DEVICE_STATUS_BUSY;
+    }
+    if (media_transfer_service_take_lane(35000) != DEVICE_STATUS_OK) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+
+    bool optional_lease_held = false;
+    if (startup_transaction) {
+        /* The media lane makes this test-and-reserve atomic with foreground
+         * audio. The shared download service owns traversal/retry only; the
+         * physical wake-memory lease remains composition-root policy. */
+        if (!pet_asset_download_host_transaction_admitted(true, context) ||
+            media_transfer_service_server_audio_wake_lease_active()) {
+            media_transfer_service_release_lane();
+            return DEVICE_STATUS_BUSY;
+        }
+        media_transfer_service_begin_optional_wake_lease("optional pet asset");
+        optional_lease_held = true;
+    }
+
+    uint8_t *frame = NULL;
+    uint32_t frame_length = 0;
+    int32_t http_status = 0;
+    esp_err_t err = pet_asset_gateway_lease_current(lease)
+                        ? (esp_err_t)gateway_transport_download_frame(
+                              url, expected_bytes, &frame, &frame_length,
+                              &http_status)
+                        : ESP_ERR_INVALID_STATE;
+    if (optional_lease_held) media_transfer_service_finish_optional_wake_lease();
+    media_transfer_service_release_lane();
+    if (startup_transaction &&
+        !pet_asset_download_host_transaction_admitted(true, context)) {
+        gateway_transport_release_media(frame);
+        return DEVICE_STATUS_BUSY;
+    }
+
+    *out_http_status = http_status;
+    if (err == ESP_OK) {
+        *out_frame = frame;
+        *out_length = frame_length;
+        return DEVICE_STATUS_OK;
+    }
+    gateway_transport_release_media(frame);
+    if (err == ESP_ERR_TIMEOUT) return DEVICE_STATUS_TIMEOUT;
+    if (err == ESP_ERR_NO_MEM) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (err == ESP_ERR_INVALID_STATE) return DEVICE_STATUS_BUSY;
+    return err == ESP_OK ? DEVICE_STATUS_IO_ERROR : DEVICE_STATUS_IO_ERROR;
+}
+
+static device_status_t pet_asset_compute_sha256(const uint8_t *frame,
+                                                uint32_t frame_bytes,
+                                                uint8_t out_digest[32],
+                                                void *context) {
+    (void)context;
+    if (!frame || frame_bytes == 0 || !out_digest) return DEVICE_STATUS_INVALID_ARGUMENT;
+    size_t digest_len = 0;
+    const psa_status_t status = psa_hash_compute(
+        PSA_ALG_SHA_256, frame, frame_bytes, out_digest, 32, &digest_len);
+    return (status == PSA_SUCCESS && digest_len == 32)
+               ? DEVICE_STATUS_OK
+               : DEVICE_STATUS_INTERNAL_ERROR;
+}
+
+static device_status_t pet_asset_download_host_verify_frame_sha256(
+    const uint8_t *frame, uint32_t frame_bytes, const char expected_sha256[65],
+    void *context) {
+    (void)context;
+    if (!frame || !expected_sha256) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return pet_asset_integrity_service_verify_frame(
+        &(pet_asset_integrity_service_host_t){
+            .struct_size = sizeof(pet_asset_integrity_service_host_t),
+            .compute_sha256 = pet_asset_compute_sha256,
+            .context = NULL,
+        }, frame, frame_bytes, expected_sha256);
+}
+
+static void pet_asset_download_host_release_frame(uint8_t *frame, void *context) {
+    (void)context;
+    heap_caps_free(frame);
+}
+
+static bool pet_asset_download_host_wait_before_retry(uint32_t delay_ms,
+                                                      bool startup_transaction,
+                                                      void *context) {
+    if (!pet_asset_download_host_transaction_admitted(startup_transaction, context)) {
+        return false;
+    }
+    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms)) != 0) return false;
+    return pet_asset_download_host_transaction_admitted(startup_transaction, context);
+}
+
+static bool pet_asset_download_host_wait_before_pack_retry(uint32_t delay_ms,
+                                                           void *context) {
+    return pet_asset_download_host_wait_before_retry(delay_ms, true, context);
+}
+
+static device_status_t pet_asset_download_host_install_preview(
+    const pet_asset_descriptor_t *descriptor, const uint8_t *frame,
+    const gateway_capability_lease_t *lease, void *context) {
+    (void)context;
+    if (!pet_asset_gateway_lease_current(lease)) return DEVICE_STATUS_BUSY;
+    uint8_t *frames[PET_ASSET_MAX_FRAMES] = {(uint8_t *)frame};
+    /* The download service has revalidated the captured Gateway lease before
+     * this callback. Preview remains best-effort, while the full install
+     * performs its own late-admission check before consuming all frames. */
+    const esp_err_t err = install_pet_asset_first_frame(descriptor, frames);
+    return err == ESP_OK ? DEVICE_STATUS_OK : DEVICE_STATUS_IO_ERROR;
+}
+
+static const pet_asset_download_service_host_t s_pet_asset_download_service_host = {
+    .struct_size = sizeof(pet_asset_download_service_host_t),
+    .transaction_admitted = pet_asset_download_host_transaction_admitted,
+    .gateway_lease_current = pet_asset_download_host_gateway_lease_current,
+    .request_frame = pet_asset_download_host_request_frame,
+    .verify_frame_sha256 = pet_asset_download_host_verify_frame_sha256,
+    .release_frame = pet_asset_download_host_release_frame,
+    .wait_before_retry = pet_asset_download_host_wait_before_retry,
+    .wait_before_pack_retry = pet_asset_download_host_wait_before_pack_retry,
+    .install_first_frame_preview = pet_asset_download_host_install_preview,
+    .context = NULL,
+};
+
 static esp_err_t download_pet_asset_frames(const pet_asset_ref_t *ref,
                                            uint8_t *frames[PET_ASSET_MAX_FRAMES],
                                            bool startup_transaction,
-                                           const gateway_capability_lease_t *gateway_lease) {
+                                           const gateway_capability_lease_t *gateway_lease,
+                                           uint32_t startup_generation) {
     if (!ref || !frames) return ESP_ERR_INVALID_ARG;
-    if (!pet_asset_gateway_lease_current(gateway_lease)) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (startup_transaction && startup_pet_asset_stop_requested()) {
-        return ESP_ERR_INVALID_STATE;
-    }
     if (!pet_asset_capacity_available(ref)) return ESP_ERR_NO_MEM;
-    size_t expected = 0;
-    if (!pet_asset_service_frame_bytes(ref->width, ref->height, &expected)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-    for (int i = 0; i < ref->frame_count; ++i) {
-        if (!pet_asset_gateway_lease_current(gateway_lease)) {
-            free_pet_asset_frames(frames, (size_t)i);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return ESP_ERR_INVALID_STATE;
-        }
-        if (startup_transaction && startup_pet_asset_stop_requested()) {
-            free_pet_asset_frames(frames, (size_t)i);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return ESP_ERR_INVALID_STATE;
-        }
-        // Optional artwork must stay below an interactive voice turn in both
-        // connection priority and Wi-Fi airtime. Pause between frames while a
-        // command is recording, uploading, or waiting for its result. A frame
-        // already in flight is bounded to one 192 KiB response; the next one
-        // cannot start until foreground ownership is released.
-        while (startup_transaction &&
-               (interaction_service_foreground_http_requested() || audio_media_download_active() ||
-                server_audio_wake_memory_lease_active()) &&
-               s_startup_pet_asset_pending && !startup_pet_asset_stop_requested()) {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) != 0) break;
-        }
-        if (startup_transaction &&
-            (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
-            free_pet_asset_frames(frames, (size_t)i);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return ESP_ERR_INVALID_STATE;
-        }
-        // Each frame is only 192 KiB, but on EchoEar it can race a TLS
-        // handshake or wake-model transition for internal heap.  A transient
-        // incomplete transfer must not discard the whole idle animation pack;
-        // failed HTTP handles are discarded by request_with_capacity(), so a
-        // bounded retry gets a clean connection and buffer on every attempt.
-        http_response_t response = {0};
-        esp_err_t err = ESP_FAIL;
-        const unsigned max_attempts = startup_transaction ? 3 : 2;
-        for (unsigned attempt = 1; attempt <= max_attempts; ++attempt) {
-            bool optional_lease_held = false;
-            // Serialize all large media bodies.  This does not serialize the
-            // gateway poll itself, only the optional pet download against the
-            // audible reply it may have just received.  With one TLS media
-            // session at a time, EchoEar retains enough internal heap for
-            // AES/TLS and completes the voice playback transaction.
-            if (!s_media_transfer_mutex ||
-                xSemaphoreTake(s_media_transfer_mutex, pdMS_TO_TICKS(35000)) != pdTRUE) {
-                err = ESP_ERR_TIMEOUT;
-                break;
-            }
-            if (startup_transaction) {
-                // The media lane makes this test-and-reserve atomic with
-                // respect to other large media operations. A foreground reply
-                // arriving before the request begins preempts the asset;
-                // otherwise this optional TLS transfer gets enough internal
-                // memory without resident MultiNet fragmenting AES buffers.
-                if (!s_startup_pet_asset_pending ||
-                    server_audio_wake_memory_lease_active() ||
-                    startup_pet_asset_stop_requested()) {
-                    xSemaphoreGive(s_media_transfer_mutex);
-                    free_pet_asset_frames(frames, (size_t)i);
-                    memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-                    return ESP_ERR_INVALID_STATE;
-                }
-                begin_optional_media_wake_memory_lease("optional pet asset");
-                optional_lease_held = true;
-            }
-            if (!pet_asset_gateway_lease_current(gateway_lease)) {
-                err = ESP_ERR_INVALID_STATE;
-            } else {
-                /* Revalidate directly at the network side-effect boundary:
-                 * a foreground lease can outlive descriptor parsing and the
-                 * media-lane wait above. */
-                err = request_with_capacity("GET", ref->urls[i], NULL, NULL, 0,
-                                            expected + 1, &response);
-            }
-            if (optional_lease_held) finish_optional_pet_asset_memory_lease();
-            xSemaphoreGive(s_media_transfer_mutex);
-            // The user-visible server reply may have pre-empted this optional
-            // request while its TLS read was in flight.  Do not retain/apply a
-            // completed decorative frame after that cancellation, and release
-            // its response body immediately so wake can reclaim its memory.
-            if (startup_transaction &&
-                (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
-                response_release(&response);
-                free_pet_asset_frames(frames, (size_t)i);
-                memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-                return ESP_ERR_INVALID_STATE;
-            }
-            if (err == ESP_OK && response.status == 200 && response.len == expected) {
-                break;
-            }
-            // Do not retry a bad/expired asset descriptor.  It cannot recover
-            // locally and should be rejected by the normal profile refresh.
-            int failed_status = response.status;
-            size_t failed_len = response.len;
-            bool permanent = err == ESP_OK && failed_status >= 400 && failed_status < 500;
-            response_release(&response);
-            memset(&response, 0, sizeof(response));
-            if (permanent || attempt == max_attempts) break;
-            ESP_LOGW(TAG, "pet asset frame retry: frame=%d attempt=%u/%u err=%s status=%d bytes=%u",
-                     i, attempt, max_attempts, esp_err_to_name(err), failed_status,
-                     (unsigned)failed_len);
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250u * attempt)) != 0) break;
-            if (startup_transaction &&
-                (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) break;
-        }
-        if (err != ESP_OK || response.status != 200 || response.len != expected) {
-            esp_err_t result = err != ESP_OK ? err :
-                               response.status >= 400 && response.status < 500
-                                   ? ESP_ERR_INVALID_ARG : ESP_FAIL;
-            response_release(&response);
-            free_pet_asset_frames(frames, (size_t)i);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return result;
-        }
-        frames[i] = (uint8_t *)response.data;
-        response.data = NULL;
-        response_release(&response);
-        uint8_t digest[32];
-        size_t digest_len = 0;
-        psa_status_t status = psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t *)frames[i], expected,
-                                               digest, sizeof(digest), &digest_len);
-        if (status != PSA_SUCCESS || digest_len != sizeof(digest)) {
-            free_pet_asset_frames(frames, (size_t)i + 1);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return ESP_FAIL;
-        }
-        if (!pet_asset_service_sha256_matches_hex(digest, ref->sha256[i])) {
-            ESP_LOGW(TAG, "pet asset SHA-256 mismatch: frame=%d", i);
-            free_pet_asset_frames(frames, (size_t)i + 1);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return ESP_ERR_INVALID_CRC;
-        }
-        // Make standby useful as soon as the first verified frame is available.
-        // The remaining frames can be retried without leaving EchoEar's round
-        // idle screen blank when a later TLS transfer is interrupted.
-        if (startup_transaction && i == 0) {
-            esp_err_t preview_err = pet_asset_gateway_lease_current(gateway_lease)
-                                        ? install_pet_asset_first_frame(ref, frames)
-                                        : ESP_ERR_INVALID_STATE;
-            if (preview_err == ESP_OK) {
-                ESP_LOGI(TAG, "startup pet first frame applied while animation downloads");
-            } else {
-                ESP_LOGW(TAG, "startup pet first-frame preview failed: %s",
-                         esp_err_to_name(preview_err));
-            }
-        }
-        if (startup_transaction &&
-            (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
-            free_pet_asset_frames(frames, (size_t)i + 1);
-            memset(frames, 0, sizeof(uint8_t *) * PET_ASSET_MAX_FRAMES);
-            return ESP_ERR_INVALID_STATE;
-        }
-    }
-    return ESP_OK;
+    pet_asset_download_service_host_t host = s_pet_asset_download_service_host;
+    host.context = (void *)(uintptr_t)startup_generation;
+    const device_status_t status = startup_transaction
+                                       ? pet_asset_download_service_fetch_startup_pack(
+                                             &host, ref, gateway_lease, frames)
+                                       : pet_asset_download_service_fetch(
+                                             &host, ref, false, gateway_lease, frames);
+    return device_status_to_platform_error(status);
 }
 
 /* Pet-cache coordination owns its task, internal stack and Storage Registry
@@ -1391,405 +1511,473 @@ static bool drop_stale_pet_asset_cache(const pet_asset_ref_t *ref) {
            dropped;
 }
 
-static esp_err_t clear_pet_asset_cache(void) {
+static esp_err_t clear_pet_asset_cache_with_cancel(
+    pet_cache_service_cancelled_fn cancelled, void *cancel_context) {
     return device_status_to_platform_error(
-        pet_cache_service_clear(NULL, NULL));
+        pet_cache_service_clear(cancelled, cancel_context));
+}
+
+static esp_err_t clear_pet_asset_cache(void) {
+    return clear_pet_asset_cache_with_cancel(NULL, NULL);
 }
 
 static esp_err_t clear_applied_pet_asset(void) {
-    if (!s_pet_asset_apply_mutex ||
-        xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
-        return ESP_ERR_INVALID_STATE;
-    }
     esp_err_t err = device_status_to_platform_error(
-        scene_presenter_set_pet_asset(NULL, 0, 0, 0, 0));
+        pet_asset_apply_service_clear(NULL, NULL));
     if (err == ESP_OK) {
-        s_loaded_pet_asset_revision[0] = '\0';
-        s_loaded_pet_asset_frame_count = 0;
-        if (s_storage_mounted && device_storage_allows_optional_flash_work()) {
+        if (device_storage_allows_optional_flash_work()) {
             esp_err_t cache_err = clear_pet_asset_cache();
             if (cache_err != ESP_OK) err = cache_err;
         }
     }
-    xSemaphoreGive(s_pet_asset_apply_mutex);
     return err;
 }
 
-static esp_err_t install_pet_asset_with_fallback(const pet_asset_ref_t *ref,
-                                                 uint8_t *frames[PET_ASSET_MAX_FRAMES],
-                                                 int *installed_frame_count,
-                                                 int *installed_frame_ms);
-
-static bool load_cached_pet_asset(void) {
-    if (!s_storage_mounted) return false;
-    pet_asset_ref_t ref = {0};
-    size_t frame_bytes = 0;
-    if (!pet_asset_cache_storage_read_descriptor(&ref) ||
-        !pet_asset_service_frame_bytes(ref.width, ref.height, &frame_bytes)) {
-        (void)clear_pet_asset_cache();
-        return false;
-    }
-    uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
-    for (int i = 0; i < ref.frame_count; ++i) {
-        frames[i] = heap_caps_malloc(frame_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!frames[i]) frames[i] = malloc(frame_bytes);
-        bool ok = frames[i] && pet_asset_cache_storage_read_frame(
-                                        &ref, (uint32_t)i, frames[i], frame_bytes);
-        if (ok) {
-            uint8_t digest[32]; size_t digest_len = 0;
-            ok = psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t *)frames[i], frame_bytes, digest,
-                                  sizeof(digest), &digest_len) == PSA_SUCCESS &&
-                 digest_len == sizeof(digest);
-            if (ok) ok = pet_asset_service_sha256_matches_hex(digest, ref.sha256[i]);
-        }
-        if (!ok) break;
-    }
-    bool loaded = true;
-    for (int i = 0; i < ref.frame_count; ++i) loaded = loaded && frames[i] != NULL;
-    if (loaded) {
-        if (!s_pet_asset_apply_mutex ||
-            xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
-            loaded = false;
-        }
-    }
-    if (loaded) {
-        int installed_frames = 0, installed_frame_ms = 0;
-        loaded = install_pet_asset_with_fallback(&ref, frames, &installed_frames,
-                                                 &installed_frame_ms) == ESP_OK;
-        if (loaded) {
-            strlcpy(s_loaded_pet_asset_revision, ref.revision,
-                    sizeof(s_loaded_pet_asset_revision));
-            s_loaded_pet_asset_frame_count = installed_frames;
-            ESP_LOGI(TAG, "cached pet asset applied: revision=%s frames=%d/%d frame_ms=%d",
-                     ref.revision, installed_frames, ref.frame_count, installed_frame_ms);
-        }
-        xSemaphoreGive(s_pet_asset_apply_mutex);
-    }
-    free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
-    if (!loaded) (void)clear_pet_asset_cache();
-    return loaded;
+static bool pet_asset_restore_storage_allowed(void *context) {
+    (void)context;
+    return device_storage_allows_optional_flash_work();
 }
 
-/* Cache restore reads up to eight 192 KiB frames and then asks the renderer to
- * create retained PSRAM copies. Keep that stack and all VFS locals out of the
- * 4 KiB main task. This worker starts only after App UI has established its
- * single display submission owner, and before gateway connectivity begins its
- * own large TLS allocations. */
-static void cached_pet_restore_task(void *arg) {
-    SemaphoreHandle_t completion = (SemaphoreHandle_t)arg;
-    if (s_storage_mounted && device_storage_allows_optional_flash_work() &&
-        load_cached_pet_asset()) {
-        /* A cached pack has no live Hub descriptor yet, but its saved frames
-         * were previously accepted under the then-current pet profile. Restore
-         * that profile's durable behaviour explicitly: the App UI default is
-         * deliberately conservative and must not silently turn a cached
-         * multi-frame asset into a static first pose before the handshake
-         * arrives. Runtime Hub `motionEnabled` remains authoritative and can
-         * immediately disable it later through the normal UI/HAL request. */
-        ambient_service_apply_pet_profile(NULL, true);
+static bool pet_asset_restore_read_descriptor(pet_asset_ref_t *out_ref, void *context) {
+    (void)context;
+    return pet_asset_cache_storage_read_descriptor(out_ref);
+}
+
+static device_status_t pet_asset_restore_load_verified_frame(
+    const pet_asset_ref_t *ref, uint32_t frame_index, uint8_t **out_frame,
+    void *context) {
+    (void)context;
+    if (!ref || !out_frame || frame_index >= (uint32_t)ref->frame_count) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    *out_frame = NULL;
+    size_t frame_bytes = 0;
+    if (!pet_asset_service_frame_bytes(ref->width, ref->height, &frame_bytes)) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    uint8_t *frame = heap_caps_malloc(frame_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!frame) frame = malloc(frame_bytes);
+    if (!frame) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (!pet_asset_cache_storage_read_frame(ref, frame_index, frame, frame_bytes)) {
+        heap_caps_free(frame);
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    const device_status_t verify_status = pet_asset_integrity_service_verify_frame(
+        &(pet_asset_integrity_service_host_t){
+            .struct_size = sizeof(pet_asset_integrity_service_host_t),
+            .compute_sha256 = pet_asset_compute_sha256,
+            .context = NULL,
+        }, frame, (uint32_t)frame_bytes, ref->sha256[frame_index]);
+    if (verify_status != DEVICE_STATUS_OK) {
+        heap_caps_free(frame);
+        return verify_status;
+    }
+    *out_frame = frame;
+    return DEVICE_STATUS_OK;
+}
+
+static device_status_t pet_asset_restore_install_full(
+    const pet_asset_ref_t *ref, uint8_t *frames[PET_ASSET_MAX_FRAMES],
+    int *out_installed_frame_count, int *out_installed_frame_ms, void *context) {
+    (void)context;
+    return pet_asset_apply_service_install_full(
+        ref, frames, false, NULL, NULL, NULL, out_installed_frame_count,
+        out_installed_frame_ms);
+}
+
+static void pet_asset_restore_release_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES],
+                                             void *context) {
+    (void)context;
+    free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+}
+
+static void pet_asset_restore_clear_cache(void *context) {
+    (void)context;
+    (void)clear_pet_asset_cache();
+}
+
+static void pet_asset_restore_apply_cached_profile(void *context) {
+    (void)context;
+    /* A cached pack has no live Hub descriptor yet, but it was previously
+     * accepted under this profile. Preserve its animated standby behavior
+     * until a runtime Hub profile replaces it. */
+    ambient_service_apply_pet_profile(NULL, true);
+}
+
+static const pet_asset_restore_service_host_t s_pet_asset_restore_service_host = {
+    .struct_size = sizeof(pet_asset_restore_service_host_t),
+    .storage_restore_allowed = pet_asset_restore_storage_allowed,
+    .read_descriptor = pet_asset_restore_read_descriptor,
+    .load_verified_frame = pet_asset_restore_load_verified_frame,
+    .install_full = pet_asset_restore_install_full,
+    .release_frames = pet_asset_restore_release_frames,
+    .clear_cache = pet_asset_restore_clear_cache,
+    .apply_cached_profile = pet_asset_restore_apply_cached_profile,
+    .context = NULL,
+};
+
+static device_status_t pet_asset_restore_run_transaction(void *context) {
+    (void)context;
+    const device_status_t status = pet_asset_restore_service_restore(
+        &s_pet_asset_restore_service_host);
+    if (status == DEVICE_STATUS_OK) {
         ESP_LOGI(TAG, "cached pet animation restored before connectivity startup");
     }
-    if (completion) xSemaphoreGive(completion);
-    vTaskDeleteWithCaps(NULL);
+    return status;
 }
 
-static bool start_cached_pet_restore_task(void) {
-    SemaphoreHandle_t completion = xSemaphoreCreateBinary();
-    if (!completion) {
-        ESP_LOGW(TAG, "cached pet restore skipped: cannot allocate completion semaphore");
-        return false;
-    }
-    TaskHandle_t task = NULL;
-    /* This is a bounded boot-time operation. The task has no shared lifetime
-     * owner and completes before any network worker is started below. Its
-     * internal stack makes SPIFFS reads safe if Flash temporarily disables the
-     * PSRAM cache. */
-    if (xTaskCreatePinnedToCoreWithCaps(cached_pet_restore_task,
-                                        "maclaw_pet_restore", 8192, completion, 1,
-                                        &task, 1,
-                                        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
-        vSemaphoreDelete(completion);
-        ESP_LOGW(TAG, "cached pet restore skipped: cannot allocate worker");
-        return false;
-    }
-    /* The cache is local Flash only. Join before networking starts, otherwise
-     * a concurrent TLS transfer could raise PSRAM pressure midway through
-     * restore. The worker always signals before deleting its internal stack. */
-    xSemaphoreTake(completion, portMAX_DELAY);
-    vSemaphoreDelete(completion);
-    return true;
+static const pet_asset_restore_worker_service_host_t
+    s_pet_asset_restore_worker_service_host = {
+        .struct_size = sizeof(pet_asset_restore_worker_service_host_t),
+        .run_restore = pet_asset_restore_run_transaction,
+        .context = NULL,
+    };
+
+static bool pet_asset_runtime_revision_installed(const pet_asset_ref_t *ref,
+                                                 void *context) {
+    (void)context;
+    return pet_asset_apply_service_revision_installed(ref);
 }
 
-static esp_err_t install_pet_asset_with_fallback(const pet_asset_ref_t *ref,
-                                                 uint8_t *frames[PET_ASSET_MAX_FRAMES],
-                                                 int *installed_frame_count,
-                                                 int *installed_frame_ms) {
-    if (!ref || !frames) return ESP_ERR_INVALID_ARG;
-    // The full-pack install consumes each source frame as soon as its scaled
-    // copy exists, bounding the PSRAM peak at copies-plus-one-source.  Consumed
-    // entries come back NULLed, so a memory-pressure retry first compacts the
-    // surviving sources to the front and then installs a shorter keyframe loop.
-    esp_err_t err = device_status_to_platform_error(
-        scene_presenter_set_pet_asset_consuming(frames, (size_t)ref->frame_count,
-                                        (size_t)ref->width, (size_t)ref->height,
-                                        (uint32_t)ref->frame_ms));
-    int used_count = ref->frame_count;
-    int used_frame_ms = ref->frame_ms;
-    // Keep the selected GUI pet visible on boards with less free PSRAM. A
-    // lower keyframe count preserves the animation period and is preferable to
-    // falling all the way back to the native robot head.
-    while (err == ESP_ERR_NO_MEM && used_count > 1) {
-        int remaining_count = 0;
-        for (int i = 0; i < ref->frame_count; ++i) {
-            if (frames[i]) frames[remaining_count++] = frames[i];
-        }
-        for (int i = remaining_count; i < ref->frame_count; ++i) frames[i] = NULL;
-        uint32_t next_count = 0;
-        uint32_t next_frame_ms = 0;
-        if (!pet_asset_service_next_memory_fallback(
-                ref, (uint32_t)used_count, (uint32_t)remaining_count,
-                &next_count, &next_frame_ms)) {
-            break;
-        }
-        used_frame_ms = (int)next_frame_ms;
-        ESP_LOGW(TAG, "pet asset memory pressure; retrying with %d/%d frames",
-                 (int)next_count, ref->frame_count);
-        err = device_status_to_platform_error(
-            scene_presenter_set_pet_asset_consuming(frames, (size_t)next_count,
-                                            (size_t)ref->width, (size_t)ref->height,
-                                            (uint32_t)used_frame_ms));
-        used_count = (int)next_count;
+static bool pet_asset_runtime_capture_gateway_lease(
+    gateway_capability_lease_t *out_lease, void *context) {
+    (void)context;
+    return gateway_transport_capture_capability_lease(
+        GATEWAY_CAPABILITY_PET_ASSET, out_lease);
+}
+
+static bool pet_asset_runtime_gateway_lease_current(
+    const gateway_capability_lease_t *lease, void *context) {
+    (void)context;
+    return pet_asset_gateway_lease_current(lease);
+}
+
+static bool pet_asset_runtime_transaction_admitted(void *context) {
+    (void)context;
+    /* Runtime profile updates are admitted only while the Hub control-plane
+     * surface still exposes PET_ASSET.  This value probe complements the
+     * captured lease: it closes the small media/cache/install windows during
+     * System Sleep or a capability withdrawal without owning HTTP state. */
+    return gateway_transport_capabilities_operational(
+        GATEWAY_CAPABILITY_PET_ASSET);
+}
+
+static void pet_asset_runtime_begin_optional_media_work(void *context) {
+    (void)context;
+    media_transfer_service_begin_optional_wake_lease("runtime pet asset");
+}
+
+static void pet_asset_runtime_finish_optional_media_work(void *context) {
+    (void)context;
+    media_transfer_service_finish_optional_wake_lease();
+}
+
+static bool pet_asset_runtime_capacity_available(const pet_asset_ref_t *ref,
+                                                 void *context) {
+    (void)context;
+    return pet_asset_capacity_available(ref);
+}
+
+static bool pet_asset_runtime_drop_stale_cache(const pet_asset_ref_t *ref,
+                                               void *context) {
+    (void)context;
+    return drop_stale_pet_asset_cache(ref);
+}
+
+static device_status_t pet_asset_runtime_download(
+    const pet_asset_ref_t *ref, const gateway_capability_lease_t *lease,
+    uint8_t *frames[PET_ASSET_MAX_FRAMES], void *context) {
+    (void)context;
+    const esp_err_t err = download_pet_asset_frames(ref, frames, false, lease, 0);
+    if (err == ESP_OK) return DEVICE_STATUS_OK;
+    if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_SIZE) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
     }
-    if (installed_frame_count) *installed_frame_count = err == ESP_OK ? used_count : 0;
-    if (installed_frame_ms) *installed_frame_ms = err == ESP_OK ? used_frame_ms : 0;
-    return err;
+    if (err == ESP_ERR_NO_MEM) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (err == ESP_ERR_TIMEOUT) return DEVICE_STATUS_TIMEOUT;
+    if (err == ESP_ERR_INVALID_STATE) return DEVICE_STATUS_BUSY;
+    return DEVICE_STATUS_IO_ERROR;
 }
-static esp_err_t install_pet_asset_first_frame(const pet_asset_ref_t *ref,
-                                               uint8_t *const frames[PET_ASSET_MAX_FRAMES]) {
-    if (!ref || !frames || !frames[0]) return ESP_ERR_INVALID_ARG;
-    const uint8_t *first[1] = {frames[0]};
-    return device_status_to_platform_error(
-        scene_presenter_set_pet_asset(first, 1, (size_t)ref->width,
-                             (size_t)ref->height,
-                             (uint32_t)ref->frame_ms));
+
+static bool pet_asset_runtime_prepare_cache_mirror(void *context) {
+    (void)context;
+    return device_storage_allows_optional_flash_work();
 }
+
+static device_status_t pet_asset_runtime_install_full(
+    const pet_asset_ref_t *ref, uint8_t *frames[PET_ASSET_MAX_FRAMES],
+    bool prepare_cache_mirror, uint8_t *cache_frames[PET_ASSET_MAX_FRAMES],
+    int *out_installed_frame_count, int *out_installed_frame_ms, void *context) {
+    (void)context;
+    return pet_asset_apply_service_install_full(
+        ref, frames, prepare_cache_mirror, cache_frames, NULL, NULL,
+        out_installed_frame_count, out_installed_frame_ms);
+}
+
+static void pet_asset_runtime_cache_in_background(
+    const pet_asset_ref_t *ref, uint8_t *cache_frames[PET_ASSET_MAX_FRAMES],
+    const gateway_capability_lease_t *lease, void *context) {
+    (void)context;
+    cache_pet_asset_in_background(ref, cache_frames, lease);
+}
+
+static void pet_asset_runtime_release_frames(
+    uint8_t *frames[PET_ASSET_MAX_FRAMES], void *context) {
+    (void)context;
+    free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+}
+
+static const pet_asset_runtime_service_host_t s_pet_asset_runtime_service_host = {
+    .struct_size = sizeof(pet_asset_runtime_service_host_t),
+    .revision_installed = pet_asset_runtime_revision_installed,
+    .capture_gateway_lease = pet_asset_runtime_capture_gateway_lease,
+    .gateway_lease_current = pet_asset_runtime_gateway_lease_current,
+    .transaction_admitted = pet_asset_runtime_transaction_admitted,
+    .begin_optional_media_work = pet_asset_runtime_begin_optional_media_work,
+    .finish_optional_media_work = pet_asset_runtime_finish_optional_media_work,
+    .capacity_available = pet_asset_runtime_capacity_available,
+    .drop_stale_cache = pet_asset_runtime_drop_stale_cache,
+    .download = pet_asset_runtime_download,
+    .prepare_cache_mirror = pet_asset_runtime_prepare_cache_mirror,
+    .install_full = pet_asset_runtime_install_full,
+    .cache_in_background = pet_asset_runtime_cache_in_background,
+    .release_frames = pet_asset_runtime_release_frames,
+    .context = NULL,
+};
+
+static bool pet_asset_profile_startup_matches(const char *revision, const char *skin,
+                                              void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_matches_profile(revision, skin);
+}
+
+static bool pet_asset_profile_startup_pending(void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_pending();
+}
+
+static void pet_asset_profile_set_startup_pending(bool pending, void *context) {
+    (void)context;
+    startup_pet_asset_state_service_set_pending(pending);
+}
+
+static device_status_t pet_asset_profile_apply(const pet_asset_ref_t *descriptor,
+                                                void *context) {
+    (void)context;
+    const device_status_t status = pet_asset_runtime_service_apply(
+        &s_pet_asset_runtime_service_host, descriptor);
+    if (status == DEVICE_STATUS_OK) {
+        ESP_LOGI(TAG, "GUI pet asset applied: revision=%s frames=%d/%d size=%dx%d",
+                 descriptor->revision, descriptor->frame_count, descriptor->frame_count,
+                 descriptor->width, descriptor->height);
+    } else if (status == DEVICE_STATUS_BUSY) {
+        ESP_LOGW(TAG, "pet asset update deferred: Gateway capability is not operational");
+    }
+    return status;
+}
+
+static device_status_t pet_asset_profile_clear(void *context) {
+    (void)context;
+    const esp_err_t err = clear_applied_pet_asset();
+    if (err == ESP_OK) return DEVICE_STATUS_OK;
+    if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_SIZE) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    if (err == ESP_ERR_NO_MEM) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (err == ESP_ERR_TIMEOUT) return DEVICE_STATUS_TIMEOUT;
+    if (err == ESP_ERR_INVALID_STATE) return DEVICE_STATUS_BUSY;
+    return DEVICE_STATUS_IO_ERROR;
+}
+
+static bool pet_asset_profile_status_permanently_invalid(device_status_t status,
+                                                          void *context) {
+    (void)context;
+    return status == DEVICE_STATUS_INVALID_ARGUMENT ||
+           status == DEVICE_STATUS_UNAVAILABLE ||
+           status == DEVICE_STATUS_NOT_FOUND;
+}
+
+static uint32_t pet_asset_profile_note_transient_failure(const char *message_id,
+                                                          void *context) {
+    (void)context;
+    return pet_asset_retry_service_note_failure(message_id);
+}
+
+static bool pet_asset_profile_retry_exhausted(uint32_t retry_limit, void *context) {
+    (void)context;
+    return pet_asset_retry_service_exhausted(retry_limit);
+}
+
+static void pet_asset_profile_reset_retries(void *context) {
+    (void)context;
+    pet_asset_retry_service_reset();
+}
+
+static const pet_asset_profile_service_host_t s_pet_asset_profile_service_host = {
+    .struct_size = sizeof(pet_asset_profile_service_host_t),
+    .startup_profile_matches = pet_asset_profile_startup_matches,
+    .startup_pending = pet_asset_profile_startup_pending,
+    .set_startup_pending = pet_asset_profile_set_startup_pending,
+    .apply_asset = pet_asset_profile_apply,
+    .clear_asset = pet_asset_profile_clear,
+    .status_permanently_invalid = pet_asset_profile_status_permanently_invalid,
+    .note_transient_failure = pet_asset_profile_note_transient_failure,
+    .retry_exhausted = pet_asset_profile_retry_exhausted,
+    .reset_retries = pet_asset_profile_reset_retries,
+    .context = NULL,
+};
+
+static bool pet_asset_startup_snapshot(startup_pet_asset_state_snapshot_t *out_state,
+                                       void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_snapshot(out_state);
+}
+
+static bool pet_asset_startup_stop_requested(void *context) {
+    (void)context;
+    return startup_pet_asset_stop_requested();
+}
+
+static device_status_t pet_asset_startup_clear_applied(uint32_t generation,
+                                                       void *context) {
+    (void)context;
+    /* The probe must run after acquiring the renderer mutex. A pre-check here
+     * races a newer runtime install while this old withdrawal waits on it. */
+    const device_status_t status = pet_asset_apply_service_clear(
+        startup_pet_asset_install_still_admitted, (void *)(uintptr_t)generation);
+    if (status != DEVICE_STATUS_OK) return status;
+    /* Cache clear is an asynchronous Flash transaction. Carry the same
+     * generation probe through its worker so a superseding descriptor cannot
+     * lose its retained cache while the old withdrawal waits for Flash. */
+    if (device_storage_allows_optional_flash_work() &&
+        clear_pet_asset_cache_with_cancel(
+            startup_pet_asset_install_still_admitted,
+            (void *)(uintptr_t)generation) != ESP_OK) {
+        return DEVICE_STATUS_IO_ERROR;
+    }
+    return DEVICE_STATUS_OK;
+}
+
+static bool pet_asset_startup_prepare_for_display(
+    const pet_asset_ref_t *source, pet_asset_ref_t *out_display, void *context) {
+    (void)context;
+    return pet_asset_prepare_for_display(source, out_display);
+}
+
+static bool pet_asset_startup_revision_installed(const pet_asset_ref_t *ref,
+                                                  void *context) {
+    (void)context;
+    return pet_asset_apply_service_revision_installed(ref);
+}
+
+static bool pet_asset_startup_capture_gateway_lease(
+    gateway_capability_lease_t *out_lease, void *context) {
+    (void)context;
+    return gateway_transport_capture_capability_lease(
+        GATEWAY_CAPABILITY_PET_ASSET, out_lease);
+}
+
+static bool pet_asset_startup_gateway_lease_current(
+    const gateway_capability_lease_t *lease, void *context) {
+    (void)context;
+    return pet_asset_gateway_lease_current(lease);
+}
+
+static bool pet_asset_startup_generation_admitted(uint32_t generation, void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_pending_generation(generation) &&
+           !startup_pet_asset_stop_requested();
+}
+
+static device_status_t pet_asset_startup_download(
+    const pet_asset_ref_t *ref, const gateway_capability_lease_t *lease,
+    uint32_t generation, uint8_t *frames[PET_ASSET_MAX_FRAMES], void *context) {
+    (void)context;
+    const esp_err_t err = download_pet_asset_frames(ref, frames, true, lease, generation);
+    if (err == ESP_OK) return DEVICE_STATUS_OK;
+    if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_SIZE) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    if (err == ESP_ERR_NO_MEM) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (err == ESP_ERR_TIMEOUT) return DEVICE_STATUS_TIMEOUT;
+    if (err == ESP_ERR_INVALID_STATE) return DEVICE_STATUS_BUSY;
+    return DEVICE_STATUS_IO_ERROR;
+}
+
+static bool pet_asset_startup_prepare_cache_mirror(void *context) {
+    (void)context;
+    return device_storage_allows_optional_flash_work();
+}
+
+static device_status_t pet_asset_startup_install_full(
+    const pet_asset_ref_t *ref, uint8_t *frames[PET_ASSET_MAX_FRAMES],
+    bool prepare_cache_mirror, uint8_t *cache_frames[PET_ASSET_MAX_FRAMES],
+    uint32_t generation, int *out_installed_frame_count,
+    int *out_installed_frame_ms, void *context) {
+    (void)context;
+    /* The apply service holds the renderer transaction. This callback adds the
+     * generation fence immediately before it consumes source frames. */
+    return pet_asset_apply_service_install_full(
+        ref, frames, prepare_cache_mirror, cache_frames,
+        startup_pet_asset_install_still_admitted, (void *)(uintptr_t)generation,
+        out_installed_frame_count, out_installed_frame_ms);
+}
+
+static void pet_asset_startup_cache_in_background(
+    const pet_asset_ref_t *ref, uint8_t *cache_frames[PET_ASSET_MAX_FRAMES],
+    const gateway_capability_lease_t *lease, void *context) {
+    (void)context;
+    cache_pet_asset_in_background(ref, cache_frames, lease);
+}
+
+static void pet_asset_startup_release_frames(uint8_t *frames[PET_ASSET_MAX_FRAMES],
+                                             void *context) {
+    (void)context;
+    free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
+}
+
+static void pet_asset_startup_finish_generation(uint32_t generation, void *context) {
+    (void)context;
+    (void)startup_pet_asset_state_service_finish_generation(generation);
+}
+
+static const pet_asset_startup_service_host_t s_pet_asset_startup_service_host = {
+    .struct_size = sizeof(pet_asset_startup_service_host_t),
+    .snapshot = pet_asset_startup_snapshot,
+    .stop_requested = pet_asset_startup_stop_requested,
+    .clear_applied = pet_asset_startup_clear_applied,
+    .prepare_for_display = pet_asset_startup_prepare_for_display,
+    .revision_installed = pet_asset_startup_revision_installed,
+    .capture_gateway_lease = pet_asset_startup_capture_gateway_lease,
+    .gateway_lease_current = pet_asset_startup_gateway_lease_current,
+    .generation_admitted = pet_asset_startup_generation_admitted,
+    .download = pet_asset_startup_download,
+    .prepare_cache_mirror = pet_asset_startup_prepare_cache_mirror,
+    .install_full = pet_asset_startup_install_full,
+    .cache_in_background = pet_asset_startup_cache_in_background,
+    .release_frames = pet_asset_startup_release_frames,
+    .finish_generation = pet_asset_startup_finish_generation,
+    .context = NULL,
+};
+
 static esp_err_t apply_pet_asset_ref(cJSON *object) {
     pet_asset_ref_t descriptor;
     pet_asset_ref_t ref;
     if (!pet_asset_service_parse_hub_descriptor(object, &descriptor) ||
         !pet_asset_prepare_for_display(&descriptor, &ref)) return ESP_ERR_INVALID_ARG;
-    // A pet_profile is durable latest-wins state. Hub can re-deliver its
-    // still-unacknowledged control message after a poll retry, so do not fetch
-    // and scale the exact revision again. More importantly, the startup
-    // installer may already have published this full pack before its delayed
-    // mirror reaches the outgoing queue. Bread treats that mirror as applied;
-    // EchoEar must do the same instead of spending another eight TLS downloads
-    // while the new pet is already on screen.
-    if (s_loaded_pet_asset_revision[0] &&
-        !strcmp(s_loaded_pet_asset_revision, ref.revision) &&
-        s_loaded_pet_asset_frame_count >= ref.frame_count) {
-        ESP_LOGI(TAG, "GUI pet asset already applied: revision=%s frames=%d/%d",
-                 ref.revision, s_loaded_pet_asset_frame_count, ref.frame_count);
-        return ESP_OK;
-    }
-    gateway_capability_lease_t gateway_lease = {0};
-    if (!gateway_transport_capture_capability_lease(
-            GATEWAY_CAPABILITY_PET_ASSET, &gateway_lease)) {
-        ESP_LOGW(TAG, "pet asset update deferred: Gateway capability is not operational");
-        return ESP_ERR_INVALID_STATE;
-    }
-    // A GUI-initiated pet switch must also succeed while the wake recognizer
-    // is resident.  Borrow the same optional-media lease the startup installer
-    // uses so the capacity sample and the downloads see the internal/PSRAM
-    // blocks MultiNet was holding.
-    begin_optional_media_wake_memory_lease("runtime pet asset");
-    esp_err_t err = ESP_OK;
-    if (!pet_asset_capacity_available(&ref)) {
-        // 自愈：回收注定被替换的旧 revision 缓存后让门禁重新取样。
-        (void)drop_stale_pet_asset_cache(&ref);
-    }
-    if (!pet_asset_capacity_available(&ref)) {
-        err = ESP_ERR_NO_MEM;
-    }
-    uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
-    uint8_t *cache_frames[PET_ASSET_MAX_FRAMES] = {0};
-    if (err == ESP_OK) {
-        err = download_pet_asset_frames(&ref, frames, false, &gateway_lease);
-    }
-    if (err == ESP_OK) {
-        if (!s_pet_asset_apply_mutex ||
-            xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
-            err = ESP_ERR_INVALID_STATE;
-        }
-    }
-    if (err == ESP_OK) {
-        // The consuming install releases the source frames. Commit the complete
-        // SHA-verified pack first so a later cold boot can restore animation
-        // locally instead of repeating the slow hub download.
-        if (s_storage_mounted && device_storage_allows_optional_flash_work() &&
-            !clone_pet_asset_frames(&ref, frames, cache_frames)) {
-            ESP_LOGI(TAG, "pet asset cache skipped: cannot reserve full-pack mirror");
-        }
-        int installed_frames = 0, installed_frame_ms = 0;
-        err = pet_asset_gateway_lease_current(&gateway_lease)
-                  ? install_pet_asset_with_fallback(&ref, frames, &installed_frames,
-                                                    &installed_frame_ms)
-                  : ESP_ERR_INVALID_STATE;
-        if (err == ESP_OK) {
-            strlcpy(s_loaded_pet_asset_revision, ref.revision,
-                    sizeof(s_loaded_pet_asset_revision));
-            s_loaded_pet_asset_frame_count = installed_frames;
-            ESP_LOGI(TAG, "GUI pet asset applied: revision=%s frames=%d/%d frame_ms=%d size=%dx%d",
-                     ref.revision, installed_frames, ref.frame_count, installed_frame_ms,
-                     ref.width, ref.height);
-        }
-        if (err == ESP_OK && installed_frames == ref.frame_count && cache_frames[0]) {
-            cache_pet_asset_in_background(&ref, cache_frames, &gateway_lease);
-        }
-        xSemaphoreGive(s_pet_asset_apply_mutex);
-    }
-    free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
-    free_pet_asset_frames(cache_frames, PET_ASSET_MAX_FRAMES);
-    finish_optional_pet_asset_memory_lease();
-    return err;
+    return device_status_to_platform_error(
+        pet_asset_profile_apply(&ref, NULL));
 }
 
 static esp_err_t apply_deferred_pet_asset(void) {
-    if (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) {
-        return startup_pet_asset_stop_requested() ? ESP_ERR_INVALID_STATE : ESP_OK;
+    const device_status_t status = pet_asset_startup_service_apply(
+        &s_pet_asset_startup_service_host);
+    if (status == DEVICE_STATUS_OK) {
+        ESP_LOGI(TAG, "deferred startup pet asset transaction complete");
+    } else if (status == DEVICE_STATUS_BUSY) {
+        ESP_LOGW(TAG, "startup pet asset deferred: admission or Gateway capability changed");
     }
-    if (!s_startup_pet_asset_present) {
-        s_loaded_pet_asset_revision[0] = '\0';
-        esp_err_t err = clear_applied_pet_asset();
-        s_startup_pet_asset_pending = false;
-        return err;
-    }
-    if (!s_startup_pet_asset_ref) {
-        s_startup_pet_asset_pending = false;
-        return ESP_ERR_INVALID_STATE;
-    }
-    pet_asset_ref_t ref;
-    if (!pet_asset_prepare_for_display(s_startup_pet_asset_ref, &ref)) {
-        s_startup_pet_asset_pending = false;
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_loaded_pet_asset_revision[0] &&
-        !strcmp(s_loaded_pet_asset_revision, ref.revision) &&
-        s_loaded_pet_asset_frame_count >= ref.frame_count) {
-        ESP_LOGI(TAG, "startup pet asset already cached: revision=%s",
-                 ref.revision);
-        s_startup_pet_asset_pending = false;
-        return ESP_OK;
-    }
-    gateway_capability_lease_t gateway_lease = {0};
-    if (!gateway_transport_capture_capability_lease(
-            GATEWAY_CAPABILITY_PET_ASSET, &gateway_lease)) {
-        /* A cold descriptor is data only; it must not authorize a later
-         * download after the Hub has withdrawn the advertised capability. */
-        ESP_LOGW(TAG, "startup pet asset deferred: Gateway capability is not operational");
-        return ESP_ERR_INVALID_STATE;
-    }
-    uint8_t *frames[PET_ASSET_MAX_FRAMES] = {0};
-    uint8_t *cache_frames[PET_ASSET_MAX_FRAMES] = {0};
-    esp_err_t err = ESP_FAIL;
-    // A fully installed pack is the smooth-animation target, but the first
-    // verified frame has already made standby usable.  Continue the complete
-    // transaction after transport-level failures instead of leaving EchoEar on
-    // that preview for the rest of the boot.  Each failed pass frees its own
-    // partial source frames and request_with_capacity discards the failed TLS
-    // handle, so the next pass starts cleanly without growing PSRAM usage.
-    for (unsigned attempt = 1; attempt <= PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS;
-         ++attempt) {
-        if (startup_pet_asset_stop_requested()) {
-            err = ESP_ERR_INVALID_STATE;
-            break;
-        }
-        err = download_pet_asset_frames(&ref, frames, true, &gateway_lease);
-        if (err == ESP_OK &&
-            (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested())) {
-            err = ESP_ERR_INVALID_STATE;
-        }
-        if (err == ESP_OK || err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_CRC ||
-            err == ESP_ERR_INVALID_SIZE || err == ESP_ERR_INVALID_STATE) {
-            break;
-        }
-        if (attempt == PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS) break;
-        ESP_LOGW(TAG, "startup pet pack retry: attempt=%u/%u err=%s; preview remains visible",
-                 attempt, PET_ASSET_STARTUP_TRANSACTION_ATTEMPTS, esp_err_to_name(err));
-        if (ulTaskNotifyTake(pdTRUE,
-                              pdMS_TO_TICKS(PET_ASSET_STARTUP_RETRY_DELAY_MS * attempt)) != 0 ||
-            !s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) {
-            err = ESP_ERR_INVALID_STATE;
-            break;
-        }
-    }
-    if (err == ESP_OK) {
-        // The live GUI choice may have arrived after the last frame download.
-        // Re-check after acquiring renderer ownership so this optional startup
-        // transaction can never publish an older pack over a newer selection.
-        if (!s_pet_asset_apply_mutex ||
-            xSemaphoreTake(s_pet_asset_apply_mutex, portMAX_DELAY) != pdTRUE) {
-            err = ESP_ERR_INVALID_STATE;
-        } else if (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) {
-            xSemaphoreGive(s_pet_asset_apply_mutex);
-            err = ESP_ERR_INVALID_STATE;
-        }
-    }
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "startup pet frames downloaded; installing first frame");
-        // Put a real pet on the standby surface immediately. Scaling one frame
-        // is quick; the remaining seven animated frames can be installed after
-        // the durable cache commit completes.
-        esp_err_t preview_err = install_pet_asset_first_frame(&ref, frames);
-        if (preview_err != ESP_OK) {
-            ESP_LOGW(TAG, "startup pet preview failed: %s", esp_err_to_name(preview_err));
-        } else {
-            ESP_LOGI(TAG, "startup pet first frame applied");
-        }
-        /* Publish the verified in-memory animation before any optional Flash
-         * work. The renderer consumes source frames as it scales, which keeps
-         * the visible user outcome ahead of slow/fragmented SPIFFS writes and
-         * prevents a timed DISPLAY_OFF from making a completed download look
-         * lost. A complete cache mirror is added by a later ownership-safe
-         * phase; metadata must never describe a reduced fallback animation. */
-        if (s_storage_mounted && device_storage_allows_optional_flash_work() &&
-            !clone_pet_asset_frames(&ref, frames, cache_frames)) {
-            ESP_LOGI(TAG, "deferred pet cache skipped: cannot reserve full-pack mirror");
-        }
-        int installed_frames = 0, installed_frame_ms = 0;
-        if (startup_pet_asset_stop_requested() ||
-            !pet_asset_gateway_lease_current(&gateway_lease)) {
-            err = ESP_ERR_INVALID_STATE;
-        } else {
-            err = install_pet_asset_with_fallback(&ref, frames,
-                                                   &installed_frames, &installed_frame_ms);
-        }
-        if (err == ESP_OK) {
-            strlcpy(s_loaded_pet_asset_revision, ref.revision,
-                    sizeof(s_loaded_pet_asset_revision));
-            s_loaded_pet_asset_frame_count = installed_frames;
-            ESP_LOGI(TAG, "deferred pet asset applied: revision=%s frames=%d/%d frame_ms=%d size=%dx%d",
-                     ref.revision, installed_frames,
-                     ref.frame_count, installed_frame_ms,
-                     ref.width, ref.height);
-        }
-        if (err == ESP_OK && installed_frames == ref.frame_count && cache_frames[0]) {
-            cache_pet_asset_in_background(&ref, cache_frames, &gateway_lease);
-        }
-        xSemaphoreGive(s_pet_asset_apply_mutex);
-    }
-    // The display port retains its own scaled PSRAM copies.  The source HTTP
-    // buffers are normally released here, but on EchoEar that deallocation
-    // races the QSPI full-frame path and causes a cache-disable assertion
-    // immediately after the visible pet has been installed. Retain the tiny
-    // one-shot source set for this boot; it is bounded (8 × 192 KiB) and avoids
-    // a restart that would otherwise erase the successful standby transition.
-    free_pet_asset_frames(frames, PET_ASSET_MAX_FRAMES);
-    free_pet_asset_frames(cache_frames, PET_ASSET_MAX_FRAMES);
-    // Keep pending true for the entire download/install/cache transaction so
-    // a queued pet_profile mirror is ACKed without starting a competing copy.
-    s_startup_pet_asset_pending = false;
-    return err;
+    return device_status_to_platform_error(status);
 }
 
 #define STARTUP_PET_RETRY_MAX 6u
@@ -1801,51 +1989,133 @@ static bool schedule_startup_pet_retry_timer(void) {
            DEVICE_STATUS_OK;
 }
 
+static bool startup_pet_admission_snapshot(
+    startup_pet_asset_state_snapshot_t *out_state, void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_snapshot(out_state);
+}
+
+static bool startup_pet_admission_stop_requested(void *context) {
+    (void)context;
+    return startup_pet_asset_stop_requested();
+}
+
+static bool startup_pet_admission_system_sleep_preparing(void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_system_sleep_preparing();
+}
+
+static bool startup_pet_admission_prepare_for_display(
+    const pet_asset_ref_t *source, pet_asset_ref_t *out_display, void *context) {
+    (void)context;
+    return pet_asset_prepare_for_display(source, out_display);
+}
+
+static bool startup_pet_admission_capacity_available(const pet_asset_ref_t *ref,
+                                                     void *context) {
+    (void)context;
+    return pet_asset_capacity_available(ref);
+}
+
+static bool startup_pet_admission_drop_stale_cache(const pet_asset_ref_t *ref,
+                                                    void *context) {
+    (void)context;
+    return drop_stale_pet_asset_cache(ref);
+}
+
+static bool startup_pet_admission_take_capacity_retry(uint32_t generation,
+                                                       uint32_t retry_limit,
+                                                       uint32_t *out_attempt,
+                                                       void *context) {
+    (void)context;
+    return startup_pet_asset_state_service_take_capacity_retry(
+        generation, retry_limit, out_attempt);
+}
+
+static void startup_pet_admission_return_capacity_retry(uint32_t generation,
+                                                        void *context) {
+    (void)context;
+    startup_pet_asset_state_service_return_capacity_retry(generation);
+}
+
+static bool startup_pet_admission_schedule_retry(void *context) {
+    (void)context;
+    return schedule_startup_pet_retry_timer();
+}
+
+static void startup_pet_admission_finish_generation(uint32_t generation, void *context) {
+    (void)context;
+    (void)startup_pet_asset_state_service_finish_generation(generation);
+}
+
+static bool startup_pet_admission_worker_active(void *context) {
+    (void)context;
+    return startup_pet_worker_service_active();
+}
+
+static bool startup_pet_admission_gateway_operational(void *context) {
+    (void)context;
+    return gateway_transport_capabilities_operational(
+        GATEWAY_CAPABILITY_PET_ASSET);
+}
+
+static device_status_t startup_pet_admission_start_worker(void *context) {
+    (void)context;
+    return startup_pet_worker_service_start();
+}
+
+static bool startup_pet_admission_revision_installed(const pet_asset_ref_t *ref,
+                                                      void *context) {
+    (void)context;
+    return pet_asset_apply_service_revision_installed(ref);
+}
+
+static void startup_pet_admission_set_pending(bool pending, void *context) {
+    (void)context;
+    startup_pet_asset_state_service_set_pending(pending);
+}
+
+static const startup_pet_asset_admission_service_host_t
+    s_startup_pet_asset_admission_service_host = {
+        .struct_size = sizeof(startup_pet_asset_admission_service_host_t),
+        .snapshot = startup_pet_admission_snapshot,
+        .stop_requested = startup_pet_admission_stop_requested,
+        .system_sleep_preparing = startup_pet_admission_system_sleep_preparing,
+        .prepare_for_display = startup_pet_admission_prepare_for_display,
+        .capacity_available = startup_pet_admission_capacity_available,
+        .drop_stale_cache = startup_pet_admission_drop_stale_cache,
+        .take_capacity_retry = startup_pet_admission_take_capacity_retry,
+        .return_capacity_retry = startup_pet_admission_return_capacity_retry,
+        .schedule_retry = startup_pet_admission_schedule_retry,
+        .finish_generation = startup_pet_admission_finish_generation,
+        .worker_active = startup_pet_admission_worker_active,
+        .gateway_operational = startup_pet_admission_gateway_operational,
+        .start_worker = startup_pet_admission_start_worker,
+        .revision_installed = startup_pet_admission_revision_installed,
+        .set_pending = startup_pet_admission_set_pending,
+        .context = NULL,
+};
+
 static void apply_deferred_startup_pet_asset(void) {
-    if (!s_startup_pet_asset_pending || startup_pet_asset_stop_requested()) return;
-    pet_asset_ref_t display_ref;
-    const bool display_ref_ready = s_startup_pet_asset_ref &&
-                                   pet_asset_prepare_for_display(
-                                       s_startup_pet_asset_ref, &display_ref);
-    if (display_ref_ready && !pet_asset_capacity_available(&display_ref)) {
-        // 自愈：旧 revision 缓存注定被这次安装替换，先回收再让门禁重新取样。
-        (void)drop_stale_pet_asset_cache(&display_ref);
-    }
-    if (!display_ref_ready || !pet_asset_capacity_available(&display_ref)) {
-        /* Decorative network/cache work is the first domain to yield.  Do not
-         * reserve TLS/PSRAM or trigger SPIFFS GC when foreground safety margin
-         * is already exhausted; a later Hub state refresh can offer it again. */
-        // The capacity sample happens right after boot while the wake model,
-        // glyph downloads and the first TLS polls still hold large transient
-        // PSRAM blocks.  That pressure subsides within seconds, so retry a few
-        // times before giving the boot's pet pack up entirely.
-        if (display_ref_ready && s_startup_pet_retry_count < STARTUP_PET_RETRY_MAX) {
-            if (schedule_startup_pet_retry_timer()) {
-                ++s_startup_pet_retry_count;
-                ESP_LOGW(TAG, "startup pet asset deferred: capacity tight, retry %u/%u in 10 s",
-                         s_startup_pet_retry_count, STARTUP_PET_RETRY_MAX);
-                return;
-            }
-        }
+    uint32_t retry_attempt = 0;
+    device_status_t start_status = DEVICE_STATUS_OK;
+    const startup_pet_asset_admission_result_t result =
+        startup_pet_asset_admission_service_admit_pending(
+            &s_startup_pet_asset_admission_service_host, STARTUP_PET_RETRY_MAX,
+            &retry_attempt, &start_status);
+    if (result == STARTUP_PET_ASSET_ADMISSION_RETRY_SCHEDULED) {
+        ESP_LOGW(TAG, "startup pet asset deferred: capacity tight, retry %u/%u in 10 s",
+                 (unsigned)retry_attempt, STARTUP_PET_RETRY_MAX);
+    } else if (result == STARTUP_PET_ASSET_ADMISSION_FINISHED) {
         ESP_LOGW(TAG, "startup pet asset skipped: shared optional capacity unavailable");
-        s_startup_pet_asset_pending = false;
-        return;
-    }
-    // Never block the gateway startup owner for optional artwork. The worker
-    // service owns create/publish/Registry/retirement sequencing; root only
-    // decides whether the domain is eligible to start a transaction.
-    if (s_startup_pet_system_sleep_preparing || startup_pet_worker_service_active()) return;
-    if (!gateway_transport_capabilities_operational(
-            GATEWAY_CAPABILITY_PET_ASSET)) {
-        /* Descriptor retention is harmless, but a retry timer must not keep
-         * creating download workers after capability withdrawal. A later
-         * authenticated handshake supplies a fresh descriptor and re-arms the
-         * normal cold-start path. */
+    } else if (result == STARTUP_PET_ASSET_ADMISSION_NO_ACTION &&
+               !startup_pet_asset_stop_requested() &&
+               !gateway_transport_capabilities_operational(
+                   GATEWAY_CAPABILITY_PET_ASSET)) {
         ESP_LOGI(TAG, "startup pet asset remains deferred: Gateway capability unavailable");
-        return;
     }
-    const device_status_t start_status = startup_pet_worker_service_start();
-    if (start_status != DEVICE_STATUS_OK) {
+    if (result == STARTUP_PET_ASSET_ADMISSION_NO_ACTION &&
+        start_status != DEVICE_STATUS_OK) {
         ESP_LOGW(TAG, "cannot start deferred pet asset worker: status=%d",
                  (int)start_status);
     }
@@ -1857,44 +2127,16 @@ static void apply_deferred_startup_pet_asset(void) {
  * The preempted worker may still be unwinding an in-flight frame request, in
  * which case the retry timer is the backstop that spawns its replacement. */
 static void rearm_preempted_startup_pet_asset(void) {
-    if (!s_startup_pet_asset_present || !s_startup_pet_asset_ref) return;
-    // A pet_profile push or an earlier re-arm may already own the install.
-    if (s_startup_pet_asset_pending) return;
-    pet_asset_ref_t display_ref;
-    if (!pet_asset_prepare_for_display(s_startup_pet_asset_ref, &display_ref)) return;
-    if (s_loaded_pet_asset_revision[0] &&
-        !strcmp(s_loaded_pet_asset_revision, display_ref.revision) &&
-        s_loaded_pet_asset_frame_count >= display_ref.frame_count) {
-        return;
-    }
-    s_startup_pet_asset_pending = true;
+    const startup_pet_asset_admission_result_t result =
+        startup_pet_asset_admission_service_rearm_preempted(
+            &s_startup_pet_asset_admission_service_host);
+    if (result != STARTUP_PET_ASSET_ADMISSION_REARMED) return;
     if (!startup_pet_worker_service_active()) {
         ESP_LOGI(TAG, "startup pet asset re-armed after server audio");
         apply_deferred_startup_pet_asset();
         return;
     }
-    if (schedule_startup_pet_retry_timer()) {
-        ESP_LOGI(TAG, "startup pet asset re-armed after server audio (worker unwinding)");
-    } else {
-        s_startup_pet_asset_pending = false;
-        ESP_LOGW(TAG, "cannot re-arm preempted startup pet asset");
-    }
-}
-
-static bool audio_mime_supported(const char *mime) {
-    return !mime || !strcmp(mime, "audio/wav") || !strcmp(mime, "audio/x-wav") ||
-           !strcmp(mime, "audio/mpeg") || !strcmp(mime, "audio/mp3");
-}
-
-static bool audio_payload_is_mp3(const char *mime, const uint8_t *data, size_t len) {
-    if (mime && (!strcmp(mime, "audio/mpeg") || !strcmp(mime, "audio/mp3"))) {
-        return true;
-    }
-    if (!data || len < 2) return false;
-    if (len >= 3 && memcmp(data, "ID3", 3) == 0) return true;
-    // MPEG audio sync: eleven leading one bits. The decoder validates the
-    // layer/version fields; this is only format dispatch when MIME is absent.
-    return data[0] == 0xFF && (data[1] & 0xE0) == 0xE0;
+    ESP_LOGI(TAG, "startup pet asset re-armed after server audio (worker unwinding)");
 }
 
 // Legacy domain workflows still use esp_err_t internally.  Keep conversion at
@@ -1927,20 +2169,23 @@ static esp_err_t audio_wake_word_stop_with_timeout(uint32_t timeout_ms) {
     return device_status_to_esp_err(audio_arbitration_wake_word_stop_with_timeout(timeout_ms));
 }
 
-static esp_err_t play_audio_payload(const char *mime, const uint8_t *data, size_t len) {
-    if (!data || len == 0) return ESP_ERR_INVALID_ARG;
-    if (audio_payload_is_mp3(mime, data, len)) {
-        return device_status_to_esp_err(mp3_player_play(data, len));
-    }
-    return device_status_to_esp_err(audio_arbitration_play_wav(data, (uint32_t)len));
+static device_status_t server_audio_play_mp3(const uint8_t *data, uint32_t length,
+                                             void *context) {
+    (void)context;
+    return mp3_player_play(data, length);
+}
+
+static device_status_t server_audio_play_wav(const uint8_t *data, uint32_t length,
+                                             void *context) {
+    (void)context;
+    return audio_arbitration_play_wav(data, length);
 }
 
 static bool hardware_audio_url_allowed(const char *url) {
-    if (!url || url[0] != '/') return false;
-    return !strncmp(url, "/api/im-gateway/v1/media/", strlen("/api/im-gateway/v1/media/"));
+    return server_audio_presentation_service_url_allowed(url);
 }
 
-static bool audio_error_is_permanent(esp_err_t err) {
+static bool gateway_transport_error_is_permanent(esp_err_t err) {
     return err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_SIZE ||
            err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_NOT_SUPPORTED ||
            err == ESP_ERR_INVALID_STATE;
@@ -1969,21 +2214,18 @@ static bool startup_welcome_is_current_boot(cJSON *item, bool welcome_audio) {
     // Only a greeting explicitly correlated to this cold boot is allowed to
     // control the gate. Reserved-ID messages without a boot ID remain ordinary
     // compatibility audio and cannot release (or be discarded by) startup.
-    return boot_session_id && boot_session_id[0] &&
-           strcmp(boot_session_id, s_boot_session_id) == 0;
+    return startup_runtime_state_service_matches_boot_session_id(boot_session_id);
 }
 
-static void finish_startup_welcome_gate(const char *reason) {
-    bool notify = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_startup_welcome_gate_active) {
-        s_startup_welcome_gate_active = false;
-        notify = true;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!notify) return;
+static void startup_welcome_log_gate_released(const char *reason, void *context) {
+    (void)context;
     ESP_LOGI(TAG, "startup Welcome gate released: %s", reason ? reason : "complete");
-    if (s_startup_welcome_done) xSemaphoreGive(s_startup_welcome_done);
+}
+
+static void startup_welcome_log_gate_timed_out(uint32_t timeout_ms, void *context) {
+    (void)context;
+    ESP_LOGW(TAG, "startup Welcome gate timed out after %u ms; late greeting will be discarded",
+             (unsigned)timeout_ms);
 }
 
 static bool start_gateway_ready_tasks(void) {
@@ -2001,13 +2243,11 @@ static bool start_gateway_ready_tasks(void) {
     // apply a queued hardware-volume update. This removes the cold-start race
     // for the shared audio bus and makes wake readiness the first service
     // published after the authenticated handshake.
-    while (s_startup_welcome_done && xSemaphoreTake(s_startup_welcome_done, 0) == pdTRUE) {}
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_startup_sequence_complete = false;
-    s_startup_welcome_gate_active = s_handshake_startup_welcome_queued;
-    s_startup_welcome_timed_out = false;
-    s_startup_welcome_consumed = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
+    const bool startup_welcome_queued = startup_welcome_service_begin_sequence();
+    if (!startup_runtime_state_service_begin_sequence()) {
+        ESP_LOGW(TAG, "startup sequence rejected because ordinary admission is closed");
+        return false;
+    }
     // Re-assert the board-specific boot artwork at the exact Welcome boundary.
     // It may already be visible from app_main(), but this closes every path where
     // pairing/status work temporarily owned the display before the handshake.
@@ -2034,11 +2274,8 @@ static bool start_gateway_ready_tasks(void) {
                          esp_err_to_name(stop_err));
             }
         }
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_startup_welcome_gate_active = false;
-        s_startup_welcome_timed_out = s_handshake_startup_welcome_queued;
-        s_startup_sequence_complete = true;
-        taskEXIT_CRITICAL(&s_task_state_lock);
+        startup_runtime_state_service_complete_sequence();
+        startup_welcome_service_mark_startup_failed();
         pet("alert");
         scene_presenter_publish_message("设备启动失败", "无法启动网关轮询");
         return false;
@@ -2050,32 +2287,18 @@ static bool start_gateway_ready_tasks(void) {
     if (!meeting_service_ensure_resume_supervisor()) {
         ESP_LOGW(TAG, "meeting recovery supervisor unavailable; retained audio remains pending");
     }
-    if (s_handshake_startup_welcome_queued) {
+    if (startup_welcome_queued) {
         ESP_LOGI(TAG, "startup Welcome gate armed; wake listener ready=%s",
                  wake_ready ? "yes" : "no");
-        if (xSemaphoreTake(s_startup_welcome_done,
-                           pdMS_TO_TICKS(STARTUP_WELCOME_TIMEOUT_MS)) != pdTRUE) {
-            taskENTER_CRITICAL(&s_task_state_lock);
-            bool still_pending = s_startup_welcome_gate_active;
-            s_startup_welcome_gate_active = false;
-            s_startup_welcome_timed_out = still_pending;
-            taskEXIT_CRITICAL(&s_task_state_lock);
-            if (still_pending) {
-                ESP_LOGW(TAG, "startup Welcome gate timed out after %u ms; late greeting will be discarded",
-                         STARTUP_WELCOME_TIMEOUT_MS);
-            }
-        }
+        (void)startup_welcome_service_wait_for_completion(STARTUP_WELCOME_TIMEOUT_MS);
     } else {
         ESP_LOGI(TAG, "startup Welcome unavailable or disabled; continuing without playback");
     }
     // The normal standby surface is still published last. Touch/wake callbacks
-    // remain blocked by s_startup_sequence_complete while the greeting owns
+    // remain blocked by the startup admission service while the greeting owns
     // the startup surface, although recognition itself is already hot.
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_startup_sequence_complete = true;
-    bool restart_after_startup = s_wake_restart_after_startup;
-    s_wake_restart_after_startup = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
+    startup_runtime_state_service_complete_sequence();
+    bool restart_after_startup = wake_restart_worker_service_consume_startup_teardown();
     // A phrase can be detected while the optional Welcome audio is still
     // authoritative. In that case the one-shot EchoEar recognizer tears itself
     // down and the callback below records a deferred restart. Avoid spawning a
@@ -2120,11 +2343,19 @@ static device_status_t cancel_gateway_requests_for_system_sleep(uint32_t timeout
     lifecycle_status = remaining_ms
         ? prepare_startup_pet_asset_system_sleep(remaining_ms)
         : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     if (lifecycle_status != DEVICE_STATUS_OK) return lifecycle_status;
 
     remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
     lifecycle_status = remaining_ms ? clock_sync_service_prepare_system_sleep(remaining_ms)
                                     : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     if (lifecycle_status != DEVICE_STATUS_OK) {
         clock_sync_service_abort_system_sleep_prepare();
         abort_startup_pet_asset_system_sleep_prepare();
@@ -2135,6 +2366,10 @@ static device_status_t cancel_gateway_requests_for_system_sleep(uint32_t timeout
     lifecycle_status = remaining_ms
         ? cellular_recovery_service_prepare_system_sleep(remaining_ms)
         : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     if (lifecycle_status != DEVICE_STATUS_OK) {
         cellular_recovery_service_abort_system_sleep_prepare();
         clock_sync_service_abort_system_sleep_prepare();
@@ -2145,6 +2380,10 @@ static device_status_t cancel_gateway_requests_for_system_sleep(uint32_t timeout
     remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
     lifecycle_status = remaining_ms ? prepare_wake_restart_system_sleep(remaining_ms)
                                     : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     if (lifecycle_status != DEVICE_STATUS_OK) {
         abort_wake_restart_system_sleep_prepare();
         cellular_recovery_service_abort_system_sleep_prepare();
@@ -2156,6 +2395,10 @@ static device_status_t cancel_gateway_requests_for_system_sleep(uint32_t timeout
     remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
     lifecycle_status = remaining_ms ? prepare_deferred_setup_system_sleep(remaining_ms)
                                     : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
     if (lifecycle_status != DEVICE_STATUS_OK) {
         abort_deferred_setup_system_sleep_prepare();
         abort_wake_restart_system_sleep_prepare();
@@ -2203,6 +2446,88 @@ static void resume_gateway_workers_after_system_sleep_abort(void *context) {
     abort_startup_pet_asset_system_sleep_prepare();
 }
 
+/* The restart coordinator remains deliberately unbound from production
+ * triggers: physical root reinitialization/rearm is not yet restart-safe.
+ * This bridge only proves the terminal half of its first stage. It uses the
+ * same single parent deadline as any future coordinator host and never calls
+ * a System Sleep ABORT on error. */
+static device_status_t quiesce_network_dependents_for_restart(uint32_t timeout_ms,
+                                                               void *context) {
+    (void)context;
+    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    device_status_t status = remaining_ms
+        ? stop_startup_pet_asset_for_network_restart(remaining_ms)
+        : DEVICE_STATUS_TIMEOUT;
+    if (status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (status != DEVICE_STATUS_OK) return status;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    status = remaining_ms ? prepare_wake_restart_network_restart(remaining_ms)
+                          : DEVICE_STATUS_TIMEOUT;
+    if (status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (status != DEVICE_STATUS_OK) return status;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    status = remaining_ms ? prepare_deferred_setup_network_restart(remaining_ms)
+                          : DEVICE_STATUS_TIMEOUT;
+    if (status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (status != DEVICE_STATUS_OK) return status;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    status = remaining_ms ? cellular_recovery_service_prepare_network_restart(remaining_ms)
+                          : DEVICE_STATUS_TIMEOUT;
+    if (status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (status != DEVICE_STATUS_OK) return status;
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    status = remaining_ms ? gateway_lifecycle_service_prepare_network_restart(remaining_ms)
+                          : DEVICE_STATUS_TIMEOUT;
+    if (status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (status != DEVICE_STATUS_OK) return status;
+
+    /* Commit in dependency order. From here every participating old
+     * generation stays terminally closed, including if a later root phase
+     * fails. */
+    status = gateway_lifecycle_service_commit_prepared_network_restart();
+    if (status != DEVICE_STATUS_OK) return status;
+    if (startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    status = cellular_recovery_service_commit_prepared_network_restart();
+    if (status != DEVICE_STATUS_OK) return status;
+    if (startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    status = commit_deferred_setup_network_restart();
+    if (status != DEVICE_STATUS_OK) return status;
+    if (startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    status = commit_wake_restart_network_restart();
+    /* The wake-restart worker is the terminal participant in this bridge.
+     * Its successful return must still fit inside the one parent deadline;
+     * otherwise the coordinator could publish a restart-ready generation
+     * after its caller's bounded transaction has already expired. */
+    if (status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    return status;
+}
+
 /* Clock sync lifecycle moved to services/clock_sync_service.c. */
 
 static void clock_sync_ensure_ambient_clock(void *context) {
@@ -2217,7 +2542,7 @@ static void clock_sync_note_wall_clock(int64_t epoch_sec, void *context) {
 
 static void clock_sync_notify_wall_clock_updated(void *context) {
     (void)context;
-    wake_deadline_service_on_wall_clock_updated();
+    wake_deadline_service_on_trusted_wall_clock_updated();
     sleep_schedule_service_on_wall_clock_updated();
 }
 
@@ -2232,333 +2557,77 @@ static const clock_sync_service_host_t s_clock_sync_service_host = {
 static void apply_gateway_server_time(cJSON *json) {
     cJSON *server_time = json ? cJSON_GetObjectItemCaseSensitive(json, "serverTime") : NULL;
     if (!cJSON_IsNumber(server_time)) return;
-    const double server_time_ms = server_time->valuedouble;
-    const double minimum_time_ms = 1672531200000.0; /* 2023-01-01 UTC */
-    const double maximum_time_ms = 4102444800000.0; /* 2100-01-01 UTC */
-    if (server_time_ms < minimum_time_ms || server_time_ms >= maximum_time_ms) {
-        ESP_LOGW(TAG, "ignored invalid gateway serverTime: %.0f", server_time_ms);
-        return;
-    }
-    const int64_t epoch_ms = (int64_t)server_time_ms;
-    struct timeval tv = {
-        .tv_sec = (time_t)(epoch_ms / 1000),
-        .tv_usec = (suseconds_t)((epoch_ms % 1000) * 1000),
-    };
-    if (settimeofday(&tv, NULL) != 0) {
-        ESP_LOGW(TAG, "cannot apply gateway serverTime: errno=%d", errno);
-        return;
-    }
-    clock_sync_service_note_authenticated_epoch((int64_t)tv.tv_sec);
-    /* ML307 has no ESP-NETIF route for SNTP. Once authenticated Hub time is
-     * available it may safely start the standby cadence. */
-    ambient_service_ensure_clock_task();
-    ESP_LOGI(TAG, "clock source: gateway serverTime");
+    /* Keep Hub and SNTP on one lifecycle owner so generation, anomaly and
+     * System Sleep admission are identical for both sources. */
+    (void)clock_sync_service_apply_authenticated_millis(server_time->valuedouble);
 }
 
-static void wake_restart_task(void *arg) {
-    (void)arg;
-    /* schedule_wake_restart() registers this one-shot worker before releasing
-     * the gate.  A recognizer that is already torn down can otherwise make a
-     * very fast worker exit between xTaskCreateWithCaps() and registration. */
-    if (!s_wake_restart_start_gate ||
-        xSemaphoreTake(s_wake_restart_start_gate, portMAX_DELAY) != pdTRUE) {
-        TaskHandle_t self = xTaskGetCurrentTaskHandle();
-        bool restart_after_system_sleep_abort = false;
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_wake_restart_retiring = true;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        const esp_err_t registry_err = task_registry_unregister_with_timeout(
-            TASK_REGISTRY_OWNER_AUDIO, (void *)self, 10);
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_wake_restart_exit_status = registry_err;
-        if (s_wake_restart_task == self) {
-            s_wake_restart_task = NULL;
-            s_wake_restart_scheduled = false;
-        }
-        s_wake_restart_retiring = false;
-        if (registry_err != ESP_OK) {
-            s_wake_restart_stop_requested = true;
-            s_wake_restart_admission_open = false;
-            s_wake_restart_registry_retirement_failed = true;
-        }
-        if (s_wake_restart_system_sleep_restart_pending &&
-            !s_wake_restart_system_sleep_preparing &&
-            s_wake_restart_admission_open && registry_err == ESP_OK) {
-            s_wake_restart_system_sleep_restart_pending = false;
-            restart_after_system_sleep_abort = true;
-        } else if (s_wake_restart_system_sleep_restart_pending && registry_err != ESP_OK) {
-            /* Preserve the marker but close admission: retaining one failed
-             * generation is safer than creating a second Registry identity. */
-            s_wake_restart_admission_open = false;
-        }
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        if (s_wake_restart_stopped) xSemaphoreGive(s_wake_restart_stopped);
-        if (restart_after_system_sleep_abort) schedule_wake_restart();
-        vTaskDeleteWithCaps(NULL);
-        return;
-    }
-    // Let the meeting worker delete its internal stack before MultiNet claims
-    // memory again. This task uses a PSRAM stack and does not write flash.
-    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));
-    esp_err_t err = ESP_FAIL;
-    unsigned attempt = 1;
-    bool waiting_for_foreground = false;
-    bool stop_requested = false;
-    while (!device_connectivity_is_provisioning_active()) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        stop_requested = s_wake_restart_stop_requested;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        if (stop_requested) break;
-        if (attempt > 12) {
-            /* Keep one registered worker across transient heap pressure.  A
-             * former implementation spawned its replacement before this task
-             * had released its completion token, so a stop could join the old
-             * task while believing the replacement had stopped. */
-            ESP_LOGE(TAG, "offline wake restart exhausted: %s; retrying after backoff",
-                     esp_err_to_name(err));
-            attempt = 1;
-            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
-            continue;
-        }
-        taskENTER_CRITICAL(&s_task_state_lock);
-        bool foreground_active = interaction_service_worker_active() ||
-                                 interaction_service_foreground_http_requested();
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        if (foreground_active || meeting_service_is_active()) {
-            if (!waiting_for_foreground) {
-                ESP_LOGI(TAG, "offline wake restart waiting for foreground audio owner");
-                waiting_for_foreground = true;
-            }
-            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-            continue;
-        }
-        // Startup pet artwork is nonessential and may still own large PSRAM
-        // source/renderer buffers just after a server reply.  Do not repeatedly
-        // construct MultiNet against that transient allocation pressure: wait
-        // until the cancelled worker has actually exited and released it.
-        if (startup_pet_worker_service_active()) {
-            if (!waiting_for_foreground) {
-                ESP_LOGI(TAG, "offline wake restart waiting for optional pet worker");
-                waiting_for_foreground = true;
-            }
-            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-            continue;
-        }
-        // The asset lane's persistent esp_http_client retains TLS buffers
-        // after a cancelled cold-start pet request.  Release that optional
-        // client before loading MultiNet; otherwise the recognizer's small
-        // internal PCM buffers can fail even after the worker itself exited.
-        gateway_transport_discard_asset_client();
-        waiting_for_foreground = false;
-        err = audio_wake_word_start(on_wake_word, NULL);
-        if (err == ESP_OK) break;
-        ESP_LOGW(TAG, "offline wake restart attempt %u/12 failed: %s",
-                 attempt, esp_err_to_name(err));
-        ++attempt;
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    stop_requested = s_wake_restart_stop_requested;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "offline wake restarted after foreground interaction");
-    } else if (!stop_requested && !device_connectivity_is_provisioning_active()) {
-        ESP_LOGI(TAG, "offline wake restart stopped before completion");
-    }
-    TaskHandle_t self = xTaskGetCurrentTaskHandle();
-    bool restart_after_system_sleep_abort = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_wake_restart_retiring = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    const esp_err_t registry_err = task_registry_unregister_with_timeout(
-        TASK_REGISTRY_OWNER_AUDIO, (void *)self, 10);
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_wake_restart_exit_status = registry_err;
-    if (s_wake_restart_task == self) {
-        s_wake_restart_task = NULL;
-        s_wake_restart_scheduled = false;
-    }
-    s_wake_restart_retiring = false;
-    if (registry_err != ESP_OK) {
-        s_wake_restart_stop_requested = true;
-        s_wake_restart_admission_open = false;
-        s_wake_restart_registry_retirement_failed = true;
-    }
-    if (s_wake_restart_system_sleep_restart_pending &&
-        !s_wake_restart_system_sleep_preparing &&
-        s_wake_restart_admission_open && registry_err == ESP_OK) {
-        s_wake_restart_system_sleep_restart_pending = false;
-        restart_after_system_sleep_abort = true;
-    } else if (s_wake_restart_system_sleep_restart_pending && registry_err != ESP_OK) {
-        /* Do not create a new retry worker while the old immutable Registry
-         * entry is still visible. A later lifecycle pass can repair the
-         * retained, deliberately closed generation. */
-        s_wake_restart_admission_open = false;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (s_wake_restart_stopped) xSemaphoreGive(s_wake_restart_stopped);
-    if (restart_after_system_sleep_abort) schedule_wake_restart();
-    vTaskDeleteWithCaps(NULL);
+
+static bool wake_restart_host_allowed(void *context) {
+    (void)context;
+    return !device_connectivity_is_provisioning_active() &&
+           startup_runtime_state_service_sequence_complete();
 }
 
-/* This only drains the restart coordinator.  The actual wake recognizer has
- * its own board-owned stop contract and is deliberately not force-stopped by
- * a Registry owner that does not own its audio/I2S resources. */
+static bool wake_restart_host_foreground_active(void *context) {
+    (void)context;
+    return interaction_service_worker_active() ||
+           interaction_service_foreground_http_requested();
+}
+
+static bool wake_restart_host_meeting_active(void *context) {
+    (void)context;
+    return meeting_service_is_active();
+}
+
+static bool wake_restart_host_optional_pet_worker_active(void *context) {
+    (void)context;
+    return startup_pet_worker_service_active();
+}
+
+static void wake_restart_host_discard_asset_client(void *context) {
+    (void)context;
+    gateway_transport_discard_asset_client();
+}
+
+static device_status_t wake_restart_host_start_wake_word(void *context) {
+    (void)context;
+    return startup_status_from_esp_err(audio_wake_word_start(on_wake_word, NULL));
+}
+
+static const wake_restart_worker_service_host_t s_wake_restart_worker_service_host = {
+    .struct_size = sizeof(wake_restart_worker_service_host_t),
+    .restart_allowed = wake_restart_host_allowed,
+    .foreground_active = wake_restart_host_foreground_active,
+    .meeting_active = wake_restart_host_meeting_active,
+    .optional_pet_worker_active = wake_restart_host_optional_pet_worker_active,
+    .discard_asset_client = wake_restart_host_discard_asset_client,
+    .start_wake_word = wake_restart_host_start_wake_word,
+    .context = NULL,
+};
+
+static void schedule_wake_restart(void) {
+    (void)wake_restart_worker_service_start();
+}
+
 static esp_err_t stop_wake_restart_task(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    const int64_t deadline_us =
-        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    TaskHandle_t task = NULL;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_wake_restart_stop_requested = true;
-    s_wake_restart_admission_open = false;
-    task = s_wake_restart_task;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!task) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        const esp_err_t exit_status = s_wake_restart_exit_status;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return exit_status;
-    }
-    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
-    xTaskNotifyGive(task);
-    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (!s_wake_restart_stopped ||
-        remaining_ms == 0 ||
-        xSemaphoreTake(s_wake_restart_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const esp_err_t exit_status = s_wake_restart_exit_status;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (exit_status != ESP_OK) return exit_status;
-    ESP_LOGI(TAG, "offline wake restart worker stopped");
-    return ESP_OK;
+    return device_status_to_esp_err(wake_restart_worker_service_stop(timeout_ms));
 }
 
-static esp_err_t stop_wake_restart_registry_entry(void *context, uint32_t timeout_ms) {
-    TaskHandle_t task = NULL;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    task = s_wake_restart_task;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
-    return stop_wake_restart_task(timeout_ms);
-}
-
-/* Audio Service already owns the recognizer's physical pause/ACK, but this
- * root-owned retry task can otherwise be created just after Audio has reached
- * that safe point.  Preserve only a pre-existing coordinator across ABORT;
- * an in-progress creator or startup-deferred request has no replay-safe task
- * generation yet, so it deliberately makes a future physical commit BUSY. */
 static device_status_t prepare_wake_restart_system_sleep(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    bool was_running = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_wake_restart_system_sleep_preparing ||
-        (s_wake_restart_scheduled && !s_wake_restart_task) ||
-        s_wake_restart_after_startup) {
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return DEVICE_STATUS_BUSY;
-    }
-    s_wake_restart_system_sleep_preparing = true;
-    s_wake_restart_system_sleep_was_admitted = s_wake_restart_admission_open;
-    was_running = s_wake_restart_task != NULL;
-    s_wake_restart_system_sleep_was_running = was_running;
-    /* Close task creation before observing/stopping the retained generation.
-     * `schedule_wake_restart()` takes the same critical lock, so no creation
-     * can slip between this snapshot and a future electrical PREPARE. */
-    s_wake_restart_admission_open = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-
-    if (!was_running) return DEVICE_STATUS_OK;
-    esp_err_t stop_err = stop_wake_restart_task(timeout_ms);
-    /* A failed join keeps retry admission closed until the parent rollback;
-     * the retiring task may still own its Registry generation. */
-    return startup_status_from_esp_err(stop_err);
+    return wake_restart_worker_service_prepare_system_sleep(timeout_ms);
 }
 
 static void abort_wake_restart_system_sleep_prepare(void) {
-    bool restart = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (!s_wake_restart_system_sleep_preparing) {
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return;
-    }
-    restart = s_wake_restart_system_sleep_was_running;
-    s_wake_restart_admission_open = !s_wake_restart_registry_retirement_failed &&
-                                    s_wake_restart_system_sleep_was_admitted;
-    s_wake_restart_system_sleep_was_running = false;
-    s_wake_restart_system_sleep_was_admitted = false;
-    s_wake_restart_system_sleep_preparing = false;
-    /* A stop timeout can race the old task's completion and Registry
-     * self-unregistration.  That task alone may replace the generation after
-     * its identity is gone; otherwise a new worker could share its completion
-     * semaphore or make a stale Registry entry address the replacement. */
-    if (restart && s_wake_restart_retiring) {
-        s_wake_restart_system_sleep_restart_pending = true;
-        restart = false;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (restart) schedule_wake_restart();
+    wake_restart_worker_service_abort_system_sleep_prepare();
 }
 
-static void schedule_wake_restart(void) {
-    if (device_connectivity_is_provisioning_active() || !s_startup_sequence_complete) return;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    bool admission_open = s_wake_restart_admission_open &&
-                          !s_wake_restart_registry_retirement_failed &&
-                          !s_wake_restart_system_sleep_preparing;
-    bool already_scheduled = s_wake_restart_scheduled;
-    if (admission_open && !already_scheduled) s_wake_restart_scheduled = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!admission_open) return;
-    if (already_scheduled) return;
-    if (!s_wake_restart_start_gate || !s_wake_restart_stopped) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_wake_restart_scheduled = false;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        ESP_LOGW(TAG, "offline wake restart unavailable before lifecycle primitives initialize");
-        return;
-    }
-    while (xSemaphoreTake(s_wake_restart_stopped, 0) == pdTRUE) {}
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_wake_restart_stop_requested = false;
-    s_wake_restart_exit_status = ESP_OK;
-    s_wake_restart_registry_retirement_failed = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    BaseType_t created = xTaskCreateWithCaps(wake_restart_task, "maclaw_wake_restart",
-                                             2048, NULL, 2, &s_wake_restart_task,
-                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (created != pdPASS) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_wake_restart_task = NULL;
-        s_wake_restart_scheduled = false;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        ESP_LOGE(TAG, "cannot schedule offline wake restart");
-    } else {
-        esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
-            .struct_size = sizeof(task_registry_entry_t),
-            .owner = TASK_REGISTRY_OWNER_AUDIO,
-            .name = "wake_restart",
-            /* Use this task's immutable handle value as entry identity.  A
-             * failed attempt may schedule the next retry before it deletes
-             * itself; a shared static-handle address would let the retiring
-             * worker unregister that newer entry. */
-            .context = (void *)s_wake_restart_task,
-            .stop = stop_wake_restart_registry_entry,
-        });
-        if (registry_err != ESP_OK) {
-            ESP_LOGE(TAG, "cannot register offline wake restart worker: %s",
-                     esp_err_to_name(registry_err));
-            xSemaphoreGive(s_wake_restart_start_gate);
-            (void)stop_wake_restart_task(500);
-        } else {
-            xSemaphoreGive(s_wake_restart_start_gate);
-            ESP_LOGI(TAG, "offline wake restart scheduled");
-        }
-    }
+static device_status_t prepare_wake_restart_network_restart(uint32_t timeout_ms) {
+    return wake_restart_worker_service_prepare_network_restart(timeout_ms);
+}
+
+static device_status_t commit_wake_restart_network_restart(void) {
+    return wake_restart_worker_service_commit_prepared_network_restart();
 }
 
 /* Configuration contains the Wi-Fi credential and the Hub bearer token.  A
@@ -2588,36 +2657,40 @@ static esp_err_t load_device_config(void) {
         configuration_service_load_boot_candidate(snapshot, &staged_provisioning));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "configuration snapshot rejected: %s", esp_err_to_name(err));
+        mbedtls_platform_zeroize(snapshot, sizeof(*snapshot));
         heap_caps_free(snapshot);
         return err;
     }
-    strlcpy(s_wifi_ssid, snapshot->wifi_ssid, sizeof(s_wifi_ssid));
-    strlcpy(s_wifi_password, snapshot->wifi_password, sizeof(s_wifi_password));
-    s_wifi_network_count = snapshot->wifi_network_count;
-    if (s_wifi_network_count > CONFIGURATION_WIFI_NETWORK_CAPACITY) {
-        s_wifi_network_count = CONFIGURATION_WIFI_NETWORK_CAPACITY;
+    /* This evidence is valid only under Configuration's durable boot-snapshot
+     * lock. Capture it before any later transaction: a re-query after a
+     * transient admission/read failure must never turn a candidate into a
+     * false confirmed boot. It also prevents multi-network convenience
+     * fallback from validating the confirmed network as the candidate. */
+    if (!startup_runtime_state_service_capture_staged_provisioning(
+            staged_provisioning)) {
+        ESP_LOGE(TAG, "cannot capture boot provisioning candidate evidence");
+        mbedtls_platform_zeroize(snapshot, sizeof(*snapshot));
+        heap_caps_free(snapshot);
+        return ESP_ERR_INVALID_STATE;
     }
-    memcpy(s_wifi_networks, snapshot->wifi_networks,
-           s_wifi_network_count * sizeof(s_wifi_networks[0]));
-    strlcpy(s_wifi_security, snapshot->wifi_security, sizeof(s_wifi_security));
-    strlcpy(s_wifi_eap_method, snapshot->wifi_eap_method, sizeof(s_wifi_eap_method));
-    strlcpy(s_wifi_identity, snapshot->wifi_identity, sizeof(s_wifi_identity));
-    strlcpy(s_wifi_username, snapshot->wifi_username, sizeof(s_wifi_username));
-    strlcpy(s_wifi_ttls_phase2, snapshot->wifi_ttls_phase2, sizeof(s_wifi_ttls_phase2));
-    strlcpy(s_wifi_ca_mode, snapshot->wifi_ca_mode, sizeof(s_wifi_ca_mode));
-    strlcpy(s_wifi_server_domain, snapshot->wifi_server_domain, sizeof(s_wifi_server_domain));
+    if (!wifi_runtime_configuration_service_capture_boot_snapshot(snapshot)) {
+        ESP_LOGE(TAG, "cannot capture boot Wi-Fi runtime configuration");
+        mbedtls_platform_zeroize(snapshot, sizeof(*snapshot));
+        heap_caps_free(snapshot);
+        return ESP_ERR_INVALID_STATE;
+    }
     char snapshot_gateway_url[URL_CAPACITY];
     strlcpy(snapshot_gateway_url, snapshot->gateway_url, sizeof(snapshot_gateway_url));
     char snapshot_gateway_token[CONFIGURATION_GATEWAY_TOKEN_CAPACITY];
     strlcpy(snapshot_gateway_token, snapshot->gateway_token, sizeof(snapshot_gateway_token));
+    char snapshot_pair_code[PROVISIONING_PAIR_CODE_CAPACITY];
+    strlcpy(snapshot_pair_code, snapshot->pair_code, sizeof(snapshot_pair_code));
     gateway_transport_set_gateway_credentials(snapshot_gateway_url, snapshot_gateway_token,
-                                              snapshot->pair_code);
-    s_configured_output_volume = snapshot->output_volume;
-    s_configured_output_volume_saved = snapshot->output_volume_saved;
-    s_configured_display_brightness = snapshot->display_brightness;
-    s_configured_display_brightness_saved = snapshot->display_brightness_saved;
-    s_configured_screen_sleep_seconds = snapshot->screen_sleep_seconds;
-    s_configured_screen_sleep_seconds_saved = snapshot->screen_sleep_seconds_saved;
+                                              snapshot_pair_code);
+    mbedtls_platform_zeroize(snapshot_gateway_token, sizeof(snapshot_gateway_token));
+    mbedtls_platform_zeroize(snapshot_pair_code, sizeof(snapshot_pair_code));
+    mbedtls_platform_zeroize(snapshot_gateway_url, sizeof(snapshot_gateway_url));
+    mbedtls_platform_zeroize(snapshot, sizeof(*snapshot));
     heap_caps_free(snapshot);
     if (staged_provisioning) {
         /* The candidate intentionally becomes active for this boot, but it is
@@ -2637,19 +2710,13 @@ static esp_err_t load_device_config(void) {
         }
         ESP_LOGW(TAG, "booting unconfirmed provisioning candidate");
     }
-    s_boot_provisioning_staged = staged_provisioning;
     return ESP_OK;
 }
 
 static esp_err_t save_output_volume(unsigned percent) {
     if (percent > 100) return ESP_ERR_INVALID_ARG;
-    esp_err_t err = device_status_to_platform_error(
+    return device_status_to_platform_error(
         configuration_service_set_output_volume((uint8_t)percent));
-    if (err == ESP_OK) {
-        s_configured_output_volume = percent;
-        s_configured_output_volume_saved = true;
-    }
-    return err;
 }
 
 static esp_err_t save_display_brightness(unsigned percent) {
@@ -2668,277 +2735,87 @@ static esp_err_t save_screen_sleep_seconds(unsigned seconds) {
         configuration_service_set_screen_sleep_seconds((uint32_t)seconds));
 }
 
-static void output_volume_persist_task(void *arg) {
-    (void)arg;
-    output_volume_persist_request_t request = {0};
-    while (true) {
-        if (xQueueReceive(s_output_volume_persist_queue, &request,
-                          portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        if (request.stop) break;
-        if (request.system_sleep_prepare) {
-            /* The composition-root bridge already closed admission and owns
-             * the request mutex.  Acknowledge only after every older queue
-             * item has finished; retain this same worker generation for a
-             * later ABORT instead of terminally stopping it. */
-            if (s_output_volume_persist_system_sleep_quiesced) {
-                xSemaphoreGive(s_output_volume_persist_system_sleep_quiesced);
-            }
-            continue;
-        }
-        output_volume_persist_reply_t reply = {
-            .result = ESP_ERR_INVALID_STATE,
-            .generation = request.generation,
+static device_status_t configuration_persistence_run_transaction(
+    const configuration_persistence_request_t *request,
+    configuration_persistence_reply_t *out_reply, void *context) {
+    (void)context;
+    if (!request || !out_reply) return DEVICE_STATUS_INVALID_ARGUMENT;
+    *out_reply = (configuration_persistence_reply_t){.status = DEVICE_STATUS_INTERNAL_ERROR};
+    const configuration_policy_request_t hub_policy = {
+        .struct_size = sizeof(configuration_policy_request_t),
+        .abi_version = CONFIGURATION_POLICY_REQUEST_ABI_VERSION,
+        .source = CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
+        .authenticated = true,
+    };
+    if (request->display_policy) {
+        const configuration_display_policy_update_t update = {
+            .struct_size = sizeof(configuration_display_policy_update_t),
+            .abi_version = CONFIGURATION_DISPLAY_POLICY_UPDATE_ABI_VERSION,
+            .has_brightness = request->display_policy_has_brightness,
+            .brightness = (uint8_t)request->percent,
+            .has_screen_sleep_seconds = request->display_policy_has_screen_sleep,
+            .screen_sleep_seconds = request->screen_sleep_seconds,
         };
-        if (request.display_policy) {
-            configuration_display_policy_update_t update = {
-                .struct_size = sizeof(update),
-                .abi_version = CONFIGURATION_DISPLAY_POLICY_UPDATE_ABI_VERSION,
-                .has_brightness = request.display_policy_has_brightness,
-                .brightness = (uint8_t)request.percent,
-                .has_screen_sleep_seconds = request.display_policy_has_screen_sleep,
-                .screen_sleep_seconds = request.screen_sleep_seconds,
-            };
-            reply.result = device_status_to_platform_error(
-                configuration_service_apply_display_policy_with_policy(
-                    &update,
-                    &(configuration_policy_request_t){
-                        .struct_size = sizeof(configuration_policy_request_t),
-                        .abi_version = CONFIGURATION_POLICY_REQUEST_ABI_VERSION,
-                        .source = CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
-                        .authenticated = true,
-                        .ttl_ms = 0u,
-                    },
-                    &reply.configuration_revision));
-        } else if (request.output_volume_policy) {
-            reply.result = device_status_to_platform_error(
-                configuration_service_set_output_volume_with_policy_revision(
-                    (uint8_t)request.percent,
-                    &(configuration_policy_request_t){
-                        .struct_size = sizeof(configuration_policy_request_t),
-                        .abi_version = CONFIGURATION_POLICY_REQUEST_ABI_VERSION,
-                        .source = CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
-                        .authenticated = true,
-                        .ttl_ms = 0u,
-                    },
-                    &reply.configuration_revision));
-        } else {
-            reply.result = request.gateway_token
-                          ? device_status_to_platform_error(
-                                configuration_service_commit_gateway_pairing_token(request.token))
-                          : (request.brightness
-                                 ? (request.hub_authenticated
-                                        ? device_status_to_platform_error(
-                                              configuration_service_set_display_brightness_with_policy(
-                                                  (uint8_t)request.percent,
-                                                  &(configuration_policy_request_t){
-                                                      .struct_size = sizeof(configuration_policy_request_t),
-                                                      .abi_version = CONFIGURATION_POLICY_REQUEST_ABI_VERSION,
-                                                      .source = CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
-                                                      .authenticated = true,
-                                                      .ttl_ms = 0u,
-                                                  }))
-                                        : save_display_brightness(request.percent))
-                                 : (request.screen_sleep
-                                        ? (request.hub_authenticated
-                                               ? device_status_to_platform_error(
-                                                     configuration_service_set_screen_sleep_seconds_with_policy(
-                                                         request.screen_sleep_seconds,
-                                                         &(configuration_policy_request_t){
-                                                             .struct_size = sizeof(configuration_policy_request_t),
-                                                             .abi_version = CONFIGURATION_POLICY_REQUEST_ABI_VERSION,
-                                                             .source = CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
-                                                             .authenticated = true,
-                                                             .ttl_ms = 0u,
-                                                         }))
-                                               : save_screen_sleep_seconds(request.screen_sleep_seconds))
-                                 : (request.hub_authenticated
-                                        ? device_status_to_platform_error(
-                                              configuration_service_set_output_volume_with_policy(
-                                                  (uint8_t)request.percent,
-                                                  &(configuration_policy_request_t){
-                                                      .struct_size = sizeof(configuration_policy_request_t),
-                                                      .abi_version =
-                                                          CONFIGURATION_POLICY_REQUEST_ABI_VERSION,
-                                                      .source =
-                                                          CONFIGURATION_SOURCE_HUB_AUTHENTICATED,
-                                                      .authenticated = true,
-                                                      .ttl_ms = 0u,
-                                                  }))
-                                        : save_output_volume(request.percent))));
-        }
-        // The reply queue has room for the active completion plus one stale
-        // completion from a timed-out caller. Do not lose the correlation ID:
-        // the next caller must be able to distinguish that old result.
-        while (xQueueSend(s_output_volume_persist_reply_queue, &reply,
-                          pdMS_TO_TICKS(50)) != pdTRUE) {
-            bool stop_requested;
-            taskENTER_CRITICAL(&s_task_state_lock);
-            stop_requested = s_output_volume_persist_stop_requested;
-            taskEXIT_CRITICAL(&s_task_state_lock);
-            /* During lifecycle drain the waiting caller has already abandoned
-             * its reply. Do not let a full reply queue prevent the stop
-             * sentinel from ever being consumed. */
-            if (stop_requested) break;
-        }
+        out_reply->status = configuration_service_apply_display_policy_with_policy(
+            &update, &hub_policy, &out_reply->configuration_revision);
+    } else if (request->output_volume_policy) {
+        out_reply->status = configuration_service_set_output_volume_with_policy_revision(
+            (uint8_t)request->percent, &hub_policy, &out_reply->configuration_revision);
+    } else if (request->gateway_token) {
+        out_reply->status = configuration_service_commit_gateway_pairing_token(request->token);
+    } else if (request->checkpoint_current_snapshot) {
+        out_reply->status = configuration_service_checkpoint_current_snapshot(
+            &out_reply->configuration_revision);
+    } else if (request->brightness) {
+        out_reply->status = request->hub_authenticated
+            ? configuration_service_set_display_brightness_with_policy((uint8_t)request->percent,
+                                                                        &hub_policy)
+            : (device_status_t)startup_status_from_esp_err(save_display_brightness(request->percent));
+    } else if (request->screen_sleep) {
+        out_reply->status = request->hub_authenticated
+            ? configuration_service_set_screen_sleep_seconds_with_policy(
+                  request->screen_sleep_seconds, &hub_policy)
+            : (device_status_t)startup_status_from_esp_err(
+                  save_screen_sleep_seconds(request->screen_sleep_seconds));
+    } else {
+        out_reply->status = request->hub_authenticated
+            ? configuration_service_set_output_volume_with_policy((uint8_t)request->percent,
+                                                                   &hub_policy)
+            : (device_status_t)startup_status_from_esp_err(save_output_volume(request->percent));
     }
-    TaskHandle_t self = xTaskGetCurrentTaskHandle();
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_output_volume_persist_retiring = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    /* The Registry entry is the authoritative lifecycle identity.  Retire it
-     * before publishing completion, otherwise a timed-out stop could observe
-     * no task handle and incorrectly authorize a replacement generation. */
-    const esp_err_t registry_err = task_registry_unregister_with_timeout(
-        TASK_REGISTRY_OWNER_STORAGE, (void *)self, 10);
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_output_volume_persist_exit_status = registry_err;
-    if (s_output_volume_persist_task_handle == self) {
-        s_output_volume_persist_task_handle = NULL;
-    }
-    s_output_volume_persist_retiring = false;
-    if (registry_err != ESP_OK) {
-        s_output_volume_persist_stop_requested = true;
-        s_output_volume_persist_registry_retirement_failed = true;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (s_output_volume_persist_stopped) xSemaphoreGive(s_output_volume_persist_stopped);
-    /* This worker is created with xTaskCreatePinnedToCoreWithCaps() so its
-     * explicitly internal stack must be released with the matching deleter. */
-    vTaskDeleteWithCaps(NULL);
+    return out_reply->status;
 }
 
-static esp_err_t stop_output_volume_persist_worker(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_output_volume_persist_queue || !s_output_volume_persist_stopped ||
-        !s_output_volume_persist_request_mutex) {
-        return ESP_OK;
-    }
-    /* Registry stop passes one owner-wide timeout. Taking the request mutex,
-     * publishing STOP and joining the internal-stack worker are one teardown
-     * transaction, not three independent timeout windows. */
-    const int64_t deadline_us =
-        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_output_volume_persist_stop_requested = true;
-    s_output_volume_persist_system_sleep_preparing = false;
-    TaskHandle_t task = s_output_volume_persist_task_handle;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!task) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        const esp_err_t exit_status = s_output_volume_persist_exit_status;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return exit_status;
-    }
-    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
-    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
-    if (xSemaphoreTake(s_output_volume_persist_request_mutex,
-                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    /* A caller may have timed out after the worker finished its flash write,
-     * leaving both reply slots occupied. Make room before queuing the stop
-     * sentinel; the lifecycle caller owns the admission mutex, so no active
-     * request can lose a completion at this point. */
-    output_volume_persist_reply_t stale_reply;
-    while (xQueueReceive(s_output_volume_persist_reply_queue, &stale_reply, 0) == pdTRUE) {}
-    output_volume_persist_request_t stop_request = {.stop = true};
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return ESP_ERR_TIMEOUT;
-    }
-    BaseType_t queued = xQueueSend(s_output_volume_persist_queue, &stop_request,
-                                   pdMS_TO_TICKS(remaining_ms));
-    xSemaphoreGive(s_output_volume_persist_request_mutex);
-    if (queued != pdTRUE) return ESP_ERR_TIMEOUT;
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
-    if (xSemaphoreTake(s_output_volume_persist_stopped,
-                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const esp_err_t exit_status = s_output_volume_persist_exit_status;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (exit_status != ESP_OK) return exit_status;
-    ESP_LOGI(TAG, "volume persistence worker stopped");
-    return ESP_OK;
+static device_status_t battery_emergency_checkpoint(uint32_t timeout_ms, void *context) {
+    (void)context;
+    if (timeout_ms == 0u) return DEVICE_STATUS_INVALID_ARGUMENT;
+    configuration_persistence_reply_t reply = {0};
+    const configuration_persistence_request_t request = {
+        .checkpoint_current_snapshot = true,
+    };
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    return configuration_persistence_worker_service_submit_until(
+        &request, deadline_us, &reply);
 }
 
-static esp_err_t stop_output_volume_persist_registry_entry(void *context,
-                                                            uint32_t timeout_ms) {
-    TaskHandle_t task = NULL;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    task = s_output_volume_persist_task_handle;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
-    return stop_output_volume_persist_worker(timeout_ms);
+static esp_err_t submit_configuration_persistence(
+    const configuration_persistence_request_t *request, uint32_t mutex_timeout_ms,
+    uint32_t queue_timeout_ms, uint32_t completion_timeout_ms, uint64_t *out_revision) {
+    configuration_persistence_reply_t reply = {0};
+    const device_status_t status = configuration_persistence_worker_service_submit(
+        request, mutex_timeout_ms, queue_timeout_ms, completion_timeout_ms, &reply);
+    if (status == DEVICE_STATUS_OK && out_revision) *out_revision = reply.configuration_revision;
+    return device_status_to_platform_error(status);
 }
 
-// NVS flash writes cannot run from a task whose stack lives in PSRAM: cache
-// disable makes that stack inaccessible. The regular key handler already runs
-// from internal RAM, but the gateway workers do not, so use one shared
-// internal-stack persistence worker for both call paths.
 static esp_err_t persist_hardware_level(unsigned percent, bool brightness,
                                         bool hub_authenticated) {
-    if (percent > 100 || !s_output_volume_persist_queue ||
-        !s_output_volume_persist_reply_queue || !s_output_volume_persist_request_mutex) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    bool stop_requested = s_output_volume_persist_stop_requested ||
-                          s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_output_volume_persist_request_mutex,
-                       pdMS_TO_TICKS(4000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    stop_requested = s_output_volume_persist_stop_requested ||
-                     s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return ESP_ERR_INVALID_STATE;
-    }
-    output_volume_persist_reply_t reply = {0};
-    while (xQueueReceive(s_output_volume_persist_reply_queue, &reply, 0) == pdTRUE) {}
-    output_volume_persist_request_t request = {
-        .percent = percent,
-        .generation = ++s_output_volume_persist_generation,
-        .brightness = brightness,
-        .hub_authenticated = hub_authenticated,
-    };
-    if (request.generation == 0) request.generation = ++s_output_volume_persist_generation;
-    esp_err_t err = ESP_ERR_TIMEOUT;
-    if (xQueueSend(s_output_volume_persist_queue, &request,
-                   pdMS_TO_TICKS(1000)) == pdTRUE) {
-        TickType_t started = xTaskGetTickCount();
-        const TickType_t timeout = pdMS_TO_TICKS(3000);
-        while (true) {
-            TickType_t elapsed = xTaskGetTickCount() - started;
-            if (elapsed >= timeout ||
-                xQueueReceive(s_output_volume_persist_reply_queue, &reply,
-                              timeout - elapsed) != pdTRUE) {
-                break;
-            }
-            if (reply.generation == request.generation) {
-                err = reply.result;
-                break;
-            }
-            ESP_LOGW(TAG, "discarding stale volume persistence reply generation=%lu (want %lu)",
-                     (unsigned long)reply.generation,
-                     (unsigned long)request.generation);
-        }
-    }
-    xSemaphoreGive(s_output_volume_persist_request_mutex);
-    return err;
+    if (percent > 100u) return ESP_ERR_INVALID_ARG;
+    return submit_configuration_persistence(
+        &(configuration_persistence_request_t){
+            .percent = percent, .brightness = brightness,
+            .hub_authenticated = hub_authenticated,
+        }, 4000, 1000, 3000, NULL);
 }
 
 static esp_err_t persist_output_volume(unsigned percent) {
@@ -2946,57 +2823,12 @@ static esp_err_t persist_output_volume(unsigned percent) {
 }
 
 static esp_err_t persist_hub_output_volume(unsigned percent, uint64_t *out_revision) {
-    if (percent > 100u || !out_revision || !s_output_volume_persist_queue ||
-        !s_output_volume_persist_reply_queue || !s_output_volume_persist_request_mutex) {
-        return ESP_ERR_INVALID_STATE;
-    }
+    if (percent > 100u || !out_revision) return ESP_ERR_INVALID_ARG;
     *out_revision = 0u;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    bool stop_requested = s_output_volume_persist_stop_requested ||
-                          s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_output_volume_persist_request_mutex, pdMS_TO_TICKS(4000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    stop_requested = s_output_volume_persist_stop_requested ||
-                     s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return ESP_ERR_INVALID_STATE;
-    }
-    output_volume_persist_reply_t reply = {0};
-    while (xQueueReceive(s_output_volume_persist_reply_queue, &reply, 0) == pdTRUE) {}
-    output_volume_persist_request_t request = {
-        .percent = percent,
-        .generation = ++s_output_volume_persist_generation,
-        .output_volume_policy = true,
-        .hub_authenticated = true,
-    };
-    if (request.generation == 0u) request.generation = ++s_output_volume_persist_generation;
-    esp_err_t err = ESP_ERR_TIMEOUT;
-    if (xQueueSend(s_output_volume_persist_queue, &request, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        TickType_t started = xTaskGetTickCount();
-        const TickType_t timeout = pdMS_TO_TICKS(3000);
-        while (true) {
-            TickType_t elapsed = xTaskGetTickCount() - started;
-            if (elapsed >= timeout || xQueueReceive(s_output_volume_persist_reply_queue, &reply,
-                                                    timeout - elapsed) != pdTRUE) {
-                break;
-            }
-            if (reply.generation == request.generation) {
-                err = reply.result;
-                if (err == ESP_OK) *out_revision = reply.configuration_revision;
-                break;
-            }
-            ESP_LOGW(TAG, "discarding stale volume-policy persistence reply generation=%lu (want %lu)",
-                     (unsigned long)reply.generation, (unsigned long)request.generation);
-        }
-    }
-    xSemaphoreGive(s_output_volume_persist_request_mutex);
-    return err;
+    return submit_configuration_persistence(
+        &(configuration_persistence_request_t){
+            .percent = percent, .output_volume_policy = true, .hub_authenticated = true,
+        }, 4000, 1000, 3000, out_revision);
 }
 
 static esp_err_t persist_hub_display_policy(bool has_brightness, unsigned brightness,
@@ -3004,67 +2836,22 @@ static esp_err_t persist_hub_display_policy(bool has_brightness, unsigned bright
                                             uint64_t *out_revision) {
     if ((!has_brightness && !has_screen_sleep) ||
         (has_brightness && brightness > 100u) ||
-        (has_screen_sleep && !valid_screen_sleep_seconds((int)seconds)) ||
-        !s_output_volume_persist_queue ||
-        !s_output_volume_persist_reply_queue || !s_output_volume_persist_request_mutex) {
-        return ESP_ERR_INVALID_STATE;
+        (has_screen_sleep && !valid_screen_sleep_seconds((int)seconds)) || !out_revision) {
+        return ESP_ERR_INVALID_ARG;
     }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    bool stop_requested = s_output_volume_persist_stop_requested ||
-                          s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_output_volume_persist_request_mutex, pdMS_TO_TICKS(4000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    stop_requested = s_output_volume_persist_stop_requested ||
-                     s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return ESP_ERR_INVALID_STATE;
-    }
-    output_volume_persist_reply_t reply = {0};
-    while (xQueueReceive(s_output_volume_persist_reply_queue, &reply, 0) == pdTRUE) {}
-    output_volume_persist_request_t request = {
-        .percent = brightness,
-        .screen_sleep_seconds = (uint32_t)seconds,
-        .generation = ++s_output_volume_persist_generation,
-        .display_policy = true,
-        .display_policy_has_brightness = has_brightness,
-        .display_policy_has_screen_sleep = has_screen_sleep,
-        .hub_authenticated = true,
-    };
-    if (request.generation == 0) request.generation = ++s_output_volume_persist_generation;
-    esp_err_t err = ESP_ERR_TIMEOUT;
-    if (xQueueSend(s_output_volume_persist_queue, &request, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        TickType_t started = xTaskGetTickCount();
-        const TickType_t timeout = pdMS_TO_TICKS(3000);
-        while (true) {
-            TickType_t elapsed = xTaskGetTickCount() - started;
-            if (elapsed >= timeout ||
-                xQueueReceive(s_output_volume_persist_reply_queue, &reply,
-                              timeout - elapsed) != pdTRUE) {
-                break;
-            }
-            if (reply.generation == request.generation) {
-                err = reply.result;
-                if (err == ESP_OK && out_revision) {
-                    *out_revision = reply.configuration_revision;
-                }
-                break;
-            }
-            ESP_LOGW(TAG, "discarding stale display-policy persistence reply generation=%lu (want %lu)",
-                      (unsigned long)reply.generation, (unsigned long)request.generation);
-        }
-    }
-    xSemaphoreGive(s_output_volume_persist_request_mutex);
-    return err;
+    *out_revision = 0u;
+    return submit_configuration_persistence(
+        &(configuration_persistence_request_t){
+            .percent = brightness, .screen_sleep_seconds = (uint32_t)seconds,
+            .display_policy = true, .display_policy_has_brightness = has_brightness,
+            .display_policy_has_screen_sleep = has_screen_sleep, .hub_authenticated = true,
+        }, 4000, 1000, 3000, out_revision);
 }
 
 static bool is_enterprise_wifi(void) {
-    return !strcmp(s_wifi_security, "enterprise");
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    return wifi_runtime_configuration_service_get_snapshot(&runtime) &&
+           !strcmp(runtime.security, "enterprise");
 }
 
 static void load_gateway_token(void) {
@@ -3097,339 +2884,23 @@ static esp_err_t save_gateway_token(const char *token) {
      * Route this through the same internal-stack persistence worker that owns
      * volume/brightness writes.  The durable operation atomically stores the
      * token and clears the consumed pairing code. */
-    if (!s_output_volume_persist_queue || !s_output_volume_persist_reply_queue ||
-        !s_output_volume_persist_request_mutex) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    bool stop_requested = s_output_volume_persist_stop_requested ||
-                          s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_output_volume_persist_request_mutex, pdMS_TO_TICKS(4000)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    stop_requested = s_output_volume_persist_stop_requested ||
-                     s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (stop_requested) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return ESP_ERR_INVALID_STATE;
-    }
-    output_volume_persist_reply_t stale_reply;
-    while (xQueueReceive(s_output_volume_persist_reply_queue, &stale_reply, 0) == pdTRUE) {}
-    output_volume_persist_request_t request = {
-        .generation = ++s_output_volume_persist_generation,
-        .gateway_token = true,
-    };
-    if (request.generation == 0) request.generation = ++s_output_volume_persist_generation;
+    configuration_persistence_request_t request = {.gateway_token = true};
     strlcpy(request.token, token, sizeof(request.token));
-    esp_err_t err = ESP_ERR_TIMEOUT;
-    if (xQueueSend(s_output_volume_persist_queue, &request, pdMS_TO_TICKS(4000)) == pdTRUE) {
-        const int64_t deadline_us = esp_timer_get_time() + 4000000;
-        while (true) {
-            int64_t remaining_us = deadline_us - esp_timer_get_time();
-            if (remaining_us <= 0) break;
-            output_volume_persist_reply_t reply = {0};
-            if (xQueueReceive(s_output_volume_persist_reply_queue, &reply,
-                              pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000))) != pdTRUE) {
-                break;
-            }
-            if (reply.generation == request.generation) {
-                err = reply.result;
-                break;
-            }
-        }
-    }
-    xSemaphoreGive(s_output_volume_persist_request_mutex);
-    return err;
-}
-
-static esp_err_t upload_voice(const uint8_t *wav, size_t wav_len, char *media_id, size_t media_id_cap) {
-    int64_t upload_started_us = esp_timer_get_time();
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "clientId", gateway_transport_device_id());
-    cJSON_AddStringToObject(body, "type", "voice");
-    cJSON_AddStringToObject(body, "fileName", "voice.wav");
-    cJSON_AddStringToObject(body, "mimeType", "audio/wav");
-    cJSON_AddNumberToObject(body, "sizeBytes", (double)wav_len);
-    char *payload = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (!payload) return ESP_ERR_NO_MEM;
-    http_response_t response = {0};
-    esp_err_t err = ESP_FAIL;
-    for (unsigned attempt = 1; attempt <= VOICE_UPLOAD_RETRY_COUNT; ++attempt) {
-        err = request("POST", "/api/im-gateway/v1/media/upload-url", "application/json",
-                      payload, strlen(payload), &response);
-        if (err == ESP_OK && response.status == 200) break;
-        bool retry = command_service_voice_upload_should_retry((int32_t)err, response.status) &&
-                     attempt < VOICE_UPLOAD_RETRY_COUNT;
-        ESP_LOGW(TAG, "media prepare attempt %u/%u failed: err=%s status=%d retry=%s",
-                 attempt, VOICE_UPLOAD_RETRY_COUNT, esp_err_to_name(err), response.status,
-                 retry ? "yes" : "no");
-        response_release(&response);
-        if (!retry) break;
-        command_service_voice_upload_retry_delay(attempt);
-    }
-    free(payload);
-    if (err != ESP_OK || response.status != 200) {
-        if (err == ESP_ERR_INVALID_STATE) {
-            // Foreground cancellation skips/aborts the request; that is a user
-            // action, not an upload failure worth an alarm.
-            ESP_LOGI(TAG, "media prepare cancelled by user");
-        } else {
-            ESP_LOGE(TAG, "media prepare failed: err=%s status=%d body=%s", esp_err_to_name(err), response.status, response.data);
-        }
-        esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
-        response_release(&response);
-        return result;
-    }
-    cJSON *json = cJSON_Parse(response.data);
-    cJSON *media = json ? cJSON_GetObjectItemCaseSensitive(json, "media") : NULL;
-    cJSON *upload = json ? cJSON_GetObjectItemCaseSensitive(json, "upload") : NULL;
-    const char *id = media ? json_string(media, "id") : NULL;
-    const char *url = upload ? json_string(upload, "url") : NULL;
-    if (!id || !url) {
-        cJSON_Delete(json);
-        response_release(&response);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    ESP_LOGI(TAG, "voice upload prepared: wav=%u bytes elapsed=%lldms",
-             (unsigned)wav_len, (long long)((esp_timer_get_time() - upload_started_us) / 1000));
-    char id_copy[96];
-    char url_copy[URL_CAPACITY];
-    strlcpy(id_copy, id, sizeof(id_copy));
-    strlcpy(url_copy, url, sizeof(url_copy));
-    cJSON_Delete(json);
-    response_release(&response);
-    http_response_t put_response = {0};
-    for (unsigned attempt = 1; attempt <= VOICE_UPLOAD_RETRY_COUNT; ++attempt) {
-        err = request("PUT", url_copy, "audio/wav", (const char *)wav, wav_len, &put_response);
-        if (err == ESP_OK && (put_response.status == 200 || put_response.status == 201)) break;
-        bool retry = command_service_voice_upload_should_retry((int32_t)err, put_response.status) &&
-                     attempt < VOICE_UPLOAD_RETRY_COUNT;
-        ESP_LOGW(TAG, "media upload attempt %u/%u failed: err=%s status=%d wav=%u retry=%s",
-                 attempt, VOICE_UPLOAD_RETRY_COUNT, esp_err_to_name(err), put_response.status,
-                 (unsigned)wav_len, retry ? "yes" : "no");
-        response_release(&put_response);
-        if (!retry) break;
-        command_service_voice_upload_retry_delay(attempt);
-    }
-    if (err != ESP_OK || (put_response.status != 200 && put_response.status != 201)) {
-        if (err == ESP_ERR_INVALID_STATE) {
-            ESP_LOGI(TAG, "media upload cancelled by user");
-        } else {
-            ESP_LOGE(TAG, "media upload failed: err=%s status=%d", esp_err_to_name(err), put_response.status);
-        }
-        esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
-        response_release(&put_response);
-        return result;
-    }
-    strlcpy(media_id, id_copy, media_id_cap);
-    int64_t upload_elapsed_ms = (esp_timer_get_time() - upload_started_us) / 1000;
-    unsigned throughput_kbps = upload_elapsed_ms > 0
-                                   ? (unsigned)((wav_len * 1000ULL / (unsigned long long)upload_elapsed_ms) / 1024ULL)
-                                   : 0;
-    ESP_LOGI(TAG, "voice upload complete: media=%s wav=%u bytes elapsed=%lldms throughput=%uKiB/s",
-             id_copy, (unsigned)wav_len, (long long)upload_elapsed_ms, throughput_kbps);
-    response_release(&put_response);
-    return ESP_OK;
-}
-
-static esp_err_t send_voice_event(const char *media_id, const char *event_id,
-                                  char *reply_to, size_t reply_to_cap) {
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "clientId", gateway_transport_device_id());
-    cJSON_AddStringToObject(body, "eventId", event_id);
-    cJSON_AddStringToObject(body, "messageId", event_id);
-    cJSON_AddStringToObject(body, "conversationId", CONFIG_MACLAW_CONVERSATION_ID);
-    cJSON *user = cJSON_AddObjectToObject(body, "user");
-    cJSON_AddStringToObject(user, "id", "local-user");
-    cJSON_AddStringToObject(user, "displayName", "ESP32-S3 user");
-    cJSON *message = cJSON_AddObjectToObject(body, "message");
-    cJSON_AddStringToObject(message, "id", event_id);
-    cJSON_AddStringToObject(message, "type", "voice");
-    cJSON_AddStringToObject(message, "mimeType", "audio/wav");
-    cJSON *attachments = cJSON_AddArrayToObject(message, "attachments");
-    cJSON *attachment = cJSON_CreateObject();
-    cJSON_AddStringToObject(attachment, "id", media_id);
-    cJSON_AddStringToObject(attachment, "type", "voice");
-    cJSON_AddStringToObject(attachment, "mimeType", "audio/wav");
-    cJSON_AddItemToArray(attachments, attachment);
-    char *payload = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (!payload) return ESP_ERR_NO_MEM;
-    int64_t submit_started_us = esp_timer_get_time();
-    http_response_t response;
-    esp_err_t err = request("POST", "/api/im-gateway/v1/incoming", "application/json", payload, strlen(payload), &response);
-    free(payload);
-    if (err != ESP_OK || response.status != 200) {
-        ESP_LOGE(TAG, "incoming event failed: err=%s status=%d body=%s", esp_err_to_name(err), response.status, response.data);
-        esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
-        response_release(&response);
-        return result;
-    }
-    cJSON *json = cJSON_Parse(response.data);
-    cJSON *accepted = json ? cJSON_GetObjectItemCaseSensitive(json, "accepted") : NULL;
-    // MaClawSrv returns the canonical `maclawMessageId`, while the embedded
-    // Hub relay returns the accepted client message as `messageId`.  Both
-    // identify the same reply correlation key.  Keep accepting the canonical
-    // response first, but do not reject a command merely because it travelled
-    // through the Hub-compatible response shape.
-    const char *reply_message_id = json ? json_string(json, "maclawMessageId") : NULL;
-    if ((!reply_message_id || !reply_message_id[0]) && json) {
-        reply_message_id = json_string(json, "messageId");
-    }
-    if (!cJSON_IsTrue(accepted)) {
-        cJSON_Delete(json);
-        response_release(&response);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    if (reply_to && reply_to_cap > 0) {
-        // Some older gateways acknowledge the event without echoing either ID.
-        // Their outgoing reply is correlated to the submitted message/event ID,
-        // so the idempotency key remains the safe protocol-compatible fallback.
-        strlcpy(reply_to,
-                reply_message_id && reply_message_id[0] ? reply_message_id : event_id,
-                reply_to_cap);
-    }
-    ESP_LOGI(TAG, "voice command accepted: event=%s replyTo=%s duplicate=%s elapsed=%lldms",
-             event_id,
-             reply_message_id && reply_message_id[0] ? reply_message_id : event_id,
-             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, "duplicate")) ? "yes" : "no",
-             (long long)((esp_timer_get_time() - submit_started_us) / 1000));
-    cJSON_Delete(json);
-    response_release(&response);
-    return ESP_OK;
-}
-
-static esp_err_t send_text_event(const char *text, const char *reply_to) {
-    if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
-    cJSON *body = cJSON_CreateObject();
-    char event_id[80];
-    snprintf(event_id, sizeof(event_id), "text-%lld", (long long)esp_timer_get_time());
-    cJSON_AddStringToObject(body, "clientId", gateway_transport_device_id());
-    cJSON_AddStringToObject(body, "eventId", event_id);
-    cJSON_AddStringToObject(body, "messageId", event_id);
-    cJSON_AddStringToObject(body, "conversationId", CONFIG_MACLAW_CONVERSATION_ID);
-	if (reply_to && reply_to[0]) {
-		// Cancellation is a control for the active command, not an independent
-		// result-producing turn. Preserve that relationship end-to-end so Hub/GUI
-		// can suppress its acknowledgement even if the new control message ID is
-		// absent from an older relay envelope.
-		cJSON_AddStringToObject(body, "replyTo", reply_to);
-		cJSON_AddStringToObject(body, "replyToMessageId", reply_to);
-	}
-    cJSON *user = cJSON_AddObjectToObject(body, "user");
-    cJSON_AddStringToObject(user, "id", "local-user");
-    cJSON_AddStringToObject(user, "displayName", "ESP32-S3 user");
-    cJSON *message = cJSON_AddObjectToObject(body, "message");
-    cJSON_AddStringToObject(message, "id", event_id);
-    cJSON_AddStringToObject(message, "type", "text");
-    cJSON_AddStringToObject(message, "text", text);
-    char *payload = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (!payload) return ESP_ERR_NO_MEM;
-    http_response_t response;
-    esp_err_t err = request("POST", "/api/im-gateway/v1/incoming", "application/json", payload, strlen(payload), &response);
-    free(payload);
-    if (err != ESP_OK || response.status != 200) {
-        esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
-        response_release(&response);
-        return result;
-    }
-    cJSON *json = cJSON_Parse(response.data);
-    cJSON *accepted = json ? cJSON_GetObjectItemCaseSensitive(json, "accepted") : NULL;
-    bool ok = cJSON_IsTrue(accepted);
-    cJSON_Delete(json);
-    response_release(&response);
-    return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+    const esp_err_t result = submit_configuration_persistence(&request, 4000, 4000, 4000, NULL);
+    mbedtls_platform_zeroize(&request, sizeof(request));
+    return result;
 }
 
 /* Meeting chunk streaming is owned by Gateway Transport. */
 
-static esp_err_t create_meeting_recording(char recording_id[MEETING_SERVICE_RECORDING_ID_CAPACITY]) {
-    char payload[192];
-    int length = snprintf(payload, sizeof(payload),
-                          "{\"title\":\"硬件会议录音\",\"purpose\":\"\","
-                          "\"conversation_id\":\"%s\",\"content_type\":\"audio/wav\"}",
-                          CONFIG_MACLAW_CONVERSATION_ID);
-    if (length <= 0 || length >= (int)sizeof(payload)) return ESP_ERR_INVALID_SIZE;
-    char base_path[MEETING_SERVICE_BASE_PATH_CAPACITY];
-    meeting_service_base_path(base_path, sizeof(base_path));
-    http_response_t response;
-    esp_err_t err = request_with_capacity("POST", base_path, "application/json",
-                                          payload, length, MEETING_RESPONSE_CAPACITY, &response);
-    if (err != ESP_OK || response.status != 201) {
-        ESP_LOGE(TAG, "meeting create failed: err=%s status=%d body=%s",
-                 esp_err_to_name(err), response.status, response.data ? response.data : "");
-        esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
-        response_release(&response);
-        return result;
-    }
-    cJSON *json = cJSON_Parse(response.data);
-    const char *id = json ? json_string(json, "recording_id") : NULL;
-    if (!id || strlen(id) >= MEETING_SERVICE_RECORDING_ID_CAPACITY) err = ESP_ERR_INVALID_RESPONSE;
-    else strlcpy(recording_id, id, MEETING_SERVICE_RECORDING_ID_CAPACITY);
-    cJSON_Delete(json);
-    response_release(&response);
-    return err;
-}
-
-static esp_err_t get_meeting_status(const char *recording_id, char *status, size_t status_cap) {
-    char path[MEETING_SERVICE_BASE_PATH_CAPACITY + MEETING_SERVICE_RECORDING_ID_CAPACITY + 8];
-    char base_path[MEETING_SERVICE_BASE_PATH_CAPACITY];
-    meeting_service_base_path(base_path, sizeof(base_path));
-    int length = snprintf(path, sizeof(path), "%s/%s", base_path, recording_id);
-    if (length <= 0 || length >= (int)sizeof(path)) return ESP_ERR_INVALID_SIZE;
-    http_response_t response;
-    esp_err_t err = request_with_capacity("GET", path, NULL, NULL, 0,
-                                          MEETING_RESPONSE_CAPACITY, &response);
-    if (err != ESP_OK || response.status != 200) {
-        esp_err_t result = response.status == 404 ? ESP_ERR_NOT_FOUND : err == ESP_OK ? ESP_FAIL : err;
-        response_release(&response);
-        return result;
-    }
-    cJSON *json = cJSON_Parse(response.data);
-    const char *value = json ? json_string(json, "status") : NULL;
-    if (!value || strlen(value) >= status_cap) err = ESP_ERR_INVALID_RESPONSE;
-    else strlcpy(status, value, status_cap);
-    cJSON_Delete(json);
-    response_release(&response);
-    return err;
-}
-static esp_err_t post_meeting_action(const char *recording_id, const char *action,
-                                     const char *payload, int expected_a, int expected_b) {
-    char path[MEETING_SERVICE_BASE_PATH_CAPACITY + MEETING_SERVICE_RECORDING_ID_CAPACITY + 32];
-    char base_path[MEETING_SERVICE_BASE_PATH_CAPACITY];
-    meeting_service_base_path(base_path, sizeof(base_path));
-    int length = snprintf(path, sizeof(path), "%s/%s/%s", base_path, recording_id, action);
-    if (length <= 0 || length >= (int)sizeof(path)) return ESP_ERR_INVALID_SIZE;
-    http_response_t response;
-    esp_err_t err = request_with_capacity("POST", path, "application/json", payload, strlen(payload),
-                                          MEETING_RESPONSE_CAPACITY, &response);
-    if (err != ESP_OK || (response.status != expected_a && response.status != expected_b)) {
-        ESP_LOGE(TAG, "meeting %s failed: err=%s status=%d body=%s",
-                 action, esp_err_to_name(err), response.status, response.data ? response.data : "");
-        esp_err_t result = err == ESP_OK ? ESP_FAIL : err;
-        response_release(&response);
-        return result;
-    }
-    response_release(&response);
-    return ESP_OK;
-}
-
 static void on_wake_word(void *arg) {
     (void)arg;
-    if (!s_startup_sequence_complete) {
+    if (!startup_runtime_state_service_sequence_complete()) {
         ESP_LOGI(TAG, "offline wake detected while startup greeting owns audio; ignored until ready");
         // The board has already retired MultiNet to safely hand this callback
         // off. Remember the one-shot teardown here; startup completion cannot
         // infer it from its earlier successful start result.
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_wake_restart_after_startup = true;
-        taskEXIT_CRITICAL(&s_task_state_lock);
+        wake_restart_worker_service_note_startup_teardown();
         return;
     }
     bool network_available = device_connectivity_is_active_uplink_ready();
@@ -3464,228 +2935,38 @@ static void enter_setup_portal(void) {
     provisioning_service_start_portal(true);
 }
 
-static bool deferred_setup_stop_requested(void) {
-    bool requested;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    requested = s_deferred_setup_stop_requested;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    return requested;
+static bool deferred_setup_host_meeting_active(void *context) {
+    (void)context;
+    return meeting_service_is_active();
 }
 
-static void deferred_setup_task(void *arg) {
-    (void)arg;
-    if (!s_deferred_setup_start_gate ||
-        xSemaphoreTake(s_deferred_setup_start_gate, portMAX_DELAY) != pdTRUE) {
-        ESP_LOGW(TAG, "deferred setup start gate unavailable");
-        goto finish;
-    }
-    /* The setup operation changes Wi-Fi mode, starts HTTP/DNS tasks and paints
-     * a QR page. Always run it outside the hardware button task so the GPIO
-     * scanner stays responsive and networking callbacks can make progress. */
-    int64_t deadline = esp_timer_get_time() + 5000000;
-    while (!deferred_setup_stop_requested() && meeting_service_is_active() &&
-           esp_timer_get_time() < deadline) {
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
-    }
-    if (deferred_setup_stop_requested()) goto finish;
+static void deferred_setup_host_start_portal(void *context) {
+    (void)context;
     ESP_LOGI(TAG, "deferred configuration portal starting");
     enter_setup_portal();
-finish:
-    TaskHandle_t self = xTaskGetCurrentTaskHandle();
-    bool restart_after_system_sleep_abort = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_deferred_setup_retiring = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    /* Retire the immutable Registry identity before completion becomes visible.
-     * The parent may otherwise see no task and recreate a portal coordinator
-     * while the old entry can still be stopped by a later owner sweep. */
-    const esp_err_t registry_err = task_registry_unregister_with_timeout(
-        TASK_REGISTRY_OWNER_CONNECTIVITY, (void *)self, 10);
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_deferred_setup_exit_status = registry_err;
-    if (s_deferred_setup_task == self) s_deferred_setup_task = NULL;
-    s_deferred_setup_starting = false;
-    s_deferred_setup_retiring = false;
-    if (registry_err != ESP_OK) {
-        s_deferred_setup_stop_requested = true;
-        s_deferred_setup_admission_open = false;
-        s_deferred_setup_registry_retirement_failed = true;
-    }
-    /* If ABORT arrived while this old generation was still completing, do not
-     * reuse its stopped semaphore as proof for a new task.  Publish its final
-     * state and unregister first; only then create the recorded replacement. */
-    restart_after_system_sleep_abort = registry_err == ESP_OK &&
-        s_deferred_setup_system_sleep_restart_pending &&
-        !s_deferred_setup_system_sleep_preparing &&
-        s_deferred_setup_admission_open;
-    if (restart_after_system_sleep_abort) {
-        s_deferred_setup_system_sleep_restart_pending = false;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (s_deferred_setup_stopped) xSemaphoreGive(s_deferred_setup_stopped);
-    if (restart_after_system_sleep_abort && !start_deferred_setup_task()) {
-        ESP_LOGW(TAG, "cannot restore deferred setup coordinator after system-sleep abort");
-    }
-    vTaskDelete(NULL);
 }
 
-static esp_err_t stop_deferred_setup_task(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    const int64_t deadline_us =
-        esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    TaskHandle_t task = NULL;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_deferred_setup_admission_open = false;
-    s_deferred_setup_stop_requested = true;
-    task = s_deferred_setup_task;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!task) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        const esp_err_t exit_status = s_deferred_setup_exit_status;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return exit_status;
-    }
-    if (xTaskGetCurrentTaskHandle() == task) return ESP_ERR_INVALID_STATE;
-    /* A registry stop can race the creator between registration and releasing
-     * the start gate. Release it here as well so the worker observes the stop
-     * token rather than stranding the join on its initial semaphore wait. */
-    if (s_deferred_setup_start_gate) xSemaphoreGive(s_deferred_setup_start_gate);
-    xTaskNotifyGive(task);
-    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (!s_deferred_setup_stopped ||
-        remaining_ms == 0 ||
-        xSemaphoreTake(s_deferred_setup_stopped, pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
-        return ESP_ERR_TIMEOUT;
-    }
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0) return ESP_ERR_TIMEOUT;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const esp_err_t exit_status = s_deferred_setup_exit_status;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (exit_status != ESP_OK) return exit_status;
-    ESP_LOGI(TAG, "deferred setup coordinator stopped");
-    return ESP_OK;
-}
+static const deferred_setup_worker_service_host_t s_deferred_setup_worker_service_host = {
+    .struct_size = sizeof(deferred_setup_worker_service_host_t),
+    .meeting_active = deferred_setup_host_meeting_active,
+    .start_setup_portal = deferred_setup_host_start_portal,
+    .context = NULL,
+};
 
-static esp_err_t stop_deferred_setup_registry_entry(void *context, uint32_t timeout_ms) {
-    TaskHandle_t task = NULL;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    task = s_deferred_setup_task;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (context && task && context != (void *)task) return ESP_ERR_INVALID_STATE;
-    return stop_deferred_setup_task(timeout_ms);
-}
-
-static bool start_deferred_setup_task(void) {
-    taskENTER_CRITICAL(&s_task_state_lock);
-    bool admission_open = s_deferred_setup_admission_open &&
-                          !s_deferred_setup_registry_retirement_failed &&
-                          !s_deferred_setup_system_sleep_preparing;
-    bool already_starting = s_deferred_setup_task != NULL || s_deferred_setup_starting;
-    if (admission_open && !already_starting) s_deferred_setup_starting = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!admission_open) {
-        ESP_LOGW(TAG, "deferred setup start rejected: lifecycle admission is closed");
-        return false;
-    }
-    if (already_starting) return true;
-    if (!s_deferred_setup_start_gate || !s_deferred_setup_stopped) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_deferred_setup_starting = false;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        ESP_LOGE(TAG, "deferred setup lifecycle primitives unavailable");
-        return false;
-    }
-    while (xSemaphoreTake(s_deferred_setup_stopped, 0) == pdTRUE) {}
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_deferred_setup_stop_requested = false;
-    s_deferred_setup_exit_status = ESP_OK;
-    s_deferred_setup_registry_retirement_failed = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    TaskHandle_t task = NULL;
-    if (xTaskCreate(deferred_setup_task, "maclaw_setup_wait", 12288, NULL, 5, &task) != pdPASS) {
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_deferred_setup_starting = false;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        ESP_LOGE(TAG, "cannot create configuration portal worker");
-        return false;
-    }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_deferred_setup_task = task;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    esp_err_t registry_err = task_registry_register(&(task_registry_entry_t){
-        .struct_size = sizeof(task_registry_entry_t),
-        .owner = TASK_REGISTRY_OWNER_CONNECTIVITY,
-        .name = "deferred_setup",
-        .context = (void *)task,
-        .stop = stop_deferred_setup_registry_entry,
-    });
-    if (registry_err != ESP_OK) {
-        ESP_LOGE(TAG, "cannot register deferred setup coordinator: %s",
-                 esp_err_to_name(registry_err));
-        taskENTER_CRITICAL(&s_task_state_lock);
-        s_deferred_setup_stop_requested = true;
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        xSemaphoreGive(s_deferred_setup_start_gate);
-        (void)stop_deferred_setup_task(500);
-        return false;
-    }
-    xSemaphoreGive(s_deferred_setup_start_gate);
-    return true;
-}
-
-/* The deferred coordinator waits up to five seconds before it changes radio
- * mode and starts the portal.  Portal-level PREPARE only observes a live
- * portal generation, so this root fence owns the earlier wait/create window.
- * It uses the task's existing cooperative join and records only a generation
- * that existed before PREPARE; ABORT never turns an otherwise idle device into
- * a configuration request. */
 static device_status_t prepare_deferred_setup_system_sleep(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return DEVICE_STATUS_INVALID_ARGUMENT;
-    bool was_running = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (s_deferred_setup_system_sleep_preparing || s_deferred_setup_starting) {
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return DEVICE_STATUS_BUSY;
-    }
-    s_deferred_setup_system_sleep_preparing = true;
-    s_deferred_setup_system_sleep_was_admitted = s_deferred_setup_admission_open;
-    s_deferred_setup_admission_open = false;
-    was_running = s_deferred_setup_task != NULL;
-    s_deferred_setup_system_sleep_was_running = was_running;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-
-    if (!was_running) return DEVICE_STATUS_OK;
-    esp_err_t stop_err = stop_deferred_setup_task(timeout_ms);
-    /* Retain portal-coordinator admission closure until the parent rollback
-     * restores the pre-PREPARE generation. */
-    return startup_status_from_esp_err(stop_err);
+    return deferred_setup_worker_service_prepare_system_sleep(timeout_ms);
 }
 
 static void abort_deferred_setup_system_sleep_prepare(void) {
-    bool restart = false;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    if (!s_deferred_setup_system_sleep_preparing) {
-        taskEXIT_CRITICAL(&s_task_state_lock);
-        return;
-    }
-    restart = s_deferred_setup_system_sleep_was_running;
-    s_deferred_setup_admission_open = !s_deferred_setup_registry_retirement_failed &&
-                                      s_deferred_setup_system_sleep_was_admitted;
-    s_deferred_setup_system_sleep_was_running = false;
-    s_deferred_setup_system_sleep_was_admitted = false;
-    s_deferred_setup_system_sleep_preparing = false;
-    /* A failed bounded join leaves the recorded old task as the only safe
-     * owner of a later replacement. Its finish path consumes this marker. */
-    if (restart && (s_deferred_setup_task || s_deferred_setup_starting ||
-                    s_deferred_setup_retiring)) {
-        s_deferred_setup_system_sleep_restart_pending = true;
-        restart = false;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (restart && !start_deferred_setup_task()) {
-        ESP_LOGW(TAG, "cannot restore deferred setup coordinator after system-sleep abort");
-    }
+    deferred_setup_worker_service_abort_system_sleep_prepare();
+}
+
+static device_status_t prepare_deferred_setup_network_restart(uint32_t timeout_ms) {
+    return deferred_setup_worker_service_prepare_network_restart(timeout_ms);
+}
+
+static device_status_t commit_deferred_setup_network_restart(void) {
+    return deferred_setup_worker_service_commit_prepared_network_restart();
 }
 
 // Alarm ringing is a local safety-critical foreground owner. The scheduler
@@ -3733,11 +3014,12 @@ static void on_app_intent(const app_intent_event_t *event, void *arg) {
 }
 
 static bool input_host_startup_sequence_complete(void) {
-    return s_startup_sequence_complete;
+    return startup_runtime_state_service_sequence_complete();
 }
 
 static bool input_host_wifi_configured(void) {
-    return s_wifi_ssid[0] != '\0';
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    return wifi_runtime_configuration_service_get_snapshot(&runtime) && runtime.ssid[0] != '\0';
 }
 
 static int32_t input_host_persist_output_volume(uint8_t percent) {
@@ -3745,11 +3027,11 @@ static int32_t input_host_persist_output_volume(uint8_t percent) {
 }
 
 static bool input_host_start_deferred_setup(void) {
-    return start_deferred_setup_task();
+    return deferred_setup_worker_service_start() == DEVICE_STATUS_OK;
 }
 
 static bool input_host_safe_mode_active(void) {
-    return s_safe_mode_active;
+    return startup_runtime_state_service_safe_mode_active();
 }
 
 static const input_binding_host_t s_input_binding_host = {
@@ -3766,18 +3048,17 @@ static const input_binding_host_t s_input_binding_host = {
  * The private network-core owner records ESP-NETIF/default-loop singleton
  * state independently, so a partial generation is never restartable. */
 static esp_err_t init_network_core(void) {
-    if (connectivity_network_root_owner_core_ready()) {
-        return ESP_OK;
-    }
-    if (connectivity_network_root_owner_has_resources()) {
-        ESP_LOGW(TAG, "network core start rejected: prior partial generation still owns resources");
-        return ESP_ERR_INVALID_STATE;
-    }
-    device_status_t connectivity_init_status = device_connectivity_initialize();
+    return device_status_to_platform_error(
+        connectivity_network_lifecycle_service_ensure_core());
+}
+
+static device_status_t network_lifecycle_initialize_logical(void *context) {
+    (void)context;
+    const device_status_t connectivity_init_status = device_connectivity_initialize();
     if (connectivity_init_status != DEVICE_STATUS_OK) {
         ESP_LOGW(TAG, "Connectivity Service initialization failed: device status=%d",
                  (int)connectivity_init_status);
-        return device_status_to_platform_error(connectivity_init_status);
+        return connectivity_init_status;
     }
     /* Connectivity Service owns system-sleep admission/drain.  Keep the
      * concrete client/task cancellation bridge in this composition root so
@@ -3787,6 +3068,17 @@ static esp_err_t init_network_core(void) {
     connectivity_service_set_system_sleep_request_resumer(
         resume_gateway_workers_after_system_sleep_abort, NULL);
 
+    return DEVICE_STATUS_OK;
+}
+
+static uint64_t network_lifecycle_monotonic_time_ms(void *context) {
+    (void)context;
+    const int64_t now_us = esp_timer_get_time();
+    return now_us > 0 ? (uint64_t)now_us / 1000u : 0;
+}
+
+static device_status_t network_lifecycle_configure_physical_lifecycle(void *context) {
+    (void)context;
     const connectivity_network_root_owner_lifecycle_host_t lifecycle_host = {
         .stop_provisioning = network_root_stop_provisioning,
         .stop_callback_admission = network_root_stop_callback_admission,
@@ -3794,115 +3086,115 @@ static esp_err_t init_network_core(void) {
         .provisioning_has_live_resources = network_root_provisioning_has_live_resources,
         .context = NULL,
     };
-    device_status_t lifecycle_host_status =
+    const device_status_t lifecycle_host_status =
         connectivity_network_root_owner_configure_lifecycle_host(&lifecycle_host);
     if (lifecycle_host_status != DEVICE_STATUS_OK) {
         ESP_LOGW(TAG, "network physical-root lifecycle bridge failed: device status=%d",
                  (int)lifecycle_host_status);
-        return device_status_to_platform_error(lifecycle_host_status);
+        return lifecycle_host_status;
     }
-
-    device_status_t core_status = connectivity_network_root_owner_ensure_core();
-    if (core_status != DEVICE_STATUS_OK) {
-        /* Connectivity's logical EventGroup has no useful lifetime without
-         * the physical netif root. Do not retain it after a failed first
-         * allocation and accidentally treat a later retry as the same Wi-Fi
-         * generation. */
-        if (connectivity_network_root_owner_has_resources()) {
-            esp_err_t rollback_err = stop_connectivity_root_transaction(500);
-            if (rollback_err != ESP_OK) {
-                ESP_LOGW(TAG, "network-core rollback after singleton init failure incomplete: %s",
-                         esp_err_to_name(rollback_err));
-            }
-        } else {
-            device_status_t stop_status = device_connectivity_deinit(500);
-            if (stop_status != DEVICE_STATUS_OK) {
-                ESP_LOGW(TAG, "cannot stop Connectivity after network-core init failure: %d",
-                         (int)stop_status);
-            }
-        }
-        return device_status_to_platform_error(core_status);
-    }
-    return ESP_OK;
+    return DEVICE_STATUS_OK;
 }
+
+static bool network_lifecycle_physical_has_resources(void *context) {
+    (void)context;
+    return connectivity_network_root_owner_has_resources();
+}
+
+static bool network_lifecycle_physical_core_ready(void *context) {
+    (void)context;
+    return connectivity_network_root_owner_core_ready();
+}
+
+static device_status_t network_lifecycle_ensure_physical_core(void *context) {
+    (void)context;
+    return connectivity_network_root_owner_ensure_core();
+}
+
+static bool network_lifecycle_wifi_has_resources(void *context) {
+    (void)context;
+    return connectivity_network_root_owner_wifi_has_resources();
+}
+
+static bool network_lifecycle_wifi_ready(void *context) {
+    (void)context;
+    return connectivity_network_root_owner_wifi_ready();
+}
+
+static device_status_t network_lifecycle_initialize_wifi(void *context) {
+    (void)context;
+    return connectivity_network_root_owner_initialize_wifi(wifi_event, NULL);
+}
+
+static void network_lifecycle_open_wifi_callback_admission(void *context) {
+    (void)context;
+    connectivity_service_open_wifi_event_callback_admission();
+}
+
+static device_status_t network_lifecycle_stop_physical(
+    uint32_t timeout_ms, bool *out_wifi_radio_stopped, void *context) {
+    (void)context;
+    const device_status_t status = connectivity_network_root_owner_stop(
+        timeout_ms, out_wifi_radio_stopped);
+    if (out_wifi_radio_stopped && *out_wifi_radio_stopped) {
+        device_connectivity_set_wifi_ready(false);
+    }
+    return status;
+}
+
+static device_status_t network_lifecycle_deinitialize_logical(uint32_t timeout_ms,
+                                                               void *context) {
+    (void)context;
+    return device_connectivity_deinit(timeout_ms);
+}
+
+static const connectivity_network_lifecycle_service_host_t
+    s_connectivity_network_lifecycle_service_host = {
+        .struct_size = sizeof(connectivity_network_lifecycle_service_host_t),
+        .now_ms = network_lifecycle_monotonic_time_ms,
+        .initialize_logical = network_lifecycle_initialize_logical,
+        .configure_physical_lifecycle = network_lifecycle_configure_physical_lifecycle,
+        .physical_has_resources = network_lifecycle_physical_has_resources,
+        .physical_core_ready = network_lifecycle_physical_core_ready,
+        .ensure_physical_core = network_lifecycle_ensure_physical_core,
+        .wifi_has_resources = network_lifecycle_wifi_has_resources,
+        .wifi_ready = network_lifecycle_wifi_ready,
+        .initialize_wifi = network_lifecycle_initialize_wifi,
+        .open_wifi_callback_admission = network_lifecycle_open_wifi_callback_admission,
+        .stop_physical = network_lifecycle_stop_physical,
+        .deinitialize_logical = network_lifecycle_deinitialize_logical,
+        .context = NULL,
+};
 
 /* Wi-Fi driver initialization is likewise a bounded transaction.  Event
  * handlers are registered one by one by ESP-IDF, hence a later registration
  * failure must remove each earlier instance before deinitializing the driver.
  * This gives the cold-start rollback a truthful ownership picture. */
 static esp_err_t init_network(void) {
-    esp_err_t err = init_network_core();
-    if (err != ESP_OK) return err;
-    if (connectivity_network_root_owner_wifi_has_resources()) {
-        /* A retained partial driver generation must go through the common
-         * teardown; treating it as ready would leave some Wi-Fi/IP events
-         * unregistered or routed at stale callback state. */
-        return connectivity_network_root_owner_wifi_ready() ? ESP_OK : ESP_ERR_INVALID_STATE;
-    }
-    device_status_t driver_status =
-        connectivity_network_root_owner_initialize_wifi(wifi_event, NULL);
-    if (driver_status != DEVICE_STATUS_OK) {
-        /* Driver creation/handler registration follows the singleton core;
-         * common root teardown preserves any partial physical generation. */
-        ESP_LOGW(TAG, "Wi-Fi driver initialization failed: device status=%d",
-                 (int)driver_status);
-        esp_err_t rollback_err = stop_connectivity_root_transaction(500);
-        if (rollback_err != ESP_OK) {
-            ESP_LOGW(TAG, "network-core rollback after Wi-Fi driver init failure incomplete: %s",
-                     esp_err_to_name(rollback_err));
-        }
-        return device_status_to_platform_error(driver_status);
-    }
-    /* The default loop is physically owned here, while Connectivity owns the
-     * lifecycle admission that prevents a queued callback from crossing a
-     * System Sleep or teardown boundary. */
-    connectivity_service_open_wifi_event_callback_admission();
-    return ESP_OK;
+    return device_status_to_platform_error(
+        connectivity_network_lifecycle_service_ensure_wifi());
 }
 
-static void setup_qrcode_display(esp_qrcode_handle_t qrcode, void *user_data) {
-    if (!qrcode) return;
-    const int size = esp_qrcode_get_size(qrcode);
-    if (size <= 0 || size > 177) return;
-    const size_t module_count = (size_t)size * (size_t)size;
-    uint8_t *modules = malloc(module_count);
-    if (!modules) {
-        ESP_LOGW(TAG, "cannot allocate setup QR module matrix");
-        return;
-    }
-    for (int y = 0; y < size; ++y) {
-        for (int x = 0; x < size; ++x) {
-            modules[(size_t)y * (size_t)size + (size_t)x] =
-                esp_qrcode_get_module(qrcode, x, y) ? 1u : 0u;
-        }
-    }
-    const bool shown = scene_presenter_publish_setup_qr(
-        modules, module_count, user_data ? (const char *)user_data : NULL);
-    free(modules);
-    if (!shown) ESP_LOGW(TAG, "cannot publish setup QR module matrix");
+static bool provisioning_qr_publish_modules(const uint8_t *modules,
+                                            size_t module_count,
+                                            const char *ssid, void *context) {
+    (void)context;
+    return scene_presenter_publish_setup_qr(modules, module_count, ssid);
 }
 
-static void show_setup_qrcode(const char *ssid, const char *passphrase) {
-    // Standard WPA/WPA2 Wi-Fi QR payload. The per-portal passphrase is
-    // generated by Provisioning Service and must never be persisted or logged.
-    char payload[128];
-    int length = snprintf(payload, sizeof(payload), "WIFI:T:WPA;S:%s;P:%s;;",
-                          ssid ? ssid : "", passphrase ? passphrase : "");
-    if (length < 0 || length >= sizeof(payload)) {
-        ESP_LOGW(TAG, "setup SSID is too long for QR payload");
-        return;
-    }
-    esp_qrcode_config_t config = ESP_QRCODE_CONFIG_DEFAULT();
-    config.display_func_with_cb = setup_qrcode_display;
-    config.user_data = (void *)ssid;
-    config.max_qrcode_version = 5;
-    config.qrcode_ecc_level = ESP_QRCODE_ECC_MED;
-    esp_err_t err = esp_qrcode_generate(&config, payload);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "cannot generate setup Wi-Fi QR: %s", esp_err_to_name(err));
-        scene_presenter_publish_message("设备网络设置", ssid);
-    }
+static void provisioning_qr_publish_fallback_message(const char *title,
+                                                      const char *body,
+                                                      void *context) {
+    (void)context;
+    scene_presenter_publish_message(title, body);
 }
+
+static const provisioning_qr_service_host_t s_provisioning_qr_service_host = {
+    .struct_size = sizeof(provisioning_qr_service_host_t),
+    .publish_modules = provisioning_qr_publish_modules,
+    .publish_fallback_message = provisioning_qr_publish_fallback_message,
+    .context = NULL,
+};
 
 
 /* Wi-Fi core teardown is deliberately a separate, stronger lifecycle level
@@ -3918,9 +3210,8 @@ static void show_setup_qrcode(const char *ssid, const char *passphrase) {
  * restarted safely. */
 static esp_err_t stop_network_core_transaction(uint32_t timeout_ms) {
     bool wifi_radio_stopped = false;
-    device_status_t status = connectivity_network_root_owner_stop(
+    device_status_t status = connectivity_network_lifecycle_service_stop(
         timeout_ms, &wifi_radio_stopped);
-    if (wifi_radio_stopped) device_connectivity_set_wifi_ready(false);
     return status == DEVICE_STATUS_OK ? ESP_OK : device_status_to_platform_error(status);
 }
 
@@ -3931,19 +3222,7 @@ static esp_err_t stop_network_core_transaction(uint32_t timeout_ms) {
  * registered callbacks may still need that state and a new generation would
  * be unsafe. */
 static esp_err_t stop_connectivity_root_transaction(uint32_t timeout_ms) {
-    if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
-    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    const uint32_t network_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (network_timeout_ms == 0) return ESP_ERR_TIMEOUT;
-    esp_err_t err = stop_network_core_transaction(network_timeout_ms);
-    if (err != ESP_OK) return err;
-    const uint32_t service_timeout_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (service_timeout_ms == 0) return ESP_ERR_TIMEOUT;
-    device_status_t service_status = device_connectivity_deinit(service_timeout_ms);
-    if (service_status == DEVICE_STATUS_OK) return ESP_OK;
-    ESP_LOGW(TAG, "cannot stop Connectivity Service after physical network stop: %d",
-             (int)service_status);
-    return device_status_to_platform_error(service_status);
+    return stop_network_core_transaction(timeout_ms);
 }
 
 static device_status_t provisioning_host_init_network(void) {
@@ -4103,35 +3382,46 @@ static void provisioning_host_show_text(const char *title, const char *body) {
 }
 
 static void provisioning_host_show_qr(const char *ap_ssid, const char *ap_passphrase) {
-    show_setup_qrcode(ap_ssid, ap_passphrase);
+    const device_status_t status = provisioning_qr_service_show(ap_ssid, ap_passphrase);
+    if (status != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "cannot present setup QR: device status=%d", (int)status);
+    }
 }
 
 static void provisioning_host_copy_runtime_wifi(provisioning_runtime_wifi_t *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    strlcpy(out->wifi_ssid, s_wifi_ssid, sizeof(out->wifi_ssid));
-    strlcpy(out->wifi_password, s_wifi_password, sizeof(out->wifi_password));
-    strlcpy(out->wifi_security, s_wifi_security, sizeof(out->wifi_security));
-    strlcpy(out->wifi_eap_method, s_wifi_eap_method, sizeof(out->wifi_eap_method));
-    strlcpy(out->wifi_identity, s_wifi_identity, sizeof(out->wifi_identity));
-    strlcpy(out->wifi_username, s_wifi_username, sizeof(out->wifi_username));
-    strlcpy(out->wifi_ttls_phase2, s_wifi_ttls_phase2, sizeof(out->wifi_ttls_phase2));
-    strlcpy(out->wifi_ca_mode, s_wifi_ca_mode, sizeof(out->wifi_ca_mode));
-    strlcpy(out->wifi_server_domain, s_wifi_server_domain, sizeof(out->wifi_server_domain));
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    if (!wifi_runtime_configuration_service_get_snapshot(&runtime)) return;
+    strlcpy(out->wifi_ssid, runtime.ssid, sizeof(out->wifi_ssid));
+    strlcpy(out->wifi_password, runtime.password, sizeof(out->wifi_password));
+    strlcpy(out->wifi_security, runtime.security, sizeof(out->wifi_security));
+    strlcpy(out->wifi_eap_method, runtime.eap_method, sizeof(out->wifi_eap_method));
+    strlcpy(out->wifi_identity, runtime.identity, sizeof(out->wifi_identity));
+    strlcpy(out->wifi_username, runtime.username, sizeof(out->wifi_username));
+    strlcpy(out->wifi_ttls_phase2, runtime.ttls_phase2, sizeof(out->wifi_ttls_phase2));
+    strlcpy(out->wifi_ca_mode, runtime.ca_mode, sizeof(out->wifi_ca_mode));
+    strlcpy(out->wifi_server_domain, runtime.server_domain, sizeof(out->wifi_server_domain));
     (void)gateway_transport_gateway_url(out->gateway_url, sizeof(out->gateway_url));
 }
 
 static void provisioning_host_sync_runtime_after_network_delete(const char *ssid) {
-    (void)configuration_service_list_wifi_networks(
-        s_wifi_networks, CONFIGURATION_WIFI_NETWORK_CAPACITY, &s_wifi_network_count);
-    if (ssid && !strcmp(ssid, s_wifi_ssid) && !is_enterprise_wifi()) {
-        s_wifi_ssid[0] = '\0';
-        s_wifi_password[0] = '\0';
+    configuration_wifi_network_t networks[CONFIGURATION_WIFI_NETWORK_CAPACITY] = {0};
+    uint8_t network_count = 0u;
+    if (configuration_service_list_wifi_networks(
+            networks, CONFIGURATION_WIFI_NETWORK_CAPACITY, &network_count) == DEVICE_STATUS_OK) {
+        (void)wifi_runtime_configuration_service_sync_saved_networks_after_delete(
+            networks, network_count, ssid);
     }
 }
 
-static const char *provisioning_host_preferred_scan_ssid(void) {
-    return s_wifi_ssid;
+static void provisioning_host_copy_preferred_scan_ssid(char *out, uint32_t capacity) {
+    if (!out || capacity == 0u) return;
+    out[0] = '\0';
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    if (wifi_runtime_configuration_service_get_snapshot(&runtime)) {
+        strlcpy(out, runtime.ssid, capacity);
+    }
 }
 
 static const provisioning_service_host_t s_provisioning_service_host = {
@@ -4163,12 +3453,14 @@ static const provisioning_service_host_t s_provisioning_service_host = {
     .show_qr = provisioning_host_show_qr,
     .copy_runtime_wifi = provisioning_host_copy_runtime_wifi,
     .sync_runtime_after_network_delete = provisioning_host_sync_runtime_after_network_delete,
-    .preferred_scan_ssid = provisioning_host_preferred_scan_ssid,
+    .copy_preferred_scan_ssid = provisioning_host_copy_preferred_scan_ssid,
 };
 
 static void wifi_event(void *arg, const connectivity_wifi_driver_event_t *event) {
     (void)arg;
     if (!event || !connectivity_service_wifi_event_callback_enter()) return;
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    const bool runtime_available = wifi_runtime_configuration_service_get_snapshot(&runtime);
     if (event->kind == CONNECTIVITY_WIFI_DRIVER_EVENT_AP_CLIENT_CONNECTED) {
         ESP_LOGI(TAG, "setup client associated: %02X:%02X:%02X:%02X:%02X:%02X",
                  event->mac[0], event->mac[1], event->mac[2], event->mac[3],
@@ -4193,7 +3485,7 @@ static void wifi_event(void *arg, const connectivity_wifi_driver_event_t *event)
             ESP_LOGW(TAG, "ignoring Wi-Fi disconnect outside current attempt");
             goto finish;
         }
-        ambient_service_apply_network(s_wifi_ssid, false);
+        ambient_service_apply_network(runtime_available ? runtime.ssid : "", false);
         scene_presenter_publish_service_ready(false);
         firmware_identity_set_service_ready(false);
         if (connectivity_wifi_driver_owner_take_expected_disconnect()) {
@@ -4201,7 +3493,8 @@ static void wifi_event(void *arg, const connectivity_wifi_driver_event_t *event)
             goto finish;
         }
         if (connectivity_wifi_driver_owner_should_auto_connect()) {
-            ESP_LOGW(TAG, "Wi-Fi disconnected from %s; retrying", s_wifi_ssid);
+            ESP_LOGW(TAG, "Wi-Fi disconnected from %s; retrying",
+                     runtime_available ? runtime.ssid : "");
             (void)connectivity_wifi_driver_owner_connect();
         }
         goto finish;
@@ -4224,97 +3517,11 @@ static void wifi_event(void *arg, const connectivity_wifi_driver_event_t *event)
         // The normal status surface is still covered by the explicit startup
         // screen here. Avoid a full LCD transfer from the IP event loop; the
         // ready transition will publish the connected state after handshake.
-        ESP_LOGI(TAG, "Wi-Fi connected to %s", s_wifi_ssid);
+        ESP_LOGI(TAG, "Wi-Fi connected to %s", runtime_available ? runtime.ssid : "");
         cellular_recovery_service_note_wifi_ready();
     }
 finish:
     connectivity_service_wifi_event_callback_leave();
-}
-
-/* Value-only Power bridge for the one remaining composition-root storage
- * worker.  It never moves queue/task details upward: PREPARE closes admission
- * while holding the requester mutex, queues a fence after any older accepted
- * write, and waits for the retained worker to acknowledge it.  No operation
- * accepted before the marker is replayed by ABORT; it either completed before
- * the fence or its caller receives its original bounded result. */
-static device_status_t prepare_output_volume_persist_system_sleep(uint32_t timeout_ms,
-                                                                   void *context) {
-    (void)context;
-    if (timeout_ms == 0 || !s_output_volume_persist_queue ||
-        !s_output_volume_persist_request_mutex ||
-        !s_output_volume_persist_system_sleep_quiesced) {
-        return DEVICE_STATUS_UNAVAILABLE;
-    }
-    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const bool unavailable = s_output_volume_persist_stop_requested ||
-                             s_output_volume_persist_registry_retirement_failed ||
-                             !s_output_volume_persist_task_handle ||
-                             s_output_volume_persist_system_sleep_preparing;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (unavailable) return DEVICE_STATUS_BUSY;
-
-    uint32_t remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms == 0 ||
-        xSemaphoreTake(s_output_volume_persist_request_mutex,
-                       pdMS_TO_TICKS(remaining_ms)) != pdTRUE) {
-        return DEVICE_STATUS_TIMEOUT;
-    }
-
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const bool still_available = !s_output_volume_persist_stop_requested &&
-                                 !s_output_volume_persist_registry_retirement_failed &&
-                                 s_output_volume_persist_task_handle &&
-                                 !s_output_volume_persist_system_sleep_preparing;
-    if (still_available) s_output_volume_persist_system_sleep_preparing = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (!still_available) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return DEVICE_STATUS_BUSY;
-    }
-
-    /* A previous failed PREPARE cannot leave an acknowledgement that would
-     * incorrectly prove this generation is quiet.  No caller can queue while
-     * this bridge owns the request mutex. */
-    while (xSemaphoreTake(s_output_volume_persist_system_sleep_quiesced, 0) == pdTRUE) {}
-    output_volume_persist_request_t fence = {.system_sleep_prepare = true};
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    BaseType_t queued = remaining_ms
-                            ? xQueueSend(s_output_volume_persist_queue, &fence,
-                                         pdMS_TO_TICKS(remaining_ms))
-                            : pdFALSE;
-    if (queued != pdTRUE) {
-        /* No post-PREPARE publisher may cross a failed fence.  Release only
-         * the requester mutex; Power's storage-bridge ABORT owns reopening
-         * the admission marker. */
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return DEVICE_STATUS_TIMEOUT;
-    }
-    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
-    if (remaining_ms != 0 &&
-        xSemaphoreTake(s_output_volume_persist_system_sleep_quiesced,
-                       pdMS_TO_TICKS(remaining_ms)) == pdTRUE) {
-        xSemaphoreGive(s_output_volume_persist_request_mutex);
-        return DEVICE_STATUS_OK;
-    }
-
-    /* The fence may be selected just after the timeout. Keep admission closed
-     * until Power's storage-bridge ABORT; the worker performs no mutation for
-     * this marker and the mutex excluded later publishers before it was sent. */
-    xSemaphoreGive(s_output_volume_persist_request_mutex);
-    return DEVICE_STATUS_TIMEOUT;
-}
-
-static void abort_output_volume_persist_system_sleep_prepare(void *context) {
-    (void)context;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    /* An unretired Storage identity is terminal for this boot.  ABORT may
-     * reopen a reversible PREPARE fence, never a domain whose predecessor can
-     * still be selected by the Task Registry. */
-    if (!s_output_volume_persist_registry_retirement_failed) {
-        s_output_volume_persist_system_sleep_preparing = false;
-    }
-    taskEXIT_CRITICAL(&s_task_state_lock);
 }
 
 static void cellular_recovery_publish_network_ready(bool ready, void *context) {
@@ -4331,10 +3538,7 @@ static bool cellular_recovery_gateway_startup_running(void *context) {
 
 static bool cellular_recovery_wifi_gateway_startup_recovery_allowed(void *context) {
     (void)context;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const bool allowed = s_gateway_startup_allowed && !s_startup_sequence_complete;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    return allowed;
+    return startup_runtime_state_service_gateway_startup_recovery_allowed();
 }
 
 static bool cellular_recovery_gateway_startup_eligible(void *context) {
@@ -4383,261 +3587,222 @@ static bool start_cellular(void) {
     return true;
 }
 
-/* 多热点自动选网：扫描可见 AP，把已存热点按最强 RSSI 从强到弱排序后逐个
- * 尝试连接，某个热点拿到 IP 即返回 true。扫描失败、没有可见的已存热点或
- * 全部连接失败时返回 false，由调用方回退到原单凭据连接流程（失败后的
- * "网络暂时不可用"/配网逻辑保持不变）。 */
+static device_status_t wifi_startup_ensure_network(void *context) {
+    (void)context;
+    return startup_status_from_esp_err(init_network());
+}
+
+static device_status_t wifi_startup_ensure_station(void *context) {
+    (void)context;
+    return provisioning_network_owner_ensure_station();
+}
+
+static void wifi_startup_set_station_policy(bool auto_connect,
+                                            bool expected_disconnect,
+                                            void *context) {
+    (void)context;
+    connectivity_wifi_driver_owner_set_station_policy(auto_connect, expected_disconnect);
+}
+
+static device_status_t wifi_startup_configure_station(
+    const wifi_startup_service_station_config_t *config, void *context) {
+    (void)context;
+    if (!config) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return connectivity_wifi_driver_owner_configure_station(
+        &(connectivity_wifi_driver_station_config_t){
+            .ssid = config->ssid,
+            .password = config->password,
+            .enterprise = config->enterprise,
+            .keep_setup_ap = config->keep_setup_ap,
+        });
+}
+
+static bool wifi_startup_enterprise_enabled(void *context) {
+    (void)context;
+    return connectivity_wifi_driver_owner_enterprise_enabled();
+}
+
+static device_status_t wifi_startup_configure_enterprise(
+    const wifi_startup_service_enterprise_config_t *config, void *context) {
+    (void)context;
+    if (!config) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return connectivity_wifi_driver_owner_configure_enterprise(
+        &(connectivity_wifi_driver_enterprise_config_t){
+            .identity = config->identity,
+            .username = config->username,
+            .password = config->password,
+            .server_domain = config->server_domain,
+            .use_ttls = config->use_ttls,
+            .ttls_phase2_pap = config->ttls_phase2_pap,
+            .use_system_ca = config->use_system_ca,
+        });
+}
+
+static device_status_t wifi_startup_disable_enterprise(void *context) {
+    (void)context;
+    return connectivity_wifi_driver_owner_disable_enterprise();
+}
+
+static bool wifi_startup_started(void *context) {
+    (void)context;
+    return connectivity_wifi_driver_owner_started();
+}
+
+static device_status_t wifi_startup_start(void *context) {
+    (void)context;
+    return connectivity_wifi_driver_owner_start();
+}
+
+static device_status_t wifi_startup_connect(void *context) {
+    (void)context;
+    return connectivity_wifi_driver_owner_connect();
+}
+
+static device_status_t wifi_startup_disconnect(void *context) {
+    (void)context;
+    return connectivity_wifi_driver_owner_disconnect();
+}
+
 typedef struct {
-    uint8_t order[CONFIGURATION_WIFI_NETWORK_CAPACITY];
-    int8_t best_rssi[CONFIGURATION_WIFI_NETWORK_CAPACITY];
-    uint8_t candidate_count;
-} saved_wifi_scan_candidates_t;
+    wifi_startup_service_scan_observer_t observer;
+    void *context;
+} wifi_startup_scan_context_t;
 
-static bool collect_saved_wifi_scan_candidate(const char *ssid, int8_t rssi,
-                                              connectivity_wifi_driver_security_t security,
-                                              void *context) {
+static bool wifi_startup_scan_adapter(const char *ssid, int8_t rssi,
+                                      connectivity_wifi_driver_security_t security,
+                                      void *context) {
     (void)security;
-    saved_wifi_scan_candidates_t *candidates = context;
-    if (!ssid || !candidates) return false;
-    for (uint8_t index = 0; index < s_wifi_network_count; ++index) {
-        if (strcmp(ssid, s_wifi_networks[index].ssid) != 0) continue;
-        uint8_t position = 0;
-        while (position < candidates->candidate_count &&
-               candidates->order[position] != index) {
-            ++position;
-        }
-        if (position < candidates->candidate_count &&
-            candidates->best_rssi[position] >= rssi) return true;
-        if (position < candidates->candidate_count) {
-            for (uint8_t shift = position; shift + 1 < candidates->candidate_count; ++shift) {
-                candidates->order[shift] = candidates->order[shift + 1];
-                candidates->best_rssi[shift] = candidates->best_rssi[shift + 1];
-            }
-            --candidates->candidate_count;
-        }
-        position = candidates->candidate_count;
-        while (position > 0 && candidates->best_rssi[position - 1] < rssi) {
-            candidates->order[position] = candidates->order[position - 1];
-            candidates->best_rssi[position] = candidates->best_rssi[position - 1];
-            --position;
-        }
-        candidates->order[position] = index;
-        candidates->best_rssi[position] = rssi;
-        ++candidates->candidate_count;
-        return true;
-    }
-    return true;
+    wifi_startup_scan_context_t *scan_context = context;
+    return scan_context && scan_context->observer &&
+           scan_context->observer(ssid, rssi, scan_context->context);
 }
 
-static bool start_wifi_saved_list(void) {
-    // 逐个尝试期间禁止断线回调自动重连，避免它抢连尚未切换的旧配置。
-    connectivity_wifi_driver_owner_set_station_policy(false, false);
-    if (!connectivity_wifi_driver_owner_started()) {
-        device_status_t start_status = connectivity_wifi_driver_owner_start();
-        if (start_status != DEVICE_STATUS_OK) {
-            ESP_LOGW(TAG, "cannot start Wi-Fi for saved-network scan: device status=%d",
-                     (int)start_status);
-            connectivity_wifi_driver_owner_set_station_policy(true, false);
-            return false;
-        }
-    }
-    saved_wifi_scan_candidates_t candidates = {0};
-    device_status_t scan_status = connectivity_wifi_driver_owner_scan_visible(
-        SETUP_SCAN_MAX_APS, collect_saved_wifi_scan_candidate, &candidates);
-    if (scan_status != DEVICE_STATUS_OK) {
-        ESP_LOGW(TAG, "Wi-Fi scan for saved networks failed: device status=%d",
-                 (int)scan_status);
-        connectivity_wifi_driver_owner_set_station_policy(true, false);
-        return false;
-    }
-    if (!candidates.candidate_count) {
-        ESP_LOGI(TAG, "no saved Wi-Fi network is currently visible");
-        connectivity_wifi_driver_owner_set_station_policy(true, false);
-        return false;
-    }
-    bool connected = false;
-    for (uint8_t c = 0; c < candidates.candidate_count && !connected; ++c) {
-        const configuration_wifi_network_t *network = &s_wifi_networks[candidates.order[c]];
-        ESP_LOGI(TAG, "trying saved Wi-Fi %s (%d dBm)", network->ssid,
-                 (int)candidates.best_rssi[c]);
-        strlcpy(s_wifi_ssid, network->ssid, sizeof(s_wifi_ssid));
-        strlcpy(s_wifi_password, network->password, sizeof(s_wifi_password));
-        const connectivity_wifi_driver_station_config_t station_config = {
-            .ssid = s_wifi_ssid,
-            .password = s_wifi_password,
-            .enterprise = false,
-            .keep_setup_ap = provisioning_service_has_live_resources(),
-        };
-        device_status_t config_status =
-            connectivity_wifi_driver_owner_configure_station(&station_config);
-        if (config_status != DEVICE_STATUS_OK) {
-            ESP_LOGW(TAG, "cannot configure saved Wi-Fi %s: device status=%d", s_wifi_ssid,
-                     (int)config_status);
-            continue;
-        }
-        ambient_service_apply_network(s_wifi_ssid, false);
-        if (c > 0) {
-            device_status_t disconnect_status = connectivity_wifi_driver_owner_disconnect();
-            if (disconnect_status != DEVICE_STATUS_OK &&
-                disconnect_status != DEVICE_STATUS_NOT_FOUND) {
-                ESP_LOGW(TAG, "cannot switch saved Wi-Fi candidate: device status=%d",
-                         (int)disconnect_status);
-            }
-        }
-        /* Each candidate receives a new Connectivity-owned attempt epoch.
-         * A late DHCP event for a prior candidate may update the physical
-         * observation, but it cannot satisfy this candidate's waiter unless
-         * it was published after the epoch became current. */
-        uint32_t attempt_epoch = device_connectivity_begin_wifi_attempt(s_wifi_ssid);
-        if (attempt_epoch == 0) {
-            ESP_LOGE(TAG, "cannot create Wi-Fi readiness attempt");
-            break;
-        }
-        device_status_t connect_status = connectivity_wifi_driver_owner_connect();
-        if (connect_status != DEVICE_STATUS_OK && connect_status != DEVICE_STATUS_BUSY) {
-            ESP_LOGW(TAG, "cannot start saved Wi-Fi attempt: device status=%d",
-                     (int)connect_status);
-            continue; // 发起失败直接试下一个候选
-        }
-        connected = device_connectivity_wait_wifi_attempt(
-            attempt_epoch, WIFI_CANDIDATE_CONNECT_TIMEOUT_MS);
-        if (!connected) {
-            ESP_LOGW(TAG, "saved Wi-Fi %s did not connect within %u ms",
-                     s_wifi_ssid, WIFI_CANDIDATE_CONNECT_TIMEOUT_MS);
-        }
-    }
-    connectivity_wifi_driver_owner_set_station_policy(true, false);
-    if (!connected) {
-        // 全部失败：保持原有后台自动重连行为（以最后一个候选继续重试）。
-        device_connectivity_set_wifi_ready(false);
-        ambient_service_apply_network(s_wifi_ssid, false);
-    }
-    return connected;
+static device_status_t wifi_startup_scan(uint32_t maximum_records,
+                                         wifi_startup_service_scan_observer_t observer,
+                                         void *observer_context, void *context) {
+    (void)context;
+    if (!observer) return DEVICE_STATUS_INVALID_ARGUMENT;
+    wifi_startup_scan_context_t scan_context = {
+        .observer = observer,
+        .context = observer_context,
+    };
+    return connectivity_wifi_driver_owner_scan_visible(
+        maximum_records, wifi_startup_scan_adapter, &scan_context);
 }
+
+static void wifi_startup_select_saved_network(const char *ssid, const char *password,
+                                              void *context) {
+    (void)context;
+    if (!ssid || !password) return;
+    (void)wifi_runtime_configuration_service_select_saved_network(ssid, password);
+}
+
+static uint32_t wifi_startup_begin_attempt(const char *ssid, void *context) {
+    (void)context;
+    return device_connectivity_begin_wifi_attempt(ssid);
+}
+
+static bool wifi_startup_wait_attempt(uint32_t attempt_epoch, uint32_t timeout_ms,
+                                      void *context) {
+    (void)context;
+    return device_connectivity_wait_wifi_attempt(attempt_epoch, timeout_ms);
+}
+
+static void wifi_startup_publish_network_ready(const char *ssid, bool ready,
+                                               void *context) {
+    (void)context;
+    device_connectivity_set_wifi_ready(ready);
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    const char *network = ssid;
+    if (!network && wifi_runtime_configuration_service_get_snapshot(&runtime)) {
+        network = runtime.ssid;
+    }
+    ambient_service_apply_network(network ? network : "", ready);
+}
+
+static bool wifi_startup_setup_portal_active(void *context) {
+    (void)context;
+    return provisioning_service_has_live_resources();
+}
+
+static const wifi_startup_service_host_t s_wifi_startup_service_host = {
+    .ensure_network = wifi_startup_ensure_network,
+    .ensure_station = wifi_startup_ensure_station,
+    .set_station_policy = wifi_startup_set_station_policy,
+    .configure_station = wifi_startup_configure_station,
+    .enterprise_enabled = wifi_startup_enterprise_enabled,
+    .configure_enterprise = wifi_startup_configure_enterprise,
+    .disable_enterprise = wifi_startup_disable_enterprise,
+    .wifi_started = wifi_startup_started,
+    .wifi_start = wifi_startup_start,
+    .wifi_connect = wifi_startup_connect,
+    .wifi_disconnect = wifi_startup_disconnect,
+    .scan_visible = wifi_startup_scan,
+    .select_saved_network = wifi_startup_select_saved_network,
+    .begin_attempt = wifi_startup_begin_attempt,
+    .wait_attempt = wifi_startup_wait_attempt,
+    .publish_network_ready = wifi_startup_publish_network_ready,
+    .setup_portal_active = wifi_startup_setup_portal_active,
+    .context = NULL,
+};
 
 static bool start_wifi(void) {
     /* A prior DHCP session is not evidence for this new adapter start. The
      * IP event publishes readiness only after this attempt acquires an
      * address. This is particularly important when Fangtang switches from
      * ML307 back to Wi-Fi during a recovery path. */
-    esp_err_t network_init_err = init_network();
-    if (network_init_err != ESP_OK) {
-        ESP_LOGE(TAG, "cannot initialize Wi-Fi transport: %s",
-                 esp_err_to_name(network_init_err));
+    wifi_runtime_configuration_snapshot_t runtime = {0};
+    if (!wifi_runtime_configuration_service_get_snapshot(&runtime)) {
+        ESP_LOGE(TAG, "Wi-Fi runtime configuration unavailable");
         return false;
     }
-    if (provisioning_network_owner_ensure_station() != DEVICE_STATUS_OK) {
-        ESP_LOGE(TAG, "cannot create Wi-Fi station netif");
-        return false;
+    wifi_startup_service_saved_network_t
+        saved_networks[CONFIGURATION_WIFI_NETWORK_CAPACITY] = {0};
+    const uint8_t saved_count = runtime.saved_network_count > CONFIGURATION_WIFI_NETWORK_CAPACITY
+                                    ? CONFIGURATION_WIFI_NETWORK_CAPACITY
+                                    : runtime.saved_network_count;
+    for (uint8_t index = 0; index < saved_count; ++index) {
+        saved_networks[index].ssid = runtime.saved_networks[index].ssid;
+        saved_networks[index].password = runtime.saved_networks[index].password;
     }
-    connectivity_wifi_driver_owner_set_station_policy(true, false);
-    bool enterprise = is_enterprise_wifi();
-    const connectivity_wifi_driver_station_config_t station_config = {
-        .ssid = s_wifi_ssid,
-        .password = s_wifi_password,
+    const bool enterprise = !strcmp(runtime.security, "enterprise");
+    const wifi_startup_service_request_t request = {
+        .ssid = runtime.ssid,
+        .password = runtime.password,
+        .boot_provisioning_staged =
+            startup_runtime_state_service_staged_provisioning_pending(),
         .enterprise = enterprise,
-        .keep_setup_ap = provisioning_service_has_live_resources(),
+        .enterprise_config = {
+            .identity = runtime.identity[0] ? runtime.identity : runtime.username,
+            .username = runtime.username,
+            .password = runtime.password,
+            .server_domain = runtime.server_domain,
+            .use_ttls = !strcmp(runtime.eap_method, "ttls"),
+            .ttls_phase2_pap = !strcmp(runtime.ttls_phase2, "pap"),
+            .use_system_ca = !strcmp(runtime.ca_mode, "system"),
+        },
+        .saved_networks = saved_networks,
+        .saved_network_count = saved_count,
+        .scan_maximum_records = SETUP_SCAN_MAX_APS,
+        .candidate_connect_timeout_ms = WIFI_CANDIDATE_CONNECT_TIMEOUT_MS,
+        .connect_timeout_ms = WIFI_CONNECT_TIMEOUT_MS,
     };
-    device_status_t station_status =
-        connectivity_wifi_driver_owner_configure_station(&station_config);
-    if (station_status != DEVICE_STATUS_OK) {
-        ESP_LOGE(TAG, "cannot configure Wi-Fi station: device status=%d",
-                 (int)station_status);
-        return false;
-    }
-    esp_err_t wifi_err = ESP_OK;
-    /* 多热点：个人网络且已存列表非空时，先扫描并连接可见的最强已存热点。
-     * 扫描失败、无可见已存热点或全部连接失败都会落回下方原单凭据流程，
-     * 保持"网络暂时不可用"与后台重连行为不变。 */
-    if (!s_boot_provisioning_staged && !enterprise && s_wifi_network_count > 0 &&
-        start_wifi_saved_list()) {
-        return true;
-    }
-    if (enterprise) {
-        // Android/iOS-style defaults: PEAP + MSCHAPv2, username as identity
-        // when anonymous identity is omitted, and platform trust anchors.
-        const connectivity_wifi_driver_enterprise_config_t enterprise_config = {
-            .identity = s_wifi_identity[0] ? s_wifi_identity : s_wifi_username,
-            .username = s_wifi_username,
-            .password = s_wifi_password,
-            .server_domain = s_wifi_server_domain,
-            .use_ttls = !strcmp(s_wifi_eap_method, "ttls"),
-            .ttls_phase2_pap = !strcmp(s_wifi_ttls_phase2, "pap"),
-            .use_system_ca = !strcmp(s_wifi_ca_mode, "system"),
-        };
-        device_status_t enterprise_status =
-            connectivity_wifi_driver_owner_configure_enterprise(&enterprise_config);
-        if (enterprise_status != DEVICE_STATUS_OK) {
-            wifi_err = device_status_to_platform_error(enterprise_status);
-            goto enterprise_config_failed;
-        }
-    } else {
-        // Enterprise state can only exist after a prior runtime enterprise
-        // connection. Do not call this API on a cold personal-Wi-Fi boot:
-        // ESP-IDF 6.0.2 can assert from the scan timer in that case.
-        if (connectivity_wifi_driver_owner_enterprise_enabled()) {
-            device_status_t eap_status = connectivity_wifi_driver_owner_disable_enterprise();
-            if (eap_status != DEVICE_STATUS_OK) {
-                ESP_LOGW(TAG, "cannot disable prior enterprise Wi-Fi state: %s",
-                         esp_err_to_name(device_status_to_platform_error(eap_status)));
-            }
-        }
-    }
-    /* Start a fresh Connectivity-owned readiness session before any station
-     * operation can synchronously emit a DHCP event. */
-    uint32_t attempt_epoch = device_connectivity_begin_wifi_attempt(s_wifi_ssid);
-    if (attempt_epoch == 0) {
-        ESP_LOGE(TAG, "cannot create Wi-Fi readiness attempt");
-        return false;
-    }
-    ambient_service_apply_network(s_wifi_ssid, false);
-    if (!connectivity_wifi_driver_owner_started()) {
-        device_status_t start_status = connectivity_wifi_driver_owner_start();
-        if (start_status != DEVICE_STATUS_OK) {
-            ESP_LOGE(TAG, "cannot start Wi-Fi station: device status=%d", (int)start_status);
-            return false;
-        }
-    } else {
-        device_status_t connect_status = connectivity_wifi_driver_owner_connect();
-        if (connect_status != DEVICE_STATUS_OK && connect_status != DEVICE_STATUS_BUSY) {
-            ESP_LOGE(TAG, "cannot connect Wi-Fi station: device status=%d",
-                     (int)connect_status);
-            return false;
-        }
-    }
-    if (device_connectivity_wait_wifi_attempt(attempt_epoch, WIFI_CONNECT_TIMEOUT_MS)) {
-        return true;
-    }
-    ambient_service_apply_network(s_wifi_ssid, false);
-    ESP_LOGW(TAG, "Wi-Fi did not connect within %u ms: %s", WIFI_CONNECT_TIMEOUT_MS, s_wifi_ssid);
-    return false;
-
-enterprise_config_failed:
-    /* EAP setup can fail for malformed credentials, missing certificate
-     * support, or a transient driver state.  It must not reboot the device;
-     * readiness remains false and the regular Connectivity recovery policy
-     * can surface the fault.  Only undo enterprise mode if this attempt had
-     * actually enabled it, avoiding the IDF cold-personal-Wi-Fi disable bug. */
-    ESP_LOGE(TAG, "cannot configure enterprise Wi-Fi: %s", esp_err_to_name(wifi_err));
-    if (connectivity_wifi_driver_owner_enterprise_enabled()) {
-        device_status_t disable_status = connectivity_wifi_driver_owner_disable_enterprise();
-        if (disable_status != DEVICE_STATUS_OK) {
-            ESP_LOGW(TAG, "cannot undo failed enterprise Wi-Fi setup: %s",
-                     esp_err_to_name(device_status_to_platform_error(disable_status)));
-        }
-    }
+    const device_status_t status = wifi_startup_service_connect(
+        &s_wifi_startup_service_host, &request);
+    if (status == DEVICE_STATUS_OK) return true;
+    ESP_LOGW(TAG, "Wi-Fi startup did not reach readiness: device status=%d ssid=%s",
+             (int)status, runtime.ssid);
     return false;
 }
 
 static bool ensure_alarm_manager_started(void) {
-    if (s_alarm_manager_started) return true;
+    if (alarm_manager_is_initialized()) return true;
     device_status_t status = alarm_manager_init();
     if (status != DEVICE_STATUS_OK) {
         ESP_LOGE(TAG, "cannot start alarm scheduler: device status=%d", (int)status);
         return false;
     }
     alarm_manager_set_ring_callback(on_alarm_ring_start, NULL);
-    s_alarm_manager_started = true;
     return true;
 }
 
@@ -4666,7 +3831,9 @@ static device_status_t safe_mode_quiesce_nonessential(void *context,
      * These helper stops are terminal for this boot and do not rely on a
      * System Sleep ABORT path. */
     SAFE_MODE_NEXT_TIMEOUT("deferred setup coordinator");
-    if (stop_deferred_setup_task(remaining_ms) != ESP_OK) return DEVICE_STATUS_BUSY;
+    if (deferred_setup_worker_service_stop(remaining_ms) != DEVICE_STATUS_OK) {
+        return DEVICE_STATUS_BUSY;
+    }
     SAFE_MODE_NEXT_TIMEOUT("wake restart coordinator");
     if (stop_wake_restart_task(remaining_ms) != ESP_OK) return DEVICE_STATUS_BUSY;
 
@@ -4715,12 +3882,20 @@ static device_status_t safe_mode_quiesce_nonessential(void *context,
      * The Gateway lifecycle commit still closes any pre-created logical
      * generation, but it must not use a System Sleep ABORT or attempt a
      * physical-root teardown that does not exist in this startup state. */
+    SAFE_MODE_NEXT_TIMEOUT("cellular recovery");
+    device_status_t cellular_status =
+        cellular_recovery_service_prepare_network_restart(remaining_ms);
+    if (cellular_status != DEVICE_STATUS_OK) return cellular_status;
     SAFE_MODE_NEXT_TIMEOUT("gateway lifecycle");
-    device_status_t gateway_status = gateway_lifecycle_service_prepare_system_sleep(remaining_ms);
+    device_status_t gateway_status =
+        gateway_lifecycle_service_prepare_network_restart(remaining_ms);
     if (gateway_status != DEVICE_STATUS_OK) return gateway_status;
     SAFE_MODE_NEXT_TIMEOUT("Gateway terminal commit");
     gateway_status = gateway_lifecycle_service_commit_prepared_network_restart();
     if (gateway_status != DEVICE_STATUS_OK) return gateway_status;
+    SAFE_MODE_NEXT_TIMEOUT("cellular recovery terminal commit");
+    cellular_status = cellular_recovery_service_commit_prepared_network_restart();
+    if (cellular_status != DEVICE_STATUS_OK) return cellular_status;
     SAFE_MODE_NEXT_TIMEOUT("connectivity workers");
     if (task_registry_stop_owner(TASK_REGISTRY_OWNER_CONNECTIVITY, remaining_ms) != ESP_OK) {
         return DEVICE_STATUS_BUSY;
@@ -4780,7 +3955,7 @@ static const safe_mode_coordinator_host_t s_safe_mode_host = {
  * do not yet exist and normal rollback remains the only truthful response. */
 static startup_safe_mode_entry_result_t startup_enter_safe_mode(
     device_runtime_phase_t phase, device_status_t status, const char *reason) {
-    if (status == DEVICE_STATUS_OK || s_safe_mode_active) {
+    if (status == DEVICE_STATUS_OK || startup_runtime_state_service_safe_mode_active()) {
         return STARTUP_SAFE_MODE_ENTRY_NOT_STARTED;
     }
     const safe_mode_entry_t entry = {
@@ -4789,22 +3964,19 @@ static startup_safe_mode_entry_result_t startup_enter_safe_mode(
         .failed_phase = phase,
         .failure_status = status,
     };
-    if (safe_mode_coordinator_init(&s_safe_mode_coordinator, &s_safe_mode_host) !=
+    if (safe_mode_coordinator_configure_host(&s_safe_mode_host) !=
         DEVICE_STATUS_OK) {
         return STARTUP_SAFE_MODE_ENTRY_NOT_STARTED;
     }
     /* Close ordinary admission before quiescence starts.  A concurrently
      * completed gesture or Wi-Fi callback then cannot create work while the
      * bridge is isolating its fault domain. */
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_safe_mode_active = true;
-    s_startup_sequence_complete = false;
-    s_gateway_startup_allowed = false;
-    s_wake_restart_admission_open = false;
-    s_deferred_setup_admission_open = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!startup_runtime_state_service_enter_safe_mode()) {
+        return STARTUP_SAFE_MODE_ENTRY_NOT_STARTED;
+    }
+    wake_restart_worker_service_close_admission();
     const device_status_t safe_mode_status = safe_mode_coordinator_enter(
-        &s_safe_mode_coordinator, &entry, SAFE_MODE_ENTRY_TIMEOUT_MS);
+        &entry, SAFE_MODE_ENTRY_TIMEOUT_MS);
     if (safe_mode_status != DEVICE_STATUS_OK) {
         ESP_LOGE(TAG, "SAFE_MODE entry failed: phase=%d status=%d reason=%s",
                  (int)phase, (int)safe_mode_status, reason ? reason : "unknown");
@@ -4835,7 +4007,7 @@ static void startup_enter_safe_mode_terminal_failure(device_runtime_phase_t phas
              "SAFE_MODE terminal failure: phase=%d device_status=%d reason=%s; "
              "ordinary startup rollback is intentionally skipped",
              (int)phase, (int)status, reason ? reason : "unknown");
-    if (s_startup_ui_initialized) {
+    if (app_ui_is_initialized()) {
         scene_presenter_publish_message("Startup failed",
                                         "Recovery services unavailable; connect a computer for diagnostics");
     }
@@ -4913,7 +4085,7 @@ static void startup_enter_degraded(device_runtime_phase_t phase,
     firmware_identity_set_service_ready(false);
     ESP_LOGE(TAG, "startup degraded: phase=%d device_status=%d reason=%s",
              (int)phase, (int)status, reason ? reason : "unknown");
-    if (s_startup_ui_initialized) {
+    if (app_ui_is_initialized()) {
         scene_presenter_publish_message("Startup failed", "Local service unavailable; connect a computer for diagnostics");
     }
 }
@@ -5085,7 +4257,7 @@ static void startup_stop_local_workers(void) {
      * joins its registration/probe coordination. It deliberately retains the
      * UART/modem and any active non-foreground HTTP borrower, so a timeout is
      * logged as incomplete isolation rather than treated as full shutdown. */
-    if (device_connectivity_is_active_cellular()) {
+    if (device_connectivity_has_cellular_transport_session()) {
         STARTUP_ROLLBACK_NEXT_TIMEOUT("cellular transport");
         device_status_t cellular_quiesce_status =
             device_connectivity_quiesce_cellular_transport(timeout_ms);
@@ -5169,7 +4341,6 @@ static void startup_stop_local_workers(void) {
         startup_rollback_step_blocked("Storage Service", NULL);
         return;
     }
-    s_storage_mounted = false;
     /* These workers have their own admission, stop sentinel and completion
      * contracts. Registry ownership keeps this coordinator from reaching into
      * task handles and preserves an entry when a bounded join times out. */
@@ -5216,9 +4387,7 @@ static void startup_stop_local_workers(void) {
      * valid cleanup handle unable to release during the degraded transition. */
     STARTUP_ROLLBACK_NEXT_TIMEOUT("alarm manager");
     device_status_t alarm_stop_status = alarm_manager_deinit(timeout_ms);
-    if (alarm_stop_status == DEVICE_STATUS_OK) {
-        s_alarm_manager_started = false;
-    } else {
+    if (alarm_stop_status != DEVICE_STATUS_OK) {
         ESP_LOGW(TAG, "alarm manager did not stop during startup rollback: device status=%d",
                  (int)alarm_stop_status);
         startup_rollback_step_blocked("alarm manager", NULL);
@@ -5321,7 +4490,7 @@ static void startup_stop_local_workers(void) {
 /* Meeting Service host seam. Gateway Transport owns all Wi-Fi HTTP lanes,
  * including the separate streaming meeting PUT transaction. */
 static bool meeting_host_storage_mounted(void) {
-    return s_storage_mounted;
+    return storage_service_is_available();
 }
 
 static int32_t meeting_host_wake_word_stop(void) {
@@ -5333,21 +4502,26 @@ static int32_t meeting_host_wake_word_start(void) {
 }
 
 static int32_t meeting_host_recording_create(char *out_recording_id, uint32_t capacity) {
-    (void)capacity;
-    return (int32_t)create_meeting_recording(out_recording_id);
+    char base_path[MEETING_SERVICE_BASE_PATH_CAPACITY];
+    meeting_service_base_path(base_path, sizeof(base_path));
+    return gateway_transport_create_meeting(base_path, out_recording_id, capacity);
 }
 
 static int32_t meeting_host_recording_get_status(const char *recording_id,
                                                  char *out_status, uint32_t capacity) {
-    return (int32_t)get_meeting_status(recording_id, out_status, capacity);
+    char base_path[MEETING_SERVICE_BASE_PATH_CAPACITY];
+    meeting_service_base_path(base_path, sizeof(base_path));
+    return gateway_transport_get_meeting_status(base_path, recording_id, out_status, capacity);
 }
 
 static int32_t meeting_host_recording_post_action(const char *recording_id,
                                                   const char *action,
                                                   const char *payload,
                                                   int32_t expected_a, int32_t expected_b) {
-    return (int32_t)post_meeting_action(recording_id, action, payload,
-                                        (int)expected_a, (int)expected_b);
+    char base_path[MEETING_SERVICE_BASE_PATH_CAPACITY];
+    meeting_service_base_path(base_path, sizeof(base_path));
+    return gateway_transport_post_meeting_action(base_path, recording_id, action, payload,
+                                                 expected_a, expected_b);
 }
 
 static bool meeting_host_capability_transport_ready(void) {
@@ -5402,7 +4576,7 @@ static bool transport_host_staged_provisioning_pending(void) {
      * still under its durable snapshot lock. Do not re-query later through a
      * lossy bool API: a transient Configuration admission failure must never
      * make this boot silently treat an unconfirmed candidate as confirmed. */
-    return s_boot_provisioning_staged;
+    return startup_runtime_state_service_staged_provisioning_pending();
 }
 
 static bool transport_host_rollback_staged_provisioning(void) {
@@ -5434,36 +4608,29 @@ static void transport_host_apply_ambient(const void *ambient_node) {
 }
 
 static void transport_host_set_handshake_welcome_queued(bool queued) {
-    s_handshake_startup_welcome_queued = queued;
+    startup_welcome_service_note_handshake_queued(queued);
 }
 
 static const char *transport_host_boot_session_id(void) {
-    return s_boot_session_id;
+    return startup_runtime_state_service_boot_session_id();
 }
 
 static void transport_host_note_cold_start_pet_asset(const void *pet_asset_node,
                                                      const char *skin) {
     cJSON *pet_asset = (cJSON *)pet_asset_node;
-    s_startup_pet_asset_pending = true;
-    s_startup_pet_retry_count = 0;
-    if (!s_startup_pet_asset_ref) {
-        s_startup_pet_asset_ref = heap_caps_calloc(
-            1, sizeof(*s_startup_pet_asset_ref), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_startup_pet_asset_ref) {
-            s_startup_pet_asset_ref = calloc(1, sizeof(*s_startup_pet_asset_ref));
-        }
+    pet_asset_ref_t descriptor = {0};
+    const bool present = cJSON_IsObject(pet_asset) &&
+                         pet_asset_service_parse_hub_descriptor(pet_asset, &descriptor);
+    if (startup_pet_asset_state_service_record(
+            present ? &descriptor : NULL, present, skin) != DEVICE_STATUS_OK) {
+        ESP_LOGW(TAG, "startup pet asset state unavailable; ignoring handshake descriptor");
+        return;
     }
-    s_startup_pet_asset_present = s_startup_pet_asset_ref &&
-                                  cJSON_IsObject(pet_asset) &&
-                                  pet_asset_service_parse_hub_descriptor(
-                                      pet_asset, s_startup_pet_asset_ref);
-    strlcpy(s_startup_pet_asset_skin, skin ? skin : "",
-            sizeof(s_startup_pet_asset_skin));
-    if (cJSON_IsObject(pet_asset) && !s_startup_pet_asset_present) {
+    if (cJSON_IsObject(pet_asset) && !present) {
         ESP_LOGW(TAG, "startup pet asset descriptor is invalid; cached asset will be cleared after wake readiness");
     }
     ESP_LOGI(TAG, "startup pet asset deferred until wake ready: %s",
-             s_startup_pet_asset_present ? s_startup_pet_asset_ref->revision : "none");
+             present ? descriptor.revision : "none");
 }
 
 static int32_t transport_host_apply_pet_asset(const void *pet_asset_node) {
@@ -5471,9 +4638,7 @@ static int32_t transport_host_apply_pet_asset(const void *pet_asset_node) {
 }
 
 static int32_t transport_host_clear_pet_asset(void) {
-    esp_err_t asset_err = clear_applied_pet_asset();
-    if (asset_err == ESP_OK) s_loaded_pet_asset_revision[0] = '\0';
-    return (int32_t)asset_err;
+    return (int32_t)clear_applied_pet_asset();
 }
 
 static void transport_host_process_update_metadata(const void *update_node, bool cold_start) {
@@ -5521,7 +4686,7 @@ static void gateway_host_cancel_poll_http(int64_t deadline_us) {
 }
 
 static bool gateway_host_welcome_gate_active(void) {
-    return s_startup_welcome_gate_active;
+    return startup_welcome_service_gate_active();
 }
 
 static int32_t gateway_host_welcome_classify(const void *message_item, const char *id,
@@ -5536,28 +4701,19 @@ static int32_t gateway_host_welcome_classify(const void *message_item, const cha
         ESP_LOGW(TAG, "stale or unscoped startup Welcome discarded: id=%s", id);
         return GATEWAY_DISPATCHER_WELCOME_STALE;
     }
-    taskENTER_CRITICAL(&s_task_state_lock);
-    const bool already_consumed = s_startup_welcome_consumed;
-    const bool discard = s_startup_welcome_timed_out || already_consumed;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    if (discard) {
+    if (startup_welcome_service_should_discard_current()) {
         // Never play a boot greeting after MultiNet has been started. ACK it
         // as handled so a late delivery cannot retry forever. The same rule
         // also turns an ACK retry after successful playback into a silent,
         // idempotent delivery instead of replaying the greeting.
-        ESP_LOGW(TAG, "%s startup Welcome discarded: id=%s",
-                 already_consumed ? "already consumed" : "late", id);
+        ESP_LOGW(TAG, "late or already consumed startup Welcome discarded: id=%s", id);
         return GATEWAY_DISPATCHER_WELCOME_DISCARD_CURRENT;
     }
     return GATEWAY_DISPATCHER_WELCOME_CURRENT;
 }
 
 static void gateway_host_welcome_complete(bool playback_succeeded) {
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_startup_welcome_consumed = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    finish_startup_welcome_gate(playback_succeeded ? "playback complete"
-                                                   : "playback unavailable");
+    startup_welcome_service_complete_current(playback_succeeded);
 }
 
 static int32_t gateway_host_handle_tool_call(const void *message_item) {
@@ -5577,68 +4733,47 @@ static void gateway_host_handle_pet_profile(const void *message_item, const char
     if (!cJSON_IsObject(pet_asset) && cJSON_IsObject(extra)) {
         pet_asset = cJSON_GetObjectItemCaseSensitive(extra, "pet_asset");
     }
-    *out_handled = true;
-    *out_permanently_invalid = false;
-    /* The handshake descriptor owns the initial high-resolution asset.
-     * It is already being installed after Welcome on the startup task;
-     * downloading the queued mirror here races it, doubles PSRAM usage,
-     * and can reduce both attempts to the native robot fallback. */
-    // The cold-start worker owns only the descriptor captured from
-    // the handshake. A later GUI selection must supersede it even if
-    // Hub happened to reuse the same content revision under a new
-    // profile message. Comparing the revision alone made that new
-    // selection get ACKed as "deferred" while the old startup worker
-    // was still the only transaction allowed to publish pixels.
-    bool defer_to_startup_installer = s_startup_pet_asset_pending &&
-        s_startup_pet_asset_ref && cJSON_IsObject(pet_asset) &&
-        !strcmp(s_startup_pet_asset_ref->revision,
-                json_string(pet_asset, "revision") ?
-                    json_string(pet_asset, "revision") : "") &&
-        (!skin || !strcmp(skin, s_startup_pet_asset_skin));
-    if (defer_to_startup_installer) {
-        ESP_LOGI(TAG, "startup pet_profile asset deferred to handshake installer");
-        /* handled by the handshake installer */
-    } else if (cJSON_IsObject(pet_asset)) {
-        if (s_startup_pet_asset_pending) {
-            ESP_LOGI(TAG, "new GUI pet revision supersedes startup asset");
-            // Cancel the older boot transaction before downloading the
-            // GUI-selected revision. The startup worker checks this
-            // flag between frames and cannot overwrite the new result.
-            s_startup_pet_asset_pending = false;
+    pet_asset_ref_t descriptor = {0};
+    pet_asset_ref_t display_descriptor = {0};
+    const pet_asset_ref_t *normalized = NULL;
+    if (cJSON_IsObject(pet_asset)) {
+        if (!pet_asset_service_parse_hub_descriptor(pet_asset, &descriptor) ||
+            !pet_asset_prepare_for_display(&descriptor, &display_descriptor)) {
+            *out_handled = false;
+            *out_permanently_invalid = true;
+            ESP_LOGW(TAG, "ignored malformed pet asset profile");
+            return;
         }
-        esp_err_t asset_err = apply_pet_asset_ref(pet_asset);
-        *out_handled = asset_err == ESP_OK;
-        *out_permanently_invalid = audio_error_is_permanent(asset_err) ||
-                                   asset_err == ESP_ERR_INVALID_CRC;
-        if (!*out_handled) {
-            if (id && !strcmp(id, s_pet_asset_retry_id)) {
-                ++s_pet_asset_retry_count;
-            } else {
-                strlcpy(s_pet_asset_retry_id, id ? id : "",
-                        sizeof(s_pet_asset_retry_id));
-                s_pet_asset_retry_count = 1;
-            }
-            // 连续失败达到上限按永久失败处理，避免堵死整页消息。
-            if (s_pet_asset_retry_count >= PET_ASSET_RETRY_LIMIT) {
-                *out_permanently_invalid = true;
-            }
-            ESP_LOGW(TAG, "pet asset update failed: %s (retry %d/%d)",
-                     esp_err_to_name(asset_err), s_pet_asset_retry_count,
-                     PET_ASSET_RETRY_LIMIT);
-        } else {
-            s_pet_asset_retry_id[0] = '\0';
-            s_pet_asset_retry_count = 0;
-        }
-    } else {
-        // An asset-less profile means the server selected the native
-        // fallback (or rejected malformed GUI data). Remove the old
-        // transparent raster and its boot cache as part of the same
-        // acknowledged state transition.
-        esp_err_t asset_err = clear_applied_pet_asset();
-        *out_handled = asset_err == ESP_OK;
-        *out_permanently_invalid = audio_error_is_permanent(asset_err);
-        if (!*out_handled) ESP_LOGW(TAG, "pet asset clear failed: %s", esp_err_to_name(asset_err));
+        normalized = &display_descriptor;
     }
+
+    const pet_asset_profile_service_result_t result =
+        pet_asset_profile_service_apply(
+            &s_pet_asset_profile_service_host, normalized, skin, id,
+            PET_ASSET_RETRY_SERVICE_DEFAULT_LIMIT);
+    *out_handled = result.handled;
+    *out_permanently_invalid = result.permanently_invalid;
+    if (result.deferred_to_startup) {
+        ESP_LOGI(TAG, "startup pet_profile asset deferred to handshake installer");
+    } else if (result.superseded_startup) {
+        ESP_LOGI(TAG, "new GUI pet revision supersedes startup asset");
+    }
+    if (!result.handled) {
+        ESP_LOGW(TAG, "pet asset %s failed: status=%d (retry %u/%u)",
+                 normalized ? "update" : "clear", (int)result.status,
+                 (unsigned)result.retry_count,
+                 (unsigned)PET_ASSET_RETRY_SERVICE_DEFAULT_LIMIT);
+    }
+}
+
+static bool gateway_host_tool_result_outbox_already_delivered(const void *message_item) {
+    if (!message_item || !s_delivered_tool_result_id[0]) return false;
+    cJSON *item = (cJSON *)message_item;
+    cJSON *call = cJSON_GetObjectItemCaseSensitive(item, "toolCallId");
+    if (!cJSON_IsString(call) || !call->valuestring) call = cJSON_GetObjectItemCaseSensitive(item, "id");
+    if (!cJSON_IsString(call) || !call->valuestring || strcmp(call->valuestring, s_delivered_tool_result_id) != 0) return false;
+    s_delivered_tool_result_id[0] = '\0';
+    return true;
 }
 
 static void gateway_host_handle_hardware_config(
@@ -5701,8 +4836,6 @@ static void gateway_host_handle_hardware_config(
                 configuration_reconcile_output_volume_applied(
                     volume_revision, (uint8_t)volume)) {
                 volume_handled = true;
-                s_configured_output_volume = (unsigned)volume;
-                s_configured_output_volume_saved = true;
                 ESP_LOGI(TAG, "server output volume: %d%% (revision=%llu)", volume,
                          (unsigned long long)volume_revision);
             } else {
@@ -5761,8 +4894,6 @@ static void gateway_host_handle_hardware_config(
                     configuration_reconcile_display_brightness_applied(
                         display_revision, (uint8_t)brightness)) {
                     brightness_handled = true;
-                    s_configured_display_brightness = (uint8_t)brightness;
-                    s_configured_display_brightness_saved = true;
                     ESP_LOGI(TAG, "server display brightness: %d%%", brightness);
                 } else {
                     apply_ok = false;
@@ -5778,8 +4909,6 @@ static void gateway_host_handle_hardware_config(
                     configuration_reconcile_screen_sleep_applied(
                         display_revision, (uint32_t)screen_sleep_seconds)) {
                     screen_sleep_handled = true;
-                    s_configured_screen_sleep_seconds = (uint32_t)screen_sleep_seconds;
-                    s_configured_screen_sleep_seconds_saved = true;
                     ESP_LOGI(TAG, "server screen sleep timeout: %d seconds", screen_sleep_seconds);
                 } else {
                     apply_ok = false;
@@ -5820,19 +4949,24 @@ static bool gateway_host_audio_url_allowed(const char *url) {
 }
 
 static bool gateway_host_audio_mime_supported(const char *mime) {
-    return audio_mime_supported(mime);
+    return server_audio_presentation_service_mime_supported(mime);
 }
 
-static bool gateway_host_audio_error_is_permanent(int32_t err) {
-    return audio_error_is_permanent((esp_err_t)err);
+static bool gateway_host_audio_download_error_is_permanent(int32_t err) {
+    return gateway_transport_error_is_permanent((esp_err_t)err);
+}
+
+static bool gateway_host_audio_presentation_error_is_permanent(int32_t err) {
+    return server_audio_presentation_service_error_is_permanent(
+        (device_status_t)err);
 }
 
 static bool gateway_host_begin_server_audio_wake_lease(const char *source) {
-    return begin_server_audio_wake_memory_lease(source);
+    return media_transfer_service_begin_server_audio_wake_lease(source);
 }
 
 static bool gateway_host_finish_server_audio_wake_lease(void) {
-    return finish_server_audio_wake_memory_lease();
+    return media_transfer_service_finish_server_audio_wake_lease();
 }
 
 static int32_t gateway_host_download_audio(const char *url, uint8_t **out_audio,
@@ -5843,9 +4977,13 @@ static int32_t gateway_host_download_audio(const char *url, uint8_t **out_audio,
     return (int32_t)err;
 }
 
+static void gateway_host_release_audio(uint8_t *audio) {
+    gateway_transport_release_media(audio);
+}
+
 static int32_t gateway_host_play_audio_payload(const char *mime, const uint8_t *data,
                                                uint32_t len) {
-    return (int32_t)play_audio_payload(mime, data, len);
+    return (int32_t)server_audio_presentation_service_play(mime, data, len);
 }
 
 static void gateway_host_schedule_wake_restart(void) {
@@ -5860,26 +4998,121 @@ static void gateway_host_apply_deferred_startup_pet_asset(void) {
     apply_deferred_startup_pet_asset();
 }
 
+static int32_t gateway_host_flush_tool_result_outbox(void) {
+    /* A full queue is intentionally kept out of internal heap: a Tool-result
+     * envelope may approach the 64 KiB bound while Wi-Fi/TLS and audio still
+     * require internal DMA-capable memory. Persistence routes the request to
+     * its internal-stack worker and safely copies from PSRAM. */
+    char *payload = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!payload) return ESP_ERR_NO_MEM;
+    size_t size = GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY;
+    const device_status_t read_status = persistence_service_read_blob(
+        "gateway", "tool_result_outbox", payload, &size);
+    if (read_status == DEVICE_STATUS_NOT_FOUND) {
+        free(payload);
+        return ESP_OK;
+    }
+    if (read_status != DEVICE_STATUS_OK) {
+        free(payload);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    /* Upgrade the pre-versioned length-only queue before replay.  The
+     * migration is value-only and is committed before any POST, so a reset
+     * cannot expose a partially interpreted legacy record. */
+    if (gateway_tool_result_outbox_validate_queue(payload, size,
+                                                  GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY) != DEVICE_STATUS_OK) {
+        char *upgraded = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        size_t upgraded_size = 0;
+        const device_status_t upgrade_status = upgraded ?
+            gateway_tool_result_outbox_upgrade_legacy(payload, size, upgraded,
+                                                      GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                                      &upgraded_size) :
+            DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        if (upgrade_status != DEVICE_STATUS_OK ||
+            persistence_service_write_blob("gateway", "tool_result_outbox",
+                                           upgraded, upgraded_size) != DEVICE_STATUS_OK) {
+            free(upgraded); free(payload); return ESP_ERR_INVALID_RESPONSE;
+        }
+        memcpy(payload, upgraded, upgraded_size);
+        size = upgraded_size;
+        free(upgraded);
+    }
+    char *record = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t record_size = 0;
+    if (!record || gateway_tool_result_outbox_peek(payload, size, record,
+            GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &record_size) != DEVICE_STATUS_OK) {
+        free(record); free(payload); return ESP_ERR_INVALID_RESPONSE;
+    }
+    cJSON *record_json = cJSON_Parse(record);
+    const char *result_id = record_json ? json_string(record_json, "resultId") : NULL;
+    if (!result_id && record_json) result_id = json_string(record_json, "toolCallId");
+    const char *tool_name = record_json ? json_string(record_json, "toolName") : NULL;
+    const bool is_factory_reset_result = tool_name &&
+                                         strcmp(tool_name, "factory_reset") == 0;
+    if (result_id && result_id[0]) snprintf(s_delivered_tool_result_id, sizeof(s_delivered_tool_result_id), "%s", result_id);
+    cJSON_Delete(record_json);
+    const int32_t post_status = gateway_transport_post_json(
+        "/api/im-gateway/v1/tool-result", record,
+        GATEWAY_TRANSPORT_ACCEPT_200 | GATEWAY_TRANSPORT_ACCEPT_202 |
+        GATEWAY_TRANSPORT_ACCEPT_204);
+    if (post_status == ESP_OK) {
+        char *remaining = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        size_t remaining_size = 0;
+        device_status_t pop_status = remaining ? gateway_tool_result_outbox_pop(
+            payload, size, remaining, GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &remaining_size) : DEVICE_STATUS_RESOURCE_EXHAUSTED;
+        /* Never erase the durable head when the value-only pop failed.  The
+         * POST may have succeeded, but without a durable dequeue result the
+         * record remains the only replay evidence; fail closed and let the
+         * next poll retry/resolve it rather than turning an internal buffer
+         * or validation error into data loss. */
+        const device_status_t erase_status = pop_status != DEVICE_STATUS_OK
+            ? pop_status
+            : (remaining_size
+                ? persistence_service_write_blob("gateway", "tool_result_outbox", remaining, remaining_size)
+                : persistence_service_erase_key("gateway", "tool_result_outbox"));
+        free(remaining);
+        if (erase_status != DEVICE_STATUS_OK && erase_status != DEVICE_STATUS_NOT_FOUND) {
+            free(payload);
+            return device_status_to_platform_error(erase_status);
+        }
+        if (is_factory_reset_result) {
+            factory_reset_service_reboot_if_pending(true);
+        }
+    }
+    if (post_status != ESP_OK) s_delivered_tool_result_id[0] = '\0';
+    free(record);
+    free(payload);
+    return post_status;
+}
+
 static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
     .cancel_poll_http = gateway_host_cancel_poll_http,
     .welcome_gate_active = gateway_host_welcome_gate_active,
     .welcome_classify = gateway_host_welcome_classify,
     .welcome_complete = gateway_host_welcome_complete,
     .handle_tool_call = gateway_host_handle_tool_call,
+    .tool_result_outbox_already_delivered = gateway_host_tool_result_outbox_already_delivered,
     .handle_pet_profile = gateway_host_handle_pet_profile,
     .handle_hardware_config = gateway_host_handle_hardware_config,
     .apply_glyphs = gateway_host_apply_glyphs,
     .apply_ambient = gateway_host_apply_ambient,
     .audio_url_allowed = gateway_host_audio_url_allowed,
     .audio_mime_supported = gateway_host_audio_mime_supported,
-    .audio_error_is_permanent = gateway_host_audio_error_is_permanent,
+    .audio_download_error_is_permanent = gateway_host_audio_download_error_is_permanent,
+    .audio_presentation_error_is_permanent = gateway_host_audio_presentation_error_is_permanent,
     .begin_server_audio_wake_lease = gateway_host_begin_server_audio_wake_lease,
     .finish_server_audio_wake_lease = gateway_host_finish_server_audio_wake_lease,
     .download_audio = gateway_host_download_audio,
+    .release_audio = gateway_host_release_audio,
     .play_audio_payload = gateway_host_play_audio_payload,
     .schedule_wake_restart = gateway_host_schedule_wake_restart,
     .take_startup_pet_retry_due = gateway_host_take_startup_pet_retry_due,
     .apply_deferred_startup_pet_asset = gateway_host_apply_deferred_startup_pet_asset,
+    .flush_tool_result_outbox = gateway_host_flush_tool_result_outbox,
 };
 
 /* Interaction Service host seam: voice upload/submit/pairing are composed
@@ -5892,15 +5125,15 @@ static bool interaction_host_ensure_gateway_poll_task(void) {
 static int32_t interaction_host_upload_voice(const uint8_t *wav, uint32_t wav_len,
                                              char *out_media_id,
                                              uint32_t media_id_capacity) {
-    return (int32_t)upload_voice(wav, wav_len, out_media_id, media_id_capacity);
+    return gateway_transport_upload_voice(wav, wav_len, out_media_id, media_id_capacity);
 }
 
 static int32_t interaction_host_send_voice_event(const char *media_id,
                                                  const char *event_id,
                                                  char *out_reply_to,
                                                  uint32_t reply_to_capacity) {
-    return (int32_t)send_voice_event(media_id, event_id, out_reply_to,
-                                     reply_to_capacity);
+    return gateway_transport_send_voice_event(media_id, event_id, out_reply_to,
+                                              reply_to_capacity);
 }
 
 static void interaction_host_cancel_foreground_http(int64_t deadline_us) {
@@ -5918,6 +5151,41 @@ static const interaction_service_host_t s_interaction_service_host = {
     .log_heap_snapshot = meeting_host_log_heap_snapshot,
     .schedule_wake_restart = meeting_host_schedule_wake_restart,
 };
+
+/* Credential Service persists only a monotonic generation floor.  The
+ * callbacks deliberately stay in the composition root so the value-only
+ * credential contract never learns an NVS namespace, key, or storage worker.
+ * Missing floor is a valid first-boot state; every other storage error is
+ * propagated and keeps credential lifecycle changes fail-closed. */
+#define CREDENTIAL_GENERATION_NAMESPACE "maclaw"
+#define CREDENTIAL_GENERATION_FLOOR_KEY "credential_generation_floor"
+
+static device_status_t credential_generation_floor_read(uint64_t *out_floor,
+                                                        void *context) {
+    (void)context;
+    if (!out_floor) return DEVICE_STATUS_INVALID_ARGUMENT;
+    int64_t floor = 0;
+    const device_status_t status = persistence_service_read_i64(
+        CREDENTIAL_GENERATION_NAMESPACE, CREDENTIAL_GENERATION_FLOOR_KEY, &floor);
+    if (status == DEVICE_STATUS_NOT_FOUND) {
+        *out_floor = 0u;
+        return status;
+    }
+    if (status != DEVICE_STATUS_OK || floor <= 0 || (uint64_t)floor > UINT32_MAX) {
+        return status == DEVICE_STATUS_OK ? DEVICE_STATUS_INTERNAL_ERROR : status;
+    }
+    *out_floor = (uint64_t)floor;
+    return DEVICE_STATUS_OK;
+}
+
+static device_status_t credential_generation_floor_write(uint64_t floor,
+                                                         void *context) {
+    (void)context;
+    if (floor == 0u || floor > UINT32_MAX) return DEVICE_STATUS_INVALID_ARGUMENT;
+    return persistence_service_write_i64(CREDENTIAL_GENERATION_NAMESPACE,
+                                         CREDENTIAL_GENERATION_FLOOR_KEY,
+                                         (int64_t)floor);
+}
 
 void app_main(void) {
     ESP_LOGW(TAG, "boot reset reason=%d", (int)esp_reset_reason());
@@ -5964,24 +5232,49 @@ void app_main(void) {
     }
 	 lifecycle_service_reach(DEVICE_RUNTIME_PHASE_STORAGE_READY);
 	load_device_id();
-    uint8_t boot_random[16];
-    esp_fill_random(boot_random, sizeof(boot_random));
-    for (size_t i = 0; i < sizeof(boot_random); ++i) {
-        snprintf(s_boot_session_id + i * 2, 3, "%02x", boot_random[i]);
+    if (startup_runtime_state_service_init() != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_RESOURCE_EXHAUSTED,
+                               "startup runtime state service");
+        return;
     }
+    if (wifi_runtime_configuration_service_init() != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_RESOURCE_EXHAUSTED,
+                               "Wi-Fi runtime configuration service");
+        return;
+    }
+    uint8_t boot_random[16];
+    if (entropy_service_init() != DEVICE_STATUS_OK ||
+        !entropy_service_fill(boot_random, sizeof(boot_random))) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_INTERNAL_ERROR, "entropy readiness");
+        return;
+    }
+    char boot_session_id[STARTUP_RUNTIME_STATE_BOOT_SESSION_ID_CAPACITY] = {0};
+    for (size_t i = 0; i < sizeof(boot_random); ++i) {
+        snprintf(boot_session_id + i * 2, 3, "%02x", boot_random[i]);
+    }
+    if (!startup_runtime_state_service_capture_boot_session_id(boot_session_id)) {
+        mbedtls_platform_zeroize(boot_random, sizeof(boot_random));
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_INTERNAL_ERROR,
+                               "boot session identity");
+        return;
+    }
+    mbedtls_platform_zeroize(boot_random, sizeof(boot_random));
     if (psa_crypto_init() != PSA_SUCCESS) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                DEVICE_STATUS_INTERNAL_ERROR, "PSA crypto initialization");
         return;
     }
     device_status_t storage_mount_status = storage_service_init();
-    s_storage_mounted = storage_service_is_available();
     if (storage_mount_status != DEVICE_STATUS_OK) {
         ESP_LOGW(TAG, "durable storage unavailable; preserving existing contents: %d",
                  (int)storage_mount_status);
     }
     device_status_t pressure_status = resource_pressure_service_init(
-        storage_service_label(), s_storage_mounted);
+        storage_service_label(), storage_service_is_available());
     if (pressure_status != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                pressure_status, "resource pressure service");
@@ -5992,10 +5285,37 @@ void app_main(void) {
     if (cellular_recovery_service_init(&s_cellular_recovery_service_host) !=
         DEVICE_STATUS_OK) goto startup_core_no_memory;
     if (gateway_lifecycle_service_init() != DEVICE_STATUS_OK) goto startup_core_no_memory;
-    s_media_transfer_mutex = xSemaphoreCreateMutex();
-    if (!s_media_transfer_mutex) goto startup_core_no_memory;
-    s_pet_asset_apply_mutex = xSemaphoreCreateMutex();
-    if (!s_pet_asset_apply_mutex) goto startup_core_no_memory;
+    if (provisioning_qr_service_init(&s_provisioning_qr_service_host) !=
+        DEVICE_STATUS_OK) goto startup_core_no_memory;
+    if (connectivity_network_lifecycle_service_init(
+            &s_connectivity_network_lifecycle_service_host) != DEVICE_STATUS_OK) {
+        goto startup_core_no_memory;
+    }
+    pet_asset_retry_service_init();
+    if (startup_pet_asset_state_service_init() != DEVICE_STATUS_OK) {
+        goto startup_core_no_memory;
+    }
+    if (media_transfer_service_init(
+            &(media_transfer_service_host_t){
+                .struct_size = sizeof(media_transfer_service_host_t),
+                .stop_wake_word_for_media = media_transfer_stop_wake_word_for_media,
+                .cancel_startup_pet_for_server_audio =
+                    media_transfer_cancel_startup_pet_for_server_audio,
+                .take_startup_pet_audio_preemption =
+                    media_transfer_take_startup_pet_audio_preemption,
+                .rearm_preempted_startup_pet =
+                    media_transfer_rearm_preempted_startup_pet,
+                .schedule_wake_restart = media_transfer_schedule_wake_restart,
+                .context = NULL,
+            }) != DEVICE_STATUS_OK) goto startup_core_no_memory;
+    if (startup_welcome_service_init(
+            &(startup_welcome_service_host_t){
+                .struct_size = sizeof(startup_welcome_service_host_t),
+                .log_gate_released = startup_welcome_log_gate_released,
+                .log_gate_timed_out = startup_welcome_log_gate_timed_out,
+                .context = NULL,
+            }) != DEVICE_STATUS_OK) goto startup_core_no_memory;
+    if (pet_asset_apply_service_init() != DEVICE_STATUS_OK) goto startup_core_no_memory;
     if (pet_cache_service_init(&s_pet_cache_service_host) != DEVICE_STATUS_OK) {
         goto startup_core_no_memory;
     }
@@ -6012,27 +5332,32 @@ void app_main(void) {
     if (interaction_service_init(&s_interaction_service_host) != DEVICE_STATUS_OK) goto startup_core_no_memory;
     if (gateway_dispatcher_init(&s_gateway_dispatcher_host) != DEVICE_STATUS_OK) goto startup_core_no_memory;
     if (meeting_service_init(&s_meeting_service_host) != DEVICE_STATUS_OK) goto startup_core_no_memory;
-    s_wake_restart_start_gate = xSemaphoreCreateBinary();
-    if (!s_wake_restart_start_gate) goto startup_core_no_memory;
-    s_wake_restart_stopped = xSemaphoreCreateBinary();
-    if (!s_wake_restart_stopped) goto startup_core_no_memory;
+    if (wake_restart_worker_service_init(&s_wake_restart_worker_service_host) !=
+        DEVICE_STATUS_OK) goto startup_core_no_memory;
     if (provisioning_service_init(&s_provisioning_service_host) != DEVICE_STATUS_OK) goto startup_core_no_memory;
-    s_deferred_setup_start_gate = xSemaphoreCreateBinary();
-    if (!s_deferred_setup_start_gate) goto startup_core_no_memory;
-    s_deferred_setup_stopped = xSemaphoreCreateBinary();
-    if (!s_deferred_setup_stopped) goto startup_core_no_memory;
+    if (deferred_setup_worker_service_init(&s_deferred_setup_worker_service_host) !=
+        DEVICE_STATUS_OK) goto startup_core_no_memory;
     if (startup_pet_retry_service_init() != DEVICE_STATUS_OK) goto startup_core_no_memory;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_wake_restart_admission_open = true;
-    s_deferred_setup_admission_open = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    s_startup_welcome_done = xSemaphoreCreateBinary();
-    if (!s_startup_welcome_done) goto startup_core_no_memory;
     device_status_t persistence_init_status = persistence_service_init();
     if (persistence_init_status != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                persistence_init_status,
                                "persistence service");
+        return;
+    }
+    /* Once the Persistence worker is live, bind Credential Service to a
+     * durable monotonic floor before loading any token-bearing snapshot.  A
+     * corrupt/out-of-range floor is a startup integrity failure; do not let
+     * Gateway continue with an in-memory generation that could collide with
+     * a prior boot after reset. */
+    device_status_t credential_floor_status =
+        credential_service_set_generation_persistence(
+            credential_generation_floor_read,
+            credential_generation_floor_write, NULL);
+    if (credential_floor_status != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               credential_floor_status,
+                               "credential generation floor");
         return;
     }
     device_status_t weather_cache_init_status = weather_cache_service_init();
@@ -6064,6 +5389,22 @@ void app_main(void) {
                                "configuration reconciliation service");
         return;
     }
+    /* Recover a COMMITTED factory-reset handoff immediately after the
+     * persistence/configuration owners exist, before loading the paired
+     * snapshot or starting any radio/Gateway work.  A pending PREPARED record
+     * therefore cannot race network admission, and a committed erase can only
+     * return to setup mode through the durable recovery path. */
+    if (factory_reset_service_init(&s_factory_reset_service_host) != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_RESOURCE_EXHAUSTED,
+                               "factory reset service");
+        return;
+    }
+    if (factory_reset_service_recover() != DEVICE_STATUS_OK) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_BUSY, "factory reset recovery");
+        return;
+    }
     configuration_reconcile_service_set_authorization_validator(
         gateway_configuration_authorization_current, NULL);
     meeting_service_load_recovery();
@@ -6090,50 +5431,32 @@ void app_main(void) {
      * snapshot deliberately leaves this boot in USB-diagnosable degraded
      * mode; starting these workers first would leak background activity into
      * that otherwise fail-closed state. */
-    s_output_volume_persist_queue = xQueueCreate(1, sizeof(output_volume_persist_request_t));
-    if (!s_output_volume_persist_queue) goto startup_core_no_memory;
-    s_output_volume_persist_reply_queue = xQueueCreate(2, sizeof(output_volume_persist_reply_t));
-    if (!s_output_volume_persist_reply_queue) goto startup_core_no_memory;
-    s_output_volume_persist_request_mutex = xSemaphoreCreateMutex();
-    if (!s_output_volume_persist_request_mutex) goto startup_core_no_memory;
-    s_output_volume_persist_stopped = xSemaphoreCreateBinary();
-    if (!s_output_volume_persist_stopped) goto startup_core_no_memory;
-    s_output_volume_persist_system_sleep_quiesced = xSemaphoreCreateBinary();
-    if (!s_output_volume_persist_system_sleep_quiesced) goto startup_core_no_memory;
     if (command_service_start() != DEVICE_STATUS_OK) goto startup_core_no_memory;
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_output_volume_persist_stop_requested = false;
-    s_output_volume_persist_system_sleep_preparing = false;
-    s_output_volume_persist_exit_status = ESP_OK;
-    s_output_volume_persist_retiring = false;
-    s_output_volume_persist_registry_retirement_failed = false;
-    taskEXIT_CRITICAL(&s_task_state_lock);
-    /* Configuration/NVS commits run with flash cache transitions, therefore
-     * the persistence worker must never receive a PSRAM stack.  The explicit
-     * 8 KiB internal stack also covers the v3 configuration transaction path
-     * observed on ESP32-S3 during Hub hardware_config volume updates. */
-    if (xTaskCreatePinnedToCoreWithCaps(
-            output_volume_persist_task, "maclaw_volume_nvs",
-            OUTPUT_VOLUME_PERSIST_TASK_STACK_BYTES, NULL, 4,
-            &s_output_volume_persist_task_handle, 1,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) goto startup_core_no_memory;
-    esp_err_t volume_registry_err = task_registry_register(&(task_registry_entry_t){
-        .struct_size = sizeof(task_registry_entry_t),
-        .owner = TASK_REGISTRY_OWNER_STORAGE,
-        .name = "output_volume_persist",
-        .context = (void *)s_output_volume_persist_task_handle,
-        .stop = stop_output_volume_persist_registry_entry,
-    });
-    if (volume_registry_err != ESP_OK) {
-        (void)stop_output_volume_persist_worker(500);
-        goto startup_core_no_memory;
-    }
+    /* Configuration/NVS commits run with flash cache transitions. The shared
+     * worker owns the explicitly internal 8 KiB stack, queue/task lifecycle,
+     * immutable Storage Registry identity and sleep fence; root injects only
+     * the configuration transaction plus runtime projection updates. */
+    if (configuration_persistence_worker_service_init(
+            &(configuration_persistence_worker_service_host_t){
+                .struct_size = sizeof(configuration_persistence_worker_service_host_t),
+                .run_transaction = configuration_persistence_run_transaction,
+                .context = NULL,
+            }) != DEVICE_STATUS_OK) goto startup_core_no_memory;
     device_status_t storage_bridge_status =
         power_service_set_system_sleep_storage_bridge(
-            prepare_output_volume_persist_system_sleep,
-            abort_output_volume_persist_system_sleep_prepare, NULL);
+            configuration_persistence_prepare_system_sleep,
+            configuration_persistence_abort_system_sleep_prepare, NULL);
     if (storage_bridge_status != DEVICE_STATUS_OK) {
-        (void)stop_output_volume_persist_worker(500);
+        (void)configuration_persistence_worker_service_stop(500);
+        goto startup_core_no_memory;
+    }
+    if (server_audio_presentation_service_init(
+            &(server_audio_presentation_service_host_t){
+                .struct_size = sizeof(server_audio_presentation_service_host_t),
+                .play_mp3 = server_audio_play_mp3,
+                .play_wav = server_audio_play_wav,
+                .context = NULL,
+            }) != DEVICE_STATUS_OK) {
         goto startup_core_no_memory;
     }
     device_connectivity_restore_selected_uplink();
@@ -6170,7 +5493,6 @@ void app_main(void) {
         return;
     }
     app_ui_init();
-    s_startup_ui_initialized = true;
     if (input_binding_init(&s_input_binding_host) != DEVICE_STATUS_OK) {
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                DEVICE_STATUS_INTERNAL_ERROR, "input binding");
@@ -6185,8 +5507,9 @@ void app_main(void) {
     /* Platform Bootstrap has already created the renderer's boot-lifetime
      * primitives. Restore before power/connectivity startup brings large
      * Wi-Fi/4G allocations into contention. */
-    if (s_storage_mounted && device_storage_allows_optional_flash_work()) {
-        (void)start_cached_pet_restore_task();
+    if (device_storage_allows_optional_flash_work()) {
+        (void)pet_asset_restore_worker_service_run(
+            &s_pet_asset_restore_worker_service_host);
     }
     device_status_t power_status = device_power_init();
     if (power_status != DEVICE_STATUS_OK) {
@@ -6200,6 +5523,13 @@ void app_main(void) {
         (void)app_intent_service_stop(500);
         startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
                                battery_policy_status, "battery policy service");
+        return;
+    }
+    if (battery_policy_service_set_emergency_checkpoint_callback(
+            battery_emergency_checkpoint, NULL) != DEVICE_STATUS_OK) {
+        (void)app_intent_service_stop(500);
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_CORE_SERVICES_READY,
+                               DEVICE_STATUS_BUSY, "battery checkpoint callback");
         return;
     }
     device_status_t fall_detection_status =
@@ -6330,7 +5660,11 @@ void app_main(void) {
     }
     // Keep the explicit board-specific startup surface until the Welcome/wake-word
     // sequence publishes ready. Do not transition to standby here.
-    if (!s_wifi_ssid[0] && !device_connectivity_is_active_cellular()) {
+    wifi_runtime_configuration_snapshot_t runtime_wifi = {0};
+    const bool wifi_configured =
+        wifi_runtime_configuration_service_get_snapshot(&runtime_wifi) &&
+        runtime_wifi.ssid[0] != '\0';
+    if (!wifi_configured && !device_connectivity_is_active_cellular()) {
         provisioning_service_start_portal(false);
         return;
     }
@@ -6360,9 +5694,12 @@ void app_main(void) {
     // transaction.  This is deliberately after alarm initialization: starting
     // TLS from IP_EVENT_STA_GOT_IP during esp_wifi_start() recreated the same
     // startup overlap that the ordering above is designed to prevent.
-    taskENTER_CRITICAL(&s_task_state_lock);
-    s_gateway_startup_allowed = true;
-    taskEXIT_CRITICAL(&s_task_state_lock);
+    if (!startup_runtime_state_service_permit_gateway_startup()) {
+        startup_enter_degraded(DEVICE_RUNTIME_PHASE_LOCAL_READY,
+                               DEVICE_STATUS_BUSY,
+                               "gateway startup admission");
+        return;
+    }
     if (!network_ready && !device_connectivity_is_active_cellular()) {
         network_ready = device_connectivity_is_active_uplink_ready();
         if (network_ready) {
@@ -6370,7 +5707,7 @@ void app_main(void) {
         }
     }
     if (!network_ready) {
-        if (s_boot_provisioning_staged) {
+        if (startup_runtime_state_service_staged_provisioning_pending()) {
             /* A candidate that cannot obtain even local uplink confirmation
              * must not replace a working device indefinitely.  The durable
              * confirmed snapshot is still intact; discard only the candidate

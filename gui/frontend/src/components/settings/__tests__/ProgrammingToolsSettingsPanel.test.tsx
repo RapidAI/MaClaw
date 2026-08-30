@@ -131,6 +131,10 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
   CodingKnowledgeEvict: vi.fn(async () => 3),
   SelectCodingKnowledgeExportPath: vi.fn(async () => "D:/tmp/coding-pack.json"),
   SelectCodingKnowledgeImportFile: vi.fn(async () => "D:/tmp/import-pack.json"),
+  // Digital asset contribution bindings used by CodingKnowledgeSection's
+  // contribute panel; empty lists keep the section in its no-library state.
+  DigitalAssetListContributableLibraries: vi.fn(async () => [] as unknown[]),
+  DigitalAssetListMySubmissions: vi.fn(async () => [] as unknown[]),
 }));
 
 vi.mock("../../CustomDialog", () => ({

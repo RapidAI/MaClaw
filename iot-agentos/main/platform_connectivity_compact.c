@@ -36,6 +36,12 @@ bool platform_connectivity_profile_is_cellular_transport_ready(void) {
 device_status_t platform_connectivity_profile_quiesce_cellular_transport(uint32_t timeout_ms) {
     return compact_status_from_esp_err(legacy_connectivity_transport_quiesce_cellular(timeout_ms));
 }
+device_status_t platform_connectivity_profile_deinit_cellular_transport(uint32_t timeout_ms) {
+    return compact_status_from_esp_err(legacy_connectivity_transport_deinit_cellular(timeout_ms));
+}
+device_status_t platform_connectivity_profile_reinitialize_cellular_transport(uint32_t timeout_ms) {
+    return compact_status_from_esp_err(legacy_connectivity_transport_reinitialize_cellular(timeout_ms));
+}
 
 device_status_t platform_connectivity_profile_prepare_system_sleep(uint32_t timeout_ms) {
     return compact_status_from_esp_err(

@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -19,6 +20,15 @@ bool ml307_transport_cancel_requests_for_owner(const void *owner);
  * might still hold it; a timeout leaves the transport intact and returns an
  * error rather than pretending the cellular service is fully stopped. */
 esp_err_t ml307_transport_quiesce(uint32_t timeout_ms);
+/* Terminally drains and destroys the modem/UART generation.  No GPIO power
+ * rail is changed here; the Fangtang profile owns that electrical action.
+ * The call is idempotent when no modem generation exists. */
+esp_err_t ml307_transport_deinit(uint32_t timeout_ms);
+/* Recreates a fresh modem/UART generation after a successful deinit.  This is
+ * intentionally one bounded operation so callers cannot reopen admission
+ * while the previous generation is still retiring. */
+esp_err_t ml307_transport_reinitialize(int tx_gpio, int rx_gpio, int baud_rate,
+                                       int timeout_ms, const char *apn);
 /* Future System Sleep needs the same bounded probe/HTTP safe point as a
  * shutdown, but must be able to return to the exact pre-PREPARE generation
  * when a later participant rejects the transaction.  These functions never

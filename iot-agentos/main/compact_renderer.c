@@ -2543,6 +2543,14 @@ esp_err_t legacy_connectivity_transport_quiesce_cellular(uint32_t timeout_ms) {
     return compact_connectivity_service_quiesce_cellular_transport(timeout_ms);
 }
 
+esp_err_t legacy_connectivity_transport_deinit_cellular(uint32_t timeout_ms) {
+    return compact_connectivity_service_deinit_cellular_transport(timeout_ms);
+}
+
+esp_err_t legacy_connectivity_transport_reinitialize_cellular(uint32_t timeout_ms) {
+    return compact_connectivity_service_reinitialize_cellular_transport(timeout_ms);
+}
+
 esp_err_t legacy_connectivity_transport_http_request(
     const device_connectivity_http_request_t *request) {
     return compact_connectivity_service_cellular_http_request(request);

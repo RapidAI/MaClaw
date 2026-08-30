@@ -940,26 +940,26 @@ func TestFormatCodingWorkbenchPlanMarkdownIncludesDeclaredFiles(t *testing.T) {
 }
 
 func TestCodingWorkbenchRunHeader(t *testing.T) {
-	if got := codingWorkbenchRunHeader(codingRequestImplementation, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "编码完成" {
+	if got := codingWorkbenchRunHeader(codingRequestImplementation, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "Coding complete" {
 		t.Fatalf("single pass: %q", got)
 	}
 	if got := codingWorkbenchRunHeader(codingRequestImplementation, true, 3, []v2.TaskRunResult{
 		{Status: v2.TaskPassed}, {Status: v2.TaskPassed}, {Status: v2.TaskPassed},
-	}); !strings.Contains(got, "3 步") {
+	}); !strings.Contains(got, "completed 3 planned steps") {
 		t.Fatalf("all pass: %q", got)
 	}
 	if got := codingWorkbenchRunHeader(codingRequestImplementation, true, 3, []v2.TaskRunResult{
 		{Status: v2.TaskPassed}, {Status: v2.TaskFailed}, {Status: v2.TaskSkipped},
-	}); !strings.Contains(got, "部分完成") {
+	}); !strings.Contains(got, "partially complete") {
 		t.Fatalf("partial: %q", got)
 	}
-	if got := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "仓库分析完成" {
+	if got := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "Repository analysis complete" {
 		t.Fatalf("inquiry pass: %q", got)
 	}
-	if got := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskFailed}}); got != "仓库分析未完成" {
+	if got := codingWorkbenchRunHeader(codingRequestInquiry, false, 1, []v2.TaskRunResult{{Status: v2.TaskFailed}}); got != "Repository analysis incomplete" {
 		t.Fatalf("inquiry failure: %q", got)
 	}
-	if got := codingWorkbenchRunHeader(codingRequestOperational, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "任务完成" {
+	if got := codingWorkbenchRunHeader(codingRequestOperational, false, 1, []v2.TaskRunResult{{Status: v2.TaskPassed}}); got != "Task complete" {
 		t.Fatalf("operational pass: %q", got)
 	}
 }
@@ -973,7 +973,7 @@ func TestCodingWorkbenchRunLabelsStaySpecificToRequestKind(t *testing.T) {
 	}
 	if got := codingWorkbenchRunHeader(codingRequestInquiry, true, 2, []v2.TaskRunResult{
 		{Status: v2.TaskPassed}, {Status: v2.TaskSkipped},
-	}); !strings.Contains(got, "仓库分析部分完成") || strings.Contains(got, "编码") {
+	}); !strings.Contains(got, "Repository analysis partially complete") || strings.Contains(got, "Coding") {
 		t.Fatalf("inquiry multi-step header must not claim coding: %q", got)
 	}
 }

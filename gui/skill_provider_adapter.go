@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -20,7 +22,7 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 	var out []tool.SkillSummary
 	for _, s := range skills {
 		// Empty/unknown status is runnable (same contract as StartRunForOwner).
-		// needs_review / disabled / needs_setup must not enter BM25 skill routing
+		// staged / needs_review / disabled / needs_setup must not enter BM25 skill routing
 		// (prevents broken Hub wget/curl skills from crowding out paper_pdf_translator
 		// or built-in download_file).
 		switch normalizeSkillEntryStatus(s.Status) {
@@ -38,6 +40,9 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 			continue
 		}
 		if skill.IsAgentGuidedWorkflowSkill(&corelib.NLSkillEntry{Source: s.Source, Steps: s.Steps, SkillDir: s.SkillDir}) {
+			continue
+		}
+		if strings.TrimSpace(s.Description) == "" && len(s.Triggers) == 0 {
 			continue
 		}
 		out = append(out, tool.SkillSummary{

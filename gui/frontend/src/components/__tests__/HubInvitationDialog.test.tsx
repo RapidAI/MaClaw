@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../wailsjs/go/main/App', () => ({
@@ -7,7 +8,12 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
   RotateHubUserInvitation: vi.fn(),
 }));
 
+vi.mock('../../../wailsjs/runtime', () => ({
+  EventsOn: vi.fn(() => vi.fn()),
+}));
+
 import { GetHubUserInvitationsPage, RotateHubUserInvitation } from '../../../wailsjs/go/main/App';
+import { DialogProvider } from '../CustomDialog';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 
 type InvitationPage = Awaited<ReturnType<typeof GetHubUserInvitationsPage>>;
@@ -34,6 +40,21 @@ afterEach(() => {
   document.querySelectorAll('.app-viewport').forEach((element) => element.remove());
 });
 
+function renderInvitation(ui: ReactElement) {
+  const view = render(<DialogProvider>{ui}</DialogProvider>);
+  return {
+    ...view,
+    rerender: (next: ReactElement) => view.rerender(<DialogProvider>{next}</DialogProvider>),
+  };
+}
+
+async function confirmRefresh() {
+  const confirm = await screen.findByRole('dialog', { name: 'Refresh invitation link?' });
+  await act(async () => {
+    fireEvent.click(confirm.querySelector('.modal-footer button:last-child')!);
+  });
+}
+
 describe('HubInvitationDialog', () => {
   it('mounts its backdrop outside the scaled app layer', async () => {
     const viewport = document.createElement('div');
@@ -46,7 +67,7 @@ describe('HubInvitationDialog', () => {
     viewport.appendChild(scaleLayer);
     document.body.appendChild(viewport);
 
-    const { unmount } = render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    const { unmount } = renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     const backdrop = document.querySelector<HTMLElement>('.hub-invitation-dialog__backdrop');
     expect(backdrop?.parentElement).toBe(viewport);
     expect(backdrop?.parentElement).not.toBe(scaleLayer);
@@ -58,7 +79,7 @@ describe('HubInvitationDialog', () => {
 
   it('only dismisses after a complete click starts and ends on the backdrop', async () => {
     const onClose = vi.fn();
-    render(<HubInvitationDialog open onClose={onClose} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={onClose} lang="en" />);
     const backdrop = document.querySelector<HTMLElement>('.hub-invitation-dialog__backdrop')!;
     const dialog = screen.getByRole('dialog');
 
@@ -75,7 +96,7 @@ describe('HubInvitationDialog', () => {
     let resolveRequest: (value: ReturnType<typeof invitationPage>) => void = () => {};
     vi.mocked(GetHubUserInvitationsPage).mockReturnValueOnce(new Promise((resolve) => { resolveRequest = resolve; }));
     const onClose = vi.fn();
-    render(<HubInvitationDialog open onClose={onClose} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={onClose} lang="en" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await act(async () => { resolveRequest(invitationPage()); });
@@ -86,7 +107,7 @@ describe('HubInvitationDialog', () => {
 
   it('keeps focus inside the dialog and restores it to its trigger on close', async () => {
     const onClose = vi.fn();
-    const { rerender } = render(<><button type="button">Open invitation dialog</button><HubInvitationDialog open={false} onClose={onClose} lang="en" /></>);
+    const { rerender } = renderInvitation(<><button type="button">Open invitation dialog</button><HubInvitationDialog open={false} onClose={onClose} lang="en" /></>);
 
     const trigger = screen.getByRole('button', { name: 'Open invitation dialog' });
     trigger.focus();
@@ -109,7 +130,7 @@ describe('HubInvitationDialog', () => {
       .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
       .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve; }));
 
-    render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     await act(async () => { resolveFirst(invitationPage(1)); });
     await waitFor(() => expect(screen.getByText('user1@example.com')).toBeTruthy());
 
@@ -126,7 +147,7 @@ describe('HubInvitationDialog', () => {
       .mockRejectedValueOnce(new Error('network unavailable'))
       .mockResolvedValueOnce(invitationPage(2));
 
-    render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     await waitFor(() => expect(screen.getByText('user1@example.com')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
@@ -144,7 +165,7 @@ describe('HubInvitationDialog', () => {
       .mockRejectedValueOnce(new Error('network unavailable'))
       .mockResolvedValueOnce(invitationPage(1));
 
-    render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
@@ -156,7 +177,7 @@ describe('HubInvitationDialog', () => {
       .mockResolvedValueOnce(invitationPage(1))
       .mockRejectedValueOnce(new Error('network unavailable'));
     const onClose = vi.fn();
-    const { rerender } = render(<HubInvitationDialog open onClose={onClose} lang="en" />);
+    const { rerender } = renderInvitation(<HubInvitationDialog open onClose={onClose} lang="en" />);
 
     await waitFor(() => expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy());
     rerender(<HubInvitationDialog open={false} onClose={onClose} lang="en" />);
@@ -166,18 +187,34 @@ describe('HubInvitationDialog', () => {
     expect(screen.queryByDisplayValue('https://hub.example/invite/demo')).toBeNull();
   });
 
+  it('asks to refresh the invitation link in a custom dialog instead of window.confirm', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Refresh invitation link?' })).toBeTruthy();
+    expect(screen.getByText('The old invitation link will stop working immediately.')).toBeTruthy();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(RotateHubUserInvitation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Refresh invitation link?' })).toBeNull());
+    expect(RotateHubUserInvitation).not.toHaveBeenCalled();
+  });
+
   it('keeps the invitation visible when link rotation fails', async () => {
     vi.mocked(RotateHubUserInvitation).mockResolvedValueOnce({
       enabled: true,
       error: 'rotation failed',
     } as InvitationPage);
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
 
-    render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     await waitFor(() => expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await confirmRefresh();
 
-    await waitFor(() => expect(screen.getByText('Could not replace the invitation link. Your current link is still active.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Could not refresh the invitation link. Your current link is still active.')).toBeTruthy());
     expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy();
   });
 
@@ -186,11 +223,11 @@ describe('HubInvitationDialog', () => {
       enabled: false,
       error: 'invitations disabled',
     } as InvitationPage);
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
 
-    render(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
+    renderInvitation(<HubInvitationDialog open onClose={vi.fn()} lang="en" />);
     await waitFor(() => expect(screen.getByDisplayValue('https://hub.example/invite/demo')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await confirmRefresh();
 
     await waitFor(() => expect(screen.getByText('Invitations are unavailable.')).toBeTruthy());
     expect(screen.queryByDisplayValue('https://hub.example/invite/demo')).toBeNull();
@@ -199,12 +236,12 @@ describe('HubInvitationDialog', () => {
   it('does not apply a rotation response after the dialog has closed', async () => {
     let resolveRotate: (value: InvitationPage) => void = () => {};
     vi.mocked(RotateHubUserInvitation).mockReturnValueOnce(new Promise((resolve) => { resolveRotate = resolve; }));
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
     const onClose = vi.fn();
-    const { rerender } = render(<HubInvitationDialog open onClose={onClose} lang="en" />);
+    const { rerender } = renderInvitation(<HubInvitationDialog open onClose={onClose} lang="en" />);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate' })).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await confirmRefresh();
     rerender(<HubInvitationDialog open={false} onClose={onClose} lang="en" />);
     await act(async () => { resolveRotate({ ...invitationPage(), invite_url: 'https://hub.example/invite/new' } as InvitationPage); });
 

@@ -971,15 +971,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	// --- Unified office document tool ---
-	reg("office", "Office/PDF/文本数据文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx，以及 .txt/.md/.json/.xml/.yaml/.yml/.log）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。read_excel 仅接受 .xls/.xlsx/.csv，read_pptx 仅接受 .pptx；需读取其他 Office 格式文本时用 read_document。read_excel 默认最多返回 1000 行（max_rows 最大 5000），read_pptx 默认最多返回 100 页（max_slides 最大 500）；truncated=true 时可用 next_offset 作为 slide_offset 分段读取。读文档优先 read_document，禁止对二进制文件用 read_file。仅当失败不属于 error_class=encrypted、error_class=malformed、error_class=source_changed、error_class=input_too_large、error_class=output_too_large 时，才可用 craft_tool 处理不支持格式；这些安全、版本或资源拒绝必须按工具提示处理，不得用其他解析器绕过。",
+	reg("office", "Office/PDF/文本数据文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx，以及 .txt/.md/.json/.xml/.yaml/.yml/.log）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、write_pptx、generate_pdf。write_pptx（别名 generate_pptx）原生生成 .pptx 演示文稿：按 data 大纲（{\"title\": \"...\", \"subtitle\": \"...\", \"slides\": [{\"title\": \"...\", \"bullets\": [\"...\"], \"notes\": \"...\", \"images\": [...], \"charts\": [{\"chart_type\": \"bar\", \"categories\": [...], \"series\": [...]}]}]}）输出到 file_path，无需 Python/pip；charts 写入可编辑的 PowerPoint 图表对象。read_excel 仅接受 .xls/.xlsx/.csv，read_pptx 仅接受 .pptx；需读取其他 Office 格式文本时用 read_document。read_excel 默认最多返回 1000 行（max_rows 最大 5000），read_pptx 默认最多返回 100 页（max_slides 最大 500）；truncated=true 时可用 next_offset 作为 slide_offset 分段读取。读文档优先 read_document，禁止对二进制文件用 read_file。仅当失败不属于 error_class=encrypted、error_class=malformed、error_class=source_changed、error_class=input_too_large、error_class=output_too_large 时，才可用 craft_tool 处理不支持格式；这些安全、版本或资源拒绝必须按工具提示处理，不得用其他解析器绕过。",
 		ToolCategoryBuiltin, []string{"office", "pdf", "doc", "docx", "excel", "xlsx", "xls", "csv", "pptx", "ppt", "document", "spreadsheet", "presentation", "word"},
 		map[string]interface{}{
-			"action":       map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/generate_pdf"},
+			"action":       map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/write_pptx/generate_pdf"},
 			"content":      map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
 			"title":        map[string]string{"type": "string", "description": "文档标题，显示在 PDF 封面（generate_pdf 时可选）"},
 			"doc_type":     map[string]string{"type": "string", "description": "文档类型（generate_pdf 时可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
 			"phase_id":     map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
-			"file_path":    map[string]string{"type": "string", "description": "文件路径（read_* / write_excel 时必填；也可用 path）"},
+			"file_path":    map[string]string{"type": "string", "description": "文件路径（read_* / write_excel / write_pptx 时必填；也可用 path）"},
 			"path":         map[string]string{"type": "string", "description": "file_path 别名"},
 			"max_chars":    map[string]string{"type": "integer", "description": "read_document 可选：本段最大字符数（默认 30000）"},
 			"offset":       map[string]string{"type": "integer", "description": "read_document 可选：从全文的字符偏移继续读（配合 truncated 结果中的 next_offset）"},
@@ -989,7 +989,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"max_rows":     map[string]string{"type": "integer", "description": "read_excel 可选：返回的最大行数（默认 1000，最大 5000）；truncated=true 时请缩小 range 或分段读取"},
 			"max_slides":   map[string]string{"type": "integer", "description": "read_pptx（仅 .pptx）可选：返回的最大幻灯片数（默认 100，最大 500）；truncated=true 时请分段或用 read_document"},
 			"slide_offset": map[string]string{"type": "integer", "description": "read_pptx 可选：零基幻灯片偏移；truncated=true 时使用 next_offset 继续读取"},
-			"data":         map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
+			"data":         map[string]string{"type": "object", "description": "写入数据（write_excel / write_pptx 时必填）。write_excel 格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}；write_pptx 格式: {\"title\": \"...\", \"subtitle\": \"...\", \"slides\": [{\"title\": \"...\", \"bullets\": [\"...\"], \"notes\": \"...\", \"images\": [...], \"charts\": [{\"chart_type\": \"bar|column|bar_h|line|radar|pie|area\", \"categories\": [...], \"series\": [{\"name\": \"...\", \"values\": [...]}]}]}]}"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolOffice(args) })
 	// Legacy office soup. Managed spreadsheet writes unpublish this entry

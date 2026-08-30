@@ -1,4 +1,5 @@
 #include "services/connectivity_wifi_driver_owner.h"
+#include "wifi_enterprise_trust_policy.h"
 
 #include "esp_err.h"
 #include "esp_event.h"
@@ -179,6 +180,12 @@ bool connectivity_wifi_driver_owner_enterprise_enabled(void) {
 device_status_t connectivity_wifi_driver_owner_configure_enterprise(
     const connectivity_wifi_driver_enterprise_config_t *config) {
     if (!config || !config->identity || !config->username || !config->password) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    /* Enterprise authentication is only safe when a trust anchor is active.
+     * Do not permit callers to configure an unauthenticated EAP TLS channel. */
+    if (!config->use_system_ca ||
+        !wifi_enterprise_trust_policy_valid_domain(config->server_domain, 254u)) {
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
     const esp_eap_method_t method = config->use_ttls ? ESP_EAP_TYPE_TTLS

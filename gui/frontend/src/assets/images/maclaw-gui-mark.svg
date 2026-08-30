@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="44 16 192 220" fill="none" role="img" aria-labelledby="mcg-title mcg-desc">
+  <title id="mcg-title">MaClaw</title>
+  <desc id="mcg-desc">MaClaw GUI mark: a cat coding assistant wearing headphones and using a laptop.</desc>
+  <style>
+    .mcg-bob{transform-origin:140px 196px;animation:mcg-bob 3.2s ease-in-out infinite}
+    .mcg-screen{animation:mcg-glow 2.4s ease-in-out infinite}
+    .mcg-cursor{animation:mcg-blink 1.1s steps(1) infinite}
+    @keyframes mcg-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+    @keyframes mcg-glow{0%,100%{opacity:1}50%{opacity:.8}}
+    @keyframes mcg-blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+    @media (prefers-reduced-motion:reduce){
+      .mcg-bob,.mcg-screen,.mcg-cursor{animation:none}
+    }
+  </style>
+  <defs>
+    <linearGradient id="mcg-fur" x1="96" y1="36" x2="188" y2="196" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF9"/>
+      <stop offset=".58" stop-color="#F6EBDD"/>
+      <stop offset="1" stop-color="#E7D2BA"/>
+    </linearGradient>
+    <linearGradient id="mcg-ear" x1="112" y1="28" x2="128" y2="70" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8B27A"/>
+      <stop offset="1" stop-color="#E8894C"/>
+    </linearGradient>
+    <linearGradient id="mcg-hp" x1="80" y1="36" x2="200" y2="132" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7EE0EA"/>
+      <stop offset=".5" stop-color="#4EC4D0"/>
+      <stop offset="1" stop-color="#2F9AA8"/>
+    </linearGradient>
+    <linearGradient id="mcg-cup" x1="70" y1="90" x2="104" y2="134" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6ED5E0"/>
+      <stop offset="1" stop-color="#2C8F9C"/>
+    </linearGradient>
+    <linearGradient id="mcg-lid" x1="90" y1="156" x2="190" y2="214" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3A414A"/>
+      <stop offset="1" stop-color="#23282F"/>
+    </linearGradient>
+    <linearGradient id="mcg-screen" x1="98" y1="162" x2="182" y2="208" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4FFF8"/>
+      <stop offset="1" stop-color="#D9F6E4"/>
+    </linearGradient>
+  </defs>
+
+  <ellipse cx="140" cy="228" rx="58" ry="8" fill="#1A2330" opacity=".1"/>
+
+  <g class="mcg-bob">
+    <path d="M90 108C92 42 188 42 190 108" stroke="url(#mcg-hp)" stroke-width="12" stroke-linecap="round"/>
+    <path d="M92 108C94 48 186 48 188 108" stroke="#9FEAF1" stroke-width="4" stroke-linecap="round" opacity=".5"/>
+
+    <path d="M110 74C100 28 138 30 132 78c-8 2-16 2-22-4Z" fill="url(#mcg-fur)"/>
+    <path d="M116 68c-4-24 16-26 14-4-6 2-11 4-14 4Z" fill="url(#mcg-ear)"/>
+    <path d="M170 74C180 28 142 30 148 78c8 2 16 2 22-4Z" fill="url(#mcg-fur)"/>
+    <path d="M164 68c4-24-16-26-14-4 6 2 11 4 14 4Z" fill="url(#mcg-ear)"/>
+
+    <ellipse cx="140" cy="172" rx="42" ry="22" fill="url(#mcg-fur)"/>
+    <circle cx="140" cy="98" r="52" fill="url(#mcg-fur)"/>
+    <ellipse cx="162" cy="110" rx="16" ry="22" fill="#E9D4BC" opacity=".42"/>
+
+    <ellipse cx="114" cy="112" rx="8" ry="5" fill="#F5B7A5" opacity=".42"/>
+    <ellipse cx="166" cy="112" rx="8" ry="5" fill="#F5B7A5" opacity=".42"/>
+    <path d="M108 100c7-7 16-7 22 0" stroke="#3D2B22" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M150 100c7-7 16-7 22 0" stroke="#3D2B22" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M128 118c6 7 18 7 24 0" stroke="#3D2B22" stroke-width="2.6" stroke-linecap="round"/>
+
+    <ellipse cx="88" cy="110" rx="15" ry="21" fill="url(#mcg-cup)"/>
+    <ellipse cx="88" cy="110" rx="8" ry="12" fill="#1F6F7A" opacity=".32"/>
+    <ellipse cx="83" cy="104" rx="4.5" ry="6" fill="#E7FBFE" opacity=".45"/>
+    <ellipse cx="192" cy="110" rx="15" ry="21" fill="url(#mcg-cup)"/>
+    <ellipse cx="192" cy="110" rx="8" ry="12" fill="#1F6F7A" opacity=".32"/>
+    <ellipse cx="187" cy="104" rx="4.5" ry="6" fill="#E7FBFE" opacity=".45"/>
+
+    <path d="M106 170c-14 6-22 20-14 30 14 4 30-4 38-14" fill="url(#mcg-fur)"/>
+    <path d="M174 170c14 6 22 20 14 30-14 4-30-4-38-14" fill="url(#mcg-fur)"/>
+
+    <rect x="92" y="156" width="96" height="54" rx="9" fill="url(#mcg-lid)"/>
+    <rect class="mcg-screen" x="98" y="162" width="84" height="42" rx="5" fill="url(#mcg-screen)"/>
+    <path d="M102 159c4 2 6 6 4 10M108 158c4 3 6 7 3 11M114 158c3 3 5 7 2 11" stroke="#34C759" stroke-width="1.6" stroke-linecap="round"/>
+    <rect x="108" y="172" width="36" height="4" rx="2" fill="#34C759" opacity=".78"/>
+    <rect x="108" y="180" width="52" height="4" rx="2" fill="#2F7D66" opacity=".4"/>
+    <rect x="108" y="188" width="28" height="4" rx="2" fill="#34C759" opacity=".55"/>
+    <rect class="mcg-cursor" x="140" y="188" width="6" height="4" rx="1.2" fill="#1F9D48"/>
+    <rect x="82" y="208" width="116" height="12" rx="4" fill="#D8DEE6"/>
+    <rect x="94" y="212" width="92" height="4" rx="2" fill="#C3CAD4"/>
+
+    <ellipse cx="112" cy="212" rx="13" ry="7" fill="url(#mcg-fur)"/>
+    <ellipse cx="168" cy="212" rx="13" ry="7" fill="url(#mcg-fur)"/>
+    <path d="M104 210c2 4 5 6 8 6M112 209c1 5 4 7 8 6M120 210c0 4 3 6 6 5" stroke="#E7C7A8" stroke-width="1.2" stroke-linecap="round" opacity=".8"/>
+    <path d="M160 210c2 4 5 6 8 6M168 209c1 5 4 7 8 6M176 210c0 4 3 6 6 5" stroke="#E7C7A8" stroke-width="1.2" stroke-linecap="round" opacity=".8"/>
+  </g>
+</svg>
