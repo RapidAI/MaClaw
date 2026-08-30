@@ -273,6 +273,17 @@ func TestSafeSearchErrorDetailForMissingHubLogin(t *testing.T) {
 	}
 }
 
+func TestSafeSearchErrorDetailForHubUnauthorizedNeverMentionsCredentials(t *testing.T) {
+	err := fmt.Errorf("MaClaw Hub search returned HTTP 401")
+	got := SafeSearchErrorDetail(err)
+	if got != "MaClaw Hub search is unavailable" {
+		t.Fatalf("SafeSearchErrorDetail() = %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "credential") || strings.Contains(strings.ToLower(got), "api key") || strings.Contains(strings.ToLower(got), "token") {
+		t.Fatalf("hub error mentioned secrets: %q", got)
+	}
+}
+
 func TestSearchWithStrategyUsesMaclawHubAndHubAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer viewer-token" {
@@ -365,6 +376,22 @@ func TestSearchMaclawHubCaptchaVsTimeoutVsOK(t *testing.T) {
 			classify:   "timeout",
 			safe:       "request timed out",
 		},
+		{
+			name:       "parse",
+			status:     http.StatusBadGateway,
+			body:       `{"ok":false,"error":"search failed to parse","code":"parse"}`,
+			wantSubstr: "failed to parse",
+			classify:   "error",
+			safe:       "MaClaw Hub search is unavailable",
+		},
+		{
+			name:       "offline",
+			status:     http.StatusServiceUnavailable,
+			body:       `{"ok":false,"error":"search backend offline","code":"offline"}`,
+			wantSubstr: "search backend offline",
+			classify:   "error",
+			safe:       "MaClaw Hub search is unavailable",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -391,6 +418,12 @@ func TestSearchMaclawHubCaptchaVsTimeoutVsOK(t *testing.T) {
 			}
 			if got := SafeSearchErrorDetail(err); got != tc.safe {
 				t.Fatalf("SafeSearchErrorDetail = %q want %q", got, tc.safe)
+			}
+			lower := strings.ToLower(SafeSearchErrorDetail(err))
+			for _, banned := range []string{"token", "api key", "credential"} {
+				if strings.Contains(lower, banned) {
+					t.Fatalf("safe detail mentioned %q: %q", banned, lower)
+				}
 			}
 		})
 	}
