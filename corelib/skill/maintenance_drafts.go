@@ -193,6 +193,14 @@ func ApplyTargetedMaintenanceAction(
 		} else if res.MergeDraft != nil && !allowDuplicateRetire {
 			res.OK = false
 			res.Error = "merge not applied; set allow_duplicate_retire=true after review"
+		} else if res.Result.NoopCount > 0 && res.Error == "" {
+			// A confirmed action that was already in the requested state is an
+			// idempotent success; callers can expose it as skipped/no_change
+			// without entering the durable write path.
+			res.OK = true
+			if res.Message == "" {
+				res.Message = "no changes required"
+			}
 		} else if res.Error == "" {
 			res.OK = false
 			res.Error = "action did not execute"

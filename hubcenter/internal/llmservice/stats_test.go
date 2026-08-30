@@ -112,3 +112,25 @@ func TestQueryProviderTrafficInvalidTimezoneFallsBackToShanghai(t *testing.T) {
 		t.Fatalf("timezone = %#v, want Asia/Shanghai", report)
 	}
 }
+
+func TestClassTrafficSinceMatchesCalendarCards(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, loc)
+	dayStart, weekStart, monthStart := ProviderTrafficBounds(now, loc)
+
+	since, window := ClassTrafficSince("24h", loc, now)
+	if window != "day" || !since.Equal(dayStart) {
+		t.Fatalf("24h alias = %s %s, want day %s", window, since, dayStart)
+	}
+	since, window = ClassTrafficSince("7d", loc, now)
+	if window != "week" || !since.Equal(weekStart) {
+		t.Fatalf("7d alias = %s %s, want week %s", window, since, weekStart)
+	}
+	since, window = ClassTrafficSince("month", loc, now)
+	if window != "month" || !since.Equal(monthStart) {
+		t.Fatalf("month = %s %s, want %s", window, since, monthStart)
+	}
+}

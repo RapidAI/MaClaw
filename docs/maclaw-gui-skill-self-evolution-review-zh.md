@@ -8,9 +8,9 @@
 
 > **本次文档优化重点**：统一“外部目录发布”和“Skill 配置提交”的先后语义；明确 `committed`、运行状态和提交后清理是三条独立状态轴；把“共享提交器已覆盖”与“入口仍有局部编排”分开描述；补充生产实例不得省略最终审计/checked 索引的 fail-closed 约束。以下目标模板不表示代码已经暴露同名公共 API。
 
-> **精简口径（2026-08-30）**：本文后续若出现旧版“多个入口已统一”与当前入口矩阵不一致，以第 3.5、10.2.2 和 14.2 的逐入口证据为准。新目录安装与已有版本更新是两种不同风险等级；前者已迁移的事实不能外推到后者。传统 GUI ZIP/插件安装仍未统一；AgentService 导入已具备 `NewService` 启动恢复基础，并按 `RecoveryScope`/目录路径校验服务归属，但多包/多租户/清理故障注入尚未完成。所有自动安装/自动写盘继续关闭，直到 P0 退出条件全部满足。
+> **精简口径（2026-08-30）**：本文后续若出现旧版“多个入口已统一”与当前入口矩阵不一致，以第 3.5、10.2.2 和 14.2 的逐入口证据为准。新目录安装与已有版本更新是两种不同风险等级；前者已迁移的事实不能外推到后者。传统 GUI ZIP/插件安装仍未统一；AgentService 导入已具备 `NewService` 启动恢复基础，并按 `RecoveryScope`/目录路径校验服务归属，但多包/多租户/清理故障注入尚未完成。GUI 与 IM 的 config-only maintenance 已接入 no-op 短路和结构化状态输出，但 IM 文件型契约与批量边缘分支仍需完整故障注入。所有自动安装/自动写盘继续关闭，直到 P0 退出条件全部满足。
 
-> **本轮代码复核证据（2026-08-30）**：已通过提交器/补偿、Hub 更新、managed Hub 回滚、安装与能力市场定向组合测试；还覆盖了 capability-gap、IM 安装、AgentService 导入/启动恢复和 legacy ZIP 路径解析相关定向测试。传统 GUI 已新增 `InstallSkillDetailed`、`AddSkillDetailed`、`DeleteSkillDetailed` 结构化结果视图，并通过 settings 写入失败回滚测试；兼容 Wails API 仍保留 error-only 签名。具体命令见第 14.2；这些结果只证明列出的提交器、回滚和安装边界，不代表 maintenance、传统 GUI ZIP/插件完整事务或所有导入更新入口已达到同等级覆盖。
+> **本轮代码复核证据（2026-08-30）**：已通过提交器/补偿、Hub 更新、managed Hub 回滚、安装与能力市场定向组合测试；还覆盖了 capability-gap、IM 安装、AgentService 导入/启动恢复和 legacy ZIP 路径解析相关定向测试。传统 GUI 已新增 `InstallSkillDetailed`、`AddSkillDetailed`、`DeleteSkillDetailed` 结构化结果视图，并通过 settings 写入失败回滚测试；安装和删除管理页已切换到详细结果并严格检查 `committed + cleanup_status=clear`；兼容 Wails API 仍保留 error-only 签名。共享 `SkillCommitter` 现对候选与权威配置完全一致的变更返回 `state=skipped`/`failure_reason=no_change`，不创建补偿记录、不写 YAML、不刷新索引或最终审计；GUI config-only maintenance 也复用该短路。具体命令见第 14.2；这些结果只证明列出的提交器、回滚和安装边界，不代表 maintenance 其它分支、传统 GUI ZIP/插件完整事务或所有导入更新入口已达到同等级覆盖。
 
 ## 一页决策摘要
 
@@ -200,7 +200,7 @@ created
 | YAML 版本恢复 | `RestoreSkillYAMLBackup` | **已接入共享 `SkillCommitter`：**版本恢复、config/index/final-audit 统一；索引或审计失败恢复旧 YAML/config，失败时保留 durable compensation | 补充多版本恢复、cleanup 失败和跨重启故障注入 |
 | 草案审核 | reviewed-draft apply | **已接入共享 `SkillCommitter`：**应用期间暂停状态 overlay，保留草案快照，config/YAML/index/final-audit 统一；draft 删除为提交后清理 | 补偿清理失败时保持 `cleanup_status=pending`；仍需跨重启清理回归 |
 | 草案审核 | reviewed-draft disable/reject | **已接入共享 `SkillCommitter`：**暂停状态 overlay，config/index/final-audit 统一，draft 删除为提交后清理 | 补清理失败/跨重启故障注入；自动化调用仍保持关闭 |
-| 维护动作 | `ApplySkillMaintenanceAction` | **已接入共享 `SkillCommitter`（主要路径）：**事务期间暂停状态 overlay，config/YAML/index/final-audit 统一，checked 索引失败可恢复；文件型契约补丁将本次新建 `skill.yaml.vN` 登记为 rollback cleanup，提交成功保留备份、回滚只清理本次产物 | 补充 merge 多条目、cleanup 失败和跨重启故障注入；自动维护仍保持灰度 |
+| 维护动作 | `ApplySkillMaintenanceAction` | **已接入共享 `SkillCommitter`（主要路径）：**事务期间暂停状态 overlay，config/YAML/index/final-audit 统一，checked 索引失败可恢复；config-only 无变化候选在补偿快照/YAML/index/audit 前返回 `skipped/no_change`；文件型契约补丁将本次新建 `skill.yaml.vN` 登记为 rollback cleanup，提交成功保留备份、回滚只清理本次产物 | 补充 merge 多条目、cleanup 失败和跨重启故障注入；自动维护仍保持灰度 |
 | 重命名 | `RenameNLSkill` | **部分落地：**已使用共享 `SkillCommitter`；目录移动、YAML 原子写回、config/索引/最终审计失败可恢复，回滚不完整时进入 durable compensation | 补充审计失败、重启补偿、Windows 锁定和 cleanup pending 故障注入；清理 worker 与统一 API 仍待完善 |
 | 删除 | `DeleteNLSkill` / AgentService `DeleteSkill` / 传统 GUI `App.DeleteSkill` | **部分落地：**GUI `DeleteNLSkill` 已使用共享 `SkillCommitter`；AgentService 删除先移动到 `.skill-delete-pending-*` 隔离目录，再在最终审计前撤销 contract 并完成目录/索引校验，最后清理隔离目录；传统 GUI `App.DeleteSkill` 已在 legacy 边界内先持久化 metadata 快照、再隔离目录和原子更新 metadata，随后执行 checked routing index 刷新，并在最终审计成功后标记 `committed + cleanup_status=pending`。索引、撤销、审计或后续事务失败时，回滚会恢复目录、metadata 与索引，并尽力恢复原 contract，避免留下“已删除”审计却仍可路由的矛盾状态 | 补充 contract 恢复失败、清理失败、跨重启和入口级故障注入；传统 GUI 删除仍未接入共享提交器与统一结构化返回，对外不得把 `nil` 返回解释为统一 `committed` |
 | 导入/安装 | ZIP、Hub/GitHub 导入 | 直接 `InstallHubSkill` 的新目录发布、ClawHub/GitHub mixed-install 的 config-only 注册、managed capability external/Hub 新目录发布、能力缺口 Hub 新目录与 GitHub 配置注册、IM install-only/SkillMarket/Hub 新目录发布及 IM tool 新目录发布已迁移到共享 `SkillCommitter`；AgentService GitHub/Hub/Market/ZIP 导入也已迁移到共享目录事务；传统 GUI ZIP/插件安装、已有版本更新、HubCenter SkillMarket 更新和其它导入分支仍为入口级 durable compensation/legacy adapter；`App.InstallSkill` 已在目录/settings mutation 前持久化唯一外层 `legacy_gui_skill_install` 记录，并在最终审计后先写 committed 再清理；安装期间暂停 status overlay；已有版本更新保留 `.prev` 恢复证据 | 仍是多套编排，尚未覆盖所有目录型更新/导入入口；`App.InstallSkill` 尚未复用共享 `SkillCommitter` 或统一结构化返回，内部 `addSkillLockedWithRecord` 复用外层记录且不再产生中间 legacy 安装审计；AgentService 已具备 `NewService` 启动恢复基础，但完整故障注入、多租户隔离和异常清理验收未完成；能力缺口/IM 的非桌面实例仍缺少同等级持久配置快照；真实故障注入与剩余入口迁移仍待完成 |
@@ -298,7 +298,7 @@ created
 
 安装入口也必须遵守幂等规则：下载包摘要与当前已安装版本相同则返回 `skipped/already_current`，不得重复发布目录、刷新索引或发送“新版本已安装”事件；同名但摘要不同才进入更新事务。发现目标目录或 `.prev` 冲突时必须拒绝并转人工处置，不能通过删除旧目录来“恢复安装”。
 
-> **实现边界**：上述 no-op 是统一提交器的验收要求。当前共享新目录安装提交器已在直接 Hub 安装、mixed-install 新目录、managed capability 新目录、能力缺口 Hub 新目录、IM install-only 新目录和 IM tool 新目录路径执行同版本短路；仍需为已有版本更新、GitHub/ZIP 导入及其它 legacy adapter 逐入口补充“摘要相同即跳过”的回归断言。在断言补齐前，不得把 legacy 路径的返回成功或同名冲突错误解释为 `already_current`。
+> **实现边界**：上述 no-op 是统一提交器的验收要求。当前共享新目录安装提交器已在直接 Hub 安装、mixed-install 新目录、managed capability 新目录、能力缺口 Hub 新目录、IM install-only 新目录和 IM tool 新目录路径执行同版本短路；GUI config-only maintenance（如 lifecycle/contract metadata 已经一致）同样在写盘前短路。仍需为已有版本更新、GitHub/ZIP 导入及其它 legacy adapter 逐入口补充“摘要相同即跳过”的回归断言。在断言补齐前，不得把 legacy 路径的返回成功或同名冲突错误解释为 `already_current`。
 
 ## 9. 队列、取消、超时与重试
 
@@ -350,10 +350,10 @@ created
 | 维度 | 允许的值 | 作用 | 失败后的默认值 |
 |---|---|---|---|
 | Skill 运行状态 | `staged`、`active`、`disabled`、`archived` | 决定是否能被普通路由和执行器使用 | 保持旧状态；无法证明一致时降为 `staged`/`needs_review` |
-| 事务结果 | `prepared`、`committed`、`rolled_back`、`audit_pending` | 描述本次写盘是否完成、是否仍需补偿 | `rolled_back` 或 `audit_pending` |
+| 事务结果 | `skipped`、`prepared`、`committed`、`rolled_back`、`audit_pending` | 描述本次写盘是否完成、是否因无变化而跳过、是否仍需补偿 | `rolled_back` 或 `audit_pending` |
 | 提交后清理 | `clear`、`pending`、`needs_review` | 描述 `.prev`、staging、draft、补偿记录等提交后清理是否完成 | `pending`（保持阻断） |
 
-`committed` 只表示本次定义、配置、（适用时）目录发布、索引和最终审计均成功；它不是把 Skill 自动设为 `active` 的授权。相反，`active` 必须再满足对应的验证和审批门禁。`committed` 但 `cleanup_status=pending` 也不能对外宣称“完全完成”：允许只读查询，不允许执行、上传或下一次自动写盘，直到清理幂等重试成功或人工处置完成。`audit_pending`、`needs_review` 或不可读的补偿队列同样属于 fail-closed。
+`skipped` 只表示候选与权威状态完全一致的幂等终态，不产生新版本或副作用；它不是 `committed`，也不能替代首次提交的最终审计。`committed` 只表示本次定义、配置、（适用时）目录发布、索引和最终审计均成功；它不是把 Skill 自动设为 `active` 的授权。相反，`active` 必须再满足对应的验证和审批门禁。`committed` 但 `cleanup_status=pending` 也不能对外宣称“完全完成”：允许只读查询，不允许执行、上传或下一次自动写盘，直到清理幂等重试成功或人工处置完成。`audit_pending`、`needs_review` 或不可读的补偿队列同样属于 fail-closed。
 
 三条状态轴必须分别展示和判断，不能压缩成一个 `status` 字段：
 
@@ -380,7 +380,7 @@ created
        └─ pending     → 保持阻断，等待幂等清理/人工处置
 ```
 
-清理属于 `committed` 之后的幂等动作，清理失败不能重新走反向回滚；但在清理完成前仍应对受影响 Skill 保持阻断，并通过重试或人工处置清除残留。任何入口若无法在“首次持久化变更前”写入补偿记录，必须停止写盘，而不是事后补记日志。
+清理属于 `committed` 之后的幂等动作，清理失败不能重新走反向回滚；但在清理完成前仍应对受影响 Skill 保持阻断，并通过重试或人工处置清除残留。`skipped/no_change` 是无副作用终态，不经过上述写盘链，也不应刷新索引或产生版本备份。任何入口若无法在“首次持久化变更前”写入补偿记录，必须停止写盘，而不是事后补记日志。
 
 **Legacy GUI 例外边界必须显式标注**：`App.AddSkill`/`App.DeleteSkill` 当前使用独立的 `legacy_gui_skill_*` 补偿记录，能够保护 `metadata.json` 和 ZIP 隔离移动，并在 metadata 恢复后重建 checked index，最终审计后先持久化 `committed` 再清理；但它们尚未纳入共享 `SkillCommitter`。`App.InstallSkill` 在外层持有唯一 `legacy_gui_skill_install` 恢复记录，目录解压、scan cache、插件 settings 与 `addSkillLockedWithRecord` 均受该记录保护；内部 metadata/package 编排不再创建嵌套 durable 记录或中间“已安装”审计，外层再执行 checked index 与唯一最终审计，因此不能把任何单步成功拼接为共享提交器语义。迁移完成前，InstallSkill 的 ZIP/插件路径必须保持人工确认、禁止已有目录覆盖，并将任意失败视为需要人工核对的 legacy 结果。
 
@@ -516,7 +516,7 @@ prepared
 | reviewed-draft disable/reject | 人工确认 | 共享提交器；config/index/audit 回滚，draft 提交后清理 | 仅 `committed + cleanup_status=clear` 完成；否则保留 draft 并阻断 |
 | Hub/Enterprise/ZIP/GitHub 导入 | 人工确认 | 来源与完整性、扫描、目录 `.prev`、最终审计、发布前补偿意图；新目录分支还需相同摘要 no-op 断言 | 不发布 staging 目录 |
 | 能力缺口 / IM 自动安装 | **禁止自动** | 新目录与 GitHub 配置注册分支已具备共享提交器和最终审计，但已有版本更新及非桌面持久快照仍未完成 | 只读提示，转人工安装 |
-| 传统 GUI ZIP/插件安装 | **禁止自动** | `App.AddSkill`/`App.DeleteSkill` 具备 legacy durable compensation、原子 metadata、checked index、最终审计前后分层和失败保留原目录；`App.InstallSkill` 已在解压/settings 前持久化唯一外层 `legacy_gui_skill_install` 记录，并在最终审计后先标记 committed 再清理；其内部复用该记录完成 metadata/package 编排，不创建嵌套 durable 记录或中间安装审计，但仍未统一结构化返回和共享提交器语义 | 只读或人工确认；失败保持原目录并阻断后续自动操作；迁移前拒绝已有目录覆盖 |
+| 传统 GUI ZIP/插件安装 | **禁止自动** | `App.AddSkill`/`App.DeleteSkill` 具备 legacy durable compensation、原子 metadata、checked index、最终审计前后分层和失败保留原目录；`App.InstallSkill` 已在解压/settings 前持久化唯一外层 `legacy_gui_skill_install` 记录，并在最终审计后先标记 committed 再清理；其内部复用该记录完成 metadata/package 编排，不创建嵌套 durable 记录或中间安装审计；三个 `*Detailed` API 已提供统一结构化结果，管理页对安装/删除结果严格执行 `committed + cleanup_status=clear` 检查，但仍未统一共享提交器语义 | 只读或人工确认；失败保持原目录并阻断后续自动操作；迁移前拒绝已有目录覆盖 |
 | AgentService GitHub/Hub/Market/ZIP 导入 | **禁止自动** | `persistImportedEntries` 已经使用共享目录事务：staging、`.prev`、批次回滚、checked 目录扫描、严格审计和提交后清理；同内容导入 no-op；覆盖更新时，旧 Skill contract 在目录发布事务内撤销，任何中途失败由回滚恢复目录并通过 durable external snapshot 恢复 contract；`NewService` 启动阶段按 action prefix + `RecoveryScope` 尝试恢复目录与 contract；执行/上传复用同一 scope-aware pending 检查 | 恢复失败、队列不可读、scope 缺失/路径越界或仍有 pending 记录时拒绝写盘、执行和上传；多包/多租户/清理故障注入尚未完成。迁移完成不等于放开自动导入，仍仅人工灰度 |
 | 上传/发布/重试 | 仅 `committed` 且 `cleanup_status=clear` | 补偿队列健康且目标 Skill 无 pending/needs_review/cleanup_pending | 保持 `blocked` |
 
@@ -590,9 +590,9 @@ prepared
 
 已覆盖：风险安装确认、无效定义不注册、Gate 三态、真实参数 staged 验证、激活旁路拦截、staged 隔离、队列合并/串并行、审计健康/失败摘要/等待时间、配置开关、基础写盘回滚、核心 pipeline 的 context cancel/timeout/shutdown 事件、repair 失败计数上限、request-level 状态、非 Bash mock/real 边界，以及 staged 重启/扫描和 overlay 防提升。提交器定向测试还覆盖了 GUI 创建/更新、reviewed-draft apply 和 staged 激活的提交成功、索引失败回滚、最终审计失败与提交后清理状态；Hub 安装新增同版本 no-op 回归（目录、`.prev` 和注册表保持不变），其它安装入口仍只有代表性目录/索引边界测试，不能替代全量安装矩阵。
 
-上线前必须补齐：maintenance 剩余分支、已有版本更新/GitHub 导入等 legacy adapter，以及传统 GUI `App.InstallSkill` 接入统一提交器（`App.AddSkill`/`App.DeleteSkill` 已具备 checked index 与外层补偿，但仍需统一结构化返回和更完整的入口级故障注入）；为已迁移的 GUI repair、YAML 版本恢复、reviewed-draft、重命名、删除、新目录安装和 AgentService 导入补充 cleanup 失败与跨重启故障注入；AgentService 已在 `NewService` 增加启动阶段恢复，但仍需验证多租户目录快照和异常恢复场景；补偿队列的跨版本迁移、损坏检测和人工处置 UI（当前已提供只读安全摘要和列表展示，不提供模型触发恢复）；补偿恢复/`needs_review` 事件写入审计；非-pipeline 审计字段统一校验；审计不可写时阻止/回滚；GUI 终态结果和回滚原因；多版本升级迁移及索引损坏恢复。
+上线前必须补齐：maintenance 剩余分支、已有版本更新/GitHub 导入等 legacy adapter，以及传统 GUI `App.InstallSkill` 接入共享提交器；`App.AddSkill`/`App.DeleteSkill` 已提供 `*Detailed` 结构化结果视图，但仍需更完整的入口级故障注入和 Wails 前端实际迁移验证；为已迁移的 GUI repair、YAML 版本恢复、reviewed-draft、重命名、删除、新目录安装和 AgentService 导入补充 cleanup 失败与跨重启故障注入；AgentService 已在 `NewService` 增加启动阶段恢复，但仍需验证多租户目录快照和异常恢复场景；补偿队列的跨版本迁移、损坏检测和人工处置 UI（当前已提供只读安全摘要和列表展示，不提供模型触发恢复）；补偿恢复/`needs_review` 事件写入审计；非-pipeline 审计字段统一校验；审计不可写时阻止/回滚；GUI 终态结果和回滚原因；多版本升级迁移及索引损坏恢复。
 
-当前可通过 `manage_skill(action="evolution_compensations")` 或 GUI Wails `ListSkillEvolutionCompensations()` 查看脱敏队列摘要；该接口只读，不允许模型或前端直接强制恢复。GUI 的恢复由 pipeline 启动流程执行，以避免绕过备份、索引刷新和审计门禁。Hub 与 AgentService 等已迁移的目录入口在最终审计之后若清理失败，会以 `committed + cleanup_status=pending` 返回；AgentService 还会在 `NewService` 启动阶段按其 action prefix 执行恢复，失败或 pending 时保持导入 fail-closed。传统 GUI ZIP 导入仍保留入口级解压/注册编排：`App.AddSkill`/`App.DeleteSkill`/`App.InstallSkill` 的 legacy 记录可跨重启恢复，并在恢复时重建 checked routing index；其中 InstallSkill 只保证外层记录的恢复顺序，内部 legacy 审计事件不构成独立提交。三者尚未统一为共享 `SkillCommitter` 的结构化返回，因此成功返回都只代表入口操作完成，不代表满足统一 `committed + cleanup_status=clear` 语义。
+当前可通过 `manage_skill(action="evolution_compensations")` 或 GUI Wails `ListSkillEvolutionCompensations()` 查看脱敏队列摘要；该接口只读，不允许模型或前端直接强制恢复。GUI 的恢复由 pipeline 启动流程执行，以避免绕过备份、索引刷新和审计门禁。Hub 与 AgentService 等已迁移的目录入口在最终审计之后若清理失败，会以 `committed + cleanup_status=pending` 返回；AgentService 还会在 `NewService` 启动阶段按其 action prefix 执行恢复，失败或 pending 时保持导入 fail-closed。传统 GUI ZIP 导入仍保留入口级解压/注册编排：`App.AddSkill`/`App.DeleteSkill`/`App.InstallSkill` 的 legacy 记录可跨重启恢复，并在恢复时重建 checked routing index；其中 InstallSkill 只保证外层记录的恢复顺序，内部 legacy 审计事件不构成独立提交。三个 `*Detailed` API 现在提供 `state`、`cleanup_status`、`request_id`、`failure_reason` 和 `rollback_complete` 结构化视图，但仍不等同共享 `SkillCommitter` 的提交承诺；兼容 error-only API 也不应把 `nil` 解释为统一 `committed + cleanup_status=clear`。
 
 建议新增以下定向测试，并把它们绑定到对应审计断言：
 
@@ -640,14 +640,14 @@ go run scripts/check_wails_bindings.go
 git diff --check
 ```
 
-GUI 全量测试还受 Windows 浮动窗口、资源架构文件和工作区并行测试负载影响；若全量命令失败，应区分环境失败与本变更回归，不得直接把环境失败写成产品结论。
+GUI 全量测试还可能受 Windows 浮动窗口、资源架构文件和工作区并行测试负载影响；若全量命令失败，应区分环境失败与本变更回归，不得直接把环境失败写成产品结论。此前阻断 GUI 编译的 MaClaw Hub WebSearch 标识/超时常量缺失已补齐，并由 `go test ./corelib/websearch` 回归覆盖。
 
 ### 14.2 本次评审的验证证据
 
 评审基线环境中已有的验证证据包括：
 
 - GUI 定向 SkillRunner、repair-draft、状态与维护测试（`-vet=off`）；
-- `go run scripts/check_wails_bindings.go`（17 个动态前端引用、1224 个生成绑定均有对应 App 方法）；
+- `go run scripts/check_wails_bindings.go`（17 个动态前端引用、1228 个生成绑定均有对应 App 方法）；
 - 本文件的 fenced-code 配对检查和 `git diff --check`。
 
 本轮新增/复核的提交器证据：
@@ -671,11 +671,13 @@ GUI 全量测试还受 Windows 浮动窗口、资源架构文件和工作区并�
 - `go test ./gui -run '^TestDeleteSkillIndexFailureRestoresPackageAndMetadata$' -count=1 -vet=off -timeout 300s`：验证传统 GUI 删除在 checked index 首次发布失败时恢复包目录与 metadata，随后重建索引并清理补偿队列，且不产生 `legacy_deleted` 审计。
 - `go test ./gui -run '^TestInstallSkillFinalAuditFailureRollsBackWithoutCommittedResult$' -count=1 -vet=off -timeout 300s`：通过使 strict audit sink 不可写，验证 InstallSkill 最终审计失败时恢复项目目录和 metadata，且不会把错误标记为 `committed`。
 - `go test ./gui -run '^TestInstallSkillDetailedReportsSettingsFailureAndRollsBack$' -count=1 -vet=off -timeout 420s`：通过 settings 写入故障注入，验证 `InstallSkillDetailed` 返回结构化 `rolled_back` 结果、保留原 settings、清理补偿队列，并携带 request/error 关联字段。
+- `go test ./gui -run 'Test(InstallSkill|DeleteSkill|AddSkill|ProjectInstallSkill|InstallSkillDetailed|ApplySkillMaintenanceAction)' -count=1 -vet=off -timeout 600s`：复核传统 GUI 详细结果契约及 maintenance 入口；config-only maintenance 的无变化候选返回 `skipped/no_change`，不创建补偿、索引或最终审计写入。
+- `go test ./gui -run 'TestToolManageSkillExecuteMaintenancePlan|TestApplySkillMaintenanceActionReturnsSkippedForNoChange' -count=1 -vet=off -timeout 600s`：复核 IM maintenance 的提交状态字段、config-only no-op 短路，以及文件型契约草案不会绕过 reviewed desktop apply。
 - `go test ./corelib/skill -run '^TestRecoverPendingCompensationsForActionPrefixAndSkillDoesNotClaimSibling$' -count=1 -vet=off -timeout 240s`：验证 GUI 按 action prefix + Skill 过滤恢复，不会误领取同队列中的其它 Skill 记录。
 
 这些测试只证明列出的路径，不证明所有 GUI 入口已统一；reviewed-draft、重命名、删除和新目录安装仍需补 cleanup 失败与跨重启矩阵，maintenance、能力缺口 GitHub/更新、IM 更新及 managed install 更新仍需入口级故障注入与跨重启矩阵。AgentService 已有单包导入、同内容 no-op、陈旧 `.prev`、共享提交器、`NewService` 启动恢复和 scope 越界拒绝定向回归，并新增删除 contract 撤销失败、contract 恢复失败时“目录 + contract + 审计”一致性断言；但缺少多包中途失败、最终审计/清理失败的完整批次矩阵及多租户恢复测试。运行/上传门禁的 scope-aware 检查仍需补入口级断言。传统 `App.AddSkill`/`App.DeleteSkill` 已增加 checked-index 失败后的目录/metadata 回滚断言，`App.InstallSkill` 已增加单一外层补偿、索引失败和最终审计失败回滚断言，但三者仍必须继续补充 settings 写入失败、提交后清理失败和跨重启测试，不能由 Hub 或 AgentService 测试代替。
 
-前端 npm build/typecheck 因当前环境未提供 npm 未执行。GUI 全量测试仍可能被工作区既有的 `h.forgetAgentGuidedSkill undefined` 编译错误阻断；该错误不应归因于本次自进化改动。
+前端 npm build/typecheck 因当前环境未提供 npm 未执行。GUI 全量测试仍可能被工作区其它资源或并行负载阻断；若出现与 `h.forgetAgentGuidedSkill undefined` 类似的既有错误，应单独记录，不归因于本次自进化改动。
 
 指标：未经确认的 high/critical 安装为 0；无证据却 `passed` 为 0；staged 未验证进入 active 为 0；关键写盘无审计为 0；冷却期重复修复为 0；取消后继续写盘为 0；修复后真实成功率高于修复前。
 
@@ -691,7 +693,7 @@ GUI 全量测试还受 Windows 浮动窗口、资源架构文件和工作区并�
 
 按风险和收益排序，实施顺序固定为：
 
-1. **进行中**：将 `SkillCommitter`（prepare/commit/rollback/cleanup）继续覆盖 maintenance 边缘分支、已有版本更新/GitHub 导入及剩余非主路径；GUI repair、YAML 版本恢复、reviewed-draft、重命名、`DeleteNLSkill`、apply、staged 激活和新目录安装已完成基础迁移。传统 `App.AddSkill`/`App.DeleteSkill` 已具备 legacy durable compensation 与 checked-index 回滚，但仍需统一结构化 API 结果和入口级故障注入；`App.InstallSkill` 已建立唯一外层 durable 记录并在 mutation 后补写路径，最终审计失败已能回滚且不再伪报 committed，下一步是收敛内部 legacy 审计为单一最终审计、接入共享提交器和完整外层故障注入；提交器必须返回 `state` 与 `cleanup_status`；
+1. **进行中**：将 `SkillCommitter`（prepare/commit/rollback/cleanup）继续覆盖 maintenance 边缘分支、已有版本更新/GitHub 导入及剩余非主路径；GUI repair、YAML 版本恢复、reviewed-draft、重命名、`DeleteNLSkill`、apply、staged 激活和新目录安装已完成基础迁移。传统 `App.AddSkill`/`App.DeleteSkill` 已具备 legacy durable compensation、checked-index 回滚和 `*Detailed` 结构化结果；仍需入口级故障注入和前端调用迁移。`App.InstallSkill` 已建立唯一外层 durable 记录并在 mutation 后补写路径，最终审计失败已能回滚且不再伪报 committed，下一步是收敛内部 legacy 审计为单一最终审计、接入共享提交器和完整外层故障注入；提交器必须返回 `state` 与 `cleanup_status`；
 2. **已完成基础能力**：索引层增加可替换的失败注入 provider；仍需将“索引失败后 YAML/config/目录均恢复”扩展为每个 GUI 入口的发布阻断测试；
 3. 为补偿队列增加版本迁移、损坏隔离和人工处置命令/UI；迁移失败时保留原文件并进入只读安全模式；
 4. 将能力缺口 GitHub/更新、IM 更新和传统 GUI ZIP/插件安装改为调用统一安装提交器；为 AgentService 补齐批次失败、最终审计/清理故障注入和多租户恢复断言（`NewService` 启动恢复基础能力已存在）。为非桌面实例补齐 durable config/目录快照；完成剩余路径前仍关闭自动安装，仅保留提示和人工确认；
@@ -803,4 +805,5 @@ GUI 全量测试还受 Windows 浮动窗口、资源架构文件和工作区并�
 | 2026-08-30 | 修正 `App.InstallSkill` 最终审计失败的结果语义：只有审计已成功才返回 `legacySkillCommitError(committed=true)`；审计失败按未提交处理并由外层 durable compensation 回滚；新增 strict audit sink 故障测试 | 避免最终审计失败却被调用方误判为已提交，导致错误放行或错误处置 |
 | 2026-08-30 | 补偿记录增加 `final_audit_kind`，启动恢复可通过严格审计行的 `request_id + skill + action + kind` 识别“审计已写入但 committed 标记未落盘”的崩溃窗口，仅执行提交后清理；新增 durable final-audit marker 回归测试 | 避免状态标记落盘失败后错误回滚已经审计的业务变更，同时拒绝以普通日志或未知决策推断提交 |
 | 2026-08-30 | 将动态 contract 外部快照明确为版本化恢复契约：补充 schema、stable ID、tenant/user、digest、幂等结果和两阶段可观测语义；同步 P0 清单、入口矩阵、故障注入证据与后续实施顺序 | 避免把 opaque snapshot 或“撤销成功”日志误当作跨系统原子提交，明确恢复失败、格式未知和无法证明归属时的 fail-closed 处置 |
-
+| 2026-08-30 | maintenance config-only 路径启用 `SkipIfUnchanged`，统一返回 `skipped/no_change`；补充 GUI maintenance 定向测试证据并修正 Restore YAML 提交器的字段边界 | 消除维护动作无实际变更时产生备份、补偿、索引和“已应用”审计的副作用，避免 no-op 配置误注入文件型恢复逻辑 |
+| 2026-08-30 | IM maintenance 批处理补充逐 Skill 准入检查、config-only 提交器 no-op 短路和结构化 `state/cleanup_status/request_id` 返回；文件型契约草案明确转回桌面 reviewed flow | 防止批量维护只校验首个 Skill、将文件型草案误当配置变更，以及调用方把普通 `ok` 误判为可继续执行 |

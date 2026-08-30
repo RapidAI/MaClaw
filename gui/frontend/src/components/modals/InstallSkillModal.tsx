@@ -1,5 +1,5 @@
 import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
-import { InstallSkill } from '../../../wailsjs/go/main/App';
+import { InstallSkillDetailed } from '../../../wailsjs/go/main/App';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { InstallSkillList } from './InstallSkillList';
@@ -93,7 +93,10 @@ export const InstallSkillModal = ({
                 }
 
                 try {
-                    await InstallSkill(skill.name, skill.description, skill.type, skill.value, installLocation, targetProjectPath, activeTool);
+                    const result = await InstallSkillDetailed(skill.name, skill.description, skill.type, skill.value, installLocation, targetProjectPath, activeTool);
+                    if (!result || result.state !== 'committed' || result.cleanup_status !== 'clear' || result.ok !== true) {
+                        throw new Error(`install not committed: state=${result?.state || 'unknown'} cleanup_status=${result?.cleanup_status || 'unknown'} reason=${result?.failure_reason || 'unknown'}`);
+                    }
                     successCount++;
                 } catch (e) {
                     console.error(e);

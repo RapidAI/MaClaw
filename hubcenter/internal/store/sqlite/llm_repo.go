@@ -632,6 +632,9 @@ func NewLLMUsageRepo(p *Provider) *llmUsageRepo {
 }
 
 func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsageRecord) error {
+	if record == nil {
+		return nil
+	}
 	createdAt := record.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()
@@ -639,50 +642,61 @@ func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsag
 	_, err := r.write.ExecContext(ctx,
 		`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.HubID, record.TenantID, record.Model, record.ProviderID,
-		record.ServiceGroupID, record.WorkloadClass, record.ClassSource, record.Preview,
+		strings.TrimSpace(record.HubID), strings.TrimSpace(record.TenantID),
+		strings.TrimSpace(record.Model), strings.TrimSpace(record.ProviderID),
+		strings.TrimSpace(record.ServiceGroupID), strings.TrimSpace(record.WorkloadClass),
+		strings.TrimSpace(record.ClassSource), record.Preview,
 		record.InputTokens, record.OutputTokens, record.Credits,
-		boolToInt(record.CacheHit), record.AuthID, createdAt.UTC().Format(time.RFC3339),
+		boolToInt(record.CacheHit), strings.TrimSpace(record.AuthID), createdAt.UTC().Format(time.RFC3339),
 	)
 	return err
 }
 
 func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.UsageFilter) ([]llmservice.TenantUsageSummary, error) {
-	// Determine grouping expression based on period
-	periodExpr := "DATE(created_at)" // default: daily
-	periodLabel := "daily"
-	switch filter.Period {
-	case "weekly":
-		periodExpr = "DATE(created_at, 'weekday 0', '-6 days')" // SQLite: start of week (Monday)
-		periodLabel = "weekly"
-	case "monthly":
-		periodExpr = "SUBSTR(created_at, 1, 7)" // "2026-01"
-		periodLabel = "monthly"
-	default:
-		periodLabel = "daily"
+	loc := llmservice.TrafficLocation(filter.Timezone)
+	start, hasStart := parseUsageLocalDate(filter.StartDate, loc)
+	end, hasEnd := parseUsageLocalDate(filter.EndDate, loc)
+	offsetAt := time.Now()
+	if hasStart {
+		offsetAt = start
 	}
+	periodExpr, periodLabel := usagePeriodSQL(filter.Period, loc, offsetAt)
 
-	query := `SELECT hub_id, tenant_id, ` + periodExpr + ` as period_start, SUM(input_tokens), SUM(output_tokens), SUM(credits_deducted), COUNT(*), SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END) FROM llm_usage_records WHERE 1=1`
+	query := `SELECT TRIM(hub_id), TRIM(tenant_id), ` + periodExpr + ` as period_start, SUM(input_tokens), SUM(output_tokens), SUM(credits_deducted), COUNT(*), SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END) FROM llm_usage_records WHERE 1=1`
 	var args []any
-	if filter.HubID != "" {
+	if hubID := strings.TrimSpace(filter.HubID); hubID != "" {
 		query += ` AND hub_id = ?`
-		args = append(args, filter.HubID)
+		args = append(args, hubID)
 	}
-	if filter.TenantID != "" {
+	if tenantID := strings.TrimSpace(filter.TenantID); tenantID != "" {
 		query += ` AND tenant_id = ?`
-		args = append(args, filter.TenantID)
+		args = append(args, tenantID)
 	}
-	if filter.StartDate != "" {
-		query += ` AND created_at >= ?`
-		args = append(args, filter.StartDate)
+	if model := strings.TrimSpace(filter.Model); model != "" {
+		query += ` AND TRIM(model) = ?`
+		args = append(args, model)
 	}
-	if filter.EndDate != "" {
-		query += ` AND created_at <= ?`
-		args = append(args, filter.EndDate+"T23:59:59Z")
+	if groupID := strings.TrimSpace(filter.ServiceGroupID); groupID != "" {
+		query += ` AND TRIM(service_group_id) = ?`
+		args = append(args, groupID)
 	}
-	query += ` GROUP BY hub_id, tenant_id, ` + periodExpr + ` ORDER BY period_start DESC`
+	if class := strings.TrimSpace(filter.WorkloadClass); class != "" {
+		query += ` AND TRIM(workload_class) = ?`
+		args = append(args, class)
+	}
+	if hasStart {
+		query += ` AND ` + usageCreatedAtWindowPred
+		args = append(args, usageCreatedAtScanBound(start), sqliteUTCDateTime(start))
+	}
+	if hasEnd {
+		endExclusive := end.AddDate(0, 0, 1)
+		query += ` AND created_at < ? AND datetime(created_at) < ?`
+		args = append(args, endExclusive.UTC().Add(24*time.Hour).Format(time.RFC3339), sqliteUTCDateTime(endExclusive))
+	}
+	query += ` GROUP BY TRIM(hub_id), TRIM(tenant_id), ` + periodExpr + ` ORDER BY period_start DESC`
 	if filter.Limit > 0 {
-		query += fmt.Sprintf(` LIMIT %d`, filter.Limit)
+		query += ` LIMIT ?`
+		args = append(args, filter.Limit)
 	}
 
 	rows, err := r.read.QueryContext(ctx, query, args...)
@@ -691,7 +705,7 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	}
 	defer rows.Close()
 
-	var results []llmservice.TenantUsageSummary
+	results := make([]llmservice.TenantUsageSummary, 0)
 	for rows.Next() {
 		var s llmservice.TenantUsageSummary
 		var cacheHits int64
@@ -705,19 +719,19 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 		}
 		results = append(results, s)
 	}
-	return results, nil
+	return results, rows.Err()
 }
 
 func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, limit int) ([]*llmservice.TenantUsageRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at FROM llm_usage_records WHERE hub_id=? AND tenant_id=? ORDER BY created_at DESC LIMIT ?`, hubID, tenantID, limit)
+	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at FROM llm_usage_records WHERE hub_id=? AND tenant_id=? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`, strings.TrimSpace(hubID), strings.TrimSpace(tenantID), limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var records []*llmservice.TenantUsageRecord
+	records := make([]*llmservice.TenantUsageRecord, 0)
 	for rows.Next() {
 		var rec llmservice.TenantUsageRecord
 		var cacheHit int
@@ -729,22 +743,115 @@ func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, 
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		records = append(records, &rec)
 	}
-	return records, nil
+	return records, rows.Err()
 }
+
+func addProviderPeriodTraffic(a, b llmservice.ProviderPeriodTraffic) llmservice.ProviderPeriodTraffic {
+	return llmservice.ProviderPeriodTraffic{
+		Day:   addTokenTraffic(a.Day, b.Day),
+		Week:  addTokenTraffic(a.Week, b.Week),
+		Month: addTokenTraffic(a.Month, b.Month),
+	}
+}
+
+func addTokenTraffic(a, b llmservice.TokenTraffic) llmservice.TokenTraffic {
+	return llmservice.TokenTraffic{
+		InputTokens:  a.InputTokens + b.InputTokens,
+		OutputTokens: a.OutputTokens + b.OutputTokens,
+		TotalTokens:  a.TotalTokens + b.TotalTokens,
+	}
+}
+
+const usageCreatedAtWindowPred = `created_at >= ? AND datetime(created_at) >= ?`
 
 func sqliteUTCDateTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05")
 }
 
+func usageCreatedAtScanBound(since time.Time) string {
+	return since.UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+}
+
+func parseUsageLocalDate(value string, loc *time.Location) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	t, err := time.ParseInLocation("2006-01-02", value, loc)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func sqliteLocalTimeModifiers(loc *time.Location, at time.Time) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	_, offset := at.In(loc).Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	hours := offset / 3600
+	mins := (offset % 3600) / 60
+	if hours == 0 && mins == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if hours != 0 {
+		parts = append(parts, fmt.Sprintf("'%s%d hours'", sign, hours))
+	}
+	if mins != 0 {
+		parts = append(parts, fmt.Sprintf("'%s%d minutes'", sign, mins))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func usagePeriodSQL(period string, loc *time.Location, now time.Time) (expr, label string) {
+	localDT := "datetime(created_at)"
+	if mods := sqliteLocalTimeModifiers(loc, now); mods != "" {
+		localDT = "datetime(created_at, " + mods + ")"
+	}
+	switch period {
+	case "weekly":
+		return "DATE(" + localDT + ", 'weekday 0', '-6 days')", "weekly"
+	case "monthly":
+		return "strftime('%Y-%m', " + localDT + ")", "monthly"
+	default:
+		return "DATE(" + localDT + ")", "daily"
+	}
+}
+
 func (r *llmUsageRepo) QueryProviderTraffic(ctx context.Context, dayStart, weekStart, monthStart time.Time) (map[string]llmservice.ProviderPeriodTraffic, error) {
+	return r.queryTokenPeriodTraffic(ctx, "TRIM(provider_id)", dayStart, weekStart, monthStart)
+}
+
+func (r *llmUsageRepo) queryTokenPeriodTraffic(ctx context.Context, keyExpr string, dayStart, weekStart, monthStart time.Time) (map[string]llmservice.ProviderPeriodTraffic, error) {
+	var extraWhere string
+	switch keyExpr {
+	case "TRIM(provider_id)":
+		extraWhere = ` AND TRIM(provider_id) != ''`
+	case "TRIM(service_group_id)":
+		extraWhere = ` AND TRIM(service_group_id) != ''`
+	default:
+		return nil, fmt.Errorf("unsupported traffic key %q", keyExpr)
+	}
 	dayBound := sqliteUTCDateTime(dayStart)
 	weekBound := sqliteUTCDateTime(weekStart)
 	monthBound := sqliteUTCDateTime(monthStart)
 	// Widen the indexed scan by a day so offset-formatted legacy rows still enter the
 	// datetime() filter. New writes are UTC RFC3339 and compare directly.
-	scanBound := monthStart.UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	scanBound := usageCreatedAtScanBound(monthStart)
 	rows, err := r.read.QueryContext(ctx, `
-		SELECT provider_id,
+		SELECT traffic_key,
 		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
 		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
 		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
@@ -752,12 +859,11 @@ func (r *llmUsageRepo) QueryProviderTraffic(ctx context.Context, dayStart, weekS
 		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
 		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END)
 		  FROM (
-		        SELECT provider_id, input_tokens, output_tokens, datetime(created_at) AS ts
+		        SELECT `+keyExpr+` AS traffic_key, input_tokens, output_tokens, datetime(created_at) AS ts
 		          FROM llm_usage_records
-		         WHERE created_at >= ?
-		           AND provider_id != ''
+		         WHERE created_at >= ?`+extraWhere+`
 		       ) AS usage
-		 GROUP BY provider_id`,
+		 GROUP BY traffic_key`,
 		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound,
 	)
 	if err != nil {
@@ -767,32 +873,36 @@ func (r *llmUsageRepo) QueryProviderTraffic(ctx context.Context, dayStart, weekS
 
 	results := map[string]llmservice.ProviderPeriodTraffic{}
 	for rows.Next() {
-		var providerID string
+		var key string
 		var dayIn, dayOut, weekIn, weekOut, monthIn, monthOut int64
-		if err := rows.Scan(&providerID, &dayIn, &dayOut, &weekIn, &weekOut, &monthIn, &monthOut); err != nil {
+		if err := rows.Scan(&key, &dayIn, &dayOut, &weekIn, &weekOut, &monthIn, &monthOut); err != nil {
 			return nil, err
 		}
-		providerID = strings.TrimSpace(providerID)
-		if providerID == "" || (dayIn == 0 && dayOut == 0 && weekIn == 0 && weekOut == 0 && monthIn == 0 && monthOut == 0) {
+		key = strings.TrimSpace(key)
+		if key == "" || (dayIn == 0 && dayOut == 0 && weekIn == 0 && weekOut == 0 && monthIn == 0 && monthOut == 0) {
 			continue
 		}
-		results[providerID] = llmservice.ProviderPeriodTraffic{
+		results[key] = addProviderPeriodTraffic(results[key], llmservice.ProviderPeriodTraffic{
 			Day:   llmservice.TokenTraffic{InputTokens: dayIn, OutputTokens: dayOut, TotalTokens: dayIn + dayOut},
 			Week:  llmservice.TokenTraffic{InputTokens: weekIn, OutputTokens: weekOut, TotalTokens: weekIn + weekOut},
 			Month: llmservice.TokenTraffic{InputTokens: monthIn, OutputTokens: monthOut, TotalTokens: monthIn + monthOut},
-		}
+		})
 	}
 	return results, rows.Err()
 }
 
 func (r *llmUsageRepo) QueryClassTraffic(ctx context.Context, serviceGroupID string, since time.Time) ([]llmservice.ClassTrafficRow, map[string]int64, []llmservice.ClassTrafficSample, error) {
+	groupID := strings.TrimSpace(serviceGroupID)
+	if groupID == "" {
+		return nil, map[string]int64{}, nil, nil
+	}
 	rows, err := r.read.QueryContext(ctx, `
-		SELECT workload_class, class_source, COUNT(*), SUM(input_tokens), SUM(output_tokens)
+		SELECT TRIM(workload_class), TRIM(class_source), COUNT(*), SUM(input_tokens), SUM(output_tokens)
 		  FROM llm_usage_records
-		 WHERE service_group_id = ?
-		   AND created_at >= ?
-		 GROUP BY workload_class, class_source`,
-		strings.TrimSpace(serviceGroupID), since.UTC().Format(time.RFC3339),
+		 WHERE `+usageCreatedAtWindowPred+`
+		   AND TRIM(service_group_id) = ?
+		 GROUP BY TRIM(workload_class), TRIM(class_source)`,
+		usageCreatedAtScanBound(since), sqliteUTCDateTime(since), groupID,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -827,7 +937,7 @@ func (r *llmUsageRepo) QueryClassTraffic(ctx context.Context, serviceGroupID str
 	for _, row := range byClass {
 		out = append(out, row)
 	}
-	samples, err := r.queryClassTrafficSamples(ctx, serviceGroupID, since)
+	samples, err := r.queryClassTrafficSamples(ctx, groupID, since)
 	if err != nil {
 		return out, sources, nil, err
 	}
@@ -835,62 +945,20 @@ func (r *llmUsageRepo) QueryClassTraffic(ctx context.Context, serviceGroupID str
 }
 
 func (r *llmUsageRepo) QueryServiceGroupTraffic(ctx context.Context, dayStart, weekStart, monthStart time.Time) (map[string]llmservice.ProviderPeriodTraffic, error) {
-	dayBound := sqliteUTCDateTime(dayStart)
-	weekBound := sqliteUTCDateTime(weekStart)
-	monthBound := sqliteUTCDateTime(monthStart)
-	scanBound := monthStart.UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	rows, err := r.read.QueryContext(ctx, `
-		SELECT service_group_id,
-		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
-		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
-		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
-		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END),
-		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
-		       SUM(CASE WHEN ts >= ? THEN output_tokens ELSE 0 END)
-		  FROM (
-		        SELECT TRIM(service_group_id) AS service_group_id, input_tokens, output_tokens, datetime(created_at) AS ts
-		          FROM llm_usage_records
-		         WHERE created_at >= ?
-		           AND TRIM(service_group_id) != ''
-		       ) AS usage
-		 GROUP BY service_group_id`,
-		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := map[string]llmservice.ProviderPeriodTraffic{}
-	for rows.Next() {
-		var groupID string
-		var dayIn, dayOut, weekIn, weekOut, monthIn, monthOut int64
-		if err := rows.Scan(&groupID, &dayIn, &dayOut, &weekIn, &weekOut, &monthIn, &monthOut); err != nil {
-			return nil, err
-		}
-		groupID = strings.TrimSpace(groupID)
-		if groupID == "" || (dayIn == 0 && dayOut == 0 && weekIn == 0 && weekOut == 0 && monthIn == 0 && monthOut == 0) {
-			continue
-		}
-		result[groupID] = llmservice.ProviderPeriodTraffic{
-			Day:   llmservice.TokenTraffic{InputTokens: dayIn, OutputTokens: dayOut, TotalTokens: dayIn + dayOut},
-			Week:  llmservice.TokenTraffic{InputTokens: weekIn, OutputTokens: weekOut, TotalTokens: weekIn + weekOut},
-			Month: llmservice.TokenTraffic{InputTokens: monthIn, OutputTokens: monthOut, TotalTokens: monthIn + monthOut},
-		}
-	}
-	return result, rows.Err()
+	return r.queryTokenPeriodTraffic(ctx, "TRIM(service_group_id)", dayStart, weekStart, monthStart)
 }
 
 func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGroupID string, since time.Time) ([]llmservice.ClassTrafficSample, error) {
 	sampleRows, err := r.read.QueryContext(ctx, `
-		SELECT created_at, workload_class, class_source, request_preview
+		SELECT created_at, TRIM(workload_class), TRIM(class_source), request_preview
 		  FROM llm_usage_records
-		 WHERE service_group_id = ?
-		   AND created_at >= ?
-		   AND class_source != ?
+		 WHERE `+usageCreatedAtWindowPred+`
+		   AND TRIM(service_group_id) = ?
+		   AND TRIM(class_source) != ?
 		   AND TRIM(request_preview) != ''
-		 ORDER BY created_at DESC
+		 ORDER BY datetime(created_at) DESC, id DESC
 		 LIMIT 20`,
-		strings.TrimSpace(serviceGroupID), since.UTC().Format(time.RFC3339), "hint",
+		usageCreatedAtScanBound(since), sqliteUTCDateTime(since), strings.TrimSpace(serviceGroupID), "hint",
 	)
 	if err != nil {
 		return nil, err
@@ -901,6 +969,9 @@ func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGrou
 		var createdAt, class, source, preview string
 		if err := sampleRows.Scan(&createdAt, &class, &source, &preview); err != nil {
 			return nil, err
+		}
+		if class == "" {
+			class = "unclassified"
 		}
 		at, _ := time.Parse(time.RFC3339, createdAt)
 		samples = append(samples, llmservice.ClassTrafficSample{

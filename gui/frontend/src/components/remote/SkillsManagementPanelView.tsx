@@ -1083,7 +1083,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setBusy(true);
         try {
             const res = await ApplySkillMaintenanceAction("merge_duplicate", keep, retire, true, true);
-            if (res?.ok) {
+            const state = String((res as any)?.state || "");
+            const cleanupStatus = String((res as any)?.cleanup_status || "");
+            const success = (res as any)?.ok === true && cleanupStatus === "clear"
+                && (state === "committed" || state === "skipped");
+            if (success) {
                 showToast(String(res.message || localizeText("Duplicate retired", "已退役重复技能", "已退役重複技能")), "success");
                 await loadData();
                 await loadMaintenanceDrafts();
@@ -1223,7 +1227,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setBusy(true);
         try {
             const res = await ApplySkillMaintenanceAction("improve_contract", name, "", true, false);
-            if (res?.ok) {
+            const state = String((res as any)?.state || "");
+            const cleanupStatus = String((res as any)?.cleanup_status || "");
+            const success = (res as any)?.ok === true && cleanupStatus === "clear"
+                && (state === "committed" || state === "skipped");
+            if (success) {
                 const extra = res.backup_version
                     ? localizeText(
                         ` (backup v${res.backup_version})`,

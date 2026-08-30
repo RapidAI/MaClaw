@@ -362,7 +362,7 @@ export function isProjectTabOpen(projectPath: string, openProjectTabPaths?: Iter
 
 /** True when this durable task row is the currently visible AI assistant tab. */
 export function isActiveTaskRow(
-    proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir'>,
+    proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir' | 'preview' | 'name'>,
     active?: ActiveAssistantTaskIdentity | null,
 ): boolean {
     const canonical = coerceActiveAssistantTask(active);
@@ -855,7 +855,7 @@ export function cloudWorkspaceNameMapFromEntitlement(
 
 /** Secondary line under the task title. Cloud rows show the Hub workspace name only. */
 export function taskSecondaryLabelFor(
-    proj: Pick<TaskManagementItem, 'preview' | 'project_path' | 'tags' | 'working_dir'>,
+    proj: Pick<TaskManagementItem, 'preview' | 'project_path' | 'tags' | 'working_dir' | 'name'>,
     workspaceNameById?: Map<string, string>,
 ): string {
     const workspaceId = cloudWorkspaceIdFromTask(proj);

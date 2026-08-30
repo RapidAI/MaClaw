@@ -44,6 +44,17 @@ func writeLLMProviderError(w http.ResponseWriter, err error) {
 	writeJSONResp(w, code, map[string]string{"error": err.Error()})
 }
 
+func queryTimezone(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	timezone := strings.TrimSpace(r.URL.Query().Get("timezone"))
+	if len(timezone) > 64 {
+		return ""
+	}
+	return timezone
+}
+
 func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reg, err := svc.LoadRegistry(r.Context())
@@ -1171,11 +1182,7 @@ func adminLLMProviderTrafficHandler(statsSvc *llmservice.StatsService) http.Hand
 			writeJSONResp(w, http.StatusOK, &llmservice.ProviderTrafficReport{Timezone: "Asia/Shanghai", Traffic: map[string]llmservice.ProviderPeriodTraffic{}})
 			return
 		}
-		timezone := strings.TrimSpace(r.URL.Query().Get("timezone"))
-		if len(timezone) > 64 {
-			timezone = ""
-		}
-		report, err := statsSvc.QueryProviderTraffic(r.Context(), timezone, time.Time{})
+		report, err := statsSvc.QueryProviderTraffic(r.Context(), queryTimezone(r), time.Time{})
 		if err != nil {
 			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -1190,11 +1197,7 @@ func adminLLMServiceGroupTrafficHandler(statsSvc *llmservice.StatsService) http.
 			writeJSONResp(w, http.StatusOK, &llmservice.ServiceGroupTrafficReport{Timezone: "Asia/Shanghai", Traffic: map[string]llmservice.ProviderPeriodTraffic{}})
 			return
 		}
-		timezone := strings.TrimSpace(r.URL.Query().Get("timezone"))
-		if len(timezone) > 64 {
-			timezone = ""
-		}
-		report, err := statsSvc.QueryServiceGroupTraffic(r.Context(), timezone, time.Time{})
+		report, err := statsSvc.QueryServiceGroupTraffic(r.Context(), queryTimezone(r), time.Time{})
 		if err != nil {
 			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -1205,14 +1208,21 @@ func adminLLMServiceGroupTrafficHandler(statsSvc *llmservice.StatsService) http.
 
 func adminLLMUsageHandler(statsSvc *llmservice.StatsService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if statsSvc == nil {
+			writeJSONResp(w, http.StatusOK, map[string]any{"usage": []llmservice.TenantUsageSummary{}, "rows": []llmservice.TenantUsageSummary{}})
+			return
+		}
 		q := r.URL.Query()
 		filter := llmservice.UsageFilter{
-			HubID:     q.Get("hub_id"),
-			TenantID:  q.Get("tenant_id"),
-			Model:     q.Get("model"),
-			Period:    q.Get("period"),
-			StartDate: firstNonEmpty(q.Get("start_date"), q.Get("start")),
-			EndDate:   firstNonEmpty(q.Get("end_date"), q.Get("end")),
+			HubID:          q.Get("hub_id"),
+			TenantID:       q.Get("tenant_id"),
+			Model:          q.Get("model"),
+			ServiceGroupID: q.Get("service_group_id"),
+			WorkloadClass:  q.Get("workload_class"),
+			Period:         q.Get("period"),
+			StartDate:      firstNonEmpty(q.Get("start_date"), q.Get("start")),
+			EndDate:        firstNonEmpty(q.Get("end_date"), q.Get("end")),
+			Timezone:       queryTimezone(r),
 		}
 		if limit := q.Get("limit"); limit != "" {
 			if n, err := strconv.Atoi(limit); err == nil {
@@ -1221,6 +1231,9 @@ func adminLLMUsageHandler(statsSvc *llmservice.StatsService) http.HandlerFunc {
 		}
 		if filter.Limit <= 0 {
 			filter.Limit = 30
+		}
+		if filter.Limit > 366 {
+			filter.Limit = 366
 		}
 		summary, err := statsSvc.QueryUsageSummary(r.Context(), filter)
 		if err != nil {
@@ -1239,17 +1252,20 @@ func adminLLMClassTrafficHandler(statsSvc *llmservice.StatsService) http.Handler
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "service_group_id is required"})
 			return
 		}
-		window := strings.TrimSpace(r.URL.Query().Get("window"))
-		days := 1
-		switch window {
-		case "7d":
-			days = 7
-		case "30d":
-			days = 30
-		default:
-			window = "24h"
+		if statsSvc == nil {
+			writeJSONResp(w, http.StatusOK, map[string]any{
+				"service_group_id": groupID,
+				"window":           "day",
+				"timezone":         "Asia/Shanghai",
+				"rows":             llmservice.NormalizeClassTrafficRows(nil),
+				"sources":          map[string]int64{},
+				"samples":          []llmservice.ClassTrafficSample{},
+			})
+			return
 		}
-		since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		loc := llmservice.TrafficLocation(queryTimezone(r))
+		window := strings.TrimSpace(r.URL.Query().Get("window"))
+		since, window := llmservice.ClassTrafficSince(window, loc, time.Time{})
 		rows, sources, samples, err := statsSvc.QueryClassTraffic(r.Context(), groupID, since)
 		if err != nil {
 			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1258,6 +1274,7 @@ func adminLLMClassTrafficHandler(statsSvc *llmservice.StatsService) http.Handler
 		writeJSONResp(w, http.StatusOK, map[string]any{
 			"service_group_id": groupID,
 			"window":           window,
+			"timezone":         loc.String(),
 			"rows":             rows,
 			"sources":          sources,
 			"samples":          samples,
