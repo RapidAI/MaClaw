@@ -693,8 +693,8 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("MaClaw Hub search returned HTTP %d", resp.StatusCode)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, maclawHubSearchStatusError(resp.StatusCode, raw)
 	}
 
 	var payloadResp struct {
@@ -732,6 +732,56 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 		}
 	}
 	return results, nil
+}
+
+func maclawHubSearchStatusError(status int, body []byte) error {
+	code, detail := parseMaclawHubSearchError(body)
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "captcha":
+		return fmt.Errorf("MaClaw Hub search returned HTTP %d: search was blocked or challenged", status)
+	case "timeout":
+		return fmt.Errorf("MaClaw Hub search returned HTTP %d: search timed out", status)
+	case "parse":
+		return fmt.Errorf("MaClaw Hub search returned HTTP %d: search failed to parse", status)
+	case "unauthorized":
+		return fmt.Errorf("MaClaw Hub search returned HTTP %d: sign in to MaClaw Hub", status)
+	case "offline":
+		return fmt.Errorf("MaClaw Hub search returned HTTP %d: search backend offline", status)
+	}
+	if status == http.StatusUnauthorized {
+		return fmt.Errorf("MaClaw Hub search returned HTTP 401 (sign in to MaClaw Hub)")
+	}
+	if detail != "" {
+		return fmt.Errorf("MaClaw Hub search returned HTTP %d: %s", status, detail)
+	}
+	return fmt.Errorf("MaClaw Hub search returned HTTP %d", status)
+}
+
+func parseMaclawHubSearchError(body []byte) (code, detail string) {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return "", ""
+	}
+	var payload struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", ""
+	}
+	code = strings.TrimSpace(payload.Code)
+	detail = strings.TrimSpace(payload.Error)
+	if hubProxyDetailLooksSecret(detail) {
+		detail = ""
+	}
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "api key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "token") {
+		detail = ""
+	}
+	if len([]rune(detail)) > 200 {
+		detail = string([]rune(detail)[:200]) + "…"
+	}
+	return code, detail
 }
 
 func maclawHubSearchURL(baseURL string) (string, error) {

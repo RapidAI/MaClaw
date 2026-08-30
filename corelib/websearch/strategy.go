@@ -659,10 +659,10 @@ func classifySearchError(err error) string {
 	if err == nil {
 		return "success"
 	}
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+	text := strings.ToLower(err.Error())
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "timeout") || strings.Contains(text, "timed out") {
 		return "timeout"
 	}
-	text := strings.ToLower(err.Error())
 	status := searchHTTPStatus(err)
 	for _, marker := range []string{"captcha", "verification", "challenge", "blocked", "反爬", "人机验证", "自動化查詢", "自动查询"} {
 		if strings.Contains(text, marker) {
@@ -684,7 +684,7 @@ func classifySearchError(err error) string {
 func SafeSearchErrorDetail(err error) string {
 	if err != nil {
 		text := strings.ToLower(err.Error())
-		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
+		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") || strings.Contains(text, "sign in to maclaw hub") {
 			return "sign in to MaClaw Hub"
 		}
 	}
