@@ -163,6 +163,8 @@ func webSearchEngineName(id string) string {
 		return "TinyFish"
 	case "tavily":
 		return "Tavily"
+	case websearch.WebSearchEngineMaclawHub:
+		return "MaClaw Hub / RapidSearch"
 	default:
 		return id
 	}
@@ -310,10 +312,18 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 	engine := resolveWebSearchEngineForTest(current, req.Engine, req.UseSavedKey)
 	engine.Enabled = true
 	engine.Priority = 1
+	if engine.ID == websearch.WebSearchEngineMaclawHub && strings.TrimSpace(engine.APIKey) == "" {
+		if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
+			engine.APIKey = websearch.HubAuthTokenFromConfig(cfg)
+		}
+	}
 	// The probe may retry one transient HTTP/API failure. Leave enough outer
 	// budget for two 12-second cold-start attempts plus the short retry delay.
+	// RapidSearch often needs 10-20s and is given a 180s client budget.
 	testTimeout := 30 * time.Second
-	if engine.Transport == corelib.WebSearchTransportBrowser && req.HumanAssistEnabled {
+	if engine.ID == websearch.WebSearchEngineMaclawHub {
+		testTimeout = 180 * time.Second
+	} else if engine.Transport == corelib.WebSearchTransportBrowser && req.HumanAssistEnabled {
 		testTimeout = 2 * time.Minute
 	} else if engine.Transport == corelib.WebSearchTransportBrowser {
 		testTimeout = 35 * time.Second

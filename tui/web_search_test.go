@@ -62,3 +62,20 @@ func TestTUIWebFetchProviderFollowsHighestPriorityEngine(t *testing.T) {
 		t.Fatalf("provider = %#v, want standard fetch", provider)
 	}
 }
+
+func TestTUIWebSearchStrategyAttachesRegisteredHubToken(t *testing.T) {
+	cfg := corelib.AppConfig{RemoteViewerToken: "viewer-token"}
+	strategy := tuiWebSearchStrategy(cfg)
+	for _, engine := range strategy.Engines {
+		if engine.ID == "maclaw_hub" {
+			if engine.Enabled {
+				t.Fatalf("TUI enabled MaClaw Hub by default: %#v", engine)
+			}
+			if engine.APIKey != "viewer-token" {
+				t.Fatalf("TUI APIKey = %q, want viewer-token", engine.APIKey)
+			}
+			return
+		}
+	}
+	t.Fatal("MaClaw Hub missing from TUI strategy")
+}

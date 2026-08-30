@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	strategySearchTimeout  = 30 * time.Second
-	strategyBrowserTimeout = 6 * time.Second
+	strategySearchTimeout    = 30 * time.Second
+	strategyBrowserTimeout   = 6 * time.Second
+	strategyMaclawHubTimeout = 180 * time.Second
+	WebSearchEngineMaclawHub = "maclaw_hub"
 )
 
 var (
@@ -36,15 +38,17 @@ var builtinWebSearchEngines = map[string]struct {
 	Name      string
 	BaseURL   string
 	NeedsKey  bool
+	OptIn     bool
 }{
-	"bing_cn":    {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
-	"baidu":      {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
-	"google":     {Transport: corelib.WebSearchTransportBrowser, Name: "Google"},
-	"duckduckgo": {Transport: corelib.WebSearchTransportHTTPHTML, Name: "DuckDuckGo", BaseURL: defaultLegacySearchURL},
-	"brave":      {Transport: corelib.WebSearchTransportAPI, Name: "Brave Search API", BaseURL: defaultBraveSearchURL, NeedsKey: true},
-	"serper":     {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
-	"tinyfish":   {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
-	"tavily":     {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
+	"bing_cn":                {Transport: corelib.WebSearchTransportHTTPHTML, Name: "Bing", BaseURL: defaultBingSearchURL},
+	"baidu":                  {Transport: corelib.WebSearchTransportHTTPHTML, Name: "百度", BaseURL: defaultBaiduSearchURL},
+	"google":                 {Transport: corelib.WebSearchTransportBrowser, Name: "Google"},
+	"duckduckgo":             {Transport: corelib.WebSearchTransportHTTPHTML, Name: "DuckDuckGo", BaseURL: defaultLegacySearchURL},
+	"brave":                  {Transport: corelib.WebSearchTransportAPI, Name: "Brave Search API", BaseURL: defaultBraveSearchURL, NeedsKey: true},
+	"serper":                 {Transport: corelib.WebSearchTransportAPI, Name: "Serper（Google API）", BaseURL: defaultSerperSearchURL, NeedsKey: true},
+	"tinyfish":               {Transport: corelib.WebSearchTransportAPI, Name: "TinyFish", BaseURL: defaultTinyFishSearchURL, NeedsKey: true},
+	"tavily":                 {Transport: corelib.WebSearchTransportAPI, Name: "Tavily", BaseURL: defaultTavilySearchURL, NeedsKey: true},
+	WebSearchEngineMaclawHub: {Transport: corelib.WebSearchTransportAPI, Name: "MaClaw Hub / RapidSearch", BaseURL: defaultMaclawHubSearchURL, OptIn: true},
 }
 
 var searchQueryHashSalt = func() [32]byte {
@@ -80,16 +84,16 @@ func DefaultWebSearchStrategy(preset string) corelib.WebSearchStrategy {
 	preset = normalizePreset(preset)
 	var order []string
 	if preset == corelib.WebSearchPresetInternational {
-		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily"}
+		order = []string{"google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	} else {
 		preset = corelib.WebSearchPresetMainland
-		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily"}
+		order = []string{"bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", WebSearchEngineMaclawHub}
 	}
 	engines := make([]corelib.WebSearchEngineConfig, 0, len(order))
 	for i, id := range order {
 		meta := builtinWebSearchEngines[id]
 		engines = append(engines, corelib.WebSearchEngineConfig{
-			ID: id, Enabled: !meta.NeedsKey, Priority: i + 1,
+			ID: id, Enabled: !meta.NeedsKey && !meta.OptIn, Priority: i + 1,
 			Transport: meta.Transport, BaseURL: meta.BaseURL,
 		})
 	}
@@ -285,18 +289,25 @@ func ResetWebSearchStrategy(current corelib.WebSearchStrategy, preset string) co
 }
 
 func strategySearchBudget(strategy corelib.WebSearchStrategy) time.Duration {
-	if !strategy.BrowserHumanAssistEnabled {
-		return strategySearchTimeout
-	}
-	if strategy.BrowserFallbackEnabled {
-		return 2 * time.Minute
-	}
-	for _, engine := range strategy.Engines {
-		if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser {
-			return 2 * time.Minute
+	budget := strategySearchTimeout
+	if strategy.BrowserHumanAssistEnabled {
+		if strategy.BrowserFallbackEnabled {
+			budget = 2 * time.Minute
+		} else {
+			for _, engine := range strategy.Engines {
+				if engine.Enabled && engine.Transport == corelib.WebSearchTransportBrowser {
+					budget = 2 * time.Minute
+					break
+				}
+			}
 		}
 	}
-	return strategySearchTimeout
+	for _, engine := range strategy.Engines {
+		if engine.Enabled && engine.ID == WebSearchEngineMaclawHub && budget < strategyMaclawHubTimeout {
+			return strategyMaclawHubTimeout
+		}
+	}
+	return budget
 }
 
 // SearchWithStrategyCtx runs enabled engines in user order. Small result sets
@@ -457,7 +468,9 @@ func ProbeWebSearchEngineCtx(parent context.Context, query string, maxResults in
 	}
 
 	timeout := strategyProbeEngineTimeout
-	if engine.Transport == corelib.WebSearchTransportBrowser {
+	if engine.ID == WebSearchEngineMaclawHub {
+		timeout = strategyMaclawHubTimeout
+	} else if engine.Transport == corelib.WebSearchTransportBrowser {
 		timeout = strategyProbeBrowserTimeout
 		if humanAssist {
 			timeout = 100 * time.Second
@@ -505,7 +518,9 @@ func queryFingerprint(query string) string {
 
 func searchStrategyEngine(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool) ([]SearchResult, error, time.Duration, int) {
 	timeout := strategyEngineTimeout
-	if engine.Transport == corelib.WebSearchTransportBrowser {
+	if engine.ID == WebSearchEngineMaclawHub {
+		timeout = strategyMaclawHubTimeout
+	} else if engine.Transport == corelib.WebSearchTransportBrowser {
 		timeout = strategyBrowserTimeout
 		if humanAssist {
 			timeout = 100 * time.Second
@@ -557,7 +572,7 @@ func shouldRetrySearchEngine(engine corelib.WebSearchEngineConfig, err error) bo
 	}
 	// Configuration/authentication and human-verification failures are stable;
 	// an immediate repeat only burns quota or triggers more anti-bot pressure.
-	for _, marker := range []string{"api key", "captcha", "verification", "challenge", "blocked"} {
+	for _, marker := range []string{"api key", "signed-in hub", "hub account", "captcha", "verification", "challenge", "blocked"} {
 		if strings.Contains(text, marker) {
 			return false
 		}
@@ -650,7 +665,7 @@ func classifySearchError(err error) string {
 			return "blocked"
 		}
 	}
-	if status == 401 || status == 403 || strings.Contains(text, "api key") {
+	if status == 401 || status == 403 || strings.Contains(text, "api key") || strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
 		return "invalid_key"
 	}
 	if status == 429 || strings.Contains(text, "rate limit") {

@@ -42,8 +42,8 @@ const testWebSearchEngine = TestWebSearchEngine as unknown as (
 	request: TestWebSearchEngineRequest,
 ) => ReturnType<typeof TestWebSearchEngine>;
 const PRESET_ORDER: Record<Exclude<Preset, "custom">, string[]> = {
-	mainland: ["bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily"],
-	international: ["google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily"],
+	mainland: ["bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
+	international: ["google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
 };
 const RETIRED_ENGINE_IDS = new Set(["mojeek"]);
 
@@ -538,6 +538,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                     </div>
                                     <p>{engine.needs_api_key
                                         ? engine.has_api_key ? t("API key saved", "API Key 已保存") : t("API key required", "需要 API Key")
+                                        : engine.id === "maclaw_hub" ? t("Uses signed-in MaClaw Hub account", "使用已登录的 MaClaw Hub 账号", "使用已登入的 MaClaw Hub 帳號")
                                         : engine.id === "google" ? t("Free · availability depends on network", "免费 · 可用性取决于网络") : t("Free · no key needed", "免费 · 无需 Key")}</p>
                                     {test.state !== "idle" && <div className="web-search-config__test-result" data-state={test.state} role="status">
                                         {test.state === "testing" ? t("Testing…", "正在测试…") : test.message}

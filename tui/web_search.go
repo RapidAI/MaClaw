@@ -10,10 +10,13 @@ import (
 // tuiWebSearchStrategy keeps interactive, pipe, and RPC modes aligned with
 // the desktop search settings stored in the shared AppConfig.
 func tuiWebSearchStrategy(cfg corelib.AppConfig) corelib.WebSearchStrategy {
-	return websearch.MigrateLegacyWebSearchStrategy(
-		cfg.WebSearchStrategy,
-		cfg.WebSearchProviders,
-		cfg.WebSearchCurrentProvider,
+	return websearch.ApplyConfigHubAuth(
+		websearch.MigrateLegacyWebSearchStrategy(
+			cfg.WebSearchStrategy,
+			cfg.WebSearchProviders,
+			cfg.WebSearchCurrentProvider,
+		),
+		cfg,
 	)
 }
 

@@ -150,6 +150,21 @@ describe("WebSearchConfigPanel", () => {
 		]);
 	});
 
+    it("shows MaClaw Hub RapidSearch unchecked without an API-key field", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            engines: [
+                ...strategy.engines,
+                { id: "maclaw_hub", name: "MaClaw Hub / RapidSearch", enabled: false, priority: 5, transport: "api", needs_api_key: false, has_api_key: false, base_url: "https://hub.maclaw.top/searchproxy/search" },
+            ],
+        });
+        render(<WebSearchConfigPanel lang="en" />);
+        const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
+        expect((toggle as HTMLInputElement).checked).toBe(false);
+        expect(screen.getByText("Uses signed-in MaClaw Hub account")).toBeTruthy();
+        expect(screen.queryByLabelText("MaClaw Hub / RapidSearch API Key")).toBeNull();
+    });
+
     it("blocks enabling an API engine until a key is entered", async () => {
         render(<WebSearchConfigPanel lang="en" />);
         await screen.findByRole("checkbox", { name: "Enable Brave Search API" });

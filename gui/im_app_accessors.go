@@ -23,15 +23,22 @@ import (
 // callback; an absent or invalid callback degrades to the safe mainland
 // defaults instead of dereferencing the desktop App.
 func (h *IMMessageHandler) getWebSearchStrategy() corelib.WebSearchStrategy {
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
 	if h != nil && h.standaloneConfig != nil && h.standaloneConfig.WebSearchStrategyFunc != nil {
-		if strategy, err := websearch.NormalizeWebSearchStrategy(h.standaloneConfig.WebSearchStrategyFunc()); err == nil {
-			return strategy
+		if normalized, err := websearch.NormalizeWebSearchStrategy(h.standaloneConfig.WebSearchStrategyFunc()); err == nil {
+			strategy = normalized
+		} else if h.app != nil {
+			strategy = h.app.effectiveWebSearchStrategy()
 		}
+	} else if h != nil && h.app != nil {
+		strategy = h.app.effectiveWebSearchStrategy()
 	}
 	if h != nil && h.app != nil {
-		return h.app.effectiveWebSearchStrategy()
+		if cfg, err := h.app.LoadConfig(); err == nil {
+			return websearch.ApplyConfigHubAuth(strategy, cfg)
+		}
 	}
-	return websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	return strategy
 }
 
 // --- Steering Store ---

@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	defaultBraveSearchURL    = "https://api.search.brave.com/res/v1/web/search"
-	defaultSerperSearchURL   = "https://google.serper.dev/search"
-	defaultTinyFishSearchURL = "https://api.search.tinyfish.ai"
-	defaultTinyFishFetchURL  = "https://api.fetch.tinyfish.ai"
-	defaultTavilySearchURL   = "https://api.tavily.com/search"
+	defaultBraveSearchURL     = "https://api.search.brave.com/res/v1/web/search"
+	defaultSerperSearchURL    = "https://google.serper.dev/search"
+	defaultTinyFishSearchURL  = "https://api.search.tinyfish.ai"
+	defaultTinyFishFetchURL   = "https://api.fetch.tinyfish.ai"
+	defaultTavilySearchURL    = "https://api.tavily.com/search"
+	defaultMaclawHubSearchURL = "https://hub.maclaw.top/searchproxy/search"
 )
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
@@ -162,6 +163,14 @@ func runProviderSearchWithTimeout(parent context.Context, query string, maxResul
 			return searchDirectFallbackChain(parent, query, maxResults, "")
 		}
 		return searchTavily(providerCtx, provider, query, maxResults)
+	case WebSearchEngineMaclawHub:
+		if provider.Key == "" {
+			if strict {
+				return nil, fmt.Errorf("MaClaw Hub search requires a signed-in hub account")
+			}
+			return searchDirectFallbackChain(parent, query, maxResults, "")
+		}
+		return searchMaclawHub(providerCtx, provider, query, maxResults)
 	case "duckduckgo":
 		return searchDuckDuckGo(providerCtx, provider, query, maxResults)
 	default:
@@ -382,6 +391,8 @@ func providerFailureDomain(provider corelib.WebSearchProvider) string {
 		return "tinyfish"
 	case "tavily":
 		return "tavily"
+	case WebSearchEngineMaclawHub:
+		return WebSearchEngineMaclawHub
 	default:
 		return ""
 	}
@@ -644,6 +655,89 @@ func searchTavily(ctx context.Context, provider corelib.WebSearchProvider, query
 		}
 	}
 	return results, nil
+}
+
+func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, query string, maxResults int) ([]SearchResult, error) {
+	token := strings.TrimSpace(provider.Key)
+	if token == "" {
+		return nil, fmt.Errorf("MaClaw Hub search requires a signed-in hub account")
+	}
+	baseURL := provider.BaseURL
+	if baseURL == "" {
+		baseURL = defaultMaclawHubSearchURL
+	}
+	payload, err := json.Marshal(map[string]interface{}{
+		"query":    query,
+		"engine":   "auto",
+		"limit":    maxResults,
+		"content":  true,
+		"region":   "cn",
+		"fallback": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", pickUserAgent())
+
+	resp, err := maclawHubHTTPClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("MaClaw Hub search returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var payloadResp struct {
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Snippet string `json:"snippet"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payloadResp); err != nil {
+		return nil, fmt.Errorf("MaClaw Hub search: failed to parse response: %w", err)
+	}
+
+	results := make([]SearchResult, 0, len(payloadResp.Results))
+	for _, item := range payloadResp.Results {
+		if item.URL == "" {
+			continue
+		}
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = item.URL
+		}
+		snippet := strings.TrimSpace(item.Snippet)
+		if snippet == "" {
+			snippet = strings.TrimSpace(item.Content)
+		}
+		if len([]rune(snippet)) > 300 {
+			snippet = string([]rune(snippet)[:300]) + "…"
+		}
+		results = append(results, SearchResult{Title: title, URL: item.URL, Snippet: snippet})
+		if len(results) >= maxResults {
+			break
+		}
+	}
+	return results, nil
+}
+
+func maclawHubHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:       strategyMaclawHubTimeout,
+		Transport:     httpClient().Transport,
+		CheckRedirect: sharedCheckRedirect,
+	}
 }
 
 // FetchWithProvider performs a provider-aware fetch. When the provider has
