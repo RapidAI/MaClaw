@@ -327,7 +327,10 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 	engine := resolveWebSearchEngineForTest(current, req.Engine, req.UseSavedKey)
 	engine.Enabled = true
 	engine.Priority = 1
-	if engine.ID == websearch.WebSearchEngineMaclawHub && strings.TrimSpace(engine.APIKey) == "" {
+	if engine.ID == websearch.WebSearchEngineMaclawHub {
+		// Hub search must use the GUI-registered token, never a request-supplied
+		// or persisted engine key. The settings UI has no RapidSearch API-key field.
+		engine.APIKey = ""
 		if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
 			engine.APIKey = websearch.HubAuthTokenFromConfig(cfg)
 		}
@@ -337,7 +340,7 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 	// RapidSearch often needs 10-20s and is given a 180s client budget.
 	testTimeout := 30 * time.Second
 	if engine.ID == websearch.WebSearchEngineMaclawHub {
-		testTimeout = 180 * time.Second
+		testTimeout = websearch.WebSearchMaclawHubTimeout
 	} else if engine.Transport == corelib.WebSearchTransportBrowser && req.HumanAssistEnabled {
 		testTimeout = 2 * time.Minute
 	} else if engine.Transport == corelib.WebSearchTransportBrowser {

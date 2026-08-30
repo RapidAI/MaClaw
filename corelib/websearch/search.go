@@ -662,9 +662,9 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 	if token == "" {
 		return nil, fmt.Errorf("MaClaw Hub search requires a signed-in hub account")
 	}
-	baseURL := provider.BaseURL
-	if baseURL == "" {
-		baseURL = defaultMaclawHubSearchURL
+	searchURL, err := maclawHubSearchURL(provider.BaseURL)
+	if err != nil {
+		return nil, err
 	}
 	payload, err := json.Marshal(map[string]interface{}{
 		"query":    query,
@@ -677,7 +677,7 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, searchURL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -692,8 +692,8 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("MaClaw Hub search returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("MaClaw Hub search returned HTTP %d", resp.StatusCode)
 	}
 
 	var payloadResp struct {
@@ -705,17 +705,18 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 		} `json:"results"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payloadResp); err != nil {
-		return nil, fmt.Errorf("MaClaw Hub search: failed to parse response: %w", err)
+		return nil, fmt.Errorf("MaClaw Hub search: failed to parse response")
 	}
 
 	results := make([]SearchResult, 0, len(payloadResp.Results))
 	for _, item := range payloadResp.Results {
-		if item.URL == "" {
+		href := normalizeSearchResultURL(item.URL)
+		if href == "" {
 			continue
 		}
 		title := strings.TrimSpace(item.Title)
 		if title == "" {
-			title = item.URL
+			title = href
 		}
 		snippet := strings.TrimSpace(item.Snippet)
 		if snippet == "" {
@@ -724,12 +725,28 @@ func searchMaclawHub(ctx context.Context, provider corelib.WebSearchProvider, qu
 		if len([]rune(snippet)) > 300 {
 			snippet = string([]rune(snippet)[:300]) + "…"
 		}
-		results = append(results, SearchResult{Title: title, URL: item.URL, Snippet: snippet})
+		results = append(results, SearchResult{Title: title, URL: href, Snippet: snippet})
 		if len(results) >= maxResults {
 			break
 		}
 	}
 	return results, nil
+}
+
+func maclawHubSearchURL(baseURL string) (string, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return defaultMaclawHubSearchURL, nil
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid search base URL")
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if path == "/searchproxy" || strings.HasSuffix(path, "/searchproxy") {
+		u.Path = path + "/search"
+	}
+	return u.String(), nil
 }
 
 func maclawHubHTTPClient() *http.Client {

@@ -185,6 +185,27 @@ describe("WebSearchConfigPanel", () => {
         expect(screen.getByText("ListenAndServe starts an HTTP server")).toBeTruthy();
     });
 
+    it("shows a RapidSearch preview when only a URL is returned", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            engines: [
+                ...strategy.engines,
+                { id: "maclaw_hub", name: "MaClaw Hub / RapidSearch", enabled: false, priority: 5, transport: "api", needs_api_key: false, has_api_key: false },
+            ],
+        });
+        testMock.mockResolvedValueOnce({
+            result_count: 1,
+            duration_ms: 900,
+            preview_title: "",
+            preview_url: "https://example.com/only-url",
+            preview_snippet: "",
+        });
+        render(<WebSearchConfigPanel lang="en" />);
+        const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
+        fireEvent.click(toggle.closest("li")!.querySelector(".web-search-config__test")!);
+        expect(await screen.findByText("https://example.com/only-url")).toBeTruthy();
+    });
+
     it("shows MaClaw Hub RapidSearch unchecked without an API-key field", async () => {
         getMock.mockResolvedValue({
             ...strategy,

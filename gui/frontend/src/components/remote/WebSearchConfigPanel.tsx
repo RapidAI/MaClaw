@@ -563,7 +563,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                                 ? t("Testing… RapidSearch can take up to a few minutes.", "正在测试… RapidSearch 可能需要一两分钟。", "正在測試… RapidSearch 可能需要一兩分鐘。")
                                                 : t("Testing…", "正在测试…")
                                             : test.message}
-                                        {test.state === "success" && test.preview?.title && (
+                                        {test.state === "success" && (test.preview?.title || test.preview?.url) && (
                                             <div className="web-search-config__test-preview">
                                                 <strong>{test.preview.title}</strong>
                                                 {test.preview.url && <span>{test.preview.url}</span>}

@@ -699,6 +699,48 @@ func TestTestWebSearchEngineUsesRegisteredHubTokenForMaclawHub(t *testing.T) {
 	}
 }
 
+func TestTestWebSearchEngineIgnoresRequestAPIKeyForMaclawHub(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Hub","url":"https://example.com/hub","snippet":"ok"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			strategy.Engines[i].BaseURL = server.URL
+			strategy.Engines[i].APIKey = "persisted-should-not-be-used"
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: strategy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{
+			ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI,
+			APIKey: "attacker-token",
+		},
+		UseSavedKey: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer viewer-token" {
+		t.Fatalf("Authorization = %q, want registered hub token", gotAuth)
+	}
+}
+
 func TestIMGetWebSearchStrategyAttachesHubAuthAtRuntime(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

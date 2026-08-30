@@ -3,6 +3,7 @@ package websearch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -226,6 +227,49 @@ func TestSearchMaclawHubUnauthorized(t *testing.T) {
 	}
 	if classifySearchError(err) != "invalid_key" {
 		t.Fatalf("classify = %q", classifySearchError(err))
+	}
+	if strings.Contains(err.Error(), "missing bearer token") {
+		t.Fatalf("provider body leaked: %v", err)
+	}
+}
+
+func TestSearchMaclawHubSkipsInvalidResultURLs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Bad","url":"javascript:alert(1)"},{"title":"Good","url":"https://example.com/ok","snippet":"safe"}]}`))
+	}))
+	defer server.Close()
+
+	results, err := searchMaclawHub(context.Background(), corelib.WebSearchProvider{
+		Type: WebSearchEngineMaclawHub, Key: "hub-token", BaseURL: server.URL,
+	}, "golang", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].URL != "https://example.com/ok" {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func TestMaclawHubSearchURLUsesCanonicalSearchPath(t *testing.T) {
+	got, err := maclawHubSearchURL("https://hub.maclaw.top/searchproxy")
+	if err != nil || got != defaultMaclawHubSearchURL {
+		t.Fatalf("canonical base = %q err = %v", got, err)
+	}
+	got, err = maclawHubSearchURL("https://hub.maclaw.top/searchproxy/search")
+	if err != nil || got != defaultMaclawHubSearchURL {
+		t.Fatalf("search path = %q err = %v", got, err)
+	}
+	got, err = maclawHubSearchURL("http://127.0.0.1:9")
+	if err != nil || got != "http://127.0.0.1:9" {
+		t.Fatalf("test endpoint rewritten: %q err = %v", got, err)
+	}
+}
+
+func TestSafeSearchErrorDetailForMissingHubLogin(t *testing.T) {
+	err := fmt.Errorf("MaClaw Hub search requires a signed-in hub account")
+	if got := SafeSearchErrorDetail(err); got != "sign in to MaClaw Hub" {
+		t.Fatalf("SafeSearchErrorDetail() = %q", got)
 	}
 }
 

@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	strategySearchTimeout    = 30 * time.Second
-	strategyBrowserTimeout   = 6 * time.Second
-	strategyMaclawHubTimeout = 180 * time.Second
-	WebSearchEngineMaclawHub = "maclaw_hub"
+	strategySearchTimeout     = 30 * time.Second
+	strategyBrowserTimeout    = 6 * time.Second
+	WebSearchMaclawHubTimeout = 180 * time.Second
+	WebSearchEngineMaclawHub  = "maclaw_hub"
+	strategyMaclawHubTimeout  = WebSearchMaclawHubTimeout
 )
 
 var (
@@ -467,15 +468,7 @@ func ProbeWebSearchEngineCtx(parent context.Context, query string, maxResults in
 		return SearchResponse{}, err
 	}
 
-	timeout := strategyProbeEngineTimeout
-	if engine.ID == WebSearchEngineMaclawHub {
-		timeout = strategyMaclawHubTimeout
-	} else if engine.Transport == corelib.WebSearchTransportBrowser {
-		timeout = strategyProbeBrowserTimeout
-		if humanAssist {
-			timeout = 100 * time.Second
-		}
-	}
+	timeout := strategyEngineAttemptTimeout(engine, humanAssist, true)
 	results, attemptErr, elapsed, retryCount := searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, timeout)
 	validResults := mergeSearchResults(nil, results, maxResults)
 	attempt := SearchAttempt{
@@ -516,17 +509,27 @@ func queryFingerprint(query string) string {
 	return fmt.Sprintf("%x", h.Sum(nil)[:8])
 }
 
-func searchStrategyEngine(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool) ([]SearchResult, error, time.Duration, int) {
-	timeout := strategyEngineTimeout
+func strategyEngineAttemptTimeout(engine corelib.WebSearchEngineConfig, humanAssist, probe bool) time.Duration {
 	if engine.ID == WebSearchEngineMaclawHub {
-		timeout = strategyMaclawHubTimeout
-	} else if engine.Transport == corelib.WebSearchTransportBrowser {
-		timeout = strategyBrowserTimeout
-		if humanAssist {
-			timeout = 100 * time.Second
-		}
+		return strategyMaclawHubTimeout
 	}
-	return searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, timeout)
+	if engine.Transport == corelib.WebSearchTransportBrowser {
+		if humanAssist {
+			return 100 * time.Second
+		}
+		if probe {
+			return strategyProbeBrowserTimeout
+		}
+		return strategyBrowserTimeout
+	}
+	if probe {
+		return strategyProbeEngineTimeout
+	}
+	return strategyEngineTimeout
+}
+
+func searchStrategyEngine(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool) ([]SearchResult, error, time.Duration, int) {
+	return searchStrategyEngineWithRetry(parent, query, maxResults, engine, humanAssist, strategyEngineAttemptTimeout(engine, humanAssist, false))
 }
 
 func searchStrategyEngineWithRetry(parent context.Context, query string, maxResults int, engine corelib.WebSearchEngineConfig, humanAssist bool, timeout time.Duration) ([]SearchResult, error, time.Duration, int) {
@@ -678,6 +681,12 @@ func classifySearchError(err error) string {
 // response bodies. Those bodies can echo requests, credentials, or private
 // gateway diagnostics and are unsafe for logs, tool output, and settings UI.
 func SafeSearchErrorDetail(err error) string {
+	if err != nil {
+		text := strings.ToLower(err.Error())
+		if strings.Contains(text, "signed-in hub") || strings.Contains(text, "hub account") {
+			return "sign in to MaClaw Hub"
+		}
+	}
 	switch classifySearchError(err) {
 	case "timeout":
 		return "request timed out"
