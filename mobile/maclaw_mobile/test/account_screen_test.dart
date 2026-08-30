@@ -271,6 +271,21 @@ class _FakeApiClient extends ApiClient {
   Future<MobileDocumentQuota> getDocumentQuota() async {
     return const MobileDocumentQuota();
   }
+
+  @override
+  Future<void> registerPushDevice({
+    required String platform,
+    required String token,
+    String deviceId = '',
+    String path = '/api/mobile/push/devices',
+  }) async {}
+
+  @override
+  Future<MobilePushPendingList> listPushPending({
+    String path = '/api/mobile/push/pending',
+  }) async {
+    return const MobilePushPendingList();
+  }
 }
 
 void main() {
@@ -497,7 +512,6 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     await _tapActionTileButton(tester, Icons.notifications_active_outlined);
-    await tester.pump();
 
     expect(notifications.requested, 1);
     expect(
@@ -523,7 +537,6 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     await _tapActionTileButton(tester, Icons.notifications_active_outlined);
-    await tester.pump();
 
     expect(notifications.requested, 1);
     expect(
@@ -727,7 +740,26 @@ Future<void> _pumpAccount(
         if (notifications != null)
           mobileNotificationServiceProvider.overrideWithValue(notifications),
         if (vault != null) secureVaultProvider.overrideWithValue(vault),
-        if (apiClient != null) apiClientProvider.overrideWithValue(apiClient),
+        apiClientProvider.overrideWithValue(
+          apiClient ??
+              _FakeApiClient(
+                const LlmServiceStatus(
+                  active: true,
+                  skipLlmConfig: true,
+                  authMode: 'grant_required',
+                  defaultModel: 'maclaw-chat',
+                  availableModels: ['maclaw-chat'],
+                  serviceGroupNames: [],
+                  inactiveReasons: [],
+                  nearestExpiresAt: '',
+                  creditsTotal: 0,
+                  creditsUsed: 0,
+                  creditsRemaining: 0,
+                  creditsAvailable: 0,
+                  tokensPerCredit: 1000,
+                ),
+              ),
+        ),
         mobileNetworkStatusProvider.overrideWith(
           (ref) => Stream.value(
             MobileNetworkSnapshot(
@@ -748,15 +780,23 @@ Future<void> _tapActionTileButton(
   WidgetTester tester,
   IconData icon,
 ) async {
+  final iconFinder = find.byIcon(icon);
+  await tester.scrollUntilVisible(
+    iconFinder,
+    320,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pump();
   final card = find.ancestor(
-    of: find.byIcon(icon),
+    of: iconFinder,
     matching: find.byType(Card),
   );
   final button = find.descendant(
     of: card,
-    matching: find.byType(FilledButton),
+    matching: find.byWidgetPredicate((widget) => widget is ButtonStyleButton),
   );
   await tester.ensureVisible(button);
   await pumpQuietly(tester);
   await tester.tap(button);
+  await pumpQuietly(tester);
 }

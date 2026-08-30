@@ -137,6 +137,11 @@ class _FakeBackendSSHApiClient extends ApiClient {
   }
 
   @override
+  Future<List<MobileSSHVaultStatus>> listSSHVault() async {
+    return const [];
+  }
+
+  @override
   Future<List<MobileBackendSSHSession>> listBackendSSHSessions() async {
     return backendSessions;
   }
