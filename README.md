@@ -384,7 +384,7 @@ MaClaw 不限于一种使用方式，你可以在多个入口与它协作：
 
 * Windows：`MaClaw.exe`
 * macOS：`MaClaw.app`
-* Linux：`MaClaw.AppImage`
+* Linux：`MaClaw-x86_64-u2404.AppImage`（Ubuntu 24.04 / WebKit 4.1；22.04 用 `*-u2204.AppImage`）。CI 产物已捆绑 WebKit，远程主机不必安装 `libwebkit2gtk`。详见 [build/linux/README.md](build/linux/README.md)。
 * 终端：`maclaw-tui`
 
 首次启动自动检测运行环境，缺少的组件会自动安装。
