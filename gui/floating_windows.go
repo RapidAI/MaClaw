@@ -908,22 +908,6 @@ func renderFloatingBase(sz int, petEnabled bool, petSkin, petVariant, state stri
 	return renderCircularLogo(sz)
 }
 
-// tryLoadPackFrame returns a scaled frame from the selected pack. The legacy
-// variant argument remains for call compatibility, but no longer selects a
-// different rendering path.
-func tryLoadPackFrame(skin, variant, state string, size int, cache *petpack.FrameCache) *image.NRGBA {
-	reg := petpack.EnsureGlobal()
-	if reg == nil {
-		return nil
-	}
-	st := petpack.NormalizeState(state)
-	frame, _, err := reg.ResolveAndLoad(skin, petpack.VariantDefault, st, size, cache)
-	if err != nil || frame == nil {
-		return nil
-	}
-	return frame
-}
-
 // renderCircularLogo creates a circular-clipped logo with a soft glow border.
 // The output image is `sz x sz` with transparent background.
 func renderCircularLogo(sz int) (*image.NRGBA, error) {
