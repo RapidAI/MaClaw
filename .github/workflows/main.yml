@@ -279,6 +279,11 @@ jobs:
 
           Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp
 
+          # GUI-subsystem binaries still return an exit code for --version.
+          # This proves the CGO WebView2-linked amd64 artifact actually starts.
+          $ver = Start-Process -FilePath "dist/${outName}_amd64.exe" -ArgumentList "--version" -Wait -PassThru -NoNewWindow
+          if ($ver.ExitCode -ne 0) { throw "Windows GUI --version smoke failed: $($ver.ExitCode)" }
+
       - name: Build TUI, CLI & VS Code ACP bridge
         shell: pwsh
         run: |
@@ -488,21 +493,47 @@ jobs:
           $outName = $env:BRAND_APP_NAME
           $outPrefix = $env:BRAND_APP_NAME.ToLower()
           Copy-Item "dist/${outName}_amd64.exe" "dist/${outName}.exe"
+          # Evergreen WebView2 bootstrapper so a remote Windows host without
+          # Edge WebView2 can still launch the portable GUI.
+          $wv2 = "dist/MicrosoftEdgeWebview2Setup.exe"
+          try {
+            Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $wv2 -UseBasicParsing
+          } catch {
+            Write-Warning "WebView2 bootstrapper download failed: $_"
+          }
+          @"
+          Portable $($outName) for Windows.
+          The GUI needs the Microsoft Edge WebView2 Runtime (usually already
+          present on Windows 10/11). If the window fails to open, run
+          MicrosoftEdgeWebview2Setup.exe from this zip, or install
+          https://go.microsoft.com/fwlink/p/?LinkId=2124703
+          "@ | Set-Content -Path "dist/README-WINDOWS.txt" -Encoding ascii
+          $zipItems = @("dist/${outName}.exe", "dist/README-WINDOWS.txt")
+          if (Test-Path $wv2) { $zipItems += $wv2 }
           if ($env:BRAND_TAG -ne "") {
             Copy-Item "dist/${outPrefix}-tui_amd64.exe" "dist/${outPrefix}-tui.exe"
             Copy-Item "dist/${outPrefix}-tool_amd64.exe" "dist/${outPrefix}-tool.exe"
             Copy-Item "dist/${outPrefix}-cli_amd64.exe" "dist/${outPrefix}-cli.exe"
             Copy-Item "dist/maclaw-acp-bridge_amd64.exe" "dist/maclaw-acp-bridge.exe"
-            Compress-Archive -Path "dist/${outName}.exe","dist/${outPrefix}-tui.exe","dist/${outPrefix}-tool.exe","dist/${outPrefix}-cli.exe","dist/maclaw-acp-bridge.exe" `
-              -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
+            $zipItems += @(
+              "dist/${outPrefix}-tui.exe",
+              "dist/${outPrefix}-tool.exe",
+              "dist/${outPrefix}-cli.exe",
+              "dist/maclaw-acp-bridge.exe"
+            )
           } else {
             Copy-Item "dist/maclaw-tui_amd64.exe" "dist/maclaw-tui.exe"
             Copy-Item "dist/maclaw-tool_amd64.exe" "dist/maclaw-tool.exe"
             Copy-Item "dist/maclaw-cli_amd64.exe" "dist/maclaw-cli.exe"
             Copy-Item "dist/maclaw-acp-bridge_amd64.exe" "dist/maclaw-acp-bridge.exe"
-            Compress-Archive -Path "dist/${outName}.exe","dist/maclaw-tui.exe","dist/maclaw-tool.exe","dist/maclaw-cli.exe","dist/maclaw-acp-bridge.exe" `
-              -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
+            $zipItems += @(
+              "dist/maclaw-tui.exe",
+              "dist/maclaw-tool.exe",
+              "dist/maclaw-cli.exe",
+              "dist/maclaw-acp-bridge.exe"
+            )
           }
+          Compress-Archive -Path $zipItems -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v5
@@ -972,6 +1003,8 @@ jobs:
             GOOS=darwin GOARCH=arm64 \
             go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
           node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_arm64"
+          # Native arch smoke: the binary must load and print its version.
+          "build/bin/${OUT_NAME}_arm64" --version
 
       - name: Build TUI, CLI & VS Code ACP bridge (darwin)
         run: |
@@ -1390,6 +1423,11 @@ jobs:
   #   - Ubuntu 26.04 (webkit2gtk-4.1, same binary as 24.04)
   # When ubuntu-26.04 runner becomes available, add it to the
   # os_version matrix to build natively on that platform.
+  #
+  # AppImages bundle WebKit/GTK (see build/linux/package_appimage.sh) so a
+  # remote host — especially a typical Ubuntu 24.04 hub/VPS — can run the
+  # matching *-u2404.AppImage without installing the runner's libwebkit2gtk.
+  # Each job smokes --version and an xvfb window start after packaging.
   # ============================================================
   build-linux:
     strategy:
@@ -1469,6 +1507,8 @@ jobs:
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
+          # patchelf: RPATH on the AppDir copy. xvfb + file: smoke the artifact.
+          sudo apt-get install -y patchelf xvfb file desktop-file-utils
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         run: |
@@ -1556,76 +1596,32 @@ jobs:
 
       - name: Create AppImage (amd64)
         run: |
-          OUT_NAME="${BRAND_APP_NAME}"
-          OUT_LOWER=$(echo "$OUT_NAME" | tr '[:upper:]' '[:lower:]')
-          # AppImage name includes Ubuntu label so both versions are released
-          APPIMAGE_NAME="${OUT_NAME}-x86_64-${UBUNTU_LABEL}.AppImage"
-          # Prepare AppDir
-          APP_DIR="build/linux/AppDir_amd64"
-          rm -rf "$APP_DIR"
-          mkdir -p "$APP_DIR/usr/bin"
-          mkdir -p "$APP_DIR/usr/share/icons/hicolor/512x512/apps"
-          cp "build/bin/${OUT_NAME}_amd64_linux" "$APP_DIR/usr/bin/${OUT_LOWER}"
-          cp "${BRAND_ICON_PNG}" "$APP_DIR/${OUT_LOWER}.png"
-          cp "${BRAND_ICON_PNG}" "$APP_DIR/.DirIcon"
-          cp "${BRAND_ICON_PNG}" "$APP_DIR/usr/share/icons/hicolor/512x512/apps/${OUT_LOWER}.png"
+          # Bundle WebKit/GTK into the AppImage so a remote host can run it.
+          # Artifact names stay MaClaw|TigerClaw|MetaStaff-x86_64-u2204|u2404.AppImage.
+          mkdir -p dist
+          cp "build/bin/${BRAND_APP_NAME}_amd64_linux" \
+            "dist/${BRAND_APP_NAME}_amd64_linux_${UBUNTU_LABEL}"
+          build/linux/package_appimage.sh \
+            --binary "build/bin/${BRAND_APP_NAME}_amd64_linux" \
+            --app-name "${BRAND_APP_NAME}" \
+            --display-name "${BRAND_DISPLAY_NAME}" \
+            --icon "${BRAND_ICON_PNG}" \
+            --arch x86_64 \
+            --ubuntu-ver "${UBUNTU_VER}" \
+            --ubuntu-label "${UBUNTU_LABEL}" \
+            --webkit-api "${WEBKIT_API}" \
+            --webkit-soname "${WEBKIT_SONAME}" \
+            --webkit-pkg "${WEBKIT_PKG}" \
+            --appdir "build/linux/AppDir_amd64" \
+            --output "dist/${BRAND_APP_NAME}-x86_64-${UBUNTU_LABEL}.AppImage"
 
-          # Desktop file (no leading spaces allowed)
-          cat > "$APP_DIR/${OUT_LOWER}.desktop" << DEOF
-          [Desktop Entry]
-          Name=${BRAND_DISPLAY_NAME}
-          Exec=${OUT_LOWER}
-          Icon=${OUT_LOWER}
-          Type=Application
-          Categories=Development;
-          MimeType=x-scheme-handler/maclaw;
-          DEOF
-          sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
-
-          # AppRun (shebang must be at column 0)
-          cat > "$APP_DIR/AppRun" << REOF
-          #!/bin/bash
-          HERE="\$(dirname "\$(readlink -f "\${0}")")"
-          export PATH="\${HERE}/usr/bin:\${PATH}"
-
-          # Check for WebKit2GTK runtime dependency
-          # This AppImage was built against webkit2gtk-${WEBKIT_API}
-          if ! ldconfig -p 2>/dev/null | grep -q "${WEBKIT_SONAME}"; then
-            echo "=========================================="
-            echo " Missing dependency: ${WEBKIT_PKG}"
-            echo "=========================================="
-            echo ""
-            echo "This application requires WebKit2GTK ${WEBKIT_API} to run."
-            echo "Please install it with your package manager:"
-            echo ""
-            echo "  sudo apt install ${WEBKIT_PKG}"
-            echo ""
-            echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
-            echo "For other Ubuntu versions, download the matching AppImage:"
-            echo "  Ubuntu 22.04 閳?*-u2204.AppImage (webkit2gtk-4.0)"
-            echo "  Ubuntu 24.04/26.04 閳?*-u2404.AppImage (webkit2gtk-4.1)"
-            echo ""
-
-            if command -v zenity &>/dev/null; then
-              zenity --error --title="Missing Dependency" \
-                --text="WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." \
-                --width=400 2>/dev/null
-            elif command -v kdialog &>/dev/null; then
-              kdialog --error "WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." 2>/dev/null
-            fi
-            exit 1
-          fi
-
-          exec ${OUT_LOWER} "\$@"
-          REOF
-          sed -i 's/^[[:space:]]*//' "$APP_DIR/AppRun"
-          chmod +x "$APP_DIR/AppRun"
-
-          # Download appimagetool
-          wget -q -O appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-          chmod +x appimagetool
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APP_DIR" \
-            "dist/${APPIMAGE_NAME}"
+      - name: Smoke-test Linux GUI AppImage (amd64)
+        env:
+          MACLAW_GUI_SMOKE_REQUIRE_XVFB: "1"
+        run: |
+          build/linux/smoke_gui.sh \
+            --appimage "dist/${BRAND_APP_NAME}-x86_64-${UBUNTU_LABEL}.AppImage" \
+            --binary "build/bin/${BRAND_APP_NAME}_amd64_linux"
 
       - name: Upload Linux GUI artifacts
         uses: actions/upload-artifact@v5
@@ -1633,6 +1629,8 @@ jobs:
           name: linux-gui-${{ matrix.os_version }}-${{ matrix.brand || 'default' }}
           path: |
             dist/${{ env.BRAND_APP_NAME }}-x86_64-${{ env.UBUNTU_LABEL }}.AppImage
+            dist/${{ env.BRAND_APP_NAME }}_amd64_linux_${{ env.UBUNTU_LABEL }}
+            build/linux/README.md
 
       - name: Upload Linux TUI & tool artifacts (newest runner only)
         if: env.BUILD_PURE_GO == 'true'
@@ -1668,6 +1666,7 @@ jobs:
   # ============================================================
   # Linux ARM64: GUI (arm64, CGO native) + AppImage
   # Build on multiple Ubuntu versions for webkit2gtk compatibility.
+  # Same bundling + xvfb smoke as build-linux (see build/linux/README.md).
   # ============================================================
   build-linux-arm64:
     strategy:
@@ -1745,6 +1744,8 @@ jobs:
           fi
           if [ -n "$BRAND_TAG" ]; then TAGS="${TAGS},${BRAND_TAG}"; fi
           echo "WEBKIT_TAGS=${TAGS}" >> $GITHUB_ENV
+          # patchelf: RPATH on the AppDir copy. xvfb + file: smoke the artifact.
+          sudo apt-get install -y patchelf xvfb file desktop-file-utils
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         run: |
@@ -1791,70 +1792,30 @@ jobs:
 
       - name: Create AppImage (arm64)
         run: |
-          OUT_NAME="${BRAND_APP_NAME}"
-          OUT_LOWER=$(echo "$OUT_NAME" | tr '[:upper:]' '[:lower:]')
-          APPIMAGE_NAME="${OUT_NAME}-aarch64-${UBUNTU_LABEL}.AppImage"
-          APP_DIR="build/linux/AppDir_arm64"
-          rm -rf "$APP_DIR"
-          mkdir -p "$APP_DIR/usr/bin"
-          mkdir -p "$APP_DIR/usr/share/icons/hicolor/512x512/apps"
-          cp "build/bin/${OUT_NAME}_arm64_linux" "$APP_DIR/usr/bin/${OUT_LOWER}"
-          cp "${BRAND_ICON_PNG}" "$APP_DIR/${OUT_LOWER}.png"
-          cp "${BRAND_ICON_PNG}" "$APP_DIR/.DirIcon"
-          cp "${BRAND_ICON_PNG}" "$APP_DIR/usr/share/icons/hicolor/512x512/apps/${OUT_LOWER}.png"
+          mkdir -p dist
+          cp "build/bin/${BRAND_APP_NAME}_arm64_linux" \
+            "dist/${BRAND_APP_NAME}_arm64_linux_${UBUNTU_LABEL}"
+          build/linux/package_appimage.sh \
+            --binary "build/bin/${BRAND_APP_NAME}_arm64_linux" \
+            --app-name "${BRAND_APP_NAME}" \
+            --display-name "${BRAND_DISPLAY_NAME}" \
+            --icon "${BRAND_ICON_PNG}" \
+            --arch aarch64 \
+            --ubuntu-ver "${UBUNTU_VER}" \
+            --ubuntu-label "${UBUNTU_LABEL}" \
+            --webkit-api "${WEBKIT_API}" \
+            --webkit-soname "${WEBKIT_SONAME}" \
+            --webkit-pkg "${WEBKIT_PKG}" \
+            --appdir "build/linux/AppDir_arm64" \
+            --output "dist/${BRAND_APP_NAME}-aarch64-${UBUNTU_LABEL}.AppImage"
 
-          cat > "$APP_DIR/${OUT_LOWER}.desktop" << DEOF
-          [Desktop Entry]
-          Name=${BRAND_DISPLAY_NAME}
-          Exec=${OUT_LOWER}
-          Icon=${OUT_LOWER}
-          Type=Application
-          Categories=Development;
-          MimeType=x-scheme-handler/maclaw;
-          DEOF
-          sed -i 's/^[[:space:]]*//' "$APP_DIR/${OUT_LOWER}.desktop"
-
-          cat > "$APP_DIR/AppRun" << REOF
-          #!/bin/bash
-          HERE="\$(dirname "\$(readlink -f "\${0}")")"
-          export PATH="\${HERE}/usr/bin:\${PATH}"
-
-          # This AppImage was built against webkit2gtk-${WEBKIT_API}
-          if ! ldconfig -p 2>/dev/null | grep -q "${WEBKIT_SONAME}"; then
-            echo "=========================================="
-            echo " Missing dependency: ${WEBKIT_PKG}"
-            echo "=========================================="
-            echo ""
-            echo "This application requires WebKit2GTK ${WEBKIT_API} to run."
-            echo "Please install it with your package manager:"
-            echo ""
-            echo "  sudo apt install ${WEBKIT_PKG}"
-            echo ""
-            echo "Note: This AppImage is built for Ubuntu ${UBUNTU_VER}."
-            echo "For other Ubuntu versions, download the matching AppImage:"
-            echo "  Ubuntu 22.04 閳?*-u2204.AppImage (webkit2gtk-4.0)"
-            echo "  Ubuntu 24.04/26.04 閳?*-u2404.AppImage (webkit2gtk-4.1)"
-            echo ""
-
-            if command -v zenity &>/dev/null; then
-              zenity --error --title="Missing Dependency" \
-                --text="WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." \
-                --width=400 2>/dev/null
-            elif command -v kdialog &>/dev/null; then
-              kdialog --error "WebKit2GTK ${WEBKIT_API} is required but not installed.\n\nsudo apt install ${WEBKIT_PKG}\n\nThis AppImage is for Ubuntu ${UBUNTU_VER}." 2>/dev/null
-            fi
-            exit 1
-          fi
-
-          exec ${OUT_LOWER} "\$@"
-          REOF
-          sed -i 's/^[[:space:]]*//' "$APP_DIR/AppRun"
-          chmod +x "$APP_DIR/AppRun"
-
-          wget -q -O appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage"
-          chmod +x appimagetool
-          ARCH=aarch64 ./appimagetool --appimage-extract-and-run "$APP_DIR" \
-            "dist/${APPIMAGE_NAME}"
+      - name: Smoke-test Linux GUI AppImage (arm64)
+        env:
+          MACLAW_GUI_SMOKE_REQUIRE_XVFB: "1"
+        run: |
+          build/linux/smoke_gui.sh \
+            --appimage "dist/${BRAND_APP_NAME}-aarch64-${UBUNTU_LABEL}.AppImage" \
+            --binary "build/bin/${BRAND_APP_NAME}_arm64_linux"
 
       - name: Upload Linux ARM64 GUI artifacts
         uses: actions/upload-artifact@v5
@@ -1862,6 +1823,8 @@ jobs:
           name: linux-arm64-gui-${{ matrix.os_version }}-${{ matrix.brand || 'default' }}
           path: |
             dist/${{ env.BRAND_APP_NAME }}-aarch64-${{ env.UBUNTU_LABEL }}.AppImage
+            dist/${{ env.BRAND_APP_NAME }}_arm64_linux_${{ env.UBUNTU_LABEL }}
+            build/linux/README.md
 
       - name: Upload Linux ARM64 srvdemo (default brand, newest runner only)
         if: matrix.brand == '' && env.BUILD_SRVDEMO == 'true'

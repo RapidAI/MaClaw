@@ -34,6 +34,9 @@ var version = "dev"
 
 func main() {
 	args := os.Args
+	if handleCLIInfo(args) {
+		return
+	}
 	isTUI := isTUISubcommand(args)
 
 	// --- Log to file: ~/.maclaw/logs/maclaw.log ---

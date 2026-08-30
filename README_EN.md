@@ -329,7 +329,7 @@ Desktop agents can also use `switch_llm_provider`, `set_nickname` (Hub group nic
 
 * Windows: `MaClaw.exe`
 * macOS: `MaClaw.app`
-* Linux: `MaClaw.AppImage`
+* Linux: `MaClaw-x86_64-u2404.AppImage` (Ubuntu 24.04 / WebKit 4.1; use `*-u2204.AppImage` on 22.04). CI AppImages bundle WebKit, so a remote host does not need `libwebkit2gtk`. See [build/linux/README.md](build/linux/README.md).
 * Terminal: `maclaw-tui`
 
 First launch auto-detects the environment and installs missing components.
