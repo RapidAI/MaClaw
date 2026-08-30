@@ -34,6 +34,8 @@ dependencies:
   web_socket_channel: ^3.0.1
   mobile_scanner: ^7.2.0
   flutter_markdown: ^0.7.7+1
+  markdown: ^7.2.2
+  stream_channel: ^2.1.2
 
 dev_dependencies:
   flutter_test:

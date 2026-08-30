@@ -138,7 +138,9 @@ class _FakeBackendSSHApiClient extends ApiClient {
   @override
   Future<MobileBackendSSHSession> createBackendSSHSession({
     required String serverProfileId,
+    String execMode = '',
   }) async {
+    execMode;
     final error = createError;
     if (error != null) throw error;
     createdProfileIds.add(serverProfileId);
@@ -202,7 +204,11 @@ class _FakeBackendSSHApiClient extends ApiClient {
   Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
     required String sessionId,
     required String input,
+    bool raw = false,
+    bool asBinary = false,
   }) async {
+    raw;
+    asBinary;
     inputs.add((sessionId: sessionId, input: input));
     return MobileBackendSSHSessionInputResult(
       sessionId: sessionId,
@@ -336,7 +342,9 @@ class _RecordingNotificationService extends MobileNotificationService {
     required String title,
     required String body,
     String? payload,
+    int? notificationId,
   }) async {
+    notificationId;
     shown.add((title: title, body: body, payload: payload));
   }
 }

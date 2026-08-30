@@ -2187,12 +2187,10 @@ class _AssistantErrorBubble extends ConsumerWidget {
 class _AssistantHistoryCard extends ConsumerWidget {
   final AsyncValue<List<SearchHistoryEntry>> history;
   final ValueChanged<String> onSelect;
-  final bool bare;
 
   const _AssistantHistoryCard({
     required this.history,
     required this.onSelect,
-    this.bare = false,
   });
 
   @override
@@ -2202,7 +2200,6 @@ class _AssistantHistoryCard extends ConsumerWidget {
       error: (error, _) => Text('助手历史加载失败：$error'),
       loading: () => const LinearProgressIndicator(),
     );
-    if (bare) return content;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),

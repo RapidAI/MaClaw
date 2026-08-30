@@ -222,7 +222,7 @@ class _AccountMcpScreenState extends ConsumerState<AccountMcpScreen> {
         );
       }
       final saved = await client.putAgentMcpConfig(cleaned);
-      if (!mounted) return;
+      if (!context.mounted) return;
       final messenger = ScaffoldMessenger.of(context);
       setState(() {
         _servers = List<MobileMcpServer>.from(saved.servers);
