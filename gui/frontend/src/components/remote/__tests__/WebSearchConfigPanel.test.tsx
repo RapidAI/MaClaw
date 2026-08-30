@@ -168,12 +168,15 @@ describe("WebSearchConfigPanel", () => {
         render(<WebSearchConfigPanel lang="en" />);
         const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
         expect((toggle as HTMLInputElement).checked).toBe(false);
+        const query = screen.getByRole("textbox", { name: "MaClaw Hub test query" }) as HTMLInputElement;
+        expect(query.value).toBe("golang http server");
+        fireEvent.change(query, { target: { value: "北京天气" } });
         const row = toggle.closest("li")!;
         fireEvent.click(row.querySelector(".web-search-config__test")!);
 
         await waitFor(() => expect(testMock).toHaveBeenCalledWith(expect.objectContaining({
             engine: expect.objectContaining({ id: "maclaw_hub", enabled: true, transport: "api" }),
-            query: "golang http server",
+            query: "北京天气",
             use_saved_key: false,
         })));
         expect(await screen.findByText("2 results · 1840 ms")).toBeTruthy();
@@ -195,6 +198,7 @@ describe("WebSearchConfigPanel", () => {
         expect((toggle as HTMLInputElement).checked).toBe(false);
         expect(screen.getByText("Uses signed-in MaClaw Hub account")).toBeTruthy();
         expect(screen.queryByLabelText("MaClaw Hub / RapidSearch API Key")).toBeNull();
+        expect(screen.getByRole("textbox", { name: "MaClaw Hub test query" })).toBeTruthy();
     });
 
     it("blocks enabling an API engine until a key is entered", async () => {

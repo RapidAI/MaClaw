@@ -723,6 +723,52 @@ func TestIMGetWebSearchStrategyAttachesHubAuthAtRuntime(t *testing.T) {
 	t.Fatal("MaClaw Hub missing from runtime strategy")
 }
 
+func TestTestWebSearchEngineHonorsExplicitMaclawHubQuery(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		gotQuery = payload.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Weather","url":"https://example.com/weather","snippet":"ok"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			strategy.Engines[i].BaseURL = server.URL
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: strategy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI},
+		Query:  "北京天气",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "北京天气" {
+		t.Fatalf("query = %q, want 北京天气", gotQuery)
+	}
+	if result.PreviewTitle != "Weather" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestWebSearchEngineTestQueryDefaults(t *testing.T) {
 	if got := webSearchEngineTestQuery(websearch.WebSearchEngineMaclawHub, "  北京天气  "); got != "北京天气" {
 		t.Fatalf("explicit query = %q", got)
