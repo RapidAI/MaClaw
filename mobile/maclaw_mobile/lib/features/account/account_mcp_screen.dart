@@ -319,7 +319,7 @@ class _McpServerCard extends StatelessWidget {
             TextFormField(
               initialValue: server.endpointUrl,
               decoration: const InputDecoration(
-                labelText: 'Endpoint URL',
+                labelText: 'MCP 地址',
                 border: OutlineInputBorder(),
               ),
               onChanged: (v) => onChanged(server.copyWith(endpointUrl: v)),

@@ -17,6 +17,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+const (
+	WebSearchMaclawHubTimeout         = 180 * time.Second
+	WebSearchMaclawHubDownloadTimeout = WebSearchMaclawHubTimeout
+	WebSearchEngineMaclawHub          = "maclaw_hub"
+	strategyMaclawHubTimeout          = WebSearchMaclawHubTimeout
+)
+
 var (
 	// strategySearchTimeout is the HTTP/API portion of a runtime search. When a
 	// browser engine or browser fallback is reachable, strategySearchBudget adds

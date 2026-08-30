@@ -18,7 +18,7 @@ bool looksLikeAssistantMarkdown(String text) {
       value.contains('> ');
 }
 
-// Regional indicators sit inside 0x1F300–0x1FAFF (aligned with corelib/textutil).
+// Regional indicators sit inside 0x1F300–0x1FAFF (emoji pictograph block).
 bool _isPictographBase(int r) {
   return (r >= 0x1F300 && r <= 0x1FAFF) ||
       (r >= 0x2600 && r <= 0x27BF) ||

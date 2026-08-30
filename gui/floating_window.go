@@ -2,15 +2,18 @@ package main
 
 // floatingWindow is the platform-specific floating window abstraction.
 // Each supported platform provides its own implementation via build-tag files:
-//   - gui/floating_windows.go  (//go:build windows)
-//   - gui/floating_darwin.go   (//go:build darwin)
-//   - gui/floating_linux.go    (//go:build linux)
+//   - gui/floating_windows.go     (//go:build windows)
+//   - gui/floating_darwin.go      (//go:build darwin && cgo)
+//   - gui/floating_linux.go       (//go:build linux && cgo)
+//   - gui/floating_unsupported.go (//go:build !(windows || (linux && cgo) || (darwin && cgo)))
 //
 // Each platform file also provides the factory function:
 //
 //	func newFloatingWindow(app *App) floatingWindow
 //
 // which constructs the platform-native floating window implementation.
+// The unsupported/no-CGO stub keeps package tests (CGO_ENABLED=0 on Linux CI)
+// compiling without changing GTK/Cocoa pet behavior when CGO is available.
 // Requirements: 9.4
 type floatingWindow interface {
 	// Create initializes and creates the floating window at the given
