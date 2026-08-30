@@ -564,7 +564,7 @@ class _EmployeeChatMessage {
     required this.failed,
     required this.streaming,
     required this.taskId,
-    this.task,
+    required this.task,
   });
 
   const _EmployeeChatMessage.user(String text)
@@ -574,6 +574,7 @@ class _EmployeeChatMessage {
           failed: false,
           streaming: false,
           taskId: '',
+          task: null,
         );
 
   const _EmployeeChatMessage.employee(
