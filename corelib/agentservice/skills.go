@@ -225,7 +225,10 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 	s.skillInstallTxnMu.Lock()
 	defer s.skillInstallTxnMu.Unlock()
 	if s.skillInstallRecoveryBlocked {
-		return fmt.Errorf("pending skill install compensation requires review")
+		// A transient startup failure must be retried under the same transaction
+		// lock; keep the operation fail-closed if recovery still cannot prove
+		// ownership or completion.
+		s.skillInstallRecoveryBlocked = false
 	}
 	if _, pending, err := s.recoverAgentSkillInstallCompensations(); err != nil {
 		s.skillInstallRecoveryBlocked = true
