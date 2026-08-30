@@ -12490,21 +12490,16 @@ func recoverLegacySkillCompensations(skillName string) error {
 	return recoverLegacySkillCompensationsForPrefixes(skillName, nil, "legacy_gui_skill_add", "legacy_gui_skill_delete", "legacy_gui_skill_install")
 }
 
-func (a *App) AddSkill(name, description, skillType, value, toolName string) error {
+func (a *App) AddSkill(name, description, skillType, value, toolName string) (retErr error) {
 	a.installMutex.Lock()
 	defer a.installMutex.Unlock()
 	defer func() {
-		// The compatibility API remains error-only, but retain the latest
-		// classified result so AddSkillDetailed can expose the same state axes.
-		// This result is advisory until the shared SkillCommitter migration is
-		// complete; automatic installation remains disabled.
+		a.recordLegacySkillResult("add", name, legacySkillResultFromError("add", name, retErr))
 	}()
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("skill name required")
 	}
-	err := a.addSkillLocked(name, description, skillType, value, toolName)
-	a.recordLegacySkillResult("add", name, legacySkillResultFromError("add", name, err))
-	return err
+	return a.addSkillLocked(name, description, skillType, value, toolName)
 }
 
 // addSkillLocked is the legacy metadata registry transaction. Callers that
@@ -13641,9 +13636,12 @@ func snapshotSkillZipForInstall(src string) (string, func(), error) {
 	return tmpPath, cleanup, nil
 }
 
-func (a *App) DeleteSkill(name, toolName string) error {
+func (a *App) DeleteSkill(name, toolName string) (retErr error) {
 	a.installMutex.Lock()
 	defer a.installMutex.Unlock()
+	defer func() {
+		a.recordLegacySkillResult("delete", name, legacySkillResultFromError("delete", name, retErr))
+	}()
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("skill name required")
 	}
