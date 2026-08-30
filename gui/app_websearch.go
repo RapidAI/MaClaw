@@ -54,16 +54,20 @@ var allowedWebSearchAPIKeyClearIDs = map[string]bool{
 var retiredWebSearchEngineIDs = map[string]bool{"mojeek": true}
 
 type WebSearchEngineTestResult struct {
-	EngineID    string `json:"engine_id"`
-	Transport   string `json:"transport"`
-	DurationMS  int64  `json:"duration_ms"`
-	ResultCount int    `json:"result_count"`
-	RetryCount  int    `json:"retry_count,omitempty"`
-	Message     string `json:"message"`
+	EngineID       string `json:"engine_id"`
+	Transport      string `json:"transport"`
+	DurationMS     int64  `json:"duration_ms"`
+	ResultCount    int    `json:"result_count"`
+	RetryCount     int    `json:"retry_count,omitempty"`
+	Message        string `json:"message"`
+	PreviewTitle   string `json:"preview_title,omitempty"`
+	PreviewURL     string `json:"preview_url,omitempty"`
+	PreviewSnippet string `json:"preview_snippet,omitempty"`
 }
 
 type TestWebSearchEngineRequest struct {
 	Engine             corelib.WebSearchEngineConfig `json:"engine"`
+	Query              string                        `json:"query,omitempty"`
 	UseSavedKey        bool                          `json:"use_saved_key"`
 	HumanAssistEnabled bool                          `json:"human_assist_enabled"`
 }
@@ -163,9 +167,22 @@ func webSearchEngineName(id string) string {
 		return "TinyFish"
 	case "tavily":
 		return "Tavily"
+	case websearch.WebSearchEngineMaclawHub:
+		return "MaClaw Hub / RapidSearch"
 	default:
 		return id
 	}
+}
+
+func webSearchEngineTestQuery(engineID, query string) string {
+	query = strings.TrimSpace(query)
+	if query != "" {
+		return query
+	}
+	if engineID == websearch.WebSearchEngineMaclawHub {
+		return "golang http server"
+	}
+	return "MaClaw web search configuration test"
 }
 
 func webSearchEngineNeedsKey(id string) bool {
@@ -310,10 +327,21 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 	engine := resolveWebSearchEngineForTest(current, req.Engine, req.UseSavedKey)
 	engine.Enabled = true
 	engine.Priority = 1
+	if engine.ID == websearch.WebSearchEngineMaclawHub {
+		// Hub search must use the GUI-registered token, never a request-supplied
+		// or persisted engine key. The settings UI has no RapidSearch API-key field.
+		engine.APIKey = ""
+		if cfg, cfgErr := a.LoadConfig(); cfgErr == nil {
+			engine.APIKey = websearch.HubAuthTokenFromConfig(cfg)
+		}
+	}
 	// The probe may retry one transient HTTP/API failure. Leave enough outer
 	// budget for two 12-second cold-start attempts plus the short retry delay.
+	// RapidSearch often needs 10-20s and is given a 180s client budget.
 	testTimeout := 30 * time.Second
-	if engine.Transport == corelib.WebSearchTransportBrowser && req.HumanAssistEnabled {
+	if engine.ID == websearch.WebSearchEngineMaclawHub {
+		testTimeout = websearch.WebSearchMaclawHubTimeout
+	} else if engine.Transport == corelib.WebSearchTransportBrowser && req.HumanAssistEnabled {
 		testTimeout = 2 * time.Minute
 	} else if engine.Transport == corelib.WebSearchTransportBrowser {
 		testTimeout = 35 * time.Second
@@ -321,8 +349,13 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 	started := time.Now()
-	response, err := websearch.ProbeWebSearchEngineCtx(ctx, "MaClaw web search configuration test", 3, engine, req.HumanAssistEnabled)
+	response, err := websearch.ProbeWebSearchEngineCtx(ctx, webSearchEngineTestQuery(engine.ID, req.Query), 3, engine, req.HumanAssistEnabled)
 	result := WebSearchEngineTestResult{EngineID: engine.ID, Transport: engine.Transport, DurationMS: time.Since(started).Milliseconds(), ResultCount: len(response.Results)}
+	if len(response.Results) > 0 {
+		result.PreviewTitle = strings.TrimSpace(response.Results[0].Title)
+		result.PreviewURL = strings.TrimSpace(response.Results[0].URL)
+		result.PreviewSnippet = strings.TrimSpace(response.Results[0].Snippet)
+	}
 	if len(response.Diagnostics) > 0 {
 		result.RetryCount = response.Diagnostics[0].RetryCount
 	}

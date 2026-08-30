@@ -239,6 +239,11 @@ func (h *IMMessageHandler) acquireTrustedRemote(principalID, rawURL string, publ
 		DisableBrowserAuthFallback: true,
 		PublicNetworkOnly:          publicNetworkOnly,
 	}
+	if !publicNetworkOnly {
+		if err := websearch.ApplyHubDownload(opts, h.getWebSearchStrategy()); err != nil {
+			return "", err
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 	result, err := websearch.FetchCtx(ctx, rawURL, opts)

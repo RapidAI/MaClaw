@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -615,5 +616,209 @@ func TestTestWebSearchEngineReportsFailureAfterRetry(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("provider calls = %d, want initial attempt plus one retry", calls)
+	}
+}
+
+func TestGetWebSearchStrategyIncludesMaclawHubUncheckedWithoutDedicatedKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatal(err)
+	}
+
+	view := app.GetWebSearchStrategy()
+	var found *WebSearchEngineView
+	for i := range view.Engines {
+		if view.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			copy := view.Engines[i]
+			found = &copy
+		}
+	}
+	if found == nil {
+		t.Fatal("MaClaw Hub / RapidSearch missing from settings strategy")
+	}
+	if found.Name != "MaClaw Hub / RapidSearch" {
+		t.Fatalf("name = %q", found.Name)
+	}
+	if found.Enabled || found.NeedsKey || found.HasKey || found.APIKey != "" {
+		t.Fatalf("settings view leaked hub credentials or enabled the engine: %#v", found)
+	}
+	if found.BaseURL != "https://hub.maclaw.top/searchproxy/search" {
+		t.Fatalf("base URL = %q", found.BaseURL)
+	}
+}
+
+func TestTestWebSearchEngineUsesRegisteredHubTokenForMaclawHub(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	var gotAuth, gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		var payload struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		gotQuery = payload.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Hub","url":"https://example.com/hub","snippet":"ok"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			strategy.Engines[i].BaseURL = server.URL
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: strategy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer viewer-token" {
+		t.Fatalf("Authorization = %q, want registered hub token", gotAuth)
+	}
+	if gotQuery != "golang http server" {
+		t.Fatalf("query = %q, want golang http server", gotQuery)
+	}
+	if result.ResultCount != 1 || result.PreviewTitle != "Hub" || result.PreviewURL != "https://example.com/hub" || result.PreviewSnippet != "ok" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestTestWebSearchEngineIgnoresRequestAPIKeyForMaclawHub(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Hub","url":"https://example.com/hub","snippet":"ok"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			strategy.Engines[i].BaseURL = server.URL
+			strategy.Engines[i].APIKey = "persisted-should-not-be-used"
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: strategy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{
+			ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI,
+			APIKey: "attacker-token",
+		},
+		UseSavedKey: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer viewer-token" {
+		t.Fatalf("Authorization = %q, want registered hub token", gotAuth)
+	}
+}
+
+func TestIMGetWebSearchStrategyAttachesHubAuthAtRuntime(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteViewerToken: "viewer-token"}); err != nil {
+		t.Fatal(err)
+	}
+	h := &IMMessageHandler{app: app}
+	strategy := h.getWebSearchStrategy()
+	for _, engine := range strategy.Engines {
+		if engine.ID == websearch.WebSearchEngineMaclawHub {
+			if engine.Enabled {
+				t.Fatalf("runtime strategy enabled MaClaw Hub by default: %#v", engine)
+			}
+			if engine.APIKey != "viewer-token" {
+				t.Fatalf("runtime APIKey = %q, want viewer-token", engine.APIKey)
+			}
+			return
+		}
+	}
+	t.Fatal("MaClaw Hub missing from runtime strategy")
+}
+
+func TestTestWebSearchEngineHonorsExplicitMaclawHubQuery(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		gotQuery = payload.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"title":"Weather","url":"https://example.com/weather","snippet":"ok"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	strategy := websearch.DefaultWebSearchStrategy(corelib.WebSearchPresetMainland)
+	for i := range strategy.Engines {
+		if strategy.Engines[i].ID == websearch.WebSearchEngineMaclawHub {
+			strategy.Engines[i].BaseURL = server.URL
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: strategy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
+		Engine: corelib.WebSearchEngineConfig{ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI},
+		Query:  "北京天气",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "北京天气" {
+		t.Fatalf("query = %q, want 北京天气", gotQuery)
+	}
+	if result.PreviewTitle != "Weather" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestWebSearchEngineTestQueryDefaults(t *testing.T) {
+	if got := webSearchEngineTestQuery(websearch.WebSearchEngineMaclawHub, "  北京天气  "); got != "北京天气" {
+		t.Fatalf("explicit query = %q", got)
+	}
+	if got := webSearchEngineTestQuery(websearch.WebSearchEngineMaclawHub, ""); got != "golang http server" {
+		t.Fatalf("hub default = %q", got)
+	}
+	if got := webSearchEngineTestQuery("brave", ""); got != "MaClaw web search configuration test" {
+		t.Fatalf("other default = %q", got)
 	}
 }

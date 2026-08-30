@@ -31,9 +31,11 @@ interface SearchStrategy {
 }
 
 type Props = { lang?: string };
-type TestState = { state: "idle" | "testing" | "success" | "error"; message?: string };
+type TestPreview = { title?: string; url?: string; snippet?: string };
+type TestState = { state: "idle" | "testing" | "success" | "error"; message?: string; preview?: TestPreview };
 type TestWebSearchEngineRequest = {
 	engine: Pick<SearchEngine, "id" | "enabled" | "priority" | "transport" | "api_key" | "base_url">;
+	query?: string;
 	use_saved_key: boolean;
 	human_assist_enabled: boolean;
 };
@@ -42,10 +44,11 @@ const testWebSearchEngine = TestWebSearchEngine as unknown as (
 	request: TestWebSearchEngineRequest,
 ) => ReturnType<typeof TestWebSearchEngine>;
 const PRESET_ORDER: Record<Exclude<Preset, "custom">, string[]> = {
-	mainland: ["bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily"],
-	international: ["google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily"],
+	mainland: ["bing_cn", "baidu", "duckduckgo", "google", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
+	international: ["google", "duckduckgo", "bing_cn", "baidu", "brave", "serper", "tinyfish", "tavily", "maclaw_hub"],
 };
 const RETIRED_ENGINE_IDS = new Set(["mojeek"]);
+const MACLAW_HUB_TEST_QUERY = "golang http server";
 
 function webSearchErrorMessage(error: unknown, fallback: string): string {
 	if (error instanceof Error && error.message.trim()) return error.message.trim();
@@ -102,6 +105,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState("");
     const [tests, setTests] = useState<Record<string, TestState>>({});
+	const [hubTestQuery, setHubTestQuery] = useState(MACLAW_HUB_TEST_QUERY);
 	const [clearedAPIKeyEngineIDs, setClearedAPIKeyEngineIDs] = useState<Set<string>>(() => new Set());
     const [draggedEngineID, setDraggedEngineID] = useState<string | null>(null);
     const savedTimer = useRef<number | null>(null);
@@ -392,11 +396,23 @@ export function WebSearchConfigPanel({ lang }: Props) {
 					api_key: engine.api_key?.trim() || "",
 					base_url: engine.base_url || "",
 				},
+				query: engine.id === "maclaw_hub" ? (hubTestQuery.trim() || MACLAW_HUB_TEST_QUERY) : undefined,
 				use_saved_key: engine.has_api_key && !clearedAPIKeyEngineIDsRef.current.has(engine.id) && !engine.api_key?.trim(),
 				human_assist_enabled: strategyRef.current?.browser_human_assist_enabled === true,
 				});
 			if (!mounted.current || testRequestVersions.current[engine.id] !== requestVersion) return;
-			const retryCount = Number((result as typeof result & { retry_count?: number })?.retry_count || 0);
+			const typedResult = result as typeof result & {
+				retry_count?: number;
+				preview_title?: string;
+				preview_url?: string;
+				preview_snippet?: string;
+			};
+			const retryCount = Number(typedResult?.retry_count || 0);
+			const preview: TestPreview = {
+				title: String(typedResult?.preview_title || "").trim(),
+				url: String(typedResult?.preview_url || "").trim(),
+				snippet: String(typedResult?.preview_snippet || "").trim(),
+			};
 			setTests(current => ({
                 ...current,
                 [engine.id]: {
@@ -406,6 +422,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
 						`${result?.result_count || 0} 条结果 · ${result?.duration_ms || 0} 毫秒${retryCount ? " · 已重试 1 次" : ""}`,
 						`${result?.result_count || 0} 筆結果 · ${result?.duration_ms || 0} 毫秒${retryCount ? " · 已重試 1 次" : ""}`,
 					),
+					preview: preview.title || preview.url ? preview : undefined,
                 },
             }));
         } catch (err) {
@@ -422,7 +439,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
 						: current);
 				}
 	        }
-	}, [busy, t]);
+	}, [busy, hubTestQuery, t]);
 
     const activeCount = useMemo(() => strategy?.engines.filter(engine => engine.enabled).length || 0, [strategy]);
 
@@ -538,11 +555,37 @@ export function WebSearchConfigPanel({ lang }: Props) {
                                     </div>
                                     <p>{engine.needs_api_key
                                         ? engine.has_api_key ? t("API key saved", "API Key 已保存") : t("API key required", "需要 API Key")
+                                        : engine.id === "maclaw_hub" ? t("Uses signed-in MaClaw Hub account", "使用已登录的 MaClaw Hub 账号", "使用已登入的 MaClaw Hub 帳號")
                                         : engine.id === "google" ? t("Free · availability depends on network", "免费 · 可用性取决于网络") : t("Free · no key needed", "免费 · 无需 Key")}</p>
                                     {test.state !== "idle" && <div className="web-search-config__test-result" data-state={test.state} role="status">
-                                        {test.state === "testing" ? t("Testing…", "正在测试…") : test.message}
+                                        {test.state === "testing"
+                                            ? engine.id === "maclaw_hub"
+                                                ? t("Testing… RapidSearch can take up to a few minutes.", "正在测试… RapidSearch 可能需要一两分钟。", "正在測試… RapidSearch 可能需要一兩分鐘。")
+                                                : t("Testing…", "正在测试…")
+                                            : test.message}
+                                        {test.state === "success" && (test.preview?.title || test.preview?.url) && (
+                                            <div className="web-search-config__test-preview">
+                                                <strong>{test.preview.title}</strong>
+                                                {test.preview.url && <span>{test.preview.url}</span>}
+                                                {test.preview.snippet && <em>{test.preview.snippet}</em>}
+                                            </div>
+                                        )}
                                     </div>}
                                 </div>
+                                {engine.id === "maclaw_hub" && (
+                                    <div className="web-search-config__key-field">
+                                        <input
+                                            className="web-search-config__key"
+                                            type="text"
+                                            disabled={busy || test.state === "testing"}
+                                            value={hubTestQuery}
+                                            onChange={event => setHubTestQuery(event.target.value)}
+                                            placeholder={t("Test query, e.g. golang http server", "测试查询，例如 北京天气")}
+                                            autoComplete="off"
+                                            aria-label={t("MaClaw Hub test query", "MaClaw Hub 测试查询", "MaClaw Hub 測試查詢")}
+                                        />
+                                    </div>
+                                )}
                                 {engine.needs_api_key && (
 									<div className="web-search-config__key-field">
 										<input

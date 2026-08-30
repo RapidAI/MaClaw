@@ -3428,11 +3428,19 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		opts.Headers = hdrs
 	}
 
+	// When MaClaw Hub / RapidSearch is enabled, HTTP(S) fetch and file
+	// downloads share that proxy channel (same hub bearer token as search).
+	if !opts.PublicNetworkOnly {
+		if err := websearch.ApplyHubDownload(opts, h.getWebSearchStrategy()); err != nil {
+			return fmt.Sprintf("抓取失败: %s", err.Error())
+		}
+	}
+
 	// Use provider-aware fetch: TinyFish has better content extraction.
 	// FetchWithProvider handles TinyFish routing, offset/maxChars windowing, and fallback.
 	var fetchProvider corelib.WebSearchProvider
-	if opts.SavePath == "" && !opts.PublicNetworkOnly && h != nil && h.app != nil {
-		strategy := h.app.effectiveWebSearchStrategy()
+	if opts.HubDownload == nil && opts.SavePath == "" && !opts.PublicNetworkOnly && h != nil && h.app != nil {
+		strategy := h.getWebSearchStrategy()
 		for _, engine := range strategy.Engines {
 			if !engine.Enabled {
 				continue

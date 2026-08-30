@@ -11720,6 +11720,10 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .web-search-config__test-result { margin: 3px 0 0; color: var(--theme-text-secondary); font-size: .8125rem; line-height: 1.4; }
 .web-search-config__test-result[data-state='success'] { color: var(--theme-success, var(--theme-primary-strong)); }
 .web-search-config__test-result[data-state='error'] { color: var(--theme-danger); overflow-wrap: anywhere; }
+.web-search-config__test-preview { display: grid; gap: 2px; margin-top: 6px; color: var(--theme-text-secondary); font-weight: 400; }
+.web-search-config__test-preview strong { color: var(--theme-text-primary); font-size: .8125rem; }
+.web-search-config__test-preview span,
+.web-search-config__test-preview em { overflow-wrap: anywhere; font-size: .75rem; font-style: normal; }
 
 .web-search-config__key-field { grid-column: 3 / 5; grid-row: 2; width: 100%; }
 .web-search-config__test { min-height: 36px; padding: 6px 10px; font-size: .8125rem; }
