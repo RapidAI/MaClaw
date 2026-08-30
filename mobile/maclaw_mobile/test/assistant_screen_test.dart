@@ -229,7 +229,7 @@ class _AssistantDisabledSessionController extends SessionController {
             hubId: 'hub-a',
             tenantId: 'tenant-a',
           ),
-          llmAccess: const MobileLlmAccess(
+          llmAccess: MobileLlmAccess(
             mode: 'maclaw_official',
             status: 'available',
             authorizationId: '',
