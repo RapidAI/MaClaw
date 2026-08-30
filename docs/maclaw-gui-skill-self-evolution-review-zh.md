@@ -749,4 +749,5 @@ GUI 全量测试还受 Windows 浮动窗口、资源架构文件和工作区并�
 | 2026-08-30 | 补充传统 `App.AddSkill`/`App.InstallSkill` 与 `agentservice.persistImportedEntries` 入口审计；明确其仍属 legacy、未接入统一补偿/checked index/最终审计，并将无事务上下文 fail-closed、成功返回不可等同 `committed` 写入准入矩阵和测试门槛 | 防止 Hub/新目录迁移证据外推到 ZIP、插件和非桌面导入路径，避免分步写盘或 best-effort 审计造成假提交 |
 | 2026-08-30 | AgentService `persistImportedEntries` 已迁移到共享目录提交器：增加 staging、批次提交、同内容 no-op、`.prev` 冲突拒绝、checked 目录扫描、最终审计和提交后清理；`NewService` 增加 `agentservice_install` 前缀的启动恢复与 fail-closed 门禁 | 防止 ZIP/GitHub/Hub/Market 多包导入产生部分安装或覆盖时丢失旧目录；明确启动恢复已具备基础实现，但多包/多租户/异常清理故障注入仍是上线阻断项 |
 | 2026-08-30 | 继续收紧 legacy GUI：统一裸文件名 ZIP 的路径解析；`DeleteSkill` 增加安装锁、严格 metadata 解析、删除失败即停和原子 metadata 写入；AgentService 补充 `RecoveryScope` 与多租户路径归属校验，并同步修正故障注入缺口和发布口径 | 避免工作目录变化导致误读 ZIP、删除失败后 metadata 与目录不一致，以及共享队列在多服务场景误恢复其它服务目录 |
+| 2026-08-30 | AgentService `DeleteSkill` 改为共享提交器隔离删除；运行与上传入口增加 scope-aware 补偿门禁，并补充删除、越界恢复和运行/上传阻断回归 | 避免删除在崩溃窗口丢失恢复路径，防止未恢复或跨服务补偿记录继续执行/上传 |
 
