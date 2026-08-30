@@ -90,6 +90,11 @@ func (h *IMMessageHandler) fetchTrustedWeb(principalID, rawURL string, publicNet
 		TimeoutS:          corelib.NormalizeAgentTimeoutSec(corelib.DefaultAgentTimeoutSec),
 		PublicNetworkOnly: publicNetworkOnly,
 	}
+	if !publicNetworkOnly {
+		if err := websearch.ApplyHubDownload(opts, h.getWebSearchStrategy()); err != nil {
+			return "", err
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 	result, err := websearch.FetchCtx(ctx, rawURL, opts)

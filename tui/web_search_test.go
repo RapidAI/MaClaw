@@ -63,6 +63,34 @@ func TestTUIWebFetchProviderFollowsHighestPriorityEngine(t *testing.T) {
 	}
 }
 
+func TestTUIWebFetchProviderUsesEnabledHubChannel(t *testing.T) {
+	cfg := corelib.AppConfig{
+		RemoteViewerToken: "viewer-token",
+		WebSearchStrategy: corelib.WebSearchStrategy{
+			Version: corelib.WebSearchStrategyVersion,
+			Preset:  corelib.WebSearchPresetCustom,
+			Mode:    corelib.WebSearchModePriority,
+			Engines: []corelib.WebSearchEngineConfig{
+				{ID: "tinyfish", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportAPI, APIKey: "tiny-key"},
+				{ID: "maclaw_hub", Enabled: true, Priority: 2, Transport: corelib.WebSearchTransportAPI},
+			},
+			BrowserFallbackEngineID: "bing_cn",
+			MinResultsBeforeHedge:   3,
+		},
+	}
+
+	provider := tuiWebFetchProvider(cfg)
+	if provider.Type != "maclaw_hub" || provider.Key != "viewer-token" {
+		t.Fatalf("provider = %#v, want enabled hub channel with registered token", provider)
+	}
+
+	cfg.WebSearchStrategy.Engines[1].Enabled = false
+	provider = tuiWebFetchProvider(cfg)
+	if provider.Type != "tinyfish" || provider.Key != "tiny-key" {
+		t.Fatalf("disabled hub should fall back to TinyFish: %#v", provider)
+	}
+}
+
 func TestTUIWebSearchStrategyAttachesRegisteredHubToken(t *testing.T) {
 	cfg := corelib.AppConfig{RemoteViewerToken: "viewer-token"}
 	strategy := tuiWebSearchStrategy(cfg)

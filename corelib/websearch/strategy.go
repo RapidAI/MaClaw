@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	strategySearchTimeout     = 30 * time.Second
-	strategyBrowserTimeout    = 6 * time.Second
-	WebSearchMaclawHubTimeout = 180 * time.Second
-	WebSearchEngineMaclawHub  = "maclaw_hub"
-	strategyMaclawHubTimeout  = WebSearchMaclawHubTimeout
+	strategySearchTimeout             = 30 * time.Second
+	strategyBrowserTimeout            = 6 * time.Second
+	WebSearchMaclawHubTimeout         = 180 * time.Second
+	WebSearchMaclawHubDownloadTimeout = WebSearchMaclawHubTimeout
+	WebSearchEngineMaclawHub          = "maclaw_hub"
+	strategyMaclawHubTimeout          = WebSearchMaclawHubTimeout
 )
 
 var (

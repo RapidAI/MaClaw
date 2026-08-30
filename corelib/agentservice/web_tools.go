@@ -19,10 +19,7 @@ func (c *coreAgentCallbacks) executeWebSearch(args map[string]interface{}) strin
 		maxResults = 20
 	}
 
-	strategy := websearch.ApplyConfigHubAuth(
-		websearch.MigrateLegacyWebSearchStrategy(c.appCfg.WebSearchStrategy, c.appCfg.WebSearchProviders, c.appCfg.WebSearchCurrentProvider),
-		c.appCfg,
-	)
+	strategy := c.webSearchStrategy()
 	response, err := websearch.SearchWithStrategyCtx(c.parentContext(), query, maxResults, strategy)
 	if err != nil {
 		return fmt.Sprintf("Error: search failed: %v", err)
@@ -65,7 +62,7 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 		TimeoutS: corelib.NormalizeAgentTimeoutSec(intArg(args, "timeout", corelib.DefaultAgentTimeoutSec)),
 	}
 
-	result, err := websearch.FetchCtx(c.parentContext(), rawURL, opts)
+	result, err := websearch.FetchWithStrategyCtx(c.parentContext(), rawURL, opts, c.webSearchStrategy())
 	if err != nil {
 		return fmt.Sprintf("Error: fetch failed: %v", err)
 	}
@@ -90,6 +87,13 @@ func (c *coreAgentCallbacks) executeWebFetch(args map[string]interface{}) string
 		sb.WriteString(fmt.Sprintf("\n\n--- Continuation ---\nhas_more: true\nnext_offset: %d\nPass offset=%d to continue reading.\n", result.NextOffset, result.NextOffset))
 	}
 	return sb.String()
+}
+
+func (c *coreAgentCallbacks) webSearchStrategy() corelib.WebSearchStrategy {
+	return websearch.ApplyConfigHubAuth(
+		websearch.MigrateLegacyWebSearchStrategy(c.appCfg.WebSearchStrategy, c.appCfg.WebSearchProviders, c.appCfg.WebSearchCurrentProvider),
+		c.appCfg,
+	)
 }
 
 // resolveWebSearchProvider finds the configured web search provider from AppConfig.

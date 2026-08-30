@@ -17,12 +17,13 @@ import (
 )
 
 const (
-	defaultBraveSearchURL     = "https://api.search.brave.com/res/v1/web/search"
-	defaultSerperSearchURL    = "https://google.serper.dev/search"
-	defaultTinyFishSearchURL  = "https://api.search.tinyfish.ai"
-	defaultTinyFishFetchURL   = "https://api.fetch.tinyfish.ai"
-	defaultTavilySearchURL    = "https://api.tavily.com/search"
-	defaultMaclawHubSearchURL = "https://hub.maclaw.top/searchproxy/search"
+	defaultBraveSearchURL       = "https://api.search.brave.com/res/v1/web/search"
+	defaultSerperSearchURL      = "https://google.serper.dev/search"
+	defaultTinyFishSearchURL    = "https://api.search.tinyfish.ai"
+	defaultTinyFishFetchURL     = "https://api.fetch.tinyfish.ai"
+	defaultTavilySearchURL      = "https://api.tavily.com/search"
+	defaultMaclawHubSearchURL   = "https://hub.maclaw.top/searchproxy/search"
+	defaultMaclawHubDownloadURL = "https://hub.maclaw.top/searchproxy/download"
 )
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
@@ -779,9 +780,20 @@ func FetchWithProviderCtx(parent context.Context, rawURL string, opts *FetchOpti
 		provider = corelib.WebSearchProvider{}
 	}
 	provider = normalizeProvider(provider)
+	if opts == nil {
+		opts = &FetchOptions{}
+	}
+
+	if provider.Type == WebSearchEngineMaclawHub {
+		if err := applyProviderHubDownload(opts, provider); err != nil {
+			return nil, err
+		}
+	}
 
 	// TinyFish has its own fetch API with better content extraction.
-	if provider.Type == "tinyfish" && provider.Key != "" && opts != nil && opts.SavePath == "" {
+	// When the Hub RapidSearch download channel is active, keep egress on
+	// that proxy instead of a third-party fetch API.
+	if opts.HubDownload == nil && provider.Type == "tinyfish" && provider.Key != "" && opts.SavePath == "" {
 		fetchURL := deriveTinyFishFetchURL(provider.BaseURL)
 		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 		defer cancel()

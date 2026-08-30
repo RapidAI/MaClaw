@@ -39,17 +39,18 @@ const (
 
 // FetchOptions configures the Fetch operation.
 type FetchOptions struct {
-	MaxBytes                   int64             // max response body size (default 2MB text / 100MB save_path; hard caps apply)
-	RenderJS                   bool              // attempt headless Chrome rendering
-	SavePath                   string            // if set, save raw content to this file path instead of returning text
-	SaveRoot                   string            // optional root that SavePath must remain under after resolving existing symlinks
-	TimeoutS                   int               // timeout in seconds (default 30, max 600)
-	Offset                     int               // rune offset for continued reading
-	MaxChars                   int               // max characters to return in Content (0 = full content)
-	Headers                    map[string]string // extra request headers (e.g. Cookie, Referer); applied after defaults
-	DisableCookies             bool              // do not send or retain the shared HTTP cookie jar
-	DisableBrowserAuthFallback bool              // do not escalate anti-bot failures through the managed browser session
-	PublicNetworkOnly          bool              // only use direct public HTTP(S) targets; blocks private IPs and redirect SSRF
+	MaxBytes                   int64               // max response body size (default 2MB text / 100MB save_path; hard caps apply)
+	RenderJS                   bool                // attempt headless Chrome rendering
+	SavePath                   string              // if set, save raw content to this file path instead of returning text
+	SaveRoot                   string              // optional root that SavePath must remain under after resolving existing symlinks
+	TimeoutS                   int                 // timeout in seconds (default 30, max 600)
+	Offset                     int                 // rune offset for continued reading
+	MaxChars                   int                 // max characters to return in Content (0 = full content)
+	Headers                    map[string]string   // extra request headers (e.g. Cookie, Referer); applied after defaults
+	DisableCookies             bool                // do not send or retain the shared HTTP cookie jar
+	DisableBrowserAuthFallback bool                // do not escalate anti-bot failures through the managed browser session
+	PublicNetworkOnly          bool                // only use direct public HTTP(S) targets; blocks private IPs and redirect SSRF
+	HubDownload                *HubDownloadChannel // when set, HTTP(S) fetch/download goes through MaClaw Hub /searchproxy/download
 }
 
 // FetchResult contains the fetched content.
@@ -271,8 +272,17 @@ func fetchHTTPWithClientCtx(parent context.Context, rawURL string, opts *FetchOp
 	if parent == nil {
 		parent = context.Background()
 	}
+	if shouldRouteMaclawHubDownload(opts) {
+		if err := prepareHubDownload(opts); err != nil {
+			return nil, err
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
+
+	if shouldRouteMaclawHubDownload(opts) {
+		return fetchViaMaclawHub(ctx, rawURL, opts)
+	}
 
 	if client == nil {
 		client = httpClient()
@@ -356,6 +366,11 @@ func performTextFetch(ctx context.Context, rawURL string, opts *FetchOptions, cl
 		}
 	}
 
+	return completeTextFetch(rawURL, opts, resp, body, rawMode)
+}
+
+func completeTextFetch(rawURL string, opts *FetchOptions, resp *http.Response, body []byte, rawMode bool) *fetchAttempt {
+	ct := resp.Header.Get("Content-Type")
 	finalURL := rawURL
 	if resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL.String()

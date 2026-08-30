@@ -276,6 +276,10 @@ func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOpti
 		}
 	}
 
+	return completeFileDownload(rawURL, logURL, opts, resp)
+}
+
+func completeFileDownload(rawURL, logURL string, opts *FetchOptions, resp *http.Response) *fetchAttempt {
 	dir := filepath.Dir(opts.SavePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return &fetchAttempt{err: fmt.Errorf("create directory failed: %w", err)}

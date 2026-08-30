@@ -849,7 +849,7 @@ func (c *coreAgentCallbacks) executeDownloadFile(args map[string]interface{}) ag
 		MaxBytes: 25 * 1024 * 1024,
 		TimeoutS: 60,
 	}
-	result, err := websearch.FetchCtx(c.parentContext(), rawURL, opts)
+	result, err := websearch.FetchWithStrategyCtx(c.parentContext(), rawURL, opts, c.webSearchStrategy())
 	if err != nil {
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: download failed: %v", err), Outcome: agent.ToolExecutionOutcomeError}
 	}
