@@ -69,8 +69,12 @@ func (m *FloatingAssistantManager) ShowFloatingButton() {
 	}
 
 	// Restore persisted position, or compute default (top-right corner).
+	// Always re-clamp: a 1920-wide fallback or a position saved on a larger
+	// display will otherwise place the pet off a 1280×800 remote desktop.
 	if m.posX == 0 && m.posY == 0 {
 		m.posX, m.posY = m.loadOrDefaultPosition(config)
+	} else {
+		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, floatingWindowSize(config), getScreenWidth(), getScreenHeight())
 	}
 
 	log.Printf("[floating-assistant] ShowFloatingButton: pos=(%d,%d) window=%v", m.posX, m.posY, m.window != nil)
@@ -129,6 +133,8 @@ func (m *FloatingAssistantManager) RefreshAppearance(config corelib.AppConfig) {
 	winSize := floatingWindowSize(config)
 	if m.posX == 0 && m.posY == 0 {
 		m.posX, m.posY = m.loadOrDefaultPosition(config)
+	} else {
+		m.posX, m.posY = clampFloatingPosition(m.posX, m.posY, winSize, getScreenWidth(), getScreenHeight())
 	}
 	if m.visible && m.window != nil {
 		m.window.Destroy()
@@ -158,17 +164,7 @@ func (m *FloatingAssistantManager) UpdatePosition(x, y int) {
 	screenW := getScreenWidth()
 	screenH := getScreenHeight()
 	buttonSize := floatingWindowSizeForCurrentConfig(m.app)
-
-	if x < 0 {
-		x = 0
-	} else if x > screenW-buttonSize {
-		x = screenW - buttonSize
-	}
-	if y < 0 {
-		y = 0
-	} else if y > screenH-buttonSize {
-		y = screenH - buttonSize
-	}
+	x, y = clampFloatingPosition(x, y, buttonSize, screenW, screenH)
 
 	m.posX = x
 	m.posY = y
@@ -192,19 +188,23 @@ func (m *FloatingAssistantManager) persistPosition(x, y int) {
 // loadOrDefaultPosition returns the persisted position from config,
 // or the default top-right corner position if not set.
 func (m *FloatingAssistantManager) loadOrDefaultPosition(config corelib.AppConfig) (int, int) {
+	screenW := getScreenWidth()
+	screenH := getScreenHeight()
+	winSize := floatingWindowSize(config)
 	if config.FloatingBtnPositionSet || config.FloatingBtnX > 0 || config.FloatingBtnY > 0 {
-		log.Printf("[floating-assistant] loadOrDefaultPosition: restored from config (%d, %d)", config.FloatingBtnX, config.FloatingBtnY)
-		return config.FloatingBtnX, config.FloatingBtnY
+		x, y := clampFloatingPosition(config.FloatingBtnX, config.FloatingBtnY, winSize, screenW, screenH)
+		log.Printf("[floating-assistant] loadOrDefaultPosition: restored from config (%d, %d) clamped=(%d,%d) screen=%dx%d", config.FloatingBtnX, config.FloatingBtnY, x, y, screenW, screenH)
+		return x, y
 	}
 	// Default: top-right corner, 150px from right edge, 100px from top.
 	// Use generous margins to avoid taskbar on any edge.
-	screenW := getScreenWidth()
 	x := screenW - 150
 	y := 100
 	if x < 0 {
 		x = 100
 	}
-	log.Printf("[floating-assistant] loadOrDefaultPosition: default (%d, %d) screenW=%d", x, y, screenW)
+	x, y = clampFloatingPosition(x, y, winSize, screenW, screenH)
+	log.Printf("[floating-assistant] loadOrDefaultPosition: default (%d, %d) screen=%dx%d", x, y, screenW, screenH)
 	return x, y
 }
 
@@ -247,18 +247,7 @@ func (m *FloatingAssistantManager) OnFloatingButtonDragged(x, y int) {
 	screenW := getScreenWidth()
 	screenH := getScreenHeight()
 	buttonSize := floatingWindowSizeForCurrentConfig(m.app)
-
-	if x < 0 {
-		x = 0
-	} else if x > screenW-buttonSize {
-		x = screenW - buttonSize
-	}
-
-	if y < 0 {
-		y = 0
-	} else if y > screenH-buttonSize {
-		y = screenH - buttonSize
-	}
+	x, y = clampFloatingPosition(x, y, buttonSize, screenW, screenH)
 
 	// Move the platform window under lock (window operations are not
 	// covered by UpdatePosition's lock).
