@@ -16,6 +16,7 @@ import 'package:maclaw_mobile/features/assistant/search_history.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/documents/document_draft.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
+import 'support/widget_pumps.dart';
 
 class _TestAppPreferencesController extends AppPreferencesController {
   @override
@@ -228,6 +229,14 @@ class _AssistantDisabledSessionController extends SessionController {
             hubId: 'hub-a',
             tenantId: 'tenant-a',
           ),
+          llmAccess: MobileLlmAccess(
+            mode: 'maclaw_official',
+            status: 'available',
+            authorizationId: '',
+            authorizedBy: '',
+            creditsAccount: 'phone:19900001111',
+            authorizedAt: null,
+          ),
           features: MobileFeatures(
             assistant: false,
             search: false,
@@ -237,6 +246,7 @@ class _AssistantDisabledSessionController extends SessionController {
             pushNotifications: false,
           ),
           limits: MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
+          assistantMode: mobileAssistantModeOfficial,
         ),
       );
 }
@@ -280,7 +290,16 @@ MobileBootstrap _assistantTestBootstrap({required bool searchEnabled}) {
       hubId: 'hub-a',
       tenantId: 'tenant-a',
     ),
+    llmAccess: const MobileLlmAccess(
+      mode: 'maclaw_official',
+      status: 'available',
+      authorizationId: '',
+      authorizedBy: '',
+      creditsAccount: 'phone:19900001111',
+      authorizedAt: null,
+    ),
     features: MobileFeatures(
+      assistant: searchEnabled,
       search: searchEnabled,
       documents: true,
       backendSshSessions: true,
@@ -288,6 +307,7 @@ MobileBootstrap _assistantTestBootstrap({required bool searchEnabled}) {
       pushNotifications: false,
     ),
     limits: const MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
+    assistantMode: mobileAssistantModeOfficial,
   );
 }
 
@@ -580,7 +600,7 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(_RecordingAssistantSearchController.queries, hasLength(1));
@@ -638,7 +658,7 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(_RecordingAssistantSearchController.queries, hasLength(1));
@@ -826,7 +846,7 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
-    await tester.pump();
+    await pumpQuietly(tester);
     await tester.enterText(
       find.widgetWithText(TextField, '说点什么…'),
       '帮我查服务状态',
@@ -879,7 +899,7 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(_FakeSearchApiClient.queries, isEmpty);
     expect(find.textContaining('当前 Hub 未启用 AI 助手服务能力'), findsWidgets);
@@ -977,7 +997,7 @@ void main() {
       find.widgetWithText(TextField, '说点什么…'),
       'main incident',
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     await tester.ensureVisible(find.byTooltip('发送给 AI 助手'));
     await tester.tap(find.byTooltip('发送给 AI 助手'));
     await tester.pump();
@@ -990,7 +1010,7 @@ void main() {
       find.widgetWithText(TextField, '说点什么…'),
       'secondary incident',
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     await tester.ensureVisible(find.byTooltip('发送给 AI 助手'));
     await tester.tap(find.byTooltip('发送给 AI 助手'));
     await tester.pump();
@@ -1001,7 +1021,7 @@ void main() {
 
     await tester.ensureVisible(find.text('主对话'));
     await tester.tap(find.text('主对话'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(find.textContaining('main incident'), findsWidgets);
     expect(find.text('移动助手回答：secondary incident'), findsNothing);
 
@@ -1009,7 +1029,7 @@ void main() {
     final secondaryTab = find.textContaining('secondary in');
     expect(secondaryTab, findsWidgets);
     await tester.tap(secondaryTab.first);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(find.textContaining('secondary incident'), findsWidgets);
     expect(find.text('移动助手回答：secondary incident'), findsOneWidget);
     expect(find.text('移动助手回答：main incident'), findsNothing);
@@ -1064,7 +1084,7 @@ void main() {
     expect(find.textContaining('来源 ·'), findsOneWidget);
     await tester.ensureVisible(find.textContaining('来源 ·'));
     await tester.tap(find.textContaining('来源 ·'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(find.text('官方服务来源'), findsOneWidget);
     expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
     expect(store.entries, hasLength(1));
@@ -1704,7 +1724,7 @@ void main() {
     // Dismiss snackbars so they do not steal later taps on citation actions.
     ScaffoldMessenger.of(tester.element(find.byType(AssistantScreen)))
         .clearSnackBars();
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(copiedTexts, hasLength(2));
     expect(copiedTexts.last, contains('结论：官方服务运行正常。'));
     expect(copiedTexts.last, contains('MaClaw 状态页'));
@@ -1712,7 +1732,7 @@ void main() {
     // Sources stay collapsed by default so the answer stays primary.
     await tester.ensureVisible(find.textContaining('来源 ·'));
     await tester.tap(find.textContaining('来源 ·'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(find.text('MaClaw 状态页'), findsOneWidget);
     expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
     expect(find.text('复制链接'), findsOneWidget);
@@ -1895,7 +1915,7 @@ void main() {
     await tester.pump();
 
     await tester.tap(find.byTooltip('对话历史'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.text('常用问题'), findsOneWidget);
     expect(find.text('最近对话'), findsOneWidget);

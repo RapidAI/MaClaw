@@ -161,7 +161,7 @@ void main() {
     await tester.tap(find.text('发送验证码'));
     await tester.pump();
 
-    expect(find.text('验证码发送失败，请检查网络或稍后重试。'), findsOneWidget);
+    expect(find.text('验证码发送失败：无法连接官方服务'), findsOneWidget);
     expect(find.textContaining('https://'), findsNothing);
     expect(find.textContaining('HubCenter'), findsNothing);
   });

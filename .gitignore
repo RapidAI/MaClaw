@@ -59,6 +59,10 @@ mobile/maclaw_mobile/android/*.keystore
 mobile/maclaw_mobile/qa-signing/
 mobile/maclaw_mobile/docs/qa-builds/*
 !mobile/maclaw_mobile/docs/qa-builds/README.md
+!mobile/maclaw_mobile/docs/qa-builds/handoff-0.1.0+1.md
+!mobile/maclaw_mobile/docs/qa-builds/release-gates-notification-pending-final-20260710.log
+!mobile/maclaw_mobile/docs/qa-builds/runtime-boundary-20260706-backend-ssh-realtime.log
+!mobile/maclaw_mobile/docs/qa-builds/final-release-evidence-20260706-backend-ssh-realtime.log
 !mobile/maclaw_mobile/docs/qa-builds/android-api35-0.1.0+1/
 !mobile/maclaw_mobile/docs/qa-builds/android-api35-0.1.0+1/**
 gui/LegacyTaskOutput.csv

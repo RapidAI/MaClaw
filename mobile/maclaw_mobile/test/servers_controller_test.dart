@@ -103,7 +103,9 @@ class _RecordingApiClient extends ApiClient {
   @override
   Future<MobileBackendSSHSession> createBackendSSHSession({
     required String serverProfileId,
+    String execMode = '',
   }) async {
+    execMode;
     sessionCalls.add('create:$serverProfileId');
     return MobileBackendSSHSession(
       sessionId: 'mobssh-1',
@@ -164,7 +166,11 @@ class _RecordingApiClient extends ApiClient {
   Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
     required String sessionId,
     required String input,
+    bool raw = false,
+    bool asBinary = false,
   }) async {
+    raw;
+    asBinary;
     sessionCalls.add('input:$sessionId:$input');
     return MobileBackendSSHSessionInputResult(
       sessionId: sessionId,
@@ -291,7 +297,9 @@ class _RecordingNotificationService extends MobileNotificationService {
     required String title,
     required String body,
     String? payload,
+    int? notificationId,
   }) async {
+    notificationId;
     shown.add((title: title, body: body, payload: payload));
   }
 }

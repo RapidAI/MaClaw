@@ -71,6 +71,8 @@ jobs:
       - name: GUI approval projection tests
         run: |
           # Pure registry/notifier projection tests; no Wails bindgen required.
+          # CGO_ENABLED=0 excludes the Linux GTK pet (gui/floating_linux.go);
+          # gui/floating_unsupported.go supplies newFloatingWindow for this gate.
           CGO_ENABLED=0 go test ./gui/ -count=1 -timeout 180s \
             -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
 

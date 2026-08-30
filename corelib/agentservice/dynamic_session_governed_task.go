@@ -212,12 +212,6 @@ func (s *SessionGovernedTaskStore) PersistGrantedPlan(request DynamicCapabilityN
 	if s == nil || !sessionGovernedPrincipalComplete(request) {
 		return
 	}
-	if s.Coordinator != nil {
-		// PublishSurface owns the exact durable snapshot. A best-effort consumer
-		// may process it later; this pre-publication call must not speculate a
-		// task fact from an uncommitted plan.
-		return
-	}
 	needs := grantedNeedsFromPlan(plan)
 	if len(needs) == 0 {
 		return
@@ -226,6 +220,10 @@ func (s *SessionGovernedTaskStore) PersistGrantedPlan(request DynamicCapabilityN
 	if !sessionGovernedNeedsHaveSideEffect(registry, needs) {
 		status = sessionGovernedSucceeded
 	}
+	// Same-session receipt-gated replay (Core Agent / Hub mobile) lives in this
+	// map even when a durable coordinator is bound. PublishSurface still owns
+	// coordinator continuity; this record is never a substitute for a verified
+	// task handle on that path.
 	s.tasks.Store(sessionGovernedTaskKey(request), SessionGovernedTask{
 		Needs:  cloneDynamicCapabilityNeeds(needs),
 		Status: status,
@@ -250,6 +248,13 @@ func (s *SessionGovernedTaskStore) Load(request DynamicCapabilityNeedRequest) (S
 			return SessionGovernedTask{}, false
 		}
 		return SessionGovernedTask{Needs: cloneDynamicCapabilityNeeds(state.OpenNeeds), Status: sessionGovernedPending}, len(state.OpenNeeds) > 0
+	}
+	return s.loadInMemory(request)
+}
+
+func (s *SessionGovernedTaskStore) loadInMemory(request DynamicCapabilityNeedRequest) (SessionGovernedTask, bool) {
+	if s == nil || !sessionGovernedPrincipalComplete(request) {
+		return SessionGovernedTask{}, false
 	}
 	value, ok := s.tasks.Load(sessionGovernedTaskKey(request))
 	if !ok {
@@ -285,11 +290,6 @@ func (c *coreAgentCallbacks) markSessionGovernedAfterDynamicResult(result coreto
 
 func (s *SessionGovernedTaskStore) Mark(request DynamicCapabilityNeedRequest, status sessionGovernedTaskStatus) {
 	if s == nil || status == "" || !sessionGovernedPrincipalComplete(request) {
-		return
-	}
-	if s.Coordinator != nil {
-		// Terminal status is a route/execution fact, written only by its owner.
-		// The facade must never race it with a mutable session-local override.
 		return
 	}
 	key := sessionGovernedTaskKey(request)
@@ -330,13 +330,23 @@ func (s *SessionGovernedTaskStore) ReplayContinuation(request DynamicCapabilityN
 	if s == nil || !isGenericContinuationPrimary(current) {
 		return DynamicCapabilityNeedResolution{}, false
 	}
-	// Legacy in-memory stores remain test-only compatibility facades. The
-	// durable coordinator is the production authority and must never replay a
-	// mutation unless ingress verified a task-bound continuation handle.
+	// Durable coordinator continuity still requires a verified task handle.
+	// Same-session Core Agent / Hub mobile turns persist a receipt-gated
+	// in-memory record so "continue" before the host local mutation receipt
+	// replays that grant without inventing a handle.
 	if s.Coordinator != nil && !request.TaskRelation.permitsContinuation(request) {
-		return DynamicCapabilityNeedResolution{}, false
+		return s.replayInMemoryContinuation(request, rules, registry)
 	}
 	task, ok := s.Load(request)
+	return replaySessionGovernedTask(task, ok, rules, registry)
+}
+
+func (s *SessionGovernedTaskStore) replayInMemoryContinuation(request DynamicCapabilityNeedRequest, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, registry *coretool.CapabilityRegistry) (DynamicCapabilityNeedResolution, bool) {
+	task, ok := s.loadInMemory(request)
+	return replaySessionGovernedTask(task, ok, rules, registry)
+}
+
+func replaySessionGovernedTask(task SessionGovernedTask, ok bool, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, registry *coretool.CapabilityRegistry) (DynamicCapabilityNeedResolution, bool) {
 	if !ok || !task.replayable(registry) {
 		return DynamicCapabilityNeedResolution{}, false
 	}

@@ -289,8 +289,8 @@ class _ServerProfileCardState extends ConsumerState<_ServerProfileCard> {
             ),
             widget.profiles.when(
               data: (items) => items.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.only(top: 12),
+                  ? const Padding(
+                      padding: EdgeInsets.only(top: 12),
                       child: StatusBanner(
                         tone: StatusTone.info,
                         icon: Icons.dns_outlined,

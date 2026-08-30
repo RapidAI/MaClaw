@@ -45,7 +45,7 @@ class UpdateDebugApkEvidenceTest(unittest.TestCase):
         )
 
         expected_sha = hashlib.sha256(b"debug apk bytes").hexdigest().upper()
-        self.assertIn("Artifact: `build\\app\\outputs\\flutter-apk\\app-debug.apk`", output)
+        self.assertIn("Artifact: `build/app/outputs/flutter-apk/app-debug.apk`", output)
         self.assertIn("Size: `15` bytes", output)
         self.assertIn(f"SHA256: `{expected_sha}`", output)
         self.assertIn("CI artifact name", output)

@@ -1019,13 +1019,13 @@ tabs.
     rejects known mojibake/replacement markers, and verifies the iOS Runner
     bundle display/name does not fall back to the Flutter template name.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 642 Python release tool tests.
+  - Passed: 650 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
     release gate runner guard tests.
 - `python tool\configure_platforms_test.py`
-  - Passed: 19 platform configuration tests.
+  - Passed: 21 platform configuration tests.
   - Covers cleanup of Flutter's generated widget-test template so
     native wrapper regeneration does not introduce stale `MyApp` analyzer
     failures, and cleanup of Flutter Android Gradle template comments after
@@ -1744,7 +1744,7 @@ tabs.
     `android/key.properties.example` placeholder coverage, and `.gitignore`
     rules for local keystore material.
 - `python -m unittest tool\build_android_release_test.py`
-  - Passed: 15 Android release build helper tests.
+  - Passed: 17 Android release build helper tests.
   - Covers local `android/key.properties` validation, missing signing input
     errors, debug-keystore rejection, APK/AAB release command construction,
     build-name/build-number forwarding, required paired version/build
@@ -1867,7 +1867,7 @@ tabs.
   - Confirms the desktop-side worker path is used instead of phone-local SSH
     credentials, direct phone connections, or phone-local SFTP.
 - `python -m unittest tool\configure_platforms_test.py`
-  - Passed: 19 platform configuration tests.
+  - Passed: 21 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
   - Passed: 236 QA record validator tests.
   - Covers final automated evidence artifact references matching the record
@@ -1966,7 +1966,7 @@ tabs.
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 348 tests.
+  - Passed: 441 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.

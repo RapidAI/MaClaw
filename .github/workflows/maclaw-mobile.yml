@@ -38,7 +38,10 @@ jobs:
           channel: stable
       - run: go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
       - run: go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1
-      - run: go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
+      # These tests are pure Go (SSH/mobile helpers). CGO_ENABLED=0 keeps the
+      # Linux GTK pet implementation out of the compile set; ubuntu-latest does
+      # not install gtk+-3.0 for this workflow.
+      - run: CGO_ENABLED=0 go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/configure_platforms_test.py
       - working-directory: mobile/maclaw_mobile

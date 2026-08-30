@@ -235,8 +235,9 @@ class _MeetingRecordingScreenState extends ConsumerState<MeetingRecordingScreen>
           '${dir.path}${Platform.pathSeparator}meeting_${DateTime.now().millisecondsSinceEpoch}_$safeTitle.wav';
       await _recorder.start(
         const RecordConfig(
-          // Standard PCM WAV is consumed directly by CoreLib ASR. This keeps
-          // the mobile meeting path independent of FFmpeg and external codecs.
+          // Standard PCM WAV is consumed directly by the host speech engine.
+          // This keeps the mobile meeting path independent of FFmpeg and
+          // external codecs.
           encoder: AudioEncoder.wav,
           sampleRate: 16000,
           numChannels: 1,

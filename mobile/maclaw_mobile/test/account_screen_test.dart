@@ -14,6 +14,7 @@ import 'package:maclaw_mobile/features/assistant/search_history.dart';
 import 'package:maclaw_mobile/features/auth/session_controller.dart';
 import 'package:maclaw_mobile/features/documents/document_draft.dart';
 import 'package:maclaw_mobile/features/servers/server_profile.dart';
+import 'support/widget_pumps.dart';
 
 class _SignedInSessionController extends SessionController {
   @override
@@ -242,10 +243,25 @@ class _FakeNotificationService extends MobileNotificationService {
 
 class _FakeSecureVault extends SecureVault {
   final clearedLegacyServerCredentials = <String>[];
+  final storedKeys = <String, String>{};
 
   @override
   Future<void> clearLegacyServerCredentials(String serverId) async {
     clearedLegacyServerCredentials.add(serverId);
+  }
+
+  @override
+  Future<String?> readKey(String key) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) return null;
+    return storedKeys[trimmed];
+  }
+
+  @override
+  Future<void> writeKey(String key, String value) async {
+    final trimmed = key.trim();
+    if (trimmed.isEmpty) return;
+    storedKeys[trimmed] = value;
   }
 }
 
@@ -259,6 +275,31 @@ class _FakeApiClient extends ApiClient {
   Future<LlmServiceStatus> llmServiceStatus([String path = '']) async {
     requestedStatusPath = path;
     return status;
+  }
+
+  @override
+  Future<MobileEntitlementsCaps> getEntitlementsCaps() async {
+    return const MobileEntitlementsCaps();
+  }
+
+  @override
+  Future<MobileDocumentQuota> getDocumentQuota() async {
+    return const MobileDocumentQuota();
+  }
+
+  @override
+  Future<void> registerPushDevice({
+    required String platform,
+    required String token,
+    String deviceId = '',
+    String path = '/api/mobile/push/devices',
+  }) async {}
+
+  @override
+  Future<MobilePushPendingList> listPushPending({
+    String path = '/api/mobile/push/pending',
+  }) async {
+    return const MobilePushPendingList();
   }
 }
 
@@ -289,7 +330,7 @@ void main() {
       ),
     );
     await _pumpAccount(tester, apiClient: apiClient);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.text('手机号'), findsOneWidget);
     expect(find.text('phone:199****1111'), findsWidgets);
@@ -330,7 +371,7 @@ void main() {
     expect(find.text('3'), findsOneWidget);
 
     await _tapActionTileButton(tester, Icons.security_outlined);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(
       find.textContaining(
         '\u540e\u53f0\u4f1a\u8bdd\u8f93\u51fa\u6216\u65e5\u5fd7\u53d1\u9001\u7ed9 AI \u5206\u6790\u524d',
@@ -370,7 +411,7 @@ void main() {
       apiClient: apiClient,
       sessionControllerBuilder: _MalformedCreditsSessionController.new,
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.text('phone:user19900001111'), findsNothing);
     expect(find.text('MaClaw 官方 credits 使用 phone:199****1111'), findsNothing);
@@ -423,14 +464,14 @@ void main() {
       findsOneWidget,
     );
     await _tapActionTileButton(tester, Icons.cleaning_services_outlined);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(
       find.textContaining('将删除助手历史、文档草稿'),
       findsOneWidget,
     );
     expect(find.textContaining('将删除搜索历史'), findsNothing);
     await tester.tap(find.byType(FilledButton).last);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(await store.loadServerProfiles(), isNotEmpty);
     expect(await store.loadSearchHistory(), isEmpty);
@@ -486,7 +527,6 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     await _tapActionTileButton(tester, Icons.notifications_active_outlined);
-    await tester.pump();
 
     expect(notifications.requested, 1);
     expect(
@@ -512,7 +552,6 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     await _tapActionTileButton(tester, Icons.notifications_active_outlined);
-    await tester.pump();
 
     expect(notifications.requested, 1);
     expect(
@@ -567,7 +606,7 @@ void main() {
       ' $_desktopLlmQrPayload ',
     );
     await tester.tap(find.text('确认授权'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(_qrAuthorizationPayloads, [_desktopLlmQrPayload]);
   });
@@ -587,7 +626,7 @@ void main() {
       'https://llm.example.com/v1\nsk-test-secret',
     );
     await tester.tap(find.text('确认授权'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(_qrAuthorizationPayloads, isEmpty);
     expect(
@@ -610,7 +649,7 @@ void main() {
     );
 
     await tester.tap(find.text('模拟扫码'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(_qrAuthorizationPayloads, [_scannedDesktopLlmQrPayload]);
   });
@@ -659,13 +698,13 @@ void main() {
       findsOneWidget,
     );
     await _tapActionTileButton(tester, Icons.key_off_outlined);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(
       find.text('\u6e05\u7406\u670d\u52a1\u5668\u6863\u6848\u7f13\u5b58\uff1f'),
       findsOneWidget,
     );
     await tester.tap(find.byType(FilledButton).last);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(store.clearedServerProfiles, isTrue);
     expect(await store.loadServerProfiles(), isEmpty);
@@ -715,8 +754,27 @@ Future<void> _pumpAccount(
         if (store != null) mobileLocalStoreProvider.overrideWithValue(store),
         if (notifications != null)
           mobileNotificationServiceProvider.overrideWithValue(notifications),
-        if (vault != null) secureVaultProvider.overrideWithValue(vault),
-        if (apiClient != null) apiClientProvider.overrideWithValue(apiClient),
+        secureVaultProvider.overrideWithValue(vault ?? _FakeSecureVault()),
+        apiClientProvider.overrideWithValue(
+          apiClient ??
+              _FakeApiClient(
+                const LlmServiceStatus(
+                  active: true,
+                  skipLlmConfig: true,
+                  authMode: 'grant_required',
+                  defaultModel: 'maclaw-chat',
+                  availableModels: ['maclaw-chat'],
+                  serviceGroupNames: [],
+                  inactiveReasons: [],
+                  nearestExpiresAt: '',
+                  creditsTotal: 0,
+                  creditsUsed: 0,
+                  creditsRemaining: 0,
+                  creditsAvailable: 0,
+                  tokensPerCredit: 1000,
+                ),
+              ),
+        ),
         mobileNetworkStatusProvider.overrideWith(
           (ref) => Stream.value(
             MobileNetworkSnapshot(
@@ -737,15 +795,23 @@ Future<void> _tapActionTileButton(
   WidgetTester tester,
   IconData icon,
 ) async {
+  final iconFinder = find.byIcon(icon);
+  await tester.scrollUntilVisible(
+    iconFinder,
+    320,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pump();
   final card = find.ancestor(
-    of: find.byIcon(icon),
+    of: iconFinder,
     matching: find.byType(Card),
   );
   final button = find.descendant(
     of: card,
-    matching: find.byType(FilledButton),
+    matching: find.byWidgetPredicate((widget) => widget is ButtonStyleButton),
   );
   await tester.ensureVisible(button);
-  await tester.pumpAndSettle();
+  await pumpQuietly(tester);
   await tester.tap(button);
+  await pumpQuietly(tester);
 }
