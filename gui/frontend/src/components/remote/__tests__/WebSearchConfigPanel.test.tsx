@@ -150,6 +150,38 @@ describe("WebSearchConfigPanel", () => {
 		]);
 	});
 
+    it("tests MaClaw Hub RapidSearch while unchecked and shows a result preview", async () => {
+        getMock.mockResolvedValue({
+            ...strategy,
+            engines: [
+                ...strategy.engines,
+                { id: "maclaw_hub", name: "MaClaw Hub / RapidSearch", enabled: false, priority: 5, transport: "api", needs_api_key: false, has_api_key: false },
+            ],
+        });
+        testMock.mockResolvedValueOnce({
+            result_count: 2,
+            duration_ms: 1840,
+            preview_title: "Go HTTP server",
+            preview_url: "https://pkg.go.dev/net/http",
+            preview_snippet: "ListenAndServe starts an HTTP server",
+        });
+        render(<WebSearchConfigPanel lang="en" />);
+        const toggle = await screen.findByRole("checkbox", { name: "Enable MaClaw Hub / RapidSearch" });
+        expect((toggle as HTMLInputElement).checked).toBe(false);
+        const row = toggle.closest("li")!;
+        fireEvent.click(row.querySelector(".web-search-config__test")!);
+
+        await waitFor(() => expect(testMock).toHaveBeenCalledWith(expect.objectContaining({
+            engine: expect.objectContaining({ id: "maclaw_hub", enabled: true, transport: "api" }),
+            query: "golang http server",
+            use_saved_key: false,
+        })));
+        expect(await screen.findByText("2 results · 1840 ms")).toBeTruthy();
+        expect(screen.getByText("Go HTTP server")).toBeTruthy();
+        expect(screen.getByText("https://pkg.go.dev/net/http")).toBeTruthy();
+        expect(screen.getByText("ListenAndServe starts an HTTP server")).toBeTruthy();
+    });
+
     it("shows MaClaw Hub RapidSearch unchecked without an API-key field", async () => {
         getMock.mockResolvedValue({
             ...strategy,

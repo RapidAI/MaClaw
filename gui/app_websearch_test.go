@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -655,9 +656,14 @@ func TestTestWebSearchEngineUsesRegisteredHubTokenForMaclawHub(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	app := &App{testHomeDir: tmpHome}
 
-	var gotAuth string
+	var gotAuth, gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		var payload struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		gotQuery = payload.Query
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"results":[{"title":"Hub","url":"https://example.com/hub","snippet":"ok"}]}`))
 	}))
@@ -685,7 +691,10 @@ func TestTestWebSearchEngineUsesRegisteredHubTokenForMaclawHub(t *testing.T) {
 	if gotAuth != "Bearer viewer-token" {
 		t.Fatalf("Authorization = %q, want registered hub token", gotAuth)
 	}
-	if result.ResultCount != 1 {
+	if gotQuery != "golang http server" {
+		t.Fatalf("query = %q, want golang http server", gotQuery)
+	}
+	if result.ResultCount != 1 || result.PreviewTitle != "Hub" || result.PreviewURL != "https://example.com/hub" || result.PreviewSnippet != "ok" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -712,4 +721,16 @@ func TestIMGetWebSearchStrategyAttachesHubAuthAtRuntime(t *testing.T) {
 		}
 	}
 	t.Fatal("MaClaw Hub missing from runtime strategy")
+}
+
+func TestWebSearchEngineTestQueryDefaults(t *testing.T) {
+	if got := webSearchEngineTestQuery(websearch.WebSearchEngineMaclawHub, "  北京天气  "); got != "北京天气" {
+		t.Fatalf("explicit query = %q", got)
+	}
+	if got := webSearchEngineTestQuery(websearch.WebSearchEngineMaclawHub, ""); got != "golang http server" {
+		t.Fatalf("hub default = %q", got)
+	}
+	if got := webSearchEngineTestQuery("brave", ""); got != "MaClaw web search configuration test" {
+		t.Fatalf("other default = %q", got)
+	}
 }

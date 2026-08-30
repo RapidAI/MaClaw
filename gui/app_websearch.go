@@ -54,16 +54,20 @@ var allowedWebSearchAPIKeyClearIDs = map[string]bool{
 var retiredWebSearchEngineIDs = map[string]bool{"mojeek": true}
 
 type WebSearchEngineTestResult struct {
-	EngineID    string `json:"engine_id"`
-	Transport   string `json:"transport"`
-	DurationMS  int64  `json:"duration_ms"`
-	ResultCount int    `json:"result_count"`
-	RetryCount  int    `json:"retry_count,omitempty"`
-	Message     string `json:"message"`
+	EngineID       string `json:"engine_id"`
+	Transport      string `json:"transport"`
+	DurationMS     int64  `json:"duration_ms"`
+	ResultCount    int    `json:"result_count"`
+	RetryCount     int    `json:"retry_count,omitempty"`
+	Message        string `json:"message"`
+	PreviewTitle   string `json:"preview_title,omitempty"`
+	PreviewURL     string `json:"preview_url,omitempty"`
+	PreviewSnippet string `json:"preview_snippet,omitempty"`
 }
 
 type TestWebSearchEngineRequest struct {
 	Engine             corelib.WebSearchEngineConfig `json:"engine"`
+	Query              string                        `json:"query,omitempty"`
 	UseSavedKey        bool                          `json:"use_saved_key"`
 	HumanAssistEnabled bool                          `json:"human_assist_enabled"`
 }
@@ -168,6 +172,17 @@ func webSearchEngineName(id string) string {
 	default:
 		return id
 	}
+}
+
+func webSearchEngineTestQuery(engineID, query string) string {
+	query = strings.TrimSpace(query)
+	if query != "" {
+		return query
+	}
+	if engineID == websearch.WebSearchEngineMaclawHub {
+		return "golang http server"
+	}
+	return "MaClaw web search configuration test"
 }
 
 func webSearchEngineNeedsKey(id string) bool {
@@ -331,8 +346,13 @@ func (a *App) TestWebSearchEngine(req TestWebSearchEngineRequest) (WebSearchEngi
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 	started := time.Now()
-	response, err := websearch.ProbeWebSearchEngineCtx(ctx, "MaClaw web search configuration test", 3, engine, req.HumanAssistEnabled)
+	response, err := websearch.ProbeWebSearchEngineCtx(ctx, webSearchEngineTestQuery(engine.ID, req.Query), 3, engine, req.HumanAssistEnabled)
 	result := WebSearchEngineTestResult{EngineID: engine.ID, Transport: engine.Transport, DurationMS: time.Since(started).Milliseconds(), ResultCount: len(response.Results)}
+	if len(response.Results) > 0 {
+		result.PreviewTitle = strings.TrimSpace(response.Results[0].Title)
+		result.PreviewURL = strings.TrimSpace(response.Results[0].URL)
+		result.PreviewSnippet = strings.TrimSpace(response.Results[0].Snippet)
+	}
 	if len(response.Diagnostics) > 0 {
 		result.RetryCount = response.Diagnostics[0].RetryCount
 	}
