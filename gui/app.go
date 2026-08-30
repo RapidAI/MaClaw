@@ -12392,13 +12392,38 @@ func (a *App) InstallSkillDetailed(name, description, skillType, value, location
 // contract for the two remaining legacy GUI mutation entry points. The
 // compatibility methods keep their historical error-only signatures.
 func (a *App) AddSkillDetailed(name, description, skillType, value, toolName string) LegacySkillInstallResult {
+	if a == nil {
+		return LegacySkillInstallResult{State: "rolled_back", CleanupStatus: "clear", FailureReason: "app not initialized"}
+	}
+	a.legacyInstallResultsMu.Lock()
+	delete(a.legacyInstallResults, legacySkillResultKey("add", name))
+	a.legacyInstallResultsMu.Unlock()
 	err := a.AddSkill(name, description, skillType, value, toolName)
-	return legacySkillResultFromError("add", name, err)
+	return a.readLegacySkillResult("add", name, err)
 }
 
 func (a *App) DeleteSkillDetailed(name, toolName string) LegacySkillInstallResult {
+	if a == nil {
+		return LegacySkillInstallResult{State: "rolled_back", CleanupStatus: "clear", FailureReason: "app not initialized"}
+	}
+	a.legacyInstallResultsMu.Lock()
+	delete(a.legacyInstallResults, legacySkillResultKey("delete", name))
+	a.legacyInstallResultsMu.Unlock()
 	err := a.DeleteSkill(name, toolName)
-	return legacySkillResultFromError("delete", name, err)
+	return a.readLegacySkillResult("delete", name, err)
+}
+
+func (a *App) readLegacySkillResult(operation, skillName string, err error) LegacySkillInstallResult {
+	a.legacyInstallResultsMu.Lock()
+	result, ok := a.legacyInstallResults[legacySkillResultKey(operation, skillName)]
+	a.legacyInstallResultsMu.Unlock()
+	if ok {
+		if err != nil && result.FailureReason == "" {
+			result.FailureReason = err.Error()
+		}
+		return result
+	}
+	return legacySkillResultFromError(operation, skillName, err)
 }
 
 func legacySkillResultFromError(operation, skillName string, err error) LegacySkillInstallResult {
@@ -12468,10 +12493,18 @@ func recoverLegacySkillCompensations(skillName string) error {
 func (a *App) AddSkill(name, description, skillType, value, toolName string) error {
 	a.installMutex.Lock()
 	defer a.installMutex.Unlock()
+	defer func() {
+		// The compatibility API remains error-only, but retain the latest
+		// classified result so AddSkillDetailed can expose the same state axes.
+		// This result is advisory until the shared SkillCommitter migration is
+		// complete; automatic installation remains disabled.
+	}()
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("skill name required")
 	}
-	return a.addSkillLocked(name, description, skillType, value, toolName)
+	err := a.addSkillLocked(name, description, skillType, value, toolName)
+	a.recordLegacySkillResult("add", name, legacySkillResultFromError("add", name, err))
+	return err
 }
 
 // addSkillLocked is the legacy metadata registry transaction. Callers that

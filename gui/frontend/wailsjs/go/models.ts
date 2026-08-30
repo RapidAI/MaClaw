@@ -7667,6 +7667,29 @@ export namespace knowledge {
 
 export namespace main {
 
+	export class LegacySkillInstallResult {
+	    ok: boolean;
+	    state: string;
+	    cleanup_status: string;
+	    request_id?: string;
+	    failure_reason?: string;
+	    rollback_complete: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new LegacySkillInstallResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.state = source["state"];
+	        this.cleanup_status = source["cleanup_status"];
+	        this.request_id = source["request_id"];
+	        this.failure_reason = source["failure_reason"];
+	        this.rollback_complete = source["rollback_complete"];
+	    }
+	}
+
 	export class ReferralHandoffClaimResult {
 		registration_session: string;
 		expires_in_seconds: number;

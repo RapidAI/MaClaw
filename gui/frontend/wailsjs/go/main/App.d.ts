@@ -55,7 +55,7 @@ export function AddLansengerWatchMember(arg1:string,arg2:string,arg3:string):Pro
 export function AddLansengerWatchMemberForBot(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function AddSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
-export function AddSkillDetailed(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<Record<string, any>>;
+export function AddSkillDetailed(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.LegacySkillInstallResult>;
 
 export function AddVEToGroup(arg1:string,arg2:string):Promise<void>;
 
@@ -399,7 +399,7 @@ export function DeleteScheduledTask(arg1:string):Promise<void>;
 export function DeleteSession(arg1:string):Promise<void>;
 
 export function DeleteSkill(arg1:string,arg2:string):Promise<void>;
-export function DeleteSkillDetailed(arg1:string,arg2:string):Promise<Record<string, any>>;
+export function DeleteSkillDetailed(arg1:string,arg2:string):Promise<main.LegacySkillInstallResult>;
 
 export function DeleteSurvey(arg1:string):Promise<void>;
 
@@ -1159,7 +1159,7 @@ export function InstallSelectedMaclawAppPackageFromHub(arg1:string,arg2:Array<st
 
 export function InstallSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string):Promise<void>;
 
-export function InstallSkillDetailed(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string):Promise<Record<string, any>>;
+export function InstallSkillDetailed(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string):Promise<main.LegacySkillInstallResult>;
 
 export function InstallTool(arg1:string):Promise<void>;
 
