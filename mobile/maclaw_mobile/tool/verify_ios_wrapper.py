@@ -5,6 +5,8 @@ import plistlib
 import sys
 from pathlib import Path
 
+import configure_platforms
+
 
 IOS_BUNDLE_ID = 'top.mypapers.maclaw.mobile'
 IOS_TEST_BUNDLE_ID = f'{IOS_BUNDLE_ID}.RunnerTests'
@@ -15,13 +17,8 @@ IOS_RUNNER_TEST_MARKERS = (
     f'"{IOS_TEST_BUNDLE_ID}"',
 )
 
-IOS_USAGE_DESCRIPTIONS = {
-    'NSCameraUsageDescription': '\u7528\u4e8e\u62cd\u7167\u63d0\u95ee\u548c\u5bfc\u5165\u56fe\u7247\u6587\u6863\u3002',
-    'NSMicrophoneUsageDescription': '\u7528\u4e8e\u8bed\u97f3\u63d0\u95ee\u3002',
-    'NSSpeechRecognitionUsageDescription': '\u7528\u4e8e\u5c06\u8bed\u97f3\u63d0\u95ee\u8f6c\u6210\u6587\u5b57\u3002',
-    'NSPhotoLibraryUsageDescription': '\u7528\u4e8e\u4ece\u76f8\u518c\u5bfc\u5165\u56fe\u7247\u6216\u622a\u56fe\u3002',
-    'NSLocalNetworkUsageDescription': '\u7528\u4e8e\u53d1\u73b0 MaClaw \u5b98\u65b9 Hub \u5e76\u540c\u6b65 GUI/agent \u7ba1\u7406\u7684\u540e\u53f0 SSH \u4f1a\u8bdd\u72b6\u6001\u3002',
-}
+# Keep this aligned with tool/configure_platforms.py. CI runs configure, then this verifier.
+IOS_USAGE_DESCRIPTIONS = configure_platforms.IOS_USAGE_DESCRIPTIONS
 
 
 def mobile_root() -> Path:
