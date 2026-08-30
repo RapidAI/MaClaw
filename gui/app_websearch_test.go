@@ -814,8 +814,8 @@ func TestTestWebSearchEngineSoftensHubUnauthorizedWithoutCredentialCopy(t *testi
 	_, err := app.TestWebSearchEngine(TestWebSearchEngineRequest{
 		Engine: corelib.WebSearchEngineConfig{ID: websearch.WebSearchEngineMaclawHub, Transport: corelib.WebSearchTransportAPI},
 	})
-	if err == nil || !strings.Contains(err.Error(), "MaClaw Hub search is unavailable") {
-		t.Fatalf("error = %v, want unavailable", err)
+	if err == nil || !strings.Contains(err.Error(), "sign in to MaClaw Hub") {
+		t.Fatalf("error = %v, want sign in to MaClaw Hub", err)
 	}
 	lower := strings.ToLower(err.Error())
 	for _, banned := range []string{"credential", "api key", "token", "rejected", "proxy.token"} {

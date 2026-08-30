@@ -350,3 +350,123 @@ func TestLiveMaclawHubSearchSmoke(t *testing.T) {
 	}
 	t.Logf("live RapidSearch: %d results, first %s — %s", len(results), results[0].Title, results[0].URL)
 }
+
+func TestSearchMaclawHubCaptchaVsTimeoutVsOK(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantSubstr string
+		classify   string
+		safe       string
+	}{
+		{
+			name:       "captcha",
+			status:     http.StatusForbidden,
+			body:       `{"ok":false,"error":"search blocked by captcha","code":"captcha","engine":"google","tried":["google"]}`,
+			wantSubstr: "blocked or challenged",
+			classify:   "blocked",
+			safe:       "request was blocked or challenged",
+		},
+		{
+			name:       "timeout",
+			status:     http.StatusGatewayTimeout,
+			body:       `{"ok":false,"error":"search timed out","code":"timeout","tried":["google","bing"]}`,
+			wantSubstr: "timed out",
+			classify:   "timeout",
+			safe:       "request timed out",
+		},
+		{
+			name:       "parse",
+			status:     http.StatusBadGateway,
+			body:       `{"ok":false,"error":"search failed to parse","code":"parse"}`,
+			wantSubstr: "failed to parse",
+			classify:   "error",
+			safe:       "MaClaw Hub search is unavailable",
+		},
+		{
+			name:       "offline",
+			status:     http.StatusServiceUnavailable,
+			body:       `{"ok":false,"error":"search backend offline","code":"offline"}`,
+			wantSubstr: "search backend offline",
+			classify:   "error",
+			safe:       "MaClaw Hub search is unavailable",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			_, err := searchMaclawHub(context.Background(), corelib.WebSearchProvider{
+				Type: WebSearchEngineMaclawHub, Key: "hub-token", BaseURL: server.URL,
+			}, "golang", 3)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) {
+				t.Fatalf("error = %v, want HTTP %d", err, tc.status)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantSubstr)
+			}
+			if classifySearchError(err) != tc.classify {
+				t.Fatalf("classify = %q want %q err=%v", classifySearchError(err), tc.classify, err)
+			}
+			if got := SafeSearchErrorDetail(err); got != tc.safe {
+				t.Fatalf("SafeSearchErrorDetail = %q want %q", got, tc.safe)
+			}
+			lower := strings.ToLower(SafeSearchErrorDetail(err))
+			for _, banned := range []string{"token", "api key", "credential"} {
+				if strings.Contains(lower, banned) {
+					t.Fatalf("safe detail mentioned %q: %q", banned, lower)
+				}
+			}
+		})
+	}
+
+	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"results":[{"title":"Go","url":"https://go.dev","snippet":"The Go site"}]}`))
+	}))
+	defer okServer.Close()
+	results, err := searchMaclawHub(context.Background(), corelib.WebSearchProvider{
+		Type: WebSearchEngineMaclawHub, Key: "hub-token", BaseURL: okServer.URL,
+	}, "golang", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].URL != "https://go.dev" {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func TestSearchMaclawHubUnauthorizedJSONCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"unauthorized","code":"unauthorized"}`))
+	}))
+	defer server.Close()
+	_, err := searchMaclawHub(context.Background(), corelib.WebSearchProvider{
+		Type: WebSearchEngineMaclawHub, Key: "hub-token", BaseURL: server.URL,
+	}, "golang", 3)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("error = %v, want HTTP 401", err)
+	}
+	if !strings.Contains(err.Error(), "sign in to MaClaw Hub") {
+		t.Fatalf("error = %v, want sign in", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "token") || strings.Contains(strings.ToLower(err.Error()), "api key") {
+		t.Fatalf("soft copy leaked secret wording: %v", err)
+	}
+	if classifySearchError(err) != "invalid_key" {
+		t.Fatalf("classify = %q", classifySearchError(err))
+	}
+	if got := SafeSearchErrorDetail(err); got != "sign in to MaClaw Hub" {
+		t.Fatalf("SafeSearchErrorDetail = %q", got)
+	}
+}
